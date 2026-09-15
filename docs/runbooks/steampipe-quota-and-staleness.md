@@ -15,6 +15,65 @@ prepare the host registry and ensure the account-management path enforces the in
 종료와 재시작은 같은 잠금을 사용하고 backoff도 중단됩니다. 기본 다중 계정 동작은
 유지하며, 활성화 전에 호스트 행과 계정 관리 경로의 범위 제어를 준비합니다.
 
+## Pinned AWS profile contract
+
+AWS plugin **0.142.0** declares `profile` in `awsConfig`; its credential loader passes
+that name to AWS SDK Go `WithSharedConfigProfile`. It does not declare the previously
+emitted `assume_role_arn` / `assume_role_external_id` SPC attributes. The supported
+member configuration is a `profile = "aws_<account-id>"` reference plus a private AWS
+INI section containing `role_arn`, `credential_source = EcsContainer` and optional
+`external_id`. The SDK assumes the role using ambient ECS task credentials; no static
+credentials or credential processes are generated. No host/default profile is written.
+
+The image exposes `AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config`
+to service and health-check processes. SPC and INI are immutable 0600 files inside
+0700 generation directories; a single atomic `current` switch publishes the pair.
+Prior generations contain metadata only and remain private for this container's lifetime.
+Identity/ExternalId values reject control characters and INI injection. Either file
+failing to stage prevents publication; a failure after the atomic switch retains the
+complete new pair and still prevents service launch.
+
+The 300-second watchdog compares both files, so an ExternalId-only change requests
+a reload. Under the existing restart lock it reaps only the tracked foreground child,
+requires `service stop --force` to complete successfully, publishes the pair, then
+launches the service. A timeout/nonzero full stop or publication failure marks fatal
+shutdown before releasing the lock and cannot launch an “already running” service.
+PID 1 exits nonzero for ECS replacement; ordinary SIGTERM retains best-effort cleanup.
+The main child wait is bounded to one second so fatal/stop events can reach final
+cleanup even when teardown could not reap the child.
+`steampipe restart launched for updated scope` records launch only, not schema import
+or AWS/collection readiness. Confirm those separately; `SELECT 1` alone is insufficient.
+
+Container health runs `python3 /app/healthcheck.py`: only a TLS loopback PostgreSQL
+connection using the existing database-password environment value and `SELECT 1`.
+It has a five-second alarm and two-second socket timeout, emits no credential/error
+text, and makes no CLI or AWS calls. This replaces `steampipe query`, whose pinned
+0.22 `GetLocalClient` calls `StartServices` and can race the supervisor by starting the
+singleton service. Health failures remain observations; they never auto-start it.
+Build the image containing this script before applying the matching Terraform health
+command; the existing 30-second interval, 10-second timeout and five retries remain.
+
+Primary contracts: [plugin configuration](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/connection_config.go),
+[plugin credential loading](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/service.go),
+and [pinned SDK credential sources](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.27.16/config/resolve_credentials.go).
+Their hashes and extracted contract fields are recorded in
+`scripts/v2/steampipe/fixtures/aws-plugin-0.142.0-contract.json`.
+Run the focused, offline checks:
+
+```bash
+python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
+  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
+  scripts/v2/steampipe/test_healthcheck.py
+bash scripts/v2/terraform-test.sh
+```
+
+The contract test checks emitted attributes against pinned upstream schema data.
+The profile test exercises an AWS SDK credential resolver with mocked ECS/STS transport;
+filesystem and supervisor tests cover paired publication, failed stop/write, ExternalId
+reload, queued-restart races, process exit and SIGTERM. No live collection is invoked.
+The health tests cover stopped/unresponsive services without spawning a process;
+the mocked Terraform plan asserts the non-spawning command and unchanged timing.
+
 
 > Data-flow diagram / 데이터 흐름 다이어그램: [`docs/diagrams/inventory-freshness-dataflow.html`](../diagrams/inventory-freshness-dataflow.html) (archify — collector → guard → ledger → freshness disclosure)
 

@@ -23,13 +23,18 @@ quota posture a task actually started with is visible in its logs.
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from functools import lru_cache
+from pathlib import Path
 
 import boto3
 from botocore.config import Config
@@ -37,9 +42,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 import pg8000.native
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spc_render import limiter_config_from_env, render_spc  # noqa: E402
+from spc_render import limiter_config_from_env, render_aws_config, render_spc  # noqa: E402
 
 SPC_PATH = os.environ.get("AWS_SPC_PATH", "/home/steampipe/.steampipe/config/aws.spc")
+RUNTIME_CONFIG_DIR = "/home/steampipe/.awsops-runtime"
 AURORA_USER = os.environ.get("AURORA_USER", "steampipe_reader")
 # RDS global CA truststore bundle, baked into the image at build time (see Dockerfile) — enables
 # certificate-verified TLS (VERIFY_FULL) on the Aurora connection (M3 fix).
@@ -168,10 +174,78 @@ def _render_spc(rows):
     return render_spc(rows, limiter)
 
 
-def write_spc(spc: str) -> None:
-    os.makedirs(os.path.dirname(SPC_PATH), exist_ok=True)
-    with open(SPC_PATH, "w") as f:
-        f.write(spc)
+def _render_runtime_config(rows):
+    try:
+        return _render_spc(rows), render_aws_config(rows)
+    except HostScopeError:
+        raise
+    except (ValueError, KeyError, TypeError):
+        raise HostScopeError("invalid_runtime_configuration") from None
+
+
+def _write_private(path, contents):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(contents)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def write_spc(spc: str, aws_config: str = "") -> None:
+    """Publish a complete private generation through one atomic directory pointer.
+
+    Both readers use current/{aws.spc,config}; restart callers stop the old service
+    before publication. Retired generations live only for this container's lifetime.
+    """
+    root, path = Path(RUNTIME_CONFIG_DIR), Path(SPC_PATH)
+    generation = None
+    temporary = []
+    published = False
+    try:
+        if not root.is_absolute() or not path.is_absolute():
+            raise ValueError()
+        expected = str(root / "current" / "config")
+        if os.environ.get("AWS_CONFIG_FILE") not in (None, expected):
+            raise ValueError()
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = root.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+                or info.st_uid != os.geteuid()):
+            raise ValueError()
+        current = root / "current"
+        if current.is_symlink():
+            target = os.readlink(current)
+            if not re.fullmatch(r"gen-[A-Za-z0-9_]+", target) or (root / target).is_symlink():
+                raise ValueError()
+        elif current.exists():
+            raise ValueError()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink() or (path.is_symlink() and os.readlink(path) != str(current / "aws.spc")):
+            raise ValueError()
+        generation = Path(tempfile.mkdtemp(prefix="gen-", dir=root))
+        _write_private(generation / "aws.spc", spc)
+        _write_private(generation / "config", aws_config)
+        link = path.parent / (".awsops-spc-" + uuid.uuid4().hex)
+        temporary.append(link)
+        os.symlink(str(current / "aws.spc"), link)
+        os.replace(link, path)
+        pointer = root / (".current-" + uuid.uuid4().hex)
+        temporary.append(pointer)
+        os.symlink(generation.name, pointer)
+        os.environ["AWS_CONFIG_FILE"] = expected
+        os.replace(pointer, current)
+        published = True
+    except Exception:
+        raise HostScopeError("runtime_configuration_write_failed") from None
+    finally:
+        for link in temporary:
+            link.unlink(missing_ok=True)
+        # A signal/error after replace may interrupt the Python assignment even
+        # though the generation was committed. Never remove the published pair.
+        committed = (generation is not None and (root / "current").is_symlink()
+                     and os.readlink(root / "current") == generation.name)
+        if generation is not None and not published and not committed:
+            shutil.rmtree(generation)
 
 
 def _start_steampipe() -> "subprocess.Popen[bytes]":
@@ -186,22 +260,28 @@ def _start_steampipe() -> "subprocess.Popen[bytes]":
     )
 
 
-def _stop_steampipe_service(timeout: int = 30) -> None:
-    """Explicitly stop the Steampipe service via its own CLI before every restart (M-A fix).
-    `steampipe service start --foreground` manages an embedded PostgreSQL plus an on-disk
-    service-state lock; killing only our immediate Popen child (terminate()/kill()) does not
-    guarantee that lock/embedded-PG teardown completes synchronously — the next `service start`
-    could then fail with "already running" or a still-bound port 9193, turning a routine
-    scope-change or crash restart into a restart loop. `service stop --force` is Steampipe's own
-    documented, canonical way to guarantee a clean stop regardless of how our process-level
-    terminate()/kill() sequence went. Best-effort: if this itself fails/times out, we still
-    proceed to `_start_steampipe()` — a failed `service start` there will fail closed via the
-    existing crash-restart/backoff path rather than silently degrading."""
+class SteampipeRestartError(RuntimeError):
+    """A failed teardown cannot safely admit another service start."""
+
+
+def _stop_steampipe_service(timeout: int = 30) -> bool:
+    """Report the bounded full-service stop outcome without exposing CLI output.
+
+    Reaping the foreground CLI alone does not prove embedded PostgreSQL stopped.
+    Shutdown remains best-effort; restart callers must require True.
+    """
     try:
-        subprocess.run(["steampipe", "service", "stop", "--force"],
-                        timeout=timeout, capture_output=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[gen-spc] steampipe service stop --force failed (continuing): {e}", file=sys.stderr)
+        result = subprocess.run(["steampipe", "service", "stop", "--force"],
+                                timeout=timeout, capture_output=True)
+        if result.returncode == 0:
+            return True
+        reason = "nonzero"
+    except subprocess.TimeoutExpired:
+        reason = "timeout"
+    except Exception:  # noqa: BLE001 — fixed diagnostic, never raw CLI/exception text
+        reason = "error"
+    print(f"[gen-spc] steampipe_service_stop_failed ({reason})", file=sys.stderr)
+    return False
 
 
 def _on_signal(signum: int, _frame: object, proc_ref: list, stop: "threading.Event") -> None:
@@ -224,8 +304,8 @@ def _on_signal(signum: int, _frame: object, proc_ref: list, stop: "threading.Eve
     sys.exit(0)
 
 
-def _terminate_steampipe(proc: "subprocess.Popen[bytes]") -> None:
-    """Reap the foreground child, then stop the embedded service, on every shutdown path."""
+def _terminate_steampipe(proc: "subprocess.Popen[bytes]") -> bool:
+    """Reap the tracked child, then report whether the embedded service stopped."""
     try:
         proc.terminate()
         try:
@@ -234,11 +314,12 @@ def _terminate_steampipe(proc: "subprocess.Popen[bytes]") -> None:
             proc.kill()
             proc.wait(timeout=30)
     finally:
-        _stop_steampipe_service()
+        stopped = _stop_steampipe_service()
+    return stopped
 
 
 def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subprocess.Popen[bytes]",
-                       stop: "threading.Event" = None) -> bool:
+                       stop: "threading.Event" = None, fatal: "threading.Event" = None, prepare=None) -> bool:
     """The FULL restart sequence — terminate the old process, guarantee a clean service stop, and
     start a new one — run under `restart_lock` from start to finish (M-1 fix, round 8).
 
@@ -266,16 +347,38 @@ def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subpr
     with restart_lock:
         if (stop is not None and stop.is_set()) or proc_ref[0] is not old:
             return False
-        _terminate_steampipe(old)
+        failure = None
+        try:
+            stopped = _terminate_steampipe(old)
+        except Exception:  # Keep the tracked child for bounded final cleanup.
+            stopped = False
+            failure = "steampipe_child_stop_failed"
         # Signal handlers set stop without taking this lock.
         if stop is not None and stop.is_set():
             return False
+        if stopped is True and prepare is not None:
+            try:
+                prepare()
+            except Exception:
+                failure = "steampipe_configuration_publish_failed"
+            if stop is not None and stop.is_set():
+                return False
+        if failure or stopped is not True:
+            # Publish failure before releasing the restart lock: queued restart
+            # callers must observe stop, never revive the stale singleton service.
+            if fatal is not None:
+                fatal.set()
+            if stop is not None:
+                stop.set()
+            if failure != "steampipe_child_stop_failed":
+                proc_ref[0] = None  # Foreground child was reaped; PID 1 must now exit.
+            raise SteampipeRestartError(failure or "steampipe_service_stop_failed")
         proc_ref[0] = _start_steampipe()
         return True
 
 
 def _scope_watchdog(
-    initial_spc: str,
+    initial_config,
     proc_ref: list,
     restart_lock: threading.Lock,
     stop: threading.Event,
@@ -284,19 +387,23 @@ def _scope_watchdog(
     """Background thread: re-query Aurora every SCOPE_WATCH_INTERVAL seconds. If the rendered
     aws.spc changes (account added/removed/disabled, region scope updated), write the new config
     and restart the Steampipe subprocess (M3)."""
-    current = initial_spc
+    current = initial_config
     while not stop.wait(SCOPE_WATCH_INTERVAL):
         try:
-            new_spc = _render_spc(fetch_rows())
-            if new_spc == current:
+            new_config = _render_runtime_config(fetch_rows())
+            if new_config == current:
                 continue
             print("[gen-spc] account scope changed — rewriting config and restarting steampipe",
                   file=sys.stderr)
-            write_spc(new_spc)
-            current = new_spc
             old = proc_ref[0]
-            if _restart_steampipe(proc_ref, restart_lock, old, stop):
-                print("[gen-spc] steampipe restarted with updated scope", file=sys.stderr)
+            if _restart_steampipe(proc_ref, restart_lock, old, stop, fatal,
+                                  prepare=lambda: write_spc(*new_config)):
+                current = new_config
+                print("[gen-spc] steampipe restart launched for updated scope", file=sys.stderr)
+        except SteampipeRestartError as e:
+            # The restart path already published fatal/stop under the lock.
+            print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+            return
         except HostScopeError as e:
             # A revoked/foreign scope must stop collection, not leave the last
             # accepted configuration running while the watchdog reports an error.
@@ -348,11 +455,11 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        spc = _render_spc(rows)
+        configuration = _render_runtime_config(rows)
+        write_spc(*configuration)
     except HostScopeError as e:
         print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
         sys.exit(1)
-    write_spc(spc)
     print(f"[gen-spc] wrote {SPC_PATH} for {len(rows)} enabled account(s)", file=sys.stderr)
 
     # Start Steampipe (no Aurora credential in its env at all — M1).
@@ -368,7 +475,7 @@ def main() -> None:
     # Start scope watchdog (daemon — exits with the supervisor).
     threading.Thread(
         target=_scope_watchdog,
-        args=(spc, proc_ref, restart_lock, stop, fatal),
+        args=(configuration, proc_ref, restart_lock, stop, fatal),
         daemon=True,
     ).start()
 
@@ -378,13 +485,18 @@ def main() -> None:
     rapid_restart_count = 0
     last_restart_time = 0.0
     try:
-        while not stop.is_set():
+        while not stop.is_set() and not fatal.is_set():
             with restart_lock:
-                if stop.is_set():
+                if stop.is_set() or fatal.is_set():
                     break
                 current = proc_ref[0]
-            code = current.wait()
-            if stop.is_set():
+            # A failed watchdog teardown can leave this child alive. Events do
+            # not interrupt Popen.wait(), so bound it before rechecking shutdown.
+            try:
+                code = current.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                continue
+            if stop.is_set() or fatal.is_set():
                 break
             if proc_ref[0] is not current:
                 # The watchdog already replaced it; this exit was not a crash.
@@ -403,7 +515,7 @@ def main() -> None:
                 print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
                       file=sys.stderr)
             last_restart_time = time.time()
-            _restart_steampipe(proc_ref, restart_lock, current, stop)
+            _restart_steampipe(proc_ref, restart_lock, current, stop, fatal)
     finally:
         try:
             with restart_lock:

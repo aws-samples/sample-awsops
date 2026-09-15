@@ -57,12 +57,28 @@ The collector receives the same IDs plus the actual expected host account. Its s
 AssumeRole policy lists only configured `AWSopsReadOnlyRole` ARNs; target trust and
 the registry ExternalId remain separate prerequisites. Rendering preserves that
 ExternalId and fails closed on unapproved/duplicate enabled accounts or a wrong host.
+The pinned AWS plugin 0.142.0 accepts `profile`, not `assume_role_arn` or
+`assume_role_external_id` connection attributes. Members select generated AWS shared
+profiles with `role_arn`, optional `external_id` and `credential_source=EcsContainer`;
+the host keeps ambient ECS task credentials. The image sets `AWS_CONFIG_FILE` to
+`/home/steampipe/.awsops-runtime/current/config` for both service and health-check processes.
+The generator writes SPC and profile files as 0600 in a 0700 generation directory,
+then atomically switches one `current` link; no access keys or session tokens are stored.
+Profile values reject INI injection. See the [pinned contract and checks](steampipe-quota-and-staleness.md#pinned-aws-profile-contract).
 The running collector may contain the host plus a subset of approved targets during
 onboarding; it never silently discards an out-of-scope row. A registered member must
 have `all_regions=true` or at least one enabled region; a member with no renderable
 scope fails closed. The existing watchdog re-reads Aurora every 300 seconds and
 rewrites/restarts Steampipe when scope changes, including host-only startup followed
-by approved member registration. No exact-member requirement is imposed on initial
+by approved member registration or an ExternalId-only change. Restart holds the existing
+lock across confirmed full-service stop, paired-file publication and process launch.
+A stop timeout/nonzero result or publication failure blocks launch and causes PID 1
+to exit nonzero so ECS can replace its own container; graceful SIGTERM remains graceful.
+The supervisor checks shutdown at most one second between child waits, including
+when teardown fails and the child remains alive. Health uses a bounded loopback
+pg8000 `SELECT 1`, never `steampipe query`, whose auto-start bypasses the restart lock.
+The launch log is not proof that the plugin loaded its schemas or that collection works.
+No exact-member requirement is imposed on initial
 rendering. Empty non-profile
 configuration retains the legacy collector scope and AssumeRole behavior.
 
@@ -75,7 +91,9 @@ gh workflow run build-runtime-images.yml -R aws-samples/sample-awsops --ref dev 
 
 Verify the build run's source SHA matches the reviewed merged runtime SHA, then update
 the protected `STEAMPIPE_IMAGE_DIGEST_DEV` variable to that run's verified digest.
-The image must contain the updated `gen_spc_entrypoint.py` allowlist guard. Retain the
+The image must contain the updated generator and `healthcheck.py`; the saved apply
+must also switch the task definition to `python3 /app/healthcheck.py`. Rebuild the
+inventory image before applying this health command to any enabled stack. Retain the
 existing approved `WORKER_IMAGE_DIGEST_DEV`; no worker rebuild is needed when worker
 source is unchanged. Next review the configured saved Terraform plan and apply it
 before registering target roles through the UI. The same apply must deploy the

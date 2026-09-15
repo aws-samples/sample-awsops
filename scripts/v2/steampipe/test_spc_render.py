@@ -3,11 +3,20 @@ import os
 import sys
 import re
 import json
+import configparser
+from pathlib import Path
 import unittest.mock as mock
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from spc_render import LimiterConfig, limiter_config_from_env, render_spc  # noqa: E402
+import spc_render
+
+
+def _profiles(rows):
+    parser = configparser.RawConfigParser()
+    parser.read_string(spc_render.render_aws_config(rows))
+    return parser
 
 
 def _conn_names(spc):
@@ -26,22 +35,26 @@ def test_host_only_no_role_arn_no_external_id():
 
 
 def test_non_host_with_external_id():
-    spc = render_spc([
+    rows = [
         {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
          "external_id": "ext-1", "all_regions": False, "regions": ["us-east-1", "eu-west-1"]},
-    ])
-    assert 'assume_role_arn = "arn:aws:iam::210987654321:role/AWSopsReadOnlyRole"' in spc
-    assert 'assume_role_external_id = "ext-1"' in spc
+    ]
+    spc = render_spc(rows)
+    assert 'profile = "aws_210987654321"' in spc
+    assert dict(_profiles(rows)["profile aws_210987654321"]) == {
+        "role_arn": "arn:aws:iam::210987654321:role/AWSopsReadOnlyRole",
+        "credential_source": "EcsContainer", "external_id": "ext-1",
+    }
     assert 'regions = ["us-east-1", "eu-west-1"]' in spc
 
 
 def test_non_host_without_external_id_omits_line():
-    spc = render_spc([
+    rows = [
         {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
          "external_id": None, "all_regions": True, "regions": []},
-    ])
-    assert "assume_role_arn" in spc
-    assert "assume_role_external_id" not in spc
+    ]
+    assert 'profile = "aws_210987654321"' in render_spc(rows)
+    assert "external_id" not in _profiles(rows)["profile aws_210987654321"]
 
 
 def test_empty_regions_not_all_is_skipped():
@@ -68,11 +81,13 @@ def test_connection_name_is_account_id_and_aggregator_present():
 
 
 def test_hcl_escaping_of_values():
-    spc = render_spc([
+    rows = [
         {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
          "external_id": 'a"b\\c', "all_regions": False, "regions": ["us-east-1"]},
-    ])
-    assert 'assume_role_external_id = "a\\"b\\\\c"' in spc
+    ]
+    with pytest.raises(ValueError, match="invalid AWS profile"):
+        spc_render.render_aws_config(rows)
+    assert spc_render._hcl('a"b\\c') == '"a\\"b\\\\c"'
 
 
 def test_hcl_escapes_dollar_and_percent_template_markers():
@@ -80,18 +95,87 @@ def test_hcl_escapes_dollar_and_percent_template_markers():
     interpreted by Steampipe's HCL2 parser as an interpolation/template directive — it must render
     as HCL2's own doubling-escape ($$/%%) so the parser treats it as a literal $ / %. Unescaped,
     this either crashes aws.spc parsing (fail-closed) or evaluates an unintended expression."""
-    spc = render_spc([
-        {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
-         "external_id": "${aws_caller_identity}", "all_regions": False, "regions": ["us-east-1"]},
-    ])
-    assert 'assume_role_external_id = "$${aws_caller_identity}"' in spc
-    assert "${aws_caller_identity}" not in spc.replace("$${aws_caller_identity}", "")  # no bare ${...} survives
+    assert spc_render._hcl("${aws_caller_identity}") == '"$${aws_caller_identity}"'
+    assert spc_render._hcl("50%{template}") == '"50%%{template}"'
+    for external_id in ["${aws_caller_identity}", "50%{template}"]:
+        with pytest.raises(ValueError, match="invalid AWS profile"):
+            spc_render.render_aws_config([{"account_id": "210987654321", "is_host": False,
+                "role_name": "AWSopsReadOnlyRole", "external_id": external_id, "all_regions": True, "regions": []}])
 
-    spc2 = render_spc([
-        {"account_id": "310987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
-         "external_id": "50%{template}", "all_regions": False, "regions": ["us-east-1"]},
-    ])
-    assert 'assume_role_external_id = "50%%{template}"' in spc2
+
+def test_rendered_connection_attributes_match_pinned_upstream_plugin_schema():
+    contract = json.loads((Path(__file__).parent / "fixtures/aws-plugin-0.142.0-contract.json").read_text())
+    rows = [
+        {"account_id": "123456789012", "is_host": True, "all_regions": True, "regions": []},
+        {"account_id": "210987654321", "is_host": False, "all_regions": True, "regions": [],
+         "role_name": "AWSopsReadOnlyRole", "external_id": "fixture-external-id"},
+    ]
+    assert spc_render.PLUGIN == contract["plugin"]
+    for name, body in re.findall(r'^connection "([^"]+)" \{\n(.*?)^\}', render_spc(rows), re.M | re.S):
+        attributes = set(re.findall(r"^  ([a-z_]+) =", body, re.M))
+        allowed = {"plugin", "type", "connections"} if name == "aws" else {"plugin", *contract["connection_hcl_attributes"]}
+        assert attributes <= allowed, attributes - allowed
+        assert attributes.isdisjoint({"access_key", "secret_key", "session_token", "credential_process"})
+    parser = _profiles(rows)
+    assert parser.sections() == ["profile aws_210987654321"]  # No host/default role override.
+    assert set(parser[parser.sections()[0]]) == set(contract["credential_profile_keys"])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("external_id", "value\n[default]\ncredential_process=evil"),
+    ("external_id", "value\rrole_arn=evil"), ("external_id", "value\x00hidden"),
+    ("role_name", "Role\ncredential_process=evil"), ("account_id", "123\n[default]"),
+])
+def test_profile_values_cannot_inject_ini_sections_or_credentials(field, value):
+    row = {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
+           "external_id": "fixture-external-id", "all_regions": True, "regions": []}
+    with pytest.raises(ValueError, match="invalid AWS profile"):
+        spc_render.render_aws_config([{**row, field: value}])
+
+
+def test_external_id_changes_only_profile_content_and_remains_reload_visible():
+    row = {"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
+           "external_id": "first-value", "all_regions": True, "regions": []}
+    changed = {**row, "external_id": "second-value"}
+    assert render_spc([row]) == render_spc([changed])
+    assert spc_render.render_aws_config([row]) != spc_render.render_aws_config([changed])
+
+def test_generated_profiles_resolve_ecs_source_and_assume_role_with_real_sdk(tmp_path):
+    """Exercise an AWS SDK credential resolver, not a mirror of the rendered strings."""
+    import botocore.session
+    rows = [{"account_id": "210987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
+             "external_id": "fixture-external-id", "all_regions": True, "regions": []},
+            {"account_id": "310987654321", "is_host": False, "role_name": "AWSopsReadOnlyRole",
+             "external_id": None, "all_regions": True, "regions": []}]
+    path = tmp_path / "config"
+    path.write_text(spc_render.render_aws_config(rows))
+    source = {"AccessKeyId": "FIXTURE_ECS_KEY", "SecretAccessKey": "FIXTURE_ECS_SECRET",
+              "Token": "FIXTURE_ECS_TOKEN", "Expiration": "2099-01-01T00:00:00Z"}
+    sts = mock.Mock()
+    sts.assume_role.return_value = {"Credentials": {
+        "AccessKeyId": "FIXTURE_TARGET_KEY", "SecretAccessKey": "FIXTURE_TARGET_SECRET",
+        "SessionToken": "FIXTURE_TARGET_TOKEN", "Expiration": "2099-01-01T00:00:00Z"}}
+    with mock.patch.dict(os.environ, {
+        "AWS_CONFIG_FILE": str(path), "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "absent"),
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/fixture",
+        "AWS_DEFAULT_REGION": "ap-northeast-2", "AWS_EC2_METADATA_DISABLED": "true",
+    }, clear=True), mock.patch("botocore.utils.ContainerMetadataFetcher.retrieve_full_uri", return_value=source):
+        for row in rows:
+            sts.reset_mock()
+            session = botocore.session.Session(profile=f"aws_{row['account_id']}")
+            with mock.patch.object(session, "create_client", return_value=sts):
+                credentials = session.get_credentials().get_frozen_credentials()
+            assert credentials.access_key == "FIXTURE_TARGET_KEY"
+            request = sts.assume_role.call_args.kwargs
+            assert request["RoleArn"] == f"arn:aws:iam::{row['account_id']}:role/AWSopsReadOnlyRole"
+            assert request.get("ExternalId") == row["external_id"]
+        sts.reset_mock()
+        session = botocore.session.Session()
+        with mock.patch.object(session, "create_client", return_value=sts):
+            assert session.get_credentials().get_frozen_credentials().access_key == "FIXTURE_ECS_KEY"
+        sts.assume_role.assert_not_called()
+    assert "FIXTURE_ECS" not in path.read_text()
+    assert "FIXTURE_TARGET" not in path.read_text()
 
 
 def test_host_included_even_when_flag_false_and_no_regions():
@@ -213,19 +297,18 @@ def test_stop_steampipe_service_runs_the_canonical_stop_command():
     embedded PostgreSQL + on-disk service-state lock that our process-level kill does not
     guarantee is released before the next `service start`."""
     import gen_spc_entrypoint
-    with mock.patch("subprocess.run") as run:
-        gen_spc_entrypoint._stop_steampipe_service()
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        assert gen_spc_entrypoint._stop_steampipe_service() is True
     args, kwargs = run.call_args
     assert args[0] == ["steampipe", "service", "stop", "--force"]
     assert kwargs.get("timeout") == 30
 
 
-def test_stop_steampipe_service_is_best_effort_on_failure():
-    """A failing/timed-out `service stop` must not raise — the caller always proceeds to attempt
-    `_start_steampipe()` regardless, which fails closed via the existing crash-restart path."""
+def test_stop_steampipe_service_reports_failure_without_breaking_best_effort_shutdown():
+    """Shutdown can ignore False, but restart must not confuse it with a clean full stop."""
     import gen_spc_entrypoint
     with mock.patch("subprocess.run", side_effect=Exception("boom")):
-        gen_spc_entrypoint._stop_steampipe_service()  # must not raise
+        assert gen_spc_entrypoint._stop_steampipe_service() is False
 
 
 def test_restart_steampipe_performs_full_sequence_when_old_still_current():
@@ -251,7 +334,7 @@ def test_restart_steampipe_performs_full_sequence_when_old_still_current():
     proc_ref = [old]
     restart_lock = threading.Lock()
 
-    with mock.patch.object(gen_spc_entrypoint, "_stop_steampipe_service") as stop_svc, \
+    with mock.patch.object(gen_spc_entrypoint, "_stop_steampipe_service", return_value=True) as stop_svc, \
          mock.patch.object(gen_spc_entrypoint, "_start_steampipe", return_value=new) as start:
         gen_spc_entrypoint._restart_steampipe(proc_ref, restart_lock, old)
 

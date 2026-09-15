@@ -31,6 +31,9 @@ RUN steampipe plugin install "ghcr.io/turbot/steampipe/plugins/turbot/aws:0.142.
 USER root
 COPY --from=python-runtime /opt/python /opt/python
 ENV PATH="/opt/python/bin:${PATH}"
+# Shared by the foreground service and ECS health-check processes. Generated at
+# runtime as private metadata-only profiles; no credentials are baked into the image.
+ENV AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
 RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.2 boto3==1.34.162
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
 # VERIFY_FULL on the boot generator's Aurora connection instead of CERT_NONE (M3 fix). Fetched at
@@ -51,7 +54,7 @@ assert d.startswith(b'-----BEGIN CERTIFICATE-----'), 'RDS CA bundle: missing PEM
 assert d.count(b'-----BEGIN CERTIFICATE-----') >= 5, 'RDS CA bundle: too few certificates — corrupt/truncated download'; \
 assert len(d) > 4096, 'RDS CA bundle: suspiciously small — corrupt/truncated download'" \
  && chmod 0644 /app/rds-ca-bundle.pem
-COPY --chown=steampipe:0 spc_render.py gen_spc_entrypoint.py /app/
+COPY --chown=steampipe:0 spc_render.py gen_spc_entrypoint.py healthcheck.py /app/
 USER steampipe
 EXPOSE 9193
 # Entrypoint generates aws.spc from Aurora, then exec's `steampipe service start` (network listener

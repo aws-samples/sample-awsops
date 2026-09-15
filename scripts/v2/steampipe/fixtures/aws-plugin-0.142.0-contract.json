@@ -1,0 +1,36 @@
+{
+  "plugin": "aws@0.142.0",
+  "connection_hcl_attributes": [
+    "regions",
+    "default_region",
+    "profile",
+    "access_key",
+    "secret_key",
+    "session_token",
+    "max_error_retry_attempts",
+    "min_error_retry_delay",
+    "ignore_error_codes",
+    "endpoint_url",
+    "s"
+  ],
+  "credential_profile_keys": [
+    "role_arn",
+    "credential_source",
+    "external_id"
+  ],
+  "credential_source": "EcsContainer",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/turbot/steampipe-plugin-aws/v0.142.0/aws/connection_config.go",
+      "sha256": "c26a6326344b19a72692932bd4e0209b4c6e1e554b76106959dbd9cdaeca9ca5"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/turbot/steampipe-plugin-aws/v0.142.0/aws/service.go",
+      "sha256": "3183facb8ba9801d31dca5085b59ef34e41b7489e430a1adae39d23b7da74c35"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/aws/aws-sdk-go-v2/config/v1.27.16/config/resolve_credentials.go",
+      "sha256": "731ec76ff903912de7131829a04df5573333b54681216feea7f40b438d73fcc7"
+    }
+  ]
+}
