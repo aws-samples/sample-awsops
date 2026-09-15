@@ -12,6 +12,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 | Runbook | Topic |
 |---|---|
+| [review-codec-sandbox.md](review-codec-sandbox.md) | Standalone Docker codec confinement, bounded byte transport and owned cleanup |
 | [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
 | [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
 | [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
@@ -31,6 +32,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
+| [pr-review-head-images.md](pr-review-head-images.md) | Trusted HEAD PNG staging, BASE context distinction, bounds and unavailable-image coverage failures |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
 | [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
@@ -45,6 +47,10 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+
+- HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
+  deterministic declaration gate. Response presence, image failure and unusable report
+  output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
@@ -313,3 +319,9 @@ Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/
 ## Graph read contract
 
 Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+
+## Isolated review codec
+
+`review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
+contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
+It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.

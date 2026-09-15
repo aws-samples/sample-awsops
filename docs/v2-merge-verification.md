@@ -42,6 +42,11 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 
 ## Runner Usage
 
+The image-codec confinement tests require Docker and a prepared
+`AWSOPS_REVIEW_CODEC_STATE`. Follow the setup and cleanup commands in
+[the codec sandbox runbook](runbooks/review-codec-sandbox.md) before running the full
+Python suite locally. Merge Verify prepares and cleans this state automatically.
+
 Use Node.js 20 (CI and web runtime; migration runtime image uses 22), Python 3.12, curl, OpenSSL, jq, Terraform **1.15.7**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
@@ -63,7 +68,14 @@ python3 -m pip install \
   -r scripts/v2/remediation/requirements.txt \
   -r scripts/v2/steampipe/requirements.txt \
   -r scripts/v2/workers/requirements.txt
+python3 -m pip install --require-hashes --only-binary=:all: \
+  -r scripts/pr-review/image-requirements.txt
 ```
+
+The separate hash-checked install provides Pillow 12.3.0 for Python 3.12 Linux
+ARM64/x86-64. Do not combine it with the unhashed requirements command above.
+Both the file-isolated image pytest suite and the panel-prompt structure check
+invoked by `bash tests/run-all.sh` require this codec; their fixtures are offline.
 
 Run all four commands for the CI-equivalent merge checks from the repository root:
 CI와 같은 범위의 검증에는 루트에서 네 명령을 모두 실행한다.
@@ -159,7 +171,8 @@ aggregate-run false failures.
 
 1. Check out the PR and set up Node.js 20, Python 3.12 and Terraform **1.15.7** (wrapper disabled).
 2. Install web dependencies, `scripts/v2/requirements-test.txt` (**pytest and PyYAML**) and
-   the existing agent/incident/remediation/Steampipe/worker requirements.
+   the existing agent/incident/remediation/Steampipe/worker requirements. Separately install
+   `scripts/pr-review/image-requirements.txt` with `--require-hashes --only-binary=:all:`.
 3. Run `bash scripts/v2/merge-verify.sh`: file-isolated pytest (including workflow fixtures and
    the localhost Terraform state-read test), web vitest, required deployment Node tests
    (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
