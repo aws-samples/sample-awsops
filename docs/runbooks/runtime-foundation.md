@@ -80,7 +80,11 @@ by approved member registration or an ExternalId-only change. Restart holds the 
 lock across observable loopback-listener closure, paired-file publication and process launch.
 The stop CLI exit code alone is not proof that the listener stopped.
 After a completed CLI call, any return code requires loopback `ECONNREFUSED` before launch.
-CLI timeout/error, an open or unconfirmed listener, or publication failure blocks launch and causes PID 1
+Poll for at most 10 seconds, with 0.2-second intervals and each connection attempt capped
+at one second; clip attempts and waits to the remaining budget. An accepted connection
+means open; a timeout or other socket error leaves closure unconfirmed. Neither is closed.
+Without refusal before the deadline, restart remains blocked. CLI timeout/error,
+unconfirmed closure at that deadline, or publication failure causes PID 1
 to exit nonzero so ECS can replace its own container; graceful SIGTERM remains graceful.
 The supervisor checks shutdown at most one second between child waits, including
 when teardown fails and the child remains alive. Health uses a bounded loopback
@@ -212,6 +216,13 @@ An explicit false decision still needs the reviewed apply to remove managed memb
 ## Rollback
 
 Retain runtime resources and restore reviewed prior digests/settings. Manual dev/preview plans and apply block listed core deletion/replacement/forget; this development policy does not cover main. No retirement mode is provided. A destructive teardown needs a separate reviewed procedure covering Aurora ingress, migration dependencies and optional gates.
+
+Treat the Steampipe image and task-definition health command as a pair. A rollback to
+an image predating `/app/healthcheck.py` must restore that image's compatible health
+command **in the same reviewed saved plan** as the image digest. Never roll back only
+the digest while retaining `CMD python3 /app/healthcheck.py`, or disable health checks
+to compensate. Preserve ALLDNS/private Cloud Map restrictions and all required
+plan, apply and runtime gates; this compatibility rule grants no bypass.
 
 <a id="promotion-to-main--main-승격"></a>
 

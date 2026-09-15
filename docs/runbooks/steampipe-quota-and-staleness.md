@@ -213,9 +213,12 @@ The 300-second watchdog compares both rendered files, so an ExternalId-only chan
 requests reload. It reaps the tracked foreground child, requests `service stop --force`
 and requires observable closure of the loopback listener before publication/start.
 The CLI exit code alone is not proof of a stopped listener: a completed CLI call, regardless
-of its return code, requires `ECONNREFUSED` from `127.0.0.1:9193`. An open listener, timeout
-or other unknown socket result does not establish closure. CLI timeout/error or failed
-closure observation blocks restart. An unconfirmed stop or failed
+of its return code, requires `ECONNREFUSED` from `127.0.0.1:9193`. Poll for at most
+10 seconds with 0.2-second intervals and per-connection timeout at most one second,
+clipping both to the remaining budget. An accepted connection means the listener is
+open; timeout or another socket error leaves closure unconfirmed. Continue bounded
+observation, but neither outcome authorizes restart. If no refusal is observed before
+the deadline, fail closed. CLI timeout/error also blocks restart. An unconfirmed stop or failed
 publication marks fatal shutdown before unlocking; queued callers cannot launch another
 service. PID 1 exits nonzero for ECS replacement; ordinary SIGTERM retains best-effort
 cleanup. Its one-second child waits let fatal/stop events reach final cleanup when a
@@ -368,7 +371,7 @@ from the JSON collector events below; no token alone proves a specific IAM or ne
 | `runtime_configuration_write_failed` | Path ownership/mode, staging or publication failed. Check the configured paths and container filesystem; no service launch is permitted. |
 | `steampipe_configuration_publish_failed` | Restart could not publish the stopped service's new pair. Keep it stopped and inspect the preceding fixed failure. |
 | `steampipe_child_stop_failed` | Foreground child teardown failed. Fatal shutdown retains its reference for bounded final cleanup. |
-| `steampipe_service_stop_failed` | Reason `listener_not_closed`, `timeout` or `error`: closure was not established or the stop CLI failed to complete. Inspect listener/process state; a completed nonzero CLI exit is acceptable only with `ECONNREFUSED`. |
+| `steampipe_service_stop_failed` | Reason `listener_open` or `listener_unconfirmed`: the bounded 10-second observation did not establish closure. An accepted connection is open; socket timeout/other errors are unconfirmed, not proof of closure. Reasons `timeout`/`error` describe a stop CLI that did not complete. `exit_code` records its integer return code, or `unknown` if unavailable. A completed nonzero CLI exit is acceptable only after observed `ECONNREFUSED`. |
 
 CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 
@@ -511,6 +514,13 @@ it can change private Cloud Map DNS and must pass the same gate. Only after sepa
 authorization may a fresh reviewed plan and its apply dispatch **both** set
 `allow_dns_changes=true`. Do not exercise that permission while ALLDNS is active or add a
 private-DNS exception.
+
+When rolling back across the introduction of `/app/healthcheck.py`, pair the prior
+Steampipe image digest with its compatible task-definition health command **in the same
+reviewed saved plan**. An older image without that script cannot retain
+`CMD python3 /app/healthcheck.py`; do not apply an image-only rollback or disable health
+checks. Follow [runtime rollback](runtime-foundation.md#rollback--롤백), retaining
+ALLDNS and every existing plan/apply/runtime gate.
 
 1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. [런타임 롤백](runtime-foundation.md#rollback--롤백)을 따르며 전체 종료는 별도 검토 절차가 필요하다.
 2. controller-approved `apply tfplan`으로 적용한다.
