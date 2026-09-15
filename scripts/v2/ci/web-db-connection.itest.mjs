@@ -25,12 +25,18 @@ function loadInventory(pool) {
   specs._compile(ts.transpileModule(readFileSync(specsFile, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, specsFile);
+  const redactionFile = new URL('../../../web/lib/inventory-redaction.ts', import.meta.url).pathname;
+  const redaction = new Module(redactionFile);
+  redaction._compile(ts.transpileModule(readFileSync(redactionFile, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, redactionFile);
   const inventoryModule = new Module(source);
   inventoryModule.require = id => {
     if (id === '@/lib/db') return { getPool: () => pool };
     if (id === '@/lib/admin') return { isAdmin: () => false };
     if (id === '@/lib/inventory-types') return specs.exports;
     if (id === '@/lib/inventory-derived') return { AGG_DERIVED_KEYS: {} };
+    if (id === './inventory-redaction') return redaction.exports;
     if (id === '@aws-sdk/client-lambda') return {
       LambdaClient: class { send() { throw new Error('AWS forbidden in inventory tests'); } }, InvokeCommand: class {},
     };
@@ -204,10 +210,20 @@ test('inventory five-row pages totally order tied timestamps using every scoped 
       await client.query(`INSERT INTO inventory_resources VALUES
         ('cloudfront',$1,$2,$3,'{}','2026-01-01T00:00:00Z')`, [account, region, id]);
     }
+    await client.query(`UPDATE inventory_resources SET data=$1 WHERE resource_id='r0'`, [{
+      origins: [{ DomainName: 'origin.example.test', CustomHeaders: [{ HeaderValue: 'FIXTURE_HEADER_SECRET' }] }],
+      actions: [{ AuthenticateOidcConfig: { ClientId: 'public-client', ClientSecret: 'FIXTURE_OIDC_SECRET' } }],
+    }]);
     const readResources = loadInventory(client);
     const found = [];
     for (let offset = 0; offset < expected.length; offset += 5) {
       const page = await readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
+      assert.equal(JSON.stringify(page).includes('FIXTURE_HEADER_SECRET'), false);
+      assert.equal(JSON.stringify(page).includes('FIXTURE_OIDC_SECRET'), false);
+      for (const row of page.rows.filter(row => row.resource_id === 'r0')) {
+        assert.equal(row.data.origins[0].DomainName, 'origin.example.test');
+        assert.equal(row.data.actions[0].AuthenticateOidcConfig.ClientId, 'public-client');
+      }
       found.push(...page.rows.map(row => [row.account_id, row.region, row.resource_id]));
     }
     assert.deepEqual(found, expected);
