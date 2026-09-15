@@ -251,6 +251,18 @@ describe('ExplorePanel example chips', () => {
 
 
 describe('Explore collection evidence', () => {
+  it('retains a valid metric beside a producer null marker and displays the omission count', async () => {
+    const result = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector',
+      collectionStatus: 'unknown', result: [{ metric: { __name__: 'up' }, value: [1, '7'] }, null] });
+    global.fetch = mockFetch(url => url === '/api/datasources' ? { datasources: INSTANCES } : { result });
+    render(<ExplorePanel instanceId={1} />);
+    fireEvent.change(await screen.findByPlaceholderText(/PromQL/), { target: { value: 'up' } });
+    fireEvent.click(screen.getByRole('button', { name: '실행' }));
+    expect((await screen.findByTestId('dropped-response-entries')).textContent).toContain(': 1');
+    expect(screen.getByText(result.collectionNote!)).toBeTruthy();
+    expect(screen.getAllByText('up').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/결과 파싱 실패/)).toBeNull();
+  });
   it.each(['partial', 'unknown', 'error'] as const)('discloses %s empty results in the actual query flow', async collectionStatus => {
     const result = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector', result: [], collectionStatus });
     global.fetch = mockFetch(url => url === '/api/datasources' ? { datasources: INSTANCES } : { result });

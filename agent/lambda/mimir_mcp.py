@@ -27,6 +27,7 @@ SCHEMA_METRIC_CAP = 3000
 
 MAX_POINTS_PER_SERIES = 500
 MAX_TOTAL_SAMPLES = 5000
+MAX_RESULT_BYTES = 1_000_000
 _REL = re.compile(r"^(\d+)([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -94,28 +95,60 @@ def _get(creds, path, params, http_timeout=None, *, with_status=False):
     return result, state
 
 
+def _sample(value):
+    if (not isinstance(value, list) or len(value) != 2
+            or type(value[0]) not in (int, float) or not isinstance(value[1], str)
+            or len(value[1]) > 128):
+        return False
+    try:
+        float(value[1])  # NaN and +/-Inf are valid Prometheus sample strings.
+        return math.isfinite(value[0])
+    except (ValueError, OverflowError):
+        return False
+
+
+def _bounded_result(payload):
+    body = json.dumps(payload, default=str)
+    if len(body.encode("utf-8")) > MAX_RESULT_BYTES:
+        empty = {key: [] for key in ("result", "labels", "series") if key in payload}
+        if payload.get("resultType") in ("vector", "matrix", "scalar", "string"):
+            empty["resultType"] = payload["resultType"]
+        state = payload.get("collectionStatus")
+        empty.update(truncated=True, reason="payload_truncated",
+                     collectionStatus=state if state in ("unknown", "error") else "partial")
+        body = json.dumps(empty)
+    return {"statusCode": 200, "body": body}
+
+
 def _bound(data):
-    if not isinstance(data, dict) or not isinstance(data.get("result"), list):
-        return data, False
-    result = data["result"]
+    """Keep bounded valid series; replace invalid records without echoing their contents."""
+    if not isinstance(data, dict):
+        return None, False
+    kind = data.get("resultType")
+    result = data.get("result")
+    if kind not in ("vector", "matrix") or not isinstance(result, list):
+        return {"resultType": kind if kind in ("vector", "matrix") else None, "result": None}, False
     truncated = len(result) > MAX_SERIES
-    result = result[:MAX_SERIES]
-    budget = MAX_TOTAL_SAMPLES
-    out = []
-    for series in result:
-        if not isinstance(series, dict):
-            out.append(None)  # Fixed malformed marker; no raw passthrough.
+    budget, out = MAX_TOTAL_SAMPLES, []
+    for series in result[:MAX_SERIES]:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in metric.items()):
+            out.append(None)
             continue
-        s = dict(series)
-        vals = s.get("values")
-        if isinstance(vals, list):
-            allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
-            if len(vals) > allowed:
-                truncated = True
-            s["values"] = vals[:allowed]
-            budget -= len(s["values"])
-        out.append(s)
-    return {"resultType": data.get("resultType"), "result": out}, truncated
+        if kind == "vector":
+            out.append({"metric": metric, "value": series["value"]} if _sample(series.get("value")) else None)
+            continue
+        values = series.get("values")
+        if not isinstance(values, list):
+            out.append(None)
+            continue
+        allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
+        truncated |= len(values) > allowed
+        kept = values[:allowed]
+        budget -= len(kept)
+        out.append({"metric": metric, "values": kept} if all(_sample(value) for value in kept) else None)
+    return {"resultType": kind, "result": out}, truncated
+
 
 
 def _query_result(observed, *, allow_scalar=False):
@@ -124,42 +157,32 @@ def _query_result(observed, *, allow_scalar=False):
     if isinstance(raw_rows, list) and any(isinstance(row, dict) and
             ("histogram" in row or "histograms" in row) for row in raw_rows[:MAX_SERIES]):
         return err("Native histogram output is unsupported; request float-valued results.")
-    bounded, truncated = _bound(data)
-    rows = bounded.get("result") if isinstance(bounded, dict) else None
-    kind = bounded.get("resultType") if isinstance(bounded, dict) else None
-    def sample(value):
-        if (not isinstance(value, list) or len(value) != 2
-                or type(value[0]) not in (int, float) or not math.isfinite(value[0])
-                or not isinstance(value[1], str)):
-            return False
-        try:
-            float(value[1])
-            return True
-        except ValueError:
-            return False
+    kind = data.get("resultType") if isinstance(data, dict) else None
     if kind in ("scalar", "string"):
         raw = data.get("result")
         pair = isinstance(raw, list) and len(raw) == 2
-        oversized = pair and isinstance(raw[1], str) and (
-            len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
-        valid_scalar = (allow_scalar and pair and type(raw[0]) in (int, float)
-                        and math.isfinite(raw[0]) and isinstance(raw[1], str)
-                        and not oversized and (kind == "string" or sample(raw)))
-        return ok({"resultType": kind, "result": raw if valid_scalar else [],
-                   "truncated": bool(oversized),
-                   "collectionStatus": state if valid_scalar or state == "error" else "unknown"})
-    valid = kind in ("vector", "matrix") and isinstance(rows, list)
-    if valid:
-        valid = all(isinstance(row, dict) and isinstance(row.get("metric"), dict)
-                    and (sample(row.get("value")) if kind == "vector" else
-                         isinstance(row.get("values"), list) and all(sample(v) for v in row["values"]))
-                    for row in rows)
+        oversized = False
+        try:
+            oversized = pair and isinstance(raw[1], str) and (
+                len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+            valid = (allow_scalar and pair and type(raw[0]) in (int, float)
+                     and math.isfinite(raw[0]) and isinstance(raw[1], str) and not oversized
+                     and (kind == "string" or _sample(raw)))
+        except (ValueError, OverflowError, UnicodeError):
+            valid = False
+        return _bounded_result({"resultType": kind, "result": raw if valid else [],
+                                "truncated": bool(oversized),
+                                "collectionStatus": state if valid or state == "error" else "unknown"})
+    bounded, truncated = _bound(data)
+    rows = bounded.get("result") if isinstance(bounded, dict) else None
+    valid = kind in ("vector", "matrix") and isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
     if not valid and state != "error":
         state = "unknown"
     elif state == "ok":
         state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
-    return ok({**(bounded if isinstance(bounded, dict) else {"result": bounded}),
-               "truncated": truncated, "collectionStatus": state})
+    return _bounded_result({**(bounded if isinstance(bounded, dict) else {"result": None}),
+                            "truncated": truncated, "collectionStatus": state})
+
 
 
 def _timeout_param(v):
@@ -207,7 +230,8 @@ def _list_result(observed, field, limit, kind):
              "unknown" if not isinstance(data, list) else
              "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
              "ok" if rows else "empty")
-    return ok({field: rows, "truncated": truncated, "collectionStatus": state})
+    rows = [row if isinstance(row, kind) else None for row in rows]
+    return _bounded_result({field: rows, "truncated": truncated, "collectionStatus": state})
 
 
 def mimir_labels(args):
@@ -363,4 +387,6 @@ def ok(body):
 
 
 def err(msg):
+    if len(str(msg)) > 400:
+        msg = "upstream error response exceeded limit"
     return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}
