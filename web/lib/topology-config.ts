@@ -3,7 +3,24 @@ import type { EndpointRow } from './eks-incluster';
 import { isTerminalPodPhase, type PodRow } from './eks-resources';
 
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
+export interface EksIpResolution {
+  map: NonNullable<FlowInput['ipResolved']>;
+  blockedScopes: string[];
+  coveredRegions: string[];
+  globalUnknown: boolean;
+  notConnected?: number;
+  status: 'ok' | 'empty' | 'partial' | 'unavailable';
+  reasons: ('cluster_unreadable' | 'cluster_limit_possible' | 'cluster_not_connected')[];
+}
+const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
+  ({ map: {}, blockedScopes: [], coveredRegions: [], globalUnknown: true, status: 'unavailable', reasons: [reason] });
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const validRegion = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9-]{1,64}$/.test(value);
+const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
+  keys.every(key => row[key] == null || typeof row[key] === 'string');
 
 export type AggregateRunStatus = 'succeeded' | 'running' | 'partial' | 'failed' | 'unknown';
 
@@ -40,55 +57,61 @@ export function inventoryEvidence(
 }
 
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
-// unique pod can establish ownership; conflicting references also disqualify the pod fallback.
-export interface EksIpEvidence {
-  ipResolved: NonNullable<FlowInput['ipResolved']>;
-  // Read outcome within declared coverage, never a whole-account completeness verdict.
-  status: 'ok' | 'partial' | 'failed';
-  region: string | null;
-  notConnected: number;
-}
-
-export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvidence> {
+// unique pod in a known active phase can establish ownership; conflicting references also
+// disqualify the pod fallback. PodRow.status is the normalized Kubernetes status.phase.
+export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
-  let degraded = false;
-  let region: string | null = null, notConnected = 0;
+  const blockedScopes = new Set<string>();
+  const reasons = new Set<EksIpResolution['reasons'][number]>();
+  let coveredRegions: string[] = [];
+  let notConnected = 0;
   try {
+    if (signal?.aborted) return unavailable();
     const response = await fetch('/api/eks', { signal });
     const list = response.ok ? await response.json() : null;
-    if (signal?.aborted || list?.error || !Array.isArray(list?.clusters)) {
-      return { ipResolved: {}, status: 'failed', region, notConnected };
-    }
-    region = typeof list.region === 'string' && /^[a-z0-9-]{1,64}$/.test(list.region) ? list.region : null;
-    degraded = list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean');
-    await Promise.all((list.clusters as Cluster[]).filter(c => {
-      // Deliberately un-onboarded clusters are an explicit coverage limit, not failed reads.
-      if (c && (c.access === 'entry-only' || c.access === 'no-entry')) {
-        notConnected++;
-        return false;
+    if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
+    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
+    // The current API returns at most 25 descriptors and reports truncation.
+    if (list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean')
+      || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
+    const clusters = list.clusters as Cluster[];
+    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
+    if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return unavailable();
+    coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
+    if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return unavailable();
+    await Promise.all(clusters.map(async cluster => {
+      const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
+      if (cluster.access !== 'connected') {
+        if (cluster.access === 'entry-only' || cluster.access === 'no-entry') {
+          notConnected++; reasons.add('cluster_not_connected');
+        } else reasons.add('cluster_unreadable');
+        blockedScopes.add(scope); return;
       }
-      const usable = c && c.access === 'connected' && typeof c.name === 'string' && c.name
-        && typeof c.region === 'string' && c.region && typeof c.vpcId === 'string' && c.vpcId;
-      if (!usable) degraded = true;
-      return usable;
-    }).map(async cluster => {
       const get = async (kind: string) => {
         try {
+          if (signal?.aborted) return null;
           const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
-          if (!d?.error && d?.status !== 'error' && Array.isArray(d?.rows)) return d.rows;
-          degraded = true;
-          return [];
-        } catch { degraded = true; return []; }
+          return !signal?.aborted && !d?.error && d?.status !== 'error' && Array.isArray(d?.rows) ? d.rows : null;
+        } catch { return null; }
       };
-      const [endpoints, pods]: [EndpointRow[], PodRow[]] = await Promise.all([get('endpoints'), get('pods')]);
+      const [endpoints, pods]: [EndpointRow[] | null, PodRow[] | null] = await Promise.all([get('endpoints'), get('pods')]);
+      // Missing reads cannot enumerate addresses to veto another cluster. Empty arrays can.
+      if (!endpoints || !pods
+        || !pods.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
+          && optionalStrings(row, ['podIP', 'workload', 'status']))
+        || !endpoints.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
+          && Array.isArray(row.ips) && row.ips.every(nonempty)
+          && Array.isArray(row.targets) && row.targets.every(target =>
+            isRecord(target) && nonempty(target.ip) && optionalStrings(target, ['pod'])))) {
+        blockedScopes.add(scope); reasons.add('cluster_unreadable'); return;
+      }
       const podsByIp = new Map<string, PodRow[]>();
-      for (const pod of pods) {
-        if (isTerminalPodPhase(pod.status)) continue;
-        if (pod.podIP) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
+      for (const pod of pods ?? []) {
+        if (pod.podIP && !isTerminalPodPhase(pod.status)) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
       }
       const servicesByIp = new Map<string, EndpointRow[]>();
-      for (const endpoint of endpoints) {
+      for (const endpoint of endpoints ?? []) {
         for (const ip of new Set(endpoint.ips ?? [])) {
           servicesByIp.set(ip, [...(servicesByIp.get(ip) ?? []), endpoint]);
         }
@@ -96,8 +119,11 @@ export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvi
       for (const ip of new Set([...podsByIp.keys(), ...servicesByIp.keys()])) {
         const matches = podsByIp.get(ip) ?? [];
         const pod = matches.length === 1 ? matches[0] : undefined;
-        const services = servicesByIp.get(ip) ?? [];
-        const corroborated = pod?.name && pod.namespace && services.every(service =>
+        const services = (servicesByIp.get(ip) ?? [])
+          .filter(service => service.targets.some(t => t.ip === ip && t.pod));
+        // A manual non-pod backend is service context, not a competing Kubernetes owner.
+        if (!matches.length && !services.length) continue;
+        const corroborated = pod?.name && pod.namespace && ['Pending', 'Running'].includes(pod.status) && services.every(service =>
           service.namespace === pod.namespace && (service.targets ?? []).filter(t => t.ip === ip)
             .every(t => !t.pod || t.pod === pod.name),
         );
@@ -114,20 +140,31 @@ export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvi
           };
         }
         const key = scopedTargetIp(cluster.region!, cluster.vpcId!, ip);
-        // Ambiguous/uncorroborated IPs are ordinary non-evidence, not failed collection.
         // An IP seen in two clusters in the same network scope is never last-wins, even if their
         // workload labels coincide. Unproven records block ownership rather than asserting it.
         candidates.set(key, candidates.has(key) ? null : resolution);
       }
     }));
-  } catch { return { ipResolved: {}, status: 'failed', region, notConnected }; }
-  return {
-    ipResolved: Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null)),
-    status: degraded ? 'partial' : 'ok', region, notConnected,
-  };
+  } catch {
+    // Unknown scope or enumeration failure can hide an owner anywhere in the account.
+    return unavailable();
+  }
+  if (signal?.aborted) return unavailable();
+  const map = Object.fromEntries([...candidates].map(([key, value]) =>
+    [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
+  return { map, ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+    : candidates.size ? 'ok' : 'empty', reasons: [...reasons].sort() };
 }
 
-/** Compatibility API for callers that only consume the corroborated map. */
-export async function fetchEksIpMap(signal?: AbortSignal): Promise<NonNullable<FlowInput['ipResolved']>> {
-  return (await fetchEksIpEvidence(signal)).ipResolved;
+/** Compatibility evidence view; the typed resolution remains the source of ownership guards. */
+export interface EksIpEvidence {
+  ipResolved: NonNullable<FlowInput['ipResolved']>;
+  status: 'ok' | 'partial' | 'failed';
+  region: string | null;
+  notConnected: number;
+}
+export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvidence> {
+  const result = await fetchEksIpMap(signal);
+  return { ipResolved: result.map, status: result.globalUnknown ? 'failed' : result.blockedScopes.length ? 'partial' : 'ok',
+    region: result.coveredRegions[0] ?? null, notConnected: result.notConnected ?? 0 };
 }

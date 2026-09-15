@@ -26,6 +26,7 @@ const region = 'us-east-1', vpcId = 'vpc-a', ip = '10.0.1.10';
 const captured = '2026-09-01T10:00:00Z', failed = '2026-09-14T10:00:00Z';
 const pod = { name: 'orders-a', namespace: 'shop', podIP: ip, workload: 'orders', status: 'Running' };
 const member = '123456789012';
+const run = { status: 'succeeded', last_success_at: captured, finished_at: failed, row_count: 20000 };
 const memberCapture = '2026-09-13T12:00:00Z';
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void;
@@ -40,6 +41,7 @@ function serve(options: {
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string, _init?: RequestInit) => {
     const url = new URL(input, 'http://localhost');
+    const accountId = url.searchParams.get('accounts') === 'self' ? 'self' : member;
     if (url.pathname === '/api/accounts') return Response.json({
       accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true },
         { accountId: member, alias: 'Member', isHost: false }],
@@ -60,7 +62,8 @@ function serve(options: {
         return Response.json({ error: 'subnet read failed' }, { status: options.subnetStatus });
       }
       if (url.pathname.endsWith('/subnet') && options.subnetRows) {
-        return Response.json({ rows: options.subnetRows, run: { status: 'succeeded', last_success_at: captured } });
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        return Response.json({ rows: options.subnetRows.slice(offset, offset + 500).map(row => ({ data: {}, ...row as object, account_id: accountId })), run, consistency: 'statement-snapshot' });
       }
       const host = url.searchParams.get('accounts') === 'self';
       if (url.pathname.endsWith('/target_group')) {
@@ -69,18 +72,19 @@ function serve(options: {
       }
       return Response.json({
       rows: url.pathname.endsWith('/target_group') && !options.emptyGraph ? [{
-        resource_id: 'tg-orders', region,
+        resource_id: 'tg-orders', region, account_id: accountId,
         captured_at: options.rowCapture === undefined ? (host ? captured : memberCapture) : options.rowCapture,
         data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
       }] : options.ecs && url.pathname.endsWith('/subnet') ? [{
-        resource_id: 'subnet-a', region, captured_at: captured, data: { vpc_id: vpcId },
+        resource_id: 'subnet-a', region, account_id: accountId, captured_at: captured, data: { vpc_id: vpcId },
       }] : options.ecs && url.pathname.endsWith('/ecs_task') ? [{
-        resource_id: 'task-orders', region, captured_at: captured, data: {
+        resource_id: 'task-orders', region, account_id: accountId, captured_at: captured, data: {
           last_status: 'RUNNING', task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
           attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }],
         },
       }] : [],
-      run: { status: options.runStatus ?? 'failed', last_success_at: captured, finished_at: failed, error: 'collection failed' },
+      run: { ...run, status: options.runStatus ?? 'succeeded', error: options.runStatus === 'failed' ? 'collection failed' : null },
+      consistency: 'statement-snapshot',
     });
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -99,6 +103,23 @@ async function ready() {
 }
 
 describe('sample topology evidence', () => {
+  it('keeps week-old inventory stale in the Refresh chip after another read', async () => {
+    const old = '2026-09-07T12:00:00Z';
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-14T12:00:00Z'));
+    try {
+      serve({ rowCapture: old, runStatus: 'succeeded' });
+      await ready();
+      const label = new Date(old).toLocaleString('en-US');
+      expect(screen.getByText(/^업데이트:/).textContent).toContain(label);
+      expect(screen.getByText(/^업데이트:/).textContent).toContain('(오래됨)');
+      const reads = vi.mocked(fetch).mock.calls.length;
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(reads));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toHaveProperty('disabled', false));
+      expect(screen.getByText(/^업데이트:/).textContent).toContain(label);
+      expect(screen.getByText(/^업데이트:/).textContent).toContain('(오래됨)');
+    } finally { clock.mockRestore(); }
+  });
   it('supplies collected subnets to corroborate an ECS attachment IP', async () => {
     serve({ ecs: true });
     expect((await ready()).textContent).toBe('ecs-orders');
@@ -109,11 +130,11 @@ describe('sample topology evidence', () => {
     expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
   });
   it('discloses the subnet cap when attachment evidence lies beyond the returned rows', async () => {
-    serve({ ecs: true, subnetRows: Array.from({ length: 500 }, (_, index) => ({
+    serve({ ecs: true, subnetRows: Array.from({ length: 10000 }, (_, index) => ({
       resource_id: `subnet-other-${index}`, region, captured_at: captured, data: { vpc_id: vpcId },
     })) });
     expect((await ready()).textContent).toBe(ip);
-    expect(screen.getByText(/Response limit reached.*subnet.*500/)).toBeTruthy();
+    expect(screen.getByText(/Response limit reached.*subnet.*10000/)).toBeTruthy();
   });
   it('retains the graph and discloses a rejected subnet transport', async () => {
     serve({ ecs: true, subnetReject: true, runStatus: 'succeeded' });
@@ -130,11 +151,13 @@ describe('sample topology evidence', () => {
   });
   it('still discloses actual unknown run metadata after successful reads', async () => {
     serve({ runStatus: 'unrecognized' });
-    await ready();
+    render(<TopologyPage />);
+    await screen.findByLabelText('Inventory collection evidence');
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: unknown (18)');
+    expect(text).toContain('Aggregate sync runs: unknown (15)');
     expect(text).toContain('Run health unknown');
-    expect(text).not.toContain('Inventory read failures:');
+    expect(text).toContain('Inventory read failures: target_group: failed, ecs_task: failed, subnet: failed');
+    expect(screen.queryByTestId('target')).toBeNull();
   });
   it.each(['entry-only', 'no-entry'])('separates %s onboarding coverage from EKS read failure', async clusterAccess => {
     serve({ clusterAccess, runStatus: 'succeeded' });
@@ -143,7 +166,10 @@ describe('sample topology evidence', () => {
     expect(text).toContain(`EKS ownership scope: configured region ${region}`);
     expect(text).toContain('other regions are not assessed');
     expect(text).toContain('Not-connected clusters not queried: 1');
-    expect(text).not.toContain('EKS ownership evidence is partial');
+    expect(text).toContain('EKS ownership evidence is partial');
+    expect(text).not.toContain('EKS ownership read failed');
+    expect(screen.getByRole('alert', { name: 'EKS 식별 상태' }).textContent).toContain('cluster_not_connected');
+    expect(screen.getByRole('alert', { name: 'EKS 식별 상태' }).textContent).not.toContain('cluster_unreadable');
   });
   it('discloses the configured-region boundary even after successful connected reads', async () => {
     serve({ runStatus: 'succeeded' });
@@ -154,16 +180,16 @@ describe('sample topology evidence', () => {
     expect(text).not.toContain('Not-connected clusters not queried:');
   });
   it('keeps capped coverage visible when the graph has no nodes', async () => {
-    serve({ emptyGraph: true, runStatus: 'succeeded', subnetRows: Array.from({ length: 500 }, (_, i) => ({ resource_id: `subnet-${i}`, region })) });
+    serve({ emptyGraph: true, runStatus: 'succeeded', subnetRows: Array.from({ length: 10000 }, (_, i) => ({ resource_id: `subnet-${i}`, region })) });
     render(<TopologyPage />);
     await waitFor(() => expect(screen.queryByText('로딩 중…')).toBeNull());
     expect(screen.queryByLabelText('flow graph')).toBeNull();
-    expect(screen.getByLabelText('Inventory collection evidence').textContent).toMatch(/Response limit reached.*subnet.*500/);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toMatch(/Response limit reached.*subnet.*10000/);
   });
   it.each([
     { eksStatus: 503, expected: 'EKS ownership read failed' },
     { podStatus: 503, expected: 'EKS ownership evidence is partial' },
-    { clusterVpc: '', expected: 'EKS ownership evidence is partial' },
+    { clusterVpc: '', expected: 'EKS ownership read failed' },
   ])('discloses EKS evidence degradation: $expected', async ({ expected, ...options }) => {
     serve({ ...options, runStatus: 'succeeded' });
     expect((await ready()).textContent).toBe(ip);
@@ -238,7 +264,7 @@ describe('sample topology evidence', () => {
     expect((await ready()).textContent).toBe(ip);
   });
   it('shows retained capture evidence and failed collection, never failed-attempt freshness', async () => {
-    serve();
+    serve({ runStatus: 'failed' });
     await ready();
     expect(document.body.textContent).not.toContain(new Date(failed).toLocaleString());
     const evidence = screen.getByLabelText('Inventory collection evidence');
@@ -268,9 +294,9 @@ function eksRequests() {
 }
 function pendingInventoryResponse() {
   return Response.json({ rows: [{
-    resource_id: 'tg-orders', region, captured_at: memberCapture,
+    resource_id: 'tg-orders', region, account_id: member, captured_at: memberCapture,
     data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
-  }] });
+  }], run, consistency: 'statement-snapshot' });
 }
 async function hostPodsStarted() {
   await waitFor(() => expect(eksRequests().some(([url]) => String(url).includes('kind=pods'))).toBe(true));

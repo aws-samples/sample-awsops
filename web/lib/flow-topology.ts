@@ -13,6 +13,9 @@
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? '' : String(v));
+const targetCaptureTime = (value: unknown): string | null => value instanceof Date
+  ? Number.isFinite(value.getTime()) ? value.toISOString() : null
+  : typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
 
 /** Coerce a jsonb value that may arrive as an array or a JSON string into an array. */
 function arr(v: unknown): Row[] {
@@ -51,15 +54,18 @@ export interface FlowInput {
   // 'integrations/<id>') label the apigw→backend edge.
   alb_listener_rule?: Row[];
   apigatewayv2_route?: Row[];
-  // ip-target resolution (Spec 2): region|VPC|IP → friendly label + meta (legacy raw IP also accepted). EKS comes live from the
-  // page (ipResolved); ECS is derived here from synced ecsTask rows. Builder stays pure.
-  ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> }>;
+  // EKS: canonical region|VPC|IP keys, or legacy IP keys with matching region/VPC metadata.
+  // ECS also requires attachment/subnet scope. Missing TG scope never proves ownership.
+  ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> } | null>;
+  ownershipRead?: {
+    targetGroup?: 'failed' | 'capped'; ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
+    eksScopes?: string[]; eksUnknown?: boolean; eksRegions?: string[]; configurationOnly?: boolean;
+  };
 }
 
 /** ECS IP identity must be scoped by its own attachment, never by the TG it happens to match. */
-function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }> {
-  const map = new Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }>();
-  const ambiguous = new Set<string>();
+function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> } | null> {
+  const map = new Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> } | null>();
   const unknownScope = new Set<string>();
   const subnetVpcs = new Map<string, Set<string>>();
   for (const subnet of subnets) {
@@ -71,8 +77,8 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
     subnetVpcs.set(key, vpcs);
   }
   for (const t of tasks) {
-    // Released or not-yet-running ENIs cannot establish current workload ownership.
-    if (t.last_status !== 'RUNNING') continue;
+    const status = str(t.last_status).toUpperCase();
+    if (status === 'STOPPED' || status === 'DELETED') continue; // Terminal tasks no longer own their ENI addresses.
     const region = str(t.region);
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
@@ -91,13 +97,12 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
             continue;
           }
           const key = scopedTargetIp(region, vpcId, ip);
-          if (ambiguous.has(key)) continue;
+          if (map.get(key) === null) continue;
           const cluster = str(t.cluster_arn).split('/').pop();
           const previous = map.get(key);
-          if (previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
+          if (status !== 'RUNNING' || previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
             || previous.meta.subnetId !== subnetId)) {
-            map.delete(key);
-            ambiguous.add(key);
+            map.set(key, null);
             continue;
           }
           map.set(key, { label: svc || taskId, resolved: 'ecs', meta: {
@@ -110,7 +115,10 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
   // A competing task whose VPC is unknown cannot be ruled out by selecting a scoped candidate.
   for (const key of map.keys()) {
     const [region, , ip] = key.split('|');
-    if (unknownScope.has(`${region}|${ip}`) || unknownScope.has(`|${ip}`)) map.delete(key);
+    if (unknownScope.has(`${region}|${ip}`) || unknownScope.has(`|${ip}`)) map.set(key, null);
+  }
+  for (const key of unknownScope) {
+    const [region, ip] = key.split('|'); map.set(scopedTargetIp(region, '', ip), null);
   }
   return map;
 }
@@ -504,16 +512,42 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       if (ttype === 'instance') { resolved = ec2ById.has(targetId) ? 'ec2' : ''; key = 'ec2'; mlabel = ec2ById.get(targetId) || targetId; groupLabel = 'EC2 instances'; }
       else if (ttype === 'lambda') { resolved = lambdaByArn.has(targetId) ? 'lambda' : ''; key = `lambda:${targetId}`; mlabel = lambdaByArn.get(targetId) || targetId; groupLabel = mlabel; }
       else if (ttype === 'ip') {
-        const pod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)] ?? input.ipResolved?.[targetId];
-        const inScope = (candidate: typeof pod) => candidate
-          && (candidate.resolved !== 'ecs' || (t.region && t.vpc_id
-            && candidate.meta?.region === t.region && candidate.meta?.vpcId === t.vpc_id))
+        const scopedPod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)];
+        const pod = scopedPod !== undefined ? scopedPod : input.ipResolved?.[targetId];
+        const inScope = (candidate: typeof pod) => candidate && t.region && t.vpc_id
+          && ((candidate === scopedPod && candidate.resolved === 'eks')
+            || (candidate.meta?.region === t.region && candidate.meta?.vpcId === t.vpc_id))
           && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
           && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
         const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));
-        const r = inScope(pod) ? pod : inScope(task) ? task : undefined;
+        const reads = input.ownershipRead;
+        const issue = reads?.targetGroup ? 'target_group_inventory_incomplete'
+          : reads?.ecsTask ? 'ecs_task_inventory_incomplete'
+          : reads?.subnet ? 'subnet_inventory_incomplete'
+          : !reads?.configurationOnly && reads?.eksUnknown ? 'eks_inventory_incomplete'
+          : !reads?.configurationOnly && reads?.eksRegions && !reads.eksRegions.includes(str(t.region))
+            ? 'eks_not_enumerated'
+          : !reads?.configurationOnly && reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
+            ? 'eks_inventory_incomplete' : undefined;
+        const contradiction = pod === null || task === null
+          || ecsByIp.get(scopedTargetIp(str(t.region), '', targetId)) === null
+          || ecsByIp.get(scopedTargetIp('', '', targetId)) === null
+          || inScope(pod) && pod?.resolved === 'eks' && inScope(task);
+        const candidate = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
+        const r = issue ? undefined : candidate;
+        if (issue || contradiction) {
+          resolved = 'ambiguous'; key = `ambiguous:${issue ?? 'ownership_unverified'}`;
+          meta = { ambiguity: issue ?? 'ownership_unverified' };
+          if (issue === 'eks_not_enumerated' && candidate) {
+            key = `context:${candidate.resolved}:${str(candidate.meta?.cluster)}/${candidate.label}`;
+            mlabel = groupLabel = candidate.label;
+            meta = { ...meta, ownership_evidence: 'scope_unverified',
+              candidate: { ...candidate, meta: { ...candidate.meta } } };
+          }
+        }
         // group key includes cluster so same-named workloads in different clusters don't merge
-        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }
+        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta }; }
+        if (reads?.configurationOnly) meta.ownership_reason = 'eks_not_enumerated';
       }
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }
@@ -542,6 +576,9 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
                        ...(total > TARGET_CAP ? { membersTruncated: total - TARGET_CAP } : {}) }),
         ...(g.resolved ? { resolved: g.resolved } : {}),
         ...g.meta,
+        // This dates the target-group row, not independently captured task/subnet/pod evidence.
+        targetCapturedAt: targetCaptureTime(t.captured_at),
+        ...(input.ownershipRead?.configurationOnly || g.resolved === 'ecs' ? { ownership_evidence: 'cached_configuration' } : {}),
       });
       addEdge(tgId, nodeId);
     }
