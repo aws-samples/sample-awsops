@@ -245,7 +245,7 @@ export async function rebuildTraceGraph(
   }));
   const hasFailure = reads.some((read) => read.status === 'error' || read.status === 'unavailable');
   const cannotSweep = reads.some((read) => read.canSweep === false);
-  const partial = cannotSweep || reads.some((read) => read.status === 'partial');
+  const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
   const calls = metricReads.flatMap((read) => read.items.map((call) => ({
     ...call,

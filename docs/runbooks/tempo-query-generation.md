@@ -12,6 +12,11 @@ Distinguish a generation error, `could not generate a valid query: TraceQL ...` 
 
 ## 원인 후보 / Candidate causes
 
+`tempo_search`는 limit을 생략하면 서버 기본값 대신 **20**을 요청한다. 요청 limit에 도달하거나 반환 데이터가 50개 출력 상한을 넘으면 `partial`이다. `ok`/`empty`에는 관측된 정수 `completedJobs == totalJobs > 0`가 필요하다. 누락·잘못된 카운터와 0/0은 `unknown`, 아직 끝나지 않은 작업은 `partial`이며, 반환 트레이스와 metrics는 유지한다.
+
+`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
+
+
 - 웹·Tempo 커넥터 Lambda·스키마 캐시 중 일부만 갱신됐다. / The web app, Tempo connector Lambda, and schema cache have not all been updated.
 - 빈 결과에 `names_truncated: true` 또는 `truncated: true`가 있으면 정상적인 빈 관측이 아니라 불완전한 수집이다. 프록시의 HTML 오류 응답 등도 이 상태가 될 수 있다. / Empty results with `names_truncated: true` or `truncated: true` indicate incomplete discovery, not a confirmed empty observation; a proxy's HTML error response can cause this state.
 - 스키마 수집은 최근 **1시간**의 제한된 관측이다. 현재 AWSops의 Tempo Explore는 시간 범위를 선택할 수 없으며 검색도 최근 1시간을 사용한다. 오래된 트레이스에만 있는 속성이 최근 캐시에 없을 수 있다. / Schema discovery samples the last **hour**. AWSops's Tempo Explore currently has no time-range control and searches the last hour. Attributes present only in older traces may be absent from this cache.
@@ -61,7 +66,7 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 로컬 회귀 검증 / Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py -q)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py -q)
 (cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
@@ -91,7 +96,7 @@ make deploy
 make agentcore
 ```
 
-`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Before running the provisioner, verify the deployment identity's `bedrock-agentcore:GetGateway` grant as described in [Provisioner reconciliation](../reference/05-agentcore.md#provisioner-reconciliation). This tool-description change adds no feature flag.
+`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions (including the search default, limits and collection-status guidance) in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Before running the provisioner, verify the deployment identity's `bedrock-agentcore:GetGateway` grant as described in [Provisioner reconciliation](../reference/05-agentcore.md#provisioner-reconciliation). This tool-description change adds no feature flag.
 
 배포 후 AWSops에 **관리자로 로그인한 탭**에서 개발자 도구의 Console을 열고 아래 블록 전체를 실행한다. 같은 출처의 세션 쿠키로만 요청하며 토큰·도메인을 붙여 넣지 않는다. 명령은 구성된 Tempo 인스턴스와 기존 캐시 요약을 먼저 출력한다. 프롬프트에 대상 인스턴스의 양의 정수 ID를 입력하면 `POST /api/integrations/schema`에 **`{ id }`**를 보내고, GET으로 다시 읽어 요약·`fetched_at`을 비교한다. 취소하면 POST하지 않는다.
 
