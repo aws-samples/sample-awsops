@@ -62,6 +62,11 @@ export interface GraphRebuildResult {
   degraded: number; reasons: string[]; accountsTruncated?: boolean;
   failed?: number; failureCode?: string;
 }
+export const GRAPH_REBUILD_REASONS: ReadonlySet<string> = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
+  'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
+  'graph_limit', 'account_failed', 'collection_ok', 'collection_empty', 'collection_partial',
+  'collection_unavailable', 'collection_error']);
+
 const emptyResult = (): GraphRebuildResult =>
   ({ nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] });
 

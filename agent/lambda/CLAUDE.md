@@ -103,7 +103,8 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
   - **JSONB blobs are exposed only through named-key projections** (`inventory_resources.data`,
     `topology_nodes.meta`). Putting raw JSONB in the column list **fails open again, per JSON
     key** — `data` carries CloudFront origin CustomHeaders (an origin secret), and `meta.row`
-    carries a full raw copy of the row. Conversely, simply **dropping the column breaks the
+    can carry full provider rows in retained legacy generations; new inventory generations
+    project consumed fields. Reader-side allowlists remain required. Simply **dropping the column breaks the
     connector at runtime** (PR #197 review CRITICAL — wiped out `find_unused_resources`/
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —

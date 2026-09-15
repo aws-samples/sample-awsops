@@ -1,5 +1,5 @@
 // Existing default-off graph timer runs in the web process, outside HTTP handlers.
-// Flow failure does not block infra; trace depends on successful same-cycle infra execution.
+// Flow failure does not block infra; trace requires a complete same-cycle infra publication.
 // Existing web-task permissions and the enabling tfvar are documented in terraform/foundation/variables.tf.
 // Class advisory locks serialize writes across ECS tasks; the local guard avoids duplicate reads.
 // If work outgrows this process, an EventBridge/ECS worker path needs separate review, not a timer tweak.
@@ -40,8 +40,9 @@ export async function register() {
       try {
         await execute('flow', () => rebuildGraph(pool));
         const infra = await execute('infra', () => rebuildInfraGraph(pool));
-        if (infra.failed) {
-          console.error('[graph-rebuild] trace skipped: infra execution failed');
+        if (infra.failed || infra.incomplete) {
+          console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
+      : '[graph-rebuild] trace skipped: infra publication incomplete');
           return;
         }
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
@@ -49,8 +50,10 @@ export async function register() {
         // docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md.
         try {
           const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
-          if (registryFailed) console.error('[graph-rebuild] trace_sources: registry_read_failed');
-          await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+          if (registryFailed) {
+            console.error('[graph-rebuild] trace_sources: registry_read_failed');
+            await execute('trace', () => recordTraceSourceFailure(pool));
+          } else await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
         } catch (error) {
           await execute('trace', () => recordTraceSourceFailure(pool));
           console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);

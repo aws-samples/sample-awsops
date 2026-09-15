@@ -34,10 +34,33 @@ optional non-null capture clocks must also be valid. Nonempty/malformed reason l
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in both HTTP and SQL projections.
 
-Publication versions must strictly advance under the class advisory lock. An equal
+Publication versions must strictly advance per account/class under the class advisory lock. An equal
 or older attempt keeps both graph and state unchanged. The trace rebuild reports
 `published: 0`, `skipped: 1`, `reasons: ['superseded']` and a fixed skip diagnostic;
 zero returned nodes in this outcome do not mean an empty graph was published.
+
+## Bounded inventory-read primitives
+
+`web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
+projected snapshots and an attempt-evidence calculation for flow/infra callers. It uses the
+existing `self` host sentinel and SDK host-only type exclusions. A member needs current
+registered participation evidence; an aggregate zero alone does not establish participation.
+Count proof is reused only when the snapshot observes the identical ledger row version.
+The helper returns source clocks/completeness, not a freshness or deployment verdict.
+
+Snapshots project consumed fields before SQL byte guards: 2,000 infra rows or 8,192 flow
+rows (plus a sentinel), 64KiB per projected row and 8MiB for projected data/identifiers
+(excluding the result envelope). Exceeded bounds
+remain explicit and cannot authorize empty proof. Request and background transaction
+helpers share two admissions per pool, reserving the third ordinary slot for authentication;
+request limits stay 1.5s statements/2s total, background limits 2s statements/4s total.
+
+These primitives do not write graph/state rows. The bounded publisher in `graph-store.ts`
+consumes their results; scheduling records stay in `graph-inventory.ts`. Existing timer/defaults and AWS permissions are unchanged. Callers
+must enforce their scope and interpret clocks before publication. Offline PG tests use the
+same private socket/admin marker below and a distinct `awsops_inventory_read_test` database
+marked `awsops-disposable-inventory-read-test` before any reset. Run from `web/`:
+`npx vitest run lib/graph-inventory-read-postgres.test.ts lib/graph-read-postgres.test.ts`.
 
 ## Source completeness and retained publication
 
@@ -127,16 +150,17 @@ VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID
 The existing web-task principal uses its provisioned Aurora IAM authentication and
 curated connector-read permissions; this change creates no principal or grant.
 Flow and infra execute sequentially. A flow exception does not block infra, but an
-infra execution failure skips trace collection and publication for that cycle and
-logs `trace skipped: infra execution failed`. Saved trace rows/clocks are untouched
-by that skipped stage; stale infra must not become fresh trace context after failure.
+failed or incomplete infra outcome skips dependent trace collection/publication. Returned
+retention, skips, degradation, traversal limits, missing publication or invalid result metadata
+cannot provide clean context. A reported clean publication with zero nodes remains valid;
+node count alone is not an empty proof. Saved trace rows/clocks remain untouched when skipped.
 
 Registry query errors normally do **not** throw from `loadGraphSources`. The loader
 returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
-fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
-existing trace builder, preserving its non-publishing retention path. A missing
-schema or failed state write can still prevent recording; the log is not a receipt
-that a trace attempt was persisted. Unexpected loader exceptions also call the non-publishing
+fixed `trace_sources: registry_read_failed` diagnostic and use `recordTraceSourceFailure`
+instead of telemetry collection. Its `trace:registry` attempt invents no item count or query
+window. Missing schema, busy admission or a failed write may prevent recording; the log
+is not a persistence receipt. Unexpected loader exceptions also call the non-publishing
 `recordTraceSourceFailure` path before the sanitized diagnostic.
 
 `web/lib/graph-execution.ts` validates the current publishers' nonnegative safe-integer
@@ -218,7 +242,8 @@ docker rm -f "$graph_test_container"
 ```
 
 The fixtures create and independently mark `awsops_graph_read_test` and
-`awsops_graph_task3`; an existing unmarked database is rejected before schema reset.
+`awsops_graph_task3`; the latter requires the distinct `awsops-disposable-graph-store-test`
+marker. Missing or generic-only target markers reject reset.
 The publication suite also invokes `lib/fixtures/graph-fatal-child.mjs`, which checks
 both server/target database markers before mutation. It covers atomic publication,
 retention, pool admission, truncation and fatal-connection recovery. Without the

@@ -11,9 +11,11 @@ const [mode, recording = 'available'] = process.argv.slice(2);
 assert.ok(process.env.GRAPH_TEST_POSTGRES_SOCKET?.startsWith('/'), 'A disposable PostgreSQL Unix socket is required');
 const pool = new pg.Pool({ host: process.env.GRAPH_TEST_POSTGRES_SOCKET,
   user: 'postgres', database: 'awsops_graph_task3', max: 1, connectionTimeoutMillis: 1000 });
-const markers = await pool.query(`SELECT shobj_description(oid,'pg_database') AS marker
+const markers = await pool.query(`SELECT datname, shobj_description(oid,'pg_database') AS marker
   FROM pg_database WHERE datname IN ('awsops',current_database())`);
-if (markers.rowCount !== 2 || markers.rows.some(row => row.marker !== 'awsops-disposable-graph-test')) {
+if (markers.rowCount !== 2 ||
+    !markers.rows.some(row => row.datname === 'awsops' && row.marker === 'awsops-disposable-graph-test') ||
+    !markers.rows.some(row => row.datname === 'awsops_graph_task3' && row.marker === 'awsops-disposable-graph-store-test')) {
   await pool.end();
   throw new Error('Refusing mutation without both disposable database sentinels');
 }
@@ -122,7 +124,8 @@ try {
     const link = async specifier => {
       const exports = specifier.includes('/db') ? { getPool: () => target }
         : specifier.includes('graph-sources') ? { loadGraphSources: async () => ({ sources: [], metricsSources }) }
-        : specifier.includes('graph-execution') ? execution : specifier.includes('graph-state') ? state : store;
+        : specifier.includes('graph-execution') ? execution
+        : specifier.includes('graph-state') ? state : store;
       const module = new vm.SyntheticModule(Object.keys(exports), function() {
         for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
       }, { context });

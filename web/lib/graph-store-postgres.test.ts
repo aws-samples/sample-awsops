@@ -42,12 +42,12 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect((await admin.query('SHOW server_version')).rows[0].server_version).toMatch(/^17\./);
     if (!(await admin.query("SELECT 1 FROM pg_database WHERE datname='awsops_graph_task3'")).rowCount) {
       await admin.query('CREATE DATABASE awsops_graph_task3');
-      await admin.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'");
+      await admin.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-store-test'");
     }
     await admin.end();
     pool = new Pool({ host: socket, user: 'postgres', database: 'awsops_graph_task3' });
     const targetMarker = await pool.query("SELECT shobj_description(oid,'pg_database') AS marker FROM pg_database WHERE datname=current_database()");
-    if (targetMarker.rows[0]?.marker !== 'awsops-disposable-graph-test')
+    if (targetMarker.rows[0]?.marker !== 'awsops-disposable-graph-store-test')
       throw new Error('Refusing graph fixtures without target disposable database sentinel');
     api.pool = pool;
     await pool.query(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
@@ -300,7 +300,14 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
           'alias_target',jsonb_build_object('DNSName','web.example.test')),$1
       FROM generate_series(1,2500) n`, [recent]);
     await pool.query("UPDATE inventory_sync_runs SET row_count=2500 WHERE resource_type='route53'");
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', flowTypes);
+    expect(snapshot.truncated).toBe(false);
+    expect(snapshot.rows).toHaveLength(2501);
+    expect(Buffer.byteLength(JSON.stringify(snapshot.rows))).toBeLessThan(8 * 1024 * 1024);
     expect(await build('flow')).toMatchObject({ published: 1, retained: 0, nodes: 2501, edges: 2500 });
+    expect((await state('flow')).sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:route53', status: 'ok', itemCount: 2500,
+    }));
     await pool.query("UPDATE inventory_sync_runs SET status='failed' WHERE resource_type='waf'");
     expect(await build('flow')).toMatchObject({ published: 0, retained: 1 });
     expect((await pool.query("SELECT count(*)::int AS n FROM topology_nodes WHERE class='flow'")).rows[0].n).toBe(2501);
@@ -454,6 +461,25 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toMatchObject({ status: status === 'registry' ? 'error' : status,
       stale: true, retainedPrevious: true, captured_at: previous.captured_at });
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+    if (status === 'registry') {
+      const projected = (await pool.query("SELECT status,captured_at,details FROM sql_reader.topology_graph_state WHERE class='trace' AND account_id='self'")).rows[0];
+      expect(projected).toMatchObject({ status: 'error', captured_at: previous.captured_at,
+        details: { retainedPrevious: true, failureReason: 'source_read_failed' } });
+      expect(projected.details.sources[0]).toMatchObject({ sourceId: 'trace:registry', reasons: ['registry_read_failed'] });
+      expect(projected.details.sources[0].itemCount == null).toBe(true);
+      const body = await (await GET(new Request('http://localhost/api/graph?class=trace'))).json();
+      expect(body.collection.status).toBe('error');
+      expect(body.nodes).toHaveLength(2);
+    }
+  });
+  it('records a first registry failure without inventing saved data or query evidence', async () => {
+    expect(await graphStore.recordTraceSourceFailure(pool)).toMatchObject({ published: 0, retained: 0, skipped: 1 });
+    const result = await state('trace');
+    expect(result).toMatchObject({ status: 'error', stale: true, captured_at: null,
+      retainedPrevious: false, failureReason: 'source_read_failed' });
+    expect(result.windowStartMs).toBeUndefined();
+    expect(result.sources[0].itemCount == null).toBe(true);
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(0);
   });
   it('does not replace trace evidence when the infra-read admission is busy', async () => {
     await trace(); const previous = await state('trace');
@@ -465,15 +491,21 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     } } as Pool;
     expect(await trace([{ client: 'replacement', server: 'other', count: 1 }], 'ok', wrapped))
       .toMatchObject({ published: 0, skipped: 1, reasons: ['rebuild_busy'] });
+    expect(connects).toBe(2);
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
   });
-  it('keeps nonempty inventory evidence distinct from an empty derived graph', async () => {
+  it.each([['infra', 'lambda'], ['infra', 'ec2'], ['flow', 'route53']])('keeps %s/%s evidence distinct from an empty derived graph', async (cls, type) => {
+    const data = cls === 'flow' ? { name: 'untracked.example.test', type: 'CNAME', records: ['external.example.test'], private_zone: false }
+      : { vpc_id: null, vpc_subnet_ids: [], vpc_security_group_ids: [] };
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      VALUES ('lambda','outside-vpc','{"vpc_id":null,"vpc_subnet_ids":[],"vpc_security_group_ids":[]}',$1)`, [recent]);
-    await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='lambda'");
-    expect(await build('infra')).toMatchObject({ published: 1, nodes: 0 });
-    expect(await state('infra')).toMatchObject({ status: 'ok' });
+      VALUES ($1,'outside-vpc',$2::jsonb,$3)`, [type, JSON.stringify(data), recent]);
+    await pool.query('UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type=$1', [type]);
+    expect(await build(cls)).toMatchObject({ published: 1, nodes: 0 });
+    expect((await state(cls)).sources).toContainEqual(expect.objectContaining({ sourceId: `inventory:${type}`, status: 'ok', itemCount: 1 }));
+    const body = await (await GET(new Request(`http://localhost/api/graph?class=${cls}`))).json();
+    expect(body.collection.status).toBe('ok');
+    expect(body.nodes).toHaveLength(0);
   });
   it('trace publishes degraded evidence and confirmed empty with distinct outcomes', async () => {
     expect(await trace(undefined, 'partial')).toMatchObject({ published: 1, degraded: 1, nodes: 2, edges: 1 });
@@ -554,17 +586,18 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
   });
-  it('refuses the standalone mutation fixture when its target database is unmarked', async () => {
+  it.each([false, true])('refuses a missing or generic-only target marker (generic=%s)', async generic => {
     await trace();
     const previous = await state('trace');
-    await pool.query('COMMENT ON DATABASE awsops_graph_task3 IS NULL');
+    await pool.query(generic ? "COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'"
+      : 'COMMENT ON DATABASE awsops_graph_task3 IS NULL');
     try {
       const child = spawnSync(process.execPath, ['--experimental-vm-modules', 'lib/fixtures/graph-fatal-child.mjs', 'helper'],
         { encoding: 'utf8', timeout: 15_000, env: process.env });
       expect(child.status).not.toBe(0);
       expect(child.stderr).toContain('disposable database');
       expect(await state('trace')).toEqual(previous);
-    } finally { await pool.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'"); }
+    } finally { await pool.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-store-test'"); }
   });
   it('sends neither oversized flow payloads nor oversized identifiers to the web process', async () => {
     await seed('flow');

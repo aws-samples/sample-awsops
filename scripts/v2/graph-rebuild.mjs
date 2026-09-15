@@ -1,5 +1,5 @@
 // ADR-043 — manual graph execution; the default-off timer uses these builders in the web process.
-// Flow failure does not block infra; trace runs only after infra execution returns successfully.
+// Flow failure does not block infra; trace requires a complete same-cycle infra publication.
 // Builders retain their existing collection/publication behavior:
 //   - flow  (class='flow')  via rebuildGraph      → traffic-flow topology
 //   - infra (class='infra') via rebuildInfraGraph → resource-relationship topology (Step 2)
@@ -18,7 +18,7 @@ import { loadGraphSources } from '../../web/lib/graph-sources.ts';
 import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 import { executeGraphLayer } from '../../web/lib/graph-execution.ts';
 
-// Exit 1: unexpected/invalid execution, registry or cleanup failure; 2: retained/skipped; otherwise 0.
+// Exit 1: unexpected/invalid execution, registry or cleanup failure; 2: incomplete publication; otherwise 0.
 const pool = getPool();
 let failed = false, incomplete = false;
 const execute = async (stage, action) => {
@@ -30,16 +30,17 @@ const execute = async (stage, action) => {
 try {
   await execute('flow', () => rebuildGraph(pool));
   const infra = await execute('infra', () => rebuildInfraGraph(pool));
-  if (infra.failed) {
-    console.error('[graph-rebuild] trace skipped: infra execution failed');
+  if (infra.failed || infra.incomplete) {
+    console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
+      : '[graph-rebuild] trace skipped: infra publication incomplete');
   } else {
     try {
       const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
       if (registryFailed) {
         failed = true;
         console.error('[graph-rebuild] trace_sources: registry_read_failed');
-      }
-      await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+        await execute('trace', () => recordTraceSourceFailure(pool));
+      } else await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
     } catch (error) {
       failed = true;
       await execute('trace', () => recordTraceSourceFailure(pool));

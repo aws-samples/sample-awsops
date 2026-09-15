@@ -1,12 +1,8 @@
 import { graphDiagnostic } from './graph-state';
-import type { GraphRebuildResult } from './graph-store';
+import { GRAPH_REBUILD_REASONS, type GraphRebuildResult } from './graph-store';
+const reasons = GRAPH_REBUILD_REASONS;
 
 export type GraphExecutionTotals = GraphRebuildResult;
-const reasons = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
-  'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
-  'graph_limit', 'account_failed', 'collection_ok', 'collection_empty', 'collection_partial',
-  'collection_unavailable', 'collection_error']);
-
 /** Project the current publisher contract; node totals alone do not establish publication. */
 function projectOutcome(value: unknown, stage: string): GraphExecutionTotals {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid graph outcome');
@@ -38,7 +34,7 @@ export async function executeGraphLayer(
     const totals = projectOutcome(await action(), safeStage);
     report(`[graph-rebuild] ${safeStage}: ${JSON.stringify(totals)}`);
     if (totals.failed) report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, { code: totals.failureCode })}`, true);
-    return { totals, failed: !!totals.failed, incomplete: !!(totals.retained || totals.skipped) };
+    return { totals, failed: !!totals.failed, incomplete: !totals.published || !!(totals.retained || totals.skipped || totals.degraded || totals.accountsTruncated || totals.reasons.length) };
   } catch (error) {
     report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, error)}`, true);
     return { failed: true };

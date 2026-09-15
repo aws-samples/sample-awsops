@@ -4,6 +4,7 @@
 Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/api/*`. Standalone build deployed as an arm64 container to ECS Fargate. Heavy or long-running work is never run inline — it's enqueued to the worker tier. The generic `POST /api/jobs` accepts only allowlisted (`noop`-family) job types; domain jobs like `report`/`compliance` go through their own ownership-checked dedicated routes instead (ADR-009).
 
 ## Key Files
+- `lib/graph-inventory-read.ts` — internal bounded account/count/snapshot reads and attempt-evidence derivation; no graph/state writes or publisher wiring. Background/request transaction helpers share two admissions per pool. See `docs/runbooks/graph-read-contract.md`.
 - `app/api/deployment/readiness/route.ts` — authenticated POST limited to administrators or `deployment-verifiers`,
   with one in-flight probe and a process-wide 60-second cooldown.
   `lib/deployment-readiness.ts` verifies the actual web-role STS identity, three fresh SSM reads
