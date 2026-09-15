@@ -216,7 +216,9 @@ The issuance stage changes validation CNAMEs/TLS consumers while A remains absen
 A standalone [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) request
 checks `/api/health` through CloudFront with service Host/SNI/TLS preserved; that
 request alone proves liveness only. Dev [Deploy Web](../../.github/workflows/deploy-web.yml)
-requires the [full authenticated runtime gate](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증), not health alone.
+proves the selected image before matching current-source private migrations, then requires
+guarded promotion, exact ECS/image verification and the [full authenticated runtime gate](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증), not health alone.
+Explicit older-image rollback skips DDL but retains the full runtime gate, including login/DB.
 Before A publication, complete that guide's runtime adoption, explicit readiness opt-in, migrations
 and full verification; `CI_READONLY_RUNTIME_DEV` alone never enables the billed probe.
 Its `collect-runtime.yml` prepare mode validates existing web/login/host registration;

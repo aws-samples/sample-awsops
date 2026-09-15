@@ -16,6 +16,18 @@ const env = {
   AWS_ACCOUNT_ID_DEV: account, AWS_REGION: 'ap-northeast-2', RUNTIME_ROLE_ARN: role,
 };
 const caller = { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/BuildRole/GitHubActions` };
+
+test('web push opt-in is confined to migration identity checks, never runtime image builds', () => {
+  const migrationEnv = { ...env, GITHUB_EVENT_NAME: 'push', MIGRATION_FROM_DEPLOY_WEB: 'true',
+    GITHUB_WORKFLOW_REF: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev' };
+  assert.throws(() => checkRole(migrationEnv), /invalid_dev_context/);
+  assert.equal(checkRole(migrationEnv, { migration: true }).account, account);
+  assert.doesNotThrow(() => verifyCaller(migrationEnv, caller, { migration: true }));
+  for (const change of [{ MIGRATION_FROM_DEPLOY_WEB: 'false' }, { GITHUB_WORKFLOW_REF: 'other' },
+    { GITHUB_REF: 'refs/heads/main' }, { AWS_ACCOUNT_ID_DEV: '999999999999' }]) {
+    assert.throws(() => checkRole({ ...migrationEnv, ...change }, { migration: true }));
+  }
+});
 const configText = '{"architecture":"arm64","os":"linux"}';
 const configDigest = 'sha256:d6f56bc20064075ce319ac2e6fcef5de9ea21773b0a8a4398c4405222971f9c0';
 const manifest = JSON.stringify({

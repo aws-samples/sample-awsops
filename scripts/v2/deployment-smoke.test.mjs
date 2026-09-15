@@ -486,7 +486,7 @@ const enabled = (step, event, verify, ref = 'refs/heads/dev') => {
   ));
 };
 
-test('Deploy Web runtime verification is mandatory on dev and follows regular health verification', () => {
+test('Deploy Web runtime verification is mandatory on dev after exact image and health verification', () => {
   const input = (workflow.on ?? workflow.true).workflow_dispatch.inputs.verify_database;
   assert.ok(input, 'missing backwards-compatible database verification input');
   assert.equal(input.type, 'boolean');
@@ -495,6 +495,7 @@ test('Deploy Web runtime verification is mandatory on dev and follows regular he
   const auth = stepNamed(deploySteps, 'Authenticated development runtime readiness');
   const resolve = stepNamed(deploySteps, 'Prepare configured demo credentials');
   for (const step of [auth, resolve]) {
+    assert.equal(step.if, "github.ref == 'refs/heads/dev'");
     assert.equal(enabled(step, 'workflow_dispatch', true), true);
     assert.equal(enabled(step, 'workflow_dispatch', false), true);
     assert.equal(enabled(step, 'push', true), true);
@@ -502,7 +503,8 @@ test('Deploy Web runtime verification is mandatory on dev and follows regular he
     assert.equal(enabled(step, 'workflow_dispatch', false, 'refs/heads/main'), false);
   }
   assert.ok(deploySteps.indexOf(auth) > deploySteps.indexOf(stepNamed(deploySteps, 'Smoke test')));
-  assert.ok(deploySteps.indexOf(resolve) < deploySteps.indexOf(stepNamed(deploySteps, 'Pin web-latest to the approved image')));
+  assert.ok(deploySteps.indexOf(resolve) < deploySteps.indexOf(stepNamed(deploySteps, 'Promote the verified image and start its deployment')));
+  assert.ok(deploySteps.indexOf(auth) > deploySteps.indexOf(stepNamed(deploySteps, 'Verify exact deployment and healthy running web image')));
   assert.ok(deploySteps.indexOf(resolve) < deploySteps.indexOf(stepNamed(deploySteps, 'Resolve ECS cluster/service/URL + ECR repo')));
   assert.ok(deploySteps.indexOf(resolve) < deploySteps.indexOf(stepNamed(deploySteps, 'Clean restored terraform config off the runner')));
   assert.equal(resolve.env.TF_VAR_demo_password, '${{ secrets.TF_VAR_DEMO_PASSWORD }}');
@@ -514,27 +516,43 @@ test('Deploy Web runtime verification is mandatory on dev and follows regular he
   assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_wrapper, false);
   for (const job of Object.values(workflow.jobs)) {
     assert.ok(!JSON.stringify(job.env ?? {}).includes('TF_VAR_DEMO_PASSWORD'));
-    for (const step of job.steps) {
+    for (const step of job.steps ?? []) {
       if (step !== resolve) assert.ok(!JSON.stringify(step).includes('TF_VAR_DEMO_PASSWORD'));
     }
   }
 });
 
 test('Deploy Web rejects unsupported verification refs before any build or deployment step', () => {
-  for (const job of Object.values(workflow.jobs)) {
-    const guard = stepNamed(job.steps, 'Validate database verification ref');
+  const requestEnv = {
+    GITHUB_REPOSITORY: 'aws-samples/sample-awsops', GITHUB_SHA: 'a'.repeat(40),
+    GITHUB_EVENT_NAME: 'workflow_dispatch', BUILD: 'true', IMAGE_SHA: '', PRODUCER_RUN: '',
+    SCHEMA_ACK: 'false', GITHUB_OUTPUT: '/dev/null',
+  };
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name === 'image-proof') {
+      assert.ok(job.needs.includes('guard'));
+      assert.match(job.if, /needs\.guard\.result == 'success'/);
+      continue;
+    }
+    if (!job.steps) {
+      assert.equal(job.uses, './.github/workflows/deploy-migrations.yml');
+      assert.ok(job.needs.includes('guard'));
+      continue;
+    }
+    const guard = stepNamed(job.steps, name === 'guard'
+      ? 'Validate release request before builds or migrations' : 'Validate database verification ref');
     assert.equal(job.steps.indexOf(guard), 0);
     assert.equal(guard.env.VERIFY_DATABASE, '${{ inputs.verify_database }}');
     for (const ref of ['refs/heads/main', 'refs/heads/atomoh', 'refs/heads/feature', 'refs/tags/dev']) {
       const rejected = spawnSync('bash', ['-euo', 'pipefail', '-c', guard.run], {
-        encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_REF: ref, VERIFY_DATABASE: 'true' },
+        encoding: 'utf8', env: { ...requestEnv, PATH: process.env.PATH, GITHUB_REF: ref, VERIFY_DATABASE: 'true' },
       });
       assert.equal(rejected.status, 1);
       assert.match(rejected.stdout + rejected.stderr, /only supported.*dev/);
     }
     for (const [ref, verify] of [['refs/heads/dev', 'true'], ['refs/heads/main', 'false'], ['refs/heads/atomoh', '']]) {
       const allowed = spawnSync('bash', ['-euo', 'pipefail', '-c', guard.run], {
-        encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_REF: ref, VERIFY_DATABASE: verify },
+        encoding: 'utf8', env: { ...requestEnv, PATH: process.env.PATH, GITHUB_REF: ref, VERIFY_DATABASE: verify },
       });
       assert.equal(allowed.status, 0, allowed.stderr);
     }
@@ -709,8 +727,11 @@ function preparationFixture(t, {
   mkdirSync(foundation, { recursive: true });
   mkdirSync(temporary, { mode: 0o700 });
   mkdirSync(join(directory, 'bin'));
+  symlinkSync(process.execPath, join(directory, 'bin/node'));
   mkdirSync(join(directory, 'scripts/v2'), { recursive: true });
-  for (const name of ['prepare-smoke-credentials.mjs', 'authenticated-smoke.mjs', 'deployment-smoke.mjs']) {
+  mkdirSync(join(directory, 'scripts/v2/ci'));
+  copyFileSync(join(root, 'scripts/v2/ci/run-migration.mjs'), join(directory, 'scripts/v2/ci/run-migration.mjs'));
+  for (const name of ['prepare-smoke-credentials.mjs', 'authenticated-smoke.mjs', 'deployment-smoke.mjs', 'migration-errors.mjs']) {
     if (existsSync(join(root, 'scripts/v2', name))) copyFileSync(join(root, 'scripts/v2', name), join(directory, 'scripts/v2', name));
   }
   writeFileSync(join(foundation, 'main.tf'), `
@@ -931,7 +952,7 @@ test('non-dev initializes normally; all dev releases use private credential prep
     rmSync(fixture.commands, { force: true });
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', restore.run], {
       cwd: fixture.foundation, encoding: 'utf8', env: {
-        PATH: fixture.env.PATH, BRANCH: branch, VERIFY_DATABASE: verify,
+        PATH: fixture.env.PATH, GITHUB_OUTPUT: fixture.output, BRANCH: branch, VERIFY_DATABASE: verify,
         DEV_BACKEND_B64: Buffer.from('\n').toString('base64'),
         DEV_TFVARS_B64: Buffer.from('create_demo_user = true\n').toString('base64'),
         MAIN_BACKEND_B64: Buffer.from('\n').toString('base64'),
@@ -940,7 +961,7 @@ test('non-dev initializes normally; all dev releases use private credential prep
         USER_TFVARS_B64: Buffer.from('create_demo_user = true\n').toString('base64'),
       },
     });
-    assert.equal(result.status, 0);
+    assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(fixture.commands), branch !== 'dev');
     if (branch !== 'dev') assert.deepEqual(JSON.parse(readFileSync(fixture.commands, 'utf8')),
       ['init', '-backend-config=backend.hcl', '-input=false']);
@@ -961,7 +982,7 @@ test('restore recreates only its owned files privately without following leftove
     }
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', restore.run], {
       cwd: fixture.foundation, encoding: 'utf8', env: {
-        PATH: fixture.env.PATH, BRANCH: 'dev', VERIFY_DATABASE: 'true',
+        PATH: fixture.env.PATH, GITHUB_OUTPUT: fixture.output, BRANCH: 'dev', VERIFY_DATABASE: 'true',
         DEV_BACKEND_B64: Buffer.from('bucket="fixture"\n').toString('base64'),
         DEV_TFVARS_B64: Buffer.from('create_demo_user=true\n').toString('base64'),
       },

@@ -6,9 +6,9 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_web_read.py` and `v2/ci_web_deploy.py` are unwired web release primitives. Only allowlisted idempotent reads raise typed transient errors; one shared deadline bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal; writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly, with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
-- `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only when `AUTOMATIC_MIGRATION=1`. Check all actual pending files before pending SQL, ledger upgrades or reader synchronization; unknown syntax requires reviewed standalone migration. `migrate.mjs` uses `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization; contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`, `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`. Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
-- `v2/ci_web_image.py` — preparatory web provenance helper; no workflow caller yet.
+- `v2/ci_web_read.py` and `v2/ci_web_deploy.py` serve the Deploy Web controller. Only allowlisted idempotent reads raise typed transient errors; one shared deadline bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal; writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly, with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
+- `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader synchronization; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown syntax require reviewed standalone migration. Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Complete standalone empty-only bootstrap/historical SQL/reader sync, then dispatch a fresh web build; no historical exemptions. `migrate.mjs` uses `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization; contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`, `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`. Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
+- `v2/ci_web_image.py` — web provenance helper called by `ci_web_deploy.py`.
   `promote` composes caller/context/source/migration/producer checks before publishing only
   the validated project's digest. Every promotion requires a nonempty preflight digest;
   fresh builds also bind it to `web-<SHA>` in the verified registry/repository. Preserve
@@ -22,15 +22,16 @@ secrets-manager) — installed by `make deps`.
   Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   Recognized non-success producer jobs skip timestamp checks; successful jobs still require
-  the artifact window. Stdout stays `{digest, image_sha, rollback}`; recovery evidence is caller-owned.
-  `IMAGE_PROJECT` requires branch-selected authenticated Terraform/verified job output, never
-  dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
+  the artifact window. Helper stdout stays `{digest, image_sha, rollback}`; controller deploy adds `migration`; recovery evidence is caller-owned.
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Never use dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
   not stack authority. Publication failure is distinct from candidate validation and may
   succeed only after an independent equal-effect tag check. Manifests use owned 0600 files;
   ZIP payload reads are bounded and attestations must reference the verified ARM64 child.
   Provider operation labels are diagnostic only; shared command support for ECS/STS remains.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
-  See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
+  Required `v2/test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint.
+  Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
+  See `docs/runbooks/web-image-provenance.md` for receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
 - `v2/ci_private_plan.py` provides policy/publish/restore/inspect for private saved plans.
   The read-only plan job keeps asset validation and stages manual attempt-specific ciphertext.
@@ -109,6 +110,12 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
+- `v2/ci_web_deploy.py` — verify caller, owned service and required read access before
+  web promotion. Readonly image proof shares registry/media/config and fresh source-tag checks before
+  migrations; `promote(env, expected_digest=...)` must retain that digest/project.
+  Receipts publish no account ID or fingerprint. Require source/project migration evidence for current dev source, or
+  explicit schema-compatible older-image rollback. Bounded ECS consistency polling
+  must converge to the exact deployment and healthy running digest, never a stable rollback.
 - `v2/prepare-smoke-credentials.mjs` — credential preparation for every dev Deploy Web release,
   manual `collect-runtime.yml`, and Terraform's private host verification before plan/apply. These
   steps bind the shared `TF_VAR_DEMO_PASSWORD` secret as `TF_VAR_demo_password`; the helper privately
@@ -192,7 +199,7 @@ secrets-manager) — installed by `make deps`.
   It runs before encryption with a two-minute timeout and fenced JSON output.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image,web_workflow,web_deploy}.py` —
   the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
   state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
@@ -212,18 +219,21 @@ secrets-manager) — installed by `make deps`.
   fallback), requiring AWS_REGION and SQL_READER_SYNC_MODE=secret|disabled; secret mode also
   requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
-  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; manual CI template retains the
-  guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
+  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; private CI template retains the
+  guarded flag for standalone/manual initialization). Automatic calls refuse a missing ledger before this hook.
+  Existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
   mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
   encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.
   Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
   Client error events and cleanup failures fail closed; success follows connection cleanup.
   `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
-- `v2/ci/run-migration.mjs` — manual development controller used by
+- `v2/ci/run-migration.mjs` — private development controller used by
   `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
   immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
   Read retries are bounded; public failure categories use the runtime diagnostic contract.
+  Standalone/AgentCore calls are dispatch-only. The explicit Deploy Web caller also
+  accepts current-source dev pushes; generic runtime builds do not inherit that opt-in.
 - `v2/ci/runtime-build.mjs` — manual dev transport for existing backend repositories.
   Require secret `AWS_ACCOUNT_ID_DEV`, configured-role and actual STS agreement, and verified
   Linux/ARM64 manifest digests. Build-role ECR scopes cover `-steampipe`/`-worker`; deployer scopes
@@ -299,7 +309,7 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 collection for every supplied type, real web-role runtime evidence and owned worker completion.
 Release mode changes the bounded polling window, not the strict data criteria.
 The file is at most 16 KiB, collectionStartedAt at most 30 minutes old at validation, and types unique
-with cloudfront included. The utility alone does not wire a deployment workflow.
+with cloudfront included. The release controller supplies it for mandatory dev verification.
 `readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` takes a finite
 numeric validation time. Pass calibrated `now()` from the controller; default callers
 retain their existing behavior without changing the marker or extending expiry.
@@ -333,7 +343,9 @@ The outer authenticated login/DB wrapper also refuses shortened request timeouts
 ## Strict release controller capability
 
 `v2/ci/runtime-release.mjs` drives mandatory dev Deploy Web verification and manual
-collect-runtime operations. Collect mode requires full readiness; prepare only verifies
+collect-runtime operations. Dev runs verify the exact ECS/image deployment first, then
+collect with `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`. Collect mode requires
+full readiness (including login/DB); prepare only verifies
 authenticated login/DB/host registration. Explicit runtime/readiness activation remains
 separate, and inactive prerequisites cannot be skipped.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
