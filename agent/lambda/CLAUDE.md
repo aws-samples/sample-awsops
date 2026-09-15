@@ -6,11 +6,6 @@ added 2026-06-18: `core_helpers` / `reachability_read` / `istio_read` — see th
 lists below.
 
 ## Key Files
-- Graph query/search producers in `clickhouse_mcp.py`, `tempo_mcp.py`, `prometheus_mcp.py`
-  and `mimir_mcp.py` disclose `collectionStatus`. Validated empty results differ from
-  missing/malformed, partial or failed responses. `test_collection_markers.py` binds
-  actual handler bodies to shared Tempo/query fixtures consumed by web adapters.
-  Deploy Lambda code through the reviewed Terraform flow; web/AgentCore images do not ship it.
 - `inventory_read_mcp.py` supports a CloudFront-only exact `query_inventory.resource_id`.
   Validate the ID before SQL; bind it as a parameter, select only identity and cap at one row.
   Responses disclose `projection=identity_only` and echo the validated ID. Existing sql_reader
@@ -94,10 +89,14 @@ guard — see the section below.
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
   - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
-    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Any unlisted key,
-    including ownership, ambiguity or target-time fields a future writer might add, remains
-    absent until a reviewed additive migration exposes it. This is a projection rule, not a
-    claim that current raw writers emit those fields.
+    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
+    carry `ownership_evidence` and `targetCapturedAt`, with VPC/subnet/ambiguity data where applicable.
+    Configuration-only IP targets also carry `ownership_reason`; other target kinds need not.
+    The timestamp dates only the target-group row, not ownership evidence. `candidate` is
+    page-only metadata, not materializer output. These names are excluded; bare `region`, `cluster`, `ecsService`
+    and `task` may be exposed and do not prove complete scope or live ownership. Any unlisted
+    key remains absent until a reviewed additive migration exposes it. Host ECS snapshot
+    target labels are cached configuration too; never infer live ownership from those labels.
   - Interpret evidence per class: flow/infra labels are cached configuration, not live
     ownership. Trace service/database account or region metadata, when present, is telemetry
     attribution; database `infra_ref` is a host-name/prefix inference, not identity proof.

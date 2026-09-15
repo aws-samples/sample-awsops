@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 59e2d591b0eb · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d76f1a41acd7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -9,10 +9,6 @@ inventories live in `ai.tf`'s `local.agent_lambdas` and the Lambda source files 
 that's the source of truth for tool counts, not this doc.
 
 ## Rules
-- Graph query/search producers disclose typed `collectionStatus`; validated empty differs
-  from incomplete or failed input. Actual handler/HTTP fixtures are checked by
-  `test_collection_markers.py` and shared with web adapters. These Lambda changes require
-  the reviewed Terraform deployment; web/AgentCore image changes do not ship them.
 - Exact `query_inventory.resource_id` is CloudFront-only: validate before SQL, bind the ID,
   return at most one identity-only row, and disclose the projection plus validated ID.
   It uses existing sql_reader columns/grants without schema, permission or AWS mutation changes.
@@ -47,9 +43,14 @@ that's the source of truth for tool counts, not this doc.
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
 - SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
-  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Unlisted keys, including
-  ownership/ambiguity/target-time fields a future writer might add, stay absent until a
-  reviewed additive migration exposes them. This does not assert current writers emit them.
+  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
+  carry ownership_evidence/targetCapturedAt and applicable VPC/subnet/ambiguity data, excluded
+  by the view. Configuration-only IP targets also carry ownership_reason; other target kinds
+  need not. The targetCapturedAt field dates only the target-group row, not ownership evidence.
+  Candidate is page-only, not materializer output, and also excluded. Exposed
+  region/cluster/ecsService/task fields are not complete
+  scope or live-ownership proof. Host ECS snapshot target labels remain cached configuration.
+  Unlisted keys need a reviewed additive migration to be exposed.
 - Flow/infra labels are cached configuration, not live ownership. Trace account/region or
   Kubernetes metadata, when present, is telemetry attribution; database `infra_ref` is a
   host-name/prefix inference. Trace queues explicitly use `identityProvenance='telemetry_claim'`

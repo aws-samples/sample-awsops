@@ -162,6 +162,79 @@ def test_summarize_handles_tempo_traces_envelope(monkeypatch):
     assert summ.get("count") == 2 and summ.get("source") == "traces"
 
 
+@pytest.mark.parametrize("kind,key,schema", [
+    ("tempo", "traces", {"labels": ["service.name"]}),
+    ("clickhouse", "rows", {"tables": ["events"]}),
+    ("prometheus", "result", {"metrics": ["errors_total"]}),
+    ("mimir", "result", {"metrics": ["errors_total"]}),
+    ("loki", "result", {"labels": ["app"]}),
+])
+@pytest.mark.parametrize("markers,expected", [
+    ({"collectionStatus": "unknown"}, "unknown"),
+    ({"collectionStatus": "error"}, "error"),
+    ({"collectionStatus": "partial"}, "partial"),
+    ({"collectionStatus": "ok", "truncated": True}, "partial"),
+    ({"truncated": True}, "partial"),
+    ({"collectionStatus": ["sensitive-invalid-status"]}, "unknown"),
+])
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_incomplete_connector_signals_never_become_confident_zero(
+        monkeypatch, kind, key, schema, markers, expected, nonempty):
+    secret = "raw-sensitive-payload"
+    rows = [{"payload": secret}] if nonempty else []
+    _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **markers, "error": secret}))
+    out = src.collect_datasources(FakeConn([(5, "source", kind, True)], {5: schema}))
+    signal = out["data"]["findings"][0]["results"][0]
+    summary = signal["summary"]
+    if expected == "error":
+        assert signal["error"] == summary["error"] == "source collection error"
+    else:
+        assert "error" not in signal and "error" not in summary
+        assert signal["incomplete"] is True and summary["incomplete"] is True
+    assert summary["collectionStatus"] == expected
+    assert "count" not in summary
+    assert summary.get("observedCount") == (1 if nonempty else None)
+    assert secret not in json.dumps(out) and "sensitive-invalid-status" not in json.dumps(out)
+
+
+def test_partial_error_trace_observations_remain_evidence_not_query_failure(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": "private-trace"}] * 20, "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": ["service.name"]}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert "count" not in signal["summary"]
+    assert "private-trace" not in json.dumps(out)
+
+
+def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": str(i)} for i in range(20)], "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "tempo", "tempo", True)], {5: {"labels": []}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert signal["summary"]["collectionStatus"] == "partial"
+
+
+@pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "redacted"}])])
+def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": rows, "collectionStatus": status, "truncated": False,
+    }))
+    out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": []}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert "error" not in signal
+    assert signal["summary"]["count"] == len(rows)
+    assert signal["summary"]["collectionStatus"] == status
+    assert "redacted" not in json.dumps(out)
+
+
 # consensus gate finding: a crafted/poisoned ClickHouse table name must NOT reach the SQL (identifier-validated).
 def test_clickhouse_table_name_is_identifier_validated(monkeypatch):
     fake = _patch_lambda(monkeypatch, FakeLambda(body={"result": {"rows": [{"c": 1}]}}))

@@ -34,6 +34,54 @@ optional non-null capture clocks must also be valid. Nonempty/malformed reason l
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in both HTTP and SQL projections.
 
+## Source completeness and retained publication
+
+`empty_not_confirmed` is a soft reason for legacy unmarked empty results.
+Recognized producer `unknown` uses `incomplete_collection`, not a failed-query diagnosis.
+That reason also includes producer warnings/partial results and missing Tempo children;
+the child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
+
+A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
+the entire previous graph and capture clock even when a sibling has useful data. Current
+bounded counts/reasons remain attempt evidence; no mixed-generation upsert is performed.
+
+Valid nonempty reads with only caps, payload truncation, warnings or completion-unknown
+metadata use the existing atomic **partial snapshot** publication path. They can create and
+refresh a graph at the fixed query bounds. The returned bounded generation replaces the prior
+one; it is not complete source coverage or evidence that omitted resources disappeared.
+Warnings stay partial: the application does not guess that an annotation is benign. Empty
+partial results cannot authorize replacement. Only confirmed complete empty results clear a
+graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
+Valid fetched spans outside the query window are not missing children. Existing query
+limits and windows remain fixed bounds, not new operator recovery controls.
+
+The existing PostgreSQL suite verifies first and repeated bounded publication, legitimate
+complete empty replacement, and all-empty/mixed missing-child retention. Shared fixtures in
+`agent/fixtures/` bind real mocked producer bodies to adapter outcomes. See
+[source completion and rollout](source-sync-observability.md#producer-completion-and-rollout)
+for producer deployment; source merge alone is not live completion proof.
+
+## Browser recovery and source evidence
+
+The graph consumer retries only a typed HTTP503 admission failure:
+`collection.readStatus="unavailable"` together with `collection.readReason="busy"`.
+It keeps the same URL/scope and uses at most five requests, with waits of
+250/750/1500/5000 ms inside one ten-second abort budget. This client budget is separate
+from the server transaction limit. Caller cancellation stops pending waits and reads.
+Authentication/rejection responses and generic errors do not enter this recovery loop.
+Exhaustion stays unknown/read-unavailable; it does not certify empty collection or expose
+an error-body payload. Collection outcome and read availability remain separate.
+
+The panel displays matching ordered attempted/saved source metadata once. Attempt and
+saved-source counts keep separate labels; differing status, reasons or clocks remain
+separate. Display comparison does not merge stored provenance or change publication.
+
+These UI checks run from `web/` with mocked transport/state and require no PostgreSQL:
+
+```bash
+npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
+```
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
@@ -51,50 +99,6 @@ The request deadline also covers pool acquisition. A late checkout is returned w
 starting SQL, and its admission remains held until settlement to prevent a queued backlog.
 Annotation normalization and serialization run after release; SQL deadlines remain defense
 in depth. The graph-attempt window has labels distinct from each source query window.
-
-## Browser recovery and source evidence
-
-The existing graph consumer retries only a typed HTTP503 admission failure:
-`collection.readStatus="unavailable"` together with `collection.readReason="busy"`.
-It keeps the same URL/scope and uses at most five requests, with waits of
-250/750/1500/5000 ms inside a single ten-second abort budget. This client budget is
-separate from the server transaction limit. Caller cancellation stops waits and reads.
-Auth/rejection responses and generic errors do not enter this recovery loop.
-Exhaustion remains unknown/read-unavailable, rather than a confirmed empty graph.
-
-For an empty trace/metric result, inspect the adapter's source evidence.
-Without an explicit `collectionStatus` of `ok` or `empty`, a legacy empty result
-becomes partial with `incomplete_collection`; this includes valid zero-valued metric
-samples. Nonempty legacy results retain compatibility. Existing malformed, error, cap and
-truncation reasons remain authoritative even beside a completion marker.
-
-The collection panel shows matching ordered attempted/saved source metadata once.
-Attempt and saved-source counts keep separate labels; differing status, reasons or
-clocks remain separate. The comparison affects display only.
-
-Consumer-only checks from `web/` use mocked transport/state and need no PostgreSQL:
-
-```bash
-npx vitest run lib/trace-source.test.ts lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
-```
-
-These changes add no database write, migration, publisher or schedule. Datastore
-verification below applies when those paths change.
-
-## Operator action
-
-Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
-`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,
-`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` and
-`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
-`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
-`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
-separately. Redeploy the updated `inventory_read_mcp` Lambda code through the existing
-operator-owned Terraform release flow so its future-clock and metadata-omission
-staleness checks match this source version. A web image or AgentCore Runtime image
-deployment does not ship that Lambda code. This document supplies no deployment authorization. Check the canonical
-[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
-A source merge or automatic web CD result is not proof that these steps completed.
 
 ## Local PostgreSQL verification
 
@@ -119,7 +123,8 @@ docker exec "$graph_test_container" pg_isready -U postgres -d awsops
 docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
-npx vitest run lib/graph-read-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
+npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
+  app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
@@ -129,9 +134,30 @@ the ordinary API and state unit tests still run. These are local contract tests,
 not live AWS or deployment acceptance.
 
 
+## Operator action
+
+Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
+`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,
+`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` and
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
+`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
+`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
+separately. Redeploy the updated `inventory_read_mcp` Lambda code through the existing
+operator-owned Terraform release flow so its future-clock and metadata-omission
+staleness checks match this source version. A web image or AgentCore Runtime image
+deployment does not ship that Lambda code. This document supplies no deployment authorization. Check the canonical
+[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
+A source merge or automatic web CD result is not proof that these steps completed.
+
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
-`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
+`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`, `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
+`web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
+`agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
+`agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
+`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`,
+`agent/lambda/test_graph_source_producer_contract.py`,
+`agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
 decision bodies are maintained upstream).

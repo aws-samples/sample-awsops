@@ -56,6 +56,87 @@ defer DNS-changing applies. Follow [deployment runbook §5](dev-repo-setup.md#5-
 - Manual inventory and security refreshes are admin-only and enqueue the same async Lambda path;
   they do not bypass its reserved concurrency.
 
+<a id="development-ci-refill-override"></a>
+
+## 1.1 Development CI refill override
+
+`CI_STEAMPIPE_AWS_FILL_RATE_DEV` is an optional, nonsecret GitHub repository variable
+for the existing Terraform `steampipe_aws_fill_rate`. Only the Plan job's
+**Configure development runtime profile** step supplies it, and only for `TARGET=dev` with `PLAN_SCOPE=full`.
+A nonempty value requires `CI_READONLY_RUNTIME_DEV=true`, the existing account
+validation, full scope, and a finite number from 0.1 through 20. Manual plans also
+require the existing immutable-image checks; advisory PR/push plans keep their
+existing digest-validation exemption and cannot authorize apply. Invalid values fail before an
+override file is written. Main and preview plans receive no value from this variable.
+
+Empty/unset means **no rate override**: explicit tfvars or the unchanged default of 2
+remain authoritative. Plan writes a numeric value to `ci-runtime.auto.tfvars.json`;
+Terraform captures that input in the saved plan. The existing authenticated plan and
+asset transport binds the reviewed bytes. Root tfvars are not added to the `.build`
+asset archive. Apply does not read the repository variable again or regenerate this
+override; changing the variable after planning cannot change that saved plan.
+A nonempty value takes precedence over `steampipe_aws_fill_rate` in `TF_TFVARS_DEV`
+because Terraform loads this auto-tfvars file after the root tfvars. This does not
+reconstruct or modify that private secret.
+
+### Size the cold query, not only the added column
+
+The [recorded 57.461-second full-catalog observation](runtime-foundation.md#observed-collection-measurement)
+at refill 2 remains valid for its recorded conditions. It did not record cold-cache
+misses or per-role API admission counts, so it cannot establish a cold-query bound.
+A later [strict-run result](https://github.com/aws-samples/sample-awsops/actions/runs/34904344563)
+reported 483 IAM roles with 483 unknown attributes after fallback; the
+[post-deployment retry](https://github.com/aws-samples/sample-awsops/actions/runs/34906577272)
+verified all 43 types, including 483 roles, after nine IAM attempts. Neither result
+measures how many responses came from cache. The calculation below is conditional
+on a cold 483-role query; it is not the measured call count or elapsed time of the
+57.461-second sample, nor proof of the later connection error's exact cause.
+
+For the 483-role development collection observed on 2026-09-14, the [pinned AWS plugin](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/table_aws_iam_role.go)
+uses `GetRole`, `ListInstanceProfilesForRole` and `ListAttachedRolePolicies` for the
+selected IAM-role columns. The two list hydrates explicitly wait on the shared
+limiter before each page. For 483 cold roles, they need at least `2 × 483 + 1 = 967`
+admissions including at least one `ListRoles` page. More accounts/pages, retries
+and competing queries increase this lower bound. At refill 2 and burst 4, the 180-second budget supplies only 364 tokens.
+The token-only lower bound is 481.5 seconds; even refill 4 needs 240.75 seconds.
+The fallback removes attached policies but still selects instance profiles and
+`GetRole`-backed fields, so it is not a plain, hydrate-free `ListRoles` query.
+
+A refill value of **10 is a trial, not a guarantee**: the same lower bound becomes
+96.3 seconds, leaving 83.7 seconds of nominal statement-budget margin without increasing concurrency. Latency,
+pagination, other queries and AWS throttling still matter. A warm-cache pass does not
+prove cold capacity or current AWS data. The shared
+[SDK limiter](https://github.com/turbot/steampipe-plugin-sdk/blob/v5.10.0/plugin/query_data_rate_limiters.go)
+does not allocate a separate refill budget to this query. Its version is declared
+by the pinned plugin's [go.mod](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/go.mod).
+
+The fallback omits one list hydrate, so its cold lower bound is at least
+`483 + 1 = 484` admissions: 240 seconds at refill 2 or 48 seconds at refill 10,
+before additional `GetRole` work, extra pages/retries and competing work. Its statement
+budget remains 90 seconds. The primary statement budget is 180 seconds; each socket
+timeout adds 15 seconds to its statement budget. The remaining-time clamp uses
+`AURORA_RESERVE_S=120`, not the nominal 150 seconds left by subtracting statement
+caps alone. Refill tuning aims to complete the primary query; a fallback with role rows
+still has unknown policy attributes and cannot pass the strict release gate.
+
+After latest-head review/CI and merge, the deployment owner may set the variable
+and request a fresh full private plan. Review the actual Steampipe task revision
+and in-place service update. CORE still rejects service teardown/replacement, and
+the separate DNS guard still blocks the roll when DNS changes are prohibited.
+For an authorized service roll, set `allow_dns_changes=true` on both plan and apply
+dispatches, then verify the full plan contains only the intended registered-service
+change and no other DNS-class changes. See the existing [ALLDNS boundary](#alldns-refill-boundary).
+The override grants no exception to either guard. It changes one unscoped limiter
+shared by the plugin's resource types and connected accounts; review headroom and
+observe a complete cycle under [safe tuning](#6-안전한-튜닝--safe-tuning).
+
+Apply only the exact reviewed plan outside active collector/runtime proof, then
+confirm service stability and the effective `steampipe_limiter_config` event.
+Preserve bucket 4, plugin/Lambda/collector concurrency 4, schedule, timeouts and IAM.
+Require all 43 baseline types and every current catalog type to complete with zero
+unknown attributes, plus authentication/DB, model and both owned worker proofs.
+Do not remove fields, accept fallback data as complete, or disable gates to pass.
+
 ## 2. 적용 전 검토 / Review before deployment
 
 공유 인프라는 saved plan으로만 적용하며 `-auto-approve`를 사용하지 않는다. 그러나 이
@@ -211,9 +292,8 @@ CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 - `inventory_sync_dispatch` — `type=all` fan-out 결과. `status=dispatched|partial|failed`,
   `queued_count`/`failed_count`, `queued_types`/`failed_types`만 포함하며 invoke exception
   text는 포함하지 않는다.
-- `inventory_sync_complete` — full success이면 `degraded=false`, `freshness=healthy`, `age_minutes=0`; expected account 일부가 도달 불가한 partial이면 `degraded=true`, `freshness=degraded`, `age_minutes=null`, `unreachable_account_count`가 있고 account ID는 없다. SDK per-resource sub-call partial이면 `failure_count`와 safe `failure_types`만 있으며 stale row pruning과 snapshot replacement를 건너뛴다. `unknown_attribute_count`는 steady-state denial로 blind 처리된 attribute read 수이며, `status=succeeded` 여도 이 값이 0보다 크면 `freshness=degraded`로 공개되고 event의 `degraded` 플래그도 true가 된다(pruning과 `last_success_at`은 막지 않는다 — 2026-09-02 정정: 종전 문구의 `degraded=false` 유지 서술은 코드와 불일치했다).
-- `inventory_sync_hydrate_fallback` — (2026-09-02, ADR-010 개정) 하이드레이트 컬럼을 실은 쿼리(현재 `iam_role.attached_policy_arns`)가 실패해 **하이드레이트 없는 폴백 재시도**로 넘어갔다는 뜻. 기본 인벤토리는 그대로 갱신되고(run `succeeded`) 하이드레이트 컬럼만 전 행에서 빠지며, 그 run의 `unknown_attribute_count`가 행 수로 기록되어 위 `succeeded+unknowns→degraded` freshness 공개 채널을 그대로 탄다. `remedy` 필드가 원인별 조치를 안내한다: statement timeout(전 계정 합산 role 수가 예산 초과 — 하이드레이트 예산 180s, 폴백 90s, Aurora 예약 120s, prune 단계 reachability probe는 건당 ≤30s로 모두 남은 Lambda 시간에 클램프) → 리미터 `fill_rate` 상향(0.1–20); SCP/IAM 거부 → `iam:ListAttachedRolePolicies` 권한 부여(rate 조정으로는 해결 불가).
-  - `inventory_sync_hydrate_fallback` — (2026-09-02, ADR-010 amendment) a hydrate-carrying query (currently `iam_role.attached_policy_arns`) failed and the sync retried hydrate-free. The base inventory still refreshes (run `succeeded`) with only the hydrate column absent, and that run's `unknown_attribute_count` records the row count so the `succeeded+unknowns→degraded` freshness channel above discloses it. The `remedy` field is cause-specific: statement timeout (aggregate role count over budget — budgets split 180s hydrated / 90s fallback / 120s Aurora reserve, with prune-phase reachability probes ≤30s each, all clamped to remaining Lambda time) → raise the limiter `fill_rate` (0.1–20); SCP/IAM denial → grant `iam:ListAttachedRolePolicies` (rate tuning cannot fix a denial).
+- `inventory_sync_complete` — full success has `degraded=false`, `freshness=healthy`, and `age_minutes=0`. Unreachable-account partial results expose only `unreachable_account_count`, with degraded freshness and null age. SDK sub-call partials expose bounded `failure_count`/`failure_types` and skip stale pruning/snapshot replacement. Missing attributes from steady-state SDK denials or the IAM policy fallback contribute to `unknown_attribute_count`; a succeeded run with positive unknowns remains degraded. This disclosure does not itself suppress pruning or `last_success_at`.
+- `inventory_sync_hydrate_fallback` — under the ADR-010 amendment dated 2026-09-02, the primary query failed and retried without `attached_policy_arns`. The fallback still selects instance profiles and `GetRole`-backed fields; it is not hydrate-free. A successful fallback refreshes base inventory but records every row as unknown for policy attributes, so the release gate rejects such nonempty fallback data. Primary/fallback statement caps are 180s/90s, socket limits add 15s, and the remaining-time clamp reserves 120s for Aurora. The event's `remedy` field is cause-specific: review refill tuning for confirmed capacity limits, or `iam:ListAttachedRolePolicies` permission for confirmed IAM/SCP denial. Reachability probes remain capped at 30s and all query budgets use the remaining-time clamp. Positive unknown attributes set `degraded=true`; a later fallback failure records `inventory_sync_failed` and preserves last-good rows. Use the [separate capacity bounds](#development-ci-refill-override). An `InterfaceError/other` alone does not prove either cause. A zero-row fallback has no per-row missing attributes to count; empty-account identity checks still apply, and no successful fallback with positive unknowns passes the release gate.
 - `inventory_sync_busy` — `degraded=true`, `throttled=false`; 해당 type의 advisory lock이 이미 사용 중이며 retry storm을 만들지 않는다.
 - `inventory_sync_failed` — `resource_type`, `elapsed_ms`, `error_category`, `error_type`, `degraded=true`, structured `throttled`; raw exception text는 로그에 쓰지 않는다.
   - `error_category=superseded`는 이 실행이 lock을 해제한 뒤 더 새 실행이 같은 ledger row를 교체했다는 뜻이다. stale finalizer는 새 row를 수정하지 않고 안전한 degraded failure 하나만 기록하며 run token/account ID를 로그에 쓰지 않는다.
@@ -256,9 +336,8 @@ and release modes use the same strict data criteria; release mode changes only t
 collection wait. Runtime/model and both owned worker proofs remain mandatory. See the [release collection contract](runtime-foundation.md#collection-contention--수집-경합)
 for the exact boundaries and single confirmed-contention retry.
 
-`unknown_attribute_count`는 steady-state denial(예: SCP로 막힌 bucket의 PAB/policy-status/versioning/encryption/logging 읽기)로 blind 처리된 attribute read 수다. 이 값은 공개되는 freshness를 degrade시키지만 stale row pruning이나 durable `last_success_at`을 막지 않는다 — 하나의 denied bucket이 pruning을 영구히 비활성화하면 안 되기 때문이다. 반대로 transient 실패(throttle 등)로 일부 attribute가 unknown이 된 rec은 아예 upsert하지 않고 건너뛴다: upsert는 `sdk_partial`이 prune을 막기 *전에* 실행되므로, 쓰면 이미 알고 있던 값이 NULL로 덮이면서 `captured_at`은 최신으로 갱신된다. rec을 건너뛰면 counted failure가 run을 partial로 유지하고, 건너뛴 prune이 그 row의 last-known-good 내용을 그대로 보존한다. CloudFront VPC origin의 `get_distribution_config` 실패도 모든 row의 origin-ref 귀속을 불완전하게 만들므로 같은 이유로 rows 전체를 버린다.
 
-`unknown_attribute_count` is the number of attribute reads blinded by steady-state denials (e.g. the PAB/policy-status/versioning/encryption/logging read on an SCP-denied bucket). It degrades the disclosed freshness but never blocks stale-row pruning or the durable `last_success_at` — one denied bucket must not disable pruning forever. Conversely, a rec whose attributes went unknown through a TRANSIENT failure (a throttle) is skipped rather than upserted: the upsert runs *before* `sdk_partial` gates the prunes, so writing it would null out previously-known fields while refreshing `captured_at` to now. Skipping the rec keeps the counted failure making the run partial, and the skipped prunes preserve that row's last-known-good content intact. A CloudFront VPC-origin `get_distribution_config` failure leaves origin-ref attribution incomplete for every row, so the whole row set is dropped for the same reason.
+`unknown_attribute_count` counts missing attribute observations, including steady-state SDK denials (such as bucket PAB/policy/versioning/encryption/logging reads) and one missing policy-list attribute per IAM role after hydrate fallback. It degrades the disclosed freshness but never blocks stale-row pruning or the durable `last_success_at` — one denied bucket must not disable pruning forever. For SDK-sourced attribute collection, a rec whose attributes went unknown through a TRANSIENT failure (a throttle) is skipped rather than upserted: the upsert runs *before* `sdk_partial` gates the prunes, so writing it would null out previously-known fields while refreshing `captured_at` to now. Skipping the rec keeps the counted failure making the run partial, and the skipped prunes preserve that row's last-known-good content intact. A CloudFront VPC-origin `get_distribution_config` failure leaves origin-ref attribution incomplete for every row, so the whole row set is dropped for the same reason.
 
 ```sql
 SELECT resource_type, status, finished_at, row_count,
@@ -284,10 +363,19 @@ ORDER BY resource_type;
 
 The limited ops `inventory-read-target` already returns explicit freshness for `query_inventory` and `inventory_summary`; it never silently falls back to a live API. Direct domain targets still coexist until Phase 2 expands Aurora coverage and retires them. Aurora-only is not live.
 
+### Persisted identity counts
+
+Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.
+
+This uses ADR-021's persisted freshness-evidence basis; it changes no collection permission or release gate.
+
 ## 6. 안전한 튜닝 / Safe tuning
 
 throttling, sync latency 증가 또는 service instability가 보이면 `max_concurrency`, bucket size,
 fill rate 또는 reserved concurrency를 낮추는 변경안을 준비한다. **즉시 적용 가능한 예외가 아니다.**
+
+<a id="alldns-refill-boundary"></a>
+
 Steampipe ECS를 변경하는 limiter 튜닝과 hydrate-fallback의 `fill_rate` 조치는 ALLDNS 중
 차단된다. Lambda reserved concurrency만 바꾸더라도 전체 계획에 DNS 변경이 없는지 확인해야 한다.
 
@@ -299,6 +387,12 @@ concurrency change needs a whole-plan check showing no DNS changes.
 **Raising a limit requires observed production headroom.** Increase only after evidence shows the current setting has sustained headroom without AWS throttling, increased sync age, Lambda throttles, or impact to production deployment/scaling operations. Change one control at a time, observe at least a full 15-minute cycle, and retain the prior values for rollback.
 
 The values are safeguards, not assertions of universal AWS quotas; service, operation, account, and Region quotas differ.
+
+### Persisted identity counts
+
+Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.
+
+Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q` (ADR-021 collection accounting).
 
 ## 7. 롤백 / Rollback
 
@@ -324,13 +418,6 @@ private-DNS exception.
 
 Phase 1 alone does not retire any direct AgentCore target, so it has no AgentCore catalog rollback of its own.
 
-## Related
-
-- ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
-- Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
-- Renderer: `scripts/v2/steampipe/spc_render.py`
-- Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`
-
 Manual dev/preview deployment blocks listed core-runtime deletion/replacement/forget.
 There is no retirement marker or supported teardown mode. Keep `steampipe_enabled=true`
 for ordinary rollback and restore prior reviewed settings; destructive decommissioning
@@ -339,3 +426,10 @@ requires a separate reviewed procedure. This development guard does not apply to
 지원되는 teardown 모드는 없다. 일반 롤백은 `steampipe_enabled=true`와 서비스·데이터를
 유지하고 이전 검토 설정을 복원한다. 파괴적 종료에는 별도 검토 절차가 필요하며
 이 개발 환경 가드는 main에는 적용되지 않는다.
+
+## Related
+
+- ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
+- Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
+- Renderer: `scripts/v2/steampipe/spc_render.py`
+- Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`

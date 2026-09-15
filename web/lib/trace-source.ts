@@ -9,6 +9,8 @@ export interface SourceRead<T> {
   reasons: string[];
   windowStartMs: number;
   windowEndMs: number;
+  /** Missing data/unproven empty reads retain the prior snapshot despite useful siblings. */
+  canSweep?: false;
 }
 
 export interface TraceIdentity {
@@ -61,7 +63,7 @@ export interface ServiceGraphCall {
 // Never use backend exceptions, status messages, SQL, previews or credentials as reasons.
 type Reason = 'missing_configuration' | 'configuration_failed' | 'query_failed' |
   'malformed_payload' | 'malformed_rows' | 'payload_truncated' | 'trace_fetch_failed' |
-  'cap_reached' | 'invalid_request' | 'incomplete_collection';
+  'cap_reached' | 'invalid_request' | 'incomplete_collection' | 'empty_not_confirmed';
 type ReadWindow = Pick<SourceRead<never>, 'windowStartMs' | 'windowEndMs'>;
 type Obj = Record<string, unknown>;
 
@@ -87,10 +89,20 @@ function readResult<T>(
   status?: SourceRead<T>['status'],
 ): SourceRead<T> {
   const unique = [...new Set(reasons)];
+  const boundedReason = (r: Reason) => [
+    'cap_reached', 'payload_truncated', 'incomplete_collection', 'empty_not_confirmed',
+  ].includes(r);
+  const outcome = status ?? (unique.length === 0 ? 'ok' :
+    items.length > 0 || unique.every(boundedReason) ? 'partial' : 'error');
+  // Bounds and completion caveats do not freeze valid nonempty snapshots. Missing or
+  // malformed data still forbids replacement; Tempo adds its mixed-child guard below.
+  const lostData = unique.some(r => !boundedReason(r));
+  const retain = lostData || outcome === 'error' || outcome === 'unavailable'
+    || (outcome !== 'ok' && items.length === 0);
   return {
     items, sourceId, ...window, reasons: unique,
-    status: status ?? (unique.length === 0 ? 'ok' :
-      items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection') ? 'partial' : 'error'),
+    ...(retain ? { canSweep: false as const } : {}),
+    status: outcome,
   };
 }
 function envelopeReasons(value: unknown): Reason[] {
@@ -101,16 +113,17 @@ function envelopeReasons(value: unknown): Reason[] {
   if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
     if (r.collectionStatus === 'error') reasons.push('query_failed');
     else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
+    else if (r.collectionStatus === 'unknown') reasons.push('incomplete_collection');
     else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
   }
   return reasons;
 }
-function requireEmptyEvidence(items: unknown[], reasons: Reason[], ...envelopes: unknown[]): Reason[] {
-  if (items.length || reasons.length || envelopes.some(value => {
-    const status = object(value)?.collectionStatus;
-    return status === 'ok' || status === 'empty';
-  })) return reasons;
-  return ['incomplete_collection'];
+function requireEmptyProof(value: unknown, items: unknown[], reasons: Reason[]): void {
+  if (items.length || reasons.length) return;
+  const outer = object(value), inner = object(outer?.result);
+  const status = outer?.collectionStatus ?? inner?.collectionStatus;
+  // Legacy delivery success is not evidence that the source query completed.
+  if (status !== 'ok' && status !== 'empty') reasons.push('empty_not_confirmed');
 }
 function inWindow(span: TraceSpan, window: ReadWindow): boolean {
   return span.startMs >= window.windowStartMs && span.startMs <= window.windowEndMs;
@@ -327,8 +340,8 @@ export class ClickHouseOtelTraceSource implements TraceSource {
           (links && item.links?.length !== links.length)) reasons.push('malformed_rows');
       if (inWindow(item, window)) items.push({ ...item, sourceId });
     }
-    return readResult(sourceId, window, items,
-      requireEmptyEvidence(items, reasons, payload, object(payload)?.result));
+    requireEmptyProof(payload, items, reasons);
+    return readResult(sourceId, window, items, reasons);
   }
 }
 
@@ -412,7 +425,7 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
       }
     }
   }
-  return { items, reasons: requireEmptyEvidence(items, reasons, r) };
+  return { items, reasons };
 }
 
 /** Pure, non-throwing OTLP mapper, supporting Tempo batches and OTLP resourceSpans. */
@@ -453,6 +466,7 @@ export class TempoTraceSource implements TraceSource {
       return id ? [id] : [];
     }))].slice(0, TEMPO_TRACE_CAP);
     const items: TraceSpan[] = [];
+    let missingChild = false;
     for (const traceId of traceIds) {
       if (items.length >= limit) { reasons.push('cap_reached'); break; }
       try {
@@ -461,14 +475,21 @@ export class TempoTraceSource implements TraceSource {
         });
         const parsed = parseTempoTrace(traceId, payload);
         reasons.push(...parsed.reasons);
+        if (!parsed.items.length) {
+          missingChild = true;
+          if (!parsed.reasons.length) reasons.push('incomplete_collection');
+        }
         const selected = parsed.items.filter((s) => inWindow(s, window));
         if (selected.length > limit - items.length) reasons.push('cap_reached');
         items.push(...selected.slice(0, limit - items.length).map((s) => ({ ...s, sourceId })));
       } catch {
+        missingChild = true;
         reasons.push('trace_fetch_failed');
       }
     }
-    return readResult(sourceId, window, items, requireEmptyEvidence(items, reasons, search));
+    requireEmptyProof(search, items, reasons);
+    return { ...readResult(sourceId, window, items, reasons),
+      ...(missingChild ? { canSweep: false as const } : {}) };
   }
 }
 
@@ -553,8 +574,9 @@ export class MetricsCallsSource {
       return readResult(sourceId, window, [], ['query_failed']);
     }
     const { items, reasons } = parseServiceGraphCalls(payload);
+    requireEmptyProof(payload, items, reasons);
     return readResult(sourceId, window, items.map((item) => ({
       ...item, clientIdentity: { ...item.clientIdentity, sourceId }, serverIdentity: { ...item.serverIdentity, sourceId },
-    })), requireEmptyEvidence(items, reasons, payload));
+    })), reasons);
   }
 }

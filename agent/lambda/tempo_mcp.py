@@ -22,7 +22,7 @@ from datasource_http import (
 
 SLUG = "tempo"
 MAX_TRACES = 50
-DEFAULT_SEARCH_LIMIT = 20  # Pin Tempo's default so a saturated response is observable.
+DEFAULT_SEARCH_LIMIT = 20
 MAX_TOTAL_BYTES = 1_000_000  # cap serialized trace payload well under the 6 MB Lambda limit
 MAX_SCHEMA_TAGS = 200
 MAX_SCHEMA_BYTES = 64_000
@@ -126,14 +126,14 @@ def tempo_search(args):
                     state = "partial"
         if "metrics" in data and not isinstance(metrics, dict):
             state = "unknown"
-    if isinstance(metrics, dict):
-        if "completedJobs" in metrics or "totalJobs" in metrics:
-            completed, total = metrics.get("completedJobs"), metrics.get("totalJobs")
-            if (type(completed) is not int or type(total) is not int
-                    or min(completed, total) < 0 or completed > total):
-                state = "unknown"
-            elif completed < total and state != "unknown":
-                state = "partial"
+    if state in ("ok", "empty"):
+        completed = metrics.get("completedJobs") if isinstance(metrics, dict) else None
+        total = metrics.get("totalJobs") if isinstance(metrics, dict) else None
+        if (type(completed) is not int or type(total) is not int
+                or completed < 0 or total <= 0 or completed > total):
+            state = "unknown"  # Missing counters or zero jobs are not affirmative completion.
+        elif completed < total:
+            state = "partial"
     payload, btr = _byte_bound({"traces": traces, "metrics": metrics})
     if btr:
         return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial"})

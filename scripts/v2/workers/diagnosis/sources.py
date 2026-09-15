@@ -511,6 +511,25 @@ def _summarize_result(body):
                 out["shape"] = res.get("shape")
     if "resultType" in body:
         out["resultType"] = body.get("resultType")
+    # Explicit upstream incompleteness is evidence, not a healthy zero. Only bounded
+    # status codes cross this boundary; raw errors/warnings can contain source data.
+    status = body.get("collectionStatus")
+    if "collectionStatus" in body:
+        out["collectionStatus"] = status if isinstance(status, str) and status in (
+            "ok", "empty", "partial", "error", "unknown",
+        ) else "unknown"
+    if body.get("truncated") is True:
+        out["truncated"] = True
+        if out.get("collectionStatus") not in ("error", "unknown"):
+            out["collectionStatus"] = "partial"
+    if out.get("collectionStatus") in ("partial", "error", "unknown"):
+        if out["collectionStatus"] == "error":
+            out["error"] = "source collection error"
+        else:
+            out["incomplete"] = True
+        count = out.pop("count", None)
+        if count:
+            out["observedCount"] = count
     return out
 
 
@@ -647,7 +666,13 @@ def collect_datasources(conn):
                 if status and status >= 400:
                     results.append({"label": label, "error": (body.get("error") or f"HTTP {status}")})
                 else:
-                    results.append({"label": label, "summary": _summarize_result(body)})
+                    summary = _summarize_result(body)
+                    signal = {"label": label, "summary": summary}
+                    if "error" in summary:
+                        signal["error"] = summary["error"]
+                    if summary.get("incomplete"):
+                        signal["incomplete"] = True
+                    results.append(signal)
             except Exception as e:  # noqa: BLE001 — per-query isolation; one bad query never sinks the rest
                 results.append({"label": label, "error": type(e).__name__})
         finding = {"name": name, "kind": kind, "version": version,

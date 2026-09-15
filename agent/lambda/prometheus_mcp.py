@@ -200,19 +200,27 @@ def prometheus_query_range(args):
     return _query_result(_get(_ds(), "/api/v1/query_range", params, with_status=True))
 
 
+def _list_result(observed, field, limit, kind):
+    data, source_status = observed
+    rows = data[:limit] if isinstance(data, list) else []
+    truncated = isinstance(data, list) and len(data) > limit
+    state = (source_status if source_status in ("unknown", "error") else
+             "unknown" if not isinstance(data, list) else
+             "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
+             "ok" if rows else "empty")
+    return ok({field: rows, "truncated": truncated, "collectionStatus": state})
+
+
 def prometheus_labels(args):
-    data = _get(_ds(), "/api/v1/labels", {})
-    names = data if isinstance(data, list) else []
-    return ok({"labels": names[:1000], "truncated": len(names) > 1000})
+    return _list_result(_get(_ds(), "/api/v1/labels", {}, with_status=True), "labels", 1000, str)
 
 
 def prometheus_series(args):
     match = (args.get("match") or "").strip()
     if not match:
         return err("match (series selector) required")
-    data = _get(_ds(), "/api/v1/series", {"match[]": match})
-    series = data if isinstance(data, list) else []
-    return ok({"series": series[:MAX_SERIES], "truncated": len(series) > MAX_SERIES})
+    return _list_result(_get(_ds(), "/api/v1/series", {"match[]": match}, with_status=True),
+                        "series", MAX_SERIES, dict)
 
 
 def prometheus_schema(args):

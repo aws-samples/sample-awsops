@@ -165,32 +165,39 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
     if status >= 400:
         snippet = (data.get("raw") or data.get("exception") or data) if isinstance(data, dict) else "non-object error response"
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")
-    if isinstance(data, dict) and (data.get("status") == "error"
-            or any(data.get(key) not in (None, "") for key in ("exception", "error", "errorType"))):
-        return err("ClickHouse query returned an error")
     raw = data.get("data") if isinstance(data, dict) else None
+    meta = data.get("meta") if isinstance(data, dict) else None
     rows = raw if isinstance(raw, list) else []
-    valid = (status in (200, 206) and isinstance(raw, list) and all(isinstance(row, dict) for row in rows[:max_rows])
-             and type(data.get("rows")) is int and data["rows"] == len(rows)
-             and isinstance(data.get("meta"), list)
-             and all(isinstance(column, dict) and isinstance(column.get("name"), str)
-                     and isinstance(column.get("type"), str) for column in data["meta"]))
-    state = "unknown" if not valid else "partial" if status == 206 or len(rows) >= max_rows else "ok" if rows else "empty"
-    if isinstance(data, dict):
+    before_limit = data.get("rows_before_limit_at_least") if isinstance(data, dict) else None
+    truncated = len(rows) >= max_rows or (type(before_limit) is int and before_limit > len(rows))
+    valid_meta = isinstance(meta, list) and bool(meta) and all(
+        isinstance(column, dict) and isinstance(column.get("name"), str)
+        and bool(column["name"]) and isinstance(column.get("type"), str)
+        and bool(column["type"]) for column in meta)
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) is not None for key in ("exception", "error", "errorType"))):
+        state = "error"
+    elif (status not in (200, 206) or not isinstance(raw, list) or not valid_meta
+          or type(data.get("rows")) is not int or data["rows"] != len(rows)):
+        state = "unknown"
+    elif status == 206 or truncated or not all(isinstance(row, dict) for row in rows):
+        state = "partial"
+    else:
+        state = "ok" if rows else "empty"
+    if isinstance(data, dict) and state != "error":
         for key in ("warnings", "partial", "truncated", "rows_before_limit_at_least"):
             if key not in data:
                 continue
             value = data[key]
-            good = (isinstance(value, list) and all(isinstance(item, str) for item in value) if key == "warnings" else
-                    type(value) is int and value >= 0 if key == "rows_before_limit_at_least" else
-                    type(value) is bool)
-            if not good:
+            valid = (isinstance(value, list) and all(isinstance(item, str) for item in value)
+                     if key == "warnings" else type(value) is int and value >= 0
+                     if key == "rows_before_limit_at_least" else type(value) is bool)
+            if not valid:
                 state = "unknown"
             elif state != "unknown" and (value > len(rows) if key == "rows_before_limit_at_least" else bool(value)):
                 state = "partial"
     return ok({"rowCount": len(rows[:max_rows]), "rows": rows[:max_rows],
-               "meta": data.get("meta") if isinstance(data, dict) else None,
-               "collectionStatus": state})
+               "meta": meta, "truncated": truncated, "collectionStatus": state})
 
 
 def clickhouse_query(args):

@@ -70,7 +70,7 @@ SCP(Service Control Policy)나 IAM 경계로 특정 AWS API가 차단되면, 해
 | `ce:GetCostAndUsage` | Cost 데이터 조회 불가 |
 | `cloudwatch:GetMetricData` | 메트릭/그래프 조회 불가 |
 
-AWSops는 읽기 전용이므로 차단된 API는 대부분 해당 항목을 빈 값으로 표시하고 나머지는 정상 동작합니다 — 단, per-row 하이드레이트 컬럼이 차단되면 예외입니다: iam_role.attached_policy_arns는 하이드레이트 없이 1회 재시도되어 기본 인벤토리는 유지되고 정책 목록 컬럼만 비며(운영자는 inventory_sync_hydrate_fallback 로그의 원인별 안내로 복구 — timeout이면 리미터 fill_rate 상향, SCP/IAM 거부이면 iam:ListAttachedRolePolicies 권한 부여), iam_user.mfa_enabled 차단이나 기본 쿼리까지 실패하면 그 타입의 sync run 전체가 failed로 기록되고 last-good 데이터가 동결됩니다(폴백 성공 시에도 최종 run 상태는 통상 라이프사이클을 따릅니다 — 도달 불가 계정이 겹치면 partial)(ADR-010 2026-09-02 개정). 누락된 데이터가 필요하면 해당 API에 대한 읽기 권한을 추가하세요. 권한 변경 없이 자연어로 부분 조회가 가능한 경우, AI 어시스턴트에 질의하면 사용 가능한 범위의 데이터로 답합니다.
+API 읽기가 거부되면 불완전한 근거이며, AWS 리소스가 없다는 뜻은 아닙니다. IAM 역할 쿼리는 `attached_policy_arns`만 제외하고 한 번 재시도하지만, `GetRole`과 인스턴스 프로파일 조회가 남아 있어 실패할 수 있습니다. 성공한 폴백만 정책 목록이 미확인인 기본 행을 갱신합니다. 두 쿼리가 모두 실패하면 마지막 정상 행을 보존하고 타입은 failed로 기록됩니다. 도달 가능성이나 저장 결과에 따라 partial 또는 failed가 될 수도 있습니다. `inventory_sync_hydrate_fallback.remedy`로 확인된 용량 문제와 권한 문제를 구분하세요. refill 조정은 IAM/SCP 거부를 해결하지 못합니다. 사용자 MFA 쿼리에는 역할 정책 폴백이 없습니다(ADR-010, 2026-09-02). 필요한 읽기 권한은 운영자에게 검토를 요청하고, AI에는 현재 접근 가능한 데이터로 범위를 명시한 답변을 요청하세요.
 
 ## 페이지 로딩이 느려요
 

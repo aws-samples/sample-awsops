@@ -25,8 +25,8 @@ interface MetricsCallsSourceLike {
 // (class is in the node PK + edge UNIQUE), so each rebuild mark-sweeps ONLY its own class.
 // EKS pods are live in-cluster, not synced → not materialized here (the UI resolves them live).
 
-// Exclude 'ipResolved' (a Record, not a Row[]) so input[key] narrows to Row[] for the push below.
-const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved'>> = {
+// Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
+const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'ownershipRead'>> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg',
   waf: 'waf', ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
@@ -129,15 +129,15 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()): Pr
   const totals = { nodes: 0, edges: 0 };
   for (const account of await inventoryAccounts(pool, TYPES)) {
     const inv = await pool.query(
-      `SELECT resource_type, resource_id, region, data FROM inventory_resources
+      `SELECT resource_type, resource_id, region, data, captured_at FROM inventory_resources
        WHERE account_id = $2 AND resource_type = ANY($1)`,
       [TYPES, account],
     );
-    const input: FlowInput = {};
-    for (const r of inv.rows as { resource_type: string; resource_id: unknown; region: unknown; data?: object }[]) {
+    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
+    for (const r of inv.rows as { resource_type: string; resource_id: unknown; region: unknown; data?: object; captured_at?: unknown }[]) {
       const key = TYPE_TO_KEY[r.resource_type];
       if (!key) continue;
-      (input[key] ??= []).push({ resource_id: r.resource_id, region: r.region, ...(r.data ?? {}) });
+      (input[key] ??= []).push({ ...(r.data ?? {}), resource_id: r.resource_id, region: r.region, captured_at: r.captured_at });
     }
     const g = buildFlowGraph(input);
     const kindOf = new Map(g.nodes.map((n) => [n.id, n.kind]));
@@ -209,14 +209,17 @@ export async function rebuildTraceGraph(
     itemCount: read.items.length, windowStartMs: read.windowStartMs, windowEndMs: read.windowEndMs,
   }));
   const hasFailure = reads.some((read) => read.status === 'error' || read.status === 'unavailable');
-  const partial = reads.some((read) => read.status === 'partial');
+  const cannotSweep = reads.some((read) => read.canSweep === false);
+  const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
   const calls = metricReads.flatMap((read) => read.items.map((call) => ({
     ...call,
     clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
     serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
   })));
-  if (!reads.length || hasFailure || (partial && !spans.length && !calls.length)) {
+  // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
+  // bounded reads continue through the existing atomic partial-snapshot publisher.
+  if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
     const status = reads.some((read) => read.status === 'error') ? 'error'
       : partial ? 'partial' : 'unavailable';
     return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, true, {
