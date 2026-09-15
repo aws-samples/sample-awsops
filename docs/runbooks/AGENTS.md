@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2198df7ce18d · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 699f51b0ddd7 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -68,7 +68,7 @@ evidence, with bounded data-only extraction and explicit unavailable-image failu
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers activation and the strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
@@ -219,9 +219,14 @@ Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets 
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
 Require every pinned baseline name (currently 43, source-AST checked); valid growth
-is allowed up to 128 and every returned type needs strict proof. Both modes require
-the enabled host only; collect's authenticated DB/host preflight fails incompatible
-registries before type calls as `host_only_registry_required`. Preserve isolated
+is allowed up to 128 and every returned type needs strict proof. Both modes default
+to the enabled host only; explicit applied targets require exact enabled registration.
+Collect additionally requires measured SQL reachability with zero unreachable accounts
+and fresh account-bound EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
+counts; CI permits host-only/null only for five source-AST-pinned SDK types, not
+43-type coverage for every member. Only Terraform onboarding
+preflight permits approved subsets; apply reads the restored plan, not a newer secret.
+Runtime release stays exact. Preserve isolated
 AWS CLI environments, first chronological terminal failure and stopped admission;
 admitted work settles and untouched types remain `not_started`. The six status-based
 `collection_attempts.counts` buckets partition `expected`: a selected type whose first call
@@ -240,7 +245,8 @@ reads must match the original opaque deployment ID, immutable task-definition AR
 count and ECR digest set, without another tag lookup. Changed ID fails even with the
 same task definition; equal snapshots are not continuous/history proof or an atomic
 lock. Prepare has no closing recheck.
-The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Each explicit target adds 35 seconds of proof reserve and removes it from collection/admission.
+The empty-target 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
 Auth proof ends 50 seconds early for three 15-second closing reads plus five seconds
 overhead, within the original deadline. Collection is at most 720 seconds; the
 450-second floor requires admission by 270 seconds minus preparation/earlier bounds.

@@ -111,15 +111,42 @@ def _validate_host_scope(rows):
     mode = os.environ.get("INVENTORY_HOST_ONLY", "false")
     if mode not in ("false", "true"):
         raise HostScopeError("invalid_host_scope_mode")
-    if mode == "false":
+    raw = os.environ.get("INVENTORY_TARGET_ACCOUNT_IDS", "")
+    try:
+        targets = json.loads(raw) if raw else []
+        if (not isinstance(targets, list) or len(targets) > 5
+                or any(not isinstance(t, str) or not re.fullmatch(r"[0-9]{12}", t) for t in targets)
+                or len(set(targets)) != len(targets)):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HostScopeError("invalid_target_account_scope") from None
+    if mode == "false" and not targets:
         return
     expected = os.environ.get("EXPECTED_HOST_ACCOUNT_ID", "")
     if not re.fullmatch(r"[0-9]{12}", expected):
         raise HostScopeError("expected_host_account_required")
     # QUERY returns enabled accounts only. Even an unrenderable foreign row is
     # a scope conflict, not a row to silently discard.
-    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
-            or rows[0].get("account_id") != expected or rows[0].get("is_host") is not True):
+    if targets:
+        if mode == "true" or expected in targets:
+            raise HostScopeError("invalid_target_account_scope")
+        allowed = {expected, *targets}
+        if (not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows)
+                or any(not isinstance(row.get("account_id"), str) or row["account_id"] not in allowed
+                       or row.get("is_host") is not (row["account_id"] == expected)
+                       or (row["account_id"] != expected and (
+                           row.get("role_name") != "AWSopsReadOnlyRole"
+                           or (row.get("all_regions") is not True and not (
+                               isinstance(row.get("regions"), list)
+                               and any(isinstance(region, str) and region for region in row["regions"])
+                           ))
+                       ))
+                       for row in rows)
+                or len({row["account_id"] for row in rows}) != len(rows)
+                or sum(row["account_id"] == expected for row in rows) != 1):
+            raise HostScopeError("invalid_enabled_target_scope")
+    elif (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+          or rows[0].get("account_id") != expected or rows[0].get("is_host") is not True):
         raise HostScopeError("invalid_enabled_host_scope")
     try:
         caller = _host_sts_client(os.environ.get("AWS_REGION", "ap-northeast-2")).get_caller_identity()
