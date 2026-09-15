@@ -43,6 +43,7 @@ function run(options: Record<string, unknown> = {}) {
           windowStartMs: endMs - mins * 60000, windowEndMs: endMs };
       }
     }
+    const fixtureNow = Date.now();
     const query = async (sql, args) => {
         if (sql.includes('SELECT accounts.account_id')) {
           if (input.failure === stage) fail();
@@ -50,7 +51,7 @@ function run(options: Record<string, unknown> = {}) {
             ...(input.partialFailure === stage ? [{ account_id: '123456789012' }] : [])] };
         }
         if (sql.includes('FROM inventory_sync_runs')) {
-          const now = Date.now();
+          const now = fixtureNow;
           return { rows: args[0].map(resource_type => ({ resource_type, account_id: 'self',
             status: stage === 'infra' && input.infraOutcome === 'retained' && resource_type === 'vpc' ? 'failed' : 'succeeded',
             row_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
@@ -66,7 +67,10 @@ function run(options: Record<string, unknown> = {}) {
           if (input.partialFailure === stage && args?.[0] === '123456789012') fail();
           return { rows: [] };
         }
-        if (sql.includes('FROM inventory_snapshots')) return { rows: [] };
+        if (sql.includes('FROM inventory_snapshots')) return { rows: args[1].map(resource_type => ({
+          resource_type, captured_at: new Date(fixtureNow - 1000).toISOString(),
+          resource_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
+        })) };
         if (sql.includes('FROM datasource_graph_queries')) {
           output.registryReads++;
           if (input.failure === 'registry') fail();

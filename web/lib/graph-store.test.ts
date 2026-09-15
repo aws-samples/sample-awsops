@@ -43,6 +43,7 @@ describe('topology_class migration', () => {
 function mockPool(invRows: unknown[]) {
   const calls: string[] = [];
   const params: unknown[][] = [];
+  const finishedAt = new Date(Date.now() - 1000).toISOString();
   const resourceRows = (invRows as Record<string, unknown>[]).map(row => ({
     ...row, account_id: 'self', captured_at: row.captured_at ?? new Date().toISOString(),
   }));
@@ -52,7 +53,7 @@ function mockPool(invRows: unknown[]) {
   const snapshot = { inventory: resourceRows, runs: invRows.length ? [...new Set(types)].map(type => ({
     account_id: 'self', resource_type: type, status: 'succeeded', unknown_attribute_count: 0, version: 'fixture-run-v1',
     row_count: resourceRows.filter(row => (row as Record<string, unknown>).resource_type === type).length,
-    started_at: new Date().toISOString(), finished_at: new Date().toISOString(), last_success_at: new Date().toISOString(),
+    started_at: finishedAt, finished_at: finishedAt, last_success_at: finishedAt,
   })) : [] };
   const client = Object.assign(new EventEmitter(), {
     query: vi.fn((sql: string, p?: unknown[]) => {
@@ -62,6 +63,8 @@ function mockPool(invRows: unknown[]) {
         : sql.includes('UNION SELECT') ? [{ account_id: 'self' }]
         : sql.includes('WITH bounded') ? resourceRows
         : sql.includes('FROM inventory_sync_runs') ? snapshot.runs
+        : sql.includes('FROM inventory_snapshots') ? snapshot.runs.map(run => ({
+          resource_type: run.resource_type, resource_count: run.row_count, captured_at: run.finished_at }))
         : sql.includes('count(*)::int AS count') ? snapshot.runs.map(run => ({ resource_type: run.resource_type, count: run.row_count })) : [];
       return Promise.resolve({ rows, rowCount: 1 });
     }),

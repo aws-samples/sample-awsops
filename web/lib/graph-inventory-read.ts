@@ -17,7 +17,7 @@ const INFRA_FIELDS = ['vpc_id', 'subnet_id', 'subnet_ids', 'vpc_subnet_ids', 'su
   'vpc_security_groups', 'endpoint_address', 'group_name', 'title', 'name', 'tags'];
 // Flow joins and safe display fields consumed by buildFlowGraph; unused provider blobs
 // must not exhaust the transfer budget or override authoritative identity columns.
-const FLOW_FIELDS = ['name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origins', 'web_acl_id',
+const FLOW_FIELDS = [...INFRA_FIELDS, 'name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origins', 'web_acl_id',
   'target_group_name', 'target_type', 'target_health_descriptions', 'load_balancer_arns',
   'vpc_id', 'scheme', 'private_zone', 'alias_target', 'records', 'type', 'last_status',
   'task_group', 'cluster_arn', 'attachments', 'origin_refs', 'api_id', 'integration_uri',
@@ -49,7 +49,8 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
         THEN (s.details->>'lastSourceAttemptedAtMs')::numeric END
       ELSE extract(epoch FROM s.attempted_at)*1000 END NULLS FIRST,
       (accounts.account_id='self') DESC, accounts.account_id LIMIT 101`, [cls, types]);
-    return result.rows.map(row => row.account_id as string);
+    return { accounts: result.rows.slice(0, 100).map(row => row.account_id as string),
+      truncated: result.rows.length > 100 };
   });
 }
 
@@ -78,12 +79,12 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY($1)`, [types]);
     // sync() writes these per-account counts only for observed/probed participants after
     // pruning. The self-keyed job ledger alone cannot prove a member's empty result.
-    const participation = account === 'self' ? { rows: [] } : await client.query(`
+    const participation = await client.query(`
       SELECT DISTINCT ON (s.resource_type) s.resource_type,s.resource_count,s.captured_at
       FROM inventory_snapshots s WHERE s.account_id=$1 AND s.resource_type=ANY($2)
-        AND EXISTS (SELECT 1 FROM accounts a WHERE a.account_id=$1 AND a.enabled
+        AND ($1='self' OR EXISTS (SELECT 1 FROM accounts a WHERE a.account_id=$1 AND a.enabled
           AND (a.all_regions OR EXISTS (SELECT 1 FROM account_regions ar
-            WHERE ar.account_id=a.account_id AND ar.enabled)))
+            WHERE ar.account_id=a.account_id AND ar.enabled))))
       ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
     // Both classes project their consumed fields before SQL byte guards prevent oversized
     // provider payloads from reaching Node. Identity columns remain authoritative.
@@ -156,10 +157,10 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const run = runs.find(row => row.resource_type === type && row.account_id === 'self');
     const point = participation.find(row => row.resource_type === type);
     const pointAt = stamp(point?.captured_at), started = stamp(run?.started_at), finished = stamp(run?.finished_at);
-    const participated = account === 'self' || (run?.status === 'succeeded' && pointAt !== null
+    const participated = run?.status === 'succeeded' && pointAt !== null
       && started !== null && finished !== null && started <= pointAt && pointAt <= finished
       && finished <= Date.now() && finished === stamp(run?.last_success_at)
-      && Number.isSafeInteger(point?.resource_count) && point!.resource_count >= 0);
+      && Number.isSafeInteger(point?.resource_count) && point!.resource_count >= 0;
     const unknownScope = !participated;
     const captures = items.map(row => stamp(row.captured_at));
     const capturedAtMs = captures.length && captures.every(value => value !== null)
@@ -168,12 +169,12 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const producerStatus = ['succeeded', 'failed', 'partial', 'running'].includes(run?.status) ? run!.status : 'unknown';
     const validCount = Number.isSafeInteger(run?.row_count) && run!.row_count >= 0;
     const countConfirmed = validCount && aggregateCounts.get(type) === run!.row_count
-      && (account === 'self' || (participated && point!.resource_count === items.length));
+      && participated && point!.resource_count === items.length;
     const confirmedEmpty = !unknownScope && countConfirmed;
     const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
     // Unknown attributes permit nonempty partial evidence, never affirmative empty proof.
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
-      : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
+      : producerStatus !== 'succeeded' ? ['incomplete_collection'] : unknownScope ? ['unknown_account_coverage']
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
@@ -181,9 +182,10 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
       ...(limitedTypes.has(type) ? ['payload_truncated'] : [])];
     const status = producerStatus === 'failed' ? 'error'
+      : producerStatus === 'running' || producerStatus === 'partial' ? 'partial'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
-    return { sourceId: `inventory:${type}`, scope: account !== 'self' && participated ? 'account' : 'aggregate',
+    return { sourceId: `inventory:${type}`, scope: 'account',
       status, producerStatus, reasons, itemCount: limitedTypes.has(type) ? null : items.length, capturedAtMs, lastSuccessAtMs,
       attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
   });

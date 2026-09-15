@@ -33,9 +33,9 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       throw new Error('Refusing fixture without disposable target database marker');
     await pool.query(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
       CREATE SCHEMA IF NOT EXISTS sql_reader;
-      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_sql_reader; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;`);
     const schema = readFileSync(resolve('../terraform/foundation/data/schema.sql'), 'utf8');
     for (const table of ['inventory_resources', 'inventory_sync_runs', 'inventory_snapshots', 'account_regions'])
       await pool.query(schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))![0]);
@@ -48,10 +48,11 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
   beforeEach(async () => {
     await pool.query('TRUNCATE inventory_resources, inventory_sync_runs, inventory_snapshots, account_regions, accounts, topology_nodes, topology_edges, topology_graph_state');
   });
-  async function seed(count = 0, unknown: number | null = 0) {
+  async function seed(count = 0, unknown: number | null = 0, selfCount = count) {
     const point = at();
     await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
       VALUES ('vpc','succeeded',$1,$1,$1,$2,$3)`, [point, count, unknown]);
+    await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self','vpc',$1,$2)", [selfCount, point]);
     return point;
   }
   it('returns affirmative self-empty evidence only with reconciled succeeded counts', async () => {
@@ -60,7 +61,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     expect(snapshot.rows).toEqual([]);
     expect(snapshot.aggregateCounts.get('vpc')).toBe(0);
     expect(inventoryAttempt(snapshot, ['vpc'], 'infra', 'self', at())).toMatchObject({ publish: true, status: 'empty',
-      details: { sources: [{ itemCount: 0, scope: 'aggregate', producerStatus: 'succeeded' }] } });
+      details: { sources: [{ itemCount: 0, scope: 'account', producerStatus: 'succeeded' }] } });
   });
   it.each([null, 1])('unknown attribute completeness %s cannot prove empty', async unknown => {
     await seed(0, unknown);
@@ -99,7 +100,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
   it('account discovery alone never supplies missing member participation', async () => {
     await seed();
     await pool.query("INSERT INTO accounts(account_id,alias,external_id,enabled,all_regions) VALUES ('000000000001','fixture','fixture',true,true)");
-    expect(await inventoryAccounts(pool, 'infra', ['vpc'])).toContain('000000000001');
+    expect((await inventoryAccounts(pool, 'infra', ['vpc']))?.accounts).toContain('000000000001');
     const snapshot = await inventorySnapshot(pool, 'infra', '000000000001', ['vpc']);
     expect(inventoryAttempt(snapshot, ['vpc'], 'infra', '000000000001', at())).toMatchObject({ publish: false,
       details: { sources: [{ reasons: expect.arrayContaining(['unknown_account_coverage']) }] } });
@@ -157,10 +158,54 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
       SELECT 'vpc','vpc-'||n,'fixture','{}',$1 FROM generate_series(5001,8193)n`, [at()]);
     await pool.query("UPDATE inventory_sync_runs SET row_count=8193 WHERE resource_type='vpc'");
+    await pool.query("UPDATE inventory_snapshots SET resource_count=8193 WHERE account_id='self' AND resource_type='vpc'");
     const bounded = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);
     expect(bounded.rows).toHaveLength(8193);
     expect(bounded.truncated).toBe(true);
     expect(inventoryAttempt(bounded, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
+  });
+  it('keeps flow detail fields consumed from meta.row', async () => {
+    const detail = { subnet_id: 'subnet-fixture', subnets: ['subnet-fixture'], availability_zones: ['zone-fixture'],
+      security_group_ids: ['sg-fixture'], vpc_security_group_ids: ['sg-fixture'], group_name: 'group-fixture', title: 'fixture-title' };
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      VALUES ('target_group','tg','fixture',$1::jsonb,$2)`, [JSON.stringify({ ...detail, target_type: 'ip' }), at()]);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['target_group']);
+    const row = snapshot.rows[0];
+    const graph = buildFlowGraph({ tg: [{ ...row.data, resource_id: row.resource_id }] });
+    expect(graph.nodes.find(node => node.kind === 'tg')?.meta.row).toMatchObject(detail);
+  });
+  it.each(['running','partial'])('a member %s sync reports collection incompleteness before coverage uncertainty', async status => {
+    const point = await seed();
+    await pool.query("INSERT INTO accounts(account_id,alias,external_id,all_regions) VALUES ('000000000001','fixture','fixture',true)");
+    await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('000000000001','vpc',0,$1)", [point]);
+    await pool.query("UPDATE inventory_sync_runs SET status=$1 WHERE resource_type='vpc'", [status]);
+    const snapshot = await inventorySnapshot(pool, 'infra', '000000000001', ['vpc']);
+    const result = inventoryAttempt(snapshot, ['vpc'], 'infra', '000000000001', at());
+    expect(result).toMatchObject({ publish: false, status: 'partial', details: { sources: [{ scope: 'account', reasons: ['incomplete_collection'] }] } });
+  });
+  it('host empty is account-scoped when the nonzero aggregate lives in a member', async () => {
+    const point = await seed(1, 0, 0);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,region,data,captured_at)
+      VALUES ('vpc','000000000001','member-vpc','fixture','{}',$1)`, [point]);
+    const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);
+    expect(inventoryAttempt(snapshot, ['vpc'], 'infra', 'self', at())).toMatchObject({ publish: true, status: 'empty',
+      details: { sources: [{ scope: 'account', itemCount: 0 }] } });
+    await pool.query("DELETE FROM inventory_snapshots WHERE account_id='self'");
+    const unproven = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);
+    expect(inventoryAttempt(unproven, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
+  });
+  it('discloses the discovery cap and advances once the caller records actual attempts', async () => {
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      SELECT lpad(n::text,12,'0'),'fixture','fixture',true FROM generate_series(1,205)n`);
+    const first = await inventoryAccounts(pool, 'infra', ['vpc']);
+    expect(first?.accounts).toHaveLength(100);
+    expect(first?.truncated).toBe(true);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      SELECT account,'infra','unavailable',now(),'{}'::jsonb FROM unnest($1::text[]) account`, [first!.accounts]);
+    const second = await inventoryAccounts(pool, 'infra', ['vpc']);
+    expect(second?.accounts).toHaveLength(100);
+    expect(second?.accounts.some(account => first!.accounts.includes(account))).toBe(false);
+    expect(second?.truncated).toBe(true);
   });
   it('read/background helpers share two admissions and leave an ordinary pool slot free', async () => {
     let release!: () => void; const hold = new Promise<void>(resolve => { release = resolve; });

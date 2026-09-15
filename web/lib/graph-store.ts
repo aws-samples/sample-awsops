@@ -159,8 +159,8 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       throw error;
     }
     if (!accounts) return { ...totals, skipped: 1, reasons: ['state_schema_missing'] };
-    if (accounts.length > 100) { totals.skipped++; totals.accountsTruncated = true; reason('account_limit'); }
-    const selected = accounts.slice(0, 100);
+    if (accounts.truncated) { totals.skipped++; totals.accountsTruncated = true; reason('account_limit'); }
+    const selected = accounts.accounts;
     for (const [index, account] of selected.entries()) {
       // Reserve a bounded transaction for skip evidence instead of silently abandoning the tail.
       if (performance.now() >= deadline - 4_000) {
