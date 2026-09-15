@@ -32,6 +32,8 @@ showing quality only in a panel cannot protect uniqueness decisions inside the e
 
 `buildE2eGraph` keeps source records and evidence classes separate. Account, region/VPC,
 pod/workload agreement and existing ownership/read-gap vetoes govern identity edges.
+At least one workload or incoming service record must attest the full compatible account/region
+tuple; complementary partial claims cannot combine, and every other conflict still vetoes.
 Cached configuration stays context and cannot become live/exclusive ownership.
 Source capture times and observation windows retain their distinct meanings.
 The non-self composition guard is not an authorization boundary.
@@ -58,8 +60,16 @@ With an incomplete configuration census, endpoint observations are counted as
 that missing candidate is not evidence that no competitor exists.
 
 A group with hidden or indeterminate membership is an unresolved competitor for its
-known region/VPC and target type; unknown dimensions cannot prove disjointness. This
-includes hidden IP/instance members, not only the displayed list. Such scope matches
+known region/VPC and target type; unknown dimensions cannot prove disjointness.
+Surrounding region/VPC whitespace is normalized before scope comparison so a padded
+blocked group cannot disappear as a supposedly disjoint competitor. Source labels and
+physical account claims are not rewritten. Hidden IP/instance members remain competitors,
+not only the displayed list. Under a complete census, cached, validated full parent
+`meta.row.target_health_descriptions` IDs can prove a requested ID absent from every
+parent and exclude only that wildcard competitor. Validation checks target type, identifiers,
+count and shown-member consistency; IPv6 spelling aliases compare canonically.
+Missing/malformed/inconsistent rows keep the conservative wildcard. This does not provide
+pod identity or promote a hidden member, and display limits remain unchanged. Other scope matches
 remain unverified even when another visible record looks unique. Known disjoint scopes
 remain independent. The group producer already keys by cluster/resolution; this change
 does not invent a mixed-cluster group or borrow another member's pod/namespace.

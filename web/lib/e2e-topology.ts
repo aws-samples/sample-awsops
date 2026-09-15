@@ -79,6 +79,7 @@ interface TargetIdentity {
   blocked: boolean;
   cached: boolean;
   contextAllowed: boolean;
+  parentMembers?: ReadonlySet<string>[];
 }
 
 const hasMarker = (value: unknown): boolean => {
@@ -119,7 +120,32 @@ function targetValues(meta: Meta): string[] {
   return [...result];
 }
 
-function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
+function membershipId(type: 'ip' | 'instance', value: unknown): string | null {
+  if (typeof value !== 'string' || value !== value.trim() || value.length > 64) return null;
+  if (type === 'instance') return /^i-[0-9a-f]+$/.test(value) ? value : null;
+  const ipv6 = value.includes(':');
+  if (!(ipv6 ? /^[\da-fA-F:.]+$/ : /^(?:\d{1,3}\.){3}\d{1,3}$/).test(value)) return null;
+  try {
+    const host = new URL(ipv6 ? `http://[${value}]/` : `http://${value}/`).hostname;
+    return ipv6 || host === value ? host : null;
+  } catch { return null; }
+}
+
+function parentMembership(row: Meta) {
+  const type = row.target_type;
+  let raw = row.target_health_descriptions;
+  try { if (typeof raw === 'string') raw = JSON.parse(raw); } catch { return null; }
+  if ((type !== 'ip' && type !== 'instance') || !Array.isArray(raw)) return null;
+  const ids = new Set<string>();
+  for (const item of raw) {
+    const id = membershipId(type, record(record(item).Target).Id);
+    if (id === null) return null;
+    ids.add(id);
+  }
+  return { type, count: raw.length, ids };
+}
+
+function targetIndex(nodes: E2eNode[], edges: E2eEdge[], complete: boolean) {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const scopes = new Map<string, Meta[]>();
   for (const edge of edges) {
@@ -130,6 +156,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
     scopes.set(edge.target, rows);
   }
   const index = new Map<string, TargetIdentity[]>();
+  const membershipCache = new Map<Meta, ReturnType<typeof parentMembership>>();
   let unresolvedTargetGroups = 0;
   for (const node of nodes) {
     if (node.layer !== 'configuration' || node.kind !== 'target') continue;
@@ -138,8 +165,14 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
     const parents = scopes.get(node.id) ?? [];
     const rows = parents.map(meta => record(meta.row));
     const common = (field: string): string => {
-      const value = text(rows[0]?.[field]);
-      return value && rows.every(row => row[field] === value) ? value : '';
+      // Scope padding cannot make a blocked competitor appear disjoint.
+      // Keep source labels and physical account claims verbatim.
+      const values = rows.map(row => {
+        const value = text(row[field]);
+        return field === 'region' || field === 'vpc_id' ? value.trim() : value;
+      });
+      const value = values[0];
+      return value && values.every(candidate => candidate === value) ? value : '';
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
     const region = common('region'), vpcId = common('vpc_id'), accountId = common('account_id');
@@ -148,6 +181,23 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
       || (node.meta.count !== undefined && (!Number.isSafeInteger(node.meta.count)
         || Number(node.meta.count) < 0 || Number(node.meta.count) > list(node.meta.members).length));
     if (limited) unresolvedTargetGroups++;
+    let parentMembers: ReadonlySet<string>[] | undefined;
+    const count = node.meta.count, truncated = node.meta.membersTruncated;
+    if (limited && complete && rows.length && node.meta.id === undefined
+      && Array.isArray(node.meta.members) && typeof count === 'number' && Number.isSafeInteger(count)
+      && count >= node.meta.members.length
+      && (truncated === undefined || Number.isSafeInteger(truncated) && truncated === count - node.meta.members.length)) {
+      const shown = node.meta.members.map(member => {
+        const values = targetValues({ members: [member] });
+        return values.length === 1 ? membershipId(type, values[0]) : null;
+      });
+      const full = rows.map(row => {
+        if (!membershipCache.has(row)) membershipCache.set(row, parentMembership(row));
+        return membershipCache.get(row);
+      });
+      if (full.every(proof => proof?.type === type && proof.count >= count
+        && shown.every(id => id !== null && proof.ids.has(id)))) parentMembers = full.map(proof => proof!.ids);
+    }
     // Empty value is a private wildcard: hidden members can contest any matching network scope.
     for (const value of [...targetValues(node.meta), ...(limited ? [''] : [])]) {
       const k = key(type, value);
@@ -157,7 +207,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
       // Retain blocked candidates in the index: dropping one would let a competing
       // record win merely because the conflicting evidence was hidden.
       entries.push({
-        node, type, value, region, vpcId,
+        node, type, value, region, vpcId, ...(!value && parentMembers ? { parentMembers } : {}),
         accountId: /^\d{12}$/.test(accountId) ? accountId : '',
         blocked: !value || !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
@@ -214,7 +264,9 @@ function workloadScopeReason(workload: WorkloadIdentity, target: TargetIdentity)
   const regions = claims('region'), accounts = claims('accountId');
   if (regions.length > 0 && regions.every(region => region === target.region)
     && accounts.length > 0 && accounts.every(account =>
-      account === 'self' || Boolean(target.accountId && account === target.accountId))) return;
+      account === 'self' || Boolean(target.accountId && account === target.accountId))
+    && workload.scopes.some(meta => meta.region === target.region
+      && (meta.accountId === 'self' || Boolean(target.accountId && meta.accountId === target.accountId)))) return;
   const conflict = regions.some(region => /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(text(region)) && region !== target.region)
     || accounts.some(account => /^\d{12}$/.test(text(account)) && target.accountId && account !== target.accountId);
   return conflict ? 'workload_conflict' : 'workload_scope_unverified';
@@ -330,7 +382,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       meta: { confidence: edge.confidence, snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
-  const { index: targets, unresolvedTargetGroups } = targetIndex(nodes, edges);
+  const { index: targets, unresolvedTargetGroups } = targetIndex(nodes, edges, summary.quality.configuration === 'complete');
   summary.quality.unresolvedTargetGroups = unresolvedTargetGroups;
   const workloads = workloadIndex(nodes, edges);
 
@@ -343,6 +395,9 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         if (!value) continue;
         for (const candidate of [...(targets.get(key(type, value)) ?? []), ...(targets.get(key(type, '')) ?? [])]) {
           if ((candidate.region && candidate.region !== region) || (candidate.vpcId && candidate.vpcId !== vpcId)) continue;
+          const member = !candidate.value && membershipId(type, value);
+          // Absence only: full TG rows never promote hidden members or supply pod identity.
+          if (member && candidate.parentMembers?.every(ids => !ids.has(member))) continue;
           candidates.set(candidate.node.id, candidate);
         }
       }

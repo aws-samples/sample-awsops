@@ -1582,3 +1582,76 @@ describe('selectE2eGraph — filtering before bounds', () => {
     });
   });
 });
+
+describe('complete scope tuples and uncapped parent membership', () => {
+  it.each([false, true])('does not combine complementary parent claims; complete tuple present=%s', complete => {
+    const snapshot = producedServices({ accountId: undefined, region: REGION });
+    const workload = snapshot.nodes.find(node => node.kind === 'workload')!;
+    snapshot.nodes.push({ id: 'account-parent', kind: 'service', label: 'account-parent',
+      meta: { accountId: 'self', ...(complete ? { region: REGION } : {}) } });
+    snapshot.edges.push({ source: 'account-parent', target: workload.id, rel: 'runs_on' });
+    const compose = () => buildE2eGraph(input({ configured: configured([eksTarget()]), services: snapshot,
+      network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])] }));
+    expect(identityEdges(compose())).toHaveLength(complete ? 2 : 0);
+    // A complete compatible tuple never cancels another source's conflict.
+    snapshot.nodes.push({ id: 'conflict', kind: 'service', label: 'conflict', meta: { region: 'us-east-1' } });
+    snapshot.edges.push({ source: 'conflict', target: workload.id, rel: 'runs_on' });
+    expect(identityEdges(compose())).toEqual([]);
+    expect(compose().nodes.find(node => node.meta.side === 'local')?.meta.correlationReason).toBe('workload_conflict');
+  });
+
+  function census(type: 'ip' | 'instance', ipv6 = false) {
+    const id = (n: number) => type === 'instance' ? `i-${n.toString(16).padStart(17, '0')}`
+      : ipv6 ? `2001:db8::${n.toString(16)}` : `10.0.4.${n}`;
+    const row = { resource_id: 'large', target_type: type, region: REGION, vpc_id: VPC,
+      target_health_descriptions: Array.from({ length: 21 }, (_, i) => ({ Target: { Id: id(i + 1), Port: 443 } })) };
+    const config = buildFlowGraph({ tg: [row] });
+    const group = config.nodes.find(node => node.kind === 'target')!;
+    expect(group.meta).toMatchObject({ count: 21, membersTruncated: 1 });
+    expect(group.meta!.members).toHaveLength(20);
+    const clean = configured([target({ targetType: type, id: id(99) }, 'clean')]);
+    config.nodes.push(...clean.nodes); config.edges.push(...clean.edges);
+    const compose = (value = id(99), complete = true) => buildE2eGraph(input({ configured: config,
+      quality: { configuration: complete ? 'complete' : 'partial' },
+      network: [observation([flow({ local: endpoint(type === 'ip' ? { ip: value } : { instanceId: value }) })])] }));
+    return { row, group, config, id, compose };
+  }
+
+  it.each(['ip', 'instance'] as const)('uses the full %s parent row only to prove an unrelated ID absent', type => {
+    const c = census(type);
+    const before = structuredClone(c.config);
+    expect(identityEdges(c.compose())).toHaveLength(1);
+    expect(identityEdges(c.compose(c.id(21)))).toEqual([]); // Hidden actual member remains unverified.
+    expect(identityEdges(c.compose(c.id(99), false))).toEqual([]);
+    expect(c.config).toEqual(before);
+    (c.row as Record<string, unknown>).target_health_descriptions = JSON.stringify(c.row.target_health_descriptions);
+    expect(identityEdges(c.compose())).toHaveLength(1);
+  });
+  it('keeps a padded parent that actually contains the requested hidden member', () => {
+    const c = census('ip');
+    c.row.region = ` ${REGION} `;
+    c.row.vpc_id = ` ${VPC} `;
+    c.config.nodes.find(node => node.id === 'clean')!.meta!.id = c.id(21);
+    expect(identityEdges(c.compose(c.id(21)))).toEqual([]);
+  });
+  it('compares IPv6 membership canonically without mistaking a hidden alias for absence', () => {
+    const c = census('ip', true);
+    expect(identityEdges(c.compose())).toHaveLength(1);
+    const alias = '2001:db8:0:0:0:0:0:15';
+    c.config.nodes.find(node => node.id === 'clean')!.meta!.id = alias;
+    expect(identityEdges(c.compose(alias))).toEqual([]);
+  });
+  it.each(['missing', 'malformed', 'invalid-row', 'invalid-id', 'shortened', 'inconsistent', 'wrong-type'] as const)(
+    'retains the conservative wildcard for %s full-parent evidence', mode => {
+      const c = census('ip');
+      const row = c.row as Record<string, unknown>;
+      if (mode === 'missing') delete row.target_health_descriptions;
+      if (mode === 'malformed') row.target_health_descriptions = '{invalid';
+      if (mode === 'invalid-row') row.target_health_descriptions = [null, ...c.row.target_health_descriptions];
+      if (mode === 'invalid-id') c.row.target_health_descriptions[0].Target.Id = 'not-an-ip';
+      if (mode === 'shortened') c.row.target_health_descriptions.pop();
+      if (mode === 'inconsistent') c.row.target_health_descriptions[0].Target.Id = '10.99.0.1';
+      if (mode === 'wrong-type') row.target_type = 'instance';
+      expect(identityEdges(c.compose())).toEqual([]);
+    });
+});
