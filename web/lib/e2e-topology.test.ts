@@ -245,12 +245,12 @@ describe('buildE2eGraph — evidence and provenance', () => {
     }
   });
 
-  it.each(['all', '123456789012', ''])('suppresses host observations for account %j', account => {
+  it.each(['__all__', 'all', '123456789012', ''])('suppresses host observations for account %j', account => {
     const graph = buildE2eGraph(input({ account, configured: configured(), services: services(), network: [observation()] }));
     expect(graph.nodes).toHaveLength(2);
     expect(graph.nodes.every(n => n.layer === 'configuration')).toBe(true);
     expect(graph.summary).toMatchObject({
-      observationsUnsupported: true, configuredNodes: 2, serviceNodes: 0, networkFlows: 0,
+      observationsUnsupported: true, configuredNodes: 2, serviceNodes: 0, networkFlows: 0, servicesComplete: false,
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
     });
   });
@@ -1488,6 +1488,19 @@ describe('selectE2eGraph — filtering before bounds', () => {
     expect(view.nodes.find(n => n.kind === 'connection')).toEqual(connections[order[0]]);
     expect(graph.nodes).toEqual(before);
     expectNoDanglingEdges(view);
+  });
+
+  it.each([
+    { rangeSec: 3600 }, { startTime: '2026-09-11T08:00:00Z' },
+    { endTime: '2026-09-11T10:00:00Z' },
+  ])('does not compare totals across distinct query windows: %j', window => {
+    const graph = buildE2eGraph(input({ network: [
+      observation([flow({ value: 1 }), flow({ value: 2 })]),
+      observation([flow({ value: 9999 })], window),
+    ] }));
+    const connections = graph.nodes.filter(n => n.kind === 'connection');
+    expect(rankE2eConnections(graph.nodes)).toEqual([connections[1], connections[0], connections[2]]);
+    expect(selectE2eGraph(graph, { maxNodes: 3 }).nodes.find(n => n.kind === 'connection')).toEqual(connections[1]);
   });
 
   it.each(['local', 'remote'])('excludes malformed %s shapes from measured ranking but permits empty endpoints', side => {

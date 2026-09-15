@@ -241,7 +241,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
       observationsUnsupported: input.account !== 'self',
       configurationComplete: input.configurationComplete === true,
-      servicesComplete: input.servicesComplete === true && Number.isFinite(Date.parse(text(input.services?.captured_at))),
+      servicesComplete: input.account === 'self' && input.servicesComplete === true
+        && Number.isFinite(Date.parse(text(input.services?.captured_at))),
       networkRead: {
         status: input.account !== 'self' ? 'unsupported'
           : readStatus === 'complete' && (failedCategories.length || unknownWindowCategories.length) ? 'partial' : readStatus,
@@ -406,7 +407,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         }
       }
       for (const field of ['traversed', 'traversedIds']) {
-        if (Array.isArray(flow[field])) projectedFlow[field] = [...flow[field]];
+        const value = flow[field];
+        if (Array.isArray(value)) projectedFlow[field] = [...value];
       }
       addNode({
         id: connectionId, kind: 'connection', layer: 'network',
@@ -493,7 +495,7 @@ const bound = (value: number | undefined, fallback: number): number =>
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
-/** Measured connections only: DATA_TRANSFERRED first, then source-order metric/unit
+/** Measured connections only: DATA_TRANSFERRED first, then source-order metric/unit/window
  * groups. Compare finite nonnegative values only within a group; stable IDs break ties. */
 export function rankE2eConnections(nodes: readonly E2eNode[]): E2eNode[] {
   const groups = new Map<string, number>();
@@ -504,7 +506,7 @@ export function rankE2eConnections(nodes: readonly E2eNode[]): E2eNode[] {
       || !flow.local || typeof flow.local !== 'object' || Array.isArray(flow.local)
       || !flow.remote || typeof flow.remote !== 'object' || Array.isArray(flow.remote)
       || typeof value !== 'number' || !Number.isFinite(value) || value < 0) return [];
-    const group = key(metric, unit);
+    const group = key(metric, unit, String(node.meta.rangeSec), text(node.meta.startTime), text(node.meta.endTime));
     if (!groups.has(group)) groups.set(group, groups.size);
     return [{ node, metric, group: groups.get(group)!, value }];
   });
