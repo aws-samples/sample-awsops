@@ -1,6 +1,7 @@
 """Real producer-envelope contracts; only datasource HTTP and credential lookup are mocked."""
 import copy
 import importlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -28,6 +29,53 @@ def invoke(kind, upstream, args=None, status=200, tool=None):
 
 
 class CollectionMarkers(unittest.TestCase):
+    def test_malformed_series_cannot_bypass_response_bounds(self):
+        for kind in ("prometheus", "mimir"):
+            with self.subTest(kind=kind):
+                _, body, _ = invoke(kind, {"status": "success", "data": {
+                    "resultType": "vector", "result": ["untrusted" * 1_000_000],
+                }})
+                self.assertLess(len(json.dumps(body)), 4096)
+                self.assertEqual(body["result"], [None])
+                self.assertEqual(body["collectionStatus"], "unknown")
+
+    def test_instant_scalar_and_string_are_bounded_single_samples(self):
+        for kind in ("prometheus", "mimir"):
+            for result_type, value in (("scalar", "0"), ("scalar", "+Inf"), ("string", "value")):
+                with self.subTest(kind=kind, result_type=result_type, value=value):
+                    upstream = {"status": "success", "data": {"resultType": result_type, "result": [1.5, value]}}
+                    _, body, _ = invoke(kind, upstream)
+                    self.assertEqual(body["collectionStatus"], "ok")
+                    self.assertEqual(body["result"], [1.5, value])
+                    _, partial, _ = invoke(kind, {**upstream, "warnings": ["advisory"]})
+                    self.assertEqual(partial["collectionStatus"], "partial")
+                    self.assertEqual(partial["result"], [1.5, value])
+            _, oversized, _ = invoke(kind, {"status": "success", "data": {
+                "resultType": "string", "result": [1, "x" * 1_000_000],
+            }})
+            self.assertLess(len(json.dumps(oversized)), 4096)
+            self.assertEqual(oversized["collectionStatus"], "unknown")
+            self.assertTrue(oversized["truncated"])
+            _, wrong_endpoint, _ = invoke(kind, {"status": "success", "data": {
+                "resultType": "scalar", "result": [1, "0"],
+            }}, tool=f"{kind}_query_range")
+            self.assertEqual(wrong_endpoint["collectionStatus"], "unknown")
+
+    def test_catalog_guides_all_collection_marker_tools(self):
+        path = Path(__file__).resolve().parents[2] / "scripts/v2/agentcore/catalog.py"
+        spec = importlib.util.spec_from_file_location("source_proof_catalog", path)
+        catalog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(catalog)
+        descriptions = {tool["name"]: tool["description"]
+                        for target in catalog.TARGETS.values() for tool in target["tools"]}
+        names = {f"{kind}_{action}" for kind in ("prometheus", "mimir")
+                 for action in ("query", "query_range", "labels", "series")}
+        names.update(("tempo_search", "clickhouse_query", "clickhouse_tables", "clickhouse_describe"))
+        for name in names:
+            with self.subTest(tool=name):
+                for marker in ("collectionStatus", "ok", "empty", "partial", "unknown", "error"):
+                    self.assertIn(marker, descriptions[name])
+
     def test_clickhouse_metadata_and_count_checks_are_independent(self):
         for meta, count in (([], 0), ([{"name": "", "type": "String"}], 0),
                             ([{"name": "TraceId", "type": ""}], 0),

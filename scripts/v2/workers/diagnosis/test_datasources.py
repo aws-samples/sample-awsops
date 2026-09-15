@@ -334,3 +334,12 @@ def test_no_signal_rows_falls_back_to_generic_planner(monkeypatch):
     conn.schemas = {5: {"metrics": ["http_requests_total"]}}
     src.collect_datasources(conn)
     assert fake.calls, "generic planner should run when no signals are materialized"
+
+
+@pytest.mark.parametrize("kind,value", [("scalar", "0"), ("string", "SYNTHETIC_PRIVATE_VALUE")])
+def test_scalar_summary_counts_one_sample_without_exposing_value(kind, value):
+    summary = src._summarize_result({"resultType": kind, "result": [1.5, value], "collectionStatus": "ok"})
+    assert summary["count"] == 1
+    assert summary["resultType"] == kind
+    assert "SYNTHETIC_PRIVATE_VALUE" not in json.dumps(summary)
+    assert "result" not in summary and "value" not in summary

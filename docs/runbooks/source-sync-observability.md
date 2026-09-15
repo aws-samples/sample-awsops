@@ -188,6 +188,8 @@ Verify locally with `cd web && npx vitest run components/topology/GraphCollectio
 the regression uses the real graph-state reader with a database boundary fixture.
 
 
+Tempo `count_not_confirmed` identifies missing/invalid/zero job-count proof; it does not mean the query failed. Valid oversized trace children expose `projection: "bounded_otlp"` and remain usable partial evidence. See the [canonical response-capability table](tempo-query-generation.md#search-result-evidence).
+
 ## Topology evidence compatibility
 
 **Symptoms:** an IP target stays unresolved, inventory shows a read/scope warning,
@@ -272,6 +274,11 @@ Graph adapters honor typed collection status and withhold empty publication when
 The PostgreSQL read-contract suite also exercises real graph publication against the shared producer fixture and a legacy unmarked-empty response. Producer/source integration does not deploy Lambda code; rollout remains separately controlled.
 
 #### Producer completion and rollout
+
+Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract.
+
+Catalog guidance accompanies every affected ClickHouse query/tables/describe and Prometheus/Mimir query/query-range/labels/series tool, as well as Tempo search. Run existing AgentCore provisioning to reconcile all these descriptions after the producer code rollout. Partial/unknown/error evidence cannot establish absence or full coverage.
+
 
 The paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` code computes `collectionStatus` from its own validated response, warnings, limits and completion evidence. It does not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
 

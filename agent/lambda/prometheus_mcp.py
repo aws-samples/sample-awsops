@@ -116,7 +116,7 @@ def _bound(data):
     out = []
     for series in result:
         if not isinstance(series, dict):
-            out.append(series)  # Preserve malformed evidence; the marker cannot confirm it.
+            out.append(None)  # Fixed malformed marker; never echo an unbounded non-series value.
             continue
         s = dict(series)
         vals = s.get("values")
@@ -132,7 +132,7 @@ def _bound(data):
     return {"resultType": data.get("resultType"), "result": out}, truncated
 
 
-def _query_result(observed):
+def _query_result(observed, *, allow_scalar=False):
     data, state = observed
     bounded, truncated = _bound(data)
     rows = bounded.get("result") if isinstance(bounded, dict) else None
@@ -147,6 +147,17 @@ def _query_result(observed):
             return True
         except ValueError:
             return False
+    if kind in ("scalar", "string"):
+        raw = data.get("result")
+        pair = isinstance(raw, list) and len(raw) == 2
+        oversized = pair and isinstance(raw[1], str) and (
+            len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+        valid_scalar = (allow_scalar and pair and type(raw[0]) in (int, float)
+                        and math.isfinite(raw[0]) and isinstance(raw[1], str)
+                        and not oversized and (kind == "string" or sample(raw)))
+        return ok({"resultType": kind, "result": raw if valid_scalar else [],
+                   "truncated": bool(oversized),
+                   "collectionStatus": state if valid_scalar or state == "error" else "unknown"})
     valid = kind in ("vector", "matrix") and isinstance(rows, list)
     if valid:
         valid = all(isinstance(row, dict) and isinstance(row.get("metric"), dict)
@@ -157,9 +168,8 @@ def _query_result(observed):
         state = "unknown"
     elif state == "ok":
         state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
-    return ok({"truncated": truncated,
-               **(bounded if isinstance(bounded, dict) else {"result": bounded}),
-               "collectionStatus": state})
+    return ok({**(bounded if isinstance(bounded, dict) else {"result": bounded}),
+               "truncated": truncated, "collectionStatus": state})
 
 
 def _timeout_param(v):
@@ -183,7 +193,7 @@ def prometheus_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True))
+    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):

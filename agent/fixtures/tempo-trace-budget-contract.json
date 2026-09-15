@@ -1,0 +1,125 @@
+{
+  "endMs": 1789432200000,
+  "traceId": "1",
+  "raw": {
+    "batches": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "bounded-api"
+              }
+            },
+            {
+              "key": "cloud.account.id",
+              "value": {
+                "stringValue": "123456789012"
+              }
+            },
+            {
+              "key": "deployment.environment",
+              "value": {
+                "stringValue": "test"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "spans": [
+              {
+                "traceId": "1",
+                "spanId": "0000000000000001",
+                "name": "read",
+                "kind": 2,
+                "startTimeUnixNano": "1789432199000000000",
+                "endTimeUnixNano": "1789432199500000000",
+                "status": {
+                  "code": 2
+                },
+                "attributes": [
+                  {
+                    "key": "peer.service",
+                    "value": {
+                      "stringValue": "database"
+                    }
+                  }
+                ],
+                "links": [
+                  {
+                    "traceId": "2",
+                    "spanId": "0000000000000002"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "truncated": true,
+    "projection": "bounded_otlp",
+    "note": "Trace payload exceeded byte budget; bounded span projection",
+    "batches": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "bounded-api"
+              }
+            },
+            {
+              "key": "cloud.account.id",
+              "value": {
+                "stringValue": "123456789012"
+              }
+            },
+            {
+              "key": "deployment.environment",
+              "value": {
+                "stringValue": "test"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "spans": [
+              {
+                "traceId": "1",
+                "spanId": "0000000000000001",
+                "name": "read",
+                "kind": 2,
+                "startTimeUnixNano": "1789432199000000000",
+                "endTimeUnixNano": "1789432199500000000",
+                "status": {
+                  "code": 2
+                },
+                "attributes": [
+                  {
+                    "key": "peer.service",
+                    "value": {
+                      "stringValue": "database"
+                    }
+                  }
+                ],
+                "links": [
+                  {
+                    "traceId": "2",
+                    "spanId": "0000000000000002"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
