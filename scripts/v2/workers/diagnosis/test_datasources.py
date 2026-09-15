@@ -185,12 +185,28 @@ def test_incomplete_connector_signals_never_become_confident_zero(
     _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **markers, "error": secret}))
     out = src.collect_datasources(FakeConn([(5, "source", kind, True)], {5: schema}))
     signal = out["data"]["findings"][0]["results"][0]
-    assert signal["error"] == f"source collection {expected}"
+    if expected == "error":
+        assert signal["error"] == "source collection error"
+    else:
+        assert "error" not in signal
+        assert signal["incomplete"] is True
     summary = signal["summary"]
     assert summary["collectionStatus"] == expected
     assert "count" not in summary
     assert summary.get("observedCount") == (1 if nonempty else None)
     assert secret not in json.dumps(out) and "sensitive-invalid-status" not in json.dumps(out)
+
+
+def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": str(i)} for i in range(20)], "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "tempo", "tempo", True)], {5: {"labels": []}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert signal["summary"]["collectionStatus"] == "partial"
 
 
 @pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "redacted"}])])

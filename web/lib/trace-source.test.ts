@@ -598,6 +598,7 @@ describe('SourceRead provenance and bounds', () => {
       windowStartMs: END_MS - 1_800_000, windowEndMs: END_MS,
       items: [{ sourceId: 'fake:default' }],
     });
+    expect(result.canSweep).toBeUndefined();
     expect(seeded[0].sourceId).toBeUndefined();
     expect(await new FakeTraceSource(seeded, false).recentSpans(30, 10, END_MS))
       .toMatchObject({ items: [], status: 'unavailable' });
@@ -755,7 +756,8 @@ describe('SourceRead provenance and bounds', () => {
       ]));
     const result = await new TempoTraceSource(7).recentSpans(30, 1, END_MS);
     expect(result.items).toHaveLength(1);
-    expect(result).toMatchObject({ status: 'partial', canSweep: false, reasons: ['payload_truncated'] });
+    expect(result).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
+    expect(result.canSweep).toBeUndefined();
   });
 
   it.each(['clickhouse', 'tempo'])('%s honors a zero cap without invoking a query', async (kind) => {
@@ -863,7 +865,7 @@ describe('typed producer collection status', () => {
   });
   it.each(['prometheus', 'mimir'] as const)('%s metric collection markers restrict empty reads', async kind => {
     getDatasource.mockResolvedValue({ id: 7, kind });
-    for (const [collectionStatus, expected] of [['empty', 'ok'], ['partial', 'partial'], ['unknown', 'error']] as const) {
+    for (const [collectionStatus, expected] of [['empty', 'ok'], ['partial', 'partial'], ['unknown', 'partial']] as const) {
       invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [], truncated: false, collectionStatus });
       expect((await new MetricsCallsSource(7, kind, 'fixture').calls(30)).status).toBe(expected);
     }

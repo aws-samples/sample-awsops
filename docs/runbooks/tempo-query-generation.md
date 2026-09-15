@@ -12,10 +12,6 @@ Distinguish a generation error, `could not generate a valid query: TraceQL ...` 
 
 ## 원인 후보 / Candidate causes
 
-`tempo_search`는 limit을 생략하면 서버 기본값 대신 **20**을 요청한다. 요청 limit에 도달하거나 반환 데이터가 50개 출력 상한을 넘으면 `partial`이다. `ok`/`empty`에는 관측된 정수 `completedJobs == totalJobs > 0`가 필요하다. 누락·잘못된 카운터와 0/0은 `unknown`, 아직 끝나지 않은 작업은 `partial`이며, 반환 트레이스와 metrics는 유지한다.
-
-`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
-
 
 - 웹·Tempo 커넥터 Lambda·스키마 캐시 중 일부만 갱신됐다. / The web app, Tempo connector Lambda, and schema cache have not all been updated.
 - 빈 결과에 `names_truncated: true` 또는 `truncated: true`가 있으면 정상적인 빈 관측이 아니라 불완전한 수집이다. 프록시의 HTML 오류 응답 등도 이 상태가 될 수 있다. / Empty results with `names_truncated: true` or `truncated: true` indicate incomplete discovery, not a confirmed empty observation; a proxy's HTML error response can cause this state.
@@ -63,7 +59,11 @@ Limited qualifiers such as `today`, `yesterday`, `last hour/day/week`, `오늘`,
 
 After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify that the draft uses observed HTTP attributes and types. An `&&` query can legitimately combine service and HTTP conditions on separate spans. A successful generation does not guarantee server acceptance; review the draft and inspect its execution result. If execution still returns 400, inspect the Tempo error and server version.
 
-로컬 회귀 검증 / Local regression checks, from the repository root:
+### Search result evidence
+
+`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available; missing completion metadata is uncertainty, not an API failure. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
+
+Local regression checks, from the repository root:
 
 ```bash
 (cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py -q)
