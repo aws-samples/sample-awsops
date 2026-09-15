@@ -113,6 +113,8 @@ Unmatched and withheld counts measure row-side observations, not unique endpoint
 
 Context includes traversed constructs and cached configuration records. The view names categories with omitted observations; high-value observations within the preferred metric/unit group are prioritized before display limits.
 
+Grouped targets show member-specific IP, namespace and Pod evidence with omission counts; the first Pod is not presented as the whole group. Check ownership restrictions, ambiguity and target-group capture time together. Capture time is not a time of ownership verification.
+
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
 - Does this CloudFront distribution talk to its origin over TLS?

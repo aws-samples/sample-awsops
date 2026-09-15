@@ -423,6 +423,8 @@ outer deadline shorten that opportunity. A 420-second Lambda timeout is an upper
 bound, not an assumed duration for every type. Slow or contended workloads can
 intentionally leave later types unstarted and block release.
 
+<a id="observed-collection-measurement"></a>
+
 A sanitized operator measurement on 2026-09-14 used a hash-verified deployed collector,
 all 43 catalog types, four synchronous lanes, reserved concurrency four, a 450-second
 admission floor and the then-current 780-second global collection budget (the current
@@ -438,7 +440,10 @@ The operator separately verified the running Steampipe task configuration as
 phase is therefore a concrete feasibility counterexample to a claim that the catalog
 can never fit, not a throughput guarantee. It does not include the complete
 authentication/model/worker or closing web proof, establish future or larger-workload latency, or
-authorize another deployment.
+authorize another deployment. Cache misses and per-role API admission counts were not
+measured, so these timings are not bounds for a cold IAM-role query. See the
+[conditional refill analysis](steampipe-quota-and-staleness.md#development-ci-refill-override)
+for its distinct assumptions and later complete/incomplete observations.
 
 ### Controller CLI contract
 

@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { ReactFlow, type ReactFlowProps } from '@xyflow/react';
 import E2eGraphCanvas from './E2eGraphCanvas';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
+import { buildFlowGraph } from '@/lib/flow-topology';
+import { buildE2eGraph } from '@/lib/e2e-topology';
 import type { E2eGraph } from '@/lib/e2e-topology-types';
 
 // Observe our viewport contract while keeping React Flow and graph selection real.
@@ -60,6 +62,37 @@ describe('E2eGraphCanvas', () => {
     const workload = await select('deployment');
     expect(workload.getByText('web-1, web-2')).toBeTruthy();
     expect(workload.getByText('app / shop / web-2')).toBeTruthy();
+  });
+  it.each([[2, false], [2, true], [25, false]] as const)('discloses grouped producer identities and ownership: count=%s countOnly=%s', async (count, countOnly) => {
+    const captured = '2026-09-11T12:00:00Z';
+    const pods = Array.from({ length: count }, (_, i) => ({
+      id: `10.0.1.${i + 1}`, pod: `web-${i + 1}`, namespace: i === 0 ? 'shop' : 'payments',
+    }));
+    const configured = buildFlowGraph({
+      tg: [{ resource_id: 'tg-web', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-app', captured_at: captured,
+        target_health_descriptions: pods.map(({ id }) => ({ Target: { Id: id, Port: 80 } })) }],
+      ipResolved: Object.fromEntries(pods.map(({ id, pod, namespace }) => [id, { label: 'deployment', resolved: 'eks',
+        meta: { cluster: 'app', region: 'us-east-1', vpcId: 'vpc-app', pod, namespace } }])),
+      ownershipRead: { configurationOnly: true },
+    });
+    const target = configured.nodes.find(node => node.kind === 'target')!;
+    target.meta = { ...target.meta, ambiguity: 'ownership_unverified', e2e_correlation_blocked: true };
+    if (countOnly) delete target.meta.members;
+    render(<E2eGraphCanvas graph={buildE2eGraph({ account: 'self', configured, services: null, network: [] })} />);
+    const detail = await select(`deployment ×${count}`);
+    expect(detail.queryByText('web-1')).toBeNull();
+    expect(detail.queryByText('shop')).toBeNull();
+    for (const value of ['여러 타깃을 묶은 구성 기록입니다.', '10.0.1.1 · shop/web-1', '10.0.1.2 · payments/web-2',
+      'ownership_evidence', 'cached_configuration', 'ownership_reason', 'eks_not_enumerated', 'ambiguity',
+      'ownership_unverified', 'e2e_correlation_blocked', 'true', 'targetCapturedAt', new Date(captured).toLocaleString(),
+      '타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.']) expect(detail.getByText(value)).toBeTruthy();
+    expect(detail.getByText('count').nextElementSibling?.textContent).toBe(String(count));
+    const identities = within(detail.getByText('memberIdentities').nextElementSibling as HTMLElement);
+    expect(identities.getAllByRole('listitem')).toHaveLength(Math.min(count, 20));
+    if (count > 20) {
+      expect(identities.getByText('+5 멤버 더 있음')).toBeTruthy();
+      expect(detail.getByText('membersTruncated').nextElementSibling?.textContent).toBe('5');
+    }
   });
   it('focuses a late-ID top contributor before display caps and names omitted categories', async () => {
     const flows = Array.from({ length: 121 }, (_, i) => {
@@ -262,12 +295,18 @@ describe('E2eGraphCanvas', () => {
   });
 
   it('discloses cached record labels and confidence only while their evidence is enabled', async () => {
+    const captured = '2026-09-11T12:00:00Z';
     render(<E2eGraphCanvas graph={{ ...graph, edges: [{ id: 'cached', source: 'p1', target: 's1',
       relation: 'configured-endpoint-match', evidence: 'context', directed: false,
-      label: 'Cached configured endpoint record', meta: { confidence: 'observed' } }] }} />);
+      label: 'Cached configured endpoint record', meta: { confidence: 'observed', ownership: 'unverified',
+        ownership_evidence: 'cached_configuration', targetCapturedAt: captured } }] }} />);
     const detail = await select('shop/pod-a');
     expect(detail.getByText('캐시된 구성 엔드포인트 기록')).toBeTruthy();
     expect(detail.getByText('confidence: observed')).toBeTruthy();
+    for (const value of ['ownership: unverified', 'ownership_evidence: cached_configuration',
+      `targetCapturedAt: ${new Date(captured).toLocaleString()}`, '타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.']) {
+      expect(detail.getByText(value)).toBeTruthy();
+    }
     fireEvent.click(screen.getByRole('checkbox', { name: '문맥 연결' }));
     const filtered = await select('shop/pod-a');
     expect(filtered.queryByText('캐시된 구성 엔드포인트 기록')).toBeNull();

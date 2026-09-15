@@ -59,7 +59,7 @@ function timeLabel(value: unknown): string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString() : '—';
 }
-function endpointLabel(endpoint: NfmEndpoint, missing: string): string {
+function endpointLabel(endpoint: NfmEndpoint | Record<string, unknown>, missing: string): string {
   return text(endpoint.podName) ? `${text(endpoint.podNamespace) || '?'}/${text(endpoint.podName)}`
     : text(endpoint.instanceId) || text(endpoint.ip) || text(endpoint.serviceName) || missing;
 }
@@ -198,6 +198,8 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   const visibleEdgeIds = new Set(view.edges.map(edge => edge.id));
   const omittedSelectedEdges = selectedEdges.filter(edge => !visibleEdgeIds.has(edge.id)).length;
   const selectedFlow = selected ? flowOf(selected) : null;
+  const groupedTarget = selected?.kind === 'target'
+    && (Array.isArray(selected.meta.members) || Number(selected.meta.count) > 1);
   const traversed = selectedFlow ? traversedItems(selectedFlow) : [];
   const selectNode = (id: string) => { setOverview(false); setQuery(''); setSelectedId(id); };
 
@@ -308,14 +310,30 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 <Link href="/network-flow" className="inline-block text-brand-600 hover:underline">{tt('네트워크 모니터 열기')}</Link>
               </div>
             ) : (
+              <>
+              {groupedTarget && <p className="mb-3 text-amber-700">{tt('여러 타깃을 묶은 구성 기록입니다.')}</p>}
               <dl className="space-y-2">
                 {selected.layer !== 'network' && typeof selected.meta.id === 'string' && (
                   <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.meta.id}</dd></div>
                 )}
-                {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
+                {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type',
+                  'count', 'members', 'membersTruncated', 'memberIdentities', 'ownership_evidence', 'ownership_reason', 'ambiguity', 'e2e_correlation_blocked', 'targetCapturedAt'].map((key) => {
+                  if (groupedTarget && (key === 'pod' || key === 'namespace')) return null;
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
-                  return value == null ? null : <div key={key}><dt className="text-[10px] text-ink-400">{key}</dt><dd className="break-all">{display(value)}</dd></div>;
+                  const items = (key === 'members' || key === 'memberIdentities') && Array.isArray(value) ? value : null;
+                  const remaining = items ? Math.max(Number(selected.meta.count) || 0,
+                    items.length + (Number(selected.meta.membersTruncated) || 0)) - Math.min(items.length, 20) : 0;
+                  return value == null ? null : <div key={key}>
+                    <dt className="text-[10px] text-ink-400">{key}</dt>
+                    <dd className="break-all">
+                      {key === 'memberIdentities' && items ? <ul>{items.slice(0, 20).map((member, i) => (
+                        <li key={i}>{object(member) ? `${display(member.id)} · ${text(member.namespace) || '?'}/${text(member.pod) || '?'}` : display(member)}</li>
+                      ))}</ul> : key === 'targetCapturedAt' ? timeLabel(value) : display(items ? items.slice(0, 20) : value)}
+                      {remaining > 0 && <p>+{remaining} {tt('멤버 더 있음')}</p>}
+                    </dd>
+                    {key === 'targetCapturedAt' && <dd className="text-[10px] text-ink-400">{tt('타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.')}</dd>}
+                  </div>;
                 })}
                 {typeof selected.meta.correlation === 'string' && <div>
                   <dt className="text-[10px] text-ink-400">{tt('식별 상태')}</dt>
@@ -327,6 +345,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   {CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason] && <dd>{tt(CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason])}</dd>}
                 </div>}
               </dl>
+              </>
             )}
             <div className="mt-5 border-t border-ink-100 pt-3">
               <p className="mb-2 font-medium">{tt('연결 근거')}</p>
@@ -341,6 +360,13 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   <p className="text-[10px] text-ink-400">relation: {e.relation}</p>
                   {e.meta?.confidence === 'inferred' && <p>{tt('추정 관계')}</p>}
                   {e.meta?.confidence != null && <p className="text-[10px] text-ink-400">confidence: {String(e.meta.confidence)}</p>}
+                  {e.relation === 'configured-endpoint-match' && <>
+                    {['ownership', 'ownership_evidence', 'ownership_reason', 'ambiguity', 'e2e_correlation_blocked', 'targetCapturedAt'].map(key =>
+                      e.meta?.[key] === undefined ? null : <p key={key} className="text-[10px] text-ink-400">
+                        {key}: {key === 'targetCapturedAt' ? timeLabel(e.meta[key]) : display(e.meta[key])}
+                      </p>)}
+                    {e.meta?.targetCapturedAt !== undefined && <p className="text-[10px] text-ink-400">{tt('타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.')}</p>}
+                  </>}
                 </li>
               ))}</ul>
               {selectedEdges.length > 20 && <p className="mt-2">+{selectedEdges.length - 20} {tt('관계 더 있음')}</p>}
