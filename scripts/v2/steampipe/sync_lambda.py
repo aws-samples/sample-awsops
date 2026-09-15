@@ -126,15 +126,17 @@ QUERIES = {
     ),
     "iam_role": (
         # attached_policy_arns (gap L242): a per-row ListAttachedRolePolicies hydrate in the
-        # pinned plugin. Cost is one call per role — and because the `aws` connection is a
-        # multi-account AGGREGATOR, "per role" means the role total across ALL connected
-        # accounts, through the shared 2 req/s awsops_global limiter (bucket_size 4). At the
-        # default fill_rate the 180s hydrate budget below covers roughly (180*2)+4 ≈ 360
-        # aggregate roles if the limiter is otherwise idle — LESS under concurrent type syncs
-        # (one limiter for everything). If the hydrated query fails (budget timeout,
+        # pinned plugin. The full cold query also lists instance profiles per role and
+        # uses GetRole-backed fields; it is not one API call per role. Both list hydrates
+        # wait on the shared awsops_global limiter, plus ListRoles pagination. At the
+        # default refill 2/burst 4, the 180s query budget supplies at most 364 admissions,
+        # not 364 complete roles; other accounts/pages/queries consume the same budget.
+        # See steampipe-quota-and-staleness.md for the primary/fallback lower bounds.
+        # If the hydrated query fails (budget timeout,
         # SCP-blocked hydrate, anything), sync() retries ONCE with HYDRATE_FALLBACK_SQL (same
-        # columns minus the hydrate) so the BASE iam_role inventory never regresses; only the
-        # drill-down column is absent, and the run is DISCLOSED as degraded via
+        # columns minus the optional policy list). Base rows refresh only if the remaining
+        # queries succeed; otherwise the query fails and preserves last-good rows. A
+        # successful fallback is DISCLOSED as degraded via
         # unknown_attribute_count (ADR-021 freshness machinery) plus the
         # inventory_sync_hydrate_fallback log event, whose remedy is cause-specific: budget
         # timeout → raise the limiter fill_rate (0.1–20, ADR-021 Phase-1 defaults); SCP/IAM
@@ -443,17 +445,19 @@ QUERIES = {
 
 
 # ---- Hydrate-budget fallback (round-8 gate; ADR-010 2026-09-02 amendment) --------------------
-# Types whose query carries a per-row list hydrate get a SECOND, hydrate-free SQL: if the
+# Types with an optional per-row list hydrate get a SECOND SQL without that column: if the
 # hydrated query fails for ANY reason (statement_timeout from an aggregate role count beyond the
 # limiter budget, an SCP-blocked hydrate, a transient error), sync() retries once with the
-# fallback so the pre-existing BASE inventory never regresses to a permanent whole-type failure.
+# fallback so base inventory can refresh if its remaining hydrates succeed.
+# A fallback failure still follows the normal failed-run lifecycle.
 # The fallback re-upserts every row's data JSON wholesale, so the hydrate column disappears from
 # ALL rows consistently — its consumer (S3IamAccessSection) detects the absent column and renders
 # the non-conclusive "not synced yet" state instead of a stale or false claim.
-# Budget split (Lambda timeout 420s): the hydrated attempt gets ≤180s (≈360 aggregate
-# role-hydrates at the default 2 req/s + bucket 4, limiter idle), the fallback ≤90s (plain
-# paginated ListRoles — a handful of calls per account), leaving ≥150s for Aurora upserts +
-# two-phase prune + snapshots + finalizer (AURORA_RESERVE_S) — and every budget is further
+# The IAM fallback still needs ListInstanceProfilesForRole and GetRole-backed fields;
+# only ListAttachedRolePolicies is omitted. Neither query is hydrate-free.
+# Budget split (Lambda timeout 420s): primary statement ≤180s, fallback statement ≤90s.
+# Each socket timeout is its statement budget plus 15s. AURORA_RESERVE_S is 120s for
+# Aurora upserts + two-phase prune + snapshots + finalizer, and every query budget is
 # clamped to the invocation's actual remaining time (_query_budget_s), so a query is refused
 # up-front rather than started when it could race the Lambda wall and strand the ledger at
 # 'running'. The fallback log event's remedy is cause-specific (fill_rate for budget timeouts,
@@ -992,7 +996,7 @@ def _steampipe(statement_timeout_s=DEFAULT_STATEMENT_TIMEOUT_S):
     # outlives the Lambda would hard-timeout the process BEFORE the failure handler runs,
     # leaving the ledger row 'running' forever. A statement_timeout below the Lambda budget
     # makes the DB kill the query first — control returns, and the run either falls back
-    # hydrate-free (HYDRATE_FALLBACK_SQL types) or records 'failed' with last-good rows
+    # without the optional policy column (HYDRATE_FALLBACK_SQL types), or records 'failed' with last-good rows
     # preserved. Callers size the value via _query_budget_s (remaining time minus the Aurora
     # reserve), so the budget shrinks as the invocation ages instead of racing the wall.
     conn.run(f"SET statement_timeout = '{statement_timeout_s}s'")
@@ -1274,8 +1278,9 @@ def _run_steampipe_query(resource_type, sql):
     """Execute one inventory query, with the hydrate-budget fallback for types that carry a
     per-row list hydrate: if the hydrated query fails for ANY reason (statement_timeout from
     an aggregate role count above the limiter budget, an SCP-blocked hydrate, a transient
-    error), retry ONCE hydrate-free so the base inventory never regresses to a permanent
-    whole-type failure. Returns (rows, cols, fallback_used) — the caller MUST disclose a
+    error), retry ONCE without the optional column so base inventory can still refresh.
+    Remaining GetRole/instance-profile hydrates still consume time and limiter capacity.
+    The fallback can also fail. Returns (rows, cols, fallback_used) — the caller MUST disclose a
     fallback run through unknown_attribute_count so ADR-021's succeeded+unknowns→degraded
     freshness machinery reaches every reader, not just the S3 section's column check."""
     fallback_sql = HYDRATE_FALLBACK_SQL.get(resource_type)
