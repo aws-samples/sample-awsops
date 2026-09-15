@@ -63,6 +63,28 @@ describe('graph collection status', () => {
     }} />);
     expect(container.querySelector('summary')?.textContent).toContain('Source details (1)');
   });
+  it.each([false, true])('shows identical current/saved evidence once while preserving saved provenance (retained=%s)', retainedPrevious => {
+    const source = { sourceId: 'inventory:vpc', status: 'ok', producerStatus: 'succeeded',
+      itemCount: 1, capturedAtMs: 1789380000000, lastSuccessAtMs: 1789380000000, reasons: [] };
+    const { container } = render(<GraphCollectionStatus collection={{
+      status: 'ok', retainedPrevious, sources: [source],
+      publishedSources: [{ ...source }],
+    }} />);
+    expect(container.querySelector('summary')?.textContent).toContain('Source details (1)');
+    expect(container.querySelectorAll('li')).toHaveLength(1);
+    expect(container.textContent).toContain('Sources used by saved graph');
+    expect(container.textContent).toContain('Same displayed source evidence as above.');
+    if (retainedPrevious) expect(container.textContent).toContain('previous graph');
+  });
+  it('keeps differing saved capture evidence separate', () => {
+    const source = { sourceId: 'inventory:vpc', status: 'ok', capturedAtMs: 1789380000000 };
+    const { container } = render(<GraphCollectionStatus collection={{
+      status: 'ok', sources: [source], publishedSources: [{ ...source, capturedAtMs: 1789376400000 }],
+    }} />);
+    expect(container.querySelector('summary')?.textContent).toContain('Source details (2)');
+    expect(container.querySelectorAll('li')).toHaveLength(2);
+    expect(container.textContent).not.toContain('Same displayed source evidence as above.');
+  });
   it('collapses dozens of sources while keeping quality counts and saved-source details accessible', () => {
     const { container } = render(<GraphCollectionStatus collection={{
       status: 'partial', stale: true, retainedPrevious: true,
