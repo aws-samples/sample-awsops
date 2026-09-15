@@ -1,8 +1,16 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e29b74972d38 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f7f540e1e632 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
 # Scripts — Reviewer Context
+
+- `pr-review/image_capability.py` is the manual dev-only runner image Read diagnostic.
+  Synthetic data precedes credentials; one bounded call requires exact Read/answer/exit
+  proof from the checkout, with image outside workspace/CLI temp. JSON observations may
+  be null; cleanup failure preserves proof but fails the job. Reused roots reject new
+  calls/stale proof. Existing grants only, operator CI under ADR-005, no mutation exception
+  or replacement for PR review gates. Tests:
+  `v2/test_review_image_capability.py`; see `docs/runbooks/review-image-capability.md`.
 
 - Web release helpers `v2/ci_web_image.py` and `v2/ci_web_deploy.py` bind producer/source/project/digest. Readonly receipt/ECR proof precedes migrations; promotion retains that digest and requires actual caller/account/read access plus exact healthy ECS evidence. Public receipts contain no account IDs/fingerprints. Unit and workflow contracts are split between `test_ci_web_image.py`, `test_ci_web_workflow.py` and `test_ci_web_deploy.py`.
 - Current-source dev pushes require matching private migrations; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release prepares private demo credentials and requires full runtime readiness, including login/DB. Standalone and AgentCore migration calls remain dispatch-only. Tests include `test_ci_web_image.py` and `test_ci_web_deploy.py`.
