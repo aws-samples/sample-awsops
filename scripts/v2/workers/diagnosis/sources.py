@@ -478,14 +478,15 @@ def _plan_queries(kind, schema):
 
 
 def _summary_sample(value, *, string=False):
-    if (not isinstance(value, list) or len(value) != 2 or type(value[0]) not in (int, float)
-            or not math.isfinite(value[0]) or not isinstance(value[1], str)):
-        return False
     try:
+        if (not isinstance(value, list) or len(value) != 2 or type(value[0]) not in (int, float)
+                or not math.isfinite(value[0]) or not isinstance(value[1], str)
+                or len(value[1]) > 4096 or len(value[1].encode("utf-8")) > 4096):
+            return False
         if not string:
             float(value[1])
         return True
-    except ValueError:
+    except (ValueError, OverflowError, UnicodeError):
         return False
 
 
@@ -555,6 +556,8 @@ def _summarize_result(body):
     # Explicit upstream incompleteness is evidence, not a healthy zero. Only bounded
     # status codes cross this boundary; raw errors/warnings can contain source data.
     status = body.get("collectionStatus")
+    if body.get("completionReason") == "search_response_unverified":
+        out["completionReason"] = "search_response_unverified"
     if "collectionStatus" in body:
         out["collectionStatus"] = status if isinstance(status, str) and status in (
             "ok", "empty", "partial", "error", "unknown",

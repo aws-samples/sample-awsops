@@ -195,7 +195,7 @@ Typed busy-read recovery is a bounded browser operation, not a collection retry.
 for its cancellation, timeout and read-status behavior.
 
 
-Tempo `count_not_confirmed` identifies missing/invalid/zero job-count proof; it does not mean the query failed. Valid oversized trace children expose `projection: "bounded_otlp"` and remain usable partial evidence. See the [canonical response-capability table](tempo-query-generation.md#search-result-evidence).
+Tempo `count_not_confirmed` identifies an unverified response, not a query failure. Valid synchronous responses can omit default protobuf job counters. Valid oversized trace children expose `projection: "bounded_otlp"` and remain usable partial evidence. See the [canonical completion contract](tempo-query-generation.md#search-completion-and-publication).
 
 ## Topology evidence compatibility
 
@@ -282,12 +282,12 @@ The PostgreSQL read-contract suite also exercises real graph publication against
 
 #### Producer completion and rollout
 
-Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
+Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Invalid matrix/vector metric-label maps or samples use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
 
 Catalog guidance accompanies every affected ClickHouse query/tables/describe and Prometheus/Mimir query/query-range/labels/series tool, as well as Tempo search. Run existing AgentCore provisioning to reconcile all these descriptions after the producer code rollout. Partial/unknown/error evidence cannot establish absence or full coverage.
 
 
-The paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` code computes `collectionStatus` from its own validated response, warnings, limits and completion evidence. It does not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
+The query/discovery paths in the paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` modules compute `collectionStatus` from their own validated responses, warnings, limits and completion evidence. They do not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
 
 An observed zero sample remains a zero sample. It does not prove the entire query was complete when an old wrapper discarded upstream warnings or accepted missing success status. Paired metric producers preserve those conditions; complete zero-only responses remain `ok`, while incomplete responses preserve the zero data with a partial marker. Tempo search IDs followed by no fetched spans are incomplete regardless of the parent search marker. The source-only producer contract test exercises the shared fixture's upstream-to-body mapping; Runtime receipt-wire tests remain with the later Runtime/producer stages.
 
@@ -300,11 +300,16 @@ old generations or upgrading warnings/unknown metadata to complete coverage.
 HTTP 206 and explicit upstream warnings/partial signals cannot establish complete empty
 collection. Error envelopes remain errors even when they also contain an empty array.
 Prometheus/Mimir retain outer success and warning/info evidence before unwrapping query
-results; malformed series/samples are unconfirmed, while usable rows remain available.
+results. Matrix/vector metric-label keys/values must be strings and sample-value strings must not exceed 128 characters; invalid series become fixed null markers while valid sibling series remain available. Metric-producer errors longer than 400 characters become a fixed diagnostic.
+Query/label/series outputs are byte-bounded without raw previews. Instant scalar/string results are one bounded sample, never two records. Diagnosis
+keeps only the count and type; its raw value is excluded. Explore drops and counts invalid series, samples and log entries, preserves usable siblings, and marks normalization loss unknown (or retains an existing error). The displayed omission count measures discarded response entries, not total missing traffic.
 Their label/series endpoints also propagate `error` and `unknown` without converting them
 to empty. Tempo treats malformed/null completion metrics as unknown and unfinished jobs
-as partial. This adds no completion claim to `tempo_get_trace`; the separate missing-child
-guard above remains required.
+as partial. `tempo_get_trace` retains bounded structured spans when possible; a no-fit byte
+omission is partial, never complete/empty. A spanless no-fit marker retains the previous graph even with useful siblings; only
+actual parsed structured spans can support partial publication. Encountered malformed projected spans make the whole producer projection unknown, which remains unverified evidence rather than a fabricated query failure. Unvisited tail data is not represented. Unmarked-empty/missing/failed children retain even
+with useful siblings. `tempo-child-contract.json` binds the actual producer envelope to
+adapter and PostgreSQL retention tests.
 
 ClickHouse's upstream JSON `rows` must be an integer equal to `data.length`, and `meta`
 must contain nonempty column names/types. A valid zero uses `rows: 0` and a real column
@@ -317,7 +322,7 @@ the PostgreSQL regressions independently enforce missing-child retention.
 
 ### Explore evidence display
 
-`NormalizedResult` retains the validated collection status and a localized disclosure. Explore shows it for both empty and nonempty results, while boolean truncation remains visible. Unknown/error/partial empty bodies are not rendered as plain no-results; confirmed empty and unmarked legacy display behavior remain distinct. Scalar/string format validation precedes the empty-list shortcut.
+`NormalizedResult` retains the validated collection status and a localized disclosure. Explore shows it for both empty and nonempty results, while boolean truncation remains visible. Unknown/error/partial empty bodies are not rendered as plain no-results; confirmed empty and unmarked legacy display behavior remain distinct. Scalar/string format validation precedes the empty-list shortcut. Non-boolean truncation flags receive an unverified-state disclosure, without discarding useful rows.
 
 ### Diagnosis signal completeness
 
@@ -329,6 +334,6 @@ Observed counts exclude null/empty placeholders. Known metric records require a 
 
 The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Partial/unknown results carry `incomplete: true`, not a query-error signal; nonempty observed records remain as `observedCount`, never a complete zero. `collectionStatus: error` keeps a fixed error signal. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
 
-Tempo search complete/empty proof requires an observed positive completed/total job pair. Absent, malformed or zero-job counters cannot certify empty; valid fetched items remain available as partial evidence under the publication contract above. See [the canonical Tempo runbook](tempo-query-generation.md) for the pinned default of 20, limit/partial semantics, source-contract checks and the required Lambda deployment plus AgentCore description reconciliation.
+Tempo search uses validated synchronous HTTP 200 completion, not a mandatory job-counter pair. Missing protobuf default fields can be valid; malformed or unrecognized responses remain unknown, explicit unfinished work remains partial. See [the canonical Tempo runbook](tempo-query-generation.md#search-completion-and-publication) for exact shape, limit and omission semantics. Deploy the producer Lambdas and reconcile all affected Gateway descriptions through the existing AgentCore provisioning flow; a source merge does not update deployed tools.
 
 Unmarked responses use the same structural validation. Valid, untruncated output keeps a `count` field without asserting collection completion. Validation loss or truncation produces incomplete evidence and only a validated nonzero `observedCount`, even for Loki or pre-rollout bodies. A legacy unmarked literal empty list still has its existing compatibility behavior; this does not introduce affirmative empty proof. `observedCount` counts validated returned records, not automatically violations; interpret it with the query scope.

@@ -47,6 +47,7 @@ export const TERMS: Record<string, Pair> = {
   '30분': { en: '30 min', zh: '30 分钟', ja: '30 分' },
   '1시간': { en: '1 hour', zh: '1 小时', ja: '1 時間' },
   '올바르지 않은 조회 응답': { en: 'Invalid query response', zh: '查询响应无效', ja: 'クエリー応答が無効です' },
+  '잘못된 응답 항목 생략': { en: 'Invalid response entries omitted', zh: '已省略无效响应项', ja: '無効な応答項目を省略' },
   '올바르지 않은 관측 데이터': { en: 'Invalid observation data', zh: '观测数据无效', ja: '観測データが無効です' },
   '조회 조건과 응답이 일치하지 않습니다.': { en: 'The response does not match the query settings.', zh: '响应与查询条件不一致。', ja: '応答がクエリー条件と一致しません。' },
   '소스를 불러오지 못했습니다.': { en: 'Failed to load the source.', zh: '无法加载数据源。', ja: 'ソースを読み込めませんでした。' },
