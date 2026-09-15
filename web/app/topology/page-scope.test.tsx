@@ -14,6 +14,11 @@ const row = (resource_id: string, data: object) => ({ account_id: 'self', resour
 // One global type-sweep ledger, shared by host/member reads; not this scope's row count.
 const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 20000 };
 type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
+const SCOPE_CHANGES = [
+  { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
+  { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
+  { ...DEFAULT_SCOPE, includeGlobal: false },
+];
 const targets = row('tg-app', { captured_at: '2099-01-01T00:00:00Z', vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
   ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
 const task = (name: string) => row(`task-${name}`, {
@@ -28,20 +33,16 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean; subnetCapped?: boolean; failure?: 'http' | 'envelope' | 'malformed'; failedType?: string; nfm?: object;
-  inventory?: Record<string, ReturnType<typeof row>[]>;
+function serve(options: { failures?: Set<string>; eks?: object; failure?: 'http' | 'envelope' | 'malformed'; failedType?: string; nfm?: object;
   inventoryReply?: (url: URL, body: Body, signal?: AbortSignal | null) => Response | Promise<Response>;
 } = {}) {
   const requests: URL[] = [];
-  const inventories = { ...options.inventory };
-  if (options.subnetCapped) inventories.subnet = Array.from({ length: 10000 }, (_, i) => row(i ? `extra-${i}` : 'subnet-app', { vpc_id: vpcId }));
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost'); requests.push(url);
     if (url.pathname === '/api/accounts') return Response.json({ accounts: [{ accountId: '111111111111', isHost: true }] });
     if (url.pathname === '/api/nfm') return Response.json(options.nfm ?? { monitors: [], scopeCount: 0 });
     if (url.pathname === '/api/nfm/query') return Response.json({ rows: [], unit: 'Bytes', tookMs: 1 });
     if (url.pathname === '/api/graph') return Response.json({ class: 'trace', account: 'self', nodes: [], edges: [], captured_at: null });
-    if (url.pathname === '/api/eks' && options.eksFailed) return Response.json({ message: 'secret=not-a-real-credential-1234567890' }, { status: 503 });
     if (url.pathname === '/api/eks' && options.eks) return Response.json({ region, truncated: false, ...options.eks });
     if (url.pathname === '/api/eks') return Response.json({ region, truncated: false, clusters: [
       { name: 'good', region, vpcId, access: 'connected' },
@@ -60,10 +61,8 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
       if (options.failure && (!options.failedType || options.failedType === type)) {
         return Response.json(options.failure === 'malformed' ? { rows: null } : { status: 'error', message: 'fixture unavailable' }, { status: options.failure === 'http' ? 503 : 200 });
       }
-      if (type === 'ecs_task' && host && options.lateTask) return options.lateTask;
-      if (type === 'subnet' && options.subnetFailed) return Response.json({ error: 'Unavailable' }, { status: 503 });
-      const all = inventories[type!] ?? (type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
-        : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : []);
+      const all = type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
+        : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : [];
       const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit'));
       const rows = all.slice(offset, offset + limit).map(r => ({ ...r, account_id: url.searchParams.get('accounts') === '__all__' ? r.account_id : host ? 'self' : url.searchParams.get('accounts')! }));
       const body = { rows, run: { ...RUN }, consistency: 'statement-snapshot' };
@@ -192,11 +191,7 @@ it('updates the cluster filter from same-page navigation and writes filter contr
     expect(select.value).toBe('');
   });
 
-it.each([
-    { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
-    { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
-    { ...DEFAULT_SCOPE, includeGlobal: false },
-  ])('clears a previous scope cluster while retaining other URL settings: %j', async nextScope => {
+it.each(SCOPE_CHANGES)('clears a previous scope cluster while retaining other URL settings: %j', async nextScope => {
     let changed = false;
     serve({ inventoryReply: (url, body) => Response.json({
       ...body, rows: changed && url.pathname.endsWith('/ecs_task') ? body.rows.map(row => ({
@@ -216,11 +211,7 @@ it.each([
     expect(await screen.findByRole('button', { name: new RegExp(expected) })).toBeTruthy();
   });
 
-it.each([
-    { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
-    { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
-    { ...DEFAULT_SCOPE, includeGlobal: false },
-  ])('rejects historical cluster filters after a scope change even when the cluster name still exists: %j', async nextScope => {
+it.each(SCOPE_CHANGES)('rejects historical cluster filters after a scope change even when the cluster name still exists: %j', async nextScope => {
     serve();
     const router = mount('/topology?cluster=ecs%3Aecs-app&monitor=kept');
     await flowReady();
@@ -241,11 +232,7 @@ it.each([
     await waitFor(() => expect(select().value).toBe(''));
   });
 
-it.each([
-    { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
-    { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
-    { ...DEFAULT_SCOPE, includeGlobal: false },
-  ])('clears selected resource details on scope changes: %j', async nextScope => {
+it.each(SCOPE_CHANGES)('clears selected resource details on scope changes: %j', async nextScope => {
     serve();
     mount();
     await flowReady();
