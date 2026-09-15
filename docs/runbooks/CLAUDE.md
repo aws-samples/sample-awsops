@@ -25,7 +25,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
 | [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
-| [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, CLI outcomes, projection/index migrations and local PostgreSQL fixtures |
+| [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |
 | [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
@@ -326,6 +326,8 @@ Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/
 ## Graph read contract
 
 Graph reads and rebuild/publication transactions share at most two admissions per max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Rebuilds retain the separate PostgreSQL four-second transaction timeout. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. The implemented publisher in `web/lib/graph-store.ts` verifies source/account evidence before atomic replacement and retains last-good data on unproven collection. Execution still requires the default-off timer or an operator invocation. See `graph-read-contract.md` for budgets, CLI outcomes, rollout and disposable tests; source integration does not establish deployment.
+
+Graph execution validates typed publication counts and fixed reasons. Unexpected same-cycle infra execution failure skips dependent trace collection/publication. Registry query failures retain their synthetic error source; unexpected loader failures attempt a non-publishing error record. CLI exits 1 for execution/registry/cleanup failure, 2 for retained/skipped work and otherwise 0; degraded publication remains explicitly labeled and does not prove complete collection.
 
 ## Isolated review codec
 
