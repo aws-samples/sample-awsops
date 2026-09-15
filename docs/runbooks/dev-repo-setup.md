@@ -453,7 +453,39 @@ and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only
 Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
 `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
 behavior; account identifiers and credentials stay in secrets. Full activation requires
-real login/DB/host-registry preflight. Readiness is a separate capability controlled by
+real login/DB/host-registry preflight.
+
+`CI_RUNTIME_TARGETS_DEV` is an optional repository **secret**, not a repository variable.
+Its value is a JSON array of at most five targets. Each object must have exactly
+`account_id`, `resource_type` and `resource_id`: account IDs are unique 12-digit strings
+and must not equal the host account; the type is `ec2` or `cloudfront`; the resource ID is
+a nonempty, bounded printable identifier (1–2048 characters, without whitespace).
+Replace all placeholders before saving the secret:
+
+```json
+[
+  {
+    "account_id": "<12-digit-target-account-id>",
+    "resource_type": "ec2",
+    "resource_id": "<known-instance-id>"
+  }
+]
+```
+
+Nonempty targets require `dev`, `plan_scope=full` and `CI_READONLY_RUNTIME_DEV=true`.
+The generated runtime profile then sets `inventory_host_only=false` and records
+`runtime_verification_targets`. The workflow does not forward this secret to main,
+preview or bootstrap scopes; unsupported inputs fail closed. Before the scope apply,
+rebuild the reviewed **ARM64 Steampipe image** containing the collector scope guard and
+pin its immutable digest in `STEAMPIPE_IMAGE_DIGEST_DEV`. Review a full saved plan and
+apply that exact plan; apply preflight reads its approved targets, not the current secret.
+Then register the approved accounts and run the strict collection/release check.
+Secret edits alone do not activate or revoke applied scope. See
+[runtime target activation](runtime-foundation.md) and
+[target registration](onboard-target-account.md) for collector trust, the onboarding
+subset preflight, exact runtime registry equality and fresh member-resource proof.
+
+Readiness is a separate capability controlled by
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.

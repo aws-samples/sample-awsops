@@ -41,10 +41,80 @@ function loadInventory(pool) {
   }).outputText, source);
   return inventoryModule.exports.readResources;
 }
+function loadMemberProof(pool, accountId) {
+  const source = new URL('../../../web/app/api/deployment/member-inventory/route.ts', import.meta.url).pathname;
+  const route = new Module(source);
+  route.require = id => {
+    if (id === '@/lib/db') return { getPool: () => pool };
+    if (id === '@/lib/auth') return { verifyUser: async () => ({ sub: 'fixture-verifier' }) };
+    if (id === '@/lib/account-registration-scope') return { registrationTargetAccountIds: () => [accountId] };
+    return webRequire(id);
+  };
+  route._compile(ts.transpileModule(readFileSync(source, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, source);
+  return route.exports.GET;
+}
 let fixture;
 
 before(async () => { fixture = await disposablePostgres(); });
 after(async () => { await fixture?.close(); });
+
+test('member identity proof finds a wide resource beyond 500 rows and rejects unusable or ambiguous scan scopes', async () => {
+  const client = new pg.Client({ ...fixture.config, database: 'awsops', password: fixture.password });
+  await client.connect();
+  const accountId = '222222222222', resourceId = 'i-fffffffffffffffff';
+  const get = loadMemberProof(client, accountId);
+  const request = () => new Request(`https://app.test/api/deployment/member-inventory?${new URLSearchParams({
+    accountId, type: 'ec2', resourceId,
+  })}`);
+  try {
+    await client.query(`
+      CREATE TEMP TABLE accounts (
+        account_id text PRIMARY KEY, enabled boolean, is_host boolean,
+        role_name text, all_regions boolean);
+      CREATE TEMP TABLE account_regions (
+        account_id text, region text, enabled boolean, PRIMARY KEY(account_id, region));
+      CREATE TEMP TABLE inventory_resources (
+        resource_type text, account_id text, region text, resource_id text,
+        captured_at timestamptz, data jsonb,
+        PRIMARY KEY(resource_type, account_id, region, resource_id));`);
+    await client.query(`INSERT INTO accounts VALUES ($1,true,false,'AWSopsReadOnlyRole',false)`, [accountId]);
+    await client.query(`INSERT INTO account_regions VALUES ($1,'ap-northeast-2',true)`, [accountId]);
+    await client.query(`INSERT INTO inventory_resources
+      SELECT 'ec2',$1,'ap-northeast-2','i-' || lpad(to_hex(n),17,'0'),now(),
+        jsonb_build_object('instance_id','i-' || lpad(to_hex(n),17,'0'))
+      FROM generate_series(1,600) n`, [accountId]);
+    await client.query(`INSERT INTO inventory_resources VALUES
+      ('ec2',$1,'ap-northeast-2',$2,'2026-09-15T08:00:00Z',
+       jsonb_build_object('instance_id',$2::text,'payload',repeat('x',100000)))`, [accountId, resourceId]);
+    let response = await get(request());
+    assert.equal(response.status, 200);
+    let text = await response.text();
+    assert.ok(Buffer.byteLength(text) < 1000);
+    assert.deepEqual(JSON.parse(text), {
+      schemaVersion: 1, status: 'verified', accountId, type: 'ec2', resourceId,
+      region: 'ap-northeast-2', capturedAt: '2026-09-15T08:00:00.000Z',
+    });
+
+    await client.query('UPDATE account_regions SET enabled=false');
+    assert.equal((await (await get(request())).json()).reason, 'scan_scope_unavailable');
+    await client.query(`INSERT INTO account_regions VALUES ($1,'us-east-1',true)`, [accountId]);
+    assert.equal((await (await get(request())).json()).reason, 'resource_missing');
+
+    await client.query('UPDATE accounts SET all_regions=true');
+    assert.equal((await (await get(request())).json()).status, 'verified');
+    await client.query(`INSERT INTO inventory_resources
+      SELECT resource_type,account_id,'us-east-1',resource_id,captured_at,data
+      FROM inventory_resources WHERE resource_id=$1`, [resourceId]);
+    assert.equal((await (await get(request())).json()).reason, 'resource_ambiguous');
+
+    await client.query('UPDATE accounts SET enabled=false');
+    assert.equal((await (await get(request())).json()).reason, 'account_not_ready');
+  } finally {
+    await client.end();
+  }
+});
 
 async function exercise(password, run) {
   const logs = [];

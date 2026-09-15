@@ -7,6 +7,7 @@ import { getPool } from '@/lib/db';
 import { listAccounts, getAccount, validateAccountId, ensureHostRow } from '@/lib/accounts';
 import { upsertAccountRegion } from '@/lib/account-regions';
 import { readJsonBounded } from '@/lib/http-body';
+import { registrationTargetAccountIds } from '@/lib/account-registration-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,6 +67,14 @@ export async function POST(request: Request) {
   const roleName = 'AWSopsReadOnlyRole';
 
   if (!validateAccountId(accountId)) return err('accountId must be 12 digits', 400);
+  try {
+    const targets = registrationTargetAccountIds(process.env.INVENTORY_TARGET_ACCOUNT_IDS, (process.env.HOST_ACCOUNT_ID || '').trim());
+    if (targets && !targets.includes(accountId)) {
+      return err('This account is not included in the configured collection and CI verification scope.', 409);
+    }
+  } catch {
+    return err('Deployment account scope is unavailable. Contact the operator.', 503);
+  }
   if (!alias) return err('alias is required', 400);
   // ExternalId is OPTIONAL only as an EXPLICIT per-account choice (ADR-011 amended 2026-06-26):
   // omitting it requires firstParty=true, asserting the target trust pins THIS task-role ARN

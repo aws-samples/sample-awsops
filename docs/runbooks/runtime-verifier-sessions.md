@@ -229,11 +229,21 @@ exceeds the verified function timeout of at most 420 seconds; that comparison ap
 only to per-type collection, not catalog discovery. There is no separate 900-second
 per-type budget. Disable automatic SDK/CLI invoke retries.
 
-Both prepare and collect require the enabled host only, rejecting enabled foreign
-accounts as `host_only_registry_required`; generic multi-account smoke behavior is
-outside this controller's scope. After web/configuration/catalog checks and before
+Both prepare and collect default to the enabled host only. Nonempty applied
+`inventory.verification_targets` instead require exact enabled host/member registration
+in both modes. Only collect additionally proves measured SQL reachability with zero
+unreachable accounts and fresh account-bound known-member EC2/CloudFront evidence.
+`account_reachability_scope` distinguishes
+`enabled_scan_accounts` measurement from host-only and unmeasured results, whose counts stay
+null. CI permits host-only/null only for the five source-AST-pinned SDK types; aggregate
+catalog proof does not establish 43-type coverage for every member. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
+Each member uses one exact `/api/deployment/member-inventory` lookup, whose bounded
+identity projection also rejects disabled, absent or ambiguous scan scope/evidence.
+Only Terraform onboarding preflight permits approved subsets, deriving apply scope
+from the restored saved plan. Release preparation never requests that leniency.
+After web/configuration/catalog checks and before
 any per-type invocation, collect's authenticated prepare verifies login, DB and that
-host-only registry and obtains the DB-clock sample. An unsupported registry is
+required exact registry and obtains the DB-clock sample. An unsupported registry is
 rejected at this preflight, before spending the collection window on type calls.
 Use that DB timestamp as the marker and calibrate subsequent time at request
 start, shifting the existing deadline by the same offset. Then require every
@@ -253,7 +263,7 @@ must complete each owned RPC and the authenticated verifier must independently
 observe strict post-marker evidence for every returned type. The shared helper's
 nominal 1,200-second release-mode poll cap is clipped by the existing deadline;
 it does not extend the marker's 30-minute lifetime or the controller's 50-minute cap.
-The controller reserves 18 minutes: the single-pass proof, collector recheck and
+The empty-target controller reserves 18 minutes: the single-pass proof, collector recheck and
 50-second closing web check total 1,060 seconds, leaving 20 seconds of margin.
 Authentication/model/workers must finish 50 seconds before the original proof deadline.
 Closing service/list-tasks/describe-tasks reads each have a 15-second cap, with five
@@ -261,7 +271,9 @@ seconds of overhead, and stay inside the original deadline. They reuse the initi
 deployment ID, immutable task-definition proof, count and ECR digest set without a
 new tag lookup. Matching start/end observations do not prove continuous identity or
 exclude an unseen intermediate restore. Prepare has no closing recheck.
-Collection has at most 720 seconds; the 450-second admission floor leaves a latest
+Each explicit target adds 35 seconds to proof reserve and removes it from collection
+and latest admission; the original deadlines do not extend. Empty-target
+collection has at most 720 seconds; the 450-second admission floor leaves a latest
 start of 270 seconds, reduced by clock preparation and earlier deadlines. An extra
 35-second read needs at least 15 seconds saved. A full retry adds at least 215 seconds
 (35-second confirmation, 65-second cooldown, 35-second recheck, 80-second probe),
