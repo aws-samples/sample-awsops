@@ -30,6 +30,7 @@ function tokenize(sql) {
     }
     if (sql[i] === "'" || sql[i] === '"') {
       const quote = sql[i++];
+      const contentStart = i;
       let closed = false;
       while (i < sql.length) {
         if (sql[i] === '\0' || sql[i] === '\\') return null;
@@ -39,7 +40,9 @@ function tokenize(sql) {
         break;
       }
       if (!closed) return null;
-      tokens.push(quote === '"' ? '#identifier' : '#literal');
+      tokens.push(quote === '"'
+        ? '#identifier:' + sql.slice(contentStart, i - 1).replace(/""/g, '"').toUpperCase()
+        : '#literal');
       continue;
     }
     const word = /^[a-z_][a-z0-9_$]*/i.exec(rest);
@@ -67,11 +70,20 @@ class AdditiveStatement {
   }
   identifier() {
     const token = this.tokens[this.position];
-    if (token !== '#identifier' && !/^[A-Z_][A-Z0-9_$]*$/.test(token ?? '')) return false;
+    if (token === '#identifier:') return false;
+    if (!token?.startsWith('#identifier:') && !/^[A-Z_][A-Z0-9_$]*$/.test(token ?? '')) return false;
     this.position++;
     return true;
   }
-  name() { return this.identifier() && (!this.take('.') || this.identifier()); }
+  name() {
+    const schema = this.tokens[this.position]?.replace(/^#identifier:/, '');
+    if (!this.identifier()) return false;
+    if (!this.take('.')) return true;
+    // A pg_temp table disappears with the session but would leave a ledger row.
+    // Preserve quoted text; case-folding intentionally rejects even distinct
+    // quoted pg_* names, rather than allowing quoting to evade the restriction.
+    return !schema.startsWith('PG_') && schema !== 'INFORMATION_SCHEMA' && this.identifier();
+  }
   list(item) {
     if (!this.take('(') || !item()) return false;
     while (this.take(',')) if (!item()) return false;

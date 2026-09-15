@@ -184,4 +184,54 @@ describe('GraphCollectionStatus', () => {
     expect(container.querySelectorAll('time')).toHaveLength(0);
     expect(screen.getByRole('status').textContent).not.toContain('Invalid Date');
   });
+  it('shows read failures and truncation separately from collection failure', () => {
+    language.current = 'en';
+    const { rerender } = render(<GraphCollectionStatus collection={{ status: 'unknown', failureReason: 'state_read_failed',
+      readStatus: 'partial', readTruncated: true }} />);
+    expect(screen.getByRole('alert').textContent).toContain('Collection metadata could not be read');
+    expect(screen.getByRole('alert').textContent).toContain('Graph read limit');
+    expect(screen.getByRole('alert').textContent).not.toContain('Collection failed');
+    rerender(<GraphCollectionStatus collection={{ status: 'unknown', readStatus: 'unavailable' }} />);
+    expect(screen.getByRole('alert').textContent).toContain('Graph read unavailable');
+  });
+  it('shows saved-source clocks on stale successful publications and explicit producer status', () => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'ok', stale: true,
+      windowStartMs: 1789360000000, windowEndMs: 1789360100000,
+      publishedSources: [{ sourceId: 'inventory:vpc', producerStatus: 'running',
+        attemptedAtMs: 1789360200000, finishedAtMs: 1789360300000 }] }} />);
+    expect(screen.getByRole('alert').textContent).toContain('Saved sources: 1');
+    expect(screen.getByRole('alert').textContent).toContain('Producer status: running');
+    expect(screen.getByRole('alert').querySelectorAll('time')).toHaveLength(4);
+  });
+
+  it('labels graph-attempt and per-source windows separately', () => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'ok', stale: false,
+      windowStartMs: 1789360000000, windowEndMs: 1789360200000,
+      sources: [{ sourceId: 'tempo:1', status: 'ok', windowStartMs: 1789360050000, windowEndMs: 1789360150000 }] }} />);
+    expect(screen.getByText('Graph attempt window start', { exact: false })).toBeTruthy();
+    expect(screen.getByText('Graph attempt window end', { exact: false })).toBeTruthy();
+    expect(screen.getAllByText('Source window start', { exact: false })).toHaveLength(1);
+    expect(screen.getAllByText('Source window end', { exact: false })).toHaveLength(1);
+  });
+
+  it('renders absent collection metadata as neutral information without a stale assertion', () => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'unknown', stale: true,
+      attempted_at: null, captured_at: null, sources: [], evidenceKind: 'inventory', readStatus: 'ok' }} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('No collection state recorded');
+    expect(screen.getByRole('status').textContent).not.toContain('Stale data');
+  });
+  it.each([
+    { failureReason: 'state_read_failed' }, { readStatus: 'unavailable' },
+    { readStatus: 'partial', readTruncated: true }, { metadataTruncated: true },
+  ])('keeps real read/disclosure failures actionable despite unknown collection: %s', extra => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'unknown', stale: true,
+      attempted_at: null, captured_at: null, sources: [], ...extra }} />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
 });

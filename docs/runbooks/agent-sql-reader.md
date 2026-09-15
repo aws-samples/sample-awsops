@@ -16,8 +16,8 @@ IAM DB auth on that path), so this one role has a password — Terraform generat
 
 ## 실행 순서 — 마이그레이션이 먼저 / Enable order — migrations first
 
-Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow before its build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a reviewed plan with `ci_migrations_enabled=true`; the applied `migration_job` output must be non-null. The default-off
-migration infrastructure blocks dev deployment until applied. Main/preview and direct CLI on a host with private DB access use: dev Deploy AgentCore는 사설 재사용 migration workflow를 먼저 실행한다. 사전에 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된 계획을 적용해 `migration_job`
+Dev Deploy AgentCore and current-source dev Deploy Web run the reusable private `deploy-migrations.yml` workflow before provisioning or web promotion; explicit older-image rollback runs no DDL. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a reviewed plan with `ci_migrations_enabled=true`; the applied `migration_job` output must be non-null. The default-off
+migration infrastructure blocks dev deployment until applied. Main/preview and direct CLI on a host with private DB access use: dev Deploy AgentCore와 현재 소스 dev Deploy Web은 프로비저닝 또는 웹 승격 전에 사설 재사용 migration workflow를 실행하며, 명시적 이전 이미지 롤백은 DDL을 실행하지 않는다. 사전에 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된 계획을 적용해 `migration_job`
 출력이 null이 아니어야 한다. 기본 비활성 인프라가 적용되지 않으면 dev 배포는 차단된다. main/preview와 DB에 접근 가능한 호스트의 직접 CLI는 다음 순서를 따른다:
 
 ```
@@ -52,13 +52,16 @@ disables sync; an output-read failure is an error. See the
 [migration guide](../../terraform/foundation/migrations/README.md) for runtime settings, TLS and IAM.
 
 With `AUTOMATIC_MIGRATION=1`, every pending `ALTER TABLE` (including nullable `ADD COLUMN`),
-view refresh, procedural block, concurrent index and no-transaction file is refused before
-pending DDL or reader sync. Keep base-column changes and the corresponding `sql_reader`
+function default (`now()`/`gen_random_uuid()`), GRANT/view refresh, procedural block, concurrent index and no-transaction file is refused before
+pending DDL, ledger upgrades or reader sync. Keep base-column changes and the corresponding `sql_reader`
 view/grant refresh together in a reviewed standalone migration with this flag unset.
 Do not split off the refresh to pass automatic admission: the agent's explicit-column view
 would remain stale. Online automatic dry-run also rejects these files without printing SQL;
-unset the flag for full standalone preview. The trusted empty-only baseline may initialize
-before pending admission; existing ledgers skip that hook.
+leave the flag unset for full standalone preview. A missing `public.schema_migrations` ledger
+fails under the advisory lock before initialization, regardless of `INITIALIZE_EMPTY_DB`.
+Complete standalone empty-only bootstrap, historical migrations and reader sync first, then
+dispatch a fresh web build via [web release](web-release.md). Existing ledgers retain checksum
+validation and the full pending-file guard; there is no automatic-baseline or historical-SQL exemption.
 
 두 도구만 실패한다. 나머지 rds-mcp 도구(`describe_*`, `list_*`)는 reader 시크릿이 아니라 실행
 역할을 쓰므로 계속 동작한다 — 그 비대칭이 판별 단서다.
@@ -332,9 +335,13 @@ The projection is not an ownership validator:
   partition's `account_id` proves telemetry ownership.
 
 The node's exposed `captured_at` is graph materialization time, not its underlying
-inventory capture or observation time. For trace collection quality, consult
+inventory capture or observation time. For collection quality, consult
 `sql_reader.topology_graph_state`: status, attempt/publication times, observation
-window, retained flag and projected source reasons. The current writer records only
+window, retained flag and projected source reasons. Its current projection owner is
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, extending the prior inventory/attempt projections and exposing bounded
+`publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
+aggregate/account scope, failure reasons and numeric loss counters. It does not expose
+raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The current writer records only
 `class='trace'`; a missing flow/infra state row is not evidence of complete or empty
 coverage. Missing qualifiers or timestamps never establish confidence.
 
@@ -343,7 +350,11 @@ coverage. Missing qualifiers or timestamps never establish confidence.
 Those baseline text assertions do **not** enforce the current topology projection.
 Inspect the current migration and the queue/view cases in
 `scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution.
+tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+API repeatable-read/timeout/cap behavior are independently covered by
+`web/lib/graph-read-postgres.test.ts`; see [local test prerequisites](graph-read-contract.md).
+Apply the new collection projection with the existing `make migrate` operator flow;
+the queue projection remains separately owned by the migration above.
 
 ### Trace queue projection / 트레이스 큐 투영
 
@@ -371,3 +382,5 @@ Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observabili
 - [Trace collection-state and edge projections](../../terraform/foundation/migrations/01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql)
 - `scripts/v2/migrate.mjs` (`syncSqlReaderPassword`) — 동기화 / the sync
 - ADR-004 §7 — SQL reader security model; the ADR body is maintained in the private upstream repository.
+
+The bounded collection projection sets `metadataTruncated` when recognized fields have malformed types/ranges or unrecognized status/producer/scope vocabulary. Both HTTP and SQL readers conservatively disclose these omissions; unrelated private fields remain excluded. Nullable source clocks stay compatible with confirmed-zero evidence, and reason ordering uses the C collation for cross-runtime parity.
