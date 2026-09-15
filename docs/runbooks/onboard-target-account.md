@@ -116,8 +116,9 @@ separate operator configuration step. AWSops itself never executes the generated
 The admin-only `POST /api/accounts/onboarding` validates the target ID, region and current
 ExternalId/first-party choice. Within one 15-second deadline, it verifies the actual host
 STS identity, assumes only `AWSopsReadOnlyRole`, then verifies the resulting target account.
-All three STS clients use the deployment `AWS_REGION`, defaulting to `ap-northeast-2`;
-the form's inventory region remains result metadata and does not select a network endpoint.
+All three STS operations use the deployment `AWS_REGION`, defaulting to `ap-northeast-2`,
+matching registration. `diagnostic.region` records the selected collection region, not the
+STS endpoint; successful identity checks do not prove inventory collection in that region.
 Success establishes that web-role connection only; it neither registers the account nor
 certifies collection, worker or AgentCore access.
 
