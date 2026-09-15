@@ -88,8 +88,102 @@ def _byte_bound(obj):
     body = json.dumps(obj, default=str, ensure_ascii=False)
     if len(body.encode("utf-8")) <= MAX_TOTAL_BYTES:
         return obj, False
-    return {"truncated": True, "note": f"trace payload exceeded {MAX_TOTAL_BYTES} bytes; fetch fewer/narrower",
-            "preview": body[:2000]}, True
+    return {"truncated": True, "note": "payload omitted at byte limit"}, True
+
+
+def _proto_integer(value, bits, signed=False):
+    if isinstance(value, str) and len(value) <= 20 and re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
+        value = int(value)
+    return (type(value) is int and (-(1 << (bits - 1)) if signed else 0) <= value
+            < (1 << (bits - int(signed))))
+
+_TRACE_ATTRIBUTES = {
+    "service.name", "service.namespace", "service.version", "cloud.account.id", "cloud.region",
+    "deployment.environment.name", "deployment.environment", "k8s.namespace.name",
+    "k8s.cluster.name", "k8s.pod.name", "k8s.deployment.name", "db.system", "db.name",
+    "server.address", "server.port", "net.peer.name", "net.peer.port", "peer.service",
+    "messaging.system", "messaging.destination.name", "messaging.destination",
+}
+
+def _json_size(value):
+    return len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8"))
+
+def _trace_attributes(value):
+    if not isinstance(value, list):
+        return None
+    selected = {}
+    for entry in value:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("key"), str)
+                or not entry["key"] or not isinstance(entry.get("value"), dict)):
+            return None
+        if entry["key"] in _TRACE_ATTRIBUTES:
+            selected[entry["key"]] = entry  # Preserve last-value identity semantics, never shorten IDs.
+    return list(selected.values())
+
+def _trace_projection(data):
+    """Over-budget only: retain scoped identities/timing in valid OTLP, never a fake empty."""
+    if (not isinstance(data, dict) or "error" in data or data.get("status") == "error"
+            or data.get("collectionStatus") == "error"):
+        return None
+    key = "batches" if "batches" in data else "resourceSpans"
+    batches = data.get(key)
+    if not isinstance(batches, list):
+        return None
+    out = {"truncated": True, "projection": "bounded_otlp",
+           "note": "Trace payload exceeded byte budget; bounded span projection", key: []}
+    used = _json_size(out)
+    for batch in batches:
+        if not isinstance(batch, dict) or not isinstance(batch.get("resource", {}), dict):
+            return None
+        resource_attrs = _trace_attributes(batch.get("resource", {}).get("attributes", []))
+        scopes = batch.get("scopeSpans", batch.get("instrumentationLibrarySpans"))
+        if resource_attrs is None or not isinstance(scopes, list):
+            return None
+        for scope in scopes:
+            if not isinstance(scope, dict) or not isinstance(scope.get("spans"), list):
+                return None
+            group = {"resource": {"attributes": resource_attrs}, "scopeSpans": [{"spans": []}]}
+            group_cost = _json_size(group) + 2
+            for span in scope["spans"]:
+                if not isinstance(span, dict):
+                    return None
+                projected = {field: span[field] for field in (
+                    "traceId", "spanId", "parentSpanId", "kind", "startTimeUnixNano", "endTimeUnixNano",
+                ) if field in span}
+                if "name" in span and _json_size(span["name"]) <= 1024:
+                    projected["name"] = span["name"]
+                if "status" in span:
+                    if not isinstance(span["status"], dict):
+                        return None
+                    projected["status"] = {k: v for k, v in span["status"].items() if k == "code"}
+                span_attrs = _trace_attributes(span.get("attributes", []))
+                if span_attrs is None:
+                    return None
+                projected["attributes"] = span_attrs
+                if "links" in span:
+                    if not isinstance(span["links"], list) or any(not isinstance(link, dict) for link in span["links"]):
+                        return None
+                    projected["links"] = [{k: v for k, v in link.items() if k in ("traceId", "spanId")}
+                                          for link in span["links"][:64]]
+                cost = _json_size(projected) + 2
+                if used + group_cost + cost > MAX_TOTAL_BYTES:
+                    # A no-fit marker must not hide an already malformed child.
+                    sid = projected.get("spanId")
+                    if not out[key] and not (isinstance(sid, str) and len(sid) == 16
+                            and _HEX.fullmatch(sid) and int(sid, 16)
+                            and all(_proto_integer(projected.get(k), 64)
+                                    for k in ("startTimeUnixNano", "endTimeUnixNano"))
+                            and int(projected["endTimeUnixNano"]) >= int(projected["startTimeUnixNano"])):
+                        return None
+                    return out if out[key] else {"truncated": True, "note": "payload omitted at byte limit",
+                                                "tracePayloadTruncated": True, "collectionStatus": "partial"}
+                if group_cost:
+                    out[key].append(group)
+                    used += group_cost
+                    group_cost = 0
+                group["scopeSpans"][0]["spans"].append(projected)
+                used += cost
+    return out if out[key] else None
 
 
 def tempo_search(args):
@@ -113,8 +207,16 @@ def tempo_get_trace(args):
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
     data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
+        return err("Tempo trace fetch returned an error")
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
-    return ok({"truncated": btr, **(payload if isinstance(payload, dict) else {"trace": payload})}) if not btr else ok(payload)
+    if btr:
+        projected = _trace_projection(data)
+        return ok(projected if projected is not None else {**payload, "collectionStatus": "unknown"})
+    # Only the local projection can issue the explicit no-fit marker.
+    payload = {key: value for key, value in payload.items() if key != "tracePayloadTruncated"}
+    return ok({"truncated": False, **payload})
 
 
 def tempo_search_tags(args):
@@ -358,4 +460,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

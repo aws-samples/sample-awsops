@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d76f1a41acd7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b7a0963c585b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -67,6 +67,12 @@ that's the source of truth for tool counts, not this doc.
   defense-in-depth, not the boundary.
 - The ClickHouse connector has no equivalent DB-role boundary yet — there the lexical guard is
   still the primary defense.
+
+## Trace payload projection
+- Preserve bounded OTLP identity/timing/link evidence on oversized trace reads; a no-fit
+  marker is partial, never complete/empty. Malformed/errors cannot be projected success.
+- Run `test_tempo_trace_budget.py` plus `test_tempo_mcp.py`; Lambda and Gateway descriptions
+  deploy separately. Offline fixtures are not live acceptance evidence.
 
 ## Review checklist
 1. Any new `execute_sql`/`inventory-read` capability must go through the `sql_reader` view

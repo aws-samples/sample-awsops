@@ -68,6 +68,12 @@ python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers
 
 ## 조치 / Action
 
+### Trace payload bounds
+
+Oversized `tempo_get_trace` responses retain a structured OTLP projection under the existing byte cap. Resource identity, span timing and bounded links remain available with `truncated: true`; this is partial evidence, never complete trace coverage. If a valid span cannot fit, the producer returns an explicit no-fit marker without a raw preview. Malformed/unusable children remain unverified and explicit error envelopes fail.
+
+Verify offline with `python3 -m pytest agent/lambda/test_tempo_trace_budget.py agent/lambda/test_tempo_mcp.py -q`. The fixture binds mocked HTTP responses to exact producer bodies, including alternate OTLP field names, UTF-8 limits and malformed/error cases. This test is not live deployment evidence. Deploy connector code through the reviewed Terraform flow below, then reconcile its Gateway description through `make agentcore`; no new IAM, endpoint or activation flag is introduced.
+
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
 A confirmed empty custom-attribute cache uses a **60-second TTL**. After expiry, the next generation request can trigger background rediscovery; this is not a timer that polls every 60 seconds. Incomplete empty results are eligible for rediscovery without waiting for that TTL. Tempo background refreshes use a one-minute per-instance cooldown to avoid per-request retries while retaining the short confirmed-empty TTL. The admin POST below performs an immediate refresh without waiting for expiry.
