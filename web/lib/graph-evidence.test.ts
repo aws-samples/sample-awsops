@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { rebuildTraceGraph } from './graph-store';
 
-function database() {
+function database(ready = true) {
   const writes: { sql: string; args: unknown[] }[] = [];
   const client = Object.assign(new EventEmitter(), {
     query: async (sql: string, args: unknown[] = []) => {
       writes.push({ sql, args });
-      return { rows: sql.includes('to_regclass') ? [{ ready: true }] : sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] };
+      return { rows: sql.includes('to_regclass') ? [{ ready }] : sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] };
     },
     release() {},
   });
@@ -39,7 +39,7 @@ function source(items: ReturnType<typeof span>[], status = 'ok') {
 describe('trace graph evidence', () => {
   it('does not query backends before the collection-state migration exists', async () => {
     let reads = 0;
-    const pool = { query: async () => ({ rows: [{ ready: false }] }) };
+    const pool = database(false).pool;
     const backend = {
       available: async () => true,
       recentSpans: async () => { reads++; throw new Error('must not query'); },

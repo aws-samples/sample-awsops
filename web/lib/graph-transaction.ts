@@ -1,22 +1,27 @@
 import type { Pool, PoolClient } from 'pg';
 
-const activeRequests = new WeakMap<Pool, number>();
+const activeGraphWork = new WeakMap<Pool, number>();
 export class GraphReadBusy extends Error {}
 export class GraphReadDeadline extends Error {
   constructor(readonly phase: 'acquire' | 'transaction') { super('graph read deadline exceeded'); }
 }
 type ReadLease = { client?: PoolClient; expired: boolean; released: boolean };
 
-/** Two admitted requests leave an auth slot. Keep admission until a late checkout settles. */
-export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
-  const active = activeRequests.get(pool) ?? 0;
+function admit(pool: Pool) {
+  const active = activeGraphWork.get(pool) ?? 0;
   if (active >= 2) throw new GraphReadBusy('graph read busy');
-  activeRequests.set(pool, active + 1);
+  activeGraphWork.set(pool, active + 1);
+  return () => {
+    const remaining = (activeGraphWork.get(pool) ?? 1) - 1;
+    if (remaining) activeGraphWork.set(pool, remaining); else activeGraphWork.delete(pool);
+  };
+}
+
+/** Reads and rebuilds share two slots. Keep admission until a late checkout settles. */
+export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+  const release = admit(pool);
   const lease: ReadLease = { expired: false, released: false };
-  const operation = runTransaction(pool, true, fn, true, lease).finally(() => {
-    const remaining = (activeRequests.get(pool) ?? 1) - 1;
-    if (remaining) activeRequests.set(pool, remaining); else activeRequests.delete(pool);
-  });
+  const operation = runTransaction(pool, true, fn, true, lease).finally(release);
   let timer: ReturnType<typeof setTimeout>;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -33,7 +38,9 @@ export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClien
 }
 
 export async function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
-  return runTransaction(pool, readOnly, fn, false);
+  const release = admit(pool);
+  try { return await runTransaction(pool, readOnly, fn, false); }
+  finally { release(); }
 }
 
 /** One shared-pool slot for a short transaction. Bounded lock waits and no remote IO in the callback.

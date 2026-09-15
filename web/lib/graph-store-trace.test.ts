@@ -38,7 +38,9 @@ function mockPool(infraNodeRows: unknown[] = []) {
       } else if (p) params.push(p);
       // This fixture has a previous trace publication, independent of its infra rows.
       return Promise.resolve({ rows: sql.includes('pg_try_advisory') ? [{ acquired: true }]
-        : sql.includes('AS retained') ? [{ retained: true }] : [] });
+        : sql.includes('to_regclass') ? [{ ready: true }]
+        : sql.includes('AS retained') ? [{ retained: true }]
+        : sql.includes("class = 'infra'") ? infraNodeRows : [] });
     }),
     release: vi.fn(),
   });

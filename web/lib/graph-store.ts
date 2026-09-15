@@ -6,6 +6,7 @@ import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './tra
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
+import { GraphReadBusy } from './graph-transaction';
 import { graphTransaction, inventoryAccounts, inventoryCounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
@@ -17,7 +18,8 @@ interface MetricsCallsSourceLike {
   calls(windowMins: number, endMs?: number): Promise<SourceRead<ServiceGraphCall>>;
 }
 
-// Inventory materialization runs in the gated web instrumentation timer or manual runner.
+// ADR-043: materialization runs off the request path in the gated instrumentation timer
+// or manual runner, with shared graph admission reserving a pool slot for auth.
 // Read/build per account with explicit budgets; only publication holds the class lock.
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.
 
@@ -85,6 +87,7 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   });
   try { return await publish(attempt); }
   catch (error) {
+    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['publication_busy'] };
     // The failed transaction rolled back BOTH state and rows. Best-effort failure evidence
     // uses a fresh bounded transaction; a newer attempt still wins. Always propagate failure.
     await publish({ ...attempt, status: 'error', publish: false,
@@ -130,11 +133,12 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
   const runStartedAt = new Date(Date.now()).toISOString();
   const deadline = performance.now() + 30_000;
   let failed = false, firstFailure: unknown;
-  let counts: ReturnType<typeof inventoryCounts> | undefined;
+  let counts: Awaited<ReturnType<typeof inventoryCounts>> | undefined;
   try {
     let accounts;
     try { accounts = await inventoryAccounts(pool, cls, types); }
     catch (error) {
+      if (error instanceof GraphReadBusy) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
       await writeGraph(pool, cls, lock, 'self', [], [], runId, { attemptedAt: runStartedAt, status: 'error', publish: false,
         details: { sources: [], retainedPrevious: true, failureReason: 'source_read_failed' } }).catch(() => {});
       throw error;
@@ -156,7 +160,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       try {
         const accountTypes = inventoryTypesForAccount(types, account);
         const snapshot = await inventorySnapshot(pool, cls, account, accountTypes,
-          await (counts ??= inventoryCounts(pool, types)));
+          counts ??= await inventoryCounts(pool, types));
         attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
         if (snapshot.truncated) reason('snapshot_limit');
         const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
@@ -173,6 +177,10 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         for (const key of ['nodes', 'edges', 'published', 'retained', 'skipped', 'degraded'] as const) totals[key] += outcome[key];
         outcome.reasons.forEach(reason);
       } catch (error) {
+        if (error instanceof GraphReadBusy) {
+          totals.skipped++; reason('rebuild_busy');
+          await new Promise<void>(resolve => setImmediate(resolve)); continue;
+        }
         if (!publishing) await writeGraph(pool, cls, lock, account, [], [], runId, { attemptedAt, status: 'error', publish: false,
           details: { sources: attempt?.details.sources ?? [], retainedPrevious: true,
             failureReason: attempt ? 'publication_failed' : 'source_read_failed' } }).catch(() => {});
@@ -226,9 +234,14 @@ export async function rebuildTraceGraph(
   runId: string = randomUUID(),
   metricsSources: MetricsCallsSourceLike[] = [],
 ): Promise<GraphRebuildResult> {
-  const schema = await pool.query(
-    `SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready`,
-  );
+  let schema;
+  try {
+    schema = await graphTransaction(pool, true, client =>
+      client.query(`SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready`));
+  } catch (error) {
+    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['rebuild_busy'] };
+    throw error;
+  }
   if (schema.rows[0]?.ready !== true) return { ...emptyResult(), skipped: 1, reasons: ['state_schema_missing'] };
   const endMs = Date.now();
   const startMs = endMs - TRACE_WINDOW_MINS * 60_000;
@@ -272,9 +285,8 @@ export async function rebuildTraceGraph(
   let infraNodes: InfraNodeLike[] = [];
   let infraUnavailable = false;
   try {
-    const result = await pool.query(
-      `SELECT id, kind, meta FROM topology_nodes WHERE account_id = 'self' AND class = 'infra'`,
-    );
+    const result = await graphTransaction(pool, true, client => client.query(
+      `SELECT id, kind, meta FROM topology_nodes WHERE account_id = 'self' AND class = 'infra'`));
     infraNodes = result.rows as InfraNodeLike[];
   } catch { infraUnavailable = true; }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());

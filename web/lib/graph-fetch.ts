@@ -14,7 +14,7 @@ interface GraphData {
 }
 
 // Supplied bounded recovery: only typed admission failures may be retried.
-const BUSY_DELAYS = [250, 750, 1500, 5000];
+const BUSY_DELAYS = [250, 500, 1000, 2000];
 class GraphRecoveryError extends Error {
   constructor(readonly reason: 'busy' | 'timeout') { super(reason); }
 }
@@ -36,28 +36,31 @@ export async function fetchGraph(url: string, signal: AbortSignal): Promise<Grap
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+  let lastReadReason: 'busy' | undefined;
   const timeout = setTimeout(() => controller.abort(new GraphRecoveryError('timeout')), 10000);
   try {
     for (let attempt = 0; ; attempt++) {
       if (controller.signal.aborted) throw controller.signal.reason;
       const response = await fetch(url, { signal: controller.signal });
       if (controller.signal.aborted) throw controller.signal.reason;
-      if (response.status === 503) {
-        const busy = await response.clone().json().catch(() => null);
-        if (controller.signal.aborted) throw controller.signal.reason;
-        if (busy?.collection?.readStatus === 'unavailable' && busy.collection.readReason === 'busy') {
-          if (attempt === BUSY_DELAYS.length) throw new GraphRecoveryError('busy');
-          await pause(BUSY_DELAYS[attempt], controller.signal);
-          continue;
-        }
-      }
       if (response.status === 401 || (response.redirected && new URL(response.url).pathname === '/login')) {
         throw new GraphFetchError('unauthenticated');
       }
       if (response.status === 403) throw new GraphFetchError('forbidden');
       if (response.status >= 400 && response.status < 500) throw new GraphFetchError('rejected');
+      if (response.status !== 503) lastReadReason = undefined;
       const body = await response.json();
       if (controller.signal.aborted) throw controller.signal.reason;
+      if (response.status === 503 && body?.collection?.readStatus === 'unavailable'
+        && body.collection.readReason === 'busy') {
+        lastReadReason = 'busy';
+        if (attempt === BUSY_DELAYS.length) throw new GraphRecoveryError('busy');
+        const hint = Number(response.headers.get('Retry-After'));
+        const delay = Math.max(BUSY_DELAYS[attempt], Number.isFinite(hint) && hint > 0 ? hint * 1000 : 0);
+        await pause(Math.min(delay, 10000), controller.signal);
+        continue;
+      }
+      lastReadReason = undefined;
       if (!response.ok) {
         const reason = body?.collection?.readReason;
         return unavailable(reason === 'busy' || reason === 'timeout' ? reason : 'query_failed');
@@ -67,7 +70,7 @@ export async function fetchGraph(url: string, signal: AbortSignal): Promise<Grap
   } catch (error) {
     if (signal.aborted) throw signal.reason;
     if (error instanceof GraphFetchError) throw error;
-    if (controller.signal.aborted) return unavailable('timeout');
+    if (controller.signal.aborted) return unavailable(lastReadReason ?? 'timeout');
     return unavailable(error instanceof GraphRecoveryError ? error.reason : 'query_failed');
   } finally {
     clearTimeout(timeout);
