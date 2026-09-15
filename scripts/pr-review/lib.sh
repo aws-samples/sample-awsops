@@ -29,7 +29,7 @@ head_png_attachments() {
 }
 
 image_coverage_valid() {
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${HEAD_PNG_REQUIRED:-0}"
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
 }
 
 mark_image_coverage_failure() {
@@ -41,7 +41,7 @@ mark_image_coverage_failure() {
 
 check_review_report() {
   local rc=0
-  image_coverage_valid "$1" || rc=$?
+  image_coverage_valid "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}" || rc=$?
   if [ "$rc" = 1 ]; then
     mark_image_coverage_failure "$(basename "$1")"
   elif [ "$rc" != 0 ]; then

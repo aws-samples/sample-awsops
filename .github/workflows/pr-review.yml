@@ -168,6 +168,7 @@ jobs:
           git diff -z --no-color --name-status "$MERGE_BASE_SHA" "$HEAD_SHA" -- docs/decisions docs/runbooks >> /tmp/pr-diff-namestatus.nul
           git diff -z --no-color --name-status "$MERGE_BASE_SHA" "$HEAD_SHA" -- docs ':(exclude)docs/decisions' ':(exclude)docs/runbooks' >> /tmp/pr-diff-namestatus.nul
           python3 - <<'PYEOF'
+          import re
           data = open('/tmp/pr-diff-namestatus.nul', 'rb').read().decode('utf-8', 'surrogateescape')
           parts = data.split('\0')
           if parts and parts[-1] == '':
@@ -180,6 +181,10 @@ jobs:
                       old, new = parts[i], parts[i + 1]; i += 2
                   else:
                       old = new = parts[i]; i += 1
+                  # Preserve full directory/suffix classification, but never let author
+                  # control bytes delimit TSV or GitHub command files. Display labels
+                  # use the same safe alphabet as HEAD image context, bounded below.
+                  old, new = (re.sub(r"[^A-Za-z0-9._/-]", "?", p) for p in (old, new))
                   out.write(f"{old}\t{new}\n")
           PYEOF
           awk '
@@ -260,16 +265,17 @@ jobs:
             #     the gate turns into a deterministic FAIL — the fail-closed contract for unseen content.
             # An inline marker is always left for the panel models too.
             length($0) > 50000 {
-              if (!(path in warned)) {
-                print "[omitted: a line over 50000 chars in " path " — likely a minified/generated export]"
-                print path >> "/tmp/pr-diff-omitted.txt"
+              if (!(idx in warned)) {
+                label = substr(path, 1, 200)
+                print "[omitted: a line over 50000 chars in " label " — likely a minified/generated export]"
+                print label >> "/tmp/pr-diff-omitted.txt"
                 generated = (path ~ /\.(svg|drawio|map)$/) &&
                             (newpath ~ /\.(svg|drawio|map)$/) &&
                             (path !~ /(^|\/)(web|docs-site)\//) && (newpath !~ /(^|\/)(web|docs-site)\//)
                 if (!generated) {
-                  print path >> "/tmp/pr-diff-omitted-source.txt"
+                  print label >> "/tmp/pr-diff-omitted-source.txt"
                 }
-                warned[path]=1
+                warned[idx]=1
               }
               next
             }
@@ -615,8 +621,10 @@ jobs:
 
       - name: Fail if CRITICAL or MAJOR
         if: always() && steps.gate.outputs.result == 'fail'
+        env:
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
         run: |
-          echo "AI Review failed: ${{ steps.gate.outputs.reason }}"
+          echo "AI Review failed: $GATE_REASON"
           exit 1
 
       - name: Remove current-run HEAD image evidence

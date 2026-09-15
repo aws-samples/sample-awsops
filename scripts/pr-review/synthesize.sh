@@ -325,7 +325,9 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   rm -f "$outfifo" "$errfifo"
   # A failed or timed-out CLI can leave complete-looking text. It is not a completed review.
   [ "$chair_rc" -eq 0 ] || : > "$OUT"
-  if [ "$chair_rc" -eq 0 ] && [ -s "$OUT" ] && ! check_review_report "$OUT"; then
+  # A rejected attempt can lack a declaration. Only explicit/malformed declarations
+  # are sticky here; the accepted chair must satisfy required coverage below.
+  if [ "$chair_rc" -eq 0 ] && [ -s "$OUT" ] && ! check_review_report "$OUT" 0; then
     printf '%s\n' 'Review output unavailable (encoding/read/size).' 'VERDICT: FAIL' > "$OUT"
   fi
 }
@@ -409,6 +411,10 @@ if ! chair_valid && [ "$FALLBACK_MODEL" != "$PRIMARY_MODEL" ]; then
   else
     echo "::warning::chair '$(chair_label "$FALLBACK_MODEL")' fallback also degraded (connection/timeout/empty/no-verdict, ${CHAIR_TIMEOUT}s cap): $(scrubbed_err_excerpt "$WORK/chair-fallback.err")"
   fi
+fi
+
+if chair_valid && ! check_review_report "$OUT"; then
+  printf '%s\n' 'Review output unavailable (encoding/read/size).' 'VERDICT: FAIL' > "$OUT"
 fi
 
 if ! chair_valid; then

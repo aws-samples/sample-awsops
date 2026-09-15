@@ -52,9 +52,9 @@ duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
 The chair rechecks all eight reports independently of the responded-cell list.
 This is a declared review outcome, not automated proof of the model's visual perception.
 
-Fenced code, blockquotes, inline quotations, indented examples and prose containing
+Fenced code, blockquotes, inline quotations, examples indented at least four spaces and prose containing
 markers are not declarations. An unquoted line starting with `IMAGE_COVERAGE:` is
-reserved: malformed/decorated declarations fail closed, including FAILED followed by
+reserved even with up to three leading spaces: malformed/decorated declarations fail closed, including FAILED followed by
 an em dash or explanation. Legacy `IMAGE COVERAGE FAILURE` prefixes also block.
 Terminal controls are stripped before validation, and only LF separates protocol lines.
 
@@ -63,7 +63,17 @@ counted even when its image declaration fails. Empty/failed CLI results retain t
 vendor/lens failure diagnosis. Unreadable, invalid-UTF-8 or oversized reports fail as
 unusable review output, not as absent responses or image findings. Current reports and
 manifest are rechecked for each synthesis; stale image flags do not poison a new run.
-Neither a later PASS nor a retry can erase a failure declared in that synthesis.
+Neither a later PASS nor a retry can erase an explicit failure or malformed reserved
+declaration in that synthesis. A discarded chair attempt with no valid verdict and no
+declaration may recover through retry/fallback; its missing marker is not an image
+failure. The finally accepted chair must still meet the required coverage contract,
+and panel-derived failures remain blocking.
+
+Omitted-source diagnostics use the same safe path alphabet and 200-character display
+bound. Full sanitized directory/suffix values drive classification before display
+truncation; control characters cannot delimit path records or GitHub environment/output
+keys. The omitted-source gate remains fail-closed. Failure reasons enter the final shell
+step through a quoted environment variable, never inline expression substitution.
 
 Use Python 3.12 on Linux in a virtual environment. Install the pinned binary codec,
 then run offline verification from the repository root:
@@ -87,13 +97,13 @@ limits, prompt propagation and missing-evidence failures.
 | --- | --- |
 | Decode attempts / staged files | 32; deletions do not consume slots |
 | One source or rendered file | 8 MiB |
-| All source bytes / rendered bytes | 32 MiB each |
+| Successfully staged source bytes / rendered bytes | 32 MiB each |
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
 | One Git subprocess / prompt context | 30 seconds / 32 KiB |
 | One decoder | 20 CPU seconds, 25 wall seconds, 512 MiB address space, 32 file descriptors |
 | Exact manifest data | 64 records and 24 KiB record budget; excess deletion names counted separately |
-| One report checked for image coverage | 1 MiB; larger reports fail coverage |
+| One report checked for image coverage | 1 MiB; larger reports are unusable review output |
 | Repository path | 512 UTF-8 bytes; no traversal or control characters |
 
 The observed repository has 95 PNGs, 23 WebPs and one single-rendition ICO, all static.
@@ -137,6 +147,15 @@ Fix the reported format/path/bound issue or provide a genuinely reviewable chang
 do not remove valid redactions to satisfy a BASE-image finding. If a model
 cannot inspect required staged pixels, report `IMAGE COVERAGE FAILURE` and fail
 closed rather than inventing a code finding or approving unseen evidence.
+
+If Codex preflight reports missing `--image` support, use an approved runner image/CLI
+update and rerun; do not add execution privileges or waive image coverage. Claude must
+be able to Read the generated absolute path outside its BASE cwd using the existing
+read-only tools. Verify that in the actual authenticated runner: a local-machine probe
+or a runner authentication failure proves neither file access nor image decoding.
+Split legitimate changes exceeding the bounds into reviewable changes without omitting
+required assets. Successful staging budgets do not include failed decodes; those attempts
+still consume the 32-attempt limit and each source remains capped at 8 MiB.
 
 After this CI change actually merges into `dev`, integrate that base normally into
 the affected PR and trigger a fresh review for the resulting HEAD. Rerunning an old

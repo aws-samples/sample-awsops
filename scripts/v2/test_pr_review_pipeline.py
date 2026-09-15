@@ -292,6 +292,12 @@ if action == 'invalid':
 if action == 'coverage_invalid':
     print('IMAGE_COVERAGE: FAILED')
     sys.exit(0)
+if action == 'garbage':
+    print('Transient malformed chair output without a verdict or declaration.')
+    sys.exit(0)
+if action == 'malformed_coverage':
+    print('IMAGE_COVERAGE: FAILED — image unavailable')
+    sys.exit(0)
 print('Review complete.')
 print(os.environ.get('CHAIR_IMAGE_REPORT', ''))
 print('VERDICT: ' + ('FAIL' if action == 'finding' else 'PASS'))
@@ -608,14 +614,52 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
 
     def test_a_later_successful_chair_retry_cannot_clear_declared_failure(self):
+        for action in ("coverage_invalid", "malformed_coverage"):
+            with self.subTest(action=action):
+                root, process = self.chair.start_chair(
+                    (action, "valid"), HEAD_PNG_CONTEXT=str(self.context),
+                    CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+                    PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+                self.chair.finish_chair(process)
+                self.assertEqual(self.chair.sequence(root),
+                                 [f"primary-fixture:{action}", "primary-fixture:valid"])
+                self.assert_blocked(root)
+
+    def test_discarded_garbage_without_marker_does_not_poison_valid_fallback(self):
         root, process = self.chair.start_chair(
-            ("coverage_invalid", "valid"), HEAD_PNG_CONTEXT=str(self.context),
+            ("garbage",), clock_step=120, HEAD_PNG_CONTEXT=str(self.context),
             CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
             PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
         self.chair.finish_chair(process)
         self.assertEqual(self.chair.sequence(root),
-                         ["primary-fixture:coverage_invalid", "primary-fixture:valid"])
+                         ["primary-fixture:garbage", "fallback-fixture:valid"])
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+
+    def test_valid_fallback_does_not_clear_panel_image_failure(self):
+        root, process = self.chair.start_chair(
+            ("garbage",), clock_step=120, HEAD_PNG_CONTEXT=str(self.context),
+            CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+            PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: FAILED")
+        self.chair.finish_chair(process)
         self.assert_blocked(root)
+
+    def test_fail_step_treats_gate_reason_as_data_not_shell_code(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        step = workflow.split("      - name: Fail if CRITICAL or MAJOR\n", 1)[1].split(
+            "      - name: Remove current-run", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory(prefix="gate-reason-") as directory:
+            first, second = Path(directory) / "first", Path(directory) / "second"
+            reason = f'$(touch "{first}") `touch "{second}"`'
+            rendered = script.replace("${{ steps.gate.outputs.reason }}", reason)
+            result = subprocess.run(["bash", "-c", rendered],
+                                    env={**os.environ, "GATE_REASON": reason},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertIn(reason, result.stdout)
 
     def test_workflow_gate_prioritizes_image_failure_over_a_pass_file(self):
         workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
@@ -744,6 +788,48 @@ class WorkflowBudgetTests(unittest.TestCase):
 
 
 class LockfileMetadataTests(unittest.TestCase):
+    def test_omitted_path_exports_keep_adversarial_filenames_as_data(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        fragment = workflow.split("          python3 - <<'PYEOF'\n", 1)[1].split(
+            "\n      - uses: actions/setup-python", 1)[0]
+        fragment = textwrap.dedent("          python3 - <<'PYEOF'\n" + fragment)
+        gate = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        gate = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        for control in ("\rFORGED=1\r", "\nFAKE=2\t", "\t"):
+            with self.subTest(control=repr(control)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                marker = root / "must-not-exist"
+                name = f'web/{control}$(touch {marker})`touch {marker}`.ts'
+                long_name = "scripts/" + "a" * 210 + ".ts"
+                # Real NUL-delimited name-status shape; headers are never path authority.
+                (root / "pr-diff-namestatus.nul").write_bytes(
+                    f"M\0{name}\0M\0{long_name}\0".encode())
+                (root / "pr-diff-raw.txt").write_text(
+                    ("diff --git quoted-header-not-parsed\n+" + "x" * 50001 + "\n") * 2)
+                env_file, output = root / "env", root / "output"
+                env = {**os.environ, "GITHUB_ENV": str(env_file), "GITHUB_OUTPUT": str(output)}
+                result = subprocess.run(["bash", "-eu", "-c", fragment.replace("/tmp/", f"{root}/")],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+                self.assertEqual(set(values), {"total_lines", "omitted_paths", "omitted_source_paths"})
+                labels = values["omitted_source_paths"].split()
+                self.assertEqual(len(labels), 2)
+                for label in labels:
+                    self.assertRegex(label, r"^[A-Za-z0-9._/?-]{1,200}$")
+                (root / "review.md").write_text("VERDICT: PASS\n")
+                result = subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
+                                        env={**env, **values, "IMAGE_STAGE_OUTCOME": "success",
+                                             "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "success"},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(set(outputs), {"result", "reason"})
+                self.assertEqual(outputs["result"], "fail")
+                self.assertIn("oversized line", outputs["reason"])
+                self.assertFalse(marker.exists())
+
     def filter_diff(self, content, paths):
         workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
         program = workflow.split("          awk '\n", 1)[1].split(

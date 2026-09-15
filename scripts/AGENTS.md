@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 268cfc3cb50a · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8fd7e5a37b3a · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -21,11 +21,14 @@ images; examples inside quotes/fences/prose do not count as declarations.
 Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
 Preparation faults publish fixed failures after context/diff validation. Both image
 and pipeline fixture suites are run by the existing panel-prompt structure check.
-Static PNG/WebP/single-rendition ICO use an isolated hash-pinned Pillow12.3 decoder on
-Python3.12 with32 attempts/files and bounded CPU/memory/time/bytes. Preserve source/render
+Static PNG/WebP/single-rendition ICO use an isolated hash-pinned Pillow 12.3.0 decoder on
+Python 3.12 with 32 attempts/files and bounded CPU/memory/time/bytes. Preserve source/render
 hashes and geometry; reject extra frames/renditions. Image failure does not erase response
 presence. Decorated failures block; terminal controls normalize before parsing; unreadable
 review output is distinct from image coverage. No new tool or AWS permission.
+The accepted chair must satisfy required coverage; discarded invalid output without a
+declaration may recover. Explicit/malformed and panel failures remain sticky. Omitted-path
+diagnostics use safe labels, and gate reasons are quoted environment data.
 
 ## Diagnostic and deployment boundaries
 - `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.

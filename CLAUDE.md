@@ -16,6 +16,11 @@ npx tsc --noEmit -p .                    # typecheck — no npm script wraps thi
 No lint script/config exists (no ESLint) — don't go looking for one. Integration tests for the migration/backfill scripts live outside `web/` as `scripts/v2/*.itest.mjs`, run directly with `node scripts/v2/<name>.itest.mjs` — each spins up a disposable `postgres:17` container via `sudo docker` (skips cleanly if Docker is unreachable), not the live Aurora instance.
 **Required database CI exception:** from the repo root, install locked dependencies with `npm ci --prefix web` and `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`. Run `node --test scripts/v2/ci/*.test.mjs` (migration runtime/controller/workflow fixtures and mocked Terraform plans), then `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs` (real PostgreSQL 17 initializer/runner and web connection-phase regressions). The offline fixtures require Node, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform 1.15.7. Both PostgreSQL suites require bare `docker` on PATH, a reachable daemon and OpenSSL; the web connection suite uses the locked web driver and TypeScript dependencies. Missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. No AWS credentials/OIDC or live AWS calls.
 
+The HEAD image fixtures and panel-prompt structure check (`bash tests/run-all.sh`) need
+Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Install it separately with
+`python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`;
+do not combine the hash-locked file with unhashed requirements.
+
 The required web-image helper tests need Linux with `/proc`, jq, and curl installed
 on `/usr/local/bin:/usr/bin:/bin`. Run `python3 -m pytest -q scripts/v2/test_ci_web_image.py`;
 AWS/GitHub responses are mocked and the real curl fixture uses localhost only.

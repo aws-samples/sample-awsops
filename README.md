@@ -188,6 +188,10 @@ awsops/
 ## Testing
 
 Install the dependencies listed in [merge verification](docs/v2-merge-verification.md#runner-usage).
+Image fixtures, including the panel-prompt structure check in `tests/run-all.sh`, require
+Python 3.12 on Linux ARM64/x86-64 and a separate hash-pinned Pillow install:
+`python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
+Do not combine this command with the unhashed requirements install.
 Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
 The required migration and web connection-phase PostgreSQL suites fail if Docker is missing;
@@ -412,6 +416,10 @@ awsops/
 ## 테스트
 
 [머지 검증](docs/v2-merge-verification.md#runner-usage)의 의존성을 먼저 설치하세요.
+`tests/run-all.sh`의 panel-prompt 구조 검사를 포함한 이미지 fixture에는 Linux ARM64/x86-64의
+Python 3.12와 해시가 고정된 Pillow가 필요합니다. 다음 명령을 해시 없는 requirements 설치와
+합치지 말고 별도로 실행하세요:
+`python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
 Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`로
 `pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
 필요합니다. 필수 migration·웹 연결 단계 PostgreSQL 테스트는 레거시 선택적 itest와 달리
