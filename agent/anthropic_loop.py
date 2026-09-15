@@ -313,10 +313,10 @@ async def run_anthropic_loop(payload):
             # while executing on the gateway was a review MAJOR: every call failed, and the mutual
             # exclusion had already dropped the in-house clickhouse lambda fallback.
             stdio_tool_names = {getattr(t, "tool_name", "") for t in clickhouse_stdio_tools}
-            # Same ceiling/order as the Strands path: dedup (gateway precedence) THEN allowlist,
+            # Same ceiling/order as Strands: reject ambiguous identities before dedup,
             # applied to the MCP tool objects BEFORE schema conversion.
-            tools = agent._filter_tools(
-                agent._dedup_by_tool_name(gateway_tools + clickhouse_stdio_tools), tool_allowlist)
+            tools = agent._dedup_by_tool_name(agent._filter_tools(
+                gateway_tools + clickhouse_stdio_tools, tool_allowlist))
 
             if system_prompt_override:
                 tool_lines = []

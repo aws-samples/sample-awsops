@@ -43,6 +43,7 @@ def _p(t, d=""):
 
 
 # target_name -> {gateway, lambda_key (matches terraform output agentcore.lambda_arns), description, tools[]}
+# Web identity mirror: web/lib/gateway-tool-catalog.json; parity enforced by agent-resolver.test.ts.
 TARGETS = {
     "iam-mcp-target": {
         "gateway": "security",

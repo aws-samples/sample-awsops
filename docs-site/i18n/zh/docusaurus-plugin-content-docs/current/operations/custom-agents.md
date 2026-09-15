@@ -64,3 +64,11 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 相关页面
 - [数据源浏览](../observability/datasources) - 浏览在集成中心连接的可观测性数据源
 - [AI 助手](../overview/assistant) - 与配置好的代理对话
+
+## 策略兼容性与发布
+
+内置/收集器路由键（如 `security`、`aws-data`）是保留名称：新自定义名称返回 400，已有冲突记录保留但不再参与路由。请检查已保存的名称和技能绑定。网关授权使用 `target___tool`；短名称必须在该网关内唯一匹配。不再匹配的 cap 可能变为全部拒绝。cap 仅缩小已声明工具范围；仅声明外部集成的代理不会隐式获得网关工具。
+
+已配置的工具限制在清空、禁用或解绑技能后仍保留。迁移回填当前绑定（包括禁用技能），API 不提供恢复无限制模式的重置操作。迁移前已删除的历史限制无法重建，请检查现有配置。仅在没有保留的工具限制，且当前没有 cap 或集成工具授权时，才保留旧版无限制模式。
+
+先通过经审核的独立迁移流程应用 `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql`，再发布 Web。自动 Web 迁移会拒绝其中的 ALTER/trigger。初始自定义策略读取失败时 `/api/chat` 返回 503，唯一例外是 hybrid 模式下的显式内置 pin（默认 hybrid=false 无例外，产品帮助也会因初始失败而返回 503）。初始读取成功后，最终启用检查失败会阻止自定义 pin 调用；自动路由独立选择内置路径并持久化提示。产品帮助跳过该最终读取。`/api/customization` GET 策略读取失败也返回 503。

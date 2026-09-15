@@ -275,3 +275,5 @@ Status discovery only extracts a runtime ID and does not perform that full ARN v
 Both honor an explicitly empty `SSM_RUNTIME_ARN_PARAM`, which the web task receives when
 AgentCore is disabled. The separate `AGENTCORE_RUNTIME_ARN_PARAM` alias and incident bridge's
 literal project paths are unchanged; other control-plane status reads can still run.
+
+The Web custom-agent resolver consumes `web/lib/gateway-tool-catalog.json`, an exact read-only target-identity mirror of `catalog.py`, checked by `web/lib/agent-resolver.test.ts`. Update both together. Both Runtime loops filter ambiguous identities before deduplication; configured empty grants use the legacy-safe deny-all token. Web policy history requires the agent-tool-policy-history migration before Web rollout; Runtime code rollout is separate.

@@ -149,14 +149,15 @@ export function resolveAgent(
     const capped = !!space?.toolAllowlist.length;
     const cap = new Set(qualifyToolNames(space?.toolAllowlist ?? [], known));
     const declaredPolicy = custom.toolPolicyConfigured === true || declared.length > 0;
-    // UI-authored instruction-only skills inherit existing gateway reads. A retained
-    // restriction (including a revoked last scoped skill) must never regain that baseline.
-    const eligible = declaredPolicy ? qualifyToolNames(declared, known) : known;
+    const integTools = egressReadIntegrations.flatMap((i) => i.exposedTools ?? []).filter(Boolean);
+    // Only the legacy unrestricted case inherits gateway reads. An account
+    // cap or integration declaration is a ceiling, never an implicit gateway grant.
+    const legacyUnrestricted = !declaredPolicy && !capped && integTools.length === 0;
+    const eligible = declaredPolicy ? qualifyToolNames(declared, known) : legacyUnrestricted ? known : [];
     const skillEnforced = eligible.filter((id) => !capped || cap.has(id));
-    const integTools = egressReadIntegrations.flatMap((i) => i.exposedTools ?? []);
     // Gateway-qualified names are reserved: an external integration cannot grant a gateway
     // tool by putting its identity in exposedTools. Unqualified integration names remain exact.
-    const integrationAllowed = (tool: string) => !tool.includes('___') &&
+    const integrationAllowed = (tool: string) => !!tool && !tool.includes('___') &&
       (!capped || space!.toolAllowlist.includes(tool));
     const integEnforced = integTools.filter(integrationAllowed);
     const merged = Array.from(new Set([...skillEnforced, ...integEnforced]));

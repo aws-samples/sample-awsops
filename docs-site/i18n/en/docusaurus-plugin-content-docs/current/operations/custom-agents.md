@@ -70,3 +70,11 @@ Connector credentials are not displayed after saving. To change them, re-enter t
 ## Related pages
 - [Datasource Explorer](../observability/datasources) - Explore the observability data sources you connected
 - [AI Assistant](../overview/assistant) - Chat with the agents you configured
+
+## Policy compatibility and rollout
+
+Built-in/collector routing keys (for example `security` and `aws-data`) are reserved: new custom names are rejected with 400, and existing conflicting rows remain stored but no longer route. Review saved names and skill bindings. Gateway grants use `target___tool`; a bare alias must uniquely match within that gateway. A saved cap that no longer intersects can produce deny-all. Caps only remove declared tools; integration-only agents receive no implicit gateway grant.
+
+Once configured, a tool restriction survives emptying, disabling or detaching its skill. The migration backfills current bindings, including disabled skills; the API has no reset to unrestricted mode. Restrictions removed before migration cannot be reconstructed, so review existing configurations. Legacy unrestricted mode requires no retained tool restriction and no current cap or integration tool grant.
+
+Apply `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql` through the reviewed standalone migration flow before the Web rollout. Automatic Web migration rejects its ALTER/trigger statements. Initial custom-policy failure returns `/api/chat` 503 except for explicit built-in pins in hybrid mode (default hybrid=false has no exemption; product help also 503s on initial failure). After a successful initial read, final enablement failure leaves a custom pin unavailable without invocation; automatic routing uses a built-in with a persisted notice. Product help bypasses that final read. A failed `/api/customization` GET policy read also returns 503.

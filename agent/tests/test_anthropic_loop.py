@@ -473,6 +473,25 @@ class RunAnthropicLoopTest(unittest.TestCase):
         tools = _CapturingBedrock.instances[-1].messages.calls[0]["tools"]
         self.assertEqual([t["name"] for t in tools], ["keep"])
 
+    def test_duplicate_identity_is_denied_before_any_deduplication(self):
+        # Exercise the real shared policy functions without importing live SDK clients.
+        import ast
+        from pathlib import Path
+        tree = ast.parse((Path(__file__).parents[1] / "agent.py").read_text())
+        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and n.name in {"_filter_tools", "_dedup_by_tool_name"}]
+        scope = {}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "agent.py", "exec"), scope)
+        m = _install_agent_stub([FakeTool("collision"), FakeTool("safe")])
+        m._filter_tools = scope["_filter_tools"]
+        m._dedup_by_tool_name = scope["_dedup_by_tool_name"]
+        m.apply_official_mcp_gates = lambda tools, key, stack: (
+            tools, [FakeTool("collision")], None)
+        run(al.run_anthropic_loop({"messages": [{"role": "user", "content": "x"}],
+                                   "toolAllowlist": ["collision", "safe"]}))
+        names = [t["name"] for t in _CapturingBedrock.instances[-1].messages.calls[0]["tools"]]
+        self.assertEqual(names, ["safe"])
+
     def test_official_mcp_gates_applied_to_raw_gateway_tools(self):
         # CRITICAL-1 regression guard: the dark path must never skip the shared ADR-017 gates.
         m = _install_agent_stub([FakeTool("raw_gw"), FakeTool("vendor_write")])

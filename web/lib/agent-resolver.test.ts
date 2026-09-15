@@ -170,7 +170,7 @@ print(json.dumps(out))
     expect(resolveAgent(scoped.name, [scoped]).toolAllowlist).toBeUndefined();
     expect(resolveAgent(scoped.name, [scoped], {
       accountId: 'self', enabledAgentIds: [1], enabledSkillIds: [], toolAllowlist: ['list_users'], version: 1,
-    }).toolAllowlist).toEqual(['iam-mcp-target___list_users']);
+    }).toolAllowlist).toEqual([]);
   });
   it('does not turn a disabled last scoped skill into legacy unrestricted mode', () => {
     const scoped = { ...custom, skills: [], toolPolicyConfigured: true };
@@ -182,7 +182,7 @@ print(json.dumps(out))
 });
 
 describe('resolveAgent — ADR-039 egress-READ integration injection', () => {
-  // custom is on the 'security' gateway whose KNOWN_TOOL_CATALOG has 14 IAM tools.
+  // custom is on the 'security' gateway whose target-qualified gateway catalog has 14 IAM tools.
   it('integration tools BYPASS the gateway catalog (a non-IAM tool survives) and union with skill tools', () => {
     const spec = resolveAgent('compliance', [custom], null, [
       { name: 'dd', exposedTools: ['datadog_query'], providedContext: { dashboards: 5 } },
@@ -305,4 +305,13 @@ it('strips Gateway identities from connectable integration metadata as well as t
   }]);
   expect(spec.toolAllowlist).toEqual(['external_query']);
   expect(spec.integrations?.[0].exposedTools).toEqual(['external_query']);
+});
+
+
+it('does not grant gateway reads to an instruction-only integration agent', () => {
+  const scoped = { ...custom, skills: [] };
+  const spec = resolveAgent(scoped.name, [scoped], null, [{
+    name: 'external', exposedTools: ['external_query'],
+  }]);
+  expect(spec.toolAllowlist).toEqual(['external_query']);
 });

@@ -15,7 +15,7 @@
 ## chat (4)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/chat` | POST | AI 챗 — 분류기 → 게이트웨이/Code Interpreter/Bedrock direct 라우팅, SSE 스트리밍 | verifyUser |
+| `/api/chat` | POST | AI 챗 — 분류기 → 게이트웨이/Code Interpreter/Bedrock direct 라우팅, SSE 스트리밍; 초기 커스텀 정책 조회 실패는 503 (아래 예외 참조) | verifyUser |
 | `/api/chat/stats` | GET | AI 호출 운영 통계 (게이트웨이별 호출량/성공률/평균 지연, `agentcore_stats` 집계) | verifyUser |
 | `/api/chat/threads` | GET, DELETE | 대화 스레드 목록/검색(`?q=` 본인 메시지 substring) + 전체 삭제 | verifyUser |
 | `/api/chat/threads/[id]` | GET, DELETE | 스레드 단건 조회/삭제 (사용자별 분리) | verifyUser |
@@ -203,7 +203,7 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/cost/availability` | GET | Cost Explorer 가용성 probe (1h 캐시, `?force=1` 재확인) | verifyUser |
 | `/api/cost/detail` | GET | 서비스별 비용 상세 (`?service=` 필수, ≤100자) | verifyUser |
 | `/api/finops/findings` | GET | ADR-020 FinOps 기본 권장 엔진 — 미해결 findings + 최근 배치 실행(`finops_runs`) 조회, Aurora만 읽음(라이브 AWS 호출 없음). `finops_baseline_enabled=false`면 `{enabled:false, findings:[], lastRun:null}` | verifyUser |
-| `/api/customization` | GET, POST, PUT | 스킬/에이전트 카탈로그 CRUD (ADR-004[legacy 031], admin) | verifyUser |
+| `/api/customization` | GET, POST, PUT | 스킬/에이전트 카탈로그 CRUD (ADR-004[legacy 031], admin); GET 정책 조회 실패는 503 | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
 | `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
@@ -252,13 +252,36 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 
 ## Chat custom-policy availability
 
-Chat reads current catalog and Agent Space policy per turn. A failed final custom
-agent-enable query leaves an explicit custom pin unavailable without invocation.
+`POST /api/chat` first reads current catalog and Agent Space policy. An unavailable
+initial context returns HTTP 503 `{"error":"Custom-agent policy unavailable"}`.
+Only a built-in pin with `HYBRID_ROUTING_ENABLED=true` bypasses that initial failure;
+with the default false setting, even a built-in pin returns 503. Initial failures
+also return 503 for product-help turns. This initial availability boundary is distinct
+from a failure of the later per-candidate enablement check; it does not authorize a
+custom agent from missing policy. `GET /api/customization` returns HTTP 503
+`{"error":"Customization policy unavailable"}` if any required catalog/space read fails.
+
+After a successful initial read, a failed final custom-agent enablement query leaves
+an explicit custom pin unavailable, with a streamed explanation and no invocation.
 Automatic routing removes custom candidates, independently resolves built-in routing,
-and displays/persists that fallback notice. Product-help routing skips this final custom
-query even when keywords match. Successful explicit deny-all remains deny-all; this
-availability handling does not add tool permissions. Initial catalog-read failures retain
-the existing SAMPLE unavailable response except for independently resolved built-in pins.
+and displays/persists its fallback notice. Product-help routing skips this final query
+even when custom keywords match. Successful deny-all remains deny-all.
+
+Tool grants use exact gateway target identities (`target___tool`); a bare alias must
+resolve uniquely within that gateway. An account cap only removes declared tools, and
+an integration-only agent receives no implicit gateway grant. Unknown/foreign names
+can leave an empty grant, which is encoded as deny-all, including for older runtimes.
+Reserved built-in/collector routing keys cannot name custom agents; existing conflicting
+rows remain stored but do not route. Review saved names and caps before rollout.
+
+The `agents.tool_policy_configured` marker retains restriction history across scope
+edits, disabling and detachment. Existing scoped bindings (including disabled ones) are
+backfilled; the API has no reset to unrestricted mode. Historical bindings removed
+before migration cannot be reconstructed: review such saved configurations explicitly.
+Apply `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql` through the standalone reviewed migration
+flow before deploying this Web reader. Automatic Web migration refuses its ALTER/trigger
+statements; do not bypass that gate. Catalog tables have no `sql_reader` projection to
+refresh. A source merge alone does not apply the migration or update the Runtime image.
 
 ## Configuration topology inventory evidence
 
