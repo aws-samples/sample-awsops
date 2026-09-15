@@ -1,3 +1,4 @@
+import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getDefaultDatasource = vi.fn();
@@ -533,11 +534,16 @@ describe('SourceRead provenance and bounds', () => {
 
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
     configure(kind);
-    invokeMcpLambdaTool.mockResolvedValue(payload);
+    invokeMcpLambdaTool.mockResolvedValue({ ...payload, collectionStatus: 'empty' });
     expect(await read()).toEqual({
       items: [], status: 'ok', sourceId: `${kind}:7`, reasons: [],
       windowStartMs: END_MS - 1_800_000, windowEndMs: END_MS,
     });
+  });
+  it.each(factories)('%s retains unmarked legacy empty data as unconfirmed', async (kind, read, payload) => {
+    configure(kind);
+    invokeMcpLambdaTool.mockResolvedValue(payload);
+    expect(await read()).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
   });
 
   it.each(factories)('%s never turns errors/malformed payloads/truncation into valid empty data', async (kind, read) => {
@@ -808,9 +814,36 @@ describe('metrics identity and query provenance', () => {
     expect(result.items).toHaveLength(1);
     expect(result.status).toBe('partial');
     expect(result.reasons).toEqual(expect.arrayContaining(['malformed_rows', 'payload_truncated']));
-    invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [{ ...valid, value: [0, '0'] }] });
+    const zero = { resultType: 'vector', result: [{ ...valid, value: [0, '0'] }] };
+    invokeMcpLambdaTool.mockResolvedValue(zero);
+    expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
+    invokeMcpLambdaTool.mockResolvedValue({ ...zero, collectionStatus: 'ok' });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'ok', reasons: [] });
     invokeMcpLambdaTool.mockResolvedValue({ resultType: 'matrix', result: [] });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'error' });
+  });
+});
+
+
+describe('typed producer collection status', () => {
+  beforeEach(() => {
+    getDatasource.mockReset(); resolveConnConfig.mockReset(); invokeMcpLambdaTool.mockReset();
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://fixture', token: 'private-token' });
+  });
+  it.each(tempoContracts)('Tempo $name never becomes an unproven successful empty read', async fixture => {
+    getDatasource.mockResolvedValue({ id: 7, kind: 'tempo' });
+    invokeMcpLambdaTool.mockResolvedValue(fixture.body);
+    const read = await new TempoTraceSource(7).recentSpans(30, 1000);
+    expect(read.status).toBe(fixture.readStatus);
+    expect(read.items).toEqual([]);
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(read)).not.toContain('private-token');
+  });
+  it.each(['prometheus', 'mimir'] as const)('%s metric collection markers restrict empty reads', async kind => {
+    getDatasource.mockResolvedValue({ id: 7, kind });
+    for (const [collectionStatus, expected] of [['empty', 'ok'], ['partial', 'partial'], ['unknown', 'error']] as const) {
+      invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [], truncated: false, collectionStatus });
+      expect((await new MetricsCallsSource(7, kind, 'fixture').calls(30)).status).toBe(expected);
+    }
   });
 });

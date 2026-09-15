@@ -1392,12 +1392,17 @@ def sync(resource_type):
             # (owner_id == account_id) so each snapshot is attributed once, to its true owner.
             if resource_type == "ebs_snapshot":
                 recs = [r for r in recs if str(r.get("owner_id")) == str(r.get("account_id"))]
-            seen = set()
+            # Match the persistence key before upserts, ledger counts and account snapshots.
+            # Duplicate joins keep the same last-row-wins value as the existing upsert.
+            by_identity = {}
             for rec in recs:
                 rid = str(rec.get(id_col))
                 region = str(rec.get(region_col) or "")
                 acct = _rec_account(rec)  # the row's real account (aggregator fan-out), not a literal 'self'
-                seen.add((acct, region, rid))
+                by_identity[(acct, region, rid)] = rec
+            recs = list(by_identity.values())
+            seen = set(by_identity)
+            for (acct, region, rid), rec in by_identity.items():
                 adb.run("INSERT INTO inventory_resources (resource_type, account_id, region, resource_id, data, captured_at) "
                         "VALUES (:t,:acct,:rg,:id,:d::jsonb,now()) "
                         "ON CONFLICT (resource_type, account_id, region, resource_id) "
