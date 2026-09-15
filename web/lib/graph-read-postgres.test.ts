@@ -63,6 +63,38 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
   });
   afterAll(async () => { await pool?.end(); });
 
+  it.each(['all-empty', 'mixed'])('retains saved trace rows for %s child coverage', async mode => {
+    await rebuildTraceGraph(pool, [], undefined, [{
+      available: async () => true,
+      calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:test',
+        items: [{ client: 'api', server: 'db', count: 7 }], status: 'ok',
+        reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
+    }]);
+    const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+    const nodes = (await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    const end = new Date(previous.attempted_at).getTime() + 1;
+    const child = { batches: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'new-service' } }] },
+      scopeSpans: [{ spans: [{ traceId: '2', spanId: '0000000000000001', kind: 1,
+        startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
+        endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+    producer.invoke.mockReset()
+      .mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }, { traceID: '2' }] })
+      .mockResolvedValueOnce({ batches: [] })
+      .mockResolvedValueOnce(mode === 'mixed' ? child : { batches: [] });
+    const source = new TempoTraceSource(7), observed = vi.spyOn(source, 'recentSpans');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
+    try { await rebuildTraceGraph(pool, [source]); }
+    finally { clock.mockRestore(); }
+    const read = await observed.mock.results[0].value;
+    expect(read).toMatchObject({ status: 'partial', canSweep: false, reasons: ['incomplete_collection'] });
+    expect(read.items).toHaveLength(mode === 'mixed' ? 1 : 0);
+    const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+    expect(after.status).toBe('partial');
+    expect(after.details.retainedPrevious).toBe(true);
+    expect(after.captured_at).toEqual(previous.captured_at);
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
+  });
+
   it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' },
     { name: 'completed search but empty child trace', body: { collectionStatus: 'ok', traces: [{ traceID: '1' }] },
       readStatus: 'partial' }])(

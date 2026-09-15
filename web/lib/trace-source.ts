@@ -9,6 +9,8 @@ export interface SourceRead<T> {
   reasons: string[];
   windowStartMs: number;
   windowEndMs: number;
+  /** A successful sibling read cannot authorize deletion after a missing child. */
+  canSweep?: false;
 }
 
 export interface TraceIdentity {
@@ -453,6 +455,7 @@ export class TempoTraceSource implements TraceSource {
       return id ? [id] : [];
     }))].slice(0, TEMPO_TRACE_CAP);
     const items: TraceSpan[] = [];
+    let missingChild = false;
     for (const traceId of traceIds) {
       if (items.length >= limit) { reasons.push('cap_reached'); break; }
       try {
@@ -461,6 +464,10 @@ export class TempoTraceSource implements TraceSource {
         });
         const parsed = parseTempoTrace(traceId, payload);
         reasons.push(...parsed.reasons);
+        if (!parsed.items.length && !parsed.reasons.length) {
+          missingChild = true;
+          reasons.push('incomplete_collection');
+        }
         const selected = parsed.items.filter((s) => inWindow(s, window));
         if (selected.length > limit - items.length) reasons.push('cap_reached');
         items.push(...selected.slice(0, limit - items.length).map((s) => ({ ...s, sourceId })));
@@ -468,10 +475,9 @@ export class TempoTraceSource implements TraceSource {
         reasons.push('trace_fetch_failed');
       }
     }
-    // Search IDs prove matching traces existed; empty child fetches cannot prove their absence.
-    if (traceIds.length && !items.length && !reasons.length) reasons.push('incomplete_collection');
     requireEmptyProof(search, items, reasons);
-    return readResult(sourceId, window, items, reasons);
+    return { ...readResult(sourceId, window, items, reasons),
+      ...(missingChild ? { canSweep: false as const } : {}) };
   }
 }
 
