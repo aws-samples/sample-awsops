@@ -12,7 +12,7 @@
 //
 // The gated web/instrumentation.ts timer invokes this logic in the web process.
 import { getPool } from '../../web/lib/db.ts';
-import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from '../../web/lib/graph-store.ts';
+import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } from '../../web/lib/graph-store.ts';
 import { loadGraphSources } from '../../web/lib/graph-sources.ts';
 import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 
@@ -41,6 +41,7 @@ try {
     await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
   } catch (error) {
     failed = true;
+    await execute('trace', () => recordTraceSourceFailure(pool));
     console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
   }
   process.exitCode = failed ? 1 : incomplete ? 2 : 0;

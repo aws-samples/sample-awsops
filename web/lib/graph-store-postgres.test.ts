@@ -6,6 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
+import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
@@ -445,12 +446,34 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       .toMatchObject({ published: 1, degraded: 1, nodes: 200, edges: 500 });
     expect(await state('trace')).toMatchObject({ status: 'partial', nodeDrops: 1, edgeDrops: 1, retainedPrevious: false });
   }, 10_000);
-  it.each(['error', 'unavailable', 'partial'] as const)('trace %s retains its prior graph and reports no publication', async status => {
+  it.each(['error', 'unavailable', 'partial', 'registry'] as const)('trace %s retains its prior graph and reports no publication', async status => {
     await trace();
     const previous = await state('trace');
-    expect(await trace([], status)).toMatchObject({ published: 0, retained: 1, skipped: 0, nodes: 0, edges: 0 });
-    expect(await state('trace')).toMatchObject({ status, stale: true, retainedPrevious: true, captured_at: previous.captured_at });
+    expect(await (status === 'registry' ? graphStore.recordTraceSourceFailure(pool) : trace([], status)))
+      .toMatchObject({ published: 0, retained: 1, skipped: 0, nodes: 0, edges: 0 });
+    expect(await state('trace')).toMatchObject({ status: status === 'registry' ? 'error' : status,
+      stale: true, retainedPrevious: true, captured_at: previous.captured_at });
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+  });
+  it('does not replace trace evidence when the infra-read admission is busy', async () => {
+    await trace(); const previous = await state('trace');
+    const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    let connects = 0;
+    const wrapped = { connect: async () => {
+      if (++connects === 2) throw new GraphReadBusy('fixture admission busy');
+      return pool.connect();
+    } } as Pool;
+    expect(await trace([{ client: 'replacement', server: 'other', count: 1 }], 'ok', wrapped))
+      .toMatchObject({ published: 0, skipped: 1, reasons: ['rebuild_busy'] });
+    expect(await state('trace')).toEqual(previous);
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
+  });
+  it('keeps nonempty inventory evidence distinct from an empty derived graph', async () => {
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('lambda','outside-vpc','{"vpc_id":null,"vpc_subnet_ids":[],"vpc_security_group_ids":[]}',$1)`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='lambda'");
+    expect(await build('infra')).toMatchObject({ published: 1, nodes: 0 });
+    expect(await state('infra')).toMatchObject({ status: 'ok' });
   });
   it('trace publishes degraded evidence and confirmed empty with distinct outcomes', async () => {
     expect(await trace(undefined, 'partial')).toMatchObject({ published: 1, degraded: 1, nodes: 2, edges: 1 });
