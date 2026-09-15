@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildFlowGraph } from './flow-topology';
 import { buildTraceGraph } from './trace-graph';
-import type { FlowGraph, FlowNode } from './flow-topology';
+import type { FlowGraph, FlowInput, FlowNode } from './flow-topology';
 import type { TraceIdentity, TraceSpan } from './trace-source';
 import type { E2eGraph, E2eInput, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from './nfm';
@@ -224,7 +224,7 @@ describe('buildE2eGraph — evidence and provenance', () => {
     });
     const malformed = {
       local: null, remote: { ip: 123, region: {}, vpcId: [] },
-      value: 0, traversed: [null, 123], traversedIds: [null, {}],
+      value: 0, traversed: [null, 123], traversedIds: [null, {}, ':x', ' :x'],
     } as unknown as NfmFlowRow;
     const graph = buildE2eGraph(input({
       configured: { nodes: [target()], edges: [{ id: 'bad', source: 'missing', target: 'target:web', confidence: 'observed' }] },
@@ -250,6 +250,8 @@ describe('buildE2eGraph — evidence and provenance', () => {
     };
     freeze(source);
     const graph = buildE2eGraph(source);
+    const projected = graph.nodes.find(node => node.kind === 'connection')!.meta.flow as NfmFlowRow;
+    expect(() => { projected.value = 999; }).not.toThrow();
     selectE2eGraph(graph, { query: 'web', maxNodes: 1 });
     expect(source).toEqual(before);
   });
@@ -331,6 +333,7 @@ describe('buildE2eGraph — scoped target identity', () => {
     }));
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe('configuration_conflict');
   });
 
   it('does not borrow one incoming TG scope when another TG gives the same target conflicting scope', () => {
@@ -429,6 +432,7 @@ describe('buildE2eGraph — workload identity', () => {
     }));
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.summary.ambiguousEndpoints).toBe(1);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe('pod_identity_conflict');
   });
 
   it('uses the exact grouped member instead of the first replica metadata retained on the group', () => {
@@ -594,19 +598,20 @@ describe('buildE2eGraph — trace scope constraints', () => {
   }));
 
   it.each([
-    { scope: { region: 'us-east-1' }, tg: {} },
-    { scope: { accountId: '999999999999' }, tg: { account_id: host } },
-    { scope: { accountId: host }, tg: {} },
-    { scope: { accountId: host }, tg: { account_id: 'self' } },
-    { scope: { accountId: undefined }, tg: { account_id: host } },
-    { scope: { region: undefined }, tg: { account_id: host } },
-    { scope: { accountId: 'unknown' }, tg: { account_id: host } },
-  ])('withholds identity for unknown or conflicting real trace scope: %j', ({ scope, tg }) => {
+    { scope: { region: 'us-east-1' }, tg: {}, reason: 'workload_conflict' },
+    { scope: { accountId: '999999999999' }, tg: { account_id: host }, reason: 'workload_conflict' },
+    { scope: { accountId: host }, tg: {}, reason: 'workload_scope_unverified' },
+    { scope: { accountId: host }, tg: { account_id: 'self' }, reason: 'workload_scope_unverified' },
+    { scope: { accountId: undefined }, tg: { account_id: host }, reason: 'workload_scope_unverified' },
+    { scope: { region: undefined }, tg: { account_id: host }, reason: 'workload_scope_unverified' },
+    { scope: { accountId: 'unknown' }, tg: { account_id: host }, reason: 'workload_scope_unverified' },
+  ])('withholds identity for unknown or conflicting real trace scope: %j', ({ scope, tg, reason }) => {
     const snapshot = producedServices(scope);
     const graph = compose(snapshot, tg);
     expect(graph.nodes.filter(node => node.layer === 'service')).toHaveLength(2);
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.summary.ambiguousEndpoints).toBe(1);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe(reason);
     expectNoDanglingEdges(graph);
   });
 
@@ -662,7 +667,11 @@ describe('buildE2eGraph — trace scope constraints', () => {
   it('cannot recover missing service scope from a workload hash', () => {
     const snapshot = producedServices({ accountId: host });
     snapshot.nodes = snapshot.nodes.filter(node => node.kind === 'workload');
-    expect(identityEdges(compose(snapshot, { account_id: host }))).toEqual([]);
+    const graph = compose(snapshot, { account_id: host });
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+      .toMatchObject({ correlation: 'ambiguous', correlationReason: 'workload_scope_unverified' });
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, ambiguousEndpoints: 1, unmatchedEndpoints: 1 });
   });
 
   it('does not discard a scope-unverified workload to choose its scoped competitor', () => {
@@ -833,6 +842,60 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
     });
     expect(graph.summary.correlatedEndpoints).toBe(0);
     expect(graph.nodes.find(n => n.kind === 'target')?.meta.ownership_evidence).toBe('cached_configuration');
+  });
+
+  function cachedEcsConfig(ownershipRead: FlowInput['ownershipRead'], conflict = false): FlowGraph {
+    return buildFlowGraph({
+      ownershipRead,
+      tg: [{ resource_id: 'tg-web', region: REGION, vpc_id: VPC, account_id: '111111111111', target_type: 'ip',
+        target_health_descriptions: [{ Target: { Id: local.ip, Port: 443 } }] }],
+      ecsTask: [{ resource_id: 'task/web', region: REGION, last_status: 'RUNNING', task_group: 'service:web',
+        cluster_arn: 'cluster/app', attachments: [{ Details: [
+          { Name: 'privateIPv4Address', Value: local.ip }, { Name: 'subnetId', Value: 'subnet-web' },
+        ] }] }],
+      subnet: [{ resource_id: 'subnet-web', region: REGION, vpc_id: VPC }],
+      ...(conflict ? { ipResolved: { [`${REGION}|${VPC}|${local.ip}`]: null } } : {}),
+    });
+  }
+
+  it.each([true, false])('keeps real ECS configurationOnly=%s output as context with zero identity edges', configurationOnly => {
+    const config = cachedEcsConfig({ configurationOnly });
+    expect(config.nodes.find(n => n.kind === 'target')?.meta).toMatchObject({
+      ownership_evidence: 'cached_configuration', ...(configurationOnly ? { ownership_reason: 'eks_not_enumerated' } : {}),
+    });
+    const graph = buildE2eGraph(input({ configured: config, services: producedServices(),
+      network: [observation([flow({ local })])] }));
+    expect(identityEdges(graph)).toHaveLength(0);
+    expect(graph.edges.filter(e => e.relation === 'configured-endpoint-match')).toMatchObject([{ evidence: 'context' }]);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+      .toMatchObject({ correlation: 'unmatched', correlationReason: 'context_only' });
+    expect(graph.nodes.find(n => n.meta.side === 'remote')?.meta.correlationReason).toBe('no_match');
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, unmatchedEndpoints: 2, ambiguousEndpoints: 0 });
+  });
+
+  it.each(['conflict', 'incomplete', 'unknown-reason', 'scope-unknown', 'scope-unverified', 'multiple',
+    'target-marker', 'parent-marker', 'parent-row-marker'])('keeps cached context vetoed by %s', veto => {
+    const config = cachedEcsConfig({ configurationOnly: true,
+      ...(veto === 'incomplete' ? { targetGroup: 'failed' as const } : {}) }, veto === 'conflict');
+    const node = config.nodes.find(n => n.kind === 'target')!;
+    const parent = config.nodes.find(n => n.kind === 'tg')!;
+    const row = parent.meta!.row as Record<string, unknown>;
+    if (veto === 'unknown-reason') node.meta!.ownership_reason = 'unknown_reason';
+    if (veto === 'scope-unknown') delete row.vpc_id;
+    if (veto === 'scope-unverified') node.meta!.ownership_evidence = 'scope_unverified';
+    if (veto === 'target-marker') node.meta!.e2e_correlation_blocked = true;
+    if (veto === 'parent-marker') parent.meta!.e2e_correlation_blocked = true;
+    if (veto === 'parent-row-marker') row.e2e_correlation_blocked = true;
+    if (veto === 'multiple') {
+      config.nodes.push({ ...node, id: 'competing-target' });
+      config.edges.push({ id: 'competing-edge', source: parent.id, target: 'competing-target', confidence: 'observed' });
+    }
+    const graph = buildE2eGraph(input({ configured: config, services: producedServices(),
+      network: [observation([flow({ local })])] }));
+    expect(graph.edges.filter(e => e.evidence === 'identity' || e.relation === 'configured-endpoint-match')).toEqual([]);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta).toMatchObject({
+      correlation: 'ambiguous', correlationReason: veto === 'multiple' ? 'configuration_conflict' : 'configuration_unverified',
+    });
   });
 
   it('separates a configured endpoint record match from a complete pod identity match', () => {
@@ -1102,6 +1165,30 @@ describe('selectE2eGraph — filtering before bounds', () => {
       expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
       expectNoDanglingEdges(view);
     }
+  });
+
+  it.each(['focus', 'search', 'both'])('completes independent flows selected from a shared construct by %s', mode => {
+    const graph = buildE2eGraph(input({ network: [observation([1, 2].map(i => flow({
+      local: { ip: `10.${i}.1.1` }, remote: { ip: `10.${i}.1.2` }, traversedIds: ['NAT:nat-shared'],
+    })))] }));
+    const construct = graph.nodes.find(node => node.kind === 'construct')!;
+    const selection = {
+      ...(mode !== 'search' ? { focusId: construct.id } : {}),
+      ...(mode !== 'focus' ? { query: construct.id } : {}),
+    };
+    for (const [maxNodes, maxEdges, connections] of [[7, 6, 2], [4, 6, 1], [7, 2, 1], [3, 6, 0]]) {
+      const view = selectE2eGraph(graph, { ...selection, maxNodes, maxEdges });
+      expect(view.nodes.filter(node => node.kind === 'connection')).toHaveLength(connections);
+      expect(view.nodes.filter(node => node.kind === 'endpoint')).toHaveLength(connections * 2);
+      expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(connections * 2);
+      expect(view.nodes.length).toBeLessThanOrEqual(maxNodes);
+      expect(view.edges.length).toBeLessThanOrEqual(maxEdges);
+      expect(view.omittedNodes).toBe(7 - view.nodes.length);
+      expect(view.omittedEdges).toBe(6 - view.edges.length);
+      expectNoDanglingEdges(view);
+    }
+    expect(selectE2eGraph(graph, { ...selection, evidence: ['context'] }).nodes
+      .some(node => node.kind === 'endpoint')).toBe(false);
   });
 
   it('applies evidence filters before reachability and preserves isolated nodes in selected layers', () => {

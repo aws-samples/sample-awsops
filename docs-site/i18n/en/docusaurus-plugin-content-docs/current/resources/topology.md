@@ -109,6 +109,8 @@ Configuration and service-call arrows retain their direction. NFM **Local** and 
 
 Resource matching requires an exact IP or instance ID with corroborating **region and VPC** scope. A workload link additionally needs configured endpoint evidence confirming the exact **cluster + namespace + Pod** tuple on the relevant side. A cluster name inferred from a monitor prefix is only a hint. Matching service names alone, a NAT address, or an unsupported DNS/IP or managed-service association cannot establish identity. Missing scope, duplicate candidates and conflicting identities remain unlinked or ambiguous. Cross-source correlations never prove one traced request, causality or an E2E traffic total.
 
+Unmatched and withheld counts measure row-side observations, not unique endpoints; the same Pod can appear in several rows. Details explain withheld identity and cached configuration context. Evidence lists show the first 20 entries and the remaining count independently of canvas limits. Main-flow ranking compares values only within one metric/unit group.
+
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
 - Does this CloudFront distribution talk to its origin over TLS?

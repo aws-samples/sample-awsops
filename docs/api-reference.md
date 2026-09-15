@@ -133,7 +133,7 @@ These are query bounds and truncation signals, not proof of complete traffic cov
 The route owns `RANGE_ALLOWED` (900/1800/3600 seconds); an unsupported or omitted range
 uses its existing 3600-second default. Metric/category allowlists remain in `nfm.ts`.
 
-The standalone `topology-observations.ts` loader is **unwired until topology integration**.
+The client-side `topology-observations.ts` loader powers explicitly requested queries in `/topology?view=e2e`.
 Its `NetworkBatch` is a client result, not additional HTTP response fields: it carries
 failed/capped categories, `complete`/`partial` status and per-category `verified`/`unknown`
 window quality. `verified` means parseable, ordered bounds only. Failures use closed codes
@@ -141,6 +141,12 @@ window quality. `verified` means parseable, ordered bounds only. Failures use cl
 upstream error text. Missing/invalid windows remain unknown and make the batch partial.
 At most three workers bound category concurrency; cancellation stops further scheduling and result
 application, without guaranteeing cancellation of a server query already started.
+
+### Service/network graph composition
+
+`web/lib/e2e-topology.ts` and `E2eGraphCanvas.tsx` compose the opt-in `/topology?view=e2e` view without adding an HTTP API. The integration uses the full loaded inventory-built configuration graph, the existing host trace snapshot and explicit NFM queries. `NetworkObservation` remains owned by the category loader and is re-exported as a type.
+
+Only the host `self` scope combines observations. Unique scoped record matches and corroborated workload tuples remain separate from ownership assertions; missing/conflicting evidence withholds identity. Persisted configuration-only records can supply cached context under the documented sole-reason exception, never identity. Counters count row/side observations. The canvas bounds display at 350 nodes/700 edges, preserves complete admitted connections, and discloses omissions independently from source truncation and evidence-detail limits.
 
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
