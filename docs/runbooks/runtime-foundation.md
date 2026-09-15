@@ -14,7 +14,9 @@ Use Terraform 1.15.7 and both `scripts/v2/requirements-test.txt` and `scripts/v2
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_*.py
 bash scripts/v2/terraform-test.sh
-python3 -m pytest -q scripts/v2/steampipe/test_host_scope.py
+python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
+  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
+  scripts/v2/steampipe/test_healthcheck.py scripts/v2/steampipe/test_observed_stop.py
 node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ```
 
@@ -24,7 +26,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
 2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and the enabled host registry. Empty target configuration permits no enabled foreign rows; [explicit targets](#explicit-runtime-targets) permit only approved subsets during onboarding.
-3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
+3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan; enforce the [Steampipe image/health-command prerequisites](#explicit-runtime-targets).
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
 5. Inspect the same branch/SHA plan privately in S3 and supply its `reviewed_plan_sha256` to apply; CI verifies pinned assets and HMAC. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
 
@@ -57,14 +59,43 @@ The collector receives the same IDs plus the actual expected host account. Its s
 AssumeRole policy lists only configured `AWSopsReadOnlyRole` ARNs; target trust and
 the registry ExternalId remain separate prerequisites. Rendering preserves that
 ExternalId and fails closed on unapproved/duplicate enabled accounts or a wrong host.
+The pinned AWS plugin 0.142.0 accepts `profile`, not `assume_role_arn` or
+`assume_role_external_id` connection attributes. Members select generated AWS shared
+profiles with `role_arn`, optional `external_id` and `credential_source=EcsContainer`;
+the host keeps ambient ECS task credentials. The service reads `AWS_CONFIG_FILE` at
+`/home/steampipe/.awsops-runtime/current/config`; the pg8000 health probe does not use it.
+`AWS_SPC_PATH` remains a regular file, defaulting to
+`/home/steampipe/.steampipe/config/aws.spc`. SPC and profile files are 0600, with private
+profile generations in 0700 directories. Each generation retains an SPC scope copy and
+role/ExternalId profile metadata, but no access keys or session tokens.
+The publisher stages both files while the service is stopped, switches the profile
+generation pointer, then replaces the regular SPC file. It launches only after both
+publications succeed. Each replacement is atomic; the stopped-service
+boundary protects the pair, not an atomic transaction for arbitrary concurrent readers.
+Profile values reject INI injection. See the [pinned contract and checks](steampipe-quota-and-staleness.md#pinned-aws-profile-contract).
 The running collector may contain the host plus a subset of approved targets during
 onboarding; it never silently discards an out-of-scope row. A registered member must
 have `all_regions=true` or at least one enabled region; a member with no renderable
 scope fails closed. The existing watchdog re-reads Aurora every 300 seconds and
 rewrites/restarts Steampipe when scope changes, including host-only startup followed
-by approved member registration. No exact-member requirement is imposed on initial
-rendering. Empty non-profile
-configuration retains the legacy collector scope and AssumeRole behavior.
+by approved member registration or an ExternalId-only change. Restart holds the existing
+lock across observable loopback-listener closure, paired-file publication and process launch.
+The stop CLI exit code alone is not proof that the listener stopped.
+After a completed CLI call, any return code requires loopback `ECONNREFUSED` before launch.
+Poll for at most 10 seconds, with 0.2-second intervals and each connection attempt capped
+at one second; clip attempts and waits to the remaining budget. An accepted connection
+means open; a timeout or other socket error leaves closure unconfirmed. Neither is closed.
+Without refusal before the deadline, restart remains blocked. CLI timeout/error,
+unconfirmed closure at that deadline, or publication failure causes PID 1
+to exit nonzero so ECS can replace its own container; graceful SIGTERM remains graceful.
+The supervisor checks shutdown at most one second between child waits, including
+when teardown fails and the child remains alive. Health uses a bounded loopback
+pg8000 `SELECT 1`, never `steampipe query`, whose auto-start bypasses the restart lock.
+The launch log is not proof that the plugin loaded its schemas or that collection works.
+No exact-member requirement is imposed on initial rendering. With no explicit targets
+and host-only mode disabled, legacy collector account selection and existing AssumeRole
+grants retain their behavior. Member connections still use supported shared profiles;
+the credential mechanism does not restore unsupported inline SPC assume-role attributes.
 
 Roll out code while host-only. After the runtime changes merge to `dev`, rebuild the
 Steampipe **ARM64** image through `build-runtime-images.yml` with `component=steampipe`:
@@ -75,7 +106,10 @@ gh workflow run build-runtime-images.yml -R aws-samples/sample-awsops --ref dev 
 
 Verify the build run's source SHA matches the reviewed merged runtime SHA, then update
 the protected `STEAMPIPE_IMAGE_DIGEST_DEV` variable to that run's verified digest.
-The image must contain the updated `gen_spc_entrypoint.py` allowlist guard. Retain the
+The image must contain the scope guard, supported shared-profile publisher and
+`/app/healthcheck.py`; the saved apply
+must also switch the task definition to `python3 /app/healthcheck.py`. Rebuild the
+inventory image before applying this health command to any enabled stack. Retain the
 existing approved `WORKER_IMAGE_DIGEST_DEV`; no worker rebuild is needed when worker
 source is unchanged. Next review the configured saved Terraform plan and apply it
 before registering target roles through the UI. The same apply must deploy the
@@ -186,6 +220,19 @@ An explicit false decision still needs the reviewed apply to remove managed memb
 ## Rollback
 
 Retain runtime resources and restore reviewed prior digests/settings. Manual dev/preview plans and apply block listed core deletion/replacement/forget; this development policy does not cover main. No retirement mode is provided. A destructive teardown needs a separate reviewed procedure covering Aurora ingress, migration dependencies and optional gates.
+
+Treat the Steampipe image and task-definition health command as a pair. A rollback to
+an image predating `/app/healthcheck.py` must restore that image's compatible health
+command **in the same reviewed saved plan** as the image digest. Never roll back only
+the digest while retaining `CMD python3 /app/healthcheck.py`, or disable health checks
+to compensate. Preserve ALLDNS/private Cloud Map restrictions and all required
+plan, apply and runtime gates; this compatibility rule grants no bypass.
+
+An image predating the supported shared-profile publisher also loses that member
+credential-resolution capability. Review compatible collector configuration and scan
+scope as part of the rollback, including registry and target-proof requirements.
+A passing health check does not restore member collection. Do not silently remove
+targets or relax the required runtime gates to accept an incompatible image.
 
 <a id="promotion-to-main--main-승격"></a>
 
