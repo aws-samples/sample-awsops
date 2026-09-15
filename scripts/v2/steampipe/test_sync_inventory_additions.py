@@ -362,10 +362,9 @@ def test_iam_role_query_carries_attached_policy_arns():
 
 
 def test_iam_role_hydrate_fallback_sql_is_the_query_minus_the_hydrate():
-    """Round-8 gate: a fleet whose aggregate role count exceeds the hydrate budget must not
-    permanently fail the whole iam_role sync — the fallback SQL is EXACTLY the primary query
-    with the hydrate column removed, so the base inventory never regresses and only the
-    drill-down column disappears (its consumer renders 'not synced yet')."""
+    """Fallback removes only the optional policy-list column. GetRole/instance-profile
+    hydrates remain, so successful base-row refresh is conditional, not guaranteed.
+    A successful fallback discloses the missing policy list as 'not synced yet'."""
     sql, _id, _rg = sync_lambda.QUERIES["iam_role"]
     fallback = sync_lambda.HYDRATE_FALLBACK_SQL["iam_role"]
     assert "attached_policy_arns" not in fallback
@@ -408,9 +407,9 @@ def _fake_steampipe_factory(script, timeouts):
 
 
 def test_hydrated_query_failure_falls_back_to_base_inventory(monkeypatch):
-    """Round-8 gate control flow: primary (hydrated, 180s) fails → ONE hydrate-free retry
-    (90s) succeeds, the base rows come back, and fallback_used=True so the caller can
-    disclose the degraded sweep (round-9 gate) — never a whole-type failure."""
+    """Primary (180s) fails, then one fallback (90s) succeeds in this fixture.
+    Returned base rows carry fallback_used=True for degraded disclosure. This fixture
+    does not claim that remaining fallback hydrates always succeed."""
     timeouts = []
     monkeypatch.setattr(
         sync_lambda, "_steampipe",

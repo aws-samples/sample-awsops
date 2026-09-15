@@ -134,8 +134,9 @@ QUERIES = {
         # See steampipe-quota-and-staleness.md for the primary/fallback lower bounds.
         # If the hydrated query fails (budget timeout,
         # SCP-blocked hydrate, anything), sync() retries ONCE with HYDRATE_FALLBACK_SQL (same
-        # columns minus the hydrate) so the BASE iam_role inventory never regresses; only the
-        # drill-down column is absent, and the run is DISCLOSED as degraded via
+        # columns minus the optional policy list). Base rows refresh only if the remaining
+        # queries succeed; otherwise the query fails and preserves last-good rows. A
+        # successful fallback is DISCLOSED as degraded via
         # unknown_attribute_count (ADR-021 freshness machinery) plus the
         # inventory_sync_hydrate_fallback log event, whose remedy is cause-specific: budget
         # timeout → raise the limiter fill_rate (0.1–20, ADR-021 Phase-1 defaults); SCP/IAM
