@@ -7,6 +7,15 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '호스트 계정 범위를 확인하는 중…': { en: 'Checking host account scope…', zh: '正在确认主账户范围…', ja: 'ホストアカウントの範囲を確認中…' },
+  '호스트 계정 범위를 확인할 수 없습니다.': { en: 'Host account scope could not be verified.', zh: '无法确认主账户范围。', ja: 'ホストアカウントの範囲を確認できません。' },
+  '현재 적용된 네트워크 관측이 없습니다.': { en: 'No network observation query is currently applied.', zh: '当前未应用网络观测查询。', ja: '現在適用されているネットワーク観測クエリはありません。' },
+  '네트워크 관측을 불러오는 중입니다.': { en: 'Loading network observations.', zh: '正在加载网络观测。', ja: 'ネットワーク観測を読み込み中です。' },
+  '네트워크 관측 범위가 불완전합니다.': { en: 'Network observation coverage is incomplete.', zh: '网络观测覆盖不完整。', ja: 'ネットワーク観測の範囲が不完全です。' },
+  '네트워크 관측 조회가 실패했습니다.': { en: 'The network observation query failed.', zh: '网络观测查询失败。', ja: 'ネットワーク観測クエリが失敗しました。' },
+  '네트워크 관측 조회 상태를 확인할 수 없습니다.': { en: 'Network observation read status is unknown.', zh: '网络观测读取状态未知。', ja: 'ネットワーク観測の取得状態は不明です。' },
+  '조회 실패 분류:': { en: 'Failed categories:', zh: '查询失败的类别：', ja: '取得に失敗した分類:' },
+  '관측 기간 미확인 분류:': { en: 'Categories with unknown observation windows:', zh: '观测时间范围未知的类别：', ja: '観測期間が不明な分類:' },
   // Integrated source panels and controls.
   '선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.': { en: 'Correlation uses the full configuration of the selected account scope. Entry and cluster filters apply only to the default view.', zh: '关联分析使用所选账户范围的完整配置。入口和集群筛选仅适用于默认视图。', ja: '相関判定には選択したアカウント範囲の全構成を使用します。入口とクラスターのフィルターは既定の画面にのみ適用されます。' },
   '서비스 + 네트워크 →': { en: 'Service + Network →', zh: '服务 + 网络 →', ja: 'サービス + ネットワーク →' },

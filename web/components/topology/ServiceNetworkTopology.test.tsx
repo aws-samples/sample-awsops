@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ServiceNetworkTopology, { type ConfigurationStatus } from './ServiceNetworkTopology';
 import type { FlowGraph } from '@/lib/flow-topology';
+import { buildFlowGraph } from '@/lib/flow-topology';
+import { buildTraceGraph } from '@/lib/trace-graph';
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
 beforeEach(() => {
@@ -15,7 +17,7 @@ const configured: FlowGraph = {
   nodes: [{ id: 'front-door', kind: 'alb', label: 'configured-front-door' }], edges: [],
 };
 const configuration: ConfigurationStatus = {
-  loading: false, capturedAt: '2026-09-11T12:00:00Z', error: '', cappedTypes: [], failedTypes: [],
+  complete: true, loading: false, capturedAt: '2026-09-11T12:00:00Z', error: '', cappedTypes: [], failedTypes: [],
 };
 const props = { configured, configuration, account: 'self', onBack: () => {} };
 const status = {
@@ -55,11 +57,13 @@ function observation(url: URL, overrides: Record<string, unknown> = {}) {
   };
 }
 type HttpHandler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
-function serve(options: { nfm?: HttpHandler; service?: HttpHandler; query?: HttpHandler } = {}) {
+function serve(options: { nfm?: HttpHandler; service?: HttpHandler; query?: HttpHandler; host?: HttpHandler } = {}) {
   const requests: { url: URL; signal?: AbortSignal | null }[] = [];
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     requests.push({ url, signal: init?.signal });
+    if (url.pathname === '/api/accounts') return Promise.resolve(options.host?.(url, init)
+      ?? json({ accounts: [{ accountId: '111111111111', isHost: true }] }));
     if (url.pathname === '/api/nfm') return Promise.resolve(options.nfm?.(url, init) ?? json(status));
     if (url.pathname === '/api/graph' && url.searchParams.get('class') === 'trace') {
       return Promise.resolve(options.service?.(url, init) ?? json(snapshot));
@@ -82,12 +86,43 @@ function search(value: string) {
 }
 
 describe('ServiceNetworkTopology', () => {
+  it.each([true, false])('uses a trusted host identity for numeric producer claims: %s', async known => {
+    const host = '111111111111', region = 'ap-northeast-2', vpcId = 'vpc-shop';
+    const configured = buildFlowGraph({
+      tg: [{ resource_id: 'tg', region, vpc_id: vpcId, account_id: 'self', target_type: 'ip',
+        target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 443 } }] }],
+      ipResolved: { '10.0.1.10': { label: 'shop/web', resolved: 'eks',
+        meta: { region, vpcId, cluster: 'app', namespace: 'shop', pod: 'web-1' } } },
+    });
+    const trace = buildTraceGraph([{ traceId: 't', spanId: 's', service: 'web', sourceId: 'tempo', kind: 'SERVER', startMs: 0, durationMs: 1,
+      accountId: host, region, k8sCluster: 'app', k8sNamespace: 'shop', k8sPod: 'web-1', k8sDeployment: 'web' }], [], [], host);
+    serve({ host: () => json({ accounts: known ? [{ accountId: host, isHost: true }] : [] }),
+      service: () => json({ ...trace, class: 'trace', account: 'self', captured_at: snapshot.captured_at }),
+      query: url => { const result = observation(url); Object.assign(result.rows[0].local,
+        { podName: 'web-1', podNamespace: 'shop' }); return json(result); },
+    });
+      render(<ServiceNetworkTopology {...props} configured={configured} />);
+      await ready(); select('목적지 분류', 'INTER_AZ');
+      fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
+      await screen.findByRole('region', { name: '적용된 네트워크 조회' });
+      search('web-1'); fireEvent.click(await screen.findByRole('button', { name: '선택: web-1' }));
+      const detail = within(screen.getByRole('region', { name: '선택한 노드 상세' }));
+      expect(Boolean(detail.queryByText('구성에서 확인된 Pod 식별자'))).toBe(known);
+  });
+  it('preserves an all-failed network read instead of presenting successful absence', async () => {
+    serve({ query: () => json({ error: 'unavailable' }, 503) });
+    render(<ServiceNetworkTopology {...props} />);
+    fireEvent.click(await ready());
+    await screen.findByRole('region', { name: '적용된 네트워크 조회' });
+    expect(screen.getByText('네트워크 관측 조회가 실패했습니다.')).toBeTruthy();
+    expect(screen.queryByText('표시할 네트워크 관측이 없습니다.')).toBeNull();
+  });
   it('loads independent sources concurrently but does not query NFM before an explicit click', async () => {
     const service = deferred<Response>();
     const http = serve({ service: () => service.promise });
     render(<ServiceNetworkTopology {...props} />);
     const button = await ready();
-    expect(http.requests.map(({ url }) => url.pathname + url.search)).toEqual(['/api/nfm', '/api/graph?class=trace']);
+    expect(http.requests.map(({ url }) => url.pathname + url.search)).toEqual(['/api/nfm', '/api/graph?class=trace', '/api/accounts']);
     expect((screen.getByRole('combobox', { name: '모니터' }) as HTMLSelectElement).value).toBe('nfm-vpc-all');
     expect(http.queries()).toHaveLength(0);
     select('메트릭', 'ROUND_TRIP_TIME');
@@ -276,7 +311,7 @@ describe('ServiceNetworkTopology', () => {
     view.rerender(<ServiceNetworkTopology {...props} account="123456789012" />);
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('region', { name: '적용된 네트워크 조회' })).toBeNull();
-    expect(http.requests).toHaveLength(3);
+    expect(http.requests).toHaveLength(4);
     expect(oldRequests.every(({ signal }) => signal?.aborted)).toBe(true);
     view.rerender(<ServiceNetworkTopology {...props} />);
     await ready();
@@ -363,6 +398,7 @@ describe('ServiceNetworkTopology', () => {
     expect(within(applied).getByText(/조건에 맞는 상위 기여자가 없습니다/)).toBeTruthy();
     expect(within(applied).getByText(/관측 시각 알 수 없음/)).toBeTruthy();
     expect(applied.querySelector('time')).toBeNull();
+    expect(screen.getByText('네트워크 관측 범위가 불완전합니다.')).toBeTruthy();
     expect(screen.queryByText(/트래픽이 없습니다|트래픽 없음/)).toBeNull();
   });
 });

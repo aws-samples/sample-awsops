@@ -24,7 +24,8 @@ beforeEach(() => {
    consistency: 'statement-snapshot', run: { status: 'succeeded', finished_at: END, last_success_at: END, row_count: 2 },
   });
   if (url.pathname === '/api/eks') return Response.json({ clusters: [], region });
-  if (url.pathname === '/api/graph') return Response.json({ class: 'trace', account: 'self', nodes: [], edges: [], captured_at: null });
+  if (url.pathname === '/api/accounts') return Response.json({ accounts: [{ accountId: '111111111111', isHost: true }] });
+    if (url.pathname === '/api/graph') return Response.json({ class: 'trace', account: 'self', nodes: [], edges: [], captured_at: null });
   if (url.pathname === '/api/nfm') return Response.json({ monitors: [{ name: 'nfm-vpc-all', status: 'ACTIVE', cluster: null }], scopeCount: 1 });
   if (url.pathname === '/api/nfm/query') {
    const category = url.searchParams.get('category');

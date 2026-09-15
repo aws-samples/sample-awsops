@@ -27,6 +27,12 @@ const METRIC_LABELS: Record<string, string> = {
   DATA_TRANSFERRED: '전송량', ROUND_TRIP_TIME: 'RTT', RETRANSMISSIONS: '재전송', TIMEOUTS: '타임아웃',
 };
 const SOURCE_LABELS = { configuration: '구성', service: '서비스', network: 'NFM' };
+const READ_LABELS = {
+  idle: '현재 적용된 네트워크 관측이 없습니다.', loading: '네트워크 관측을 불러오는 중입니다.',
+  partial: '네트워크 관측 범위가 불완전합니다.', failed: '네트워크 관측 조회가 실패했습니다.',
+  unknown: '네트워크 관측 조회 상태를 확인할 수 없습니다.',
+  unsupported: '이 계정에서 네트워크 관측을 사용할 수 없습니다.',
+};
 const GENERATED_LABELS: Record<string, string> = {
   'Cached configured endpoint record': '캐시된 구성 엔드포인트 기록',
   'Configured endpoint record': '구성 엔드포인트 기록',
@@ -104,6 +110,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       && ['configured-endpoint-match', 'same-identity'].includes(edge.relation) && GENERATED_LABELS[edge.label]
       ? { ...edge, label: tt(GENERATED_LABELS[edge.label]) } : edge),
   }), [inputGraph, tt]);
+  const readState = graph.summary.observationsUnsupported ? 'unsupported' : graph.summary.networkRead?.status ?? 'unknown';
   const dark = useTheme() === 'dark';
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -248,13 +255,15 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-500" role="status">
         <span>{tt('표시 노드')} {view.nodes.length} · {tt('관계')} {view.edges.length}</span>
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
-        {graph.summary.observationsUnsupported
-          ? <span>{tt('이 계정에서 네트워크 관측을 사용할 수 없습니다.')}</span>
-          : graph.summary.networkFlows > 0 ? <>
+        {readState !== 'complete' && <span role="status">{tt(READ_LABELS[readState])}</span>}
+        {!!graph.summary.networkRead?.failedCategories.length && <span>{tt('조회 실패 분류:')} {graph.summary.networkRead.failedCategories.join(', ')}</span>}
+        {!!graph.summary.networkRead?.unknownWindowCategories.length && <span>{tt('관측 기간 미확인 분류:')} {graph.summary.networkRead.unknownWindowCategories.join(', ')}</span>}
+        {readState !== 'unsupported' && graph.summary.networkFlows > 0 && <>
             <span>{tt('미연결 관측')} {graph.summary.unmatchedEndpoints}</span>
             {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별 보류 관측')} {graph.summary.ambiguousEndpoints}</span>}
             <span>{tt('관측 행의 로컬·원격을 각각 집계하며 고유 엔드포인트 수가 아닙니다.')}</span>
-          </> : <span>{tt('표시할 네트워크 관측이 없습니다.')}</span>}
+          </>}
+        {readState === 'complete' && graph.summary.networkFlows === 0 && <span>{tt('표시할 네트워크 관측이 없습니다.')}</span>}
         {view.omittedCategories.length > 0 && <span className="text-amber-700">{tt('생략된 관측 분류:')} {view.omittedCategories.join(', ')}</span>}
         {(view.omittedNodes > 0 || view.omittedEdges > 0) && (
           <span className="text-amber-700">{tt('화면 한도:')} {view.omittedNodes} {tt('노드')}, {view.omittedEdges} {tt('관계 생략 — 검색으로 범위를 좁히세요.')}</span>

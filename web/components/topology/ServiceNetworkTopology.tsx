@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import type { FlowGraph } from '@/lib/flow-topology';
-import type { ServiceSnapshot } from '@/lib/e2e-topology-types';
+import type { E2eNetworkRead, ServiceSnapshot } from '@/lib/e2e-topology-types';
 import type { NfmCategory, NfmMetric } from '@/lib/nfm';
 import { buildE2eGraph } from '@/lib/e2e-topology';
 import {
@@ -19,6 +19,7 @@ import GraphCollectionStatus from './GraphCollectionStatus';
 import GraphReadError from './GraphReadError';
 
 export interface ConfigurationStatus {
+  complete: boolean;
   loading: boolean;
   capturedAt: string | null;
   error: string;
@@ -116,6 +117,13 @@ function readServices(body: Record<string, unknown>): ObservedServices {
   };
 }
 
+function readHostAccount(body: Record<string, unknown>): string {
+  const hosts = Array.isArray(body.accounts) ? body.accounts.filter(row => object(row) && row.isHost === true) : [];
+  if (hosts.length !== 1 || !object(hosts[0]) || typeof hosts[0].accountId !== 'string'
+    || !/^\d{12}$/.test(hosts[0].accountId)) throw new SourceReadError('호스트 계정 범위를 확인할 수 없습니다.');
+  return hosts[0].accountId;
+}
+
 function initialFilters(): NetworkFilters {
   // Read after mount so the server and first client render have the same controls.
   try {
@@ -141,6 +149,7 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
   const host = account === 'self';
   const [monitors, setMonitors] = useState<Source<MonitorStatus>>(() => emptySource(host));
   const [services, setServices] = useState<Source<ObservedServices>>(() => emptySource(host));
+  const [hostIdentity, setHostIdentity] = useState<Source<string>>(() => emptySource(host));
   const [filters, setFilters] = useState<NetworkFilters>(DEFAULT_FILTERS);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [network, setNetwork] = useState<QueryState>(IDLE_QUERY);
@@ -173,6 +182,11 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
       }).catch((error: unknown) => {
         if (!signal.aborted) setServices(failedSource<ObservedServices>(error));
       }),
+      readSource('/api/accounts', signal).then(readHostAccount).then(data => {
+        if (!signal.aborted) setHostIdentity({ loading: false, data, error: '', checkedAt: new Date().toISOString() });
+      }).catch((error: unknown) => {
+        if (!signal.aborted) setHostIdentity(failedSource<string>(error));
+      }),
     ]);
     return () => {
       controller.abort();
@@ -192,6 +206,7 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
     clearNetwork();
     setMonitors(emptySource(host));
     setServices(emptySource(host));
+    setHostIdentity(emptySource(host));
     setSourceVersion((current) => current + 1);
     onRefresh?.();
   };
@@ -221,9 +236,18 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
   };
 
   const batch = host ? network.batch : null;
+  const configurationComplete = configuration.complete === true && !configuration.loading && !configuration.error
+    && !configuration.failedTypes.length && !configuration.cappedTypes.length;
+  const networkRead = useMemo<E2eNetworkRead>(() => ({
+    status: !host ? 'unsupported' : network.loading ? 'loading' : network.error ? 'failed'
+      : batch ? batch.failedCategories.length && !batch.observations.length ? 'failed' : batch.status : 'idle',
+    failedCategories: batch?.failedCategories ?? [],
+    unknownWindowCategories: Object.entries(batch?.windowQuality ?? {}).filter(([, quality]) => quality === 'unknown').map(([category]) => category),
+  }), [host, network.loading, network.error, batch]);
   const graph = useMemo(() => buildE2eGraph({
     account, configured, services: host ? services.data : null, network: batch?.observations ?? [],
-  }), [account, configured, host, services.data, batch]);
+    hostAccountId: hostIdentity.data ?? undefined, configurationComplete, networkRead,
+  }), [account, configured, host, services.data, batch, hostIdentity.data, configurationComplete, networkRead]);
   const changed = batch !== null && (filters.monitor !== batch.filters.monitor || filters.metric !== batch.filters.metric
     || filters.category !== batch.filters.category || filters.rangeSec !== batch.filters.rangeSec);
   const rows = batch?.observations.reduce((count, observation) => count + observation.rows.length, 0) ?? 0;
@@ -269,6 +293,8 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
                     : <><p>{tt('노드')} {services.data.nodes.length} · {tt('관계')} {services.data.edges.length}</p>
                       <p>{tt('스냅샷 시각')} · {time(services.data.captured_at)}</p></>}
             {host && services.data && <GraphCollectionStatus collection={services.data.collection} />}
+            {host && hostIdentity.loading && <p>{tt('호스트 계정 범위를 확인하는 중…')}</p>}
+            {host && hostIdentity.error && <p role="status" className="text-warning">{tt('호스트 계정 범위를 확인할 수 없습니다.')}</p>}
           </section>
           <section aria-label={tt('NFM 소스')} className="min-w-0 flex-1 basis-56 space-y-1 break-words">
             <h2 className="font-semibold text-ink-800">{tt('NFM · 호스트 기본 리전')}</h2>

@@ -39,8 +39,8 @@ const inventory: Record<string, { resource_id: string; region: string; data: Rec
 const services = {
   class: 'trace', account: 'self', captured_at: END,
   nodes: [
-    { id: 'svc:frontend', kind: 'service', label: 'frontend', meta: { spanCount: 50, accountId: 'self', region: 'us-east-1' } },
-    { id: 'svc:orders', kind: 'service', label: 'orders', meta: { spanCount: 40, accountId: 'self', region: 'us-east-1' } },
+    { id: 'svc:frontend', kind: 'service', label: 'frontend', meta: { spanCount: 50, accountId: '000000000000', region: 'us-east-1' } },
+    { id: 'svc:orders', kind: 'service', label: 'orders', meta: { spanCount: 40, accountId: '000000000000', region: 'us-east-1' } },
     { id: 'db:orders', kind: 'db', label: 'postgres:orders', meta: { host: 'orders-db.internal', system: 'postgresql' } },
     ...['frontend', 'orders'].map((name) => ({
       id: `workload:${name}`, kind: 'workload', label: `shop/${name} @demo`,
@@ -139,7 +139,7 @@ async function fixtures(page: Page, opts: {
       });
     }
     if (url.pathname === '/api/stream') return route.fulfill({ contentType: 'text/event-stream', body: ': fixture\n\n' });
-    if (url.pathname === '/api/accounts') return json({ accounts: [{ accountId: 'self', alias: 'Fixture', isHost: true }] });
+    if (url.pathname === '/api/accounts') return json({ accounts: [{ accountId: '000000000000', alias: 'Fixture', isHost: true }] });
     if (url.pathname === '/api/accounts/regions') return json({ regions: ['us-east-1'] });
     if (url.pathname === '/api/me') return json({ user: { sub: 'fixture-user', email: 'fixture@example.test' }, isAdmin: false });
     if (url.pathname === '/api/datasources') return json({ datasources: [] });

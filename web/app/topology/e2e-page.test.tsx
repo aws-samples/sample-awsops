@@ -23,6 +23,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function serve(fail = false) {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/accounts') return Response.json({ accounts: [{ accountId: '111111111111', isHost: true }] });
     if (url.pathname === '/api/graph') return Response.json({
       class: 'trace', account: 'self', captured_at: null, nodes: [], edges: [],
       collection: { readStatus: 'unavailable', readReason: 'database_unavailable' },

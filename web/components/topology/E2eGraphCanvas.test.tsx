@@ -35,7 +35,7 @@ const graph: E2eGraph = {
     { id: 'n1', source: 'p1', target: 'f1', evidence: 'network', relation: 'network', directed: false },
     { id: 'n2', source: 'f1', target: 'p2', evidence: 'network', relation: 'network', directed: false },
   ],
-  summary: { configuredNodes: 0, serviceNodes: 1, networkFlows: 1, correlatedEndpoints: 1,
+  summary: { configurationComplete: true, networkRead: { status: 'complete', failedCategories: [], unknownWindowCategories: [] }, configuredNodes: 0, serviceNodes: 1, networkFlows: 1, correlatedEndpoints: 1,
     unmatchedEndpoints: 1, ambiguousEndpoints: 0, observationsUnsupported: false },
 };
 

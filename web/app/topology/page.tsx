@@ -685,10 +685,6 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   // view filter. Retained/in-flight inventory remains visible but cannot promote identity.
   const identityBlocked = busy || retained || !!err || syncIncomplete || readFailures.length > 0
     || cappedTypes.length > 0 || collectionIssues.length > 0;
-  const correlationGraph = useMemo(() => identityBlocked ? {
-    ...full, nodes: full.nodes.map(node => node.kind === 'target'
-      ? { ...node, meta: { ...node.meta, e2e_correlation_blocked: true } } : node),
-  } : full, [full, identityBlocked]);
   const inventoryEvidencePanel = <>
         {e2e && <p className="text-[12px] text-ink-600">
           {tt('선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.')}
@@ -726,8 +722,8 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     if (view) next.set('view', 'e2e'); else next.delete('view');
     return `/topology${next.size ? `?${next}` : ''}`;
   };
-  if (e2e) return <ServiceNetworkTopology configured={correlationGraph} account={activeAccount}
-    configuration={{ loading: busy || (!data && !err), capturedAt: syncedAt, error: '',
+  if (e2e) return <ServiceNetworkTopology configured={full} account={activeAccount}
+    configuration={{ complete: !!data && !identityBlocked, loading: busy || (!data && !err), capturedAt: syncedAt, error: '',
       failedTypes: [], cappedTypes: [] }} evidence={inventoryEvidencePanel}
     backHref={viewHref(false)} onRefresh={() => void load()} />;
 

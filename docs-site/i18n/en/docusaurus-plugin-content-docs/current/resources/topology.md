@@ -115,6 +115,8 @@ Context includes traversed constructs and cached configuration records. The view
 
 Grouped targets show member-specific IP, namespace and Pod evidence with omission counts; the first Pod is not presented as the whole group. Check ownership restrictions, ambiguity and target-group capture time together. Capture time is not a time of ownership verification.
 
+Numeric trace account IDs are reconciled only with the authenticated host account identity. Unverified host scope withholds those identity links; failed or partial reads and unknown observation windows remain distinct from successful empty results.
+
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
 - Does this CloudFront distribution talk to its origin over TLS?
