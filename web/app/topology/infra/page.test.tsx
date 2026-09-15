@@ -30,7 +30,7 @@ it.each(['infra', 'resource'])('shows retained collection warnings in the %s gra
 
 it.each(['infra', 'resource', 'services'])('shows safe unavailable evidence for a failed %s read', async page => {
   vi.stubGlobal('fetch', async () => Response.json({ message: 'PRIVATE', collection: {
-    status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } }, { status: 503 }));
+    status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } }, { status: 500 }));
   render(page === 'infra' ? <InfraPage /> : page === 'resource' ? <ResourcePage params={{ id: 'alb:one' }} /> : <ServicesPage />);
   const warning = await screen.findByRole('alert');
   expect(warning.textContent).toContain('Graph read unavailable');
