@@ -71,7 +71,7 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 | Valid oversized OTLP child | Bounded structured span projection with `truncated: true` |
 | Failed/malformed child with no usable representation | Retain previous graph, including affected mixed reads |
 
-An oversized `tempo_get_trace` response keeps a structured OTLP projection instead of only a text prefix. The existing 1,000,000-byte limit is unchanged. The projection keeps span IDs/times/kinds/status codes, recognized resource and peer/messaging identity attributes, and at most 64 links per span. Events, status messages, unrecognized attributes and long optional span names are omitted. Valid scoped identity values are not shortened. Payloads under the limit remain unchanged; structurally malformed/error payloads do not become projected successes. This lets valid large children and healthy siblings refresh a partial graph without manufacturing missing data.
+Oversized `tempo_get_trace` responses use the existing 1,000,000-byte limit. The projection retains span identities/timing/kinds/status codes, recognized resource and peer/messaging attributes, and up to 64 links per span. Events, status messages, other attributes and oversized optional names are omitted; identity values are never shortened. The validation and partial/unknown marker contract is defined under Trace payload bounds below. Small responses retain application data and upstream truncation while removing an untrusted producer-only no-fit marker.
 
 
 Local regression checks, from the repository root:
@@ -82,11 +82,23 @@ Local regression checks, from the repository root:
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
 
-## 조치 / Action
-
 ### Search completion and publication
 
 The pinned upstream [SearchMetrics schema](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/pkg/tempopb/tempo.proto#L170) declares job counters, while [recent-search aggregation](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/querier/querier.go#L892) starts with empty metrics and merges its responders. Positive job counts are therefore not assumed for all response paths. These are static source observations, not verification of a deployed provider. Inspect the returned marker and optional schema version through the existing approved read path; absence of counter proof is uncertainty, not an API failure.
+
+
+### Trace payload bounds
+
+Oversized `tempo_get_trace` responses may retain a structured `projection: bounded_otlp` under the existing byte cap, with `truncated: true`. Every admitted span first passes identity/timing validation, including any reported trace ID's agreement with the request, and validation of present parent/link/status fields. Nonzero canonical hex and protobuf base64 IDs are supported; shortened trace hex is normalized for comparison. Resource identity, span timing and bounded links remain partial evidence, never complete trace coverage.
+
+If a validated span cannot fit, `tracePayloadTruncated: true` and `collectionStatus: partial` disclose a no-fit outcome without a raw preview. A malformed child encountered before the budget boundary leaves the whole trace unverified (`collectionStatus: unknown`, no usable projection); valid siblings do not conceal it. Unvisited rows beyond the boundary are not validated or represented. Explicit error envelopes fail. These markers never authorize a complete or empty graph.
+
+The offline fixtures in the verification block bind mocked HTTP responses to exact producer bodies, including alternate OTLP field names, UTF-8 limits, malformed fitting spans and base64 IDs. They are not live deployment evidence.
+
+## 조치 / Action
+
+Deploy connector code through the reviewed Terraform flow below, then reconcile its Gateway description through `make agentcore`; no new IAM, endpoint or activation flag is introduced.
+
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
@@ -211,6 +223,8 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 
 - `agent/lambda/tempo_mcp.py`
 - `agent/lambda/test_tempo_trace_budget.py`
+- `agent/fixtures/tempo-trace-budget-contract.json`
+
 - `agent/lambda/test_graph_source_producer_contract.py`
 - `agent/fixtures/tempo-trace-budget-contract.json`
 - `agent/fixtures/tempo-topology-contract.json`
