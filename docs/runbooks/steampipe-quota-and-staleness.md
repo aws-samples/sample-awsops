@@ -300,6 +300,12 @@ concurrency change needs a whole-plan check showing no DNS changes.
 
 The values are safeguards, not assertions of universal AWS quotas; service, operation, account, and Region quotas differ.
 
+### Persisted identity counts
+
+Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.
+
+Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q` (ADR-021 collection accounting).
+
 ## 7. 롤백 / Rollback
 
 롤백은 파괴적 데이터베이스 변경 없이 이전 limiter defaults 또는 AgentCore catalog를 복원하는 방식이다.
@@ -339,7 +345,3 @@ requires a separate reviewed procedure. This development guard does not apply to
 지원되는 teardown 모드는 없다. 일반 롤백은 `steampipe_enabled=true`와 서비스·데이터를
 유지하고 이전 검토 설정을 복원한다. 파괴적 종료에는 별도 검토 절차가 필요하며
 이 개발 환경 가드는 main에는 적용되지 않는다.
-
-### Persisted identity counts
-
-Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.

@@ -124,6 +124,47 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
     });
 
+  it.each(['tempo-cap', 'clickhouse-cap', 'metrics-warning', 'tempo-unknown'] as const)(
+    'publishes fresh partial %s data for both first and subsequent reads', async mode => {
+      for (const seeded of [false, true]) {
+        await pool.query("DELETE FROM topology_nodes WHERE class='trace'; DELETE FROM topology_edges WHERE class='trace'; DELETE FROM topology_graph_state WHERE class='trace'");
+        if (seeded) await rebuildTraceGraph(pool, [], undefined, [{ available: async () => true,
+          calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:saved',
+            items: [{ client: 'saved-api', server: 'saved-db', count: 1 }], status: 'ok', reasons: [],
+            windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) }]);
+        const end = Date.now() + 1000;
+        const span = { spanId: '0000000000000001', kind: 2,
+          startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
+          endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) };
+        producer.invoke.mockReset().mockImplementation(async ({ tool }: { tool: string }) => {
+          if (tool === 'tempo_search') return { collectionStatus: mode === 'tempo-unknown' ? 'unknown' : 'partial',
+            traces: Array.from({ length: 20 }, (_, i) => ({ traceID: (i + 1).toString(16) })) };
+          if (tool === 'tempo_get_trace') return { batches: [{
+            resource: { attributes: [{ key: 'service.name', value: { stringValue: 'new-service' } }] },
+            scopeSpans: [{ spans: [span] }],
+          }] };
+          if (tool === 'clickhouse_query') return { collectionStatus: 'partial', truncated: true, rows: [{
+            TraceId: '1', SpanId: span.spanId, Timestamp: new Date(end - 1000).toISOString(),
+            Duration: 5_000_000, ServiceName: 'new-service', SpanKind: 'SERVER',
+          }] };
+          return { collectionStatus: 'partial', resultType: 'vector', result: [{
+            metric: { client: 'new-api', server: 'new-db' }, value: [end / 1000, '5'],
+          }] };
+        });
+        const trace = mode === 'clickhouse-cap' ? new ClickHouseOtelTraceSource(8) : new TempoTraceSource(7);
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
+        try { await rebuildTraceGraph(pool, mode === 'metrics-warning' ? [] : [trace], undefined,
+          mode === 'metrics-warning' ? [new MetricsCallsSource(9, 'prometheus', 'fixture')] : []); }
+        finally { clock.mockRestore(); }
+        const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+        expect(after.status).toBe('partial');
+        expect(after.captured_at?.getTime()).toBe(end);
+        expect(after.details.retainedPrevious).not.toBe(true);
+        expect((await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ label: expect.stringContaining('new-') })]));
+      }
+    });
+
   it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' },
     { name: 'completed search but empty child trace', body: { collectionStatus: 'ok', traces: [{ traceID: '1' }] },
       readStatus: 'partial' }])(
