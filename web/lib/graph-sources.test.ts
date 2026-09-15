@@ -83,7 +83,10 @@ describe('loadGraphSources', () => {
 
   it('exposes registry query failure instead of silently narrowing to the default source', async () => {
     const pool = { query: vi.fn(async () => { throw new Error('db down'); }) } as unknown as import('pg').Pool;
-    const { sources } = await loadGraphSources(pool);
+    const result = await loadGraphSources(pool);
+    const { sources } = result;
+    expect(result.registryFailed).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('db down');
     expect(sources).toHaveLength(1);
     expect(await sources[0].recentSpans(60, 1000, 3600000)).toMatchObject({
       status: 'error', sourceId: 'graph-registry', items: [], reasons: ['registry_read_failed'],

@@ -97,35 +97,45 @@ npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus
 
 ## Layer execution and diagnostics
 
-To rebuild from an authorized VPC/Aurora context, run
-`cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` with the existing database
-configuration and `HOST_ACCOUNT_ID`. Flow, infra and trace execute sequentially;
-a rejected flow or infra rebuild does not prevent later layers from running.
-A source-registry read failure skips trace and logs a safe diagnostic. This runner
-does not persist that failure or change the builders' publication decisions.
+Run `cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` only from an authorized
+VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID`.
+The existing web-task principal uses its provisioned Aurora IAM authentication and
+curated connector-read permissions; this change creates no principal or grant.
+Flow and infra execute sequentially. A flow exception does not block infra, but an
+infra execution failure skips trace collection and publication for that cycle and
+logs `trace skipped: infra execution failed`. Saved trace rows/clocks are untouched
+by that skipped stage; stale infra must not become fresh trace context after failure.
 
-`web/lib/graph-execution.ts` reports each returned layer's available node/edge totals.
-Legacy builders return only those totals; missing publication metadata stays absent.
-If supplied, published/retained/skipped/degraded/failed counts remain separate.
-Logs project only nonnegative safe-integer counts, allowlisted reasons (at most 16),
-and normalized stage/SQLSTATE diagnostics. Filtered reason metadata is disclosed;
-raw provider errors, SQL text and arbitrary result fields are not logged.
+Registry query errors normally do **not** throw from `loadGraphSources`. The loader
+returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
+fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
+existing trace builder, preserving its non-publishing retention path. A missing
+schema or failed state write can still prevent recording; the log is not a receipt
+that a trace attempt was persisted. Unexpected loader exceptions remain safely logged.
 
-The CLI awaits pool closure. Exit 1 means a layer, source lookup or pool close failed;
-exit 2 means explicit retention/skip metadata was returned without failure; exit 0
-means execution returned without either signal. Exit 0 and zero node/edge totals
-do not certify complete collection or a confirmed empty publication. This coordinator
-does not add publisher metadata to legacy results or replace release verification.
+`web/lib/graph-execution.ts` projects only the current builders' nonnegative safe-integer
+node/edge totals. Other result fields are unsupported and are not logged. Exceptions
+use normalized stage/SQLSTATE diagnostics, never raw provider errors or SQL text.
+The CLI awaits pool closure and exits **1** for a thrown/invalid layer execution,
+known registry failure, unexpected loader exception or failed cleanup; otherwise it
+exits **0**. There is no exit-2 publication contract. In particular, real legacy
+retention, missing state schema and confirmed-empty publication can all return the
+same zero totals. A source-level error/partial/unavailable response handled internally
+by the builder can still exit 0. Inspect the graph API's collection/source metadata;
+these execution totals and exit 0 do not prove complete or empty collection.
 
-The web timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or
-nonpositive. When enabled, it retains its initial 60-second delay and process-local
-overlap guard, and resets that guard after a failed cycle. It keeps the shared pool
-open and runs outside HTTP handlers in the web process, not an async worker.
-Deploy the matching web image separately; source changes do not enable the timer.
-Run the offline entrypoint/diagnostic regressions from `web/`:
+The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
+Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole
+minutes 1–1440). When enabled, the timer retains its initial 60-second delay, process-local
+overlap guard and outer catch/finally recovery. Existing per-class advisory locks serialize
+writes across ECS tasks; they do not eliminate duplicate cross-task reads. This runs outside
+HTTP handlers in the web process, not an async worker. A future EventBridge/ECS worker
+path needs separate review if this work outgrows that process. Deploy/apply separately;
+source changes do not enable the timer. Offline tests from `web/` exercise the actual
+legacy loader/builders with mocked SQL and connector IO:
 
 ```bash
-npx vitest run lib/graph-rebuild-runner.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
+npx vitest run lib/graph-rebuild-runner.test.ts lib/graph-sources.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
 ```
 
 ## Verification commands

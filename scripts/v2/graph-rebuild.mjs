@@ -1,5 +1,6 @@
 // ADR-043 — manual graph execution; the default-off timer uses these builders in the web process.
-// Rebuilds all three materialized graph classes without changing their collection/publication behavior:
+// Flow failure does not block infra; trace runs only after infra execution returns successfully.
+// Builders retain their existing collection/publication behavior:
 //   - flow  (class='flow')  via rebuildGraph      → traffic-flow topology
 //   - infra (class='infra') via rebuildInfraGraph → resource-relationship topology (Step 2)
 //   - trace (class='trace') via rebuildTraceGraph → shared trace graph
@@ -17,25 +18,34 @@ import { loadGraphSources } from '../../web/lib/graph-sources.ts';
 import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 import { executeGraphLayer } from '../../web/lib/graph-execution.ts';
 
-// Exit 0: execution returned; 2: explicit retention/skip reported; 1: failure. Counts are not full source proof.
+// Exit 1: thrown/invalid execution, known registry failure or cleanup failure; otherwise 0.
+// Legacy zero totals cannot distinguish retained/skipped from confirmed-empty publication.
 const pool = getPool();
-let failed = false, incomplete = false;
+let failed = false;
 const execute = async (stage, action) => {
   const result = await executeGraphLayer(stage, action, (line, error) => console[error ? 'error' : 'log'](line));
   failed ||= result.failed;
-  incomplete ||= result.incomplete;
+  return result;
 };
 try {
   await execute('flow', () => rebuildGraph(pool));
-  await execute('infra', () => rebuildInfraGraph(pool));
-  try {
-    const { sources, metricsSources } = await loadGraphSources(pool);
-    await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
-  } catch (error) {
-    failed = true;
-    console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+  const infra = await execute('infra', () => rebuildInfraGraph(pool));
+  if (infra.failed) {
+    console.error('[graph-rebuild] trace skipped: infra execution failed');
+  } else {
+    try {
+      const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
+      if (registryFailed) {
+        failed = true;
+        console.error('[graph-rebuild] trace_sources: registry_read_failed');
+      }
+      await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+    } catch (error) {
+      failed = true;
+      console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+    }
   }
-  process.exitCode = failed ? 1 : incomplete ? 2 : 0;
+  process.exitCode = failed ? 1 : 0;
 } finally {
   try { await pool.end(); }
   catch (error) {
