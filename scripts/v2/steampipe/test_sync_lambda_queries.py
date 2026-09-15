@@ -397,6 +397,7 @@ def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, mo
         })
     result = mod.sync("duplicate_test")
     assert result["status"] == ("partial" if mode == "sdk_partial" else "succeeded")
+    assert result["unreachable_account_count"] == 0
     assert len(persisted) == 3
     assert persisted[("self", "r-one", "i-one")]["value"] == "last"
     assert result["row_count"] == finalized[-1]["n"] == len(persisted)
@@ -452,12 +453,14 @@ def test_sync_success_logs_one_terminal_record_with_row_count(capsys, monkeypatc
         "type": "log_test_success",
         "row_count": 1,
         "unknown_attribute_count": 0,
+        "unreachable_account_count": 0,
     }
     assert len(terminal) == 1
     assert terminal[0]["event"] == "inventory_sync_complete"
     assert terminal[0]["resource_type"] == "log_test_success"
     assert terminal[0]["row_count"] == 1
     assert terminal[0]["unknown_attribute_count"] == 0
+    assert terminal[0]["unreachable_account_count"] == 0
     assert terminal[0]["degraded"] is False
     assert terminal[0]["throttled"] is False
     assert terminal[0]["freshness"] == "healthy"
@@ -595,6 +598,7 @@ def test_sdk_partial_upserts_good_rows_without_pruning_or_advancing_last_success
         "failure_count": 1,
         "failure_types": ["ClientError:AccessDenied"],
         "unknown_attribute_count": 2,
+        "unreachable_account_count": 0,
     }
     assert any("INSERT INTO inventory_resources" in sql for sql, _ in main_calls)
     assert mod.PHASE1_PRUNE_SQL not in [sql for sql, _ in main_calls]
@@ -616,6 +620,7 @@ def test_sdk_partial_upserts_good_rows_without_pruning_or_advancing_last_success
         "failure_count": 1,
         "failure_types": ["ClientError:AccessDenied"],
         "unknown_attribute_count": 2,
+        "unreachable_account_count": 0,
         "degraded": True,
         "throttled": False,
         "freshness": "degraded",
@@ -878,6 +883,7 @@ def test_zero_row_success_is_durable_across_later_failure(capsys, monkeypatch):
         "type": "zero_row_history_test",
         "row_count": 0,
         "unknown_attribute_count": 0,
+        "unreachable_account_count": 0,
     }
     assert second["status"] == "failed"
     assert reachable == ["111111111111", "222222222222"]
@@ -1499,6 +1505,7 @@ def test_stale_finalizer_cannot_overwrite_newer_run(capsys, monkeypatch):
         "type": "cas_interleaving_test",
         "row_count": 2,
         "unknown_attribute_count": 0,
+        "unreachable_account_count": 0,
     }
     assert result == {
         "status": "failed",
@@ -1565,6 +1572,7 @@ def test_finalizer_close_failure_does_not_downgrade_committed_success(capsys, mo
         "type": "finalizer_close_failure_test",
         "row_count": 1,
         "unknown_attribute_count": 0,
+        "unreachable_account_count": 0,
     }
     assert len(finalizer_calls) == 1
     assert "SET status='succeeded'" in finalizer_calls[0][0]

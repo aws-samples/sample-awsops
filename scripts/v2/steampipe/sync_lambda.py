@@ -1483,6 +1483,7 @@ def sync(resource_type):
                     "failure_count": sdk_failure_count,
                     "failure_types": sdk_failure_types,
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    "unreachable_account_count": len(unreachable_accounts),
                 }
                 terminal_event = "inventory_sync_complete"
                 terminal_fields = {
@@ -1491,6 +1492,7 @@ def sync(resource_type):
                     "failure_count": sdk_failure_count,
                     "failure_types": sdk_failure_types,
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    "unreachable_account_count": len(unreachable_accounts),
                     "degraded": True,
                     "throttled": any(
                         _failure_label_is_throttling(failure_type)
@@ -1530,12 +1532,14 @@ def sync(resource_type):
                     "type": resource_type,
                     "row_count": len(recs),
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    "unreachable_account_count": len(unreachable_accounts),
                 }
                 terminal_event = "inventory_sync_complete"
                 terminal_fields = {
                     "resource_type": resource_type,
                     "row_count": len(recs),
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    "unreachable_account_count": len(unreachable_accounts),
                     "degraded": bool(sdk_unknown_attrs),
                     "throttled": False,
                     # Attribute blind spots degrade the DISCLOSED freshness while the status stays

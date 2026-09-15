@@ -35,6 +35,13 @@ Parameters:
       as a source/destination for a worker-driven member-account read (the sg-rules worker's own
       EC2/ENI-inventory reads, or a Network Path Check resolve_live_identity() call). Leave empty
       otherwise.
+  InventoryTaskRoleArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws:iam::\d{12}:role/.+$'
+    Description: >
+      OPTIONAL. Exact ARN of the host inventory collector task role. Required for
+      multi-account inventory collection. Uses the same ExternalId condition as the web role.
   ExternalId:
     Type: String
     Default: ''
@@ -53,6 +60,7 @@ Parameters:
 Conditions:
   HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
   HasWorkerTaskRoleArn: !Not [!Equals [!Ref WorkerTaskRoleArn, '']]
+  HasInventoryTaskRoleArn: !Not [!Equals [!Ref InventoryTaskRoleArn, '']]
 
 Resources:
   AWSopsReadOnlyRole:
@@ -71,8 +79,6 @@ Resources:
               # worker principal is included only when WorkerTaskRoleArn is non-empty, so an
               # existing stack that never sets it keeps the EXACT pre-existing single-principal
               # trust unchanged on update.
-              # (The steampipe task role is added by the multi-account inventory fan-out PR, which
-              # also grants it the source-side sts:AssumeRole — kept together there for consistency.)
               AWS: !If
                 - HasWorkerTaskRoleArn
                 - [!Ref HostTaskRoleArn, !Ref WorkerTaskRoleArn]
@@ -85,6 +91,18 @@ Resources:
               - StringEquals:
                   'sts:ExternalId': !Ref ExternalId
               - !Ref 'AWS::NoValue'
+          - !If
+            - HasInventoryTaskRoleArn
+            - Effect: Allow
+              Principal:
+                AWS: !Ref InventoryTaskRoleArn
+              Action: 'sts:AssumeRole'
+              Condition: !If
+                - HasExternalId
+                - StringEquals:
+                    'sts:ExternalId': !Ref ExternalId
+                - !Ref 'AWS::NoValue'
+            - !Ref 'AWS::NoValue'
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/ReadOnlyAccess
 

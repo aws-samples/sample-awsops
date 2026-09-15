@@ -41,3 +41,10 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
 When `INVENTORY_HOST_ONLY=true`, `POST /api/accounts` rejects onboarding with 409 after
 authentication/admin checks and before STS or registry writes. Reads, connection re-tests
 and removal retain their behavior. Configure multi-account collection before onboarding.
+The separate admin-only `POST /api/accounts/onboarding` performs a bounded, read-only
+host/AssumeRole/target identity check and never writes the registry. Its diagnostic fields
+exclude provider error text, credentials and the ExternalId value. AI guidance prefills
+the existing assistant composer without sending. An explicit
+`INVENTORY_TARGET_ACCOUNT_IDS` deployment allowlist also gates registration; malformed
+configuration fails closed. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host
+collector principal to the create-only CloudFormation role guide.

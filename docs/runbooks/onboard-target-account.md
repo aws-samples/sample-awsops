@@ -41,13 +41,19 @@ Existing stacks/roles stop creation; inspect them and use their current External
 The page preserves the stored ExternalId and hides creation controls for registered accounts;
 use the registered row's **Test** control for those accounts.
 
+When the deployed web configuration supplies `INVENTORY_TASK_ROLE_ARN`, the script also
+passes that exact host-account principal as `InventoryTaskRoleArn`. Its separate trust
+statement uses the same ExternalId condition. An absent parameter preserves the existing
+web/worker trust unchanged. Existing stacks require an operator-reviewed change set to add
+the collector principal; the browser script remains create-only.
 New stacks leave worker trust empty. Worker reads require the additional setup below.
 The generated template's deployment contract matches `infra/cfn/awsops-target-account-role.yaml`;
 only explanatory template/parameter/output descriptions differ. The required offline
 `scripts/v2/test_account_onboarding_template.py` test compares all deployment parameters,
 resources, conditions and outputs, including trust and permission policies.
 
-After stack completion, return to the same form and choose **Verify and register**.
+After stack completion, return to the same form and choose **Check connection**, or
+**Verify and register** when registration is enabled for that account.
 Verification failure preserves the fields for retry. A successful registration followed by
 a failed list refresh remains successful, prevents repeat registration/script generation
 for that account and asks for a page refresh. Delete, connection-test and region-add reload
@@ -85,14 +91,43 @@ propagated there. Operators must coordinate the shared reader value and its trus
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
 
 Host-only deployments display the restriction before registration and disable the register
-button. Script generation remains available for preparation; running it does not change
+button. The separate connection check remains available and performs no registry writes.
+Script generation remains available for preparation; running it does not change
 `inventory_host_only`, collector IAM, or readiness policy. Multi-account activation is a
 separate operator configuration step. AWSops itself never executes the generated AWS writes.
+
+## Connection evidence and AI guidance
+
+The admin-only `POST /api/accounts/onboarding` validates the target ID, region and current
+ExternalId/first-party choice. Within one 15-second deadline, it verifies the actual host
+STS identity, assumes only `AWSopsReadOnlyRole`, then verifies the resulting target account.
+Success establishes that web-role connection only; it neither registers the account nor
+certifies collection, worker or AgentCore access.
+
+Each result includes a check ID, UTC timestamp, verification stage, fixed failure code,
+duration and an AWS request ID when available. The web log event is
+`account_connection_check` with the same bounded fields. Provider exception text,
+temporary credentials and the ExternalId value are excluded from these diagnostics.
+`access_denied` is evidence of rejection, not proof of which policy caused it: compare the
+source role permission, target trust, current ExternalId and organization/session boundaries.
+Credential failures, timeouts and identity mismatches have separate classifications.
+
+The troubleshooting panel provides read-only target-account CLI commands and an AI
+assistant draft containing only validated evidence. The draft is reviewed in the composer
+before sending; opening it does not invoke a model. Do not paste credentials or the
+ExternalId into an AI request.
+
+For deployments with an explicit `INVENTORY_TARGET_ACCOUNT_IDS` allowlist, registration
+is limited to the applied accounts. A malformed allowlist fails closed. An account outside
+the list can still be diagnosed, but must be added through the reviewed collection and CI
+scope configuration before registration. See [runtime activation](runtime-foundation.md)
+for the separate multi-account collection and release evidence.
 
 ## Prerequisites
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
 - For the manual CLI path below: the **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`). The browser path discovers it automatically.
-  The generated template does not add the separate Steampipe collector principal.
+- For inventory collection, the exact **host inventory task role ARN** must be supplied as
+  `InventoryTaskRoleArn`. The browser discovers it from the applied web configuration.
 - **Optional** — the **host worker task role ARN**, `arn:aws:iam::<host>:role/awsops-v2-worker-task`
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
   WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
