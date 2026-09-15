@@ -564,7 +564,7 @@ describe('SourceRead provenance and bounds', () => {
   it.each(factories)('%s retains unmarked legacy empty data as unconfirmed', async (kind, read, payload) => {
     configure(kind);
     invokeMcpLambdaTool.mockResolvedValue(payload);
-    expect(await read()).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
+    expect(await read()).toMatchObject({ items: [], status: 'partial', canSweep: false, reasons: ['empty_not_confirmed'] });
   });
 
   it.each(factories)('%s never turns errors/malformed payloads/truncation into valid empty data', async (kind, read) => {
@@ -575,6 +575,7 @@ describe('SourceRead provenance and bounds', () => {
       expect(result.status).toBe('error');
       expect(result.items).toEqual([]);
       expect(result.reasons.length).toBeGreaterThan(0);
+      expect(result.canSweep).toBe(false);
       expect(JSON.stringify(result)).not.toContain('private-token');
     }
   });
@@ -686,7 +687,7 @@ describe('SourceRead provenance and bounds', () => {
     invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: 'bad-trace' }, { traceID: 'good' }] })
       .mockRejectedValueOnce(new Error('private-token')).mockResolvedValueOnce(tempoTrace());
     const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
-    expect(result).toMatchObject({ status: 'partial', reasons: ['trace_fetch_failed'] });
+    expect(result).toMatchObject({ status: 'partial', canSweep: false, reasons: ['trace_fetch_failed'] });
     expect(result.items).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain('private-token');
   });
@@ -754,7 +755,7 @@ describe('SourceRead provenance and bounds', () => {
       ]));
     const result = await new TempoTraceSource(7).recentSpans(30, 1, END_MS);
     expect(result.items).toHaveLength(1);
-    expect(result).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
+    expect(result).toMatchObject({ status: 'partial', canSweep: false, reasons: ['payload_truncated'] });
   });
 
   it.each(['clickhouse', 'tempo'])('%s honors a zero cap without invoking a query', async (kind) => {
@@ -837,7 +838,7 @@ describe('metrics identity and query provenance', () => {
     expect(result.reasons).toEqual(expect.arrayContaining(['malformed_rows', 'payload_truncated']));
     const zero = { resultType: 'vector', result: [{ ...valid, value: [0, '0'] }] };
     invokeMcpLambdaTool.mockResolvedValue(zero);
-    expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
+    expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'partial', canSweep: false, reasons: ['empty_not_confirmed'] });
     invokeMcpLambdaTool.mockResolvedValue({ ...zero, collectionStatus: 'ok' });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'ok', reasons: [] });
     invokeMcpLambdaTool.mockResolvedValue({ resultType: 'matrix', result: [] });
