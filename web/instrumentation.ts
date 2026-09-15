@@ -19,7 +19,7 @@ export async function register() {
     if (!Number.isFinite(mins) || mins <= 0) return;
 
     const { getPool } = await import('./lib/db');
-    const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } = await import('./lib/graph-store');
+    const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure, recordTraceDependencySkip } = await import('./lib/graph-store');
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
     const { executeGraphLayer } = await import('./lib/graph-execution');
@@ -40,9 +40,10 @@ export async function register() {
       try {
         await execute('flow', () => rebuildGraph(pool));
         const infra = await execute('infra', () => rebuildInfraGraph(pool));
-        if (infra.failed || infra.incomplete) {
+        if (!infra.selfInfraComplete) {
           console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
-      : '[graph-rebuild] trace skipped: infra publication incomplete');
+            : '[graph-rebuild] trace skipped: infra publication incomplete');
+          await execute('trace', () => recordTraceDependencySkip(pool));
           return;
         }
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built

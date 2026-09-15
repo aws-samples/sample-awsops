@@ -51,7 +51,8 @@ function run(options: Record<string, unknown> = {}) {
         if (sql.includes('SELECT accounts.account_id')) {
           if (input.failure === stage) fail();
           return { rows: [{ account_id: 'self' },
-            ...(input.partialFailure === stage ? [{ account_id: '123456789012' }] : [])] };
+            ...(input.accountCap ? Array.from({ length: 100 }, (_, i) => ({ account_id: String(i).padStart(12, '0') }))
+              : input.partialFailure === stage || input.memberOnlyGap ? [{ account_id: '123456789012' }] : [])] };
         }
         if (sql.includes('FROM inventory_sync_runs')) {
           const now = fixtureNow;
@@ -70,7 +71,7 @@ function run(options: Record<string, unknown> = {}) {
           if (input.partialFailure === stage && args?.[0] === '123456789012') fail();
           return { rows: [] };
         }
-        if (sql.includes('FROM inventory_snapshots')) return { rows: args[1].map(resource_type => ({
+        if (sql.includes('FROM inventory_snapshots')) return { rows: input.memberOnlyGap && args[0] !== 'self' ? [] : args[1].map(resource_type => ({
           resource_type, captured_at: new Date(fixtureNow - 1000).toISOString(),
           resource_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
         })) };
@@ -134,7 +135,7 @@ function run(options: Record<string, unknown> = {}) {
         : load(resolve(input.root, 'lib', specifier.split('/').at(-1).replace(/\.ts$/, '') + '.ts'));
       if (specifier.includes('graph-store')) {
         const stages = { rebuildGraph: 'flow', rebuildInfraGraph: 'infra', rebuildTraceGraph: 'trace',
-          recordTraceSourceFailure: 'trace' };
+          recordTraceSourceFailure: 'trace', recordTraceDependencySkip: 'trace' };
         exports = Object.fromEntries(Object.entries(exports).map(([name, value]) => [name,
           stages[name] ? (...args) => { stage = stages[name]; return value(...args); } : value]));
       }
@@ -187,7 +188,9 @@ describe('graph execution and publication contract', () => {
     expect(result.registryReads).toBe(0);
     expect(result.traceCollections).toBe(0);
     expect(result.infraReads).toBe(0);
-    expect(result.attempts).toEqual([]);
+    expect(result.attempts).toHaveLength(cycles(timer));
+    expect(result.attempts.every((a: { publish: boolean; details: Record<string, unknown> }) =>
+      !a.publish && a.details.sourceAttempted === false && a.details.failureReason === 'not_attempted')).toBe(true);
     expect(result.traceWrites).toBe(0);
     expect(result.traceDeletes).toBe(0);
     expect(result.savedCapture).toBe('previous');
@@ -199,12 +202,29 @@ describe('graph execution and publication contract', () => {
       expect(result.code).toBe(timer ? null : 2);
       expect(result.registryReads).toBe(0);
       expect(result.traceCollections).toBe(0);
-      expect(result.attempts).toEqual([]);
+      expect(result.attempts).toHaveLength(cycles(timer));
+      expect(result.attempts.every((a: { publish: boolean; details: Record<string, unknown> }) =>
+        !a.publish && a.details.sourceAttempted === false && a.details.failureReason === 'not_attempted')).toBe(true);
       expect(result.traceWrites).toBe(0);
       expect(result.traceDeletes).toBe(0);
       expect(result.savedCapture).toBe('previous');
       expect(result.errors).toContain('[graph-rebuild] trace skipped: infra publication incomplete');
     }
+  });
+  it.each([false, true])('member retention keeps fleet incomplete but does not poison clean self trace context (timer=%s)', timer => {
+    const result = run({ timer, memberOnlyGap: true });
+    expect(result.code).toBe(timer ? null : 2);
+    expect(result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'))).toContain('"retained":1');
+    expect(result.traceCollections).toBe(cycles(timer));
+    expect(result.traceWrites).toBeGreaterThan(0);
+    expect(result.attempts.every((attempt: { publish: boolean }) => attempt.publish)).toBe(true);
+  });
+  it.each([false, true])('account truncation stays incomplete while a proved self slice can refresh trace (timer=%s)', timer => {
+    const result = run({ timer, accountCap: true });
+    expect(result.code).toBe(timer ? null : 2);
+    expect(result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'))).toContain('"accountsTruncated":true');
+    expect(result.traceCollections).toBe(cycles(timer));
+    expect(result.traceWrites).toBeGreaterThan(0);
   });
   it.each([false, true])('the actual loader synthetic error retains trace and makes registry failure observable (timer=%s)', timer => {
     const result = run({ timer, failure: 'registry' });
@@ -265,7 +285,7 @@ describe('graph execution and publication contract', () => {
       expect(JSON.parse(line.slice(line.indexOf(': ') + 2))).toMatchObject({
         published: 1, failed: 1, failureCode: '23514',
       });
-      expect(result.traceCollections).toBe(partialFailure === 'infra' ? 0 : cycles(timer));
+      expect(result.traceCollections).toBe(cycles(timer));
       expect(JSON.stringify(result)).not.toContain('credential');
     }
   });
@@ -345,7 +365,8 @@ describe('publisher outcome projection', () => {
   it.each([null, {}, { nodes: 1, edges: 0 }, { ...valid, nodes: -1 },
     { ...valid, edges: NaN }, { ...valid, edges: Number.MAX_SAFE_INTEGER + 1 },
     { ...valid, retained: 'future-field' }, { ...valid, failed: -1 },
-    { ...valid, reasons: ['credential=reason-secret'] }, { ...valid, accountsTruncated: 'PRIVATE_VALUE' }])(
+    { ...valid, reasons: ['credential=reason-secret'] }, { ...valid, accountsTruncated: 'PRIVATE_VALUE' },
+    { ...valid, selfInfraComplete: 'unverified' }, { ...valid, selfInfraComplete: true }])(
     'invalid required totals never become healthy zeros: %j', async value => {
       const lines: string[] = [];
       expect(await executeGraphLayer('flow', async () => value, line => lines.push(line))).toEqual({ failed: true });

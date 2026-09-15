@@ -259,7 +259,7 @@ configuration; persisted service-map labels change only after a flow rebuild, wh
 source integration does not trigger. SQL-reader projections omit ownership provenance;
 see [the agent contract](agent-sql-reader.md#current-topology-evidence-contract).
 
-The bounded publication implementation in `web/lib/graph-store.ts` supplies optional inventory capture/sweep clocks, aggregate/account source scope, saved-source provenance and explicit truncation flags. Missing metadata remains unknown; producer deployment and migration are separately verified. See [the API contract](../api-reference.md#graph-collection-metadata).
+The bounded publication implementation in `web/lib/graph-store.ts` supplies optional inventory capture/sweep clocks, per-account inventory source scope (retained older metadata may carry aggregate scope), saved-source provenance and explicit truncation flags. Missing metadata remains unknown; producer deployment and migration are separately verified. See [the API contract](../api-reference.md#graph-collection-metadata).
 
 **Local verification:** from `web/`, run:
 

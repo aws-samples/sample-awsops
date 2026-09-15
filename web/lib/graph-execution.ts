@@ -17,24 +17,29 @@ function projectOutcome(value: unknown, stage: string): GraphExecutionTotals {
     throw new Error('Invalid graph reasons');
   if (raw.accountsTruncated !== undefined && typeof raw.accountsTruncated !== 'boolean')
     throw new Error('Invalid graph account limit');
+  if (raw.selfInfraComplete !== undefined && (typeof raw.selfInfraComplete !== 'boolean'
+    || (raw.selfInfraComplete && (stage !== 'infra' || count('published') === 0))))
+    throw new Error('Invalid self infra evidence');
   const failed = raw.failed === undefined ? 0 : count('failed');
   return { nodes: count('nodes'), edges: count('edges'), published: count('published'),
     retained: count('retained'), skipped: count('skipped'), degraded: count('degraded'),
     reasons: [...new Set(raw.reasons)],
     ...(raw.accountsTruncated !== undefined ? { accountsTruncated: raw.accountsTruncated } : {}),
+    ...(raw.selfInfraComplete !== undefined ? { selfInfraComplete: raw.selfInfraComplete as boolean } : {}),
     ...(failed ? { failed, failureCode: JSON.parse(graphDiagnostic(stage, { code: raw.failureCode })).code } : {}) };
 }
 
 /** The caller must respect layer dependencies; this helper reports execution, not completeness. */
 export async function executeGraphLayer(
   stage: string, action: () => Promise<unknown>, report: (line: string, failed?: boolean) => void,
-): Promise<{ failed: boolean; incomplete?: boolean; totals?: GraphExecutionTotals }> {
+): Promise<{ failed: boolean; incomplete?: boolean; selfInfraComplete?: boolean; totals?: GraphExecutionTotals }> {
   const safeStage: string = JSON.parse(graphDiagnostic(stage, null)).stage;
   try {
     const totals = projectOutcome(await action(), safeStage);
     report(`[graph-rebuild] ${safeStage}: ${JSON.stringify(totals)}`);
     if (totals.failed) report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, { code: totals.failureCode })}`, true);
-    return { totals, failed: !!totals.failed, incomplete: !totals.published || !!(totals.retained || totals.skipped || totals.degraded || totals.accountsTruncated || totals.reasons.length) };
+    return { totals, failed: !!totals.failed, selfInfraComplete: safeStage === 'infra' && totals.selfInfraComplete === true,
+      incomplete: !totals.published || !!(totals.retained || totals.skipped || totals.degraded || totals.accountsTruncated || totals.reasons.length) };
   } catch (error) {
     report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, error)}`, true);
     return { failed: true };

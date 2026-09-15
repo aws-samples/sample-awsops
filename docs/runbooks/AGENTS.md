@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 556be18ee925 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8a8341380b21 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -260,7 +260,7 @@ Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deploymen
 
 Graph reads and rebuild/publication transactions share at most two admissions per max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Background checkout has its own two-second deadline, followed by the separate PostgreSQL four-second transaction timeout; a six-second caller watchdog also bounds a stalled response. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. The implemented publisher in `web/lib/graph-store.ts` verifies source/account evidence before atomic replacement and retains last-good data on unproven collection. Execution still requires the default-off timer or an operator invocation. See `graph-read-contract.md` for budgets, CLI outcomes, rollout and disposable tests; source integration does not establish deployment.
 
-Graph execution validates typed publication counts and fixed reasons. Failed, retained, skipped, degraded or unproven same-cycle infra outcomes withhold trace; a reported clean complete-empty publication remains valid. Signaled registry failures and unexpected loader exceptions use the non-publishing recorder without invented counts/windows. CLI exits 1 for execution/registry/cleanup failure, 2 for retained/skipped/degraded/incomplete work and otherwise 0. These graph outcomes do not replace full runtime release proof.
+Graph execution validates typed publication counts, fixed reasons and the current selfInfraComplete flag. Trace requires a fresh, clean self infra publication; a proved complete-empty self slice is valid. Member gaps remain in fleet-wide failure/incomplete results. Missing self proof records a non-publishing not_attempted trace state where possible. Signaled registry failures and unexpected loader exceptions use the non-publishing recorder without invented counts/windows. CLI exits 1 for execution/registry/cleanup failure, 2 for retained/skipped/degraded/incomplete work and otherwise 0. These graph outcomes do not replace full runtime release proof.
 
 Changed HEAD image review uses the shared static-raster format table, source/render lineage
 and bounded decoding. All eight cells and chair must declare required coverage; explicit

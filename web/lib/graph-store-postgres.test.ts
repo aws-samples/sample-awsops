@@ -10,7 +10,7 @@ import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
-import { graphTransaction, graphReadTransaction, GraphReadBusy } from './graph-transaction';
+import { graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -157,6 +157,40 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
     expect(await state('infra')).toMatchObject({ status: 'unavailable', captured_at: previous.captured_at });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('proves only the current self infra slice while retaining an unproven member', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    await build('infra');
+    await pool.query('DELETE FROM inventory_snapshots WHERE account_id=$1', [member]);
+    expect(await build('infra')).toMatchObject({ published: 1, retained: 1, selfInfraComplete: true });
+    expect(await state('infra', member)).toMatchObject({ retainedPrevious: true, status: 'unavailable' });
+    await pool.query("UPDATE inventory_resources SET captured_at=$1 WHERE account_id='self'", [old]);
+    expect(await build('infra')).toMatchObject({ selfInfraComplete: false });
+  });
+  it.each(['discover', 'publish', 'trace_context'])('a %s deadline skips without writing a false collection failure', async phase => {
+    await seed('infra'); await build('infra'); await trace();
+    const cls = phase === 'trace_context' ? 'trace' : 'infra';
+    const previous = await state(cls);
+    const query = Client.prototype.query;
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+      if ((phase === 'discover' && String(sql).includes('SELECT accounts.account_id'))
+        || (phase === 'publish' && String(sql).includes('INSERT INTO topology_nodes'))
+        || (phase === 'trace_context' && String(sql).includes("class = 'infra'")))
+        throw new GraphReadDeadline(phase === 'publish' ? 'transaction' : 'acquire');
+      return Reflect.apply(query, this, [sql, ...args]);
+    });
+    expect(await (phase === 'trace_context' ? trace() : build('infra')))
+      .toMatchObject({ published: 0, skipped: 1, reasons: ['rebuild_deadline'] });
+    expect(await state(cls)).toEqual(previous);
+  });
+  it('records an unattempted trace dependency without changing saved rows or capture', async () => {
+    await trace(); const previous = await state('trace');
+    expect(await graphStore.recordTraceDependencySkip(pool)).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('trace')).toMatchObject({ status: 'unavailable', sourceAttempted: false,
+      failureReason: 'not_attempted', captured_at: previous.captured_at });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
   });
 
   it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
@@ -784,7 +818,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       FROM accounts a CROSS JOIN unnest($2::text[]) t`,
     [recent, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
     const result = await build('infra');
-    expect(result).toMatchObject({ published: 100, skipped: 1, accountsTruncated: true, reasons: ['account_limit'] });
+    expect(result).toMatchObject({ published: 100, skipped: 1, accountsTruncated: true,
+      selfInfraComplete: true, reasons: ['account_limit'] });
     expect((await pool.query('SELECT count(*)::int AS n FROM topology_graph_state')).rows[0].n).toBe(100);
   });
   it('rolls back graph expansion beyond its budget and discloses the retained snapshot', async () => {

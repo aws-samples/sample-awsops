@@ -11,8 +11,8 @@ transaction. The shared helper bounds statements, lock waits and transaction
 duration, handles checked-out client errors, and discards failed connections. Reads and rebuild
 transactions share at most two admissions per pool, reserving one of the three pool slots for auth.
 Excess reads receive typed 503/busy and rebuilds report busy/skipped without queueing a checkout. Request
-statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers use 2s statements and a 4s total transaction budget, separately
-from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
+statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers have a 2s checkout deadline, 2s statements, a 4s PostgreSQL transaction
+budget and a 6s caller watchdog, separately from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
 VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclude all placement targets. Read limits and
 500/503 failures are disclosed separately from collector status.
@@ -45,7 +45,12 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 projected snapshots and an attempt-evidence calculation for flow/infra callers. Callers use the
 existing `self` host sentinel and the exported SDK host-only type filter. Every selected slice, including `self`, needs a current participation snapshot; members
 also require registration. Its `scope: account` and item count describe that slice, not
-the global producer ledger. Aggregate zero alone never proves slice participation.
+the global producer ledger. Aggregate zero alone never proves slice participation. The real producer writes each proved host
+snapshot before finalizing success. A failed host data-path probe records `partial` and
+preserves the earlier snapshot; readers must not reinterpret that as confirmed empty.
+Repair legacy host registration/rendering through the existing onboarding contract rather
+than injecting snapshot rows. `test_empty_inventory_sync_uses_real_identity_probe` pins
+successful and failed empty VPC/Route53/other SQL paths and snapshot-before-finalize order.
 Count proof is reused only when the snapshot observes the identical ledger row version.
 The snapshot records its queried types; an attempt cannot narrow that set to hide a failed source.
 The helper returns source clocks/completeness, not a freshness or deployment verdict.
@@ -74,8 +79,8 @@ transaction limit, with a six-second caller watchdog across both phases. The tra
 must perform only bounded SQL/local work. An expired checkout never starts abandoned
 work; its admission remains held until the late connection is returned.
 All helpers can reject with `GraphReadBusy`; callers classify it as skipped/busy, never
-successful empty collection. `GraphReadDeadline` identifies checkout or watchdog timeout;
-the publisher records a source-read failure where possible. Do not nest these helpers
+successful empty collection. `GraphReadDeadline` identifies checkout or watchdog timeout and returns skipped work with
+`rebuild_deadline`; it does not overwrite saved state with a false collection failure. Do not nest these helpers
 inside an already-admitted transaction.
 
 These primitives do not write graph/state rows. The bounded publisher in `graph-store.ts`
@@ -171,11 +176,24 @@ Run `cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` only from an authorized
 VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID`.
 The existing web-task principal uses its provisioned Aurora IAM authentication and
 curated connector-read permissions; this change creates no principal or grant.
-Flow and infra execute sequentially. A flow exception does not block infra, but an
-failed or incomplete infra outcome skips dependent trace collection/publication. Returned
-retention, skips, degradation, traversal limits, missing publication or invalid result metadata
-cannot provide clean context. A reported clean publication with zero nodes remains valid;
-node count alone is not an empty proof. Saved trace rows/clocks remain untouched when skipped.
+Flow and infra execute sequentially. Trace consumes only host (`self`) infra, so it requires
+`selfInfraComplete: true` from that cycle: a successful self publication with no retention,
+skip or degradation, and source clocks/counts that pass `inventorySourcesStale`.
+A clean confirmed-empty self publication is valid; zero nodes alone are not proof.
+Member-only gaps do not invalidate proved self context, but remain in fleet-wide counts,
+reasons and CLI exit 1/2. A missing, failed, retained, skipped, degraded or stale self slice
+withholds trace. This does not relax the strict 43-type runtime release proof.
+
+| Exact diagnostic | Meaning and next check |
+|---|---|
+| `[graph-rebuild] trace skipped: infra execution failed` | No usable self proof after an execution failure. Inspect the infra result's sanitized failure code and host collection state. |
+| `[graph-rebuild] trace skipped: infra publication incomplete` | Self was unattempted, superseded, retained, skipped, degraded or stale. Inspect `/api/graph?class=infra` source counts/clocks and `selfInfraComplete`; member counters alone are not the dependency gate. |
+| `rebuild_deadline` | Checkout or caller watchdog expired. Work is skipped; check DB connection/TLS latency and pool contention before retrying. It is not confirmed empty collection. |
+
+`recordTraceDependencySkip` records a non-publishing trace attempt with
+`sourceAttempted: false` and `failureReason: not_attempted`, retaining rows and the old
+capture clock. It invents no telemetry count/window. Missing schema, busy admission or
+storage failure can prevent that record; a log line alone is not a persistence receipt.
 
 Registry query errors normally do **not** throw from `loadGraphSources`. The loader
 returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
@@ -189,10 +207,9 @@ is not a persistence receipt. Unexpected loader exceptions also call the non-pub
 node/edge and published/degraded/retained/skipped counts, fixed reasons, optional failed-account
 count and account-limit flag. It projects only those fields and sanitized failure codes.
 Node/edge totals alone are not sufficient. Partial account progress remains visible alongside
-its unexpected failure; an infra failed-account result also skips dependent trace work.
-The dependency guard also withholds trace on retained/skipped/degraded results, traversal
-limits, missing publication or invalid metadata. A reported clean complete-empty infra
-publication remains valid. The CLI awaits pool closure and exits **1** for failure,
+its unexpected failure. The separately validated `selfInfraComplete` flag describes only
+that cycle’s fresh host infra publication; fleet truncation or member failure never becomes
+fleet success merely because host trace can refresh. Missing/invalid self proof withholds trace. The CLI awaits pool closure and exits **1** for failure,
 including registry or cleanup failure; otherwise **2** for incomplete publication and
 **0** for clean publication. These graph outcomes do not replace full runtime release proof.
 

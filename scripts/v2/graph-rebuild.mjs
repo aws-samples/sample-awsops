@@ -13,7 +13,7 @@
 //
 // The gated web/instrumentation.ts timer invokes this logic in the web process.
 import { getPool } from '../../web/lib/db.ts';
-import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } from '../../web/lib/graph-store.ts';
+import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure, recordTraceDependencySkip } from '../../web/lib/graph-store.ts';
 import { loadGraphSources } from '../../web/lib/graph-sources.ts';
 import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 import { executeGraphLayer } from '../../web/lib/graph-execution.ts';
@@ -30,9 +30,10 @@ const execute = async (stage, action) => {
 try {
   await execute('flow', () => rebuildGraph(pool));
   const infra = await execute('infra', () => rebuildInfraGraph(pool));
-  if (infra.failed || infra.incomplete) {
+  if (!infra.selfInfraComplete) {
     console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
       : '[graph-rebuild] trace skipped: infra publication incomplete');
+    await execute('trace', () => recordTraceDependencySkip(pool));
   } else {
     try {
       const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
