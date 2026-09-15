@@ -144,6 +144,15 @@ run "inventory_fingerprint_uses_the_deployed_archive" {
   }
   assert {
     condition = (
+      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].healthCheck.command == ["CMD", "python3", "/app/healthcheck.py"] &&
+      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].healthCheck.timeout == 10 &&
+      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].healthCheck.interval == 30 &&
+      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].healthCheck.retries == 5
+    )
+    error_message = "Health checks must observe PostgreSQL without a Steampipe CLI auto-start that races the supervisor."
+  }
+  assert {
+    condition = (
       output.runtime_deployment.inventory.sync_code_sha256 == data.archive_file.inv_sync_src[0].output_base64sha256 &&
       output.runtime_deployment.inventory.sync_code_sha256 == aws_lambda_function.inv_sync[0].source_code_hash &&
       output.runtime_deployment.inventory.sync_code_sha256 != aws_lambda_function.inv_sync[0].code_sha256

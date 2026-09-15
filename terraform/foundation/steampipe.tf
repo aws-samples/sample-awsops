@@ -202,7 +202,8 @@ resource "aws_ecs_task_definition" "steampipe" {
       { name = "STEAMPIPE_DATABASE_PASSWORD", valueFrom = aws_secretsmanager_secret.steampipe[0].arn },
     ]
     healthCheck = {
-      command  = ["CMD-SHELL", "steampipe query \"select 1\" >/dev/null 2>&1 || exit 1"]
+      # `steampipe query` can auto-start PostgreSQL outside the supervisor lock.
+      command  = ["CMD", "python3", "/app/healthcheck.py"]
       interval = 30
       timeout  = 10
       # retries=5 (150s consecutive-failure tolerance) — NOT just the initial startup case.

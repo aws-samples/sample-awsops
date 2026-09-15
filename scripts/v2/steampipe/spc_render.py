@@ -3,9 +3,10 @@
 One `connection "aws_<account_id>"` per enabled account (name = account id, never the alias —
 aliases aren't unique and can collide/sanitize to empty). `all_regions` → `regions = ["*"]`;
 otherwise the explicit enabled regions; an account that is NOT all-regions and has NO enabled
-regions is skipped (never the backwards ["*"]-on-empty). Non-host connections carry `assume_role_arn`
-(+ `assume_role_external_id` only when set; 1st-party omits it). An `aws` aggregator spans every per-account
-connection so existing `aws.*` queries transparently fan out. All rendered values are HCL-escaped.
+regions is skipped (never the backwards ["*"]-on-empty). Non-host connections select generated
+AWS shared-config profiles. The pinned plugin supports `profile`, not inline assume-role keys.
+Profiles use the ECS task credentials to assume the target role, with ExternalId only when set.
+An `aws` aggregator spans every per-account connection. All SPC values are HCL-escaped.
 Also renders a leading `plugin "aws" { limiter "awsops_global" { ... } }` block from a
 `LimiterConfig` — defaults, or env-tunable values (`STEAMPIPE_AWS_MAX_CONCURRENCY` /
 `STEAMPIPE_AWS_BUCKET_SIZE` / `STEAMPIPE_AWS_FILL_RATE`) each bounds-validated by
@@ -14,6 +15,7 @@ Also renders a leading `plugin "aws" { limiter "awsops_global" { ... } }` block 
 from dataclasses import dataclass
 import math
 import os
+import re
 from typing import Mapping, Optional
 
 PLUGIN = "aws@0.142.0"
@@ -69,6 +71,48 @@ def _hcl(s) -> str:
 def _regions_list(regions) -> str:
     return "[" + ", ".join(_hcl(r) for r in regions) + "]"
 
+def _scan_rows(rows):
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("invalid AWS profile configuration")
+        regions = ["*"] if row.get("all_regions") or row.get("is_host") else [
+            region for region in (row.get("regions") or []) if region]
+        if not regions:
+            continue
+        account = row.get("account_id")
+        legacy_host = account == "self" and row.get("is_host") is True
+        if (not isinstance(account, str) or not (legacy_host or re.fullmatch(r"[0-9]{12}", account))
+                or account in seen):
+            raise ValueError("invalid AWS profile configuration")
+        seen.add(account)
+        if not row.get("is_host"):
+            role = row.get("role_name")
+            external = row.get("external_id")
+            if (not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9_+=,.@/-]{1,512}", role)
+                    or (external not in (None, "") and (
+                        not isinstance(external, str)
+                        or not re.fullmatch(r"[A-Za-z0-9_+=,.@:/-]{2,1224}", external)))):
+                raise ValueError("invalid AWS profile configuration")
+        yield row, regions
+
+
+def render_aws_config(rows) -> str:
+    """Private INI metadata only: no static credentials, default profile, or processes."""
+    profiles = []
+    for row, _ in _scan_rows(rows):
+        if row.get("is_host"):
+            continue
+        lines = [
+            f"[profile aws_{row['account_id']}]",
+            f"role_arn = arn:aws:iam::{row['account_id']}:role/{row['role_name']}",
+            "credential_source = EcsContainer",
+        ]
+        if row.get("external_id"):
+            lines.append(f"external_id = {row['external_id']}")
+        profiles.append("\n".join(lines))
+    return "\n\n".join(profiles) + ("\n" if profiles else "")
+
 
 def render_spc(rows, limiter: Optional[LimiterConfig] = None) -> str:
     """rows: list of {account_id, is_host, role_name, external_id, all_regions, regions[]}."""
@@ -83,15 +127,7 @@ def render_spc(rows, limiter: Optional[LimiterConfig] = None) -> str:
         "  }\n"
         "}"
     )
-    for r in rows:
-        # The HOST always scans all regions (v1 parity) regardless of the flag — it has no
-        # account_regions rows, and skipping it would empty the whole inventory (C1).
-        if r.get("all_regions") or r.get("is_host"):
-            regions = ["*"]
-        else:
-            regions = [x for x in (r.get("regions") or []) if x]
-            if not regions:
-                continue  # target that is not all-regions and has nothing enabled → skip
+    for r, regions in _scan_rows(rows):
         name = "aws_" + str(r["account_id"])
         lines = [
             f'connection "{name}" {{',
@@ -99,11 +135,7 @@ def render_spc(rows, limiter: Optional[LimiterConfig] = None) -> str:
             f"  regions = {_regions_list(regions)}",
         ]
         if not r.get("is_host"):
-            # Steampipe AWS plugin assume-role keys are `assume_role_arn` / `assume_role_external_id`
-            # (NOT role_arn/external_id) — verified vs scripts/12-setup-multi-account.sh + the live aws.spc.
-            lines.append(f'  assume_role_arn = {_hcl("arn:aws:iam::%s:role/%s" % (r["account_id"], r["role_name"]))}')
-            if r.get("external_id"):
-                lines.append(f"  assume_role_external_id = {_hcl(r['external_id'])}")
+            lines.append(f"  profile = {_hcl(name)}")
         lines.append("}")
         blocks.append("\n".join(lines))
 
