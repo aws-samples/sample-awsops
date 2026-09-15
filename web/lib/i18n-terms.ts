@@ -7,6 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.': { en: 'Workload identity is withheld because service evidence completeness or freshness is unverified.', zh: '无法确认服务依据的完整性或新鲜度，已暂缓工作负载标识。', ja: 'サービスの根拠の完全性または鮮度を確認できないため、ワークロードの識別を保留しました。' },
   '호스트 계정 범위를 확인하는 중…': { en: 'Checking host account scope…', zh: '正在确认主账户范围…', ja: 'ホストアカウントの範囲を確認中…' },
   '호스트 계정 범위를 확인할 수 없습니다.': { en: 'Host account scope could not be verified.', zh: '无法确认主账户范围。', ja: 'ホストアカウントの範囲を確認できません。' },
   '현재 적용된 네트워크 관측이 없습니다.': { en: 'No network observation query is currently applied.', zh: '当前未应用网络观测查询。', ja: '現在適用されているネットワーク観測クエリはありません。' },

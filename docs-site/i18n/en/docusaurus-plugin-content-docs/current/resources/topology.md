@@ -117,6 +117,8 @@ Grouped targets show member-specific IP, namespace and Pod evidence with omissio
 
 Numeric trace account IDs are reconciled only with the authenticated host account identity. Unverified host scope withholds those identity links; failed or partial reads and unknown observation windows remain distinct from successful empty results.
 
+Workload identity also requires a complete, fresh service-snapshot read. Stale, retained, dropped, capped, partial or unknown service evidence remains visible but cannot establish the related workload identity. This verifies evidence within the query scope, not collection of all traffic.
+
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
 - Does this CloudFront distribution talk to its origin over TLS?

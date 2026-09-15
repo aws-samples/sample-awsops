@@ -28,8 +28,14 @@ const status = {
   ],
   scopeCount: 1,
 };
+const completeCollection = {
+  status: 'ok', stale: false, readStatus: 'ok', retainedPrevious: false,
+  nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0,
+  sources: [{ sourceId: 'tempo', status: 'ok', reasons: [],
+    windowStartMs: Date.parse('2026-09-11T11:45:00Z'), windowEndMs: Date.parse('2026-09-11T12:00:00Z') }],
+};
 const snapshot = {
-  class: 'trace', account: 'self', captured_at: '2026-09-11T11:55:00Z',
+  class: 'trace', account: 'self', captured_at: '2026-09-11T11:55:00Z', collection: completeCollection,
   nodes: [{ id: 'checkout', kind: 'service', label: 'checkout-service', meta: {} }], edges: [],
 };
 const json = (body: unknown, code = 200) => new Response(JSON.stringify(body), {
@@ -86,7 +92,12 @@ function search(value: string) {
 }
 
 describe('ServiceNetworkTopology', () => {
-  it.each([true, false])('uses a trusted host identity for numeric producer claims: %s', async known => {
+  it.each([[true, {}, true], [false, {}, false], [true, { stale: true }, false],
+    [true, { status: 'partial' }, false], [true, { readTruncated: true }, false],
+    [true, { retainedPrevious: true }, false], [true, { sources: [] }, false],
+    [true, { metadataTruncated: true }, false], [true, { nodeDrops: 1 }, false],
+    [true, { sources: [{ ...completeCollection.sources[0], status: 'partial' }] }, false]] as const)
+  ('requires trusted host and complete fresh service evidence: %j', async (known, quality, expected) => {
     const host = '111111111111', region = 'ap-northeast-2', vpcId = 'vpc-shop';
     const configured = buildFlowGraph({
       tg: [{ resource_id: 'tg', region, vpc_id: vpcId, account_id: 'self', target_type: 'ip',
@@ -97,7 +108,7 @@ describe('ServiceNetworkTopology', () => {
     const trace = buildTraceGraph([{ traceId: 't', spanId: 's', service: 'web', sourceId: 'tempo', kind: 'SERVER', startMs: 0, durationMs: 1,
       accountId: host, region, k8sCluster: 'app', k8sNamespace: 'shop', k8sPod: 'web-1', k8sDeployment: 'web' }], [], [], host);
     serve({ host: () => json({ accounts: known ? [{ accountId: host, isHost: true }] : [] }),
-      service: () => json({ ...trace, class: 'trace', account: 'self', captured_at: snapshot.captured_at }),
+      service: () => json({ ...trace, class: 'trace', account: 'self', captured_at: snapshot.captured_at, collection: { ...completeCollection, ...quality } }),
       query: url => { const result = observation(url); Object.assign(result.rows[0].local,
         { podName: 'web-1', podNamespace: 'shop' }); return json(result); },
     });
@@ -107,7 +118,7 @@ describe('ServiceNetworkTopology', () => {
       await screen.findByRole('region', { name: '적용된 네트워크 조회' });
       search('web-1'); fireEvent.click(await screen.findByRole('button', { name: '선택: web-1' }));
       const detail = within(screen.getByRole('region', { name: '선택한 노드 상세' }));
-      expect(Boolean(detail.queryByText('구성에서 확인된 Pod 식별자'))).toBe(known);
+      expect(Boolean(detail.queryByText('구성에서 확인된 Pod 식별자'))).toBe(expected);
   });
   it('preserves an all-failed network read instead of presenting successful absence', async () => {
     serve({ query: () => json({ error: 'unavailable' }, 503) });

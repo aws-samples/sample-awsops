@@ -45,6 +45,7 @@ const CORRELATION_REASONS: Record<E2eCorrelationReason, string> = {
   configuration_unverified: '구성 근거를 확인할 수 없어 연결을 보류했습니다.',
   workload_conflict: '워크로드 식별자가 충돌하여 연결을 보류했습니다.',
   workload_scope_unverified: '워크로드 범위를 확인할 수 없어 구성 기록 연결도 보류했습니다.',
+  service_source_unverified: '서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.',
   pod_identity_conflict: 'Pod 식별 정보가 충돌하여 연결을 보류했습니다.',
   context_only: '캐시된 구성 기록은 참고 정보이며 식별자 연결이 아닙니다.',
   no_match: '연결할 식별 근거가 없습니다.',
@@ -250,6 +251,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-500" role="status">
         <span>{tt('표시 노드')} {view.nodes.length} · {tt('관계')} {view.edges.length}</span>
+        {graph.summary.serviceNodes > 0 && !graph.summary.servicesComplete && <span>{tt('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')}</span>}
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
         {readState !== 'complete' && <span role="status">{tt(READ_LABELS[readState])}</span>}
         {!!graph.summary.networkRead?.failedCategories.length && <span>{tt('조회 실패 분류:')} {graph.summary.networkRead.failedCategories.join(', ')}</span>}

@@ -124,6 +124,23 @@ function readHostAccount(body: Record<string, unknown>): string {
   return hosts[0].accountId;
 }
 
+function serviceReadComplete(snapshot: ObservedServices | null): boolean {
+  if (!snapshot || !validTime(snapshot.captured_at) || !object(snapshot.collection)) return false;
+  const c = snapshot.collection;
+  if (!['ok', 'empty'].includes(String(c.status)) || c.stale !== false || c.readStatus !== 'ok'
+    || c.failureReason != null || c.coverage === 'unknown' || c.sourceAttempted === false) return false;
+  if (['retainedPrevious', 'metadataTruncated', 'readTruncated', 'inputTruncated', 'graphTruncated', 'infraUnavailable']
+    .some(key => c[key] !== undefined && c[key] !== false)) return false;
+  if (['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging']
+    .some(key => c[key] !== undefined && c[key] !== 0)) return false;
+  const sources = c.publishedSources ?? c.sources;
+  return Array.isArray(sources) && sources.length > 0 && sources.every(source => object(source)
+    && ['ok', 'empty'].includes(String(source.status)) && Array.isArray(source.reasons) && !source.reasons.length
+    && typeof source.windowStartMs === 'number' && Number.isFinite(source.windowStartMs) && source.windowStartMs >= 0
+    && typeof source.windowEndMs === 'number' && Number.isFinite(source.windowEndMs)
+    && source.windowEndMs >= source.windowStartMs);
+}
+
 function initialFilters(): NetworkFilters {
   // Read after mount so the server and first client render have the same controls.
   try {
@@ -236,6 +253,7 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
   };
 
   const batch = host ? network.batch : null;
+  const servicesComplete = host && serviceReadComplete(services.data);
   const configurationComplete = configuration.complete === true && !configuration.loading && !configuration.error
     && !configuration.failedTypes.length && !configuration.cappedTypes.length;
   const networkRead = useMemo<E2eNetworkRead>(() => ({
@@ -246,8 +264,8 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
   }), [host, network.loading, network.error, batch]);
   const graph = useMemo(() => buildE2eGraph({
     account, configured, services: host ? services.data : null, network: batch?.observations ?? [],
-    hostAccountId: hostIdentity.data ?? undefined, configurationComplete, networkRead,
-  }), [account, configured, host, services.data, batch, hostIdentity.data, configurationComplete, networkRead]);
+    hostAccountId: hostIdentity.data ?? undefined, configurationComplete, servicesComplete, networkRead,
+  }), [account, configured, host, services.data, batch, hostIdentity.data, configurationComplete, servicesComplete, networkRead]);
   const changed = batch !== null && (filters.monitor !== batch.filters.monitor || filters.metric !== batch.filters.metric
     || filters.category !== batch.filters.category || filters.rangeSec !== batch.filters.rangeSec);
   const rows = batch?.observations.reduce((count, observation) => count + observation.rows.length, 0) ?? 0;

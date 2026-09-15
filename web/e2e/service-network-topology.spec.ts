@@ -38,6 +38,10 @@ const inventory: Record<string, { resource_id: string; region: string; data: Rec
 };
 const services = {
   class: 'trace', account: 'self', captured_at: END,
+  collection: { status: 'ok', stale: false, readStatus: 'ok', retainedPrevious: false,
+    nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0,
+    sources: [{ sourceId: 'fixture-trace', status: 'ok', reasons: [],
+      windowStartMs: Date.parse(START), windowEndMs: Date.parse(END) }] },
   nodes: [
     { id: 'svc:frontend', kind: 'service', label: 'frontend', meta: { spanCount: 50, accountId: '000000000000', region: 'us-east-1' } },
     { id: 'svc:orders', kind: 'service', label: 'orders', meta: { spanCount: 40, accountId: '000000000000', region: 'us-east-1' } },
