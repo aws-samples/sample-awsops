@@ -96,7 +96,7 @@ export default function AccountsPage() {
   return (
     <div className="p-4 md:p-6 flex min-w-0 flex-col gap-4">
       <PageHeader title="계정 관리" subtitle="연결된 AWS 계정 (크로스계정 read-only via AWSopsReadOnlyRole)" />
-      <AccountOnboarding onRegistered={load} />
+      <AccountOnboarding onRegistered={load} accounts={accounts} />
 
       <Card className="p-4 min-w-0 overflow-x-auto">
         <div className="text-[13px] font-semibold text-ink-800 mb-3">{tt('등록된 계정')}</div>

@@ -7,6 +7,13 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '초기 수집 리전': { en: 'Initial collection region', zh: '初始采集区域', ja: '初期収集リージョン' },
+  '계정 등록·검증은 완료됐지만 목록을 새로 불러오지 못했습니다. 페이지를 새로고침하세요.': { en: 'Account registration and verification succeeded, but the list could not be refreshed. Reload the page.', zh: '账户注册和验证已成功，但无法刷新列表。请刷新页面。', ja: 'アカウント登録・検証は成功しましたが、一覧を更新できませんでした。ページを再読み込みしてください。' },
+  '이미 등록된 계정입니다. 저장된 ExternalId를 유지합니다. 아래 등록된 계정 목록에서 테스트를 실행하세요.': { en: 'This account is already registered. Its saved ExternalId is preserved. Run Test from the registered accounts list below.', zh: '此账户已注册，将保留已保存的 ExternalId。请在下方已注册账户列表中运行测试。', ja: 'このアカウントは登録済みです。保存済みの ExternalId を維持します。下の登録済みアカウント一覧からテストしてください。' },
+  '새 역할만 생성하며 기존 스택·역할은 변경하지 않습니다. 기존 역할이 있으면 ExternalId를 맞춘 뒤 연결을 확인하세요.': { en: 'Creates only a new role; existing stacks and roles are never changed. For an existing role, match its ExternalId and verify the connection.', zh: '仅创建新角色，不更改已有堆栈或角色。已有角色请使用匹配的 ExternalId 验证连接。', ja: '新規ロールのみ作成し、既存のスタック・ロールは変更しません。既存ロールは ExternalId を合わせて接続を確認してください。' },
+  '등록된 계정에는 역할 생성 스크립트를 제공하지 않습니다.': { en: 'Role-creation scripts are not provided for registered accounts.', zh: '不为已注册账户提供角色创建脚本。', ja: '登録済みアカウントにはロール作成スクリプトを提供しません。' },
+  '연결 확인은 웹 역할의 접근만 검증합니다. 인벤토리 수집·AgentCore·워커의 연결과 수집 완료를 보장하지 않습니다.': { en: 'Verification checks access by the web role only. It does not confirm inventory collection, AgentCore or worker connectivity, or collection completion.', zh: '验证仅检查网页角色的访问权限，不确认清单采集、AgentCore 或工作器连接，也不保证采集完成。', ja: '接続確認はウェブロールのアクセスのみ検証します。インベントリ収集・AgentCore・ワーカーの接続や収集完了は確認しません。' },
+  'AgentCore 조회는 현재 공통 AWSOPS_EXTERNAL_ID 설정을 사용합니다. 계정별 자동 생성값과 별개로 운영자 설정이 필요합니다.': { en: 'AgentCore reads currently use the shared AWSOPS_EXTERNAL_ID setting. Operator configuration is required separately from per-account generated values.', zh: 'AgentCore 查询目前使用共享的 AWSOPS_EXTERNAL_ID 设置，需要运维人员单独配置，不会自动使用各账户生成的值。', ja: 'AgentCore の読み取りは現在共通の AWSOPS_EXTERNAL_ID 設定を使用します。アカウントごとの生成値とは別に運用者による設定が必要です。' },
   '다시 시도': { en: 'Retry', zh: '重试', ja: '再試行' },
   '복사됨': { en: 'Copied', zh: '已复制', ja: 'コピー済み' },
   'AWS 계정 연결': { en: 'Connect an AWS account', zh: '连接 AWS 账户', ja: 'AWS アカウントを接続' },

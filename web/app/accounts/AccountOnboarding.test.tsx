@@ -10,7 +10,7 @@ const config = {
 const onRegistered = vi.fn().mockResolvedValue(undefined);
 
 beforeEach(() => {
-  onRegistered.mockClear();
+  onRegistered.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
     url === '/api/accounts/onboarding' ? config : { ok: true, status: 'verified' },
   ))));
@@ -30,7 +30,7 @@ describe('account onboarding flow', () => {
     await fillAccount();
     const externalId = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
     expect(screen.getByText(config.hostTaskRoleArn)).toBeTruthy();
-    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`ExternalId=${externalId}`);
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`"ParameterValue": "${externalId}"`);
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
     await screen.findByText('등록·검증 완료');
     expect(fetch).toHaveBeenCalledWith('/api/accounts', expect.objectContaining({
@@ -79,5 +79,30 @@ describe('account onboarding flow', () => {
     fireEvent.click(await screen.findByRole('button', { name: '다시 시도' }));
     await fillAccount();
     expect(screen.getByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeTruthy();
+  });
+  it('keeps registration success when only the account-list refresh fails', async () => {
+    onRegistered.mockRejectedValueOnce(new Error('refresh offline'));
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('계정 등록·검증은 완료됐지만 목록을 새로 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('역할 생성 완료 여부, 신뢰할 호스트 역할 ARN, ExternalId 일치를 확인하세요. IAM 반영에 시간이 걸리면 잠시 후 다시 확인하세요.')).toBeNull();
+  });
+  it('preserves a registered ExternalId and prevents role recreation', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} accounts={[{ accountId: '222222222222', externalId: 'stored-external-id' }]} />);
+    await fillAccount();
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe('stored-external-id');
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).readOnly).toBe(true);
+    expect(screen.queryByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeNull();
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('이미 등록된 계정입니다. 저장된 ExternalId를 유지합니다. 아래 등록된 계정 목록에서 테스트를 실행하세요.')).toBeTruthy();
+  });
+  it('gives a different new account its own ExternalId', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    const original = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).not.toBe(original);
   });
 });

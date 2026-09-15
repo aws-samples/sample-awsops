@@ -27,9 +27,10 @@ printf '%s\\n' "$@" >> "$CALL_LOG"
 if [ "$1 $2" = "$FAIL_COMMAND" ]; then exit 1; fi
 if [ "$1 $2" = "sts get-caller-identity" ]; then
   printf '%s\\n' "$CALLER_ACCOUNT"
-elif [ "$1 $2" = "cloudformation deploy" ]; then
+elif [ "$1 $2" = "cloudformation create-stack" ]; then
   while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--template-file" ]; then cp "$2" "$SAVED_TEMPLATE"; fi
+    if [ "$1" = "--template-body" ]; then cp "\${2#file://}" "$SAVED_TEMPLATE"; fi
+    if [ "$1" = "--parameters" ]; then cp "\${2#file://}" "$SAVED_PARAMETERS"; fi
     shift
   done
 fi
@@ -41,6 +42,7 @@ fi
       ...process.env, PATH: `${directory}:${process.env.PATH}`, CALL_LOG: log,
       CALLER_ACCOUNT: options.account ?? input.accountId, FAIL_COMMAND: options.fail ?? '',
       SAVED_TEMPLATE: join(directory, 'template.json'),
+      SAVED_PARAMETERS: join(directory, 'parameters.json'),
     },
   });
   return { ...result, calls: readFileSync(log, 'utf8'), directory, injected, profile };
@@ -51,11 +53,15 @@ describe('account onboarding script', () => {
     const result = runScript();
     expect(result.status).toBe(0);
     expect(result.calls).toContain(result.profile);
-    expect(result.calls).toContain(`HostTaskRoleArn=${config.hostTaskRoleArn}`);
-    expect(result.calls).toContain(`ExternalId=${input.externalId}`);
     expect(result.calls).toContain('CAPABILITY_NAMED_IAM');
-    expect(result.calls).toContain('--no-fail-on-empty-changeset');
+    expect(result.calls).toContain('stack-create-complete');
     expect(existsSync(result.injected)).toBe(false);
+    const parameters = JSON.parse(readFileSync(join(result.directory, 'parameters.json'), 'utf8'));
+    expect(parameters).toEqual([
+      { ParameterKey: 'HostTaskRoleArn', ParameterValue: config.hostTaskRoleArn },
+      { ParameterKey: 'RoleName', ParameterValue: 'AWSopsReadOnlyRole' },
+      { ParameterKey: 'ExternalId', ParameterValue: input.externalId },
+    ]);
     const template = JSON.parse(readFileSync(join(result.directory, 'template.json'), 'utf8'));
     expect(Object.keys(template.Resources)).toEqual(['AWSopsReadOnlyRole']);
     expect(template.Resources.AWSopsReadOnlyRole.Properties.ManagedPolicyArns).toEqual(['arn:aws:iam::aws:policy/ReadOnlyAccess']);
@@ -76,17 +82,21 @@ describe('account onboarding script', () => {
     const identityFailure = runScript({ fail: 'sts get-caller-identity' });
     expect(identityFailure.status).not.toBe(0);
     expect(identityFailure.calls).not.toContain('cloudformation');
-    const deployFailure = runScript({ fail: 'cloudformation deploy' });
+    const deployFailure = runScript({ fail: 'cloudformation create-stack' });
     expect(deployFailure.status).not.toBe(0);
     expect(deployFailure.calls).not.toContain('describe-stacks');
+    expect(deployFailure.calls).not.toContain('wait');
     expect(deployFailure.stdout).not.toContain('Role ready');
+    expect(buildAccountOnboarding(input, config).script).not.toContain('cloudformation deploy');
+    expect(buildAccountOnboarding(input, config).script).not.toContain('update-stack');
   });
 
   it('uses current credentials without a profile and permits explicit first-party omission only', () => {
     expect(runScript({ profile: '' }).calls).not.toContain('--profile');
     expect(onboardingInputError({ ...input, externalId: '' })).toBeTruthy();
     const guide = buildAccountOnboarding({ ...input, externalId: '', firstParty: true }, config);
-    expect(guide.script).toContain("'ExternalId='");
+    const parameters = JSON.parse(guide.script.split("<<'AWSOPS_PARAMETERS'\n")[1].split('\nAWSOPS_PARAMETERS')[0]);
+    expect(parameters.some((parameter: { ParameterKey: string }) => parameter.ParameterKey === 'ExternalId')).toBe(false);
     expect(execFileSync('bash', ['-n'], { input: guide.script }).toString()).toBe('');
   });
 

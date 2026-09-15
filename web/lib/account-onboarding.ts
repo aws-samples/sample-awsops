@@ -41,8 +41,8 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
     Parameters: {
       HostTaskRoleArn: { Type: 'String', AllowedPattern: '^arn:aws:iam::\\d{12}:role/.+$' },
       WorkerTaskRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
-      ExternalId: { Type: 'String', Default: '', AllowedPattern: '^$|^[A-Za-z0-9_+=,.@:/-]{8,1224}$', NoEcho: true },
-      RoleName: { Type: 'String', Default: 'AWSopsReadOnlyRole', AllowedValues: ['AWSopsReadOnlyRole'] },
+      ExternalId: { Type: 'String', Default: '', AllowedPattern: '^$|^.{8,}$', NoEcho: true },
+      RoleName: { Type: 'String', Default: 'AWSopsReadOnlyRole' },
     },
     Conditions: {
       HasExternalId: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'ExternalId' }, ''] }] },
@@ -72,6 +72,11 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
     },
     Outputs: { RoleArn: { Value: { 'Fn::GetAtt': ['AWSopsReadOnlyRole', 'Arn'] } } },
   }, null, 2);
+  const parameters = JSON.stringify([
+    { ParameterKey: 'HostTaskRoleArn', ParameterValue: config.hostTaskRoleArn },
+    { ParameterKey: 'RoleName', ParameterValue: 'AWSopsReadOnlyRole' },
+    ...(input.externalId ? [{ ParameterKey: 'ExternalId', ParameterValue: input.externalId }] : []),
+  ], null, 2);
   const filename = `awsops-readonly-role-${input.accountId}.sh`;
   const completion = config.registrationEnabled
     ? 'Role ready. Return to AWSops Accounts with the same ExternalId and select Verify and register.'
@@ -95,15 +100,16 @@ trap 'rm -rf -- "$work_dir"' EXIT
 cat > "$work_dir/awsops-target-account-role.json" <<'AWSOPS_TEMPLATE'
 ${template}
 AWSOPS_TEMPLATE
-aws cloudformation deploy "\${aws_args[@]}" \\
-  --template-file "$work_dir/awsops-target-account-role.json" \\
+cat > "$work_dir/parameters.json" <<'AWSOPS_PARAMETERS'
+${parameters}
+AWSOPS_PARAMETERS
+printf '%s\\n' 'Create a new read-only role only. Existing stacks and roles are never updated by this script.'
+aws cloudformation create-stack "\${aws_args[@]}" \\
+  --template-body "file://$work_dir/awsops-target-account-role.json" \\
   --stack-name awsops-readonly-role \\
   --capabilities CAPABILITY_NAMED_IAM \\
-  --no-fail-on-empty-changeset \\
-  --parameter-overrides \\
-    ${shellQuote(`HostTaskRoleArn=${config.hostTaskRoleArn}`)} \\
-    ${shellQuote(`ExternalId=${input.externalId}`)} \\
-    'RoleName=AWSopsReadOnlyRole'
+  --parameters "file://$work_dir/parameters.json"
+aws cloudformation wait stack-create-complete "\${aws_args[@]}" --stack-name awsops-readonly-role
 aws cloudformation describe-stacks "\${aws_args[@]}" \\
   --stack-name awsops-readonly-role \\
   --query 'Stacks[0].Outputs[?OutputKey==\`RoleArn\`].OutputValue' --output text

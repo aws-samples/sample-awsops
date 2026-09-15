@@ -25,20 +25,42 @@ CloudFormation template, so the target administrator does not need a repository 
 Run it in the **target account's** CloudShell, or Bash with AWS CLI v2 and target-account
 credentials. Upload a downloaded file through **Actions → Upload file**, then execute the
 displayed `bash` command. A named CLI profile can be included in advanced settings.
-IAM role creation/policy attachment and CloudFormation deployment permissions are required.
+IAM role creation/policy attachment and CloudFormation creation/read permissions are required.
 
 The script checks `GetCallerIdentity.Account` before any deployment and stops on a mismatch.
-It deploys `awsops-readonly-role`, pins trust to the discovered host web role and grants
-`ReadOnlyAccess`. Existing `WorkerTaskRoleArn` stack parameter values are preserved on
-updates; new stacks leave worker trust empty. Worker reads require the additional setup below.
-The generated template in `web/lib/account-onboarding.ts` uses the same role logical ID,
-parameters and trust conditions as `infra/cfn/awsops-target-account-role.yaml`.
+It creates `awsops-readonly-role` with `create-stack`, waits for creation, pins trust to
+the discovered host web role and grants the AWS-managed `ReadOnlyAccess` policy.
+That policy permits broad service/resource reads; it is not limited to metadata.
+The generated script never updates existing stacks or roles, so it cannot rotate a live
+ExternalId or remove an existing trust condition. Same-organization setup omits the
+ExternalId parameter, using the template's empty default only for a new stack.
+Existing stacks/roles stop creation; inspect them and use their current ExternalId to verify.
+The page preserves the stored ExternalId and hides creation controls for registered accounts;
+use the registered row's **Test** control for those accounts.
+
+New stacks leave worker trust empty. Worker reads require the additional setup below.
+The generated template's deployment contract matches `infra/cfn/awsops-target-account-role.yaml`;
+only explanatory template/parameter/output descriptions differ. The required offline
+`scripts/v2/test_account_onboarding_template.py` test compares all deployment parameters,
+resources, conditions and outputs, including trust and permission policies.
 
 After stack completion, return to the same form and choose **Verify and register**.
-Verification failure preserves the fields for retry. If the page was reloaded, restore
+Verification failure preserves the fields for retry. A successful registration followed by
+a failed list refresh remains successful and asks for a page refresh. If the page was reloaded, restore
 the ExternalId used to create the role. `AlreadyExists` means an existing role must be
 checked, not deleted: use its trust policy/ExternalId and verify from the form.
-Allow for IAM propagation if verification fails immediately after creation.
+Allow for IAM propagation if verification fails immediately after creation. A failed
+CloudFormation create may leave a rollback stack; inspect its events before retrying and
+coordinate cleanup separately rather than deleting an existing role.
+
+Verification proves the **web task role's** AssumeRole and caller-account identity only.
+It does not prove inventory collection, worker access or AgentCore MCP access. The selected
+region is the initial collection scope; add other regions using the registered row.
+Inventory collection is asynchronous and requires its own principal/trust configuration.
+Agent Lambda readers currently use a single `AWSOPS_EXTERNAL_ID` setting instead of the
+registry's per-account value. An automatically generated per-account ID is not automatically
+propagated there. Operators must coordinate the shared reader value and its trusted
+principal before expecting AgentCore cross-account reads; the wizard does not configure them.
 
 Host-only deployments display the restriction before registration and disable the register
 button. Script generation remains available for preparation; running it does not change
@@ -47,7 +69,7 @@ separate operator configuration step. AWSops itself never executes the generated
 
 ## Prerequisites
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
-- The **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`).
+- For the manual CLI path below: the **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`). The browser path discovers it automatically.
   (When the multi-account inventory fan-out ships, the steampipe task role is added then.)
 - **Optional** — the **host worker task role ARN**, `arn:aws:iam::<host>:role/awsops-v2-worker-task`
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
@@ -57,10 +79,10 @@ separate operator configuration step. AWSops itself never executes the generated
   role is trusted by this account until `WorkerTaskRoleArn` below is set — omitting it leaves those
   two features correctly failing closed (AccessDenied) against this account, exactly as if it were
   never onboarded for worker-driven reads at all.
-- **3rd-party only**: a chosen **ExternalId** string (≥8 chars), same value in the CFN and `/accounts`.
+- **3rd-party only**: a chosen **ExternalId** string (8–1224 ASCII letters, digits or `_+=,.@:/-` for the browser path), same value in the CFN and `/accounts`.
   1st-party (same-org) accounts can omit it.
 
-## Steps
+## Manual CLI alternative
 1. In the **target account**, deploy the CloudFormation template:
    ```
    aws cloudformation deploy \
@@ -78,9 +100,11 @@ separate operator configuration step. AWSops itself never executes the generated
    `aws cloudformation deploy` with the SAME `--stack-name` against an already-onboarded account is
    an in-place update — adding `WorkerTaskRoleArn` to an existing stack is additive and does not
    revoke the existing web-task-role trust.
-2. In AWSops, open **계정 관리 (`/accounts`)** as an admin → **계정 추가** → enter the target Account ID,
-   an Alias, the Region, and the ExternalId. **For 1st-party (no-ExternalId) onboarding: leave
-   ExternalId blank AND tick the "1st-party 계정 (ExternalId 생략)" checkbox** — registration is
+2. In AWSops, open **Accounts (`/accounts`)** as an admin → **Connect an AWS account**
+   (Korean: **AWS 계정 연결**) → enter the target Account ID, alias and initial region.
+   In **Advanced: ExternalId · AWS CLI profile**, enter the ExternalId already used above.
+   For first-party onboarding, explicitly select the same-organization checkbox and leave
+   ExternalId blank, then select **Verify and register** (Korean: **연결 확인 및 등록**). Registration is
    rejected (400) if ExternalId is empty and that box is unchecked, so omission is an explicit
    choice. AWSops assumes the role and confirms `GetCallerIdentity.Account` matches the submitted ID
    (status → `verified`) before saving.
