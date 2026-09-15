@@ -56,9 +56,14 @@ export function selectProject(text) {
   return match?.[1] ?? 'awsops-v2';
 }
 
+export function allowedMigrationEvent(c) {
+  return c?.event === 'workflow_dispatch' || (c?.event === 'push' && c.fromDeployWeb === 'true' &&
+    c.workflowRef === 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev');
+}
+
 export function validateContext(c) {
   requireThat(c?.repository === REPOSITORY && c.ref === 'refs/heads/dev' &&
-    c.event === 'workflow_dispatch', 'Only the samples repository dev dispatch is allowed');
+    allowedMigrationEvent(c), 'Only a samples dev dispatch or opted-in Deploy Web push is allowed');
   requireThat(SHA.test(c.sha) && PROJECT.test(c.project) && c.region === REGION &&
     numericId.test(c.runId) && numericId.test(c.attempt), 'Invalid migration run context');
   const role = configuredRole(c.deployRoleArn);
@@ -77,6 +82,7 @@ export function validateContext(c) {
 }
 
 function validateConfig(config, c, expected) {
+  requireThat(config, 'Migration capability unavailable: configure CI_MIGRATIONS_ENABLED_DEV=true and apply ci_migrations_enabled=true before a current-source web release');
   requireThat(config && allowedKeys(config, ['project', 'region', 'cluster', 'task_template_arn',
     'repository_url', 'subnets', 'security_groups', 'log_group']), 'Missing or invalid migration_job output');
   requireThat(config.project === c.project && config.region === REGION &&
@@ -124,12 +130,17 @@ function registration(t, config, c, e, expectedArn = config.task_template_arn, s
   'Unexpected migration container configuration');
   const names = ['AWS_REGION', 'AURORA_ENDPOINT', 'AURORA_DATABASE', 'AURORA_SECRET_ARN',
     'SQL_READER_SECRET_ARN', 'SQL_READER_SYNC_MODE', 'INITIALIZE_EMPTY_DB'];
+  const automatic = c.fromDeployWeb === 'true';
+  if (automatic && expectedArn !== config.task_template_arn) names.push('AUTOMATIC_MIGRATION');
   requireThat(Array.isArray(container.environment) && container.environment.length === names.length &&
     container.environment.every(v => allowedKeys(v, ['name', 'value']) &&
       names.includes(v.name) && typeof v.value === 'string') &&
     new Set(container.environment.map(v => v.name)).size === names.length,
   'Only the nonsecret migration environment is permitted');
   const env = Object.fromEntries(container.environment.map(v => [v.name, v.value]));
+  if (automatic && expectedArn !== config.task_template_arn) {
+    requireThat(env.AUTOMATIC_MIGRATION === '1', 'Registered automatic migration policy changed');
+  }
   const secretPrefix = `arn:aws:secretsmanager:${REGION}:${e.account}:secret:`;
   requireThat(env.AWS_REGION === REGION && env.AURORA_DATABASE === 'awsops' &&
     env.INITIALIZE_EMPTY_DB === '1' &&
@@ -153,7 +164,9 @@ function registration(t, config, c, e, expectedArn = config.task_template_arn, s
     runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
     containerDefinitions: [{
       name: 'migration', image: c.image, essential: true, user: '1000:1000',
-      readonlyRootFilesystem: true, stopTimeout: 30, environment: container.environment,
+      readonlyRootFilesystem: true, stopTimeout: 30,
+      environment: [...container.environment.filter(v => v.name !== 'AUTOMATIC_MIGRATION'),
+        ...(automatic ? [{ name: 'AUTOMATIC_MIGRATION', value: '1' }] : [])],
       logConfiguration: container.logConfiguration,
     }],
   };
@@ -331,6 +344,7 @@ async function failureLogs(record, e, deps) {
         [/^checksum drift: applied (baseline|migration) /m.test(messages), 'migration checksum'],
         [/^Concurrent migration is already running;/m.test(messages), 'migration lock'],
         [/^Automatic migration blocked: /m.test(messages), 'automatic SQL policy'],
+        [/^Automatic migration requires manual bootstrap;/m.test(messages), 'manual database bootstrap required'],
         [/^Migration advisory lock returned an invalid result$/m.test(messages), 'invalid migration lock result'],
         [/^Refusing initialization of a non-empty database without schema_migrations$/m.test(messages), 'bootstrap refused nonempty database'],
       ].filter(([matched]) => matched).map(([, label]) => label);
@@ -449,6 +463,7 @@ function contextFromEnv(env) {
   const role = configuredRole(env.MIGRATION_DEPLOY_ROLE_ARN);
   return {
     repository: env.GITHUB_REPOSITORY, ref: env.GITHUB_REF, event: env.GITHUB_EVENT_NAME,
+    fromDeployWeb: env.MIGRATION_FROM_DEPLOY_WEB, workflowRef: env.GITHUB_WORKFLOW_REF,
     sha: env.GITHUB_SHA, runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
     project: env.MIGRATION_PROJECT, region: REGION, digest: env.MIGRATION_DIGEST,
     // Do not pass a masked registry/account in a GitHub job output. Derive the

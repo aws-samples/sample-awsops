@@ -379,7 +379,7 @@ variable "steampipe_sync_reserved_concurrency" {
 variable "inventory_stale_after_minutes" {
   type        = number
   default     = 30
-  description = "Age in minutes after which inventory-read reports a resource type as stale."
+  description = "Inventory source freshness age in minutes for the web workload and inventory-reader Lambda; independent of graph publication cadence."
   validation {
     condition     = floor(var.inventory_stale_after_minutes) == var.inventory_stale_after_minutes && var.inventory_stale_after_minutes >= 1 && var.inventory_stale_after_minutes <= 1440
     error_message = "inventory_stale_after_minutes must be an integer from 1 to 1440."

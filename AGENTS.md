@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 192913362ba0 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 788f5807874d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -51,23 +51,28 @@ make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait s
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
-Dev Deploy AgentCore runs reusable private `deploy-migrations.yml` before its split build/provision phases. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before dispatch. Main/preview and direct private-host CLI retain `make migrate`
+Dev Deploy Web requires readonly producer/ECR proof before migrations and promotes only that same digest. Dev Deploy AgentCore and current-source dev Deploy Web require the reusable private `deploy-migrations.yml` workflow before provisioning or image promotion. Guarded dev web pushes run it automatically; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release verifies the exact ECS/image deployment, then full runtime readiness including login/DB; the compatibility input cannot disable these checks. This is operator CI under ADR-005, not product autonomy. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before release. Main/preview and direct private-host CLI retain `make migrate`
 before `make agentcore`. Migrations and reader password sync always precede AgentCore provisioning. Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform
 1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. Both `scripts/v2/ci/migration.itest.mjs` and `scripts/v2/ci/web-db-connection.itest.mjs` require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase suite
 additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 
-Dev Deploy Web requires applied inventory (`steampipe_enabled`), AgentCore, workers and readiness, their deployed images/runtime and enabled dispatch. Every activated dev release performs collection, a billed model probe and two real worker jobs. Every current catalog type needs clean post-marker success with known counts/zero unknown attributes; retained operational degraded data does not pass release acceptance. Preserve web identity/image, fresh known resource, SSM/AgentCore/model and both owned worker proofs. Activation and bounded failure policy: `docs/runbooks/runtime-foundation.md`.
+Deploy Web wires producer receipts and successful migration outputs. Its controller calls
+composed `promote(env, expected_digest=...)` after readonly proof and service/read preflight.
+Preserve the validated project/digest. `AWS_ACCOUNT_ID_DEV` is required in every AWS-facing Deploy Web job,
+including main's dev-account exclusion check; the guard job does not need it. Build/image-proof select
+`IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs.
+Image-helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`.
+See `docs/runbooks/web-image-provenance.md` and `docs/runbooks/web-release.md`.
 
-The web image provenance helper is unwired. Future dev web wiring must supply real successful
-migration outputs and the named producer-receipt steps, then use composed `promote`.
-`AWS_ACCOUNT_ID_DEV` is required even on main for dev-account exclusion. The helper alone
-changes no release behavior; see `docs/runbooks/web-image-provenance.md`.
-Its required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
+Dev Deploy Web requires applied inventory (`steampipe_enabled`), AgentCore, workers and readiness, their deployed images/runtime and enabled dispatch. Every dev push/dispatch release requires private `runtime_deployment` capture and a restricted workload session, then the full runtime controller with `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`. Missing prerequisites fail closed. It performs collection, a billed model probe and two real worker jobs; manual `collect-runtime.yml` prepare is not release proof. Every current catalog type needs clean post-marker success with known counts/zero unknown attributes; retained operational degraded data does not pass release acceptance. Preserve web identity/image, fresh known resource, SSM/AgentCore/model and both owned worker proofs. Activation and bounded failure policy: `docs/runbooks/runtime-foundation.md`.
+The image helper's required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
 `python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
 
-The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The unwired controller and automatic SQL policy are documented in `docs/runbooks/release-safety-primitives.md`.
+Every web migration caller forces `AUTOMATIC_MIGRATION=1`. Automatic web migration requires `public.schema_migrations` and rejects its absence under the advisory lock; it never calls `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Standalone `deploy-migrations.yml --ref dev` or approved private-host `INITIALIZE_EMPTY_DB=1 make migrate` completes empty-only bootstrap, historical SQL and reader sync first. On initialized databases preserve checksums and the full pending-file guard, including older gaps. `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views and other unsupported SQL require reviewed standalone migration, then fresh `deploy-web.yml --ref dev -f build=true`; no flag or historical exemptions.
+
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Run all three with `python3 -m pytest -q scripts/v2/test_ci_web_read.py scripts/v2/test_ci_web_deploy.py scripts/v2/test_ci_web_workflow.py`. See `docs/runbooks/release-safety-primitives.md`; actionlint is optional local lint, not a CI prerequisite.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).

@@ -285,7 +285,8 @@ actual STS caller, and a valid source SHA. Manual collect-runtime dispatches may
 prepare or collect; Deploy Web push/dispatch may collect only. Collect requires a full
 lowercase `PIN_SHA`, applied inventory/AgentCore/worker metadata, the exact owned
 collector identity/hash and known CloudFront ID. Web verification binds the running
-ARM64 task role/revision/digest; Deploy Web also requires the approved root digest.
+ARM64 task role/revision/digest; Deploy Web runs this gate after exact ECS/image verification
+and passes its verified root digest as `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`.
 ECR digest lookup may return multiple tag entries for one manifest. Every entry must
 match the configured account/repository, one digest and identical manifest bytes before
 normalization and hash/ARM64 validation. Tag lookup still binds every entry to the

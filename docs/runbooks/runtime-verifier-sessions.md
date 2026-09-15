@@ -7,9 +7,9 @@ credentials permit operations beyond the controller's command allowlist.
 Application-level allowlists do not restrict the underlying AWS session.
 
 The helper supplies session policies for manual collection and Deploy Web's
-development verification phase. It does not assume a role or wire workflows.
-Review each consumer's credential-assumption steps separately; helper availability
-alone does not establish that a workflow uses a restricted session.
+development verification phase. Both workflows assume credentials using these policies;
+the helper itself only generates them. Verify each consumer's nonempty session restriction
+and private-file cleanup rather than treating helper availability as session proof.
 
 **Current wiring:** `collect-runtime.yml` provides manual prepare/collect.
 Every dev Deploy Web push or dispatch captures `runtime_deployment`, prepares
