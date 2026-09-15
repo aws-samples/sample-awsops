@@ -5,12 +5,12 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 
 ## Key Files
 - `topology-config.ts` — client-safe EKS pod/endpoint evidence for the runtime IP-target view; returns scoped candidates and explicit read/coverage failures.
-- `e2e-topology.ts` / `e2e-topology-types.ts` — pure service/network correlation and bounded graph selection; honor ownership vetoes, require scoped identities, and never infer cluster identity from a monitor name.
 - `aws.ts` — `listClusterInventory` reports the configured EKS region and continuation state, with at most 25 descriptions. `listClusters` remains the array-only compatibility wrapper; this does not enumerate other regions or certify pod ownership.
 - `topology-observations.ts` — client-side NFM category loader; owns `NetworkObservation`.
   Keep category concurrency at most three, with closed errors, per-category window quality and caps. Metric/category
   mirrors follow `nfm.ts`; range presets follow `app/api/nfm/query/route.ts`'s `RANGE_ALLOWED`.
   Query-window metadata is not proof of full traffic coverage. `ServiceNetworkTopology` uses this loader for explicit queries.
+- `e2e-topology.ts` / `e2e-topology-types.ts` — pure service/network correlation and bounded graph selection; honor ownership vetoes, require scoped identities, and never infer cluster identity from a monitor name.
 - `db-connection.ts` — exports `ObservedDbClient`; coupled to pinned pg 8.13.1 internal
   `connection` events. `sslconnect` means SSL accepted, not completed TLS: only the socket's
   `secureConnect` marks TLS completion. Observe error/errorMessage/end until Client connect,
