@@ -116,3 +116,5 @@ register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계�
 
 Per-phase execution history (plans, verification logs, design notes) lives under
 [`../history/archive/`](../history/archive/) — see its README. 각 단계의 실행 이력은 `../history/archive/`를 참조한다.
+
+- [E2E observability contracts and status](observability-e2e.md) — source evidence, trusted identity and integration status.

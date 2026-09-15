@@ -4,7 +4,7 @@ import { buildTraceGraph } from './trace-graph';
 import { loadNetworkObservations, TOPOLOGY_CATEGORIES } from './topology-observations';
 import type { FlowGraph, FlowInput, FlowNode } from './flow-topology';
 import type { TraceIdentity, TraceSpan } from './trace-source';
-import type { E2eGraph, E2eInput, E2eNetworkRead, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
+import type { E2eGraph, E2eInput, E2eLabelKey, E2eNetworkRead, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from './nfm';
 import { buildE2eGraph, filterE2eGraph, matchesE2eQuery, rankE2eConnections, selectE2eGraph } from './e2e-topology';
 
@@ -94,6 +94,36 @@ function expectNoDanglingEdges(graph: { nodes: { id: string }[]; edges: { source
 }
 
 describe('buildE2eGraph — evidence and provenance', () => {
+  it('emits stable fallback label keys for anonymous observations and endpoints', () => {
+    const graph = buildE2eGraph(input({ network: [observation([flow({ local: {}, remote: {} })], {
+      metric: '' as NetworkObservation['metric'], // Malformed loaded data still needs a display fallback.
+    })] }));
+    const keys: E2eLabelKey[] = ['network_observation', 'local_endpoint', 'remote_endpoint'];
+    expect(graph.nodes.map(n => ({ label: n.label, labelKey: n.labelKey })))
+      .toEqual(keys.map(labelKey => ({ label: labelKey, labelKey })));
+    expect(selectE2eGraph(graph, {}).nodes).toEqual(graph.nodes);
+  });
+
+  it('preserves supplied resource, service, metric and endpoint labels without assigning translation keys', () => {
+    const config = configured();
+    config.nodes[0].label = 'local_endpoint';
+    config.edges[0].label = 'configured_endpoint_record';
+    const trace = services();
+    trace.nodes[0].label = 'remote_endpoint';
+    const graph = buildE2eGraph(input({ configured: config, services: trace, network: [
+      observation([flow({ local: endpoint({ podName: 'configured_pod_identity' }),
+        remote: endpoint({ instanceId: 'i-web' }), traversedIds: ['NAT:nat-web'] })]),
+    ] }));
+    expect(labels(graph)).toEqual(['local_endpoint', 'web', 'remote_endpoint', 'web deployment',
+      'DATA_TRANSFERRED', 'configured_pod_identity', 'i-web', 'NAT:nat-web']);
+    expect(graph.nodes.every(n => n.labelKey === undefined)).toBe(true);
+    expect(graph.edges.find(e => e.evidence === 'configuration')).toMatchObject({ label: 'configured_endpoint_record' });
+    expect(graph.edges.find(e => e.evidence === 'configuration')?.labelKey).toBeUndefined();
+    const ipOnly = buildE2eGraph(input({ network: [observation()] }));
+    expect(ipOnly.nodes.filter(n => n.kind === 'endpoint').map(n => n.label)).toEqual(['10.0.1.10', '10.0.2.20']);
+    expect(ipOnly.nodes.every(n => n.labelKey === undefined)).toBe(true);
+  });
+
   it('bridges a real CF/LB/TG/target graph, trace workloads and one NFM connection without collapsing records', () => {
     const lbArn = 'arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/web/1';
     const config = buildFlowGraph({
@@ -477,12 +507,25 @@ describe('buildE2eGraph — scoped target identity', () => {
   it.each([
     { region: 'us-east-1', vpcId: VPC },
     { region: REGION, vpcId: 'vpc-other' },
-    { region: '', vpcId: VPC },
-    { region: REGION, vpcId: undefined },
   ])('refuses endpoint scope %j even with the same IP', scope => {
     const graph = buildE2eGraph(input({ configured: configured(), network: [observation([flow({ local: endpoint(scope) })])] }));
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.summary.unmatchedEndpoints).toBe(2);
+  });
+
+  it.each([
+    { region: '', vpcId: VPC }, { region: REGION, vpcId: undefined }, { region: undefined, vpcId: undefined },
+  ])('marks an identified endpoint with missing scope unverified: %j', scope => {
+    for (const identity of [{ ip: '10.0.1.10' }, { instanceId: 'i-web' }]) {
+      for (const config of [configured(), { nodes: [], edges: [] }]) {
+        const graph = buildE2eGraph(input({ configured: config,
+          network: [observation([flow({ local: { ...identity, ...scope }, remote: {} })])] }));
+        expect(identityEdges(graph)).toEqual([]);
+        expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+          .toMatchObject({ correlation: 'ambiguous', correlationReason: 'configuration_unverified' });
+        expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
+      }
+    }
   });
 
   it.each([
@@ -542,7 +585,7 @@ describe('buildE2eGraph — scoped target identity', () => {
       ])],
     }));
     expect(identityEdges(graph)).toHaveLength(2);
-    expect(graph.summary).toMatchObject({ correlatedEndpoints: 2, unmatchedEndpoints: 2, ambiguousEndpoints: 0 });
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 2, unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
   });
 
   it('does not use SNAT or DNAT aliases as endpoint identities', () => {
@@ -558,6 +601,107 @@ describe('buildE2eGraph — scoped target identity', () => {
     expect(graph.nodes.find(n => n.kind === 'connection')!.meta.flow).toMatchObject({
       snatIp: '10.0.1.10', dnatIp: '10.0.1.10',
     });
+  });
+});
+
+describe('buildE2eGraph — display-truncated membership', () => {
+  function group(scope: Record<string, unknown> = { region: REGION, vpc_id: VPC }, type = 'ip'): FlowGraph {
+    return buildFlowGraph({
+      tg: [{ resource_id: 'large', target_type: type, ...scope,
+        target_health_descriptions: Array.from({ length: 25 }, (_, i) => ({
+          Target: { Id: type === 'ip' ? `10.0.1.${i + 1}` : `i-member-${i + 1}`, Port: 443 },
+        })) }],
+      ipResolved: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`10.0.1.${i + 1}`, {
+        label: 'shop/web', resolved: 'eks',
+        meta: { cluster: 'app', namespace: 'shop', pod: `web-${i + 1}`, region: REGION, vpcId: VPC },
+      }])),
+    });
+  }
+  const hidden = endpoint({ ip: '10.0.1.25', podName: 'web-1', podNamespace: 'shop' });
+
+  it.each(['both', 'count', 'membersTruncated'])('withholds the unseen 25th member using %s evidence', marker => {
+    const config = group(), meta = config.nodes.find(n => n.kind === 'target')!.meta!;
+    expect(meta).toMatchObject({ count: 25, membersTruncated: 5, pod: 'web-1' });
+    expect(meta.members).toHaveLength(20);
+    expect(meta.memberIdentities).toHaveLength(20);
+    expect(meta.members).not.toContain('10.0.1.25:443');
+    if (marker === 'count') delete meta.membersTruncated;
+    if (marker === 'membersTruncated') delete meta.count;
+    const before = structuredClone(config);
+    const graph = buildE2eGraph(input({ configured: config, services: services(),
+      network: [observation([flow({ local: hidden, remote: {} })])] }));
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.edges.filter(e => e.relation === 'configured-endpoint-match')).toEqual([]);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+      .toMatchObject({ correlation: 'ambiguous', correlationReason: 'configuration_unverified' });
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
+    expect(config).toEqual(before);
+  });
+
+  it('keeps a shown member of its own truncated group usable with exact pod proof', () => {
+    const graph = buildE2eGraph(input({ configured: group(), services: services(),
+      network: [observation([flow({ local: endpoint({ ip: '10.0.1.2', podName: 'web-2', podNamespace: 'shop' }),
+        remote: {} })])] }));
+    expect(identityEdges(graph)).toHaveLength(2);
+    expect(identityEdges(graph).find(e => e.relation === 'same-identity')?.meta?.pod).toBe('web-2');
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 1, unmatchedEndpoints: 1, ambiguousEndpoints: 0 });
+  });
+
+  it.each([
+    { scope: { region: REGION, vpc_id: VPC }, ambiguous: 1 },
+    { scope: { region: REGION }, ambiguous: 1 },
+    { scope: { vpc_id: VPC }, ambiguous: 1 },
+    { scope: {}, ambiguous: 1 },
+    { scope: { region: 'us-east-1', vpc_id: VPC }, ambiguous: 0 },
+    { scope: { region: REGION, vpc_id: 'vpc-other' }, ambiguous: 0 },
+  ])('arbitrates hidden competitors by known scope: %j', ({ scope, ambiguous }) => {
+    const config = group(scope), eligible = configured([eksTarget({ id: hidden.ip })]);
+    config.nodes.push(...eligible.nodes);
+    config.edges.push(...eligible.edges);
+    for (const candidate of [config, { nodes: [...config.nodes].reverse(), edges: [...config.edges].reverse() }]) {
+      const graph = buildE2eGraph(input({ configured: candidate, services: services(),
+        network: [observation([flow({ local: hidden, remote: {} })])] }));
+      expect(identityEdges(graph)).toHaveLength(ambiguous ? 0 : 2);
+      expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+        .toMatchObject(ambiguous ? { correlation: 'ambiguous', correlationReason: 'configuration_unverified' }
+          : { correlation: 'correlated' });
+      expect(graph.summary).toMatchObject({ correlatedEndpoints: ambiguous ? 0 : 1,
+        unmatchedEndpoints: 1, ambiguousEndpoints: ambiguous });
+    }
+  });
+
+  it.each(['ip', 'instance'])('retains hidden %s members only for endpoints carrying that identity type', type => {
+    const local = type === 'ip' ? endpoint({ ip: undefined, instanceId: 'i-web' }) : endpoint();
+    const config = group(undefined, type), eligible = configured([target({
+      targetType: type === 'ip' ? 'instance' : 'ip', id: local.instanceId ?? local.ip,
+    })]);
+    config.nodes.push(...eligible.nodes);
+    config.edges.push(...eligible.edges);
+    const make = (data: NfmEndpoint) => buildE2eGraph(input({ configured: config,
+      network: [observation([flow({ local: data, remote: {} })])] }));
+    expect(identityEdges(make(local))).toHaveLength(1);
+    const competing = make({ ...local, ...(type === 'ip' ? { ip: hidden.ip } : { instanceId: 'i-member-25' }) });
+    expect(identityEdges(competing)).toHaveLength(0);
+    expect(competing.nodes.find(n => n.meta.side === 'local')?.meta)
+      .toMatchObject({ correlation: 'ambiguous', correlationReason: 'configuration_unverified' });
+  });
+
+  it.each([{ members: [] }, { members: undefined }])('retains truncation uncertainty even without any shown members: %j', ({ members }) => {
+    const config = group();
+    config.nodes.find(n => n.kind === 'target')!.meta!.members = members;
+    const graph = buildE2eGraph(input({ configured: config,
+      network: [observation([flow({ local: hidden, remote: {} })])] }));
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.summary).toMatchObject({ unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
+  });
+
+  it('counts shown IP:port records before deduplication so multiple ports do not imply truncation', () => {
+    const config = buildFlowGraph({ tg: [{ resource_id: 'ports', target_type: 'ip', region: REGION, vpc_id: VPC,
+      target_health_descriptions: [443, 8443].map(Port => ({ Target: { Id: '10.0.1.10', Port } })) }] });
+    const graph = buildE2eGraph(input({ configured: config, network: [observation()] }));
+    expect(identityEdges(graph)).toHaveLength(1);
+    expect(graph.nodes.find(n => n.meta.side === 'remote')?.meta.correlationReason).toBe('no_match');
+    expect(graph.summary).toMatchObject({ correlatedEndpoints: 1, unmatchedEndpoints: 1, ambiguousEndpoints: 0 });
   });
 });
 
@@ -985,7 +1129,7 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
     }));
     expect(identityEdges(graph)).toHaveLength(1);
     expect(identityEdges(graph)[0]).toMatchObject({
-      relation: 'configured-endpoint-match', label: 'Configured endpoint record',
+      relation: 'configured-endpoint-match', label: 'configured_endpoint_record', labelKey: 'configured_endpoint_record',
       meta: { match: 'ip-region-vpc', ownership: 'unverified', ownership_evidence: 'configured_record' },
     });
   });
@@ -1008,7 +1152,7 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
     }));
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.edges.find(e => e.relation === 'configured-endpoint-match')).toMatchObject({
-      evidence: 'context', directed: false, label: 'Cached configured endpoint record',
+      evidence: 'context', directed: false, label: 'cached_configured_endpoint_record', labelKey: 'cached_configured_endpoint_record',
       meta: { ownership: 'unverified', ownership_evidence: 'cached_configuration', targetCapturedAt: CAPTURED_AT },
     });
     expect(graph.summary.correlatedEndpoints).toBe(0);
@@ -1078,7 +1222,7 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
       relation: 'configured-endpoint-match', meta: { ownership: 'unverified', ownership_evidence: 'configured_record' },
     });
     expect(identityEdges(graph)[1]).toMatchObject({
-      relation: 'same-identity', label: 'Configured pod identity',
+      relation: 'same-identity', label: 'configured_pod_identity', labelKey: 'configured_pod_identity',
       meta: { match: 'configured-cluster', ownership: 'unverified' },
     });
   });
