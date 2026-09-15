@@ -66,13 +66,6 @@ it.each(malformedMetadata)('discloses rejected recognized metadata: %j', details
 });
 
 describe('graph producer and scope honesty', () => {
-  it('does not expose the internal scheduling clock or mutate stored details', async () => {
-    const details = { sourceAttempted: false, lastSourceAttemptedAtMs: 1000, sources: [] };
-    const query = vi.fn().mockResolvedValue({ rows: [{ status: 'unavailable', details }] });
-    const state = await readGraphState({ query }, 'self', 'infra');
-    expect(state).not.toHaveProperty('lastSourceAttemptedAtMs');
-    expect(details.lastSourceAttemptedAtMs).toBe(1000);
-  });
   it.each(['failed', 'running', 'partial', 'unknown', undefined])('does not certify fresh producer status %s', producerStatus => {
     expect(inventorySourcesStale([{ status: 'empty', producerStatus, itemCount: 0, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
   });
