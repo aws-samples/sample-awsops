@@ -3,6 +3,10 @@ import { Pool } from 'pg';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
+const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@/lib/datasources', () => ({ getDatasource: async () => ({ id: 7, kind: 'tempo' }),
+  getDefaultDatasource: async () => ({ id: 7, kind: 'tempo' }), resolveConnConfig: async () => ({}) }));
+vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unknown[]) => producer.invoke(...args) }));
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
@@ -10,6 +14,8 @@ import { graphTransaction } from './graph-transaction';
 import { projectGraphDetails, writeGraphState } from './graph-state';
 import { buildInfraGraph } from './infra-topology';
 import { rebuildTraceGraph } from './graph-store';
+import { TempoTraceSource } from './trace-source';
+import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -56,6 +62,32 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
         '{"retainedPrevious":true,"secret":"PRIVATE","sources":[{"sourceId":"inventory:vpc","status":"partial","producerStatus":"succeeded","itemCount":1,"secret":"PRIVATE","reasons":["unknown_attributes","PRIVATE"]}]}')`);
   });
   afterAll(async () => { await pool?.end(); });
+
+  it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' }])(
+    'producer $name cannot sweep unless empty is confirmed', async fixture => {
+      await rebuildTraceGraph(pool, [], undefined, [{
+        available: async () => true,
+        calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:test',
+          items: [{ client: 'api', server: 'db', count: 7 }], status: 'ok',
+          reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
+      }]);
+      const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+      producer.invoke.mockReset().mockResolvedValue(fixture.body);
+      const source = new TempoTraceSource(7), observed = vi.spyOn(source, 'recentSpans');
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+      try { await rebuildTraceGraph(pool, [source]); }
+      finally { clock.mockRestore(); }
+      expect((await observed.mock.results[0].value).status).toBe(fixture.readStatus);
+      const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      const count = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount;
+      if (fixture.readStatus === 'ok') {
+        expect(after.status).toBe('empty'); expect(count).toBe(0);
+      } else {
+        expect(after.details.retainedPrevious).toBe(true);
+        expect(after.captured_at).toEqual(previous.captured_at); expect(count).toBe(2);
+      }
+    });
 
   it.each(['flow', 'infra', 'trace'] as const)('rejects nonadvancing %s attempts and preserves last-good on a newer failure', async cls => {
     await pool.query('TRUNCATE topology_graph_state');

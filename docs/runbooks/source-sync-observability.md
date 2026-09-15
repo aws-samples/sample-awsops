@@ -271,6 +271,10 @@ Separately, `inventory_stale_after_minutes` supplies `INVENTORY_STALE_AFTER_MINU
 
 See [graph read contract](graph-read-contract.md) for request budgets, read-vs-collection disclosure, legacy display clocks and the disposable PostgreSQL tests. No repeated retention count permits an unproven empty publication or sweep.
 
-Topology source adapters honor typed producer collection markers before accepting empty results. Unknown or incomplete empty responses cannot authorize an empty graph publication; a genuinely observed empty response can. The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; the producer-side fixture check ships with the producer contract stage.
+### Source proof before graph publication
 
-An empty adapter result without an affirmative producer collection marker remains `empty_not_confirmed` during rollout; legacy delivery success cannot authorize an empty trace publication. Account discovery includes current scan-scope registry entries and inventory snapshots, including first-collection zeros. Discovery itself never establishes participation or empty proof; the existing current-account/snapshot/count checks still apply.
+Graph adapters honor typed collection status and withhold empty publication when a legacy empty or zero-only result lacks affirmative completion evidence. ClickHouse, Tempo and Prometheus/Mimir adapters report `empty_not_confirmed` rather than interpreting delivery success as collection success. Useful nonempty data and existing error/truncation signals remain intact. Sync results and per-account snapshots count the same unique account/region/resource identities persisted by the upsert, preserving last-row-wins data.
+
+The PostgreSQL read-contract suite also exercises real graph publication against the shared producer fixture and a legacy unmarked-empty response. Producer/source integration does not deploy Lambda code; rollout remains separately controlled.
+
+The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; its producer-side check ships with the producer contract stage. Account discovery includes scan-scope registry entries and inventory snapshots, including first-collection zeros. Discovery alone never grants participation or empty proof; current-account/snapshot/count checks remain mandatory. Zero-row inventory with unknown attribute completeness retains last-good data.
