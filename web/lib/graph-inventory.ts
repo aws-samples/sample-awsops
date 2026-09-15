@@ -40,6 +40,10 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
       UNION SELECT account_id FROM topology_graph_state WHERE class=$1
       UNION SELECT account_id FROM inventory_resources WHERE resource_type=ANY($2)
       UNION SELECT account_id FROM inventory_sync_runs WHERE resource_type=ANY($2)
+      UNION SELECT account_id FROM inventory_snapshots WHERE resource_type=ANY($2)
+      UNION SELECT a.account_id FROM accounts a WHERE a.enabled AND NOT a.is_host
+        AND a.account_id <> 'self' AND (a.all_regions OR EXISTS (
+          SELECT 1 FROM account_regions ar WHERE ar.account_id=a.account_id AND ar.enabled))
     ) accounts LEFT JOIN topology_graph_state s ON s.account_id=accounts.account_id AND s.class=$1
     ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN
       CASE WHEN jsonb_typeof(s.details->'lastSourceAttemptedAtMs')='number'
@@ -151,13 +155,13 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const countConfirmed = validCount && aggregateCounts.get(type) === run!.row_count
       && (account === 'self' || (participated && point!.resource_count === items.length));
     const confirmedEmpty = !unknownScope && countConfirmed;
+    const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
       : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
-      : !items.length && !confirmedEmpty ? ['empty_not_confirmed']
+      : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     if (blockers.length) safe = false;
-    const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
