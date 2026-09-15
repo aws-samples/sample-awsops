@@ -87,6 +87,8 @@ describe('account onboarding flow', () => {
     await fillAccount();
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
     await screen.findByText('계정 등록·검증은 완료됐지만 목록을 새로 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('역할 생성 완료 여부, 신뢰할 호스트 역할 ARN, ExternalId 일치를 확인하세요. IAM 반영에 시간이 걸리면 잠시 후 다시 확인하세요.')).toBeNull();
   });
@@ -118,21 +120,22 @@ describe('account onboarding flow', () => {
     expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(original);
     expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`"ParameterValue": "${original}"`);
   });
-  it('preserves first-party consent when returning to the same account', async () => {
+  it('requires fresh first-party consent after switching accounts, retaining the ExternalId', async () => {
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
+    const original = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '22222222222' } });
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
-    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
-    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText(/set -euo pipefail/).textContent).not.toContain('"ParameterKey": "ExternalId"');
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(original);
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`"ParameterValue": "${original}"`);
   });
-  it.each([false, true])('restores a draft after remount (firstParty=%s)', async (firstParty) => {
+  it.each([false, true])('restores only the ExternalId after remount (previous firstParty=%s)', async (firstParty) => {
     const first = render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
     fireEvent.change(screen.getByLabelText('ExternalId'), { target: { value: 'saved-external-id' } });
@@ -140,8 +143,50 @@ describe('account onboarding flow', () => {
     first.unmount();
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
-    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(firstParty ? '' : 'saved-external-id');
-    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(firstParty);
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe('saved-external-id');
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+  });
+  it('restores the downloaded ExternalId after checking and unchecking omission', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    const original = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByText(/set -euo pipefail/).textContent).not.toContain('"ParameterKey": "ExternalId"');
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(original);
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`"ParameterValue": "${original}"`);
+  });
+  it('submits omission only from the visible current-account consent', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    expect(screen.getByRole('checkbox').closest('details')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('등록·검증 완료');
+    const request = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/accounts');
+    expect(JSON.parse(request![1]!.body as string)).toEqual(expect.objectContaining({
+      externalId: '', firstParty: true,
+    }));
+  });
+  it('does not inherit omission consent from a deleted registered account', async () => {
+    const view = render(<AccountOnboarding onRegistered={onRegistered}
+      accounts={[{ accountId: '222222222222', externalId: null }]} />);
+    await fillAccount();
+    view.rerender(<AccountOnboarding onRegistered={onRegistered} accounts={[]} />);
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).not.toBe('');
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('등록·검증 완료');
+    const request = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/accounts');
+    expect(JSON.parse(request![1]!.body as string)).toEqual(expect.objectContaining({ firstParty: false }));
+  });
+  it('ignores a legacy persisted first-party consent', async () => {
+    sessionStorage.setItem(`awsops.account-onboarding.v1:${config.hostTaskRoleArn}`,
+      JSON.stringify({ '222222222222': { externalId: '', firstParty: true } }));
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('waits for registered-account lookup before allowing setup', async () => {
     const page = render(<AccountOnboarding onRegistered={onRegistered} accounts={null} />);

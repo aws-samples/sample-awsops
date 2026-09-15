@@ -31,6 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('AccountsPage regions', () => {
@@ -63,5 +64,23 @@ describe('AccountsPage regions', () => {
         body: JSON.stringify({ accountId: '210987654321', region: 'us-east-1' }),
       }));
     });
+  });
+  it.each(['remove', 'test', 'region'])('reports a failed reload after a successful %s without a success message', async (operation) => {
+    render(<AccountsPage />);
+    await screen.findByText('Prod');
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (init?.method) return Response.json({ ok: true });
+      return new Response('{}', { status: 500 });
+    });
+    if (operation === 'remove') fireEvent.click(screen.getByRole('button', { name: '제거' }));
+    if (operation === 'test') fireEvent.click(screen.getByRole('button', { name: 'Prod 연결 테스트' }));
+    if (operation === 'region') {
+      fireEvent.change(screen.getByLabelText('Prod 추가 리전'), { target: { value: 'us-east-1' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Prod 리전 추가' }));
+    }
+    await screen.findByText('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect(screen.queryByText('리전 추가 완료')).toBeNull();
+    expect(screen.queryByText('210987654321 연결 확인됨 (verified)')).toBeNull();
   });
 });

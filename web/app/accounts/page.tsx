@@ -45,11 +45,26 @@ export default function AccountsPage() {
     void load().catch(() => setMsg('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.'));
   }, [load]);
 
+  const reloadAfterAction = async () => {
+    try {
+      await load();
+      return true;
+    } catch {
+      setMsg('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+      return false;
+    }
+  };
+
   const remove = async (id: string) => {
     if (!confirm(tt(`${id} 계정을 제거할까요?`))) return;
-    const r = await fetch(`/api/accounts?accountId=${id}`, { method: 'DELETE' });
-    if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(tt(`삭제 실패: ${d.message || r.status}`)); return; }
-    await load();
+    setMsg('');
+    try {
+      const r = await fetch(`/api/accounts?accountId=${id}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(tt(`삭제 실패: ${d.message || r.status}`)); return; }
+      await reloadAfterAction();
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
+    }
   };
 
   // v1-parity connection test: re-assume the registered role and refresh status/lastVerifiedAt.
@@ -60,8 +75,11 @@ export default function AccountsPage() {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId }),
       });
       const d = await r.json().catch(() => ({}));
-      setMsg(tt(r.ok ? `${accountId} 연결 확인됨 (verified)` : `${accountId} 연결 실패: ${d.message || r.status}`));
-      await load(); // status badge + last_verified_at reflect the outcome either way
+      if (await reloadAfterAction()) {
+        setMsg(tt(r.ok ? `${accountId} 연결 확인됨 (verified)` : `${accountId} 연결 실패: ${d.message || r.status}`));
+      }
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
     } finally { setTesting(null); }
   };
 
@@ -77,9 +95,10 @@ export default function AccountsPage() {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setMsg(tt(`리전 추가 실패: ${d.message || r.status}`)); return; }
-      setMsg(tt('리전 추가 완료'));
       setRegionForm((prev) => ({ ...prev, [accountId]: '' }));
-      await load();
+      if (await reloadAfterAction()) setMsg(tt('리전 추가 완료'));
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
     } finally { setBusy(false); }
   };
 

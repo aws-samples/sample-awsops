@@ -8,7 +8,7 @@ const inputClass = 'w-full rounded border border-ink-200 bg-card px-3 py-2 text-
 const buttonClass = 'rounded border border-ink-200 px-3 py-1.5 text-[12px] text-ink-700 hover:bg-ink-50 disabled:opacity-50';
 
 interface RegisteredAccount { accountId: string; externalId: string | null }
-interface AccountDraft { externalId: string; firstParty: boolean }
+interface AccountDraft { externalId: string }
 const draftKey = (config: AccountOnboardingConfig) => `awsops.account-onboarding.v1:${config.hostTaskRoleArn}`;
 
 export default function AccountOnboarding({ onRegistered, accounts = [] }: {
@@ -25,9 +25,12 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const [success, setSuccess] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const [pendingRegistration, setPendingRegistration] = useState<RegisteredAccount | null>(null);
   const drafts = useRef(new Map<string, AccountDraft>());
-  const registeredAccount = accounts?.find((account) => account.accountId === form.accountId);
-  const externalId = registeredAccount ? registeredAccount.externalId || '' : form.externalId;
+  const registeredAccount = accounts?.find((account) => account.accountId === form.accountId)
+    || (pendingRegistration?.accountId === form.accountId ? pendingRegistration : undefined);
+  const externalId = registeredAccount ? registeredAccount.externalId || '' : form.firstParty ? '' : form.externalId;
+  const submission = { ...form, externalId };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -45,8 +48,8 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
           for (const [accountId, value] of Object.entries(saved)) {
             const draft = value as AccountDraft | null;
             if (!drafts.current.has(accountId) && /^\d{12}$/.test(accountId) && draft && typeof draft.externalId === 'string'
-              && draft.externalId.length <= 1224 && typeof draft.firstParty === 'boolean') {
-              drafts.current.set(accountId, { externalId: draft.externalId, firstParty: draft.firstParty });
+              && (draft.externalId === '' || /^[A-Za-z0-9_+=,.@:/-]{8,1224}$/.test(draft.externalId))) {
+              drafts.current.set(accountId, { externalId: draft.externalId });
             }
           }
         } catch {}
@@ -66,13 +69,15 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
     let next = { ...form, ...patch };
     if (patch.accountId !== undefined && patch.accountId !== form.accountId && /^\d{12}$/.test(patch.accountId)) {
       const registered = accounts?.find((account) => account.accountId === patch.accountId);
-      const draft = registered
-        ? { externalId: registered.externalId || '', firstParty: !registered.externalId }
-        : drafts.current.get(patch.accountId) || { externalId: newAccountExternalId(), firstParty: false };
-      next = { ...next, ...draft };
+      const draft = registered?.externalId
+        ? { externalId: registered.externalId }
+        : drafts.current.get(patch.accountId) || { externalId: newAccountExternalId() };
+      next = { ...next, ...draft, firstParty: false };
+    } else if (patch.accountId !== undefined && patch.accountId !== form.accountId) {
+      next.firstParty = false;
     }
     if (/^\d{12}$/.test(next.accountId)) {
-      drafts.current.set(next.accountId, { externalId: next.externalId, firstParty: next.firstParty });
+      drafts.current.set(next.accountId, { externalId: next.externalId });
       if (config) {
         try {
           sessionStorage.setItem(draftKey(config), JSON.stringify(Object.fromEntries(drafts.current)));
@@ -85,10 +90,10 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
     setCopied(false);
     setCopyError('');
   };
-  const inputError = onboardingInputError(form);
+  const inputError = onboardingInputError(submission);
   const isHost = config?.hostAccountId === form.accountId;
-  const guide = config && accounts !== null && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(form, config) : null;
-  const canRegister = Boolean(guide && form.alias.trim() && config?.registrationEnabled && !busy);
+  const guide = config && accounts !== null && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(submission, config) : null;
+  const canRegister = Boolean(guide && form.alias.trim() && config?.registrationEnabled && !busy && !success);
 
   const copy = async (text: string) => {
     setCopyError('');
@@ -96,6 +101,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
       await navigator.clipboard.writeText(text);
       setCopied(true);
     } catch {
+      setCopied(false);
       setCopyError(tt('복사하지 못했습니다. 명령어를 직접 선택하거나 스크립트를 다운로드하세요.'));
     }
   };
@@ -123,7 +129,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           accountId: form.accountId, alias: form.alias.trim(), region: form.region,
-          externalId: form.externalId, firstParty: form.firstParty,
+          externalId, firstParty: form.firstParty,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -132,9 +138,12 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         return;
       }
       setSuccess(true);
+      setPendingRegistration({ accountId: form.accountId, externalId: externalId || null });
+      setForm((previous) => ({ ...previous, firstParty: false }));
       setMessage(tt('등록·검증 완료'));
       try {
         await onRegistered();
+        setPendingRegistration(null);
       } catch {
         setMessage(tt('계정 등록·검증은 완료됐지만 목록을 새로 불러오지 못했습니다. 페이지를 새로고침하세요.'));
       }
@@ -186,23 +195,22 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         <details className="mt-3 text-[12px] text-ink-600">
           <summary className="cursor-pointer">{tt('고급 설정: ExternalId · AWS CLI 프로필')}</summary>
           <p className="my-2">{tt('ExternalId는 자동 생성되며 역할 생성과 등록에 같은 값이 사용됩니다. 기존 역할을 연결하려면 해당 역할의 ExternalId로 바꾸세요.')}</p>
-          <p className="my-2">{tt('계정별 설정은 이 브라우저 세션에 보존됩니다. 새 세션에서는 기존 스크립트 또는 역할의 신뢰 정책에서 ExternalId를 확인하세요.')}</p>
+          <p className="my-2">{tt('ExternalId 초안은 이 브라우저 세션에 보존됩니다. 계정을 바꾸거나 폼을 다시 열면 생략에 다시 동의해야 합니다. 새 세션에서는 기존 스크립트 또는 역할에서 값을 확인하세요.')}</p>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label>ExternalId
-              <input className={`${inputClass} mt-1 font-mono`} readOnly={Boolean(registeredAccount)} disabled={!/^\d{12}$/.test(form.accountId)} value={externalId} onChange={(event) => updateForm({ externalId: event.target.value.trim() })} />
+              <input className={`${inputClass} mt-1 font-mono`} readOnly={Boolean(registeredAccount)} disabled={form.firstParty || !/^\d{12}$/.test(form.accountId)} value={externalId} onChange={(event) => updateForm({ externalId: event.target.value.trim() })} />
             </label>
             <label>{tt('AWS CLI 프로필 (선택)')}
               <input className={`${inputClass} mt-1`} placeholder={tt('비워두면 현재 로그인 사용')} value={form.profile} onChange={(event) => updateForm({ profile: event.target.value })} />
             </label>
           </div>
-          <label className="mt-2 flex items-start gap-2">
+        </details>
+          <label className="mt-3 flex items-start gap-2 text-[12px] text-ink-600">
             <input type="checkbox" disabled={Boolean(registeredAccount) || !/^\d{12}$/.test(form.accountId)} checked={registeredAccount ? !registeredAccount.externalId : form.firstParty} onChange={(event) => updateForm({
               firstParty: event.target.checked,
-              externalId: event.target.checked ? '' : form.externalId || newAccountExternalId(),
             })} />
             {tt('같은 조직 계정: 호스트 역할 ARN을 정확히 신뢰하며 ExternalId 생략에 동의합니다.')}
           </label>
-        </details>
       </fieldset>
       <section className="min-w-0 border-t border-ink-100 pt-3">
         <h3 className="mb-2 text-[13px] font-semibold text-ink-800">{tt('2. 대상 계정에서 읽기 전용 역할 생성')}</h3>

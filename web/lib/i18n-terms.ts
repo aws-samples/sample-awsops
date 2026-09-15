@@ -7,7 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
-  '계정별 설정은 이 브라우저 세션에 보존됩니다. 새 세션에서는 기존 스크립트 또는 역할의 신뢰 정책에서 ExternalId를 확인하세요.': { en: 'Account drafts are retained in this browser session. In a new session, retrieve ExternalId from the original script or the role trust policy.', zh: '账户草稿保留在此浏览器会话中。新会话中请从原脚本或角色信任策略获取 ExternalId。', ja: 'アカウント設定はこのブラウザセッションに保存されます。新しいセッションでは元のスクリプトまたはロールの信頼ポリシーで ExternalId を確認してください。' },
+  'ExternalId 초안은 이 브라우저 세션에 보존됩니다. 계정을 바꾸거나 폼을 다시 열면 생략에 다시 동의해야 합니다. 새 세션에서는 기존 스크립트 또는 역할에서 값을 확인하세요.': { en: 'Draft ExternalIds are retained in this browser session. Switching accounts or reopening the form requires renewed omission consent. In a new session, retrieve the value from the original script or role.', zh: 'ExternalId 草稿保留在此浏览器会话中。切换账户或重新打开表单后，须重新同意省略。新会话中请从原脚本或角色获取该值。', ja: 'ExternalId の下書きはこのブラウザセッションに保存されます。アカウントの切り替えやフォームの再表示後は省略への再同意が必要です。新しいセッションでは元のスクリプトまたはロールで値を確認してください。' },
   '계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.': { en: 'Could not load the account list. Reload the page.', zh: '无法加载账户列表，请刷新页面。', ja: 'アカウント一覧を読み込めませんでした。ページを再読み込みしてください。' },
   '등록된 계정 정보를 확인하는 중…': { en: 'Checking registered accounts…', zh: '正在检查已注册账户…', ja: '登録済みアカウントを確認中…' },
   'AlreadyExists는 스택 이름 충돌일 수도 있습니다. CloudFormation에서 awsops-readonly-role의 상태·이벤트·리소스를 먼저 확인하세요.': { en: 'AlreadyExists may mean a stack-name collision. First inspect the status, events and resources of awsops-readonly-role in CloudFormation.', zh: 'AlreadyExists 也可能是堆栈名称冲突。请先在 CloudFormation 检查 awsops-readonly-role 的状态、事件和资源。', ja: 'AlreadyExists はスタック名の競合の場合もあります。まず CloudFormation で awsops-readonly-role の状態・イベント・リソースを確認してください。' },
