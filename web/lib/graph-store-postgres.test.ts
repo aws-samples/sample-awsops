@@ -275,7 +275,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
           return query(sql, args);
         } };
     } };
-    await expect(rebuildInfraGraph(wrapped as never)).rejects.toMatchObject({ code: '55P03' });
+    await expect(rebuildInfraGraph(wrapped as never)).resolves.toMatchObject({ published: 1, failed: 1, failureCode: '55P03' });
     expect(await state('infra', '111122223333')).toMatchObject({ status: 'ok', retainedPrevious: false });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id='111122223333'")).rows)
       .toEqual([{ id: 'vpc:one' }]);
@@ -290,6 +290,19 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       sourceId: 'inventory:vpc', status: 'partial', itemCount: null,
       reasons: expect.arrayContaining(['payload_truncated']),
     }));
+  });
+  it('publishes dense Route53 record-level input inside the byte and graph budgets', async () => {
+    await seed('flow');
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      SELECT 'route53','host-'||n||'.example.test. A',
+        jsonb_build_object('name','host-'||n||'.example.test.','type','A','private_zone',false,
+          'alias_target',jsonb_build_object('DNSName','web.example.test')),$1
+      FROM generate_series(1,2500) n`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2500 WHERE resource_type='route53'");
+    expect(await build('flow')).toMatchObject({ published: 1, retained: 0, nodes: 2501, edges: 2500 });
+    await pool.query("UPDATE inventory_sync_runs SET status='failed' WHERE resource_type='waf'");
+    expect(await build('flow')).toMatchObject({ published: 0, retained: 1 });
+    expect((await pool.query("SELECT count(*)::int AS n FROM topology_nodes WHERE class='flow'")).rows[0].n).toBe(2501);
   });
   it('discovers eligible first-empty accounts without scanning historical snapshot keys', async () => {
     await pool.query("INSERT INTO accounts(account_id,alias,external_id,all_regions) VALUES ('111122223333','fixture','fixture',true)");
@@ -624,7 +637,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       .rows.map(row => row.account_id).sort();
     expect(published).toEqual([...accounts].sort());
   });
-  it('continues later accounts after a source read fails and preserves the original failure', async () => {
+  it('continues later accounts after a source read fails and reports the first safe failure code', async () => {
     const member = '111122223333';
     await seed('infra'); await seed('infra', recent, member);
     await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
@@ -637,7 +650,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
           return query(sql, args);
         } };
     } };
-    await expect(rebuildInfraGraph(wrapped as never)).rejects.toBe(failure);
+    await expect(rebuildInfraGraph(wrapped as never)).resolves.toMatchObject({ published: 1, failed: 1, failureCode: '42501' });
     expect(await state('infra', member)).toMatchObject({ status: 'ok', retainedPrevious: false });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id=$1", [member])).rows).toEqual([{ id: 'vpc:one' }]);
   });
@@ -840,7 +853,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       BEGIN RAISE EXCEPTION 'credential=do-not-expose'; END $$;
       CREATE TRIGGER reject_publication BEFORE INSERT OR UPDATE ON topology_nodes
       FOR EACH ROW EXECUTE FUNCTION reject_graph();`);
-    await expect(build('infra')).rejects.toThrow();
+    const result = await build('infra');
+    expect(result).toMatchObject({ failed: 1, failureCode: 'P0001' });
+    expect(JSON.stringify(result)).not.toContain('credential');
     expect(await state('infra')).toMatchObject({ status: 'error', retainedPrevious: true,
       captured_at: previous.captured_at, publishedSources: previous.publishedSources });
     expect(JSON.stringify(await state('infra'))).not.toContain('credential');

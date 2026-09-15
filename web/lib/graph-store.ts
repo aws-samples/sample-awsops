@@ -4,7 +4,7 @@ import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
 import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
-import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
+import { graphDiagnostic, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
 import { GraphReadBusy } from './graph-transaction';
 import { graphTransaction, inventoryAccounts, inventoryCounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
@@ -60,6 +60,7 @@ interface GEdge { source: string; target: string; rel: string; confidence: strin
 export interface GraphRebuildResult {
   nodes: number; edges: number; published: number; retained: number; skipped: number;
   degraded: number; reasons: string[]; accountsTruncated?: boolean;
+  failed?: number; failureCode?: string;
 }
 const emptyResult = (): GraphRebuildResult =>
   ({ nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] });
@@ -132,7 +133,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
   active.add(cls); inventoryBusy.set(pool, active);
   const runStartedAt = new Date(Date.now()).toISOString();
   const deadline = performance.now() + 30_000;
-  let failed = false, firstFailure: unknown;
+  let failed = 0, firstFailure: unknown;
   let counts: Awaited<ReturnType<typeof inventoryCounts>> | undefined;
   try {
     let accounts;
@@ -185,13 +186,13 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
           details: { sources: attempt?.details.sources ?? [], retainedPrevious: true,
             failureReason: attempt ? 'publication_failed' : 'source_read_failed' } }).catch(() => {});
         if (!failed) firstFailure = error;
-        failed = true; reason('account_failed');
+        failed++; reason('account_failed');
       }
       await new Promise<void>(resolve => setImmediate(resolve));
     }
-    // Preserve the existing unexpected-error/CLI contract, after allowing later accounts to progress.
-    if (failed) throw firstFailure;
-    return totals;
+    // Keep successful account outcomes and only the first allow-listed diagnostic.
+    // Entry points still exit/report failure, but independently attempt later layers.
+    return failed ? { ...totals, failed, failureCode: JSON.parse(graphDiagnostic(cls, firstFailure)).code } : totals;
   } finally {
     active.delete(cls);
     if (!active.size) inventoryBusy.delete(pool);

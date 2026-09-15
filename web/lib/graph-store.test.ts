@@ -162,7 +162,7 @@ describe('rebuildGraph', () => {
       if (String(sql).includes('INSERT INTO topology_nodes')) return Promise.reject(new Error('boom'));
       return read(sql, p);
     });
-    await expect(rebuildGraph(pool as never, 'RUN2')).rejects.toThrow('boom');
+    await expect(rebuildGraph(pool as never, 'RUN2')).resolves.toMatchObject({ failed: 1, failureCode: 'unknown' });
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining('ROLLBACK'));
     expect(client.release).toHaveBeenCalled();
   });

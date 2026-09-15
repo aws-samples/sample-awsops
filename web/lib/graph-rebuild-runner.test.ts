@@ -27,6 +27,7 @@ function run(outcome = 'published', failed = '', traceOutcome = 'published', tim
     const rebuild = (stage, outcome) => async () => {
       if (input.failed === stage) throw Object.assign(new Error('credential=secret'), { code: input.code });
       const counts = { nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] };
+      if (outcome === 'partial_failure') return { ...counts, published: 1, failed: 1, failureCode: input.code };
       counts[outcome] = 1;
       if (outcome === 'degraded') counts.published = 1;
       return counts;
@@ -83,6 +84,21 @@ describe('graph rebuild runner outcomes', () => {
     expect(result.code).toBe(1);
     expect(result.errors).toEqual(['[graph-rebuild] failed {"stage":"flow","code":"23514"}']);
     expect(result.closed).toBe(1);
+  });
+  it.each([false, true])('continues later layers after an exception (timer=%s)', timer => {
+    for (const stage of ['flow', 'infra']) {
+      const result = run('published', stage, 'published', timer);
+      expect(result.logs.filter((line: string) => line.startsWith('[graph-rebuild] trace:'))).toHaveLength(timer ? 2 : 1);
+      expect(result.code).toBe(timer ? null : 1);
+      expect(result.errors.join('\n')).not.toContain('credential');
+    }
+  });
+  it.each([false, true])('reports partial account progress and safe failure without starving trace (timer=%s)', timer => {
+    const result = run('partial_failure', '', 'published', timer);
+    expect(result.logs).toHaveLength(timer ? 6 : 3);
+    expect(JSON.parse(result.logs[0].split(': ').slice(1).join(': '))).toMatchObject({ published: 1, failed: 1, failureCode: '23514' });
+    expect(result.errors).toHaveLength(timer ? 4 : 2);
+    expect(result.code).toBe(timer ? null : 1);
   });
   it.each(['retained', 'skipped', 'published', 'degraded'])('CLI propagates trace %s even if inventory published', outcome => {
     const result = run('published', '', outcome);
