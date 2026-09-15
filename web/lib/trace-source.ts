@@ -468,6 +468,8 @@ export class TempoTraceSource implements TraceSource {
         reasons.push('trace_fetch_failed');
       }
     }
+    // Search IDs prove matching traces existed; empty child fetches cannot prove their absence.
+    if (traceIds.length && !items.length && !reasons.length) reasons.push('incomplete_collection');
     requireEmptyProof(search, items, reasons);
     return readResult(sourceId, window, items, reasons);
   }

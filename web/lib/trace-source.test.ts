@@ -532,6 +532,14 @@ describe('SourceRead provenance and bounds', () => {
     ['mimir', () => new MetricsCallsSource(7, 'mimir', 'x[{window}m]').calls(30, END_MS), { resultType: 'vector', result: [] }],
   ] as const;
 
+  it('does not use a completed search to certify empty child trace fetches', async () => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce({ batches: [] });
+    expect(await new TempoTraceSource(7).recentSpans(30, 10, END_MS))
+      .toMatchObject({ items: [], status: 'partial', reasons: ['incomplete_collection'] });
+  });
+
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
     configure(kind);
     invokeMcpLambdaTool.mockResolvedValue({ ...payload, collectionStatus: 'empty' });
