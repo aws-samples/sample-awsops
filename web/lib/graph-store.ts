@@ -59,13 +59,17 @@ function relFor(sk: FlowKind | undefined, tk: FlowKind | undefined): string {
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string; confidence: string; meta?: object }
 
-// Shared writer: one advisory-locked tx, class+account-scoped upsert + mark-sweep. The empty-build
-// guard preserves the last-good graph when inventory is unsynced/failed (skip the destructive sweep) —
-// this is RIGHT for flow/infra (a transient empty fetch must not wipe a live graph). The trace layer is
-// the exception: an intentionally-empty build (source unavailable) MUST sweep its stale rows, so it
-// passes `allowEmpty = true`. Default false keeps the flow/infra guard verbatim (one writer, no
-// duplicate sweep). The sweep is ACCOUNT-scoped so one account's rebuild never wipes another's rows.
-async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountId: string, nodes: GNode[], edges: GEdge[], runId: string, allowEmpty = false, attempt?: GraphAttempt) {
+export interface GraphRebuildResult {
+  nodes: number; edges: number;
+  published?: number; skipped?: number; reasons?: string[];
+}
+
+// One advisory-locked, class/account-scoped upsert and mark-sweep transaction. The legacy
+// inventory empty guard retains last-good rows. Trace bypasses that guard to record each
+// attempt, but its publish flag still gates row replacement: failed/unavailable sources
+// retain the graph; confirmed-empty publication can sweep it. Superseded versions retain
+// both graph and collection state and return an explicit skipped outcome.
+async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountId: string, nodes: GNode[], edges: GEdge[], runId: string, allowEmpty = false, attempt?: GraphAttempt): Promise<GraphRebuildResult> {
   if (nodes.length === 0 && !allowEmpty) return { nodes: 0, edges: 0 };
   const client = await pool.connect();
   try {
@@ -73,7 +77,12 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
     await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey]);
     if (attempt) {
       const current = await writeGraphState(client, accountId, attempt, cls);
-      if (!current || !attempt.publish) {
+      if (!current) {
+        await client.query('COMMIT');
+        console.warn('[graph] publication skipped', { class: cls, reason: 'superseded' });
+        return { nodes: 0, edges: 0, published: 0, skipped: 1, reasons: ['superseded'] };
+      }
+      if (!attempt.publish) {
         await client.query('COMMIT');
         return { nodes: 0, edges: 0 };
       }
@@ -183,7 +192,7 @@ export async function rebuildTraceGraph(
   sources: TraceSource[],
   runId: string = randomUUID(),
   metricsSources: MetricsCallsSourceLike[] = [],
-): Promise<{ nodes: number; edges: number }> {
+): Promise<GraphRebuildResult> {
   const schema = await pool.query(
     `SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready`,
   );

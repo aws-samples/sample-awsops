@@ -34,6 +34,11 @@ optional non-null capture clocks must also be valid. Nonempty/malformed reason l
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in both HTTP and SQL projections.
 
+Publication versions must strictly advance under the class advisory lock. An equal
+or older attempt keeps both graph and state unchanged. The trace rebuild reports
+`published: 0`, `skipped: 1`, `reasons: ['superseded']` and a fixed skip diagnostic;
+zero returned nodes in this outcome do not mean an empty graph was published.
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,

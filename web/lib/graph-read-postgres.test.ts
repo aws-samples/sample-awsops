@@ -9,6 +9,7 @@ import { GET } from '../app/api/graph/route';
 import { graphTransaction } from './graph-transaction';
 import { projectGraphDetails, writeGraphState } from './graph-state';
 import { buildInfraGraph } from './infra-topology';
+import { rebuildTraceGraph } from './graph-store';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -56,7 +57,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
   });
   afterAll(async () => { await pool?.end(); });
 
-  it.each(['flow', 'infra', 'trace'] as const)('accepts equal-timestamp %s attempts, rejects older ones and preserves last-good on failure', async cls => {
+  it.each(['flow', 'infra', 'trace'] as const)('rejects nonadvancing %s attempts and preserves last-good on a newer failure', async cls => {
     await pool.query('TRUNCATE topology_graph_state');
     const at = '2026-09-14T12:00:00.000Z';
     const source = { sourceId: 'inventory:fixture', status: 'ok', itemCount: 1 };
@@ -64,10 +65,10 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       await client.query('SELECT pg_advisory_xact_lock($1)', [123456]);
       const attempt = { status: 'ok' as const, attemptedAt: at, publish: true, details: { sources: [source], revision: 1 } };
       expect(await writeGraphState(client, 'self', attempt, cls)).toBe(true);
-      expect(await writeGraphState(client, 'self', { ...attempt, details: { sources: [source], revision: 2 } }, cls)).toBe(true);
       const saved = (await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0];
-      expect(saved.details.revision).toBe(2); // Caller may proceed with the equal-timestamp publication.
-      expect(await writeGraphState(client, 'self', { ...attempt, publish: false, status: 'error',
+      expect(await writeGraphState(client, 'self', { ...attempt, details: { sources: [source], revision: 2 } }, cls)).toBe(false);
+      expect((await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0]).toEqual(saved);
+      expect(await writeGraphState(client, 'self', { ...attempt, attemptedAt: '2026-09-14T12:00:00.001Z', publish: false, status: 'error',
         details: { sources: [], retainedPrevious: true } }, cls)).toBe(true);
       const retained = (await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0];
       expect(retained.status).toBe('error');
@@ -76,6 +77,32 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       expect(await writeGraphState(client, 'self', { ...attempt, attemptedAt: '2026-09-14T11:59:59.999Z' }, cls)).toBe(false);
       expect((await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0]).toEqual(retained);
     });
+  });
+
+  it.each([0, -1000])('trace reports a superseded attempt (%s ms) separately from a confirmed empty publication', async offset => {
+    const trace = (items = [{ client: 'api', server: 'db', count: 7 }]) =>
+      rebuildTraceGraph(pool, [], undefined, [{
+        available: async () => true,
+        calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:test', items, status: 'ok',
+          reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
+      }]);
+    expect((await trace()).nodes).toBe(2);
+    const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+    const saved = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + offset);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await trace([])).toMatchObject({ nodes: 0, edges: 0, published: 0, skipped: 1, reasons: ['superseded'] });
+      expect(warning).toHaveBeenCalledWith('[graph] publication skipped', { class: 'trace', reason: 'superseded' });
+      expect((await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0]).toEqual(previous);
+      expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(saved);
+      clock.mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+      const empty = await trace([]);
+      expect(empty).toMatchObject({ nodes: 0, edges: 0 });
+      expect(empty).not.toMatchObject({ skipped: 1 });
+      expect((await pool.query("SELECT status FROM topology_graph_state WHERE class='trace'")).rows[0].status).toBe('empty');
+      expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(0);
+    } finally { clock.mockRestore(); warning.mockRestore(); }
   });
 
   it('keeps nodes and collection on one snapshot while another connection publishes', async () => {
