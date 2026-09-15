@@ -155,13 +155,13 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const countConfirmed = validCount && aggregateCounts.get(type) === run!.row_count
       && (account === 'self' || (participated && point!.resource_count === items.length));
     const confirmedEmpty = !unknownScope && countConfirmed;
+    const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
       : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
-      : !items.length && !confirmedEmpty ? ['empty_not_confirmed']
+      : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     if (blockers.length) safe = false;
-    const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
