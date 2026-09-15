@@ -231,7 +231,7 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
           {sources.length > 0 && <span> · {copy.attemptSources}: {sources.length}
             {STATUSES.filter(key => counts[key]).map(key => <span key={key}> · {counts[key]} {copy.counts[key]}</span>)}
           </span>}
-          {published.length > 0 && <span> · {copy.savedSourceCount}: {published.length}</span>}
+          {published.length > 0 && !sharedSources && <span> · {copy.savedSourceCount}: {published.length}</span>}
         </summary>
         <div data-source-details className="max-h-[18vh] overflow-y-auto overscroll-contain">
       {sources.length > 0 && sourceList(sources)}
