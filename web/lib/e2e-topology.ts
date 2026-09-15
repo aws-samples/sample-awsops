@@ -44,7 +44,7 @@ const hasMarker = (value: unknown): boolean => {
 };
 
 /** Negative ownership evidence is monotonic; nested display candidates are never proof. */
-function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
+export function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
   if (meta.resolved === 'ambiguous' || hasMarker(meta.ambiguity)
     || meta.ownership_evidence === 'scope_unverified' || hasMarker(meta.ownership_reason)
     || meta.e2e_correlation_blocked === true) return true;

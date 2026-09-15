@@ -73,7 +73,7 @@ Service and Network Flow Monitor (NFM) observations are supported only for the *
 
 Configuration inventory follows the selected **account, regions and global-resource setting**, including every page and name-enrichment read. Changing any part of that scope clears prior graph, selection, retained evidence and the cluster display filter. Initial cluster deep links remain supported. The inventory collection panel discloses the scope. EKS evidence still covers only connected clusters in its configured region; changing inventory scope does not extend EKS or NFM coverage.
 
-Identity correlation uses the complete inventory for the selected account scope. Default-view entry and cluster filters do not apply to the integrated view; search, focus and evidence filters apply after correlation. Hiding a competing candidate must never turn an ambiguous observation into a confirmed identity.
+Identity correlation uses the complete inventory for the selected account, region and global-resource scope. Default-view entry and cluster filters do not apply to the integrated view; search, focus and evidence filters apply after correlation. Hiding a competing candidate must never turn an ambiguous observation into a confirmed identity.
 
 ### Query network observations
 

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Activity, Box, CircleHelp, Cloud, Database, GitBranch, Network, Search, Server, X } from 'lucide-react';
 import { Background, Controls, MarkerType, MiniMap, Position, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { filterE2eGraph, matchesE2eQuery, rankE2eConnections, selectE2eGraph } from '@/lib/e2e-topology';
+import { filterE2eGraph, matchesE2eQuery, ownershipVeto, rankE2eConnections, selectE2eGraph } from '@/lib/e2e-topology';
 import type { E2eCorrelationReason, E2eEvidence, E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from '@/lib/nfm';
 import { layoutFlow } from '@/lib/flow-layout';
@@ -110,8 +110,8 @@ function IconForNode({ node }: { node: E2eNode }) {
   return <Icon size={16} aria-hidden className="shrink-0" />;
 }
 function identityWithheld(node: E2eNode): boolean {
-  return node.meta.e2e_correlation_blocked === true || node.meta.correlation === 'ambiguous'
-    || node.meta.resolved === 'ambiguous' || !!text(node.meta.ambiguity);
+  return node.meta.correlation === 'ambiguous'
+    || ownershipVeto(node.meta, text(node.meta.region), text(node.meta.vpcId ?? node.meta.vpc_id));
 }
 
 export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph }) {
