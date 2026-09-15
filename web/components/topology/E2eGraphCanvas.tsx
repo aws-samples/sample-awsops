@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Activity, Box, Cloud, Database, GitBranch, Network, Search, Server, X } from 'lucide-react';
 import { Background, Controls, MarkerType, MiniMap, Position, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { filterE2eGraph, matchesE2eQuery, selectE2eGraph } from '@/lib/e2e-topology';
+import { filterE2eGraph, matchesE2eQuery, rankE2eConnections, selectE2eGraph } from '@/lib/e2e-topology';
 import type { E2eCorrelationReason, E2eEvidence, E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from '@/lib/nfm';
 import { layoutFlow } from '@/lib/flow-layout';
@@ -20,7 +20,7 @@ const EVIDENCE: Record<E2eEvidence, { label: string; color: string; dash?: strin
   service: { label: '서비스 관측', color: '#8b5cf6' },
   network: { label: '네트워크 관측', color: '#0284c7' },
   identity: { label: '식별자 연결', color: '#0d9488', dash: '3 4' },
-  context: { label: '경유 구성요소', color: '#c08438', dash: '2 5' },
+  context: { label: '문맥 연결', color: '#c08438', dash: '2 5' },
 };
 const ALL_EVIDENCE = Object.keys(EVIDENCE) as E2eEvidence[];
 const METRIC_LABELS: Record<string, string> = {
@@ -67,19 +67,6 @@ function flowOf(node: E2eNode): NfmFlowRow | null {
   const flow = node.meta.flow;
   return node.kind === 'connection' && object(flow) && object(flow.local) && object(flow.remote)
     && typeof flow.value === 'number' ? flow as unknown as NfmFlowRow : null;
-}
-function mainConnection(nodes: E2eNode[]): E2eNode | undefined {
-  const measured = nodes.flatMap(node => {
-    const flow = flowOf(node), metric = text(node.meta.metric), unit = text(node.meta.unit ?? flow?.unit);
-    return flow && metric && unit ? [{ node, metric, unit, value: flow.value }] : [];
-  });
-  const group = measured.find(item => item.metric === 'DATA_TRANSFERRED') ?? measured[0];
-  let best: typeof group | undefined;
-  for (const item of measured) {
-    if (item.metric === group.metric && item.unit === group.unit && Number.isFinite(item.value)
-      && item.value >= 0 && (!best || item.value > best.value)) best = item;
-  }
-  return best?.node;
 }
 function traversedItems(flow: NfmFlowRow): string[] {
   const strings = (value: unknown): string[] =>
@@ -137,7 +124,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   }, [eligible.nodes, query]);
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   const viewport = useMemo(() => {
-    const primary = selected ?? mainConnection(view.nodes);
+    const primary = selected ?? rankE2eConnections(view.nodes)[0];
     if (overview || !primary) return { nodes: view.nodes.map(({ id }) => ({ id })), minZoom: 0.05 };
     const keep = new Set([primary.id]);
     let frontier = new Set(keep);
@@ -259,9 +246,14 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-500" role="status">
         <span>{tt('표시 노드')} {view.nodes.length} · {tt('관계')} {view.edges.length}</span>
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
-        <span>{tt('미연결 관측')} {graph.summary.unmatchedEndpoints}</span>
-        {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별 보류 관측')} {graph.summary.ambiguousEndpoints}</span>}
-        <span>{tt('관측 행의 로컬·원격을 각각 집계하며 고유 엔드포인트 수가 아닙니다.')}</span>
+        {graph.summary.observationsUnsupported
+          ? <span>{tt('이 계정에서 네트워크 관측을 사용할 수 없습니다.')}</span>
+          : graph.summary.networkFlows > 0 ? <>
+            <span>{tt('미연결 관측')} {graph.summary.unmatchedEndpoints}</span>
+            {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별 보류 관측')} {graph.summary.ambiguousEndpoints}</span>}
+            <span>{tt('관측 행의 로컬·원격을 각각 집계하며 고유 엔드포인트 수가 아닙니다.')}</span>
+          </> : <span>{tt('표시할 네트워크 관측이 없습니다.')}</span>}
+        {view.omittedCategories.length > 0 && <span className="text-amber-700">{tt('생략된 관측 분류:')} {view.omittedCategories.join(', ')}</span>}
         {(view.omittedNodes > 0 || view.omittedEdges > 0) && (
           <span className="text-amber-700">{tt('화면 한도:')} {view.omittedNodes} {tt('노드')}, {view.omittedEdges} {tt('관계 생략 — 검색으로 범위를 좁히세요.')}</span>
         )}
@@ -274,6 +266,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
             </div>
           ) : (
             <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.05} colorMode={dark ? 'dark' : 'light'}
+              nodesDraggable={false} nodesConnectable={false}
               fitViewOptions={fitOptions} proOptions={{ hideAttribution: true }}
               onInit={(value) => { instance.current = value; }}
               onNodeClick={(_, node) => selectNode(node.id)} onPaneClick={() => setSelectedId(null)}>
@@ -319,7 +312,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 {selected.layer !== 'network' && typeof selected.meta.id === 'string' && (
                   <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.meta.id}</dd></div>
                 )}
-                {['cluster', 'namespace', 'deployment', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
+                {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
                   return value == null ? null : <div key={key}><dt className="text-[10px] text-ink-400">{key}</dt><dd className="break-all">{display(value)}</dd></div>;
@@ -331,7 +324,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 {typeof selected.meta.correlationReason === 'string' && <div>
                   <dt className="text-[10px] text-ink-400">correlationReason</dt>
                   <dd className="break-all">{selected.meta.correlationReason}</dd>
-                  <dd>{tt(CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason] ?? '')}</dd>
+                  {CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason] && <dd>{tt(CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason])}</dd>}
                 </div>}
               </dl>
             )}
@@ -344,6 +337,8 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   <span style={{ color: EVIDENCE[e.evidence].color }}>{e.label || tt(EVIDENCE[e.evidence].label)}</span>
                   <p className="text-ink-500">{byId.get(e.source)?.label} {e.directed ? '→' : '↔'} {byId.get(e.target)?.label}</p>
                   {e.meta?.match != null && <p className="font-mono text-[10px] text-ink-400">{String(e.meta.match)}</p>}
+                  {text(e.meta?.pod) && <p className="font-mono text-[10px]">{[e.meta?.cluster, e.meta?.namespace, e.meta?.pod].map(text).filter(Boolean).join(' / ')}</p>}
+                  <p className="text-[10px] text-ink-400">relation: {e.relation}</p>
                   {e.meta?.confidence === 'inferred' && <p>{tt('추정 관계')}</p>}
                   {e.meta?.confidence != null && <p className="text-[10px] text-ink-400">confidence: {String(e.meta.confidence)}</p>}
                 </li>
@@ -354,7 +349,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
         )}
       </div>
       <p className="text-[10px] text-ink-400">
-        {tt('화살표는 구성·서비스 호출의 방향입니다. NFM 연결은 로컬·원격 관측이며 동일한 요청의 인과관계를 뜻하지 않습니다.')}
+        {tt('화살표는 구성·서비스 관계의 방향입니다. NFM 연결은 로컬·원격 관측이며 동일한 요청의 인과관계를 뜻하지 않습니다.')}
       </p>
     </div>
   );

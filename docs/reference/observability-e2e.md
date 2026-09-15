@@ -81,3 +81,7 @@ documentation alone do not establish completion.
 공개 통합은 samples 배포 동작과 소유권 검사를 보존해야 한다. P0 회귀는 실행 가능한 테스트로
 검증한다. E2E·성과 기능은 데이터 생성·조회 API·운영 화면이 연결되어 검증되어야 완료이며,
 인터페이스나 문서만 추가한 상태는 완료로 간주하지 않는다.
+
+## Service/network graph status
+
+The pure correlator, shared value-aware display selection and reusable evidence canvas now exist as unwired prerequisites. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source acquisition and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.

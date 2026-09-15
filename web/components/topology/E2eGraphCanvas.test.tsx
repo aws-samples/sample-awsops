@@ -44,6 +44,42 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it.each([false, true])('does not turn absent/unsupported observations into zero unmatched counts: %s', unsupported => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [], edges: [],
+      summary: { ...graph.summary, networkFlows: 0, unmatchedEndpoints: 0, observationsUnsupported: unsupported } }} />);
+    expect(screen.queryByText('미연결 관측 0')).toBeNull();
+    expect(screen.getByText(unsupported ? '이 계정에서 네트워크 관측을 사용할 수 없습니다.' : '표시할 네트워크 관측이 없습니다.')).toBeTruthy();
+  });
+  it('exposes the configured and workload Pod evidence used by identity links', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [
+      { id: 't', kind: 'target', layer: 'configuration', label: 'target', meta: { pod: 'web-2', namespace: 'shop', resolved: 'eks' } },
+      { id: 'w', kind: 'workload', layer: 'service', label: 'deployment', meta: { pods: ['web-1', 'web-2'] } },
+    ], edges: [{ id: 'identity', source: 't', target: 'w', evidence: 'identity', relation: 'same-identity',
+      meta: { cluster: 'app', namespace: 'shop', pod: 'web-2' } }] }} />);
+    expect((await select('target')).getByText('web-2')).toBeTruthy();
+    const workload = await select('deployment');
+    expect(workload.getByText('web-1, web-2')).toBeTruthy();
+    expect(workload.getByText('app / shop / web-2')).toBeTruthy();
+  });
+  it('focuses a late-ID top contributor before display caps and names omitted categories', async () => {
+    const flows = Array.from({ length: 121 }, (_, i) => {
+      const id = i === 120 ? 'z-peak' : `a-${i}`;
+      return { ...graph.nodes[3], id, meta: { ...graph.nodes[3].meta,
+        category: i === 120 ? 'UNCLASSIFIED' : 'INTER_AZ',
+        flow: { ...(graph.nodes[3].meta.flow as object), value: i === 120 ? 1e9 : 1 } } };
+    });
+    const nodes = flows.flatMap(flow => [flow, ...['local', 'remote'].map(side => ({
+      ...graph.nodes[1], id: `${flow.id}-${side}`,
+    }))]);
+    const edges = flows.flatMap(flow => ['local', 'remote'].map(side => ({
+      id: `${flow.id}-${side}`, source: `${flow.id}-${side}`, target: flow.id,
+      evidence: 'network' as const, relation: side, directed: false,
+    })));
+    render(<E2eGraphCanvas graph={{ ...graph, nodes, edges, summary: { ...graph.summary, networkFlows: 121 } }} />);
+    await waitFor(() => expect(vi.mocked(ReactFlow).mock.lastCall?.[0].fitViewOptions?.nodes)
+      .toContainEqual({ id: 'z-peak' }));
+    expect(screen.getByText(/생략된 관측 분류:/).textContent).toContain('INTER_AZ');
+  });
   it.each([
     ['ko', '로컬 엔드포인트', '네트워크 관측'], ['en', 'Local endpoint', 'Network observations'],
     ['zh', '本地端点', '网络观测'], ['ja', 'ローカルエンドポイント', 'ネットワーク観測'],
@@ -232,7 +268,7 @@ describe('E2eGraphCanvas', () => {
     const detail = await select('shop/pod-a');
     expect(detail.getByText('캐시된 구성 엔드포인트 기록')).toBeTruthy();
     expect(detail.getByText('confidence: observed')).toBeTruthy();
-    fireEvent.click(screen.getByRole('checkbox', { name: '경유 구성요소' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '문맥 연결' }));
     const filtered = await select('shop/pod-a');
     expect(filtered.queryByText('캐시된 구성 엔드포인트 기록')).toBeNull();
     expect(filtered.getByText('현재 관계 필터에서 연결 근거가 없습니다.')).toBeTruthy();
