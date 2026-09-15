@@ -1,13 +1,6 @@
-// Next.js server-boot hook (requires experimental.instrumentationHook in next.config.mjs). Schedules
-// the graph-rebuild materializer (flow/infra/trace layers, ADR-043 + the 2026-06-25 trace-topology
-// design) to run periodically IN the web server process — no new Docker image or AWS resource, and
-// the web task role already holds the perms rebuildTraceGraph needs (Aurora IAM auth + connector-Lambda
-// invoke for the ClickHouse source). Bounded work (one inventory SELECT + ≤1000 spans + ≤200/500 node/
-// edge upserts, seconds, I/O-bound) run OFF any request path, so this doesn't violate thin-BFF.
-// Concurrent ECS tasks are safe: writeGraph() takes a per-class pg advisory lock, so overlapping runs
-// serialize rather than corrupt state — duplicate work is a bounded, acceptable cost, not a bug.
-// Upgrade path if this ever gets heavy: move to an EventBridge-scheduled ECS runTask (ADR-043 stays
-// BFF-request-path-clean either way; this only affects background-timer plumbing).
+// Existing default-off graph timer runs in the web process, outside HTTP handlers.
+// This coordinator preserves collection/publication behavior and only isolates layer failures.
+// Its process-local overlap guard does not enqueue a worker job or change database limits.
 //
 // Default OFF (GRAPH_REBUILD_INTERVAL_MINS unset/0) — manual `scripts/v2/graph-rebuild.mjs` remains
 // the baseline path; this just automates it once the interval is configured (recommended: 15, matching
@@ -26,7 +19,12 @@ export async function register() {
     const { getPool } = await import('./lib/db');
     const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } = await import('./lib/graph-store');
     const { loadGraphSources } = await import('./lib/graph-sources');
+    const { graphDiagnostic } = await import('./lib/graph-state');
+    const { executeGraphLayer } = await import('./lib/graph-execution');
     const pool = getPool();
+    const execute = async (stage: string, action: () => ReturnType<typeof rebuildGraph>) => {
+      await executeGraphLayer(stage, action, (line, failed) => console[failed ? 'error' : 'log'](line));
+    };
 
     // In-flight guard: the advisory lock in writeGraph() only serializes the WRITE section, not the
     // (possibly expensive) ClickHouse/inventory reads before it — without this, a rebuild slower than
@@ -38,25 +36,23 @@ export async function register() {
       if (running) return;
       running = true;
       try {
-        const flow = await rebuildGraph(pool);
-        const infra = await rebuildInfraGraph(pool);
+        await execute('flow', () => rebuildGraph(pool));
+        await execute('infra', () => rebuildInfraGraph(pool));
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
         // graph-query catalog (datasource_graph_queries), not one hardcoded default — see
         // docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md.
-        const { sources, metricsSources } = await loadGraphSources(pool);
-        const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-        console.log(`[graph-rebuild] flow: ${flow.nodes} nodes, ${flow.edges} edges`);
-        console.log(`[graph-rebuild] infra: ${infra.nodes} nodes, ${infra.edges} edges`);
-        console.log(`[graph-rebuild] trace: ${trace.nodes} nodes, ${trace.edges} edges`);
-      } catch (err) {
-        // Never crash the server over a background rebuild — log and retry next interval.
-        console.error('[graph-rebuild] failed:', err);
+        try {
+          const { sources, metricsSources } = await loadGraphSources(pool);
+          await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+        } catch (error) {
+          console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+        }
       } finally {
         running = false;
       }
     };
 
-    setTimeout(run, 60_000); // first run ~60s after boot, so a fresh deploy materializes promptly
+    setTimeout(run, 60_000); // first attempt ~60s after boot; interval ticks keep the same overlap guard
     setInterval(run, mins * 60_000);
   }
 }

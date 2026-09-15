@@ -37,7 +37,7 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 ## Source completeness and retained publication
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
-Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
+Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes an unverified response (`completionReason: search_response_unverified`) as `count_not_confirmed` in HTTP/SQL source reasons; missing protobuf default counters alone do not invalidate synchronous completion.
 Producer warnings and partial results use `incomplete_collection`; an empty returned Tempo child also uses it. Failed or malformed children keep their specific failure reasons. The child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
@@ -49,8 +49,9 @@ metadata use the existing atomic **partial snapshot** publication path. They can
 refresh a graph at the fixed query bounds. The returned bounded generation replaces the prior
 one; it is not complete source coverage or evidence that omitted resources disappeared.
 Warnings stay partial: the application does not guess that an annotation is benign. Empty
-partial results cannot authorize replacement. Only confirmed complete empty results clear a
-graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
+partial attempts with no useful items cannot authorize replacement. A byte-omitted Tempo child (`tracePayloadTruncated: true`, partial) has no attributable
+spans and retains the previous graph even when siblings have useful data. Only confirmed complete
+empty results clear a graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
 Valid fetched spans outside the query window are not missing children. Existing query
 limits and windows remain fixed bounds, not new operator recovery controls.
 
@@ -60,9 +61,9 @@ complete empty replacement, and all-empty/mixed missing-child retention. Shared 
 [source completion and rollout](source-sync-observability.md#producer-completion-and-rollout)
 for producer deployment; source merge alone is not live completion proof.
 
-Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo response-capability table](tempo-query-generation.md#search-result-evidence) distinguishes count-proof absence, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
+Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo completion contract](tempo-query-generation.md#search-completion-and-publication) distinguishes unverified shape, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
 
-The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses.
+The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
 ## Browser recovery and source evidence
 
@@ -92,6 +93,39 @@ These UI checks run from `web/` with mocked transport/state and require no Postg
 
 ```bash
 npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
+```
+
+## Layer execution and diagnostics
+
+To rebuild from an authorized VPC/Aurora context, run
+`cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` with the existing database
+configuration and `HOST_ACCOUNT_ID`. Flow, infra and trace execute sequentially;
+a rejected flow or infra rebuild does not prevent later layers from running.
+A source-registry read failure skips trace and logs a safe diagnostic. This runner
+does not persist that failure or change the builders' publication decisions.
+
+`web/lib/graph-execution.ts` reports each returned layer's available node/edge totals.
+Legacy builders return only those totals; missing publication metadata stays absent.
+If supplied, published/retained/skipped/degraded/failed counts remain separate.
+Logs project only nonnegative safe-integer counts, allowlisted reasons (at most 16),
+and normalized stage/SQLSTATE diagnostics. Filtered reason metadata is disclosed;
+raw provider errors, SQL text and arbitrary result fields are not logged.
+
+The CLI awaits pool closure. Exit 1 means a layer, source lookup or pool close failed;
+exit 2 means explicit retention/skip metadata was returned without failure; exit 0
+means execution returned without either signal. Exit 0 and zero node/edge totals
+do not certify complete collection or a confirmed empty publication. This coordinator
+does not add publisher metadata to legacy results or replace release verification.
+
+The web timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or
+nonpositive. When enabled, it retains its initial 60-second delay and process-local
+overlap guard, and resets that guard after a failed cycle. It keeps the shared pool
+open and runs outside HTTP handlers in the web process, not an async worker.
+Deploy the matching web image separately; source changes do not enable the timer.
+Run the offline entrypoint/diagnostic regressions from `web/`:
+
+```bash
+npx vitest run lib/graph-rebuild-runner.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
 ```
 
 ## Verification commands
@@ -173,12 +207,15 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`,
+`web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`, `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
 `agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
-`agent/fixtures/tempo-trace-budget-contract.json`,
+`agent/fixtures/tempo-trace-budget-contract.json`, `agent/fixtures/tempo-child-contract.json`,
+`agent/lambda/test_collection_boundaries.py`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;

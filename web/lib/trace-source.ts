@@ -110,13 +110,14 @@ function envelopeReasons(value: unknown): Reason[] {
   const reasons: Reason[] = [];
   if (r?.error !== undefined || r?.status === 'error') reasons.push('query_failed');
   if (r?.truncated === true) reasons.push('payload_truncated');
+  if (r && 'truncated' in r && typeof r.truncated !== 'boolean') reasons.push('incomplete_collection');
   if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
     if (r.collectionStatus === 'error') reasons.push('query_failed');
     else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
     else if (r.collectionStatus === 'unknown') reasons.push('incomplete_collection');
     else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
   }
-  if (r?.collectionReason === 'count_not_confirmed') {
+  if (r?.collectionReason === 'count_not_confirmed' || r?.completionReason === 'search_response_unverified') {
     const generic = reasons.indexOf('incomplete_collection');
     if (r.collectionStatus === 'unknown' && generic !== -1) reasons.splice(generic, 1);
     reasons.push('count_not_confirmed');
@@ -354,6 +355,13 @@ export class ClickHouseOtelTraceSource implements TraceSource {
 
 const TEMPO_TRACE_CAP = 20; // graph_catalog.py tempo_v1; <=21 invokes per source
 
+// This marker describes omitted data, not verified child identity or replacement permission.
+function byteBoundedTempoTrace(value: unknown): boolean {
+  const r = object(value);
+  return r?.tracePayloadTruncated === true && r.truncated === true
+    && r.collectionStatus === 'partial' && r.error === undefined && r.status !== 'error';
+}
+
 function otlpAttrs(value: unknown, reasons: Reason[]): Obj {
   if (value === undefined) return {};
   if (!Array.isArray(value)) { reasons.push('malformed_rows'); return {}; }
@@ -377,8 +385,13 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
   if (reasons.includes('query_failed')) return { items, reasons };
   const normalizedTraceId = normalizeTempoId(traceId, 16);
   if (!normalizedTraceId) return { items, reasons: [...reasons, 'malformed_rows'] };
+  if (byteBoundedTempoTrace(r)) return { items, reasons };
   const batches = r?.batches ?? r?.resourceSpans;
-  if (!Array.isArray(batches)) return { items, reasons: [...reasons, 'malformed_payload'] };
+  // The producer can omit an entire unverified projection. Keep that uncertainty
+  // distinct from a query failure; an empty child still vetoes replacement below.
+  if (!Array.isArray(batches)) return { items,
+    reasons: r?.tracePayloadUnverified === true && r.truncated === true && r.collectionStatus === 'unknown'
+      ? reasons : [...reasons, 'malformed_payload'] };
   for (const batch of batches) {
     const b = object(batch);
     if (b?.resource !== undefined && !object(b.resource)) reasons.push('malformed_rows');

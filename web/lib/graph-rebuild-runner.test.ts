@@ -1,21 +1,204 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
+import { executeGraphLayer } from './graph-execution';
 
-// T6 — the graph-rebuild runner wires all THREE materialized layers (flow/infra/trace). The runner
-// executes at import (getPool + process.exit), so this asserts its wiring by source rather than by
-// running it. Mirrors the migration-presence assertions in graph-store.test.ts.
-const RUNNER = join(process.cwd(), '..', 'scripts', 'v2', 'graph-rebuild.mjs');
+// Execute the real entrypoint in a VM; only DB/collection IO and console/process sinks are
+// replaced. This also checks top-level awaiting and exit behavior, without AWS or a TS loader.
+function run(outcome = 'published', failed = '', traceOutcome = 'published', timer = false,
+  env: Record<string, string> = { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '1' }, code = '23514', closeFailure = false) {
+  const file = resolve(timer ? 'instrumentation.ts' : '../scripts/v2/graph-rebuild.mjs');
+  const compile = (path: string) => transpileModule(readFileSync(path, 'utf8'), {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  return JSON.parse(execFileSync('node', ['--experimental-vm-modules', '--input-type=module', '-e', `
+    import vm from 'node:vm';
+    import fs from 'node:fs';
+    import * as url from 'node:url';
+    const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const result = { code: null, logs: [], errors: [], opened: 0, closed: 0, scheduled: [] };
+    const ticks = [];
+    const schedule = kind => (callback, delay) => { ticks.push(callback); result.scheduled.push({ kind, delay }); };
+    const processSink = { argv: ['node', input.file], env: input.env, exit: code => { result.code = code; } };
+    const context = vm.createContext({ process: processSink, setTimeout: schedule('timeout'), setInterval: schedule('interval'), console: {
+      log: text => result.logs.push(text), error: text => result.errors.push(text),
+    } });
+    const rebuild = (stage, outcome) => async () => {
+      if (input.failed === stage) throw Object.assign(new Error('credential=secret'), { code: input.code });
+      if (outcome === 'legacy') return { nodes: 3, edges: 2 };
+      const counts = { nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] };
+      if (outcome === 'partial_failure') return { ...counts, published: 1, failed: 1, failureCode: input.code };
+      counts[outcome] = 1;
+      if (outcome === 'degraded') counts.published = 1;
+      return counts;
+    };
+    const load = async specifier => {
+      const exports = specifier === 'node:url' ? url
+        : specifier.includes('/db') ? { getPool: () => { result.opened++; return { end: async () => {
+            result.closed++; if (input.closeFailure) throw Object.assign(new Error('credential=close-secret'), { code: '08006' });
+          } }; } }
+        : specifier.includes('graph-sources') ? { loadGraphSources: async () => {
+            if (input.failed === 'trace_sources') throw Object.assign(new Error('credential=source-secret'), { code: input.code });
+            return { sources: [], metricsSources: [] };
+          } }
+        : { rebuildGraph: rebuild('flow', input.outcome), rebuildInfraGraph: rebuild('infra', input.outcome),
+            rebuildTraceGraph: rebuild('trace', input.traceOutcome) };
+      const actual = specifier.includes('graph-execution') ? input.execution : specifier.includes('graph-state') ? input.state : null;
+      const loaded = actual ? new vm.SourceTextModule(actual, { context })
+        : new vm.SyntheticModule(Object.keys(exports), function() {
+        for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
+      }, { context });
+      await loaded.link(load);
+      await loaded.evaluate();
+      return loaded;
+    };
+    const module = new vm.SourceTextModule(input.source, {
+      context, importModuleDynamically: load,
+      initializeImportMeta: meta => { meta.url = url.pathToFileURL(input.file).href; },
+    });
+    await module.link(load);
+    try { await module.evaluate(); } catch { result.code = 1; }
+    if (input.timer) {
+      await module.namespace.register();
+      if (ticks.length) {
+        await Promise.all([ticks[0](), ticks[1]()]); // overlapping initial/interval tick
+        await ticks[1](); // finally must reset the guard even after failure
+      }
+    }
+    result.code = processSink.exitCode ?? result.code;
+    console.log(JSON.stringify(result));
+  `], { input: JSON.stringify({ file, source: compile(file), state: compile(resolve('lib/graph-state.ts')),
+      execution: compile(resolve('lib/graph-execution.ts')), outcome, failed, traceOutcome, timer, env, code, closeFailure }),
+    encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }));
+}
 
-describe('graph-rebuild.mjs', () => {
-  const src = readFileSync(RUNNER, 'utf8');
-  it('imports and calls all three rebuilds', () => {
-    expect(src).toMatch(/rebuildGraph/);
-    expect(src).toMatch(/rebuildInfraGraph/);
-    expect(src).toMatch(/rebuildTraceGraph/);
+describe('graph rebuild runner outcomes', () => {
+  it('honors explicit publication metadata and closes its pool', () => {
+    const result = run();
+    expect(result.code).toBe(0);
+    expect(result.closed).toBe(1);
+    expect(result.logs.join('\n')).toContain('"published":1');
   });
-  it('loads registry-driven graph sources and logs the trace line', () => {
-    expect(src).toMatch(/loadGraphSources/);
-    expect(src).toMatch(/\[graph-rebuild\] trace:/);
+  it.each([false, true])('preserves legacy node/edge totals without inventing publication fields (timer=%s)', timer => {
+    const result = run('legacy', '', 'legacy', timer);
+    expect(result.code).toBe(timer ? null : 0);
+    expect(result.logs).toHaveLength(timer ? 6 : 3);
+    for (const line of result.logs) expect(JSON.parse(line.slice(line.indexOf(': ') + 2))).toEqual({ nodes: 3, edges: 2 });
+  });
+  it.each([false, true])('legacy layer failure preserves later available totals (timer=%s)', timer => {
+    const result = run('legacy', 'flow', 'legacy', timer);
+    expect(result.code).toBe(timer ? null : 1);
+    expect(result.logs).toHaveLength(timer ? 4 : 2);
+    expect(result.logs.join('\n')).toContain('"nodes":3,"edges":2');
+    expect(result.closed).toBe(timer ? 0 : 1);
+  });
+  it.each([false, true])('source-loader errors remain sanitized failures without fabricating trace totals (timer=%s)', timer => {
+    const result = run('legacy', 'trace_sources', 'legacy', timer);
+    expect(result.errors).toEqual(Array(timer ? 2 : 1).fill('[graph-rebuild] failed {"stage":"trace_sources","code":"23514"}'));
+    expect(result.logs).toHaveLength(timer ? 4 : 2);
+    expect(result.code).toBe(timer ? null : 1);
+    expect(result.closed).toBe(timer ? 0 : 1);
+  });
+  it('sanitizes a CLI pool-close error and retains the reported totals', () => {
+    const result = run('legacy', '', 'legacy', false, undefined, '23514', true);
+    expect(result.code).toBe(1);
+    expect(result.closed).toBe(1);
+    expect(result.logs).toHaveLength(3);
+    expect(result.errors).toEqual(['[graph-rebuild] pool close failed {"stage":"graph_state","code":"08006"}']);
+    expect(JSON.stringify(result)).not.toContain('credential');
+  });
+  it.each(['retained', 'skipped'])('distinguishes %s from a healthy zero', outcome => {
+    const result = run(outcome);
+    expect(result.code).toBe(2);
+    expect(result.logs.join('\n')).toContain(`"${outcome}":1`);
+    expect(result.closed).toBe(1);
+  });
+  it('reports collection exceptions as failure without raw errors', () => {
+    const result = run('published', 'flow');
+    expect(result.code).toBe(1);
+    expect(result.errors).toEqual(['[graph-rebuild] failed {"stage":"flow","code":"23514"}']);
+    expect(result.closed).toBe(1);
+  });
+  it.each([false, true])('continues later layers after an exception (timer=%s)', timer => {
+    for (const stage of ['flow', 'infra']) {
+      const result = run('published', stage, 'published', timer);
+      expect(result.logs.filter((line: string) => line.startsWith('[graph-rebuild] trace:'))).toHaveLength(timer ? 2 : 1);
+      expect(result.code).toBe(timer ? null : 1);
+      expect(result.errors.join('\n')).not.toContain('credential');
+    }
+  });
+  it.each([false, true])('reports partial account progress and safe failure without starving trace (timer=%s)', timer => {
+    const result = run('partial_failure', '', 'published', timer);
+    expect(result.logs).toHaveLength(timer ? 6 : 3);
+    expect(JSON.parse(result.logs[0].split(': ').slice(1).join(': '))).toMatchObject({ published: 1, failed: 1, failureCode: '23514' });
+    expect(result.errors).toHaveLength(timer ? 4 : 2);
+    expect(result.code).toBe(timer ? null : 1);
+  });
+  it.each(['retained', 'skipped', 'published', 'degraded'])('CLI propagates trace %s even if inventory published', outcome => {
+    const result = run('published', '', outcome);
+    expect(result.code).toBe(['retained', 'skipped'].includes(outcome) ? 2 : 0);
+    expect(result.logs.at(-1)).toContain(`"${outcome}":1`);
+    expect(result.closed).toBe(1);
+  });
+  it.each(['retained', 'skipped', 'published', 'degraded'])('timer reports trace %s and bounds overlapping ticks', outcome => {
+    const result = run('published', '', outcome, true);
+    expect(result.scheduled).toEqual([{ kind: 'timeout', delay: 60000 }, { kind: 'interval', delay: 60000 }]);
+    expect(result.logs).toHaveLength(6); // two cycles, three layers; overlapping tick skipped
+    expect(result.logs.at(-1)).toContain(`"${outcome}":1`);
+    expect(result.closed).toBe(0);
+  });
+  it.each([false, true])('trace exceptions disclose stage/code safely (timer=%s)', timer => {
+    const result = run('published', 'trace', 'published', timer);
+    expect(result.errors).toEqual(Array(timer ? 2 : 1).fill('[graph-rebuild] failed {"stage":"trace","code":"23514"}'));
+    expect(result.code).toBe(timer ? null : 1);
+    expect(result.closed).toBe(timer ? 0 : 1);
+    expect(run('published', 'trace', 'published', timer, undefined, 'credential=secret').errors.join('\n'))
+      .toContain('"code":"unknown"');
+  });
+  it.each([
+    { NEXT_RUNTIME: 'edge', GRAPH_REBUILD_INTERVAL_MINS: '1' },
+    { NEXT_RUNTIME: 'nodejs' },
+    { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '0' },
+    { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '-1' },
+    { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: 'invalid' },
+    { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: 'Infinity' },
+  ])('timer gates leave the pool untouched: %j', env => {
+    const result = run('published', '', 'published', true, env);
+    expect(result).toMatchObject({ scheduled: [], logs: [], errors: [], opened: 0, closed: 0 });
+  });
+});
+
+describe('safe graph execution projection', () => {
+  it('bounds reason output and normalizes an unknown stage', async () => {
+    const lines: string[] = [];
+    const result = await executeGraphLayer('credential=stage-secret', async () => ({
+      nodes: 0, edges: 0, reasons: Array(100).fill('snapshot_limit'),
+    }), line => lines.push(line));
+    expect(result.totals?.reasons).toHaveLength(16);
+    expect(result.totals?.metadataOmitted).toBe(true);
+    expect(lines[0]).toMatch(/^\[graph-rebuild\] unknown: /);
+    expect(lines[0]).not.toContain('credential');
+    expect(lines[0].length).toBeLessThan(500);
+  });
+  it('keeps declared totals and safe reason codes while excluding arbitrary fields', async () => {
+    const lines: string[] = [];
+    const result = await executeGraphLayer('flow', async () => ({
+      nodes: 3, edges: 2, published: 1, failed: 1, failureCode: 'credential=secret',
+      accountsTruncated: true, reasons: ['snapshot_limit', 'credential_private'], secret: 'PRIVATE_VALUE',
+    }), line => lines.push(line));
+    expect(result).toMatchObject({ failed: true, incomplete: false, totals: {
+      nodes: 3, edges: 2, published: 1, failed: 1, failureCode: 'unknown',
+      reasons: ['snapshot_limit'], metadataOmitted: true, accountsTruncated: true,
+    } });
+    expect(lines.join('\n')).not.toMatch(/credential|PRIVATE_VALUE/);
+  });
+  it.each([null, {}, { nodes: -1, edges: 0 }, { nodes: 1, edges: NaN },
+    { nodes: 1, edges: 0, retained: '1' }])('rejects invalid totals without replacing unknown values with zero: %j', async value => {
+    const lines: string[] = [];
+    const result = await executeGraphLayer('flow', async () => value, line => lines.push(line));
+    expect(result).toEqual({ failed: true, incomplete: false });
+    expect(lines).toEqual(['[graph-rebuild] failed {"stage":"flow","code":"unknown"}']);
   });
 });

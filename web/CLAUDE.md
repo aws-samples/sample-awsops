@@ -19,6 +19,9 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   consumes collection metadata and requires Lambda/Fargate completion checks.
 - `middleware.ts` — global 2MB body cap over all of `/api/*` (defense-in-depth above each route's own `readJsonBounded`).
 - `instrumentation.ts` — server-boot hook: runs the periodic graph rebuild, default off (`GRAPH_REBUILD_INTERVAL_MINS`).
+  Its process-local overlap guard remains in force. `lib/graph-execution.ts` isolates layer failures
+  for this timer and the manual CLI, reporting available totals and sanitized diagnostics.
+  Legacy node/edge-only results are not collection-completeness or confirmed-empty proof.
 - `next.config.mjs` — `output: 'standalone'` + `experimental.instrumentationHook` + legacy-path redirects (`/ec2`, `/opencost`).
 - `Dockerfile` — node:20-alpine 2-stage standalone build, `CMD ["node","server.js"]`.
 
