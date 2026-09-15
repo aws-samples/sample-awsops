@@ -352,7 +352,7 @@ def test_every_terminal_finalizer_uses_run_token_compare_and_set(
     assert params["run_token"] == run_token
 
 
-@pytest.mark.parametrize("mode", ["steampipe", "sdk", "sdk_partial"])
+@pytest.mark.parametrize("mode", ["steampipe", "steampipe_hydrate", "sdk", "sdk_partial"])
 def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, monkeypatch):
     mod = load_sync_lambda()
     mod._ACCOUNT_CACHE["id"] = "111111111111"
@@ -385,11 +385,11 @@ def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, mo
     monkeypatch.setattr(mod, "_enabled_target_accounts", lambda _db: [])
     monkeypatch.setattr(mod, "_write_snapshot_row", lambda _db, account, typ, count: snapshots.append((account, count)))
     mod._ALLOWED.add("duplicate_test")
-    if mode == "steampipe":
+    if mode.startswith("steampipe"):
         mod.QUERIES["duplicate_test"] = ("SELECT fixture", "id", "region")
         columns = list(rows[0])
         monkeypatch.setattr(mod, "_run_steampipe_query", lambda *_args: (
-            [[row[key] for key in columns] for row in rows], columns, False))
+            [[row[key] for key in columns] for row in rows], columns, mode == "steampipe_hydrate"))
     else:
         mod.SDK_SYNCS["duplicate_test"] = lambda: (rows, "id", "region", {
             "failure_count": int(mode == "sdk_partial"),
@@ -403,6 +403,8 @@ def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, mo
     terminal = [json.loads(line) for line in capsys.readouterr().out.splitlines()
                 if '"inventory_sync_complete"' in line]
     assert terminal[-1]["row_count"] == len(persisted)
+    if mode == "steampipe_hydrate":
+        assert terminal[-1]["unknown_attribute_count"] == finalized[-1]["u"] == len(persisted)
     assert sorted(snapshots) == ([] if mode == "sdk_partial" else [("222222222222", 1), ("self", 2)])
 
 

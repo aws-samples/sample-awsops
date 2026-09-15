@@ -22,6 +22,7 @@ from datasource_http import (
 
 SLUG = "tempo"
 MAX_TRACES = 50
+DEFAULT_SEARCH_LIMIT = 20
 MAX_TOTAL_BYTES = 1_000_000  # cap serialized trace payload well under the 6 MB Lambda limit
 MAX_SCHEMA_TAGS = 200
 MAX_SCHEMA_BYTES = 64_000
@@ -97,15 +98,38 @@ def tempo_search(args):
     if not query:
         return err("query (TraceQL) required")
     params = {"q": query, "start": _parse_time_s(args.get("start"), 3600), "end": _parse_time_s(args.get("end"))}
-    if args.get("limit"):
-        params["limit"] = str(args["limit"])
+    # Pin the request default so collection evidence does not guess the server's configuration.
+    params["limit"] = str(args.get("limit") or DEFAULT_SEARCH_LIMIT)
+    try:
+        requested = int(params["limit"])
+    except ValueError:
+        requested = 0
     data = _get(_ds(), "/api/search", params)
-    traces = data.get("traces", []) if isinstance(data, dict) else []
-    truncated = len(traces) > MAX_TRACES
-    payload, btr = _byte_bound({"traces": traces[:MAX_TRACES], "metrics": data.get("metrics") if isinstance(data, dict) else None})
+    raw = data.get("traces") if isinstance(data, dict) else None
+    traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
+    truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
+    state = ("unknown" if not isinstance(raw, list) else
+             "partial" if truncated or not all(isinstance(t, dict) and isinstance(t.get("traceID"), str)
+                                                and _HEX.fullmatch(t["traceID"]) for t in traces) else
+             "ok" if traces else "empty")
+    if state in ("ok", "empty"):
+        if requested <= 0:
+            state = "unknown"
+        elif len(raw) >= requested:
+            state = "partial"  # Hitting the limit does not prove all matching traces were searched.
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    if isinstance(metrics, dict) and state != "unknown":
+        completed, total = metrics.get("completedJobs"), metrics.get("totalJobs")
+        if "completedJobs" in metrics or "totalJobs" in metrics:
+            if (type(completed) is not int or type(total) is not int
+                    or min(completed, total) < 0 or completed > total):
+                state = "unknown"  # Missing counters are not affirmative completion (or assumed zero).
+            elif completed < total:
+                state = "partial"
+    payload, btr = _byte_bound({"traces": traces, "metrics": data.get("metrics") if isinstance(data, dict) else None})
     if btr:
-        return ok(payload)
-    return ok({"truncated": truncated, **payload})
+        return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial"})
+    return ok({"truncated": truncated, **payload, "collectionStatus": state})
 
 
 def tempo_get_trace(args):
