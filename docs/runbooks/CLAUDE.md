@@ -2,10 +2,17 @@
 
 Operational playbooks organized by scenario. Each follows symptoms → diagnosis → action.
 
+`review-image-capability.md` documents the manual dev-only operator CI diagnostic under
+ADR-005, with existing OIDC role/environment and no mutation exception or gate replacement.
+Model cwd is the checked-out workspace; the image is outside it and CLI temp. JSON keeps
+observations/unknown values separate from cleanup; cleanup failure fails the job without
+erasing valid Read evidence. Source helper/tests and the role consumer catalog are linked.
+
 ## Index
 
 | Runbook | Topic |
 |---|---|
+| [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
 | [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
 | [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
 | [add-new-page.md](add-new-page.md) | Adding a new dashboard page |
