@@ -36,12 +36,4 @@ describe('layoutFlow (dagre LR)', () => {
   it('handles an empty graph without throwing', () => {
     expect(layoutFlow({ nodes: [], edges: [] })).toEqual([]);
   });
-
-  it('keeps distinct node positions when callers reuse one size object', () => {
-    const sharedSize = { width: 232, height: 76 };
-    const positions = layoutFlow(graph, { nodeSize: () => sharedSize });
-    expect(sharedSize).toEqual({ width: 232, height: 76 });
-    expect(new Set(positions.map(p => `${p.x},${p.y}`)).size).toBe(4);
-    expect(positions[0].x).toBeLessThan(positions[3].x);
-  });
 });

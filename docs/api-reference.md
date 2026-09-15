@@ -142,10 +142,6 @@ upstream error text. Missing/invalid windows remain unknown and make the batch p
 At most three workers bound category concurrency; cancellation stops further scheduling and result
 application, without guaranteeing cancellation of a server query already started.
 
-### Unwired service/network graph composition
-
-The pure `web/lib/e2e-topology.ts` model adds no HTTP route or enabled page. Its source-evidence, identity and selection contracts are maintained in [E2E observability](reference/observability-e2e.md#graph-source-contract); the UI integration supplies rendering and API orchestration.
-
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
