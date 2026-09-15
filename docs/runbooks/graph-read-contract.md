@@ -106,3 +106,7 @@ not live AWS or deployment acceptance.
 `web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
 decision bodies are maintained upstream).
+
+## Source completeness and retained publication
+
+`empty_not_confirmed` identifies a legacy empty response without affirmative collection proof; `incomplete_collection` includes missing Tempo children and typed partial producer results. Incomplete adapter reads supply `canSweep: false`, so healthy sibling data cannot authorize deleting saved identities. This retains the complete prior graph and capture clock, recording bounded current source counts/reasons rather than mixing generations. See [source completion proof](source-sync-observability.md) for recovery and producer rollout. The existing PostgreSQL suite includes cross-source retention and consumes the real Tempo producer fixture in `agent/fixtures/tempo-topology-contract.json`; run `npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts` from `web/` with the disposable PostgreSQL socket described above.
