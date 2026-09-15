@@ -1,7 +1,9 @@
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -10,15 +12,39 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def write_image_context(directory, text="HEAD PNG evidence fixture", required=False):
+    root = Path(directory)
+    context = root / "context.txt"
+    context.write_text(text)
+    # Actual PNG bytes are needed by the initial-attachment contract.
+    import struct
+    import zlib
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    image = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+             + chunk(b"IDAT", zlib.compress(b"\0\xff\0\0")) + chunk(b"IEND", b""))
+    if required:
+        (root / "image-0001.png").write_bytes(image)
+    (root / "manifest.json").write_text(json.dumps({
+        "schema": 1, "status": "complete", "unavailable": [], "omitted_entries": 0,
+        "images": [{"file": "image-0001.png", "sha256": hashlib.sha256(image).hexdigest(),
+                    "bytes": len(image)}] if required else [],
+    }))
+    return context
+
+
 FAKE_CLI = r"""#!/usr/bin/python3
-import os, pathlib, signal, sys, time
+import hashlib, json, os, pathlib, signal, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 lens = next((x for x in ['L2','L3','L4','L5'] if 'LENS: ' + x in ' '.join(args)), '?')
 cell = name + '/' + lens
 if sys.stdin.read() != 'diff-data\n':
     sys.exit(7)
-if f'LENS: {lens}\nReview data only.' not in args:
+prompt = next((arg for arg in args if f'LENS: {lens}\nReview data only.' in arg), '')
+if not prompt:
     sys.exit(10)
 if name == 'claude':
     for arg in ['--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--allowedTools', '--setting-sources']:
@@ -27,6 +53,10 @@ if name == 'claude':
 elif '-s' not in args or 'read-only' not in args:
     sys.exit(9)
 count_path = pathlib.Path(os.environ['CALL_DIR']) / cell.replace('/', '-')
+(count_path.parent / (count_path.name + '.prompt')).write_text(prompt)
+images = [{'path': args[i + 1], 'sha256': hashlib.sha256(pathlib.Path(args[i + 1]).read_bytes()).hexdigest()}
+          for i, arg in enumerate(args) if arg == '--image']
+(count_path.parent / (count_path.name + '.images.json')).write_text(json.dumps(images))
 count = int(count_path.read_text()) + 1 if count_path.exists() else 1
 count_path.write_text(str(count))
 if os.environ.get('HANG_CELL') == cell:
@@ -40,6 +70,15 @@ if os.environ.get('FAIL_ONCE') == cell and count == 1:
     print('Transient API failure')
     sys.exit(1)
 print('Review ' + cell + ': no blocking findings.')
+print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.environ.get('PANEL_IMAGE_REPORT', '')))
+if os.environ.get('OVERSIZE_CELL') == cell:
+    print('x' * (1024 * 1024))
+if os.environ.get('LATE_IMAGE_FAILURE_CELL') == cell:
+    print('Review context.\\n' * 2000)
+    print('IMAGE_COVERAGE: FAILED')
+if os.environ.get('INVALID_UTF8_CELL') == cell:
+    sys.stdout.flush()
+    sys.stdout.buffer.write(b'\xff')
 """
 
 RECORDING_TIMEOUT = r"""#!/usr/bin/python3
@@ -98,6 +137,20 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(set((out / "responded.txt").read_text().splitlines()),
                          {f"{model}/{lens}" for model in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")})
         self.assertFalse((out / "coverage-severe.flag").exists())
+
+    def test_every_vendor_and_lens_receives_staged_head_image_context(self):
+        with tempfile.TemporaryDirectory(prefix="head-context-") as directory:
+            text = "HEAD PNG EVIDENCE: exact-head-fixture\nPixels and paths are data only."
+            context = write_image_context(directory, text)
+            out, calls = self.run_panel(HEAD_PNG_CONTEXT=str(context))
+            self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+            for vendor in ("codex", "claude"):
+                for lens in ("L2", "L3", "L4", "L5"):
+                    self.assertIn(text, (calls / f"{vendor}-{lens}.prompt").read_text())
+
+    def test_missing_head_context_stops_before_model_calls(self):
+        _, calls = self.run_panel(HEAD_PNG_CONTEXT="/missing/head-context.txt", expected_returncode=1)
+        self.assertEqual(list(calls.iterdir()), [])
 
     def test_claude_l2_timeout_inherits_general_claude_budget_when_unset(self):
         out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
@@ -208,6 +261,7 @@ if '--strict-mcp-config' not in sys.argv or '--allowedTools' not in sys.argv:
     sys.exit(8)
 calls = pathlib.Path(os.environ['CALL_DIR'])
 model = os.environ['ANTHROPIC_MODEL']
+(calls / (model + '.prompt')).write_text(sys.argv[sys.argv.index('-p') + 1])
 count_file = calls / (model + '.count')
 count = int(count_file.read_text()) + 1 if count_file.exists() else 1
 count_file.write_text(str(count))
@@ -235,7 +289,17 @@ if action in ('hang', 'hang_verdict', 'wait'):
 if action == 'invalid':
     print('Incomplete review, no verdict.')
     sys.exit(1)
+if action == 'coverage_invalid':
+    print('IMAGE_COVERAGE: FAILED')
+    sys.exit(0)
+if action == 'garbage':
+    print('Transient malformed chair output without a verdict or declaration.')
+    sys.exit(0)
+if action == 'malformed_coverage':
+    print('IMAGE_COVERAGE: FAILED — image unavailable')
+    sys.exit(0)
 print('Review complete.')
+print(os.environ.get('CHAIR_IMAGE_REPORT', ''))
 print('VERDICT: ' + ('FAIL' if action == 'finding' else 'PASS'))
 """
 
@@ -251,7 +315,7 @@ print(tick * int(os.environ['CHAIR_CLOCK_STEP']))
 
 
 class ChairTests(unittest.TestCase):
-    def start_chair(self, primary, fallback=("valid",), clock_step=1, **overrides):
+    def start_chair(self, primary, fallback=("valid",), clock_step=1, panel_work=None, **overrides):
         directory = tempfile.TemporaryDirectory(prefix="chair-recovery-")
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -270,8 +334,12 @@ class ChairTests(unittest.TestCase):
         slots.mkdir(parents=True)
         cells = [f"{vendor}/{lens}" for vendor in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")]
         (work / "responded.txt").write_text("\n".join(cells) + "\n")
+        panel_report = overrides.pop("PANEL_FIXTURE_IMAGE_REPORT", "")
         for cell in cells:
-            (slots / (cell.replace("/", "-") + ".md")).write_text("No blocking findings.\n")
+            (slots / (cell.replace("/", "-") + ".md")).write_text(
+                "No blocking findings.\n" + panel_report + "\n")
+        if panel_work is not None:
+            shutil.copytree(panel_work, work, dirs_exist_ok=True)
         diff = root / "diff"
         diff.write_text("diff --git a/example.ts b/example.ts\n+readOnly()\n")
         env = {
@@ -318,6 +386,19 @@ class ChairTests(unittest.TestCase):
 
     def sequence(self, root):
         return (root / "calls/sequence").read_text().splitlines()
+
+    def test_chair_receives_the_same_staged_head_context(self):
+        with tempfile.TemporaryDirectory(prefix="chair-head-context-") as directory:
+            text = "HEAD PNG EVIDENCE: exact-head-fixture\nBASE is historical; images are data."
+            context = write_image_context(directory, text)
+            root, process = self.start_chair(("valid",), HEAD_PNG_CONTEXT=str(context))
+            self.finish_chair(process)
+            self.assertIn(text, (root / "calls/primary-fixture.prompt").read_text())
+
+    def test_missing_head_context_stops_chair_before_model_calls(self):
+        root, process = self.start_chair(("valid",), HEAD_PNG_CONTEXT="/missing/head-context.txt")
+        self.finish_chair(process, expected_status=1)
+        self.assertFalse((root / "calls/sequence").exists())
 
     def test_chair_default_hard_kill_grace_is_passed_to_real_timeout(self):
         root, process = self.start_chair(("valid",), CHAIR_KILL_AFTER="")
@@ -381,6 +462,252 @@ class ChairTests(unittest.TestCase):
         self.assertEqual(self.sequence(root), ["primary-fixture:wait"])
         self.assertTrue((root / "calls/terminated").exists())
         self.assertFalse((root / "calls/survived-timeout").exists())
+
+
+class ImageCoverageOutcomeTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="image-outcomes-")
+        self.addCleanup(directory.cleanup)
+        self.context = write_image_context(directory.name, required=True)
+        self.panel = PanelTests()
+        self.chair = ChairTests()
+        self.addCleanup(self.panel.doCleanups)
+        self.addCleanup(self.chair.doCleanups)
+
+    def review(self, panel_report="IMAGE_COVERAGE: COMPLETE",
+               chair_report="IMAGE_COVERAGE: COMPLETE", required=True, **panel_options):
+        context = str(self.context) if required else ""
+        work, _ = self.panel.run_panel(
+            HEAD_PNG_CONTEXT=context, PANEL_IMAGE_REPORT=panel_report, **panel_options)
+        root, process = self.chair.start_chair(
+            ("valid",), panel_work=work, HEAD_PNG_CONTEXT=context, CHAIR_IMAGE_REPORT=chair_report)
+        self.chair.finish_chair(process)
+        return work, root
+
+    def assert_blocked(self, root):
+        review = (root / "work/review.md").read_text()
+        self.assertTrue(review.rstrip().endswith("VERDICT: FAIL"), review)
+        self.assertIn("image coverage", review.lower())
+        self.assertTrue((root / "work/image-coverage-failed.flag").exists())
+        self.assertIn("image_coverage_failed=1", (root / "github-env").read_text())
+
+    def test_all_panels_report_failure_then_chair_pass_cannot_approve(self):
+        for report in ("IMAGE_COVERAGE: FAILED", "IMAGE COVERAGE FAILURE: cannot inspect pixels"):
+            with self.subTest(report=report):
+                work, root = self.review(panel_report=report)
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+                self.assertEqual((work / "degraded-models.txt").read_text(), "")
+                self.assertEqual((work / "degraded-lenses.txt").read_text(), "")
+                self.assertNotIn("had no response", (root / "work/review.md").read_text())
+                self.assertTrue((work / "coverage-severe.flag").exists())
+                self.assert_blocked(root)
+
+    def test_chair_failure_overrides_later_pass_even_without_required_images(self):
+        for required in (True, False):
+            for report in ("IMAGE_COVERAGE: FAILED", "IMAGE COVERAGE FAILURE: renderer unavailable"):
+                with self.subTest(required=required, report=report):
+                    _, root = self.review(chair_report=report, required=required)
+                    self.assert_blocked(root)
+
+    def test_missing_or_not_required_signal_from_one_required_cell_blocks(self):
+        for signal in ("", "IMAGE_COVERAGE: NOT_REQUIRED"):
+            with self.subTest(signal=signal):
+                work, root = self.review(PANEL_IMAGE_REPORTS=json.dumps({"claude/L5": signal}))
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+                self.assertIn("claude/L5", (work / "responded.txt").read_text())
+                self.assert_blocked(root)
+
+    def test_chair_must_explicitly_complete_required_images(self):
+        for signal in ("", "IMAGE_COVERAGE: NOT_REQUIRED",
+                       "IMAGE_COVERAGE: COMPLETE\nIMAGE_COVERAGE: FAILED",
+                       "IMAGE_COVERAGE: FAILED\nIMAGE_COVERAGE: COMPLETE"):
+            with self.subTest(signal=signal):
+                _, root = self.review(chair_report=signal)
+                self.assert_blocked(root)
+
+    def test_quoted_fenced_and_prose_mentions_are_not_failure_declarations(self):
+        report = ('The IMAGE_COVERAGE: FAILED rule is discussed here.\n'
+                  'Example: IMAGE_COVERAGE: FAILED is not this review outcome.\n'
+                  '> IMAGE_COVERAGE: FAILED\n`IMAGE_COVERAGE: FAILED`\n'
+                  '"IMAGE_COVERAGE: FAILED"\n    IMAGE_COVERAGE: FAILED\n'
+                  '```text\nIMAGE COVERAGE FAILURE\nIMAGE_COVERAGE: FAILED\n```\n'
+                  '~~~\nIMAGE_COVERAGE: FAILED\n~~~\n'
+                  'IMAGE_COVERAGE: COMPLETE\n')
+        work, root = self.review(panel_report=report, chair_report=report)
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+
+    def test_no_image_legacy_reviews_remain_marker_optional_but_explicit_failure_blocks(self):
+        _, root = self.review(panel_report="", chair_report="", required=False)
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+        _, root = self.review(panel_report="IMAGE_COVERAGE: FAILED", required=False)
+        self.assert_blocked(root)
+
+    def test_chair_revalidates_cells_instead_of_trusting_responded_list(self):
+        root, process = self.chair.start_chair(
+            ("valid",), HEAD_PNG_CONTEXT=str(self.context), CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+            PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: FAILED")
+        self.chair.finish_chair(process)
+        self.assert_blocked(root)
+
+    def test_oversized_report_is_unavailable_not_a_truncated_complete(self):
+        _, root = self.review(OVERSIZE_CELL="codex/L2")
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+        self.assertTrue((root / "work/report-invalid.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertIn("review output", (root / "work/review.md").read_text().lower())
+
+    def test_failure_beyond_chair_cell_truncation_is_not_hidden(self):
+        work, root = self.review(LATE_IMAGE_FAILURE_CELL="codex/L2")
+        self.assertGreater((work / "slot/codex-L2.md").stat().st_size, 20000)
+        self.assertIn("codex/L2", (work / "responded.txt").read_text())
+        self.assert_blocked(root)
+
+    def test_decorated_failure_cannot_be_overridden_by_complete(self):
+        for signal in ("IMAGE_COVERAGE:FAILED — decoder failed",
+                       "IMAGE_COVERAGE: FAILED: unreadable image",
+                       "IMAGE COVERAGE FAILURE — unreadable image",
+                       "**IMAGE_COVERAGE: FAILED** — unreadable image",
+                       "### IMAGE_COVERAGE: FAILED — unreadable image",
+                       "- IMAGE_COVERAGE: FAILED",
+                       "1. IMAGE_COVERAGE: FAILED",
+                       "  IMAGE COVERAGE FAILURE — unreadable image"):
+            for required in (True, False):
+                with self.subTest(signal=signal, required=required):
+                    _, root = self.review(panel_report=signal + "\nIMAGE_COVERAGE: COMPLETE",
+                                          chair_report="IMAGE_COVERAGE: COMPLETE", required=required)
+                    self.assert_blocked(root)
+                    _, root = self.review(chair_report=signal + "\nIMAGE_COVERAGE: COMPLETE",
+                                          required=required)
+                    self.assert_blocked(root)
+
+    def test_control_stripped_complete_is_valid_and_presence_is_retained(self):
+        complete = "\x1b[32mIMAGE_COVERAGE: COMPLETE\x1b[0m\r\n"
+        work, root = self.review(panel_report=complete, chair_report=complete)
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+
+    def test_missing_cli_response_is_not_an_image_failure(self):
+        work, root = self.review(FAIL_CELL="claude/L2")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 7)
+        self.assertFalse((work / "image-coverage-failed.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_invalid_utf8_is_a_report_failure_not_missing_response_or_image_failure(self):
+        work, root = self.review(INVALID_UTF8_CELL="codex/L2")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertTrue((root / "work/report-invalid.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_stale_image_flags_do_not_poison_a_new_synthesis(self):
+        work, _ = self.panel.run_panel(HEAD_PNG_CONTEXT=str(self.context),
+                                      PANEL_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+        (work / "image-coverage-failed.flag").touch()
+        (work / "coverage-severe.flag").touch()
+        root, process = self.chair.start_chair(
+            ("valid",), panel_work=work, HEAD_PNG_CONTEXT=str(self.context),
+            CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+        self.chair.finish_chair(process)
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+
+    def test_a_later_successful_chair_retry_cannot_clear_declared_failure(self):
+        for action in ("coverage_invalid", "malformed_coverage"):
+            with self.subTest(action=action):
+                root, process = self.chair.start_chair(
+                    (action, "valid"), HEAD_PNG_CONTEXT=str(self.context),
+                    CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+                    PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+                self.chair.finish_chair(process)
+                self.assertEqual(self.chair.sequence(root),
+                                 [f"primary-fixture:{action}", "primary-fixture:valid"])
+                self.assert_blocked(root)
+
+    def test_discarded_garbage_without_marker_does_not_poison_valid_fallback(self):
+        root, process = self.chair.start_chair(
+            ("garbage",), clock_step=120, HEAD_PNG_CONTEXT=str(self.context),
+            CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+            PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+        self.chair.finish_chair(process)
+        self.assertEqual(self.chair.sequence(root),
+                         ["primary-fixture:garbage", "fallback-fixture:valid"])
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+
+    def test_valid_fallback_does_not_clear_panel_image_failure(self):
+        root, process = self.chair.start_chair(
+            ("garbage",), clock_step=120, HEAD_PNG_CONTEXT=str(self.context),
+            CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE",
+            PANEL_FIXTURE_IMAGE_REPORT="IMAGE_COVERAGE: FAILED")
+        self.chair.finish_chair(process)
+        self.assert_blocked(root)
+
+    def test_fail_step_treats_gate_reason_as_data_not_shell_code(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        step = workflow.split("      - name: Fail if CRITICAL or MAJOR\n", 1)[1].split(
+            "      - name: Remove current-run", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory(prefix="gate-reason-") as directory:
+            first, second = Path(directory) / "first", Path(directory) / "second"
+            reason = f'$(touch "{first}") `touch "{second}"`'
+            rendered = script.replace("${{ steps.gate.outputs.reason }}", reason)
+            result = subprocess.run(["bash", "-c", rendered],
+                                    env={**os.environ, "GATE_REASON": reason},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertIn(reason, result.stdout)
+
+    def test_workflow_gate_prioritizes_image_failure_over_a_pass_file(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        step = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory(prefix="image-gate-") as directory:
+            root = Path(directory)
+            review, output = root / "review.md", root / "output"
+            review.write_text("VERDICT: PASS\n")
+            script = script.replace("/tmp/review.md", str(review))
+            for failed, expected in (("1", "fail"), ("0", "pass")):
+                output.write_text("")
+                result = subprocess.run(["bash", "-eu", "-c", script], env={
+                    **os.environ, "image_coverage_failed": failed, "omitted_source_paths": "",
+                    "IMAGE_STAGE_OUTCOME": "success", "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "success",
+                    "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("result=" + expected, output.read_text())
+                if failed == "1":
+                    self.assertIn("not an application finding", output.read_text())
+
+    def test_stage_or_preparation_failure_produces_a_publishable_fail_without_stale_pass(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        step = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        self.assertIn("always()", step)
+        post = workflow.split("      - name: Post review comment (upsert)\n", 1)[1].split("        env:", 1)[0]
+        self.assertIn("always()", post)
+        with tempfile.TemporaryDirectory(prefix="stage-gate-") as directory:
+            root = Path(directory)
+            review, output = root / "review.md", root / "output"
+            script = script.replace("/tmp/review.md", str(review))
+            for stage, panel, chair in (("failure", "skipped", "skipped"),
+                                        ("success", "failure", "skipped"), ("success", "success", "failure")):
+                review.write_text("STALE PASS\nVERDICT: PASS\n")
+                output.write_text("")
+                result = subprocess.run(["bash", "-eu", "-c", script], env={
+                    **os.environ, "IMAGE_STAGE_OUTCOME": stage, "PANEL_OUTCOME": panel, "CHAIR_OUTCOME": chair,
+                    "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(root / "env")},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("result=fail", output.read_text())
+                self.assertTrue(review.read_text().rstrip().endswith("VERDICT: FAIL"))
+                self.assertNotIn("STALE", review.read_text())
 
 
 class WorkflowBudgetTests(unittest.TestCase):
@@ -463,6 +790,48 @@ class WorkflowBudgetTests(unittest.TestCase):
 
 
 class LockfileMetadataTests(unittest.TestCase):
+    def test_omitted_path_exports_keep_adversarial_filenames_as_data(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        fragment = workflow.split("          python3 - <<'PYEOF'\n", 1)[1].split(
+            "\n      - uses: actions/setup-python", 1)[0]
+        fragment = textwrap.dedent("          python3 - <<'PYEOF'\n" + fragment)
+        gate = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        gate = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        for control in ("\rFORGED=1\r", "\nFAKE=2\t", "\t"):
+            with self.subTest(control=repr(control)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                marker = root / "must-not-exist"
+                name = f'web/{control}$(touch {marker})`touch {marker}`.ts'
+                long_name = "scripts/" + "a" * 210 + ".ts"
+                # Real NUL-delimited name-status shape; headers are never path authority.
+                (root / "pr-diff-namestatus.nul").write_bytes(
+                    f"M\0{name}\0M\0{long_name}\0".encode())
+                (root / "pr-diff-raw.txt").write_text(
+                    ("diff --git quoted-header-not-parsed\n+" + "x" * 50001 + "\n") * 2)
+                env_file, output = root / "env", root / "output"
+                env = {**os.environ, "GITHUB_ENV": str(env_file), "GITHUB_OUTPUT": str(output)}
+                result = subprocess.run(["bash", "-eu", "-c", fragment.replace("/tmp/", f"{root}/")],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+                self.assertEqual(set(values), {"total_lines", "omitted_paths", "omitted_source_paths"})
+                labels = values["omitted_source_paths"].split()
+                self.assertEqual(len(labels), 2)
+                for label in labels:
+                    self.assertRegex(label, r"^[A-Za-z0-9._/?-]{1,200}$")
+                (root / "review.md").write_text("VERDICT: PASS\n")
+                result = subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
+                                        env={**env, **values, "IMAGE_STAGE_OUTCOME": "success",
+                                             "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "success"},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(set(outputs), {"result", "reason"})
+                self.assertEqual(outputs["result"], "fail")
+                self.assertIn("oversized line", outputs["reason"])
+                self.assertFalse(marker.exists())
+
     def filter_diff(self, content, paths):
         workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
         program = workflow.split("          awk '\n", 1)[1].split(
