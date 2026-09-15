@@ -13,6 +13,8 @@ Bash-based structure/hook test suite. Separate from the v2 app's own tests — `
 `tests/run-all.sh` also drives `agent/`'s Python unittest (dark-path loop, account logic, etc.)
 alongside the hook/structure tests above.
 
+Full image checks also require Docker and `AWSOPS_REVIEW_CODEC_STATE`; see `docs/runbooks/review-codec-sandbox.md#verification`.
+
 ## Running
 The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv.
 

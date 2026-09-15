@@ -440,3 +440,12 @@ Four lanes are a concurrency ceiling, not a throughput guarantee; the active sch
 and shared limiter can cause throttling or incomplete data. Budgets fail closed rather
 than promise every workload fits. Preserve the recorded feasibility sample and its
 limitations in the runbook; do not suppress the schedule or weaken proof to pass.
+
+## Isolated review codec
+
+`pr-review/codec_sandbox.py` prepares a digest-pinned Python/Pillow decoder image and
+runs bytes in a non-root, network-none, read-only container with no workspace mounts.
+No direct host fallback is allowed. State binds an immutable image, owned tag and run
+label; per-decode and final cleanup are bounded and scoped to that ownership.
+`v2/test_review_codec_sandbox.py` requires prepared Docker state and verifies actual
+confinement, transport and cleanup. Privileged review wiring is a separate change.

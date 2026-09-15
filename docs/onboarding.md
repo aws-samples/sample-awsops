@@ -39,6 +39,8 @@ npm run dev                    # next dev
   `/api/diagnosis` and `/api/compliance/run`; generic `POST /api/jobs` accepts only allowlisted noop types.
 - Aurora 연결은 `AURORA_ENDPOINT` 미설정 시 `/api/db`가 503 — DB 없는 UI 작업은 그대로 가능.
 
+Full image checks require Docker and prepared `AWSOPS_REVIEW_CODEC_STATE`; follow [the sandbox setup](runbooks/review-codec-sandbox.md#verification).
+
 ## 테스트 / Tests
 
 Run these commands from the repository root, with Python 3.12 in an activated

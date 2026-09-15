@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 81e8f8c687fc · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b35956ec93a1 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -257,3 +257,9 @@ Changed HEAD image review uses the shared static-raster format table, source/ren
 and bounded decoding. All eight cells and chair must declare required coverage; explicit
 unavailable entries block. Response presence and unusable reports remain separate;
 see `pr-review-head-images.md`. No new tool or IAM grants.
+
+## Isolated review codec
+
+`review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
+contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
+It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.

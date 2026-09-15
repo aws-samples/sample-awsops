@@ -304,10 +304,9 @@ jobs:
           HEAD_PNG_ROOT=$(mktemp -d "$RUNNER_TEMP/pr-review-head-png.XXXXXX")
           echo "root=$HEAD_PNG_ROOT" >> "$GITHUB_OUTPUT"
           echo "context=$HEAD_PNG_ROOT/images/context.txt" >> "$GITHUB_OUTPUT"
-          python3 -m venv --copies "$HEAD_PNG_ROOT/codec"
-          "$HEAD_PNG_ROOT/codec/bin/python" -m pip install --disable-pip-version-check \
-            --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/scripts/pr-review/image-requirements.txt"
-          "$HEAD_PNG_ROOT/codec/bin/python" "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
+          python3 "$GITHUB_WORKSPACE/scripts/pr-review/codec_sandbox.py" prepare --state "$HEAD_PNG_ROOT/codec.json"
+          AWSOPS_REVIEW_CODEC_STATE="$HEAD_PNG_ROOT/codec.json" \
+            python3 "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
             --repo "$GITHUB_WORKSPACE" --head "$HEAD_SHA" --merge-base "$MERGE_BASE_SHA" \
             --output "$HEAD_PNG_ROOT/images"
 
@@ -636,6 +635,11 @@ jobs:
           if [ -n "$HEAD_PNG_ROOT" ]; then
             case "$HEAD_PNG_ROOT" in
               "$RUNNER_TEMP"/pr-review-head-png.*)
+                cleanup_rc=0
+                if [ -f "$HEAD_PNG_ROOT/codec.json" ]; then
+                  python3 "$GITHUB_WORKSPACE/scripts/pr-review/codec_sandbox.py" cleanup \
+                    --state "$HEAD_PNG_ROOT/codec.json" || cleanup_rc=$?
+                fi
                 python3 - "$HEAD_PNG_ROOT/images" <<'PY'
           import os, sys
           try:
@@ -649,6 +653,7 @@ jobs:
                   os.close(fd)
           PY
                 rm -rf -- "$HEAD_PNG_ROOT"
+                exit "$cleanup_rc"
                 ;;
               *) echo "::error::Unexpected HEAD PNG cleanup path"; exit 1 ;;
             esac

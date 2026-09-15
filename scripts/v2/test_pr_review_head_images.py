@@ -282,6 +282,14 @@ class HeadImageTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "incomplete")
         self.assertEqual(manifest["images"], [])
 
+    def test_missing_sandbox_never_falls_back_to_host_decoding(self):
+        from unittest.mock import patch
+        self.write("docs/new.png", png())
+        with patch.dict(os.environ, {"AWSOPS_REVIEW_CODEC_STATE": ""}):
+            result = self.stage(self.head())
+        self.assertEqual(result["images"], [])
+        self.assertEqual(result["unavailable"][0]["code"], "image_sandbox_unavailable")
+
     def test_unneeded_static_codecs_require_conversion_without_invoking_decoder(self):
         from PIL import Image
         from unittest.mock import patch
@@ -543,6 +551,17 @@ class ImageCoverageParserTests(unittest.TestCase):
             "image_coverage", ROOT / "scripts/pr-review/image_coverage.py")
         cls.tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.tool)
+
+    def test_echoed_generated_instructions_do_not_become_a_reserved_declaration(self):
+        HeadImageTests.setUpClass()
+        manifest = {"schema": 1, "status": "complete", "deleted": [], "unavailable": [],
+                    "images": [{"file": "image-0001.png", "path": "fixture.png"}],
+                    "omitted_entries": 0, "omitted_deletions": 0}
+        context = HeadImageTests.tool.context_text(manifest, Path("/fixture/evidence"))
+        self.assertFalse(self.tool.validate_report(context, required=True))
+        self.assertTrue(self.tool.validate_report(context + "\nIMAGE_COVERAGE: COMPLETE\n", required=True))
+        self.assertFalse(self.tool.validate_report(
+            context + "\nIMAGE_COVERAGE: FAILED\nIMAGE_COVERAGE: COMPLETE\n", required=True))
 
     def test_plain_signal_contract_and_code_fence_boundaries(self):
         cases = [

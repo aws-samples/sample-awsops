@@ -15,6 +15,9 @@ import threading
 import unicodedata
 import zlib
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import codec_sandbox
+
 
 class CoverageError(Exception):
     """A fixed diagnostic code: unavailable evidence is not a code finding."""
@@ -34,27 +37,17 @@ CONTEXT_LIMIT = 32768
 MANIFEST_LIMIT = 24576
 RECORD_LIMIT = 64
 DECODE_ERRORS = {"image_codec_unavailable", "image_format_mismatch", "image_frame_limit",
-                 "image_dimension_limit", "image_file_limit", "image_output_limit", "image_decode_failed"}
+                 "image_dimension_limit", "image_file_limit", "image_profile_limit",
+                 "image_output_limit", "image_decode_failed"}
 
 
 def render_blob(blob, suffix, limits):
-    command = [sys.executable, "-I", str(Path(__file__).with_name("render_head_image.py")),
-               suffix, str(limits.dimension), str(limits.pixels), str(limits.file_bytes)]
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, env={"LANG": "C", "LC_ALL": "C"})
-    timer = threading.Timer(25, process.kill)
-    timer.start()
     try:
-        try:
-            process.stdin.write(blob)
-            process.stdin.close()
-        except BrokenPipeError:
-            pass  # The decoder may have returned a useful error before reading stdin.
-        output = process.stdout.read(limits.file_bytes + 2049)
-        if len(output) > limits.file_bytes + 2048:
-            process.kill()
-            raise CoverageError("image_output_limit")
-        status = process.wait()
+        state_path = os.environ.get("AWSOPS_REVIEW_CODEC_STATE")
+        if not state_path:
+            raise CoverageError("image_sandbox_unavailable")
+        status, output = codec_sandbox.decode(codec_sandbox.load_state(state_path), suffix,
+                                              limits.dimension, limits.pixels, limits.file_bytes, blob)
         header, separator, rendered = output.partition(b"\n")
         if not separator or len(header) > 2048:
             raise CoverageError("image_decode_failed")
@@ -64,27 +57,21 @@ def render_blob(blob, suffix, limits):
         if status:
             code = metadata.get("error")
             raise CoverageError(code if isinstance(code, str) and code in DECODE_ERRORS else "image_decode_failed")
-        if (set(metadata) != {"source_format", "source_width", "source_height", "frames", "decoder"}
+        if (set(metadata) != {"source_format", "source_width", "source_height", "frames", "decoder",
+                             "rendered_width", "rendered_height"}
                 or metadata.get("source_format") != FORMATS[suffix]
                 or type(metadata.get("frames")) is not int or metadata["frames"] != 1
                 or metadata.get("decoder") != "Pillow-12.3.0"
                 or any(type(metadata.get(key)) is not int or not 0 < metadata[key] <= limits.dimension
-                       for key in ("source_width", "source_height"))
-                or metadata["source_width"] * metadata["source_height"] > limits.pixels):
+                       for key in ("source_width", "source_height", "rendered_width", "rendered_height"))
+                or metadata["source_width"] * metadata["source_height"] > limits.pixels
+                or metadata["rendered_width"] * metadata["rendered_height"] > limits.pixels):
             raise CoverageError("image_decode_failed")
         return rendered, metadata
+    except codec_sandbox.SandboxError as error:
+        raise CoverageError(str(error)) from None
     except (OSError, ValueError):
         raise CoverageError("image_decode_failed") from None
-    finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait()
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
-        process.stdout.close()
-        timer.cancel()
 
 
 def git_read(repo, args, limit):
@@ -221,9 +208,12 @@ Do not suppress a genuine finding or change its severity because an asset is sta
 If required pixels cannot be inspected, report IMAGE COVERAGE FAILURE and fail closed;
 do not substitute BASE pixels, fabricate a code finding, or approve unseen evidence.
 IMAGE COVERAGE OUTPUT CONTRACT: emit exactly one plain, unquoted line at column zero:
-IMAGE_COVERAGE: COMPLETE only after inspecting every listed HEAD PNG within your lens;
-IMAGE_COVERAGE: FAILED if required pixels cannot be inspected; or
-IMAGE_COVERAGE: NOT_REQUIRED only when no images or unavailable/omitted entries exist.
+    IMAGE_COVERAGE: COMPLETE
+Use this only after inspecting every listed HEAD PNG within your lens.
+    IMAGE_COVERAGE: FAILED
+Use this if required pixels cannot be inspected.
+    IMAGE_COVERAGE: NOT_REQUIRED
+Use this only when no images or unavailable/omitted entries exist.
 Do not fence or quote your own declaration. A nonempty image list requires COMPLETE
 from every panel cell and the chair; missing, failed or conflicting declarations block
 review regardless of any later VERDICT: PASS. Unavailable/omitted entries force FAILED
@@ -341,6 +331,8 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
                     if len(rendered) > limits.file_bytes or rendered_total + len(rendered) > limits.total_bytes:
                         raise CoverageError("image_output_limit")
                     width, height = png_size(rendered, limits)
+                    if (width, height) != (metadata["rendered_width"], metadata["rendered_height"]):
+                        raise CoverageError("image_decode_failed")
                     name = f"image-{len(blobs) + 1:04d}.png"
                     entry = {"path": new, "change": status, "blob": oid,
                              "sha256": hashlib.sha256(rendered).hexdigest(), "bytes": len(rendered),

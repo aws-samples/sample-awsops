@@ -188,6 +188,8 @@ awsops/
 ## Testing
 
 Install the dependencies listed in [merge verification](docs/v2-merge-verification.md#runner-usage).
+Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; use the [sandbox setup](docs/runbooks/review-codec-sandbox.md#verification).
+
 Image fixtures, including the panel-prompt structure check in `tests/run-all.sh`, require
 Python 3.12 on Linux ARM64/x86-64 and a separate hash-pinned Pillow install:
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
@@ -416,6 +418,8 @@ awsops/
 ## 테스트
 
 [머지 검증](docs/v2-merge-verification.md#runner-usage)의 의존성을 먼저 설치하세요.
+Docker와 준비된 `AWSOPS_REVIEW_CODEC_STATE`도 필요합니다. [샌드박스 준비 절차](docs/runbooks/review-codec-sandbox.md#verification)를 따르세요.
+
 `tests/run-all.sh`의 panel-prompt 구조 검사를 포함한 이미지 fixture에는 Linux ARM64/x86-64의
 Python 3.12와 해시가 고정된 Pillow가 필요합니다. 다음 명령을 해시 없는 requirements 설치와
 합치지 말고 별도로 실행하세요:

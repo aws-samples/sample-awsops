@@ -52,6 +52,7 @@ duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
 The chair rechecks all eight reports independently of the responded-cell list.
 This is a declared review outcome, not automated proof of the model's visual perception.
 
+Generated instruction examples are indented so echoing them is not a declaration.
 Fenced code, blockquotes, inline quotations, examples indented at least four spaces and prose containing
 markers are not declarations. An unquoted line starting with `IMAGE_COVERAGE:` is
 reserved even with up to three leading spaces: malformed/decorated declarations fail closed, including FAILED followed by
@@ -85,7 +86,8 @@ python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_revi
 
 Merge Verify discovers both suites through isolated pytest execution.
 The local `test-pr-review-panel-prompt.sh` structure check also runs both suites.
-The image suite also supports the isolated `scripts/v2` cwd used by pytest:
+Prepare `AWSOPS_REVIEW_CODEC_STATE` using the [sandbox setup](review-codec-sandbox.md#verification)
+before direct local image tests; Docker is required. The image suite also supports the isolated `scripts/v2` cwd used by pytest:
 `python3 -m pytest test_pr_review_head_images.py`.
 
 These tests use local Git repositories and mocked CLIs; they do not invoke models
@@ -119,8 +121,9 @@ The single trusted [format table](../../scripts/pr-review/image-formats.json) dr
 both detection and decoder selection. Only regular PNG/WebP/ICO
 blobs are decoded. PNG structure/CRC checks remain, and an
 isolated Python process using hash-pinned Pillow 12.3.0 fully loads each image. The
-worker receives image bytes via stdin with a minimal environment, no credential variables,
-no shell invocation and no HEAD code execution. Animated/multiple-frame images and ICOs
+worker receives bytes through stdin in the [isolated codec container](review-codec-sandbox.md):
+non-root, network-none, read-only root, no runner workspace/credential mounts, dropped
+capabilities and no privilege escalation. No direct host decoder fallback exists. Animated/multiple-frame images and ICOs
 with multiple renditions fail as whole assets; no first-frame fallback is accepted.
 Symlinks, gitlinks, invalid inputs and exceeded bounds become unavailable evidence.
 JPEG/GIF/AVIF/BMP/TIFF, HEIC/HEIF/JXL and compressed SVGZ are explicitly detected but have no approved codec;
@@ -146,11 +149,14 @@ BASE pixels or count an unreadable image as reviewed.
 
 Files are owner-read-only (0400), inside an owner-only directory (0500 after staging).
 Pillow is an explicit dependency, locked to Python 3.12 Linux wheels for ARM64/x86-64.
-The review workflow installs it into a private virtualenv before review credentials;
-Merge Verify installs the same hash lock for its fixtures. Decoder input/output reads
+The review workflow builds the digest-pinned codec image from its trusted checkout before
+review credentials. Merge Verify prepares the same sandbox and installs the host codec lock
+only for trusted fixture generation. Ordering alone is not containment; the container is
+the execution boundary. Decoder input/output reads
 are bounded; PNGs retain exact source bytes while converted files retain source lineage.
 No credentials, AWS actions or model tool permissions are added.
-The workflow removes only its generated scratch root in an always-run cleanup step;
+Each decode removes its owned container; the workflow removes its run-labeled containers,
+owned image tag and generated scratch root in an always-run cleanup step;
 runner loss can prevent that cleanup. It does not upload image artifacts.
 
 ## Action

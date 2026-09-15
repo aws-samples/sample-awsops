@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 19a237f052c3 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d3b8e71a26a7 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -73,6 +73,8 @@ The image helper's required tests need Linux `/proc`, jq and curl on `/usr/local
 Every web migration caller forces `AUTOMATIC_MIGRATION=1`. Automatic web migration requires `public.schema_migrations` and rejects its absence under the advisory lock; it never calls `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Standalone `deploy-migrations.yml --ref dev` or approved private-host `INITIALIZE_EMPTY_DB=1 make migrate` completes empty-only bootstrap, historical SQL and reader sync first. On initialized databases preserve checksums and the full pending-file guard, including older gaps. `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views and other unsupported SQL require reviewed standalone migration, then fresh `deploy-web.yml --ref dev -f build=true`; no flag or historical exemptions.
 
 The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Run all three with `python3 -m pytest -q scripts/v2/test_ci_web_read.py scripts/v2/test_ci_web_deploy.py scripts/v2/test_ci_web_workflow.py`. See `docs/runbooks/release-safety-primitives.md`; actionlint is optional local lint, not a CI prerequisite.
+
+Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; follow `docs/runbooks/review-codec-sandbox.md#verification`.
 
 HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh`) require
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
