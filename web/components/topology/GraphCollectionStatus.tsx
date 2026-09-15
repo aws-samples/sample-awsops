@@ -61,6 +61,7 @@ const COPY = {
     attempted: '최근 수집 시도', captured: '저장된 그래프 시각',
     sourceCapture: '원본 행 수집 시각', lastSuccess: '최근 성공한 수집', inventoryEmpty: '성공한 수집의 그래프가 비어 있음',
     savedSources: '저장된 그래프의 원본', refresh: '최근 그래프 갱신 시도',
+    sharedSources: '위에 표시된 원본 근거와 같습니다.',
     sourceDetails: '원본 상세', limited: '처리 한도 초과 — 이전 그래프를 유지합니다.',
     limitedPartial: '처리 한도로 인해 그래프 범위가 불완전합니다.', nodeDrops: '누락 노드', edgeDrops: '누락 엣지',
     infraUnavailable: '인벤토리 정보를 사용할 수 없음', windowStart: '원본 조회 시작', windowEnd: '원본 조회 종료',
@@ -79,6 +80,7 @@ const COPY = {
     attempted: 'Latest collection attempt', captured: 'Saved graph time',
     sourceCapture: 'Source capture', lastSuccess: 'Last successful sweep', inventoryEmpty: 'Successful collection produced an empty graph',
     savedSources: 'Sources used by saved graph', refresh: 'Latest graph refresh attempt',
+    sharedSources: 'Same displayed source evidence as above.',
     sourceDetails: 'Source details', limited: 'Processing limit reached — previous graph retained.',
     limitedPartial: 'Processing limit reached — graph coverage is incomplete.', nodeDrops: 'Nodes omitted', edgeDrops: 'Edges omitted',
     infraUnavailable: 'Inventory context unavailable', windowStart: 'Source window start', windowEnd: 'Source window end',
@@ -97,6 +99,7 @@ const COPY = {
     attempted: '最新の収集試行', captured: '保存されたグラフの時刻',
     sourceCapture: '元データの収集時刻', lastSuccess: '最後に成功した収集', inventoryEmpty: '成功した収集のグラフは空です',
     savedSources: '保存されたグラフの元データ', refresh: '最新のグラフ更新試行',
+    sharedSources: '上記と同じ収集根拠です。',
     sourceDetails: '元データの詳細', limited: '処理上限に到達 — 以前のグラフを保持します。',
     limitedPartial: '処理上限によりグラフの範囲は不完全です。', nodeDrops: '省略ノード', edgeDrops: '省略エッジ',
     infraUnavailable: 'インベントリ情報を利用できません', windowStart: '元データの照会開始', windowEnd: '元データの照会終了',
@@ -115,6 +118,7 @@ const COPY = {
     attempted: '最近一次采集尝试', captured: '已保存图的时间',
     sourceCapture: '源数据采集时间', lastSuccess: '最后成功采集', inventoryEmpty: '成功采集的图为空',
     savedSources: '已保存图使用的源数据', refresh: '最近一次图刷新尝试',
+    sharedSources: '与上方显示的源数据依据相同。',
     sourceDetails: '源数据详情', limited: '达到处理上限 — 保留上一次的图。',
     limitedPartial: '达到处理上限 — 图的覆盖范围不完整。', nodeDrops: '省略节点', edgeDrops: '省略边',
     infraUnavailable: '资产清单上下文不可用', windowStart: '源查询开始', windowEnd: '源查询结束',
@@ -127,6 +131,10 @@ const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const STATUSES = ['ok', 'empty', 'partial', 'unavailable', 'error', 'unknown'] as const;
 const statusOf = (value: unknown) => STATUSES.find(status => status === value) ?? 'unknown';
+const SOURCE_FIELDS = ['sourceId','status','scope','producerStatus','itemCount','capturedAtMs',
+  'lastSuccessAtMs','attemptedAtMs','finishedAtMs','windowStartMs','windowEndMs'] as const;
+const sourceReasons = (source: Record<string, unknown>) =>
+  Array.isArray(source.reasons) ? source.reasons.filter(reason => typeof reason === 'string') : [];
 
 export default function GraphCollectionStatus({ collection }: { collection?: unknown }) {
   const { lang } = useI18n();
@@ -140,6 +148,11 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
   const published = Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
+  const sharedSources = sources.length > 0 && sources.length === published.length && sources.every((source, i) => {
+    const reasons = sourceReasons(source), savedReasons = sourceReasons(published[i]);
+    return typeof source.sourceId === 'string' && SOURCE_FIELDS.every(key => source[key] === published[i][key])
+      && reasons.length === savedReasons.length && reasons.every((reason, j) => reason === savedReasons[j]);
+  });
   const unrecorded = data.status === 'unknown' && data.attempted_at === null && data.captured_at === null
     && Array.isArray(data.sources)
     && sources.length === 0 && published.length === 0 && !data.failureReason
@@ -192,16 +205,16 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       })}
       {sources.length + published.length > 0 && <details className="mt-1">
         <summary className="cursor-pointer break-words font-medium">
-          {copy.sourceDetails} ({sources.length + published.length})
+          {copy.sourceDetails} ({sources.length + (sharedSources ? 0 : published.length)})
           {sources.length > 0 && <span> · {copy.attemptSources}: {sources.length}
             {STATUSES.filter(key => counts[key]).map(key => <span key={key}> · {counts[key]} {copy.counts[key]}</span>)}
           </span>}
-          {published.length > 0 && <span> · {copy.savedSourceCount}: {published.length}</span>}
+          {published.length > 0 && !sharedSources && <span> · {copy.savedSourceCount}: {published.length}</span>}
         </summary>
         <div data-source-details className="max-h-[18vh] overflow-y-auto overscroll-contain">
       {sources.length > 0 && <ul className="mt-1 space-y-1">
         {sources.map((source, i) => {
-          const reasons = Array.isArray(source.reasons) ? source.reasons.filter(reason => typeof reason === 'string') : [];
+          const reasons = sourceReasons(source);
           return <li key={i} className="break-words">
             <span className="font-mono">{typeof source.sourceId === 'string' ? source.sourceId : '—'}</span>: {copy[statusOf(source.status)]}
             {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
@@ -212,9 +225,9 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       </ul>}
       {published.length > 0 ? <div className="mt-2">
         <p>{copy.savedSources}</p>
-        <ul>{published.map((source, i) => <li key={i}>
+        {sharedSources ? <p>{copy.sharedSources}</p> : <ul>{published.map((source, i) => <li key={i}>
           {typeof source.sourceId === 'string' ? source.sourceId : '—'}{producer(source)}{sourceTimes(source)}
-        </li>)}</ul>
+        </li>)}</ul>}
       </div> : null}
         </div>
       </details>}
