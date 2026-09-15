@@ -61,18 +61,22 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 로컬 회귀 검증 / Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py -q)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_tempo_trace_budget.py -q)
 (cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
 
-## 조치 / Action
-
 ### Trace payload bounds
 
-Oversized `tempo_get_trace` responses retain a structured OTLP projection under the existing byte cap. Resource identity, span timing and bounded links remain available with `truncated: true`; this is partial evidence, never complete trace coverage. If a valid span cannot fit, the producer returns an explicit no-fit marker without a raw preview. Malformed/unusable children remain unverified and explicit error envelopes fail.
+Oversized `tempo_get_trace` responses may retain a structured `projection: bounded_otlp` under the existing byte cap, with `truncated: true`. Every admitted span first passes identity/timing validation, including any reported trace ID's agreement with the request, and validation of present parent/link/status fields. Nonzero canonical hex and protobuf base64 IDs are supported; shortened trace hex is normalized for comparison. Resource identity, span timing and bounded links remain partial evidence, never complete trace coverage.
 
-Verify offline with `python3 -m pytest agent/lambda/test_tempo_trace_budget.py agent/lambda/test_tempo_mcp.py -q`. The fixture binds mocked HTTP responses to exact producer bodies, including alternate OTLP field names, UTF-8 limits and malformed/error cases. This test is not live deployment evidence. Deploy connector code through the reviewed Terraform flow below, then reconcile its Gateway description through `make agentcore`; no new IAM, endpoint or activation flag is introduced.
+If a validated span cannot fit, `tracePayloadTruncated: true` and `collectionStatus: partial` disclose a no-fit outcome without a raw preview. A malformed child encountered before the budget boundary leaves the whole trace unverified (`collectionStatus: unknown`, no usable projection); valid siblings do not conceal it. Unvisited rows beyond the boundary are not validated or represented. Explicit error envelopes fail. These markers never authorize a complete or empty graph.
+
+The offline fixtures in the verification block bind mocked HTTP responses to exact producer bodies, including alternate OTLP field names, UTF-8 limits, malformed fitting spans and base64 IDs. They are not live deployment evidence.
+
+## 조치 / Action
+
+Deploy connector code through the reviewed Terraform flow below, then reconcile its Gateway description through `make agentcore`; no new IAM, endpoint or activation flag is introduced.
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
@@ -196,6 +200,8 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 ## 관련 파일 / Related files
 
 - `agent/lambda/tempo_mcp.py`
+- `agent/lambda/test_tempo_trace_budget.py`
+- `agent/fixtures/tempo-trace-budget-contract.json`
 - `web/lib/tempo-schema.ts`
 - `web/lib/tempo-schema.test.ts`
 - `web/lib/datasource-schema.ts`

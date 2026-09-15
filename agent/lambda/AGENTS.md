@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b7a0963c585b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6cc4bc1a0aee · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -69,8 +69,9 @@ that's the source of truth for tool counts, not this doc.
   still the primary defense.
 
 ## Trace payload projection
-- Preserve bounded OTLP identity/timing/link evidence on oversized trace reads; a no-fit
-  marker is partial, never complete/empty. Malformed/errors cannot be projected success.
+- Tempo oversized reads retain bounded OTLP evidence only after span identity/timing and
+  reported trace-ID checks. Encountered malformed children leave the projection unknown;
+  unvisited rows remain unassessed. No-fit markers never establish complete/empty coverage.
 - Run `test_tempo_trace_budget.py` plus `test_tempo_mcp.py`; Lambda and Gateway descriptions
   deploy separately. Offline fixtures are not live acceptance evidence.
 

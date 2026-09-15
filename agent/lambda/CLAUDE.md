@@ -30,7 +30,10 @@ guard — see the section below.
 
 `tempo_mcp.py` retains a bounded structured OTLP projection for oversized trace responses,
 without raw previews or a complete-coverage claim. An explicit no-fit marker is distinct from
-malformed/failed children. `test_tempo_trace_budget.py` binds real-shaped HTTP fixtures to
+malformed/failed children. Every admitted span validates identity/timing and reported trace
+identity against the request before consuming the output budget. Malformed encountered
+children leave the whole projection unknown; unvisited rows remain unassessed.
+`test_tempo_trace_budget.py` binds real-shaped HTTP fixtures to
 producer output; run it with `test_tempo_mcp.py` before the reviewed Lambda/catalog rollout.
 
 ## Rules

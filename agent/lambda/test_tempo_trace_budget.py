@@ -1,5 +1,6 @@
 """Oversized real-shaped trace responses retain bounded usable spans."""
 import copy
+import base64
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -100,3 +101,40 @@ def test_oversized_error_payload_cannot_become_projected_success():
     body = read_trace(raw, status=400)
     assert body["collectionStatus"] == "error"
     assert "batches" not in body
+
+@pytest.mark.parametrize("field,value", [
+    ("spanId", None), ("spanId", ""), ("spanId", "0000000000000000"),
+    ("traceId", "2"), ("traceId", "00000000000000000000000000000000"),
+    ("startTimeUnixNano", None), ("startTimeUnixNano", "-1"),
+    ("endTimeUnixNano", "0"), ("endTimeUnixNano", str(1 << 64)),
+    ("parentSpanId", None), ("parentSpanId", "bad"), ("name", {}),
+    ("status", {"code": "invalid"}), ("links", [{"traceId": "2", "spanId": "0"}]),
+])
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_fitting_malformed_span_never_becomes_projected_evidence(field, value, position):
+    raw = copy.deepcopy(CASE["raw"])
+    spans = raw["batches"][0]["scopeSpans"][0]["spans"]
+    bad = {**copy.deepcopy(spans[0]), field: value}
+    spans.insert(0 if position == "before" else len(spans), bad)
+    raw["padding"] = "x" * tempo.MAX_TOTAL_BYTES
+    body = read_trace(raw)
+    assert body["collectionStatus"] == "unknown"
+    assert "batches" not in body and "projection" not in body
+    assert body.get("tracePayloadTruncated") is not True
+
+def test_identityless_fitting_span_is_not_projected():
+    raw = copy.deepcopy(CASE["raw"])
+    raw["batches"][0]["scopeSpans"][0]["spans"].insert(0, {})
+    raw["padding"] = "x" * tempo.MAX_TOTAL_BYTES
+    assert "batches" not in read_trace(raw)
+
+def test_valid_base64_identity_survives_projection_and_no_fit_validation():
+    raw = copy.deepcopy(CASE["raw"])
+    span = raw["batches"][0]["scopeSpans"][0]["spans"][0]
+    span["traceId"] = base64.b64encode(bytes.fromhex("0" * 31 + "1")).decode()
+    span["spanId"] = base64.b64encode(bytes.fromhex("0" * 15 + "1")).decode()
+    raw["padding"] = "x" * tempo.MAX_TOTAL_BYTES
+    body = read_trace(raw)
+    assert body["batches"][0]["scopeSpans"][0]["spans"][0]["spanId"] == span["spanId"]
+    with patch.object(tempo, "MAX_TOTAL_BYTES", 128):
+        assert read_trace(raw)["tracePayloadTruncated"] is True
