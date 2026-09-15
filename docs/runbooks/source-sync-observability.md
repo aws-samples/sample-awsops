@@ -282,3 +282,5 @@ Incomplete source evidence carries `SourceRead.canSweep: false`, including uncon
 ### Diagnosis signal completeness
 
 The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Explicit `unknown`, `error`, or `partial` results carry a fixed error signal; only nonempty observed counts remain as `observedCount`, never a complete zero. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
+
+Tempo search complete/empty proof requires an observed positive completed/total job pair. Absent, malformed or zero-job counters cannot certify empty; incomplete reads retain fetched data without authorizing a graph sweep. See [the canonical Tempo runbook](tempo-query-generation.md) for the pinned default of 20, limit/partial semantics, source-contract checks and the required Lambda deployment plus AgentCore description reconciliation.
