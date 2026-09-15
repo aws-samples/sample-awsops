@@ -47,7 +47,7 @@ lifecycle prerequisites before the first publication.
 - it fails at *Restore terraform.foundation backend* with
   `this branch's TF backend secrets are not set`, or
 - a preview dispatch fails the same way for `TF_*_PREVIEW_<USER>`, or
-- the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`, or
+- the deploy job's *Promote the verified image and start its deployment* step fails with an ECR `AccessDenied`, or
 - AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`, or
 - `Deployment preflight refused`, `DNS change prohibited`, or an unavailable certificate stops
   a dispatch (§5), or
@@ -336,8 +336,10 @@ anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
-`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
-Terraform's plan step and Deploy Web's opt-in private credential-preparation step).
+`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` in Terraform's
+plan and private host-credential preparation steps, and in the credential-preparation
+steps of Deploy Web and manual `collect-runtime.yml`). Each binding is step-scoped;
+the credential helper publishes only a private file path, never the password.
 `create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
@@ -404,7 +406,7 @@ Then register the generated files (base64) as repo secrets:
 | Stack | Secrets |
 |---|---|
 | all stacks (repo-wide) | `AWS_ACCOUNT_ID_DEV` (12-digit development/preview account; also required by the web helper on main for account exclusion) / `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
-| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS`; future `ci_web_image.py` integration also requires repository secret `AWS_ACCOUNT_ID_DEV` for its dev-account exclusion check |
+| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` / repository secret `AWS_ACCOUNT_ID_DEV` (12-digit dev-account exclusion check; required even on main) |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
@@ -419,10 +421,10 @@ Store `AWS_ACCOUNT_ID_DEV` as a repository-wide secret identifying the shared de
 and preview account. Those stacks' configured role and STS caller must match it before AWS reads/writes. A missing backend
 may skip an advisory plan; missing account verification on a configured stack fails.
 
-The preparatory [web image provenance helper](web-image-provenance.md) additionally requires
+The [web image provenance helper](web-image-provenance.md) additionally requires
 this repository secret on **main**, as 12 ASCII digits, before excluding the dev account.
 Keep it available to the production environment and do not shadow it with an invalid value.
-This is the new helper's contract; the current legacy web workflow is not yet wired to it.
+Deploy Web passes this secret to its configured-role and actual-caller checks.
 
 The manual development [deployment audit](deployment-audit.md)
 (`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
@@ -443,7 +445,7 @@ real login/DB/host-registry preflight. Readiness is a separate capability contro
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
-`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds and dev AgentCore provisioning. No variable/default-account fallback exists. It must match the configured role accounts and actual STS
+`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
@@ -639,7 +641,7 @@ wildcard or another policy grant.
 
 <a id="4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한"></a>
 
-### 4. ECR permissions for the pin step
+### 4. Image promotion and web verification permissions
 
 **AgentCore upgrade prerequisite:** the configured operator-owned CI deployer
 must permit `bedrock-agentcore:GetGateway` on its managed gateway resources,
@@ -658,20 +660,39 @@ configured correctly. Least-privilege roles need the scoped read added by their
 owner. The application workflow does not grant IAM. See the
 [AgentCore reconciliation contract](../reference/05-agentcore.md#provisioner-reconciliation).
 
-The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
-so the selected role needs `ecr:BatchGetImage` + `ecr:PutImage` on the verified
-branch stack's web ECR repository (plus the auth-token action it already has).
+The deploy jobs re-point `:web-latest` at the build/producer receipt's verified digest before rolling,
+so the selected role needs `ecr:BatchGetImage` + `ecr:PutImage` on the independently
+verified stack's web repository (plus the auth-token action it already has). A mutable
+`web-<sha>` lookup alone is not image provenance.
+
+Provision the following read and deployment permissions before releasing. The web snapshot
+preflights the ECS read operations before changing the image tag or service; writes are
+checked when invoked. SCPs and boundaries can still deny an otherwise correct policy.
+A write failure after publication requires the partial-state inspection and recovery in
+[web release](web-release.md); a changed tag alone does not prove a successful rollout.
+
+| Operation | Required scope |
+| --- | --- |
+| `ecs:DescribeServices`, `ecs:UpdateService` | The configured web service ARN; restrict its cluster |
+| `ecs:ListTasks` | `Resource: "*"` with `ecs:cluster` restricted to the configured cluster; a cluster ARN is not a valid Resource for this action |
+| `ecs:DescribeTasks` | The configured cluster's task ARN prefix, with the cluster condition |
+| `ecs:DescribeTaskDefinition` | `Resource: "*"` with `aws:RequestedRegion` restricted to the deployment region; this action does not support task-definition resource scoping |
+| `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:PutImage` | The configured web repository ARN |
+
+Verification uses bounded retries for stale PRIMARY and task/health reads. A
+persistent rollback, wrong running image, missing permission or timeout still
+fails. These grants belong to the deployment role, not the application's task role.
+
+Readonly image proof and promotion need repository-scoped `ecr:GetDownloadUrlForLayer`
+for digest-bound ARM64 config checks. Receipt jobs need `actions: read`; image proof uses
+the ci-build role, promotion uses the deployer role. The helpers grant no permissions.
+
 The samples dev deployer's current `AdministratorAccess` baseline and the build
 role's CI-account repository-wide ECR policy are broader than one stack; they do
 not establish branch-to-stack authority. Each operation must target exactly the
 independently verified stack repository. Scope any new ECR grants to that repository's ARN.
-Future wiring of the [web provenance helper](web-image-provenance.md) additionally
-requires repository-scoped `ecr:GetDownloadUrlForLayer` for digest-bound ARM64 config
-verification. Its producer and receipt-consuming jobs need `actions: read`; the
-producer uses its ci-build role, while promotion uses the deployer role. The
-currently unwired helper grants none of these permissions. Its `IMAGE_PROJECT`
-must come from branch-selected authenticated Terraform outputs or a verified
-job output derived from them, with ECR/cluster/service cross-checks, never dispatch input.
+Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars secrets. Before promotion,
+deploy cross-checks actual Terraform ECR/cluster/service outputs; never use dispatch input.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 
@@ -837,8 +858,9 @@ which validates destinations and passes curl arguments without shell interpolati
 They connect to `cloudfront_domain` with curl
 `--connect-to` while requesting `public_url`. This preserves the service Host,
 SNI and certificate verification before service DNS is published. `/api/health`
-checks process liveness; complete the required database migrations and verify
-authenticated application routes separately.
+checks process liveness. Dev Deploy Web requires readonly image proof before current-source private
+migrations, guarded promotion and exact ECS/image verification, then the mandatory full runtime gate including login/DB. Manual and
+main/preview releases retain operator-managed migration and authenticated verification.
 For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
 first runs the private reusable migration workflow on `dev`; other branches retain `make migrate`. Before dev dispatch, apply `ci_migrations_enabled=true` using `CI_MIGRATIONS_ENABLED_DEV=true` and confirm a non-null `migration_job` output. Optional `smoke=true` runs after provisioning. On dev it requires
 the matching readiness producer, `runtime_deployment`, enabled inventory and producer-classified freshness. The applied `agentcore.deployment_readiness_enabled` output must be boolean true; the provisioner keeps the runtime probe disabled for missing/false values, ignoring
@@ -848,6 +870,8 @@ advisory there when available, while invocation transport failures still fail. N
 The DNS/provenance scripts run from the deployment ref. They are safety checks for reviewed
 code, not a security boundary against changes to that ref; normal review and environment
 protections remain required.
+
+Full controller verification also requires the narrowly scoped ECS/Lambda reads and owned sync invocation in [deployer verification permissions](runtime-foundation.md#deployer-verification-permissions--deployer-검증-권한). The pre-mutation feature check and existing-stack rollout order are documented there.
 
 #### AgentCore provisioner Python
 
@@ -885,9 +909,18 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 ### Storage and role prerequisites
 
 Use the configured backend bucket and its private `backend.hcl` for publication,
-inspection and apply. The backend's `encrypt=true` alone does not establish the
-bucket's default encryption or access controls. This transport requires versioning
-Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
+inspection and apply. A backend encryption request flag alone does not establish the
+bucket's default encryption or access controls.
+The optional backend `encrypt` field defaults to `false`, matching Terraform, and is
+bound as metadata even when omitted. It does not control private plan-object encryption:
+the helper verifies bucket SSE-KMS and explicitly sets/verifies the upload key.
+The verifier/audit parser uses the same optional boolean semantics. State at-rest
+encryption follows Terraform's request settings and bucket defaults; these metadata
+values are not proof of the active key. With `encrypt=false`, a declared state
+`kms_key_id` is inactive, so verifier/audit KMS reads retain the existing account,
+S3-service and state-context restrictions without selecting that inactive key.
+This transport requires versioning Enabled, all four public-access blocks,
+BucketOwnerEnforced ownership and default
 SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
 versioning, public-access blocks and SSE-KMS settings for new state buckets;
 inspect existing bucket ownership and writer compatibility before changing them.
@@ -1037,21 +1070,25 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 
 | Diagnostic | Operator check |
 |---|---|
+| `backend_required_fields_missing` | Supply static bucket, key and region fields; `encrypt` and `use_lockfile` are optional booleans whose omitted value is false. |
+| `backend_syntax_invalid` / `backend_field_invalid` | Check the backend file privately for unsupported syntax, unknown fields or duplicate keys. No source line or value is printed. |
+| `invalid_backend` / `backend_binding_mismatch` | Check static value types and normalized backend settings. Changing an encryption boolean or another bound value after publication requires a fresh plan and review; omission and explicit false normalize identically. |
 | `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
 | `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
 | `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
 | `bucket_region_mismatch` | Confirm the private backend region matches GetBucketLocation. A failed regional endpoint request is not proof of a match. |
 | `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
 | `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
-| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
+| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; a backend request flag is not evidence of that setting. |
 | `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
 | `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
 | `bucket_lifecycle_missing` / `bucket_lifecycle_denied` | Confirm an existing lifecycle and GetLifecycleConfiguration permission with the bucket owner; publication and private reads require both. |
 | `bucket_lifecycle_invalid` / `bucket_lifecycle_required` / `bucket_lifecycle_conflict` | Establish the exact plan-only 7/7/1 rule through the owning bootstrap and remove conflicting early expiry/archive rules. Do not bypass the check or broaden expiry to state. |
 | `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
 
-These codes come only from the matching AWS S3 operation's exception envelope.
-Other command failures remain generic; provider text is not published. Apply finalizers
+AWS error categories are parsed from the matching S3/KMS operation's exception envelope;
+backend, binding and posture-validation categories are generated locally. Other command
+failures remain generic; provider text is not published. Apply finalizers
 remove only `.private-plan-<current-run>-<current-attempt>-*` under its Terraform directory.
 
 ### Purge expired plan versions
@@ -1209,9 +1246,7 @@ Initialization and earlier policy failures are outside command-tail capture. Exi
 ## Private development database migration
 
 **Symptom:** a newly provisioned private Aurora has no application tables, or the
-external Actions runner cannot connect to its private endpoint. Deploy Web does not initialize
-the database. Use **Migrate Development Database** (`deploy-migrations.yml`), a manual-only
-workflow restricted to this samples repository's `dev` branch, also reusable by a manual dev AgentCore dispatch. It builds an ARM64 image and
+external Actions runner cannot connect to its private endpoint. **Migrate Development Database** (`deploy-migrations.yml`) is restricted to this samples repository's `dev` branch. Standalone and AgentCore use remain manual; current-source Deploy Web runs it automatically before image promotion, including on dev pushes, but requires an initialized ledger and an admissible full pending set. Bootstrap or unsupported SQL needs standalone migration and reader sync first, then a fresh web dispatch. An explicitly acknowledged older-image rollback skips migrations. See [web release and rollback](web-release.md). It builds an ARM64 image and
 runs one Fargate task in the existing private subnets with the existing service security group.
 
 **Preparation:**
@@ -1298,11 +1333,12 @@ Failure-log reads are best effort and do not replace the primary error. Public o
 fixed diagnostic categories only. In the private migration log stream, inspect the retained
 operation/purpose, SDK code and HTTP status, SQLSTATE and role booleans described in the
 [safe diagnostic table](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics).
-Raw remote error text is discarded before logging. Empty-DB bootstrap and ULID migrations run under the migration advisory lock;
-an occupied database without a ledger is refused. Retry only after identifying the failure,
+Raw remote error text is discarded before logging. Standalone empty-DB bootstrap and ULID migrations run under the migration advisory lock;
+automatic web calls refuse a missing ledger before initialization regardless of the retained init flag, reporting `manual database bootstrap required`.
+An occupied database without a ledger is refused. Retry only after identifying the failure,
 and preserve all existing migration checksums and `-- since:` headers.
 
-After a successful migration, deploy the reviewed web image and verify authenticated database access before publishing service DNS.
+After a successful migration, deploy the reviewed web image and pass the full dev runtime gate, including authenticated database access, before publishing service DNS.
 
 Offline controller checks require Node 20, Python 3 with PyYAML and boto3/botocore, Terraform 1.15.7 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
 
@@ -1311,7 +1347,7 @@ node --test scripts/v2/ci/run-migration*.test.mjs
 ```
 
 Merge Verify also runs the required runtime tests and disposable PostgreSQL integration suite.
-The manual controller adds no product autonomy or DNS exception.
+The operator deployment controller adds no product autonomy or DNS exception.
 
 <a id="verification--확인"></a>
 
@@ -1320,37 +1356,29 @@ The manual controller adds no product autonomy or DNS exception.
 For a provisioned dev stack, the web workflow should build, pin, roll and pass the
 Host/SNI-preserving smoke through `cloudfront_domain`, even before `public_url` resolves.
 For production, dispatch Deploy Web from the reviewed main commit through the normal
-environment approval. Health is process liveness, not proof that migrations/authenticated
-routes work. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
+environment approval, using `build=true` or the required `image_build_run_id` for a retained producer receipt; see [release commands and rollback limits](web-release.md). Standalone health is process liveness only. Every dev Deploy Web release additionally requires
+the full authenticated runtime gate; complete [runtime adoption](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증) before dispatch or service A publication. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
 branch requires investigation and a fresh plan, never bypassing checks.
 
 <a id="runtime-probe-capability--런타임-검증-기능"></a>
 
 ### Runtime probe capability
 
-For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
+Before the first mandatory dev release gate, explicitly opt in with `CI_READINESS_ENABLED_DEV=true`
+(or explicit operator `ci_readiness_enabled=true` configuration when the override is unset),
+apply it with `agentcore_enabled=true`, then provision AgentCore. `CI_READONLY_RUNTIME_DEV`
+alone never enables readiness. See [runtime adoption](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증).
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
 Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
 worker images as described in [worker deployment](../reference/06-workers.md).
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway
+schema first. The web scan is capped at 500 rows; not finding the ID does not prove absence.
+The [collection contract](runtime-foundation.md#collection-contention--수집-경합) requires complete post-marker success with known counts and zero unknown attributes for every current catalog type, a fresh known CloudFront record and runtime/worker proof. Missing, partial, failed, stale or unknown evidence blocks release. See also [runtime endpoint authorization](../reference/05-agentcore.md).
 
-Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
-The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
-`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
-The optional-mode paragraph below also defines `collection_stale`, `release_timeout` and
-`runtime_inventory_contention`.
-Degraded inventory never passes release readiness. A missing match is not proof that the resource is absent in AWS.
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in a 0700 directory. Normal finalizers clean both; process or runner loss can prevent cleanup. The file is limited to 16 KiB, and verify requires a marker no older than thirty minutes and unique types including cloudfront. Verification itself expires at marker plus thirty minutes, or an earlier caller deadline.
+Every dev Deploy Web release supplies the applied deployment, code-checked catalog and synchronous collection evidence for every type. The legacy `verify_database` input cannot skip this gate.
 
-`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
-Normal finalizers cover both; process or runner loss can prevent cleanup. The 16 KiB cap,
-30-minute verify window and unique type list including cloudfront are required.
-The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
-
-`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
-Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
-caller-supplied `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
-deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
-and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
-inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host. Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`, the full catalog in `expectedQueuedTypes` and the pre-collection `collectionStartedAt`. The controller selects full policy and release mode; all types still require clean post-marker success. Web-role SSM/runtime/model calls and succeeded Lambda/Fargate jobs remain mandatory. Legacy NULL attribute coverage is unassessed, never healthy zero.
 
 Verify also accepts `inventoryPolicy: "full"` and `collectionMode: "release"`; prepare rejects
 both. Only those values are supported. The policy adds structured quality/gaps for
@@ -1381,7 +1409,10 @@ Membership is added only for the Terraform-managed demo when `create_demo_user=t
 unmanaged identity is enrolled, and no admin membership or IAM role is granted. Public CI rejects
 readiness outside dev. Use the separate CI_READINESS_ENABLED_DEV decision or explicit operator
 Terraform configuration; the runtime profile is not authorization for this billed capability.
-Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
+The release controller verifies authenticated readiness access; it does not inspect or create
+the live group/membership resources. Do not separately
+create a Terraform-managed verifier group. Use a fresh login after membership changes; one
+in-flight call and a 60-second process cooldown apply.
 
 If the group or managed-demo membership already exists, adopt it through a reviewed import before
 apply rather than deleting/recreating it: group ID `<pool-id>/deployment-verifiers`, membership ID
@@ -1390,14 +1421,14 @@ Disabling readiness or AgentCore removes the managed group/membership on a subse
 it does not reset passwords or delete the demo user. Existing ID tokens keep their group claims
 until expiry (up to the configured 12 hours) unless session revocation rejects them. Runtime
 disablement independently blocks the probe; membership removal alone is not immediate token
-revocation. See [revocation details](runtime-foundation.md#readiness-capability).
+revocation. See [revocation details](runtime-foundation.md#readiness-capability) and the
+[reviewed adoption procedure](runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택).
 
 <a id="authenticated-database-verification--인증된-db-검증"></a>
 
 ### Authenticated database verification
 
-After the required database migrations succeed, run **Deploy Web** on `dev` with
-`verify_database=true`. Before dispatch, ensure the reviewed Terraform saved-plan apply
+Every **Deploy Web** release on `dev` requires exact ECS/image verification followed by full runtime readiness (including login/DB), for pushes, dispatches and explicit rollbacks; `verify_database` cannot disable it. Current-source releases prove the receipt/ECR digest before matching private migrations and guarded promotion; explicit older-image rollback runs no DDL. Before release, ensure the reviewed Terraform saved-plan apply
 has persisted the new **`demo_username` output** in dev state. A plan alone does not
 persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, and its
 effective `demo_email` must exactly match that applied username.
@@ -1422,10 +1453,10 @@ Standalone smoke calls prefer `RUNNER_TEMP` as well. Only validated numeric HTTP
 may accompany phase errors; response bodies, cookies and Terraform diagnostics stay private.
 
 ```bash
-# After successful migration; use the already-built image for this reviewed dev HEAD:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
-# If this HEAD's web image still needs building, use this instead:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
+# Reuse a successful build for the current dev SHA; private migration runs first:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f image_build_run_id='<PRODUCER_RUN_ID>'
+# Build the current source, then migrate, deploy and verify:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
 ```
 
 Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
@@ -1434,8 +1465,7 @@ with HTTP **200**, boolean **`ok: true`** and a usable secure host-specific
 **200**, **`status: "ok"`** and a **positive safe-integer `public_tables`**. Both requests
 retain service Host/SNI and TLS verification through CloudFront; neither follows
 redirects. These checks verify login and the BFF's database connection/table presence,
-not the entire migration ledger. `verify_database=false` retains the ordinary health-only
-deployment path.
+not the entire migration ledger. The current-source migration has its separate verified receipt. Every dev release additionally requires full runtime verification regardless of `verify_database`.
 
 A configured credential can still be stale: only the post-rollout login validates the
 actual password. If login fails, inspect the existing identity and protected credential
@@ -1447,7 +1477,7 @@ Troubleshoot by phase and safe status: login 401 points to the configured creden
 Cognito user/challenge state; 502 to its upstream connection. Database 503 points to missing
 service configuration; 500 to database credentials, IAM or connectivity. A transport/TLS failure
 may have no HTTP response. Inspect private application logs; never print response bodies or
-reset a password to make a check pass. Opt-in preparation performs its own bounded private
+reset a password to make a check pass. Required dev preparation performs its own bounded private
 Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
 image pinning or rollout.
 

@@ -30,6 +30,15 @@ parsing accepts only supported static fields and the default workspace. Inspecti
 and restore validate the backend before any command or network request; there is no
 bucket enumeration/discovery fallback. Publication uses the policy mode's validated
 backend store. Callers must protect backend/configuration inputs and generated files.
+The optional backend `encrypt` flag is state-backend metadata, not the artifact
+encryption control. Omission normalizes to Terraform's default `false`; the private
+binding covers normalized backend semantics, so omission and explicit false agree.
+The shared verifier/audit parser uses the same boolean rule. This changes no backend file or
+state encryption setting. Publication and reads still require the private bucket's
+SSE-KMS posture, and uploads explicitly request and verify the resolved KMS key.
+A declared state `kms_key_id` is inactive when `encrypt` is false. It remains bound
+metadata, not proof of the active key. Verifier/audit sessions then use their existing
+account/S3/state-context-restricted KMS wildcard instead of selecting an inactive key.
 
 ### Workflow integration contract
 
@@ -160,6 +169,8 @@ Grant no IAM permissions or product mutation capabilities from this helper.
 
 - `scripts/v2/ci_private_plan.py`: four-mode transport and validation.
 - `scripts/v2/test_ci_private_plan.py`: offline transport/security fixtures.
+- `scripts/v2/fixtures/aws-cli/`: captured error bytes and canonical version,
+  environment and upstream-source metadata.
 - `scripts/v2/test_ci_private_plan_workflow.py`: workflow adapters and executable operator procedures.
 - `scripts/v2/ci_plan_inspect.py`: historical encrypted-artifact inspector.
 - `.github/workflows/terraform.yml`: protected publication and exact-plan Apply.
@@ -190,11 +201,34 @@ python3 -m pytest -q -p no:cacheprovider \
 This adds no Python dependency. Runtime execution requires authenticated GitHub CLI,
 AWS CLI v2 supporting conditional PUT/checksum arguments and Terraform/provider schemas.
 Offline tests do not prove live access or successful deployment.
+Error classification accepts the legacy AWS exception header and the
+`aws: [ERROR]:` header observed with AWS CLI 2.35.11. The identifier-free captured
+response and version/source metadata live under `scripts/v2/fixtures/aws-cli/`;
+the regression reads those bytes rather than constructing that fixture from the
+parser expression. A second capture uses the helper's `AWS_MAX_ATTEMPTS=1`
+environment: botocore adds ` (reached max retries: 0)` before the envelope's colon.
+The parser accepts that exact optional annotation with a nonnegative integer;
+it still binds the exception to the invoked service/operation and keeps the first
+recognized envelope. A later missing-policy message cannot override AccessDenied.
+The captured retry-annotated bytes and exit code are replayed through the actual
+subprocess transport and bucket-posture check. This records observed formats, not
+the first releases introducing them. The one-attempt AWS bound is unchanged.
+Unknown formats remain generic failures; they are not evidence of denied
+permission or an absent bucket policy.
 
 Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 
 ## Source
 
+- [Terraform S3 backend configuration](https://developer.hashicorp.com/terraform/language/backend/s3#encrypt):
+  public `encrypt` and `kms_key_id` configuration reference.
+- [AWS CLI 2.35.11 error formatting](https://github.com/aws/aws-cli/blob/2.35.11/awscli/errorformat.py)
+  and [error handlers](https://github.com/aws/aws-cli/blob/2.35.11/awscli/errorhandler.py):
+  the fixed `aws: [ERROR]:` prefix and enhanced error rendering.
+- [botocore ClientError formatting](https://github.com/boto/botocore/blob/1.42.97/botocore/exceptions.py):
+  `MaxAttemptsReached` and `RetryAttempts` produce the optional retry annotation.
+- [Terraform 1.15.7 S3 backend](https://github.com/hashicorp/terraform/blob/v1.15.7/internal/backend/remote-state/s3/backend.go):
+  `encrypt` is optional and `boolAttr` defaults an omitted value to false.
 - [S3 expiration behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
   current/noncurrent versions and asynchronous deletion.
 - [SSE-KMS permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html):

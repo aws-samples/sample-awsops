@@ -24,27 +24,32 @@ name: Deploy Web
 # Fork PRs never reach this workflow (push/dispatch only) and GitHub denies
 # fork runs secrets and id-token anyway.
 #
-# Tag discipline: build pushes ONLY the immutable web-<sha>; the deploy job's
-# pin step is the ONLY writer of that stack's :web-latest — approval/rollout
-# is always bound to a concrete image, and ECS task churn re-resolves to the
-# last pinned image.
+# Builds publish a digest receipt. Promotions and actual running tasks are bound
+# to that digest; mutable SHA tags are never image provenance. See web-release.md.
 
 on:
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
-    paths: ["web/**", "CHANGELOG.md"]
+    paths: ["web/**", "CHANGELOG.md", "terraform/foundation/migrations/**"]
   workflow_dispatch:
     inputs:
       image_sha:
-        description: "Full commit SHA whose web-<sha> image to promote and roll (default: the dispatched ref's HEAD)"
+        description: "Source SHA of a retained build receipt; defaults to this dispatch SHA."
         required: false
+      image_build_run_id:
+        description: "Producer Deploy Web run ID; required for reuse/rollback when build=false."
+        required: false
+      rollback_schema_compatible:
+        description: "Older image only: acknowledge compatibility with the currently applied schema. Runs NO migrations."
+        type: boolean
+        default: false
       build:
-        description: "Build & push web-<HEAD sha> first, then roll it (for a stack whose image was never built / was lost). Mutually exclusive with image_sha."
+        description: "Build this source, migrate and release. Cannot combine with image_sha, image_build_run_id or rollback_schema_compatible."
         type: boolean
         required: false
         default: false
       verify_database:
-        description: "After deployment, sign in as the configured dev demo user and verify /api/db (dev branch only)."
+        description: "Compatibility input: dev always requires full authenticated runtime readiness; true is unsupported elsewhere."
         type: boolean
         required: false
         default: false
@@ -55,18 +60,79 @@ permissions:
 
 # Per-job concurrency with separate build/rollout groups (a pending production
 # rollout must never be displaced by a push's build-only run). main queues;
-# every other branch is newest-wins.
+# other builds are newest-wins; deployment jobs do not cancel active rollouts.
 
 jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      migration_required: ${{ steps.request.outputs.migration_required }}
+      rollback: ${{ steps.request.outputs.rollback }}
+    steps:
+      - name: Validate release request before builds or migrations
+        id: request
+        env:
+          BUILD: ${{ inputs.build }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+          PRODUCER_RUN: ${{ inputs.image_build_run_id }}
+          SCHEMA_ACK: ${{ inputs.rollback_schema_compatible }}
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] || exit 1
+          if [ "$VERIFY_DATABASE" = true ] && [ "$GITHUB_REF" != refs/heads/dev ]; then
+            echo "::error::Database verification is only supported on the dev branch."; exit 1
+          fi
+          case "$GITHUB_REF" in refs/heads/main|refs/heads/dev|refs/heads/atomoh|refs/heads/ssminji|refs/heads/whchoi) ;; *) exit 1;; esac
+          rollback=false
+          case "$GITHUB_EVENT_NAME" in
+            push) ;;
+            workflow_dispatch)
+              if [ "$BUILD" = true ]; then
+                [ -z "$IMAGE_SHA" ] && [ -z "$PRODUCER_RUN" ] && [ "$SCHEMA_ACK" != true ] || {
+                  echo "::error::A fresh build cannot select a reused image or rollback"; exit 1;
+                }
+              else
+                [[ "${IMAGE_SHA:-$GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]] &&
+                [[ "$PRODUCER_RUN" =~ ^[1-9][0-9]{0,14}$ ]] || {
+                  echo "::error::Image reuse requires a full source SHA and producer run ID"; exit 1;
+                }
+                if [ "${IMAGE_SHA:-$GITHUB_SHA}" != "$GITHUB_SHA" ]; then
+                  [ "$SCHEMA_ACK" = true ] || { echo "::error::Older image rollback requires schema compatibility acknowledgement"; exit 1; }
+                  rollback=true
+                else
+                  [ "$SCHEMA_ACK" != true ] || { echo "::error::Schema acknowledgement is for older-image rollback only"; exit 1; }
+                fi
+              fi ;;
+            *) exit 1 ;;
+          esac
+          migrate=false
+          if [ "$GITHUB_REF" = refs/heads/dev ] && [ "$rollback" = false ]; then migrate=true; fi
+          printf 'migration_required=%s\nrollback=%s\n' "$migrate" "$rollback" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build & push (arm64)
+    needs: [guard]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build)
     runs-on: sample-awsops
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      project: ${{ steps.stack.outputs.project }}
     concurrency:
       group: deploy-web-build-${{ github.ref_name }}
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -83,6 +149,15 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
         id: sel
@@ -95,12 +170,34 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::build role variable for '$BRANCH' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Check configured branch build identity
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: python3 scripts/v2/ci_web_image.py check-role
+
+      - name: Validate configured development build account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-build)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+          unset-current-credentials: true
+
+      - name: Verify actual branch build identity
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: python3 scripts/v2/ci_web_image.py verify-role
+
+      - name: Verify actual development build caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       # The build job needs exactly one stack fact — the web ECR repository —
       # and derives it WITHOUT reading Terraform state (the ci-build role is
@@ -120,8 +217,8 @@ jobs:
             echo "::error::TF tfvars secret for '$BRANCH' is not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
-          PROJECT=$(echo "$V" | base64 -d | sed -nE 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -1)
-          PROJECT="${PROJECT:-awsops-v2}"   # variables.tf default
+          set -euo pipefail
+          PROJECT=$(printf '%s' "$V" | base64 -d | node scripts/v2/ci/run-migration.mjs project)
           echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
 
       - name: Verify the web ECR repository exists before building
@@ -153,31 +250,159 @@ jobs:
         run: cp CHANGELOG.md web/CHANGELOG.md
 
       - name: Build and push (arm64)
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: web
           platforms: linux/arm64
           push: true
-          # ONLY the immutable per-commit tag — :web-latest is written solely
-          # by the deploy job's pin step.
+          # Only the source tag; the returned digest is the image authority.
           tags: ${{ steps.ecr.outputs.registry }}/${{ steps.stack.outputs.project }}-web:web-${{ github.sha }}
+
+      - name: Record the image producer
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+          IMAGE_PROJECT: ${{ steps.stack.outputs.project }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          PROOF_DIR="$RUNNER_TEMP/web-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$PROOF_DIR"
+          python3 scripts/v2/ci_web_image.py receipt --output "$PROOF_DIR/web-build.json"
+
+      - name: Retain the build receipt for explicit reuse
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/web-proof-${{ github.run_id }}-${{ github.run_attempt }}/web-build.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Clean the local build receipt
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/web-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  image-proof:
+    name: Validate image before database migration
+    needs: [guard, build]
+    if: >-
+      !cancelled() && needs.guard.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.proof.outputs.digest }}
+    env:
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
+      DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+      USER_TFVARS_B64: >-
+        ${{ github.ref_name == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh ||
+            github.ref_name == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji ||
+            github.ref_name == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Select exact branch role and project
+        id: target
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            main) ROLE="$MAIN_ROLE"; V="$MAIN_TFVARS_B64";;
+            dev) ROLE="$DEV_ROLE"; V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) ROLE="$DEV_ROLE"; V="$USER_TFVARS_B64";;
+            *) exit 1;;
+          esac
+          [ -n "$ROLE" ] && [ -n "$V" ] || { echo "::error::Image validation requires this branch's build role and tfvars"; exit 1; }
+          PROJECT=$(printf '%s' "$V" | base64 -d | node scripts/v2/ci/run-migration.mjs project)
+          printf 'role=%s\nproject=%s\n' "$ROLE" "$PROJECT" >> "$GITHUB_OUTPUT"
+      - name: Validate configured image-read identity
+        env:
+          CI_ROLE_ARN: ${{ steps.target.outputs.role }}
+        run: python3 scripts/v2/ci_web_image.py check-role
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.target.outputs.role }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+      - name: Verify producer receipt and ECR content without mutation
+        id: proof
+        env:
+          CI_ROLE_ARN: ${{ steps.target.outputs.role }}
+          IMAGE_PROJECT: ${{ steps.target.outputs.project }}
+          PIN_SHA: ${{ inputs.image_sha || github.sha }}
+          IMAGE_BUILD_RUN_ID: ${{ inputs.image_build_run_id }}
+          FRESH_DIGEST: ${{ needs.build.outputs.digest }}
+          FRESH_PROJECT: ${{ needs.build.outputs.project }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/v2/ci_web_deploy.py preflight-image
+
+  migrate-dev:
+    needs: [guard, image-proof]
+    if: >-
+      !cancelled() && needs.guard.result == 'success' &&
+      needs.guard.outputs.migration_required == 'true' &&
+      needs.image-proof.result == 'success' && needs.image-proof.outputs.digest != ''
+    uses: ./.github/workflows/deploy-migrations.yml
+    with:
+      from_deploy_web: true
+    secrets:
+      TF_TFVARS_DEV: ${{ secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_DEV: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      AWS_CI_BUILD_DEV_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
 
   deploy:
     name: Roll ECS service
     # main: workflow_dispatch only (production environment gates it).
     # dev + user branches: continuous deploy right after their own build.
-    needs: [build]
+    needs: [guard, build, image-proof, migrate-dev]
     if: >-
       !cancelled() &&
+      needs.guard.result == 'success' &&
+      needs.image-proof.result == 'success' && needs.image-proof.outputs.digest != '' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      ((needs.guard.outputs.migration_required == 'true' && needs.migrate-dev.result == 'success') ||
+       (needs.guard.outputs.migration_required == 'false' && needs.migrate-dev.result == 'skipped')) &&
       (github.event_name == 'workflow_dispatch' || github.ref_name != 'main')
     runs-on: sample-awsops
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      expected_image_digest: ${{ steps.pin.outputs.digest }}
+      expected_runtime_digest: ${{ steps.pin.outputs.runtime_digest }}
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     concurrency:
       group: deploy-web-rollout-${{ github.ref_name }}
-      cancel-in-progress: ${{ github.ref_name != 'main' }}
+      cancel-in-progress: false
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      RUNTIME_MODE: collect
+      INVENTORY_POLICY: full
+      PIN_SHA: ${{ inputs.image_sha || github.sha }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
@@ -197,6 +422,13 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - uses: actions/setup-node@v4
         with:
@@ -218,14 +450,37 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$BRANCH' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Check configured branch deploy identity
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: python3 scripts/v2/ci_web_image.py check-role
+
+      - name: Validate configured development deploy account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+          unset-current-credentials: true
+
+      - name: Verify actual branch deploy identity
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: python3 scripts/v2/ci_web_image.py verify-role
+
+      - name: Verify actual development deploy caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore terraform.foundation backend
+        id: restore
         working-directory: terraform/foundation
         env:
           VERIFY_DATABASE: ${{ inputs.verify_database }}
@@ -246,12 +501,16 @@ jobs:
           set -o noclobber
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          if [ "$VERIFY_DATABASE" != "true" ]; then
-            terraform init -backend-config=backend.hcl -input=false
+          PROJECT=$(node ../../scripts/v2/ci/run-migration.mjs project < terraform.tfvars)
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+          if [ "$BRANCH" != dev ]; then
+            terraform init -backend-config=backend.hcl -input=false >/dev/null 2>&1 || {
+              echo "::error::Backend initialization failed (details withheld)"; exit 1;
+            }
           fi
 
       - name: Prepare configured demo credentials
-        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+        if: github.ref == 'refs/heads/dev'
         id: demo
         working-directory: terraform/foundation
         env:
@@ -269,68 +528,62 @@ jobs:
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
           echo "cloudfront_domain=$(terraform output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
+          echo "ecr_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
+
+      - name: Capture development runtime contract
+        if: github.ref == 'refs/heads/dev'
+        id: runtime
+        timeout-minutes: 3
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/foundation output -json runtime_deployment 2>/dev/null |
+            node scripts/v2/ci/runtime-release.mjs capture
 
       # The runner is persistent and shared — never leave the restored stack
       # config behind, whatever the outcome.
       - name: Clean restored terraform config off the runner
         if: always()
         working-directory: terraform/foundation
-        run: rm -f terraform.tfvars backend.hcl
+        run: |
+          rm -f terraform.tfvars backend.hcl
+          rm -rf -- .terraform
 
-      - name: Pin web-latest to the approved image
-        # The task definition references :web-latest, and this step is that
-        # tag's ONLY writer (build never touches it). Point it at the EXACT
-        # web-<sha> this run was approved for (dispatch input, defaulting to
-        # the dispatched ref's HEAD; the run's own commit on branch pushes).
-        # Caveat: the pin necessarily precedes the roll, so a roll that then
-        # fails or is cancelled leaves :web-latest at the pinned-but-not-
-        # stabilized image until the next run. Recovery: dispatch this
-        # workflow with the image_sha you want live — the newest built sha to
-        # go forward, or a previously stabilized sha to roll back. (Re-running
-        # the failed run re-pins ITS OWN sha — safe only while nothing newer
-        # has deployed since; prefer the explicit dispatch.)
+      - name: Promote the verified image and start its deployment
+        id: pin
         env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+          IMAGE_PROJECT: ${{ steps.restore.outputs.project }}
+          ECR_URI: ${{ steps.tf.outputs.ecr_uri }}
+          ECS_CLUSTER: ${{ steps.tf.outputs.cluster }}
+          ECS_SERVICE: ${{ steps.tf.outputs.service }}
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
-          DISPATCH_BUILD: ${{ inputs.build }}
-          DISPATCH_IMAGE_SHA: ${{ inputs.image_sha }}
-        run: |
-          if [ "$DISPATCH_BUILD" = "true" ] && [ -n "$DISPATCH_IMAGE_SHA" ]; then
-            echo "::error::'build' and 'image_sha' are mutually exclusive — a fresh build is always HEAD's sha."; exit 1
-          fi
-          MANIFEST=$(aws ecr batch-get-image \
-            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
-            --image-ids imageTag="web-${PIN_SHA}" \
-            --region ap-northeast-2 \
-            --query 'images[0].imageManifest' --output text)
-          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
-            echo "::error::No image tagged web-${PIN_SHA} in ${{ steps.tf.outputs.ecr_repo }} — build it first (push, or dispatch with a built SHA)."
-            exit 1
-          fi
-          # put-image errors with ImageAlreadyExistsException when web-latest
-          # already points at this manifest — that's success for our purposes.
-          OUT=$(aws ecr put-image \
-            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
-            --image-tag web-latest \
-            --image-manifest "$MANIFEST" \
-            --region ap-northeast-2 2>&1) || {
-              echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT" >&2; exit 1; }
-            }
-          echo "web-latest -> web-${PIN_SHA}"
+          IMAGE_BUILD_RUN_ID: ${{ inputs.image_build_run_id }}
+          PREFLIGHT_DIGEST: ${{ needs.image-proof.outputs.digest }}
+          FRESH_DIGEST: ${{ needs.build.outputs.digest }}
+          FRESH_PROJECT: ${{ needs.build.outputs.project }}
+          MIGRATED_SHA: ${{ needs.migrate-dev.outputs.source_sha }}
+          MIGRATED_PROJECT: ${{ needs.migrate-dev.outputs.project }}
+          ROLLBACK_SCHEMA_COMPATIBLE: ${{ inputs.rollback_schema_compatible }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/v2/ci_web_deploy.py deploy
 
-      - name: ECS force-new-deployment
-        run: |
-          aws ecs update-service \
-            --cluster "${{ steps.tf.outputs.cluster }}" \
-            --service "${{ steps.tf.outputs.service }}" \
-            --force-new-deployment \
-            --region ap-northeast-2 >/dev/null
-
-      - name: Wait for services-stable
-        run: |
-          aws ecs wait services-stable \
-            --cluster "${{ steps.tf.outputs.cluster }}" \
-            --services "${{ steps.tf.outputs.service }}" \
-            --region ap-northeast-2
+      - name: Verify exact deployment and healthy running web image
+        # Runtime readiness must consume this digest, never re-resolve web-<SHA>.
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+          IMAGE_PROJECT: ${{ steps.restore.outputs.project }}
+          ECR_URI: ${{ steps.tf.outputs.ecr_uri }}
+          ECS_CLUSTER: ${{ steps.tf.outputs.cluster }}
+          ECS_SERVICE: ${{ steps.tf.outputs.service }}
+          WEB_DIGEST: ${{ steps.pin.outputs.digest }}
+          WEB_RUNTIME_DIGEST: ${{ steps.pin.outputs.runtime_digest }}
+          WEB_DEPLOYMENT_ID: ${{ steps.pin.outputs.deployment_id }}
+          WEB_OLD_DEPLOYMENT_ID: ${{ steps.pin.outputs.old_deployment_id }}
+          WEB_TASK_REVISION: ${{ steps.pin.outputs.task_revision }}
+          WEB_DESIRED_COUNT: ${{ steps.pin.outputs.desired_count }}
+        run: python3 scripts/v2/ci_web_deploy.py verify
 
       - name: Smoke test
         # Connect to CloudFront directly while preserving the configured Host,
@@ -343,18 +596,46 @@ jobs:
           node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo
 
-      - name: Authenticated database smoke
-        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+      - name: Build restricted workload verification session
+        if: github.ref == 'refs/heads/dev'
+        id: workload_session
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+        run: |
+          set -euo pipefail
+          [ -n "$SMOKE_CREDENTIAL_FILE" ] && [ -n "$RUNTIME_DEPLOYMENT_FILE" ] || exit 1
+          directory="$(dirname -- "$SMOKE_CREDENTIAL_FILE")"
+          python3 scripts/v2/ci_verifier_sessions.py workload --directory "$directory" --deployment-file "$RUNTIME_DEPLOYMENT_FILE"
+          rm -f -- "$directory/workload-policy.json"
+      - name: Refresh development credentials for runtime verification
+        if: ${{ success() && github.ref == 'refs/heads/dev' && steps.workload_session.outputs.session_policy != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+          inline-session-policy: ${{ steps.workload_session.outputs.session_policy }}
+
+      - name: Authenticated development runtime readiness
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 55
         env:
           PUBLIC_URL: ${{ steps.tf.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+          WORKLOAD_SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
+          EXPECTED_WEB_DIGEST: ${{ steps.pin.outputs.digest }}
         run: |
           set -euo pipefail
-          node scripts/v2/authenticated-smoke.mjs
+          [ -n "${WORKLOAD_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::workload_session_policy_missing"; exit 1; }
+          node scripts/v2/ci/runtime-release.mjs run
 
       - name: Clean prepared demo credentials off the runner
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_database
+        if: always() && github.ref == 'refs/heads/dev'
         env:
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
         run: node scripts/v2/prepare-smoke-credentials.mjs --cleanup

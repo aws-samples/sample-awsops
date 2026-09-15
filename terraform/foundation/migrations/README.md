@@ -16,9 +16,10 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 2. Create `terraform/foundation/migrations/<ULID>_<snake_name>.sql`, e.g.
    `01J9Z8XK3P7QF2VN6T0BC4D5EH_opencost_config.sql`.
 3. Put **only DDL/data** in the file. **Do NOT** write `schema_migrations` — the runner stamps it
-   (version + sha256 checksum) in the same transaction. Do NOT use `ON CONFLICT DO NOTHING` on the ledger.
+   (version + sha256 checksum) in the same transaction for ordinary files. Do NOT use `ON CONFLICT DO NOTHING` on the ledger.
 4. Non-transactional statements (`CREATE INDEX CONCURRENTLY`, some `ALTER TYPE … ADD VALUE`) — put
-   `-- migrate:no-transaction` as the first line; the runner runs that file in autocommit.
+   `-- migrate:no-transaction` as the first line; the standalone runner runs that file in autocommit,
+   with a separate ledger write. These files require manual failure/retry review and are refused in automatic mode.
 5. Declare the release with a `-- since: <semver>` header (e.g. `-- since: 2.1.0`) — the version the
    migration is introduced in. Recorded in the `app_version` ledger column at apply. Optional: with no
    header the runner stamps the deploying app's version (`web/package.json`) instead.
@@ -30,13 +31,26 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 
 ## Apply
 - Install locked runtime dependencies first: `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`.
-- `make migrate` — apply pending (advisory-locked, pending-only, fail-loud, version-stamped). `make deploy` runs it first.
+- `make migrate` — apply pending after nonblocking `pg_try_advisory_lock(4729411)` admission.
+  A busy lock fails immediately instead of queueing; that runner performs no initialization, DDL or reader sync.
+  The owner holds the session lock through reader password synchronization. `make deploy` runs migration first.
 - `make migrate-status` — offline summary: the deploying app version + each migration's declared release. No DB.
-- `DRY_RUN=1 make migrate` — list pending + SQL, no exec. `DRY_RUN=1 OFFLINE=1` — no DB connection.
+- `DRY_RUN=1 make migrate` — list pending + SQL, no exec; automatic admission still applies if enabled.
+  `DRY_RUN=1 OFFLINE=1` — no DB connection or admission check.
 - `BOOTSTRAP=1 make migrate` — **one-time, controller-confirmed**: migrates the legacy `schema_migrations.version`
   INTEGER→TEXT + adds the `checksum` + `app_version` columns + a `baseline` marker. Run during a coordinated quiet
   window (concurrent sessions may still INSERT integer rows). Legacy integer rows (v1..vN) are preserved as applied;
   the baseline `schema.sql` stays as the one-time bootstrap of those tables.
+
+### Automatic migration admission
+
+`AUTOMATIC_MIGRATION=1` enables the conservative policy in `scripts/v2/automatic-migration-policy.mjs` and is forced by web-driven migrations. A missing ledger fails before frozen-baseline initialization, even with `INITIALIZE_EMPTY_DB=1`. On initialized databases, under the session lock and after checksum validation, it checks **all ledger-derived pending files**, including gaps below newer applied IDs. Only supported `CREATE TABLE` definitions and ordinary, non-unique, column-only B-tree `CREATE INDEX` statements are admitted. Allowlisted built-in column types, constant defaults, and new-table `NOT NULL`/`PRIMARY KEY`/`UNIQUE` constraints are supported; indexes may use ordering, `INCLUDE`, and `IF NOT EXISTS`. This is a limited syntax subset, not complete schema validation.
+
+Every `-- migrate:no-transaction` file is rejected, even if its SQL could run transactionally. `CREATE INDEX CONCURRENTLY` is rejected with or without that header or `IF NOT EXISTS`. Function defaults (`DEFAULT now()`/`gen_random_uuid()`), `ALTER`, `GRANT` and views also require standalone migration. Base-column changes and their `sql_reader` view/grant refresh must remain together; even nullable `ADD COLUMN` is rejected. Do not remove a paired refresh to pass admission. Destructive SQL, procedural/dynamic SQL, data statements and other unsupported forms also require the manual path.
+
+A rejected file produces only safe file/id/reason metadata and fixed guidance, before any pending DDL, ledger upgrade or reader sync. Online `DRY_RUN=1` still rejects disallowed pending files instead of printing SQL; one rejected pending file stops the entire online preview. Reviewed standalone migration or full SQL preview leaves `AUTOMATIC_MIGRATION` unset; web callers cannot bypass it. Checksums and the lock still apply. `--status`/`STATUS=1` and offline preview inspect files without validating live pending admission. False positives intentionally require manual review; never edit immutable SQL/headers or ledger checksums to bypass them.
+
+For bootstrap or unsupported pending SQL, run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`. Inspect that exact run for **SUCCESS**, the intended source SHA, container exit `0` and reader sync, then start `gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`; see the [step-by-step procedure](../../../docs/runbooks/web-release.md). Historical SQL receives no automatic exemption. An initialized database with an admissible pending set needs no standalone run.
 
 ### Empty database / 빈 데이터베이스
 
@@ -56,21 +70,26 @@ Aurora에 사설 연결 가능한 승인된 호스트에서 새 빈 DB에 한해
 The frozen baseline's one legacy BEGIN/COMMIT pair is removed **only in memory**. All baseline
 sections, INTEGER→TEXT ledger conversion and the baseline checksum commit atomically. ULIDs then
 commit individually under the same session lock (`4729411`), held through reader synchronization.
+A concurrent runner fails immediately before initialization; it does not wait for this lock.
 A later ULID failure leaves the committed baseline/prior ULIDs available for retry. Existing ledgers
 skip initialization; existing INTEGER ledgers still require the separate `BOOTSTRAP=1` gate.
+Only standalone/manual migration can initialize a missing ledger and apply the historical corpus.
+Automatic web migration fails before baseline initialization; the template's retained
+`INITIALIZE_EMPTY_DB=1` never bypasses that refusal or the full pending-file check.
 `INITIALIZE_EMPTY_DB=1` cannot be combined with an online `DRY_RUN=1`; `--status`/`STATUS=1`
 and `DRY_RUN=1 OFFLINE=1` remain credential-free inspection modes.
 
 기존 SQL 파일을 바꾸지 않고 메모리에서만 wrapper를 제거한다. baseline 전체·TEXT 변환·checksum은
-한 트랜잭션으로 반영하고, 같은 advisory lock을 유지해 ULID별 적용과 reader 동기화를 진행한다.
+한 트랜잭션으로 반영하고, advisory lock(4729411)을 대기 없이 획득한 실행만 잠금을 유지해
+ULID별 적용과 reader 동기화를 진행한다. 잠금이 사용 중이면 초기화 전에 즉시 실패한다.
 후속 ULID 실패 시 완료된 baseline/이전 ULID는 유지되어 재시도 가능하다. 원장이 있으면 초기화를
-건너뛰며 INTEGER 원장은 별도 `BOOTSTRAP=1`이 필요하다. 온라인 dry-run과 초기화는 함께 쓰지 않는다.
+건너뛰며 INTEGER 원장은 별도 `BOOTSTRAP=1`이 필요하다. 원장 초기화와 과거 migration 전체 적용은 수동 경로로 먼저 완료한다. 자동 웹 migration은 원장이 없으면 baseline 초기화 전에 실패하며 템플릿의 초기화 플래그로 우회할 수 없다. 온라인 dry-run과 초기화는 함께 쓰지 않는다.
 상태 조회와 오프라인 preview에는 자격증명이 필요 없다.
 
-Every run, including online preview, checks stored non-null baseline and ULID checksums before
-ledger changes or password sync. Legacy null baseline checksums remain supported; this is not
+After empty-only initialization, every online run, including preview, checks stored non-null
+baseline and ULID checksums before pending ledger changes or password sync. Legacy null baseline checksums remain supported; this is not
 permission to retag/edit existing SQL or to rewrite ledger checksums.
-온라인 preview도 저장된 non-null baseline/ULID checksum을 검증한다. 레거시 null checksum은
+빈 DB 전용 초기화 후 모든 온라인 실행은 preview를 포함해 pending ledger 변경이나 비밀번호 동기화 전에 저장된 non-null baseline/ULID checksum을 검증한다. 레거시 null checksum은
 허용하지만 기존 SQL의 `-- since:` 변경·수정이나 원장 checksum 덮어쓰기는 허용하지 않는다.
 
 ### Runtime configuration / 런타임 설정
@@ -93,8 +112,9 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `AURORA_SECRET_ARN` | Required **master** secret identifier; JSON `username` must be `awsops_admin`, password a nonempty string / `awsops_admin` master 시크릿 |
 | `SQL_READER_SYNC_MODE` | Explicit `secret` or `disabled`; no runtime `terraform` mode / 명시적 모드 필수 |
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
-| `INITIALIZE_EMPTY_DB` | Optional `1` for verified empty DB; one-shot host command, retained in the manual CI template / 최초 빈 DB 초기화; 수동 CI 템플릿 예외는 위 설명 참조 |
+| `INITIALIZE_EMPTY_DB` | Optional `1` for standalone/manual empty-DB initialization; retained in the private CI template, but automatic web calls refuse a missing ledger before initialization / 수동 빈 DB 초기화에만 `1`; private CI 템플릿에 유지되지만 자동 웹 호출은 원장이 없으면 초기화 전에 거부 |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
+| `AUTOMATIC_MIGRATION` | Forced to literal `1` by web-driven migrations; optional for standalone callers. It restricts all pending files to supported transactional new tables and ordinary non-unique indexes. Unset preserves reviewed standalone SQL; online dry-run also enforces the policy above. |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
 
@@ -112,8 +132,8 @@ the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRE
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
 reader secret fetch/password alteration; it does not repair a missing role or password mismatch.
-After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
-Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before dispatch.
+After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore and current-source dev Deploy Web run the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
+Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before release.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
 이 이름은 runtime/controller의 계약이다. 에이전트 환경변수를 복사하지 않는다.
@@ -138,22 +158,22 @@ docker run --rm --network none --read-only awsops-migration:local \
   node scripts/v2/migrate.mjs --status
 ```
 
-The manual development workflow builds/pushes to the selected private ECR repository,
+The private development workflow (manual dispatch or the guarded current-source Deploy Web caller) builds/pushes to the selected private ECR repository,
 pins the image digest, and runs the default CMD in a private ARM64 Fargate task.
 Its task/IAM template is gated by `ci_migrations_enabled` (default false); see the [deployment runbook](../../../docs/runbooks/dev-repo-setup.md).
 Task completion must include the migration container's numeric exit code `0`; status output alone
 is not a successful migration. Supply the required identifiers/mode above (plus reader ARN
 only in secret mode) as nonsecret environment settings; never inject passwords or secret bodies.
-The dedicated **Migrate Development Database** template deliberately enables guarded initialization:
-each manual dev dispatch requests it if needed. Provisioning the template runs nothing, an existing
-ledger skips initialization, and an occupied database without a ledger is refused. This exception
+The dedicated **Migrate Development Database** template retains guarded initialization for standalone/manual calls:
+automatic web calls refuse a missing ledger before initialization; explicit older-image rollback skips this workflow. Provisioning the template runs nothing, an existing
+ledger skips initialization, and an occupied database without a ledger is refused. This template setting
 does not apply to ordinary services or scheduled deployment templates.
 
-수동 개발 workflow가 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64 Fargate 태스크를 실행한다.
+수동 실행 또는 현재 소스 Deploy Web의 보호된 호출로 개발 workflow가 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64 Fargate 태스크를 실행한다.
 태스크/IAM 템플릿은 기본 false인 `ci_migrations_enabled`로 제어한다.
 성공은 migration 컨테이너의 숫자 exit code `0`까지 확인해야 한다. 환경에는 위 식별자/모드만
 전달하고 비밀번호·시크릿 본문을 넣지 않는다. 전용 **Migrate Development Database** 템플릿은
-수동 dev 실행마다 필요한 경우의 안전한 초기화를 명시적으로 요청한다. 템플릿 생성만으로 실행되지
+수동 호출에서만 필요한 경우 안전한 초기화를 수행하며, 자동 웹 호출은 원장이 없으면 초기화 전에 거부한다. 이전 이미지 롤백은 이 workflow를 실행하지 않는다. 템플릿 생성만으로 실행되지
 않으며, 원장이 있으면 초기화를 생략하고 원장 없는 비어 있지 않은 DB는 거부한다. 일반 서비스나
 예약 배포 템플릿에는 이 예외를 적용하지 않는다.
 

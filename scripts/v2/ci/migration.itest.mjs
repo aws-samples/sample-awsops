@@ -31,8 +31,7 @@ async function inspect(database, fn) {
 }
 const ledger = db => db.query('SELECT * FROM schema_migrations ORDER BY version').then(result => result.rows);
 const testId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
-// Two 2.5s polling windows + 5.2s injected CI delay + startup/assertions fit
-// within 15s. Keep statement timeout at 30s and lock tests bounded at 45s.
+// Internal test barriers may wait, but the runner's admission lock must not.
 const lockRunnerOptions = { lock_timeout: 15_000 };
 
 test('the real runner initializes the frozen baseline, stamps all ULIDs, and reruns unchanged', async () => {
@@ -49,6 +48,21 @@ test('the real runner initializes the frozen baseline, stamps all ULIDs, and rer
     if (declaredVersion) assert.equal(row.app_version, declaredVersion, file);
   }
   await run(database);
+  assert.deepEqual(await inspect(database, ledger), first);
+});
+
+test('web automatic mode requires manual bootstrap before any baseline SQL; the full historical corpus then permits release', async () => {
+  const database = await postgres.database();
+  const automatic = { env: { ...env, AUTOMATIC_MIGRATION: '1' } };
+  await assert.rejects(run(database, automatic), /Automatic migration requires manual bootstrap;/);
+  await inspect(database, async db => {
+    assert.equal((await db.query("SELECT to_regclass('public.schema_migrations') AS ledger")).rows[0].ledger, null);
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public'")).rows[0].n, 0);
+  });
+  await run(database); // Reviewed standalone bootstrap applies the actual repository corpus.
+  const first = await inspect(database, ledger);
+  assert.equal(first.length, migrationFiles.length + 10);
+  await run(database, automatic);
   assert.deepEqual(await inspect(database, ledger), first);
 });
 
@@ -73,60 +87,258 @@ test('initialization cannot be combined with online dry-run, and does not write 
   });
 });
 
-test('both first-run initialization and ULIDs wait behind the same advisory lock', { timeout: 45_000 }, async () => {
+test('a concurrent initializer fails immediately without initializing, then a retry succeeds', { timeout: 10_000 }, async () => {
   const database = await postgres.database();
   await inspect(database, async blocker => {
     await blocker.query('SELECT pg_advisory_lock(4729411)');
-    const result = run(database, {}, { ...lockRunnerOptions, application_name: 'waiting-initializer' });
-    result.catch(() => {});
     try {
-      await waitForQuery(blocker, "SELECT wait_event FROM pg_stat_activity WHERE application_name='waiting-initializer'",
-        rows => rows.some(row => row.wait_event === 'advisory'));
+      const start = performance.now();
+      await assert.rejects(run(database, {}, { ...lockRunnerOptions, application_name: 'contending-initializer' }),
+        /Concurrent migration.*retry.*standalone/i);
+      assert.ok(performance.now() - start < 2500, 'admission must not wait for lock_timeout');
       assert.equal((await blocker.query("SELECT to_regclass('public.schema_migrations') AS ledger")).rows[0].ledger, null);
     } finally { await blocker.query('SELECT pg_advisory_unlock(4729411)'); }
-    await result;
+    await run(database);
     assert.equal((await ledger(blocker)).length, migrationFiles.length + 10);
   });
 });
 
-test('concurrent initializers apply each migration once', { timeout: 45_000 }, async () => {
-  const database = await postgres.database();
-  await Promise.all([run(database, {}, lockRunnerOptions), run(database, {}, lockRunnerOptions)]);
-  assert.equal((await inspect(database, ledger)).length, migrationFiles.length + 10);
-});
-
-test('the migration lock stays held after the baseline commits and until ULIDs finish', { timeout: 45_000 }, async () => {
+test('two real runners: one owns the lock, the other fails promptly, then retries without duplicate DDL', { timeout: 15_000 }, async () => {
   const database = await postgres.database();
   const directory = mkdtempSync(join(tmpdir(), 'awsops-lock-test-'));
-  writeFileSync(join(directory, `${testId}_lock.sql`),
-    'SELECT pg_advisory_lock(4729412); SELECT pg_advisory_unlock(4729412); CREATE TABLE lock_marker(id int);');
   try {
+    await run(database, { migrationDir: directory });
+    writeFileSync(join(directory, `${testId}_lock.sql`),
+      'CREATE TABLE lock_marker(id int); CREATE INDEX lock_target_idx ON lock_target(id);');
+    const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
     await inspect(database, async observer => {
-      await observer.query('SELECT pg_advisory_lock(4729412)');
-      const first = run(database, { migrationDir: directory }, { ...lockRunnerOptions, application_name: 'first-lock-runner' });
+      // A relation lock controls the first runner's DDL; only that runner takes
+      // advisory key 4729411. Both runners use real PostgreSQL connections.
+      await observer.query('CREATE TABLE lock_target(id int)');
+      await observer.query('BEGIN; LOCK TABLE lock_target IN ACCESS EXCLUSIVE MODE');
+      const first = run(database, options, { ...lockRunnerOptions, application_name: 'first-lock-runner' });
       first.catch(() => {}); // observed below, even if the runner rejects during polling
-      let second;
       try {
-        await waitForQuery(observer, "SELECT wait_event FROM pg_stat_activity WHERE application_name='first-lock-runner'",
-          rows => rows.some(row => row.wait_event === 'advisory'));
-        // Model a loaded CI observer crossing the fixture's default 5s lock timeout.
-        await observer.query('SELECT pg_sleep(5.2)');
+        // The lock holder's open transaction caches activity snapshots.
+        await inspect(database, monitor => waitForQuery(monitor,
+          "SELECT wait_event FROM pg_stat_activity WHERE application_name='first-lock-runner'",
+          rows => rows.some(row => row.wait_event === 'relation')));
         assert.equal((await observer.query("SELECT version FROM schema_migrations WHERE version='baseline'")).rowCount, 1);
         assert.equal((await observer.query(`SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON l.pid=a.pid
           WHERE a.application_name='first-lock-runner' AND l.locktype='advisory' AND l.objid=4729411 AND l.granted`)).rowCount, 1);
-        second = run(database, { migrationDir: directory }, { ...lockRunnerOptions, application_name: 'second-lock-runner' });
-        second.catch(() => {});
-        await waitForQuery(observer, `SELECT l.objid FROM pg_locks l JOIN pg_stat_activity a ON l.pid=a.pid
-          WHERE a.application_name='second-lock-runner' AND l.locktype='advisory' AND NOT l.granted`,
-        rows => rows.some(row => row.objid === 4729411));
+        const start = performance.now();
+        await assert.rejects(run(database, options, { ...lockRunnerOptions, application_name: 'second-lock-runner' }),
+          /Concurrent migration/);
+        assert.ok(performance.now() - start < 2500, 'the second runner must not queue behind the owner');
+        assert.equal((await observer.query('SELECT 1 FROM schema_migrations WHERE version=$1', [testId])).rowCount, 0);
       } finally {
-        await observer.query('SELECT pg_advisory_unlock(4729412)');
-        await Promise.all([first, second]);
+        await observer.query('ROLLBACK');
+        await first;
       }
+      const firstLedger = await ledger(observer);
+      await run(database, options, { application_name: 'second-lock-runner' });
+      assert.deepEqual(await ledger(observer), firstLedger);
       assert.equal((await observer.query('SELECT 1 FROM schema_migrations WHERE version=$1', [testId])).rowCount, 1);
+      assert.deepEqual((await observer.query(
+        "SELECT to_regclass('lock_marker') AS t, to_regclass('lock_target_idx') AS i")).rows,
+      [{ t: 'lock_marker', i: 'lock_target_idx' }]);
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('automatic additive SQL works with recurring initialization and an unchanged rerun', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-additive-'));
+  const database = await postgres.database();
+  try {
+    await run(database, { migrationDir: directory }); // Standalone baseline first.
+    writeFileSync(join(directory, `${testId}_table.sql`),
+      "CREATE TABLE additive_example(id bigint PRIMARY KEY, label text, meta jsonb DEFAULT '{}'::jsonb);");
+    writeFileSync(join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAW_index.sql'),
+      'CREATE INDEX additive_idx ON additive_example(label);');
+    const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
+    await run(database, options);
+    const first = await inspect(database, ledger);
+    await run(database, options);
+    assert.deepEqual(await inspect(database, ledger), first);
+    await inspect(database, async db => {
+      assert.equal((await db.query("SELECT to_regclass('additive_idx') AS t")).rows[0].t, 'additive_idx');
+      await db.query('INSERT INTO additive_example(id) VALUES (1)');
+      assert.deepEqual((await db.query('SELECT label, meta FROM additive_example')).rows, [{ label: null, meta: {} }]);
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const [label, sql, manualSucceeds] of [
+  ['function timestamp default', 'CREATE TABLE rejected_table(created_at timestamptz DEFAULT now())', true],
+  ['function UUID default', 'CREATE TABLE rejected_table(id uuid DEFAULT gen_random_uuid())', true],
+  ['no-transaction single statement', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int)', true],
+  ['no-transaction multiple statements', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int); CREATE TABLE later_table(id int)', true],
+  ['concurrent index without flag', 'CREATE INDEX CONCURRENTLY rejected_idx ON retained(id)', false],
+  ['conditional concurrent index with flag', '-- migrate:no-transaction\nCREATE INDEX CONCURRENTLY IF NOT EXISTS rejected_idx ON retained(id)', true],
+  ['bare column addition', 'ALTER TABLE retained ADD label text', true],
+  ['paired column and reader view', 'ALTER TABLE retained ADD label text; CREATE OR REPLACE VIEW sql_reader.retained AS SELECT id, label FROM retained', true],
+]) {
+  test(`automatic admission rejects ${label} before any pending DDL, ledger upgrade or reader sync`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-reject-'));
+    const database = await postgres.database();
+    const messages = [];
+    try {
+      await run(database, { migrationDir: directory });
+      await inspect(database, db => db.query(`CREATE TABLE retained(id int); INSERT INTO retained VALUES (42);
+        CREATE SCHEMA sql_reader; CREATE VIEW sql_reader.retained AS SELECT id FROM retained;
+        ALTER TABLE schema_migrations DROP COLUMN checksum, DROP COLUMN app_version;`));
+      writeFileSync(join(directory, `${testId}_earlier.sql`), 'CREATE TABLE earlier_table(id int);');
+      writeFileSync(join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAW_rejected.sql'), sql);
+      const first = await inspect(database, ledger);
+      for (const dry of [false, true]) {
+        await assert.rejects(run(database, { migrationDir: directory, logger: { log: text => messages.push(text) },
+          env: { AUTOMATIC_MIGRATION: '1', SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader',
+            ...(dry ? { DRY_RUN: '1' } : { INITIALIZE_EMPTY_DB: '1' }) },
+        }), /Automatic migration blocked.*01ARZ3NDEKTSV4RRFFQ69G5FAW_rejected.sql.*reason=/);
+        // Full rows include column keys: no ledger metadata upgrade is allowed.
+        assert.deepEqual(await inspect(database, ledger), first);
+        await inspect(database, async db => {
+          for (const relation of ['earlier_table', 'rejected_table', 'later_table', 'rejected_idx']) {
+            assert.equal((await db.query('SELECT to_regclass($1) AS t', [relation])).rows[0].t, null);
+          }
+          assert.deepEqual((await db.query('SELECT * FROM retained')).rows, [{ id: 42 }]);
+          assert.deepEqual((await db.query('SELECT * FROM sql_reader.retained')).rows, [{ id: 42 }]);
+        });
+      }
+      assert.doesNotMatch(messages.join('\n'), /CREATE |ALTER |password synced|applied \d+ migration/);
+      // Default/manual mode keeps the original SQL and transaction behavior.
+      if (manualSucceeds) await run(database, { migrationDir: directory });
+      else await assert.rejects(run(database, { migrationDir: directory }),
+        /SQLSTATE=25001.*active SQL transaction.*standalone.*transaction mode/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
+test('all actual pending SQL is guarded before ledger upgrades, pending DDL and reader sync; manual override works', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-contract-'));
+  const database = await postgres.database();
+  const unsafeId = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+  const messages = [];
+  try {
+    await run(database, { migrationDir: directory });
+    await inspect(database, async db => {
+      await db.query('CREATE TABLE retained(id int); INSERT INTO retained VALUES (42)');
+      await db.query('ALTER TABLE schema_migrations DROP COLUMN checksum, DROP COLUMN app_version');
+      // A newer applied ID must not hide either earlier pending file.
+      await db.query("INSERT INTO schema_migrations(version,description) VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAZ','newer applied')");
+    });
+    writeFileSync(join(directory, `${testId}_safe.sql`), 'CREATE TABLE must_not_apply(id int);');
+    writeFileSync(join(directory, `${unsafeId}_contract.sql`), 'DROP TABLE retained; -- do-not-echo-sql');
+    const first = await inspect(database, ledger);
+    await assert.rejects(run(database, {
+      migrationDir: directory, logger: { log: message => messages.push(message) },
+      env: { ...env, AUTOMATIC_MIGRATION: '1', SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
+    }), error => {
+      assert.match(error.message, new RegExp(`${unsafeId}_contract.sql.*reason=destructive-sql`));
+      assert.doesNotMatch(error.message + messages.join(''), /DROP TABLE|do-not-echo-sql/);
+      return true;
+    });
+    assert.deepEqual(await inspect(database, ledger), first); // includes absent metadata columns
+    await inspect(database, async db => {
+      assert.deepEqual((await db.query('SELECT * FROM retained')).rows, [{ id: 42 }]);
+      assert.equal((await db.query("SELECT to_regclass('must_not_apply') AS t")).rows[0].t, null);
+    });
+    await run(database, { migrationDir: directory }); // explicit standalone override, flag absent
+    const applied = await inspect(database, ledger);
+    assert.ok(applied.some(row => row.version === unsafeId));
+    await run(database, { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } });
+    assert.deepEqual(await inspect(database, ledger), applied); // already-applied contract SQL is not pending
+    writeFileSync(join(directory, `${unsafeId}_contract.sql`), 'DROP TABLE edited_after_apply;');
+    await assert.rejects(run(database, { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } }),
+      /checksum drift/); // checksum failure precedes policy classification
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('automatic mode refuses unsafe pending SQL before legacy BOOTSTRAP alters the ledger', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-bootstrap-'));
+  const database = await postgres.database();
+  try {
+    await inspect(database, db => db.query(schema));
+    const first = await inspect(database, ledger);
+    writeFileSync(join(directory, `${testId}_contract.sql`), 'ALTER TABLE accounts ALTER COLUMN name SET NOT NULL;');
+    await assert.rejects(run(database, {
+      migrationDir: directory, env: { ...env, BOOTSTRAP: '1', AUTOMATIC_MIGRATION: '1' },
+    }), /Automatic migration blocked/);
+    assert.deepEqual(await inspect(database, ledger), first);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('automatic mode never initializes an unversioned database or executes its pending files', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-initialize-'));
+  try {
+    writeFileSync(join(directory, `${testId}_contract.sql`), 'DROP TABLE schema_migrations;');
+    const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
+    const empty = await postgres.database();
+    await assert.rejects(run(empty, options), /Automatic migration requires manual bootstrap;/);
+    await inspect(empty, async db => {
+      assert.equal((await db.query("SELECT to_regclass('schema_migrations') AS t")).rows[0].t, null);
+    });
+    const occupied = await postgres.database();
+    await inspect(occupied, db => db.query('CREATE TABLE retained(id int)'));
+    await assert.rejects(run(occupied, options), /Automatic migration requires manual bootstrap;/);
+    await inspect(occupied, async db => {
+      assert.equal((await db.query("SELECT to_regclass('schema_migrations') AS t")).rows[0].t, null);
+      assert.equal((await db.query("SELECT to_regclass('retained') AS t")).rows[0].t, 'retained');
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('the advisory lock remains held through reader secret lookup and password synchronization', { timeout: 10_000 }, async () => {
+  const database = await postgres.database();
+  await run(database);
+  let secretStarted, releaseSecret;
+  const started = new Promise(resolve => { secretStarted = resolve; });
+  const release = new Promise(resolve => { releaseSecret = resolve; });
+  const first = run(database, {
+    env: { ...env, SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
+    readSecret: async () => {
+      secretStarted();
+      await release;
+      return { username: 'awsops_sql_reader', password: 'local-lock-test' };
+    },
+  });
+  first.catch(() => {});
+  try {
+    await Promise.race([started, first.then(() => assert.fail('reader sync must start'))]);
+    await assert.rejects(run(database), /Concurrent migration/);
+  } finally { releaseSecret(); await first; }
+  await run(database);
+});
+
+for (const [code, timeouts, diagnosis] of [
+  ['55P03', { lock_timeout: 100, statement_timeout: 5000 }, /database lock unavailable.*blocking transactions/i],
+  ['57014', { lock_timeout: 5000, statement_timeout: 100 }, /query canceled.*statement timeout.*cancellation/i],
+]) {
+  test(`DDL contention reports ${code} without claiming a concurrent migration`, { timeout: 10_000 }, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'awsops-ddl-contention-'));
+    const database = await postgres.database();
+    try {
+      await run(database, { migrationDir: directory });
+      await inspect(database, db => db.query('CREATE TABLE ddl_target(id int)'));
+      writeFileSync(join(directory, `${testId}_blocked.sql`), 'CREATE INDEX ddl_target_idx ON ddl_target(id)');
+      await inspect(database, async blocker => {
+        await blocker.query('BEGIN; LOCK TABLE ddl_target IN ACCESS EXCLUSIVE MODE');
+        try {
+          await assert.rejects(run(database, {
+            migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' },
+          }, timeouts), error => {
+            assert.match(error.message, new RegExp(`SQLSTATE=${code}`));
+            assert.match(error.message, diagnosis);
+            assert.doesNotMatch(error.message, /concurrent migration/i);
+            return true;
+          });
+          assert.equal((await ledger(blocker)).some(row => row.version === testId), false);
+        } finally { await blocker.query('ROLLBACK'); }
+      });
+      await run(database, { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
 
 test('a stored non-null baseline checksum is checked before ULIDs, including dry-run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'awsops-baseline-drift-'));

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { selectProject } from './run-migration.mjs';
+import { selectProject, allowedMigrationEvent } from './run-migration.mjs';
 
 const REGION = 'ap-northeast-2';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -25,9 +25,13 @@ export class RuntimeBuildError extends Error {
 }
 function requireValue(ok, code) { if (!ok) throw new RuntimeBuildError(code); }
 
-export function checkRole(env) {
+export function checkRole(env, { migration = false } = {}) {
+  const eventAllowed = migration ? allowedMigrationEvent({
+    event: env.GITHUB_EVENT_NAME, fromDeployWeb: env.MIGRATION_FROM_DEPLOY_WEB,
+    workflowRef: env.GITHUB_WORKFLOW_REF,
+  }) : env.GITHUB_EVENT_NAME === 'workflow_dispatch';
   requireValue(env.GITHUB_REPOSITORY === 'aws-samples/sample-awsops' &&
-    env.GITHUB_REF === 'refs/heads/dev' && env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
+    env.GITHUB_REF === 'refs/heads/dev' && eventAllowed &&
     /^[0-9a-f]{40}$/.test(env.GITHUB_SHA || '') && env.AWS_REGION === REGION, 'invalid_dev_context');
   requireValue(/^[0-9]{12}$/.test(env.AWS_ACCOUNT_ID_DEV || ''), 'expected_account_required');
   // Same role/path and assumed-role identity contract as run-migration.mjs.
@@ -38,8 +42,8 @@ export function checkRole(env) {
   return { account: role[1], name: role[3], arn };
 }
 
-export function verifyCaller(env, caller) {
-  const role = checkRole(env);
+export function verifyCaller(env, caller, options) {
+  const role = checkRole(env, options);
   const prefix = `arn:aws:sts::${role.account}:assumed-role/${role.name}/`;
   requireValue(caller?.Account === role.account && typeof caller.Arn === 'string' &&
     caller.Arn.startsWith(prefix) && /^[A-Za-z0-9+=,.@_-]{2,64}$/.test(caller.Arn.slice(prefix.length)),
@@ -228,6 +232,8 @@ function main() {
   const mode = process.argv[2];
   if (mode === 'check-role') checkRole(process.env);
   else if (mode === 'verify-role') verifyCaller(process.env, json(readFileSync(0, 'utf8')));
+  else if (mode === 'check-migration-role') checkRole(process.env, { migration: true });
+  else if (mode === 'verify-migration-role') verifyCaller(process.env, json(readFileSync(0, 'utf8')), { migration: true });
   else if (mode === 'build') {
     requireValue(['steampipe', 'worker'].includes(process.env.RUNTIME_COMPONENT), 'invalid_component');
     requireValue(Boolean(process.env.GITHUB_OUTPUT), 'output_path_required');

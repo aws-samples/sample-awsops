@@ -17,16 +17,20 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
 | [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
+| [graph-read-contract.md](graph-read-contract.md) | Bounded graph requests, collection/read failures, projection/index migrations and local PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — graph evidence/identity boundaries, DX assessment scope, migrations and Lambda deployment prerequisites |
 | [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
-| [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
+| [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
+| [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
+| [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
+| [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
-| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
+| [runtime-foundation.md](runtime-foundation.md) | Runtime activation and strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
@@ -34,6 +38,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
@@ -51,19 +56,16 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   S3/KMS readers: they need no CI envelope key. Publisher policy requires SSE-KMS on PUT,
   separately from reads. Optional purge targets reviewed expired attempt versions.
   Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
-- The web image provenance helper is not yet wired. Its future caller must add the documented
-  receipt steps and current-dev migration outputs; use the composed `promote` entrypoint,
+- Deploy Web wires producer-receipt steps and current-dev migration outputs, with readonly
+  image proof before DDL and composed `promote` preserving the validated project/digest;
   never manually mint migration evidence or silently fall back to mutable-tag authority.
   Require a nonempty preflight digest on all paths and fresh digest/source-tag agreement.
   Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
   ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
   config-download permission; publication uses the deployer role and explicit ECR media.
-  Success stdout remains `{digest, image_sha, rollback}` with no tag history. Recovery
-  requires independently retained source/digest evidence; receipt cleanup targets only an
-  owned run/attempt directory. Migration/preflight assertions use verified job outputs,
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no tag history. Recovery requires independently retained source/digest evidence. Legacy images without receipts use the separately approved private-host recovery runbook with source/digest evidence and schema approval, never fabricated receipts or a workflow bypass. Automatic receipt cleanup removes only the fixed GitHub run/attempt path; manual leftover cleanup checks ownership. Migration/preflight assertions use verified job outputs,
   never dispatch inputs. Fresh-only consumers do not need `actions: read`.
-  `IMAGE_PROJECT` likewise needs branch-selected authenticated Terraform/verified job output,
-  cross-checked against ECR/cluster/service metadata. Broad current CI-account IAM does not
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Broad current CI-account IAM does not
   supply stack authority; each operation selects one verified repo and any new grant uses
   its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
   not rebuilding a validated candidate; document completed-producer and superseded-push cases.
@@ -71,7 +73,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
-- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). Both workflows consume these policies. Dev verification requires activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the controller must enforce catalog or each verified catalog member's RequestResponse payload, banning empty/all/unregistered/Event calls. The dated owner requirement is all current types with post-marker succeeded evidence, known counts and zero unknowns, not rolling prior success. At most four calls are concurrent and in flight; at least one catalog request plus at least one per type, including any retries, determines total volume. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -80,7 +83,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
@@ -137,7 +140,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is a default-off operator capability.
-  Dev Deploy AgentCore requires the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it.
+  Dev Deploy AgentCore and current-source dev Deploy Web require the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it. The guarded Deploy Web caller also permits dev pushes; standalone and AgentCore use remain dispatch-only. Explicit older-image rollback skips this workflow.
   `deploy-migrations.yml` builds an ARM64 image and `run-migration.mjs` launches/verifies one
   private task. The task role reads exact Aurora secrets; DDL uses DB credentials. This is
   operator CI, not product autonomy or an ADR-005 AWS-resource-mutation exception.
@@ -169,7 +172,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   renders fenced JSON, and must not block encrypted handoff/private publication.
   Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
-  CLI; health is liveness only. DB/auth checks precede service A publication.
+  CLI; standalone health proves liveness only. Every dev Deploy Web release requires
+  the full authenticated runtime gate before service A publication. Existing-web
+  prepare does not create first web or bypass readiness; follow runtime adoption first.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
   Terraform 1.15.7, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
   `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in
@@ -191,24 +196,40 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Disabled AgentCore blanks only the web task's `SSM_RUNTIME_ARN_PARAM`; invocation and status
   lookup honor it. The separate alias and incident bridge paths remain literal. Status lookup
   does not validate the full ARN and can still perform other control-plane reads.
-  Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
-  remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
+  The controller does not create the group/membership; use reviewed imports for existing resources.
+  Capped samples cannot prove absence. Every current catalog type requires clean post-marker
+  success with known counts and zero unknown attributes. Missing, partial, failed, stale or
+  unknown evidence blocks release; a prior rolling success is insufficient.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
-  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
-  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
-  Web remains DB-only until the release controller supplies this file. The billed readiness
-  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+  requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,
+  complete post-marker collection evidence, web-role SSM/AgentCore/model proof and Lambda/Fargate completion.
+  Every dev Deploy Web release requires the controller-generated verify file after exact ECS/image
+  verification, with `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`; `verify_database` cannot bypass it.
+  The billed route requires admin or deployment-verifiers, one in-flight call and a per-process
+  60-second cooldown; replicas have independent cooldowns.
 
-- Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
+- Reused-image receipt/ECR validation precedes migrations. Automatic DDL is expand-only;
+  contract cutovers require a merge freeze, drained queues and explicit manual coordination.
+  The active `protect-main-dev` ruleset requires GitHub Actions AI Code Review and
+  Merge Verify success before main/dev merge; no extra environment reviewer is added.
+  Current-source releases require matching private migrations; explicit rollback runs no DDL.
+  Both require the full runtime gate, including login/DB. Every dev release prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
+- Terraform plan/private host preparation, Deploy Web and manual collect-runtime credential steps
+  bind `TF_VAR_DEMO_PASSWORD` as step-scoped `TF_VAR_demo_password`; only private file paths cross steps.
 - Credentials and HTTP scratch share one 0700 run directory with 0600 files. Normal
   finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
   contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
+
+Collector verification binds the applied `sync_code_sha256` to the configured archive
+`source_code_hash` and checks live `CodeSha256`; stale provider observations cannot authorize code.
+
+The release controller synchronously collects every code-checked catalog type through at most four collectors. It requires successful owned responses and strict post-marker ledger evidence for all types, plus a fresh known CloudFront record, nonce-bound web SSM/AgentCore/model proof and both terminal worker proofs. Full policy reports collection attempts and categorized gaps; no degraded acceptance is available. The marker-plus-thirty-minute proof deadline includes required HTTP/model/worker allowances. Collection stops early enough to reserve them; the single confirmed-contention retry revalidates all types within the original poll window. See `runtime-foundation.md` for exact budgets, digest binding, cleanup and adoption. No scheduler or IAM repair is performed.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
@@ -228,7 +249,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 4. Always include the related file paths.
 
 The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
-(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+(nominal 20-minute rather than 10-minute collection wait caps, clipped by remaining
+absolute/proof budgets). The controller does not promise that whole wait. Rechecks share the first window; all
 runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
 Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
 collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
@@ -237,3 +259,49 @@ collection windows are caps and late completion can fail admission. Retry admiss
 cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
 Keep the probe contract before Related/ADR references. From the repository root run
 `node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
+
+Both dev workflows call the strict controller. Preserve the active scheduler and the
+distinction between operational degraded data and ineligible release evidence.
+Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
+admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
+57.461-second collection sample and its limits; it is not full live readiness.
+The catalog must include the pinned baseline (currently 43 names, source-AST checked);
+valid growth is allowed up to 128 types and every returned type needs strict proof.
+Both modes require the enabled host only. Collect's authenticated DB/host preflight
+rejects incompatible registries before type calls with `host_only_registry_required`.
+Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.
+The first chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`.
+`collection_attempts.counts` uses six status buckets that partition `expected`.
+A selected type whose first call is refused by the 450-second floor is `deadline` with zero attempts;
+never-selected types are `not_started` with zero attempts. Do not classify by attempts alone
+or apply this partition rule to overlapping `inventory_quality` gaps.
+Preserve exact diagnostics: outer `Runtime release: <reason>`; passed-through `SmokeError`
+messages retain `Runtime smoke:` / `Authenticated smoke:` prefixes. Direct `RuntimeSmokeError`
+config failures can become controller fallbacks. RPC and ledger suffixes are not
+interchangeable; the operator table enumerates controller reasons and describes helper families.
+Partial/unknown outcomes are expected hard stops even under limiter/hydrate pressure.
+Use bounded capacity/reachability/permission diagnosis before an authorized fresh rerun,
+never automatic permission widening, degraded acceptance or scheduler suppression.
+`remaining_prerequisites: "not_assessed"` leaves separate workflow/plan/promotion gates;
+keep the fixed-code table and calibrated `readRuntimeSmokeConfig` parameter documented.
+Collect's closing service/list-tasks/describe-tasks reads must match the initial opaque
+deployment ID, immutable task-definition ARN, count and ECR digest set before success;
+never resolve the tag again. A changed ID fails even with the same task definition.
+Equal snapshots are not continuous identity/history proof or an atomic lock; prepare is unchanged.
+The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Auth proof ends 50 seconds before the original proof deadline for three closing reads
+at 15 seconds each plus five seconds overhead, all inside that original deadline.
+Collection has at most 720 seconds; the 450-second floor requires admission by 270
+seconds minus clock preparation/earlier bounds. An extra 35-second read needs 15 seconds
+saved. Full retry overhead is at least 215 seconds, needing 195 saved: a 35-second
+confirmation precedes the helper's remaining 180-second admission allowance, with the
+original worker allowances reused rather than counted twice.
+Additional reads/waits/overhead require more time; no extras are guaranteed.
+CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
+Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
+
+## Graph read contract
+
+Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.

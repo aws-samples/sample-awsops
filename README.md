@@ -146,10 +146,10 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | Flag | Gates |
 |------|-------|
 | `agentcore_enabled` | 21 of the AgentCore Lambda slices |
-| `ci_readiness_enabled` | Default-off bounded billed deployment probe. Dedicated `CI_READINESS_ENABLED_DEV=true/false` overrides the dev value; unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. Public CI permits enabled readiness only on dev. Apply requires AgentCore for the verifier group and `create_demo_user=true` for managed-demo membership. No admin/IAM grant. |
+| `ci_readiness_enabled` | Default-off bounded billed deployment probe. Dedicated `CI_READINESS_ENABLED_DEV=true/false` overrides the dev value; unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. Before the mandatory dev Deploy Web gate, apply `steampipe_enabled=true`, `agentcore_enabled=true`, `workers_enabled=true` and readiness, deploy the inventory/worker images, ensure worker dispatch is enabled, and provision AgentCore as described in [runtime activation](docs/runbooks/runtime-foundation.md), which requires post-marker success with known counts and zero unknown attributes for every current catalog type plus runtime and worker proof; health-only verification cannot bypass it. Public CI permits enabled readiness only on dev. Apply requires AgentCore for the verifier group and `create_demo_user=true` for managed-demo membership. Each activated dev release invokes collection, a billed model probe and two real worker jobs. No admin/IAM grant. |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
-| `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
+| `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Private dev CI migration: manual dispatch or the guarded current-source Deploy Web path; no service or scheduler. Disabling deletes the log group/history. |
 | `steampipe_enabled` | the Steampipe inventory-sync data layer |
 | `inventory_host_only` | Default-off collector scope: require exactly one enabled host and omit collector AssumeRole. Agent MCP grants stay unchanged; dev requires profile-bound host verification. See [runtime activation](docs/runbooks/runtime-foundation.md) and ADR-011 onboarding. |
 | `finops_baseline_enabled` | the FinOps baseline-recommendations engine (ADR-020): a daily Fargate rule batch (unattached EBS volumes; EC2/RDS rightsizing via Compute Optimizer) writing to `finops_findings`, read-only, rendered on `/cost`. Requires `workers_enabled` only at the Terraform level — but the EBS rule additionally needs a fresh `steampipe_enabled=true` inventory sync at runtime; without it, that rule honestly reports `partial` (EC2/RDS rightsizing still work) |
@@ -199,8 +199,10 @@ their offline variable fixture needs no providers. Terraform mock tests require 
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
 only its final fmt/validate diagnostics are informational.
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Deploy Web uses the controller and forces automatic SQL admission for web-driven migrations; see `docs/runbooks/release-safety-primitives.md`.
 The offline [web image provenance helper](docs/runbooks/web-image-provenance.md) tests also require **jq**, Linux `/proc`, and curl on `/usr/local/bin:/usr/bin:/bin`.
-That helper has no workflow caller yet; its guide defines the future receipt, promotion and recovery contract.
+Deploy Web proves the image before private migrations, calls guarded promotion for that digest, then requires exact ECS/image verification and the full dev runtime gate including login/DB; the guide defines receipts and recovery. The [release safety primitives](docs/runbooks/release-safety-primitives.md) describe the controller and migration policy.
+See [web release](docs/runbooks/web-release.md) for standalone bootstrap or unsupported SQL → successful migration/reader sync → fresh web dispatch, and [legacy image recovery](docs/runbooks/legacy-web-image-recovery.md) for images without receipts.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # required Python, web and deployment tests
@@ -368,10 +370,10 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | Flag | 게이트 대상 |
 |------|-------------|
 | `agentcore_enabled` | AgentCore Lambda 슬라이스 21개 |
-| `ci_readiness_enabled` | 기본 비활성 유료 배포 검증. 전용 `CI_READINESS_ENABLED_DEV=true/false`가 dev 값을 덮어쓰며 미설정은 명시적 tfvars·기본 false를 유지한다. 런타임 프로필만으로 활성화하지 않고 공개 CI에서는 dev만 허용한다. 적용 시 verifier 그룹에는 AgentCore가, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 관리자·IAM 권한은 부여하지 않는다. |
+| `ci_readiness_enabled` | 기본 비활성 유료 배포 검증. 전용 `CI_READINESS_ENABLED_DEV=true/false`가 dev 값을 덮어쓰며 미설정은 명시적 tfvars·기본 false를 유지한다. 런타임 프로필만으로 활성화하지 않는다. 필수 dev Deploy Web 검증 전에 `steampipe_enabled=true`, `agentcore_enabled=true`, `workers_enabled=true`와 readiness를 적용하고 수집·워커 이미지를 배포하며 dispatch 활성 상태를 확인한 뒤 AgentCore를 프로비저닝해야 한다. [런타임 활성화 절차](docs/runbooks/runtime-foundation.md)를 따른다. 모든 현재 카탈로그 타입의 기준 시각 이후 성공·확인된 개수·미확인 속성 0개와 런타임·워커 증거를 요구하며 health 검사만으로 우회하지 않는다. 공개 CI에서는 dev만 허용한다. 적용 시 verifier 그룹에는 AgentCore가, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 활성화된 각 dev 배포는 수집·유료 모델 검증·실제 워커 작업 두 개를 실행한다. 관리자·IAM 권한은 부여하지 않는다. |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
-| `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
+| `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev 수동 실행 또는 현재 소스 Deploy Web의 보호된 migration 경로에서 사용하며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
 | `steampipe_enabled` | Steampipe 인벤토리 sync 데이터 계층 |
 | `inventory_host_only` | 기본 비활성: 활성 호스트 하나만 허용하고 수집기 AssumeRole을 제외합니다. Agent MCP 권한은 유지하며 dev 활성화에는 프로필 기반 호스트 검증이 필요합니다. [런타임 절차](docs/runbooks/runtime-foundation.md)와 ADR-011 참고. |
 | `finops_baseline_enabled` | FinOps 기본 권장 엔진(ADR-020): 일별 Fargate 룰 배치(미사용 EBS 볼륨; Compute Optimizer 기반 EC2/RDS rightsizing)가 `finops_findings`에 적재, read-only, `/cost`에 렌더. terraform 레벨로는 `workers_enabled`만 선행 — 단 EBS 룰은 런타임에 `steampipe_enabled=true`의 최신 동기화가 있어야 동작하고, 없으면 그 룰만 정직하게 `partial`로 표면화(EC2/RDS는 무관하게 동작) |
@@ -421,8 +423,10 @@ AWS 자격증명을 사용하지 않습니다.
 마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
+필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다. 필수 `test_ci_web_workflow.py` 테스트에는 PyYAML과 Bash도 필요합니다. Deploy Web은 컨트롤러를 사용하고 웹 배포가 호출하는 마이그레이션에 자동 SQL 검사를 강제합니다. 자세한 내용은 `docs/runbooks/release-safety-primitives.md`를 참고하세요.
 오프라인 [웹 이미지 출처 검증 도우미](docs/runbooks/web-image-provenance.md) 테스트에는 **jq**, Linux `/proc`, `/usr/local/bin:/usr/bin:/bin`의 curl도 필요합니다.
-이 도우미를 호출하는 워크플로는 아직 없으며, 가이드에서 향후 영수증·승격·복구 계약을 정의합니다.
+Deploy Web은 사설 마이그레이션 전에 이미지를 검증하고 해당 다이제스트를 보호된 진입점으로 승격한 뒤, 정확한 ECS·이미지와 로그인·DB를 포함한 전체 dev 런타임 검증을 필수로 수행하며 가이드에서 영수증·복구 계약을 정의합니다. [배포 안전 도구](docs/runbooks/release-safety-primitives.md)에서 컨트롤러와 마이그레이션 정책을 설명합니다.
+[웹 배포](docs/runbooks/web-release.md)에서 초기화·자동 검사 미지원 SQL의 수동 migration/reader 동기화 성공 후 새 웹 배포를 실행하는 절차를, [레거시 이미지 복구](docs/runbooks/legacy-web-image-recovery.md)에서 영수증 없는 이미지 복구를 확인하세요.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # 필수 Python·웹·배포 테스트

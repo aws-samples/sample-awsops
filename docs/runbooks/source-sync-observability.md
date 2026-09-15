@@ -29,11 +29,15 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
   explicit graph evidence counts, and projected SQL-reader views.
+- `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
+  terminal timestamps, stamped by the existing ledger's status transitions.
 - `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`: queue claimed account/region
   derived only from destination ARN qualifiers and constant `telemetry_claim` provenance in the
   SQL-reader projection, including retained snapshots; idempotent view-only SELECT grant.
-- `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
-  terminal timestamps, stamped by the existing ledger's status transitions.
+- `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`: collection-state projection for flow/infra, bounded source clocks/status/scope, saved sources, loss counters and failure reasons; existing grants remain unchanged.
+- `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`: bounded sourceAttempted/not_attempted/count_not_confirmed metadata, unchanged from the prepared publisher contract.
+- `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`: class-ordered indexes for bounded graph reads; no writer or schedule activation.
+- `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`: matching HTTP/SQL vocabulary, nullable source clocks and computed metadataTruncated; existing grants unchanged.
 
 The samples web deployment workflow does not run migrations. Run the existing `make migrate`
 from the authorized VPC/operator context to activate these metadata contracts. Existing workers
@@ -81,13 +85,13 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
 
 
 The web task and inventory-reader Lambda both receive `graph_rebuild_interval_mins` through
-`GRAPH_REBUILD_INTERVAL_MINS`. Their freshness threshold is twice that cadence with a 15-minute
+`GRAPH_REBUILD_INTERVAL_MINS`. Their graph-publication freshness threshold is twice that cadence with a 15-minute
 minimum; zero retains that minimum. For example, a successful 20-minute-old snapshot is current
 at a 30-minute cadence in both readers. Failed/partial/retained evidence keeps its existing gates.
 Apply the Lambda environment binding through Terraform along with the reader code deployment;
 updating the code alone does not configure the cadence.
 
-웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 신선도 기준은
+웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 그래프 게시 시점의 신선도 기준은
 수집 주기의 두 배이며 최소 15분이고, 0에서도 이 최소값을 유지한다. 30분 주기에서 정상적으로
 수집된 20분 전 스냅샷은 양쪽에서 최신으로 판정한다. 실패·부분·보존 데이터의 기존 판정은
 유지하며, 코드 배포와 함께 Terraform의 Lambda 환경설정도 반영해야 한다.
@@ -238,6 +242,9 @@ see [the agent contract](agent-sql-reader.md#current-topology-evidence-contract)
 npx vitest run lib/inventory.test.ts app/topology/page.test.tsx app/topology/page-ownership.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
 ```
 
+These fixtures exercise real page/builder and graph-state-reader boundaries with local
+transport/database doubles.
+
 From the repository root, with locked web/scripts dependencies and local Docker:
 
 ```bash
@@ -249,3 +256,11 @@ empty/ledger results, worst-first ordering, concurrent-writer consistency and po
 These checks do not establish deployed AWS, Runtime or migration state. Keep the existing
 separately authorized rollout procedure above (ADR-005/ADR-007); source integration is
 not activation.
+
+### Graph read rollout and source age
+
+Apply the named collection projection and read-index migrations through the existing authorized `make migrate` operator flow before relying on the widened SQL-reader view and indexed read plan. The reader remains compatible with missing state as unknown; it does not activate the companion flow/infra publisher. Source integration and automatic web CD do not prove these migrations ran.
+
+Separately, `inventory_stale_after_minutes` supplies `INVENTORY_STALE_AFTER_MINUTES` to the web task and inventory-reader Lambda (default 30, 1–1440). Applying the reviewed Terraform environment change, deploying the web image, and redeploying the updated `inventory_read_mcp` Lambda code through the operator-owned Terraform release flow are separate steps. The Lambda code update is required for its future-clock and metadata-omission staleness checks; web or AgentCore Runtime image deployment does not deliver it. The shared number is an age threshold, not identical status algorithms: the graph also requires a succeeded producer and ok/empty published-source evidence, valid source clocks and a fresh graph publication. Unknown attributes produce partial source evidence, not fresh completeness. Future clocks remain unknown/stale conservatively.
+
+See [graph read contract](graph-read-contract.md) for request budgets, read-vs-collection disclosure, legacy display clocks and the disposable PostgreSQL tests. No repeated retention count permits an unproven empty publication or sweep.

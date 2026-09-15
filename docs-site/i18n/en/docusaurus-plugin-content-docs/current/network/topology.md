@@ -38,6 +38,17 @@ Two display modes are available:
 - Zoom/pan for navigation
 - MiniMap for overall structure overview
 
+### Collection Evidence and Read Status
+
+The infrastructure relationship graph and an individual resource's relationship graph show collection evidence separately from the displayed nodes.
+
+- Source capture, last successful collection, and saved-graph clocks describe different events. Retained results, incomplete coverage and truncation remain visible; they do not establish the current live AWS state.
+- No collection state recorded is neutral information. An empty drawing alone does not prove that resources are absent; check the collection status.
+- **Refresh** reads the saved graph again. It does not start collection or rebuild the graph.
+- Graph read unavailable describes a lookup failure, separately from the collection outcome. Retry with Refresh when available. If the session expires, follow **Sign in**. Access denial and request rejection are shown separately.
+- Response or traversal limits disclose truncation even when no nodes are shown. They cannot establish that resources or connections outside the displayed scope are absent.
+
+
 ### Kubernetes View
 
 Displays EKS workloads in a 4-column resource map:
