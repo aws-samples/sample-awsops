@@ -26,7 +26,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
 2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and the enabled host registry. Empty target configuration permits no enabled foreign rows; [explicit targets](#explicit-runtime-targets) permit only approved subsets during onboarding.
-3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
+3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan; enforce the [Steampipe image/health-command prerequisites](#explicit-runtime-targets).
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
 5. Inspect the same branch/SHA plan privately in S3 and supply its `reviewed_plan_sha256` to apply; CI verifies pinned assets and HMAC. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
 
@@ -66,9 +66,11 @@ the host keeps ambient ECS task credentials. The service reads `AWS_CONFIG_FILE`
 `/home/steampipe/.awsops-runtime/current/config`; the pg8000 health probe does not use it.
 `AWS_SPC_PATH` remains a regular file, defaulting to
 `/home/steampipe/.steampipe/config/aws.spc`. SPC and profile files are 0600, with private
-profile generations in 0700 directories; no access keys or session tokens are stored.
-The publisher stages and replaces the files while the service is stopped, and launches
-only after both publications succeed. Each replacement is atomic; the stopped-service
+profile generations in 0700 directories. Each generation retains an SPC scope copy and
+role/ExternalId profile metadata, but no access keys or session tokens.
+The publisher stages both files while the service is stopped, switches the profile
+generation pointer, then replaces the regular SPC file. It launches only after both
+publications succeed. Each replacement is atomic; the stopped-service
 boundary protects the pair, not an atomic transaction for arbitrary concurrent readers.
 Profile values reject INI injection. See the [pinned contract and checks](steampipe-quota-and-staleness.md#pinned-aws-profile-contract).
 The running collector may contain the host plus a subset of approved targets during
@@ -90,9 +92,10 @@ The supervisor checks shutdown at most one second between child waits, including
 when teardown fails and the child remains alive. Health uses a bounded loopback
 pg8000 `SELECT 1`, never `steampipe query`, whose auto-start bypasses the restart lock.
 The launch log is not proof that the plugin loaded its schemas or that collection works.
-No exact-member requirement is imposed on initial
-rendering. Empty non-profile
-configuration retains the legacy collector scope and AssumeRole behavior.
+No exact-member requirement is imposed on initial rendering. With no explicit targets
+and host-only mode disabled, legacy collector account selection and existing AssumeRole
+grants retain their behavior. Member connections still use supported shared profiles;
+the credential mechanism does not restore unsupported inline SPC assume-role attributes.
 
 Roll out code while host-only. After the runtime changes merge to `dev`, rebuild the
 Steampipe **ARM64** image through `build-runtime-images.yml` with `component=steampipe`:
@@ -103,7 +106,8 @@ gh workflow run build-runtime-images.yml -R aws-samples/sample-awsops --ref dev 
 
 Verify the build run's source SHA matches the reviewed merged runtime SHA, then update
 the protected `STEAMPIPE_IMAGE_DIGEST_DEV` variable to that run's verified digest.
-The image must contain the updated generator and `healthcheck.py`; the saved apply
+The image must contain the scope guard, supported shared-profile publisher and
+`/app/healthcheck.py`; the saved apply
 must also switch the task definition to `python3 /app/healthcheck.py`. Rebuild the
 inventory image before applying this health command to any enabled stack. Retain the
 existing approved `WORKER_IMAGE_DIGEST_DEV`; no worker rebuild is needed when worker
@@ -223,6 +227,12 @@ command **in the same reviewed saved plan** as the image digest. Never roll back
 the digest while retaining `CMD python3 /app/healthcheck.py`, or disable health checks
 to compensate. Preserve ALLDNS/private Cloud Map restrictions and all required
 plan, apply and runtime gates; this compatibility rule grants no bypass.
+
+An image predating the supported shared-profile publisher also loses that member
+credential-resolution capability. Review compatible collector configuration and scan
+scope as part of the rollback, including registry and target-proof requirements.
+A passing health check does not restore member collection. Do not silently remove
+targets or relax the required runtime gates to accept an incompatible image.
 
 <a id="promotion-to-main--main-승격"></a>
 

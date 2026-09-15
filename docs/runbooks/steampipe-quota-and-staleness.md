@@ -195,12 +195,13 @@ The service uses `AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
 for the shared-profile generation. The loopback pg8000 health probe does not read this
 file. `AWS_SPC_PATH` defaults to `/home/steampipe/.steampipe/config/aws.spc` and is a
 regular file, not a symlinked SPC entry. SPC and profile files are 0600; profile generations
-are kept in owner-controlled 0700 directories. Prior generations contain only private
-role/ExternalId metadata, not access keys or session tokens.
+are kept in owner-controlled 0700 directories. Each retained generation contains an
+SPC scope copy and role/ExternalId profile metadata, not access keys or session tokens.
+These private generations remain for the container's lifetime.
 
 Boot publishes both files before first launch. Reload publication holds the existing
-restart lock with the service stopped: stage both files, publish the regular SPC and
-profile generation, then launch only after both publications succeed. Each replacement
+restart lock with the service stopped: stage both files, switch the profile-generation
+pointer, then replace the regular SPC file. Launch only after both publications succeed. Each replacement
 is atomic; the stopped-service boundary protects the pair, not an atomic transaction
 for arbitrary concurrent readers of the two paths. A failed
 write/publication blocks launch and triggers fatal shutdown. Identity and ExternalId
@@ -274,8 +275,10 @@ checks the health command and unchanged timing. No live collection is invoked.
 4. ECS Steampipe service가 stable이 될 때까지 기다린다.
 5. bounded async path로 sync 하나를 trigger하고 freshness/lifecycle log를 확인한다.
 
-1. Build/push the new ARM64 Steampipe image to the existing ECR repository without rolling the
-   ECS service.
+1. Build/push the reviewed ARM64 Steampipe image containing the scope guard, supported
+   shared-profile publisher and `/app/healthcheck.py` to the existing ECR repository
+   without rolling the ECS service. Pair its digest with `CMD python3 /app/healthcheck.py`
+   in the reviewed saved plan.
 2. Run `make migrate` against the current foundation outputs and confirm the `run_token` migration
    is applied.
 3. Only then create/review and controller-apply the saved Terraform plan that updates the Lambda
@@ -331,7 +334,9 @@ aws lambda invoke \
 3. After migration, use a repository-only saved target plan to create only the Steampipe ECR
    repository. This bootstrap apply must not create the Lambda, event rule, task definition, or
    service.
-4. Build/push the ARM64 Steampipe image to that repository.
+4. Build/push the reviewed ARM64 Steampipe image containing the scope guard, supported
+   shared-profile publisher and `/app/healthcheck.py` to that repository. Pair its
+   digest with `CMD python3 /app/healthcheck.py` in the reviewed saved plan.
 5. Set `steampipe_enabled=true`, create/review a fresh full saved plan, and have the controller
    apply it.
 6. Wait for service stability, trigger one sync, and verify freshness/logs.
@@ -521,6 +526,11 @@ reviewed saved plan**. An older image without that script cannot retain
 `CMD python3 /app/healthcheck.py`; do not apply an image-only rollback or disable health
 checks. Follow [runtime rollback](runtime-foundation.md#rollback--롤백), retaining
 ALLDNS and every existing plan/apply/runtime gate.
+
+A pre-profile-publisher image also loses supported member credential resolution.
+Review the rollback's compatible collector configuration and scan scope, including
+registered targets and strict member proof. Health success alone does not preserve
+member collection; do not silently remove targets or weaken gates to accept that image.
 
 1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. [런타임 롤백](runtime-foundation.md#rollback--롤백)을 따르며 전체 종료는 별도 검토 절차가 필요하다.
 2. controller-approved `apply tfplan`으로 적용한다.
