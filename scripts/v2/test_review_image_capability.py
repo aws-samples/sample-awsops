@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
@@ -170,6 +171,28 @@ class CapabilityTests(unittest.TestCase):
             events[2]["message"]["content"][0]["is_error"] = value
             self.module.validate_trace(encode(events), image, "012345")
 
+    def test_permission_denials_have_a_typed_list_contract(self):
+        image = self.parent / "image.png"
+        for value in (None, False, 0, "", {}, "Read", [None], ["Read"], [{}],
+                      [{"tool_name": 7}], [{"tool_name": " "}]):
+            with self.subTest(value=value):
+                events = trace(image, "012345")
+                events[-1]["permission_denials"] = value
+                with self.assertRaises(self.module.ProbeError) as caught:
+                    self.module.validate_trace(encode(events), image, "012345")
+                self.assertEqual(caught.exception.code, "invalid_trace")
+        for omitted in (False, True):
+            events = trace(image, "012345")
+            if omitted:
+                del events[-1]["permission_denials"]
+            self.module.validate_trace(encode(events), image, "012345")
+
+    def test_runbook_documents_every_fixed_outcome_code(self):
+        text = (ROOT / "docs/runbooks/review-image-capability.md").read_text()
+        self.assertIn("## Outcome codes\n", text)
+        section = text.split("## Outcome codes\n", 1)[1].split("\n## ", 1)[0]
+        self.assertEqual(set(re.findall(r"^\| `([a-z_]+)` \|", section, re.M)), self.module.CODES)
+
     def test_child_env_requires_fresh_credentials_and_drops_command_channels(self):
         root = self.prepare()
         with self.assertRaises(self.module.ProbeError):
@@ -202,6 +225,7 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(args[args.index("--tools") + 1], "Read,Grep,Glob")
         self.assertEqual(args[args.index("--allowedTools") + 1], "Read,Grep,Glob")
         self.assertEqual(args[args.index("--output-format") + 1], "stream-json")
+        self.assertEqual(args[args.index("--max-turns") + 1], "3")
         self.assertNotIn(state["answer"], " ".join(args))
         self.assertNotIn(state["answer"], json.dumps(env))
         self.assertEqual(proof["status"], "passed")
@@ -243,6 +267,9 @@ class CapabilityTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, code)
             self.assertEqual(raised.exception.exit_code, 1 if code == "cli_failed" else None)
             self.assertNotIn("PRIVATE", str(raised.exception))
+            self.assertNotIn("PRIVATE", repr(raised.exception))
+            if code == "cli_failed":
+                self.assertEqual(raised.exception.private_stdout, b"PRIVATE\n")
 
     def test_real_helper_process_with_fake_cli_publishes_only_safe_proof_and_cleans(self):
         binaries = self.parent / "bin"
@@ -264,7 +291,10 @@ sys.exit(int((base / 'exit').read_text()))
 """)
         fake.chmod(0o700)
         for index, mode in enumerate(("valid", "other_tool", "cli_failure", "malformed",
-                                      "answer_mismatch", "repeat"), 1):
+                                      "answer_mismatch", "repeat", "preamble",
+                                      "turn_budget_0", "turn_budget_1",
+                                      "permission_denied_0", "permission_denied_1",
+                                      "denial_null_0", "denial_null_1"), 1):
             with self.subTest(mode=mode):
                 root = self.prepare()
                 state = json.loads((root / "control.json").read_text())
@@ -274,8 +304,23 @@ sys.exit(int((base / 'exit').read_text()))
                     events[1]["message"]["content"][0]["name"] = "Bash"
                 if mode == "answer_mismatch":
                     events[-1]["result"] = str((int(state["answer"][0]) + 1) % 10) + state["answer"][1:]
+                if mode.startswith("turn_budget"):
+                    events = events[:3] + [{"type": "result", "subtype": "error_max_turns",
+                                            "is_error": True, "permission_denials": [],
+                                            "errors": ["PRIVATE_RESPONSE_MARKER"]}]
+                if mode.startswith("permission_denied"):
+                    events[2]["message"]["content"][0].update(is_error=True, content="PRIVATE_RESPONSE_MARKER")
+                    events[-1].update(subtype="error_during_execution", is_error=True,
+                                      result="PRIVATE_RESPONSE_MARKER",
+                                      permission_denials=[{"tool_name": "Grep", "tool_input": {"path": "/PRIVATE_PATH"}}])
+                if mode.startswith("denial_null"):
+                    events[-1]["permission_denials"] = None
+                if mode == "preamble" or mode.startswith("turn_budget"):
+                    events.insert(1, {"type": "assistant", "message": {"content": [
+                        {"type": "text", "text": "I will inspect the image."}]}})
+                cli_exit = 1 if mode == "cli_failure" or mode.endswith("_1") else 0
                 (binaries / "response").write_bytes(b"PRIVATE_RESPONSE_MARKER" if mode == "malformed" else encode(events))
-                (binaries / "exit").write_text("1" if mode == "cli_failure" else "0")
+                (binaries / "exit").write_text(str(cli_exit))
                 env = {**os.environ, **self.env, "PATH": f"{binaries}:{os.environ['PATH']}",
                        "AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake",
                        "AWS_SESSION_TOKEN": "fake", "GITHUB_TOKEN": "PRIVATE_TOKEN"}
@@ -283,13 +328,16 @@ sys.exit(int((base / 'exit').read_text()))
                 if mode == "repeat":
                     self.assertEqual(run.returncode, 0)
                     run = subprocess.run(["python3", str(HELPER), "run"], env=env, capture_output=True, text=True)
+                if cli_exit:
+                    self.assertEqual((root / "trace.jsonl").read_bytes(), encode(events))
+                    self.assertEqual((root / "trace.jsonl").stat().st_mode & 0o777, 0o600)
                 finish = subprocess.run(["python3", str(HELPER), "finish"], env=env, capture_output=True, text=True)
-                expected = 0 if mode == "valid" else 1
+                expected = 0 if mode in ("valid", "preamble") else 1
                 self.assertEqual((run.returncode, finish.returncode), (expected, expected))
                 proof = json.loads(finish.stdout)
-                self.assertEqual(proof["status"], "passed" if mode == "valid" else "failed")
-                tools = {"valid": ["Read"], "other_tool": ["other"], "answer_mismatch": ["Read"]}
-                self.assertEqual(proof["invoked_tools"], tools.get(mode))
+                self.assertEqual(proof["status"], "passed" if expected == 0 else "failed")
+                self.assertEqual(proof["invoked_tools"], None if mode in ("malformed", "repeat")
+                                 else ["other"] if mode == "other_tool" else ["Read"])
                 self.assertEqual(proof["cleanup_status"], "removed")
                 self.assertFalse(proof["residue_possible"])
                 if mode == "answer_mismatch":
@@ -298,12 +346,24 @@ sys.exit(int((base / 'exit').read_text()))
                     self.assertFalse(proof["answer_matches"])
                     self.assertEqual(proof["cli_exit_code"], 0)
                 if mode == "cli_failure":
+                    self.assertEqual(proof["code"], "cli_failed")
                     self.assertEqual(proof["cli_exit_code"], 1)
-                    self.assertIsNone(proof["read_exact_file"])
+                    self.assertTrue(proof["read_exact_file"] and proof["answer_matches"])
+                if mode.startswith(("turn_budget", "permission_denied", "denial_null")):
+                    expected_code = ("turn_budget" if mode.startswith("turn_budget") else
+                                     "permission_denied" if mode.startswith("permission_denied") else
+                                     "cli_failed" if cli_exit else "invalid_trace")
+                    self.assertEqual(proof["code"], expected_code)
+                    self.assertEqual(proof["cli_exit_code"], cli_exit)
+                    self.assertIsNone(proof["answer_matches"])
+                    if mode.startswith("permission_denied"):
+                        self.assertIsNone(proof["read_exact_file"])
+                    else:
+                        self.assertTrue(proof["read_exact_file"])
                 if mode == "repeat":
                     self.assertEqual(proof["code"], "reused_root")
                 public = run.stdout + run.stderr + finish.stdout + finish.stderr
-                for private in ("PRIVATE_RESPONSE_MARKER", "PRIVATE_TOKEN", state["answer"], str(root)):
+                for private in ("PRIVATE_RESPONSE_MARKER", "PRIVATE_TOKEN", "PRIVATE_PATH", state["answer"], str(root)):
                     self.assertNotIn(private, public)
                 self.assertFalse(root.exists())
                 self.assertEqual((binaries / "calls").read_text().splitlines(), ["called"] * index)

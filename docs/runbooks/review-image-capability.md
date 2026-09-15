@@ -33,11 +33,13 @@ model. It keeps the review panel's `Read,Grep,Glob`, `--strict-mcp-config` and e
 persistence keep diagnostic state private. The model gets no GitHub command channels
 or tokens. Only the fresh AWS session is forwarded for authentication.
 
-The job has a five-minute backstop; the model call has a 110-second deadline, two-turn
+The job has a five-minute backstop; the model call has a 110-second deadline, three-turn
 limit and 1 MiB combined stdout/stderr bound. The parser accepts at most 128 JSON trace
 events and requires exactly one Read of the exact generated path, a successful image
 tool result, matching digits and successful final result/CLI exit. Any other invoked
 tool, including Grep/Glob, invalid trace, missing proof or wrong answer fails.
+Three turns provide room for a text preamble; they do not guarantee model completion.
+The one-call limit, wall deadline, tool list and existing grants are unchanged.
 
 Only fixed-field JSON is published: source SHA, requested model, CLI version, observed
 CLI exit code, proof observations and fixed failure/cleanup codes. Boolean observations
@@ -47,6 +49,11 @@ workspace boundaries, with `answer_matches: false`. Tool labels record the obser
 trace prefix as Read/Grep/Glob/other; `null` means no reliable tool observation, not zero
 invocations. A failed/invalid trace does not claim that this prefix covers all activity.
 No answer, path, image, raw response, credentials or provider stderr is published.
+Bounded stdout from a completed nonzero CLI exit is kept privately and parsed for
+observations and reported negative outcomes. It can never make the run pass:
+a valid-looking trace with a nonzero exit remains `cli_failed`. Malformed failed stdout
+also remains `cli_failed`; explicit validated failures can retain their specific code.
+Timeout/output-limit failures do not reinterpret a truncated trace as complete evidence.
 
 Read proof and cleanup are independent. The always-run finish step retains valid proof
 even if removal fails, reporting `cleanup_status: failed` and `residue_possible: true`.
@@ -62,19 +69,8 @@ The workflow must exist on the repository's default branch, which is **dev** for
 repository; `main` promotion is not a prerequisite. After normal review and merge into `dev`, an authorized
 operator selects **Review Image Capability Diagnostic → Run workflow → dev**. There
 are no dispatch inputs. Check the authentication step and final safe JSON separately:
-`incomplete` can mean preparation/authentication stopped before the model call or the
-root/proof is missing. `cli_failed` includes an observed numeric exit code but does not
-by itself distinguish auth, transport or file access. `invalid_trace` describes a schema
-or declaration problem, including an absent or non-string final result; it does not
-establish that Read is unsupported. Only a present, different string result is
-`answer_mismatch`. A malformed tool error flag is `read_unavailable`, never successful
-Read evidence.
-`invalid_state` rejects malformed private control data without a traceback; malformed
-or missing persisted proof returns `incomplete`.
-`reused_root` rejects repeated attempts or pre-existing proof/trace, prevents another
-model call and prevents an old passing proof from being published. Start a fresh dispatch.
-`diagnostic_unavailable` is the outer fixed failure category when normal proof handling
-cannot complete. No category exposes raw stderr or overrides required review.
+use the fixed-code table below, together with observations, CLI exit and cleanup status.
+No category exposes raw stderr or overrides required review.
 
 A passing proof applies only to that run, CLI and requested model. It does not prove
 every image/model can decode every asset and never waives latest-HEAD full review.
@@ -86,6 +82,53 @@ process groups, permissions and pipes:
 `python3 -m unittest scripts.v2.test_review_image_capability` from the root, or
 `python3 -m pytest test_review_image_capability.py` from `scripts/v2`.
 Merge Verify discovers this test file automatically. These tests make no model/AWS calls.
+
+## Outcome codes
+
+This table covers every helper `CODES` value; the offline suite enforces set equality.
+Preparation/context failures can reach the reduced outer `diagnostic_unavailable` payload
+before a normal proof is available. Treat omitted observations there as unknown.
+
+| Code | Meaning and next step |
+|---|---|
+| `read_verified` | Exact Read/image/answer and zero CLI exit were verified. Also require cleanup `removed`; this is not full-review or deployment approval. |
+| `incomplete` | Root/proof is absent or persisted proof is malformed; preparation/authentication may have stopped earlier. Check the preceding workflow step and use a fresh dispatch. |
+| `unsafe_context` | Internal repository/event/ref/SHA guard rejected the invocation. Use the exact guarded dev dispatch; the outer CLI may report `diagnostic_unavailable`. |
+| `unsafe_path` | An owned path or checkout/CLI-temp boundary could not be verified. Correct runner scratch/workspace layout without expanding Read privileges. |
+| `invalid_state` | Private control data or internal state is malformed. No traceback is published; inspect owned state privately and start fresh. Invalid persisted proof becomes `incomplete` at finish. |
+| `cli_unavailable` | CLI launch/version could not be verified. Use the normal reviewed runner update; a preparation failure may instead reach the outer fallback. |
+| `cli_failed` | Nonzero CLI exit without a more specific validated negative outcome, including a valid-looking trace that exited nonzero. Retained observations do not override the exit. Check existing authentication/runtime setup; no raw stderr is published. |
+| `timeout` | The bounded process exceeded its wall deadline. Partial output is not proof; inspect runner/provider availability before retrying within the existing limit. |
+| `output_limit` | Combined stdout/stderr exceeded the bound. No truncated completion is accepted; investigate output volume without raising limits to obtain a pass. |
+| `invalid_trace` | JSON/envelope/result schema or declaration is invalid, including absent/non-string final text or an ill-typed denial list. This is not evidence that Read is unsupported; malformed stdout accompanying nonzero exit remains `cli_failed`. |
+| `unexpected_tool` | A tool, Read input, count or message shape violated the single exact-Read contract. Do not add tools to make the probe pass. |
+| `read_unavailable` | The matching Read result failed, lacks image evidence or has a malformed tool-error flag. It does not establish a general filesystem/Read capability limit. |
+| `answer_mismatch` | A present string answer differs from the private expected digits. Verified Read/boundary observations remain intact; do not reinterpret missing/non-string answers as misreads. |
+| `cancelled` | A handled interruption stopped execution. There is no success proof; require cleanup or investigate possible owned residue before another dispatch. |
+| `auth_unavailable` | Required fresh AWS session fields were absent before the call. Check the existing credential step; do not borrow runner/job credentials or expand IAM. |
+| `reused_root` | A prior attempt/proof/trace was found. No new call or stale passing publication is allowed; use a fresh dispatch. |
+| `diagnostic_unavailable` | The outer handler could not produce a normal proof. The reduced payload leaves detailed observations/cleanup unknown; check preparation/context and possible owned residue privately. |
+| `permission_denied` | A typed nonempty CLI tool-denial list was reported. This need not concern Read or this image, and is not an AWS IAM diagnosis; retain the generic code and existing grants. |
+| `turn_budget` | The CLI reported `error_max_turns`. This is bounded incomplete execution, not a schema defect or proof of denied Read; the three-turn/110-second limits remain in force. |
+
+`permission_denials` may be absent or a list of objects with a nonempty string
+`tool_name`. Explicit null, scalars and malformed entries are invalid, never an empty
+denial list. A nonempty valid list takes priority over a simultaneous turn-budget report.
+No raw denial arguments or tool-provided paths are published.
+
+## Observation and cleanup interpretation
+
+The boundary fields (`outside_cwd`, `cwd_is_github_workspace`, `outside_cli_temp`)
+describe locally checked path relationships, not CLI permission or successful Read.
+They may be true before the model call. Null means unestablished, never false/inside.
+`read_exact_file` requires the matching image-result observation; `answer_matches`
+requires an observed string result. A prefix of observed tools is not whole-trace coverage.
+
+Read status and cleanup status are independent. `removed` confirms owned cleanup;
+`not_needed` means no root was available to remove, not that an unpublished preparation
+directory could never have existed. `failed` preserves Read evidence
+while setting possible residue and failing the job; `unavailable` leaves residue unknown
+because safe cleanup could not be established. Abrupt runner loss remains unconfirmed.
 
 ## Related files and ADRs
 
