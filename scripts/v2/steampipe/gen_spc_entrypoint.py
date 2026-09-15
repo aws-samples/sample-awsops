@@ -20,11 +20,13 @@ Every render also discloses the effective plugin rate-limiter knobs to stderr as
 `steampipe_limiter_config` JSON event (max_concurrency / bucket_size / fill_rate), so the
 quota posture a task actually started with is visible in its logs.
 """
+import errno
 import json
 import os
 import re
 import shutil
 import signal
+import socket
 import ssl
 import stat
 import subprocess
@@ -192,10 +194,10 @@ def _write_private(path, contents):
 
 
 def write_spc(spc: str, aws_config: str = "") -> None:
-    """Publish a complete private generation through one atomic directory pointer.
+    """Publish private profiles and a regular SPC before the service starts.
 
-    Both readers use current/{aws.spc,config}; restart callers stop the old service
-    before publication. Retired generations live only for this container's lifetime.
+    Each replacement is atomic; the stopped service protects the pair. Publication
+    failure forbids launch. Retired generations live for this container's lifetime.
     """
     root, path = Path(RUNTIME_CONFIG_DIR), Path(SPC_PATH)
     generation = None
@@ -225,15 +227,15 @@ def write_spc(spc: str, aws_config: str = "") -> None:
         generation = Path(tempfile.mkdtemp(prefix="gen-", dir=root))
         _write_private(generation / "aws.spc", spc)
         _write_private(generation / "config", aws_config)
-        link = path.parent / (".awsops-spc-" + uuid.uuid4().hex)
-        temporary.append(link)
-        os.symlink(str(current / "aws.spc"), link)
-        os.replace(link, path)
+        staged_spc = path.parent / (".awsops-spc-" + uuid.uuid4().hex)
+        temporary.append(staged_spc)
+        _write_private(staged_spc, spc)
         pointer = root / (".current-" + uuid.uuid4().hex)
         temporary.append(pointer)
         os.symlink(generation.name, pointer)
         os.environ["AWS_CONFIG_FILE"] = expected
         os.replace(pointer, current)
+        os.replace(staged_spc, path)
         published = True
     except Exception:
         raise HostScopeError("runtime_configuration_write_failed") from None
@@ -241,7 +243,7 @@ def write_spc(spc: str, aws_config: str = "") -> None:
         for link in temporary:
             link.unlink(missing_ok=True)
         # A signal/error after replace may interrupt the Python assignment even
-        # though the generation was committed. Never remove the published pair.
+        # though the profile pointer was committed. Keep its generation intact.
         committed = (generation is not None and (root / "current").is_symlink()
                      and os.readlink(root / "current") == generation.name)
         if generation is not None and not published and not committed:
@@ -264,18 +266,27 @@ class SteampipeRestartError(RuntimeError):
     """A failed teardown cannot safely admit another service start."""
 
 
+def _steampipe_listener_closed(port: int = 9193) -> bool:
+    """Only connection refusal establishes closure; do not spawn or query a DB."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return False
+    except OSError as error:
+        return error.errno == errno.ECONNREFUSED
+
+
 def _stop_steampipe_service(timeout: int = 30) -> bool:
     """Report the bounded full-service stop outcome without exposing CLI output.
 
-    Reaping the foreground CLI alone does not prove embedded PostgreSQL stopped.
-    Shutdown remains best-effort; restart callers must require True.
+    Completed CLI exit codes do not prove embedded PostgreSQL stopped. Require a
+    refused loopback connection; shutdown is best-effort, restart requires True.
     """
     try:
-        result = subprocess.run(["steampipe", "service", "stop", "--force"],
-                                timeout=timeout, capture_output=True)
-        if result.returncode == 0:
+        subprocess.run(["steampipe", "service", "stop", "--force"],
+                       timeout=timeout, capture_output=True)
+        if _steampipe_listener_closed():
             return True
-        reason = "nonzero"
+        reason = "listener_not_closed"
     except subprocess.TimeoutExpired:
         reason = "timeout"
     except Exception:  # noqa: BLE001 — fixed diagnostic, never raw CLI/exception text

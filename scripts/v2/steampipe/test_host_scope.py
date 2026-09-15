@@ -206,6 +206,7 @@ def test_failed_full_stop_never_launches_already_running_service_or_claims_updat
             mock.patch.object(entrypoint, "_render_spc", return_value="new member scope"), \
             mock.patch.object(entrypoint, "write_spc"), \
             mock.patch.object(entrypoint.subprocess, "run", side_effect=run_stop) as run, \
+            mock.patch.object(entrypoint, "_steampipe_listener_closed", return_value=False), \
             mock.patch.object(entrypoint, "_start_steampipe", side_effect=already_running) as start:
         # Bound the old implementation too: without fatal stop it would poll forever.
         with mock.patch.object(stop, "wait", side_effect=[False, True]):

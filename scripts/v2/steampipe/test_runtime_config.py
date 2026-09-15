@@ -1,4 +1,4 @@
-"""Runtime SPC/profile publication uses one private generation and no live services."""
+"""Private SPC/profile publication completes before a stopped service can restart."""
 import os
 from pathlib import Path
 import stat
@@ -22,23 +22,24 @@ def private_paths(tmp_path, monkeypatch):
     return root, spc
 
 
-def test_spc_and_aws_profiles_publish_as_one_private_generation(private_paths):
+def test_spc_is_a_regular_private_file_and_profiles_use_a_private_generation(private_paths):
     root, spc = private_paths
     entrypoint.write_spc("first SPC", "first profile")
     profile = Path(os.environ["AWS_CONFIG_FILE"])
     assert spc.read_text() == "first SPC"
     assert profile.read_text() == "first profile"
-    assert spc.resolve().parent == profile.resolve().parent
+    assert stat.S_ISREG(spc.lstat().st_mode)
     assert stat.S_IMODE(spc.stat().st_mode) == stat.S_IMODE(profile.stat().st_mode) == 0o600
     assert stat.S_IMODE(root.stat().st_mode) == stat.S_IMODE(profile.resolve().parent.stat().st_mode) == 0o700
     old = profile.resolve().parent
     entrypoint.write_spc("second SPC", "second profile")
     assert spc.read_text() == "second SPC" and profile.read_text() == "second profile"
-    assert spc.resolve().parent == profile.resolve().parent != old
+    assert stat.S_ISREG(spc.lstat().st_mode)
+    assert profile.resolve().parent != old
 
 
 @pytest.mark.parametrize("failure", ["second_file", "publish"])
-def test_failed_generation_never_exposes_mixed_spc_and_profiles(private_paths, monkeypatch, failure):
+def test_failure_before_profile_publication_preserves_previous_files(private_paths, monkeypatch, failure):
     root, spc = private_paths
     entrypoint.write_spc("old SPC", "old profile")
     profile = Path(os.environ["AWS_CONFIG_FILE"])
@@ -61,7 +62,8 @@ def test_failed_generation_never_exposes_mixed_spc_and_profiles(private_paths, m
         entrypoint.write_spc("new SPC", "new profile")
     assert "PRIVATE_FILE_DETAIL" not in str(error.value)
     assert spc.read_text() == "old SPC" and profile.read_text() == "old profile"
-    assert spc.resolve().parent == profile.resolve().parent == old
+    assert stat.S_ISREG(spc.lstat().st_mode)
+    assert profile.resolve().parent == old
     assert sorted(root.glob("gen-*")) == [old]
 
 
@@ -74,20 +76,47 @@ def test_profile_root_symlink_is_rejected_without_writing_outside(private_paths,
         entrypoint.write_spc("SPC", "profile")
     assert list(outside.iterdir()) == []
 
-def test_error_after_atomic_commit_never_deletes_the_published_pair(private_paths, monkeypatch):
+@pytest.mark.parametrize("failure", ["profile_committed", "spc_publish"])
+def test_incomplete_publication_keeps_profiles_but_never_restarts(private_paths, monkeypatch, failure):
     root, spc = private_paths
     entrypoint.write_spc("old SPC", "old profile")
     original = entrypoint.os.replace
     def replace(source, target):
+        if failure == "spc_publish" and Path(target) == spc:
+            raise OSError("PRIVATE_FILE_DETAIL")
         original(source, target)
-        if Path(target) == root / "current":
-            raise OSError("commit acknowledgement interrupted")
+        if failure == "profile_committed" and Path(target) == root / "current":
+            raise OSError("PRIVATE_FILE_DETAIL")
     monkeypatch.setattr(entrypoint.os, "replace", replace)
-    with pytest.raises(ValueError, match="runtime_configuration_write_failed"):
-        entrypoint.write_spc("new SPC", "new profile")
+    stop, fatal = threading.Event(), threading.Event()
+    proc = mock.Mock()
+    refs = [proc]
+    with mock.patch.object(entrypoint, "_stop_steampipe_service", return_value=True), \
+            mock.patch.object(entrypoint, "_start_steampipe") as start:
+        with pytest.raises(RuntimeError, match="steampipe_configuration_publish_failed"):
+            entrypoint._restart_steampipe(refs, threading.Lock(), proc, stop, fatal,
+                prepare=lambda: entrypoint.write_spc("new SPC", "new profile"))
+        assert stop.is_set() and fatal.is_set() and refs[0] is None
+        start.assert_not_called()
     profile = Path(os.environ["AWS_CONFIG_FILE"])
-    assert spc.read_text() == "new SPC" and profile.read_text() == "new profile"
-    assert spc.resolve().parent == profile.resolve().parent
+    assert spc.read_text() == "old SPC" and profile.read_text() == "new profile"
+    assert stat.S_ISREG(spc.lstat().st_mode)
+    assert profile.resolve().is_file()
+    assert not list(spc.parent.glob(".awsops-spc-*"))
+    assert not list(root.glob(".current-*"))
+
+
+def test_previous_owned_spc_symlink_is_replaced_without_modifying_its_target(private_paths):
+    root, spc = private_paths
+    entrypoint.write_spc("old SPC", "old profile")
+    old = (root / "current" / "aws.spc").resolve()
+    spc.unlink()
+    spc.symlink_to(root / "current" / "aws.spc")
+    entrypoint.write_spc("new SPC", "new profile")
+    assert old.read_text() == "old SPC"
+    assert spc.read_text() == "new SPC"
+    assert stat.S_ISREG(spc.lstat().st_mode)
+    assert stat.S_IMODE(spc.lstat().st_mode) == 0o600
 
 
 def test_image_exposes_profile_path_to_service_and_healthcheck_processes():
