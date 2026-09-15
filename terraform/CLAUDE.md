@@ -33,8 +33,9 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   are declared at the top of `ai.tf`; `ci_migrations_enabled` is declared in `ci-migrations.tf`.
   Host-only, image-digest and CI runtime metadata inputs live in `runtime-read-scope.tf`.
 - `ci-migrations.tf` — default-off operator migration task template, exact-secret task IAM,
-  14-day log group and `migration_job` output. The manual development CI controller owns
-  launch/cleanup; no app service or scheduler starts it. Disabling deletes retained logs.
+  14-day logs and `migration_job` output. The private dev CI controller owns launch/cleanup:
+  manual dispatch or guarded current-source dev Deploy Web; never an app service/scheduler.
+  Disabling deletes retained logs.
 - `controller-readiness.tf` — application-only `deployment-verifiers` group when readiness
   and AgentCore are enabled; membership additionally requires the Terraform-managed demo.
   No administrator membership or IAM role.

@@ -18,7 +18,7 @@ AWS-resource mutation or autonomy (ADR-005).
 | Failure | Check before retrying |
 |---|---|
 | Web image cannot be pulled | The private web ECR repository and matching ARM64 image must exist before the full base apply. |
-| `schema_migrations missing` | A genuinely empty database needs the guarded initializer, then all migrations. |
+| `schema_migrations missing` | Automatic web migration stops before initialization; a genuinely empty database needs standalone guarded initialization, all historical migrations and reader sync first. |
 | New image has no effect | `make deploy` does not register a task definition; `IMAGE_TAG` must match the applied web container image tag. |
 | Edge returns 504 | A new VPC can require a second reviewed apply to add the CloudFront-managed SG ingress rule. |
 | Runtime host preparation fails | Verify real login, database access and the enabled host registry before activation. |
@@ -216,7 +216,7 @@ test "$(aws ecs describe-task-definition --task-definition "$BOOTSTRAP_TASK_DEFI
 ### 4. Initialize Aurora, migrate and deploy the first usable web
 
 Use a clean deployment shell without inherited runtime `AURORA_*`,
-`SQL_READER_*`, `DRY_RUN`, `OFFLINE` or `BOOTSTRAP` overrides. The CLI reads
+`SQL_READER_*`, `DRY_RUN`, `OFFLINE`, `BOOTSTRAP` or `AUTOMATIC_MIGRATION` overrides. The CLI reads
 `aurora_endpoint`, `aurora_secret_arn` and `agent_sql_reader_secret_arn` from
 Terraform; credentials are fetched from Secrets Manager in memory.
 
@@ -231,6 +231,7 @@ installs the frozen baseline transactionally and upgrades the ledger to text.
 An existing ledger skips initialization; pending checksum-verified ULID migrations
 still run. `BOOTSTRAP=1` is for legacy integer ledgers, not this installation.
 Never manually import `schema.sql` or remove a ledger to make initialization pass.
+This standalone migration completes the historical corpus and reader sync before web release. Automatic web migration refuses a missing ledger before initialization; it does not bootstrap historical SQL. If the private migration capability is already applied, the standalone `deploy-migrations.yml` dispatch in [web release](web-release.md) is the alternative to the private-host command; require its successful completion first.
 
 `make deploy` runs migrations again, then ECR login, ARM64 build/push, a
 force-new-deployment of the **current** ECS service task definition, a
@@ -299,27 +300,39 @@ false and follow [runtime activation](runtime-foundation.md):
    repositories with `runtime-ecr-bootstrap`. Build the ARM64 Steampipe/worker
    images and configure their verified digests before the full runtime plan.
 2. Make the separate readiness decision and apply it with the authorized full
-   runtime rollout. Apply `ci_migrations_enabled=true` before dev Deploy AgentCore;
-   its reusable migration workflow must run before AgentCore provisioning and
-   SQL-reader use. Preserve the real host preflight at both plan and apply.
+   runtime rollout. Before dev Deploy Web or Deploy AgentCore, apply
+   `ci_migrations_enabled=true`, set `CI_MIGRATIONS_ENABLED_DEV=true` and confirm a
+   non-null `migration_job` output. The shared private migration must succeed before
+   current-source web promotion or AgentCore provisioning/SQL-reader use.
+   Preserve the real host preflight at both plan and apply.
 3. After inventory infrastructure/image activation, allow the configured
    EventBridge `rate(15 minutes)` / `type=all` sweep to run before the first gated
    release. Wait for its per-type durable success evidence; elapsed time or
    catalog acknowledgement alone is insufficient. Investigate failures using
    [inventory diagnostics](steampipe-quota-and-staleness.md); never fabricate
    ledger rows or declare an unseeded catalog ready.
-4. Run the normal dev release workflow after those prerequisites:
+4. Confirm section §4's standalone migration and reader sync succeeded. If bootstrap
+   remains incomplete or any pending SQL is outside the automatic subset (including
+   `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT` or views), first run:
+
+   ```bash
+   gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev
+   ```
+
+   Inspect that exact run for **SUCCESS**, the intended source SHA, container exit `0`
+   and reader sync using the [web-release procedure](web-release.md). Then dispatch
+   a fresh web build; an initialized database with an admissible pending set can go directly:
 
    ```bash
    gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
    ```
 
-   Current Deploy Web integrates `runtime-release.mjs`: require the complete
-   mandatory AI/CI and authenticated checks, including web identity/image,
-   every catalog type's clean post-marker collection, SSM/AgentCore/model access
-   and both owned Lambda/Fargate jobs. Legacy revisions with only health or
-   optional DB smoke cannot establish this proof. Publication requires the full
-   integrated gate; this runbook provides no skip input.
+   Require readonly image proof before current-source private migration, guarded digest promotion,
+   exact ECS/image verification and the integrated `runtime-release.mjs` gate, including login/DB,
+   web identity/image, every catalog type's clean post-marker collection, SSM/AgentCore/model access
+   and both owned Lambda/Fargate jobs. Complete mandatory AI/CI checks; `verify_database` cannot
+   disable full dev verification. Legacy health/optional DB smoke cannot establish this proof.
+   Publication requires the integrated gate with no skip input; see [web release](web-release.md).
 5. Only after the full gate passes, use the separately authorized service A
    publication stage in [domain rollout](dev-domain-rollout.md), with a fresh
    reviewed saved plan. Bootstrap completion is never a full-ready report.

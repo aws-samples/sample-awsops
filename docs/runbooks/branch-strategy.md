@@ -35,7 +35,8 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 - `dev` is the **default branch** — PRs (internal and external) target it by default.
 - `main` accepts PRs **only from `dev`**, enforced mechanically by
-  `guard-main-prs.yml` on top of the `protect-main` ruleset (PR required, no
+  `guard-main-prs.yml` on top of the `protect-main-dev` ruleset (PR required, required
+  `AI Code Review` and `Merge Verify` checks, no
   force-push/deletion). `dev` carries the same ruleset protections.
 
 ## Branch flow / 브랜치 흐름
@@ -45,8 +46,11 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    `<user>.awsops-dev.whchoi.net`. When ready, PR into `dev`. PR checks:
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
-2. **`dev`** — integration branch; every push auto-deploys the DEV stack
-   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → preflight → pin → roll → full runtime verification).
+2. **`dev`** — integration branch; pushes touching web code, CHANGELOG or migrations auto-deploy the DEV stack
+   via `deploy-web.yml` (build → readonly receipt/ECR proof → matching private migration →
+   guarded digest promotion → exact ECS/image verification → mandatory full runtime gate, including login/DB).
+   The applied private migration capability and initialized ledger are required; every pending file must pass the
+   forced automatic SQL subset. Bootstrap or unsupported SQL needs standalone migration first.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
@@ -94,8 +98,8 @@ Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
-| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
-| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | auto web roll on push (`deploy-web.yml`); DNS requires explicit dispatch |
+| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto web roll on configured pushes, including migrations; DDL/authenticated verification are operator-managed, so schema drift can block the app |
+| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | guarded build → full pending-SQL admission on initialized DB → private migration → verified web roll; bootstrap/unsupported SQL needs standalone migration first; [older-image rollback](web-release.md) runs no migrations; DNS requires explicit dispatch |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
 
 Dev's repo-level name/zone overrides feed console and plan consistently; main/preview ignore
@@ -181,7 +185,13 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` must pass its full runtime gate; health alone cannot pass.
-  Manual `collect-runtime.yml` provides pre-activation host preparation or collection verification.
+- Push to `dev` changing web code, CHANGELOG or `terraform/foundation/migrations/**`:
+  `deploy-web.yml` builds ARM64, proves the selected receipt/ECR digest before matching-source private
+  migration on an initialized DB with an admitted pending set, then promotes that digest and verifies exact ECS/image
+  deployment followed by mandatory full runtime readiness. Apply `ci_migrations_enabled=true` with
+  `CI_MIGRATIONS_ENABLED_DEV=true` and the runtime prerequisites first; the workflow cannot provision them.
+  Manual `collect-runtime.yml` supports existing-web preparation or full collection verification.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
+
+For a missing ledger or unsupported pending SQL (`DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views), run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`. Inspect that exact run for **SUCCESS**, source SHA, migration-container exit `0` and reader sync as described in [web release](web-release.md), then run `gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`. Automatic runs never initialize a missing ledger or exempt historical pending files; standalone migrations retain locks/checksums, and contract cutovers need the documented coordination.

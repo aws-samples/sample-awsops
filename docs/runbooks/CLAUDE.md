@@ -25,8 +25,10 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
-| [release-safety-primitives.md](release-safety-primitives.md) | Unwired bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005) |
-| [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
+| [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
+| [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
+| [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
+| [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Runtime activation and strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
@@ -36,7 +38,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- `release-safety-primitives.md` defines unwired web read/controller contracts and opt-in transactional pending-SQL admission. The empty-only frozen baseline precedes the pending guard. Column/view changes and non-transactional SQL require manual review. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
+- `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
@@ -54,19 +56,16 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   S3/KMS readers: they need no CI envelope key. Publisher policy requires SSE-KMS on PUT,
   separately from reads. Optional purge targets reviewed expired attempt versions.
   Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
-- The web image provenance helper is not yet wired. Its future caller must add the documented
-  receipt steps and current-dev migration outputs; use the composed `promote` entrypoint,
+- Deploy Web wires producer-receipt steps and current-dev migration outputs, with readonly
+  image proof before DDL and composed `promote` preserving the validated project/digest;
   never manually mint migration evidence or silently fall back to mutable-tag authority.
   Require a nonempty preflight digest on all paths and fresh digest/source-tag agreement.
   Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
   ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
   config-download permission; publication uses the deployer role and explicit ECR media.
-  Success stdout remains `{digest, image_sha, rollback}` with no tag history. Recovery
-  requires independently retained source/digest evidence; receipt cleanup targets only an
-  owned run/attempt directory. Migration/preflight assertions use verified job outputs,
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no tag history. Recovery requires independently retained source/digest evidence. Legacy images without receipts use the separately approved private-host recovery runbook with source/digest evidence and schema approval, never fabricated receipts or a workflow bypass. Automatic receipt cleanup removes only the fixed GitHub run/attempt path; manual leftover cleanup checks ownership. Migration/preflight assertions use verified job outputs,
   never dispatch inputs. Fresh-only consumers do not need `actions: read`.
-  `IMAGE_PROJECT` likewise needs branch-selected authenticated Terraform/verified job output,
-  cross-checked against ECR/cluster/service metadata. Broad current CI-account IAM does not
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Broad current CI-account IAM does not
   supply stack authority; each operation selects one verified repo and any new grant uses
   its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
   not rebuilding a validated candidate; document completed-producer and superseded-push cases.
@@ -74,6 +73,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). Both workflows consume these policies. Dev verification requires activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the controller must enforce catalog or each verified catalog member's RequestResponse payload, banning empty/all/unregistered/Event calls. The dated owner requirement is all current types with post-marker succeeded evidence, known counts and zero unknowns, not rolling prior success. At most four calls are concurrent and in flight; at least one catalog request plus at least one per type, including any retries, determines total volume. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
@@ -140,7 +140,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is a default-off operator capability.
-  Dev Deploy AgentCore requires the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it.
+  Dev Deploy AgentCore and current-source dev Deploy Web require the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it. The guarded Deploy Web caller also permits dev pushes; standalone and AgentCore use remain dispatch-only. Explicit older-image rollback skips this workflow.
   `deploy-migrations.yml` builds an ARM64 image and `run-migration.mjs` launches/verifies one
   private task. The task role reads exact Aurora secrets; DDL uses DB credentials. This is
   operator CI, not product autonomy or an ADR-005 AWS-resource-mutation exception.
@@ -203,11 +203,18 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,
-  complete post-marker collection evidence, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
-  release requires the controller-generated verify file regardless of verify_database. The billed readiness
-  route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
+  complete post-marker collection evidence, web-role SSM/AgentCore/model proof and Lambda/Fargate completion.
+  Every dev Deploy Web release requires the controller-generated verify file after exact ECS/image
+  verification, with `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`; `verify_database` cannot bypass it.
+  The billed route requires admin or deployment-verifiers, one in-flight call and a per-process
+  60-second cooldown; replicas have independent cooldowns.
 
-- Every dev Deploy Web release requires verification after migrations, regardless of the legacy input. It prepares
+- Reused-image receipt/ECR validation precedes migrations. Automatic DDL is expand-only;
+  contract cutovers require a merge freeze, drained queues and explicit manual coordination.
+  The active `protect-main-dev` ruleset requires GitHub Actions AI Code Review and
+  Merge Verify success before main/dev merge; no extra environment reviewer is added.
+  Current-source releases require matching private migrations; explicit rollback runs no DDL.
+  Both require the full runtime gate, including login/DB. Every dev release prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
 - Terraform plan/private host preparation, Deploy Web and manual collect-runtime credential steps

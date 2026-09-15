@@ -2,11 +2,12 @@
 
 ## Symptoms and current integration
 
-Use this guide for a failed migration lock, SQL rejected on an automatic release, or an ECS release whose read calls are throttled or whose deployment rolls back. The web controller and read transport are preparatory utilities: no workflow in this change invokes them. The existing migration runner gains immediate lock contention reporting and an opt-in SQL policy; automatic caller wiring is separate.
+Use this guide for a failed migration lock, SQL rejected on an automatic release, or an ECS release whose read calls are throttled or whose deployment rolls back. Deploy Web uses the controller/read transport and forces the automatic SQL policy for every web-driven migration. Standalone operator migrations retain their explicit manual mode. The runner reports lock contention immediately.
 
 ## Candidate causes
 
 - Another migration owns the shared PostgreSQL advisory lock.
+- The migration ledger is missing; automatic execution cannot initialize it.
 - A pending file contains SQL outside the conservative additive subset.
 - A read-only AWS request encounters throttling or a temporary transport failure.
 - ECS reports a failed deployment or a different replacement deployment.
@@ -29,13 +30,15 @@ The two Python suites need Python 3.12 on Linux with `/proc`, POSIX process grou
 
 ### Automatic migration policy
 
-`AUTOMATIC_MIGRATION=1` checks **every ledger-derived pending migration** while holding the advisory lock, after checksum validation and before pending SQL, ledger upgrades or reader password synchronization. Applied migration contents and immutable `-- since:` headers are never rewritten.
+`AUTOMATIC_MIGRATION=1` refuses a missing ledger before any frozen-baseline initialization, even with `INITIALIZE_EMPTY_DB=1`. On initialized databases it checks **every ledger-derived pending migration**, including older gaps, while holding the advisory lock, after checksum validation and before pending SQL, ledger upgrades or reader password synchronization. Applied migration contents and immutable `-- since:` headers are never rewritten.
 
-The automatic subset permits only transactional files containing simple new tables and ordinary non-unique btree indexes. Non-transactional files, `CONCURRENTLY`, all column alterations, procedural/dynamic SQL, dollar-quoted bodies and unknown syntax require a reviewed standalone migration. Column changes and their paired `sql_reader` view refresh must be reviewed/applied together; do not split a file to omit the view update. Rejecting all automatic column alterations avoids silently leaving fixed-column reader views stale. Failed concurrent indexes and partial non-transactional files require inspection/repair, never an `IF NOT EXISTS` retry that could ledger an invalid index. This is a conservative syntax admission rule, not proof that arbitrary SQL is backward-compatible or cheap. Review remains mandatory. The existing frozen-baseline initializer still checks that the database is empty; setting its flag on an existing database does not bypass pending-file checks.
+The automatic subset permits only transactional files containing simple new tables and ordinary non-unique btree indexes. Function defaults (`DEFAULT now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views, non-transactional files, `CONCURRENTLY`, procedural/dynamic SQL, dollar-quoted bodies and unknown syntax require a reviewed standalone migration. Column changes and their paired `sql_reader` view refresh must be reviewed/applied together; do not split a file to omit the view update. Rejecting all automatic column alterations avoids silently leaving fixed-column reader views stale. Failed concurrent indexes and partial non-transactional files require inspection/repair, never an `IF NOT EXISTS` retry that could ledger an invalid index. This is a conservative syntax admission rule, not proof that arbitrary SQL is backward-compatible or cheap. Review remains mandatory. Standalone initialization retains the empty-only guard; historical pending SQL has no automatic exemption.
 
-The caller must set this flag from its verified automatic web context, never a dispatch input or a caller-supplied SQL annotation. Standalone manual migration leaves it unset and is the explicit override for approved contract cutovers. Keep web releases disabled and queues drained during those cutovers; keep required AI/CI checks enabled. Re-enable only after compatible consumers are verified.
+Temporary/internal schemas (`pg_*`, `information_schema`) are rejected, including quoted schema names: temporary objects would disappear while leaving an applied ledger row. An ordinary index can block writes until completion or the statement timeout; review hot-table impact before release. `IF NOT EXISTS` does not validate an existing object's definition, so inspect divergent pre-existing objects before accepting such a migration.
 
-This implementation adds no product autonomy, AWS-resource remediation flag or exception to ADR-005. Automatic caller activation remains a separately reviewed operator deployment change. `DRY_RUN=1` combined with automatic mode still validates the subset and rejects unsupported SQL rather than previewing rejected statements.
+The caller must set this flag from its verified automatic web context, never a dispatch input or a caller-supplied SQL annotation. Standalone manual migration leaves it unset while retaining locks and checksums. For bootstrap or unsupported SQL, dispatch `deploy-migrations.yml --ref dev`, inspect SUCCESS including reader sync, then dispatch `deploy-web.yml --ref dev -f build=true` using the executable [web-release procedure](web-release.md). During contract cutovers, keep web releases disabled and queues drained; keep required AI/CI checks enabled. Re-enable only after compatible consumers are verified.
+
+This implementation adds no product autonomy, AWS-resource remediation flag or exception to ADR-005. Deploy Web enables the policy as part of the reviewed operator deployment workflow. `DRY_RUN=1` combined with automatic mode still validates the subset and rejects unsupported SQL rather than previewing rejected statements.
 
 `pg_try_advisory_lock(4729411)` fails immediately when another runner holds the lock. No pending SQL or reader synchronization starts in that case. Acquired locks remain held through reader synchronization. Wait for the other release and start a new verified run; never remove the lock or repeat a mutation blindly. SQLSTATE `55P03` reports a database lock conflict, while `57014` reports query cancellation/timeout; neither alone proves another migration owns the advisory lock.
 
