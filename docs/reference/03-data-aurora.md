@@ -42,13 +42,10 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   `make migrate` from an approved in-VPC host or the private migration runtime. A new empty DB
   requires `INITIALIZE_EMPTY_DB=1` for its initial migration; the baseline plus ledger conversion/checksum commit
   atomically before ULIDs. Any user object without a ledger prevents initialization.
-  Ordinary host commands set this once. The default-off manual development migration template
-  retains the flag for deliberate dispatches; an existing ledger skips initialization and an
-  occupied unversioned database still fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
-  새 빈 DB는 최초 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
-  일반 호스트 명령은 플래그를 한 번만 설정한다. 기본 비활성 수동 개발 템플릿은 명시적 dispatch용으로
-  플래그를 유지하지만 기존 원장이 있으면 초기화를 건너뛰며, 원장 없는 비어 있지 않은 DB는 거부한다.
-  원장 없이 사용자 객체가 있으면 초기화를 거부한다.
+  Ordinary host commands set this once. The default-off private development migration template
+  retains the flag for standalone/manual calls; automatic web calls refuse a missing ledger before initialization.
+  Complete the historical corpus and reader sync manually first. Existing ledgers skip initialization;
+  automatic admission still checks every pending file. An occupied unversioned database fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.
@@ -136,15 +133,15 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   정상 판정이 아니다. 서버 lifecycle 텍스트는 미검증·위조 가능하며 인증 성공 로그는 실제 설정이
   미확인인 log_connections가 필요하다. timeout·인증·용량 설정은 바꾸지 않는다.
 - `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
-  `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
-  scoped secret-read IAM and verified private execution (ADR-005 operator boundary).
-  기본 비활성 수동 개발 migration·시크릿 한정 IAM·검증된 사설 실행을 담당한다.
+  `scripts/v2/ci/run-migration.mjs` — default-off private development migration task,
+  scoped secret-read IAM and verified execution, called manually or before current-source
+  dev web promotion. Older-image rollback skips it (ADR-005 operator boundary).
 - `terraform/foundation/data.tf` — KMS key + alias, DB subnet group, SG,
   Aurora cluster + writer instance, RDS-managed master secret.
 - `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
   + P2 `worker_jobs` (idempotent).
-- `scripts/v2/automatic-migration-policy.mjs` — opt-in transactional pending-SQL admission; column/view and non-transactional changes require reviewed standalone execution.
-- `scripts/v2/migrate.mjs`, `initialize-db.mjs` — atomic empty-DB baseline and checksum-verified
+- `scripts/v2/automatic-migration-policy.mjs` — transactional pending-SQL admission forced by every web-driven migration; standalone mode is explicit, and column/view or non-transactional changes require reviewed standalone execution.
+- `scripts/v2/migrate.mjs`, `initialize-db.mjs` — standalone-only atomic empty-DB baseline and checksum-verified
   ULIDs; `scripts/v2/eks/rds-ca-bundle.pem` is the shared migration TLS trust bundle despite
   the historical `eks/` path. See [migration operations](../../terraform/foundation/migrations/README.md)
   for build/run/env/IAM/network requirements.

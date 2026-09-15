@@ -86,6 +86,8 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
   });
 
   it('preserves actual infra placement containers and connectivity above the class node cap', async () => {
+    // Remove beforeEach's unrelated legacy VPC so this fixture has exactly three containers.
+    await pool.query('TRUNCATE topology_nodes, topology_edges');
     const graph = buildInfraGraph({
       resources: Array.from({ length: 4001 }, (_, i) => ({
         resource_type: 'ec2', resource_id: `i-${i}`, data: { vpc_id: 'vpc-1' },
@@ -107,7 +109,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     for (const id of ['vpc:vpc-1', 'subnet:subnet-1', 'sg:sg-1']) expect(ids.has(id)).toBe(true);
     const connected = new Set(body.edges.filter((e: { target: string }) => e.target === 'vpc:vpc-1')
       .map((e: { source: string }) => e.source));
-    expect(body.nodes.filter((n: { kind: string }) => n.kind === 'ec2')).toHaveLength(3996);
+    expect(body.nodes.filter((n: { kind: string }) => n.kind === 'ec2')).toHaveLength(3997);
     expect(body.nodes.every((n: { id: string; kind: string }) => n.kind !== 'ec2' || connected.has(n.id))).toBe(true);
     expect(body.collection).toMatchObject({ readStatus: 'partial', readTruncated: true });
   });

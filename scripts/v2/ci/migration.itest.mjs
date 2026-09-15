@@ -51,6 +51,21 @@ test('the real runner initializes the frozen baseline, stamps all ULIDs, and rer
   assert.deepEqual(await inspect(database, ledger), first);
 });
 
+test('web automatic mode requires manual bootstrap before any baseline SQL; the full historical corpus then permits release', async () => {
+  const database = await postgres.database();
+  const automatic = { env: { ...env, AUTOMATIC_MIGRATION: '1' } };
+  await assert.rejects(run(database, automatic), /Automatic migration requires manual bootstrap;/);
+  await inspect(database, async db => {
+    assert.equal((await db.query("SELECT to_regclass('public.schema_migrations') AS ledger")).rows[0].ledger, null);
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public'")).rows[0].n, 0);
+  });
+  await run(database); // Reviewed standalone bootstrap applies the actual repository corpus.
+  const first = await inspect(database, ledger);
+  assert.equal(first.length, migrationFiles.length + 10);
+  await run(database, automatic);
+  assert.deepEqual(await inspect(database, ledger), first);
+});
+
 test('an existing integer ledger still requires BOOTSTRAP; conversion remains rerunnable', async () => {
   const database = await postgres.database();
   await inspect(database, db => db.query(schema));
@@ -135,6 +150,7 @@ test('automatic additive SQL works with recurring initialization and an unchange
   const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-additive-'));
   const database = await postgres.database();
   try {
+    await run(database, { migrationDir: directory }); // Standalone baseline first.
     writeFileSync(join(directory, `${testId}_table.sql`),
       "CREATE TABLE additive_example(id bigint PRIMARY KEY, label text, meta jsonb DEFAULT '{}'::jsonb);");
     writeFileSync(join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAW_index.sql'),
@@ -153,6 +169,8 @@ test('automatic additive SQL works with recurring initialization and an unchange
 });
 
 for (const [label, sql, manualSucceeds] of [
+  ['function timestamp default', 'CREATE TABLE rejected_table(created_at timestamptz DEFAULT now())', true],
+  ['function UUID default', 'CREATE TABLE rejected_table(id uuid DEFAULT gen_random_uuid())', true],
   ['no-transaction single statement', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int)', true],
   ['no-transaction multiple statements', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int); CREATE TABLE later_table(id int)', true],
   ['concurrent index without flag', 'CREATE INDEX CONCURRENTLY rejected_idx ON retained(id)', false],
@@ -250,19 +268,22 @@ test('automatic mode refuses unsafe pending SQL before legacy BOOTSTRAP alters t
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('automatic mode retains empty-only baseline admission but never executes a rejected pending file', async () => {
+test('automatic mode never initializes an unversioned database or executes its pending files', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-initialize-'));
   try {
     writeFileSync(join(directory, `${testId}_contract.sql`), 'DROP TABLE schema_migrations;');
     const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
     const empty = await postgres.database();
-    await assert.rejects(run(empty, options), /Automatic migration blocked/);
-    assert.equal((await inspect(empty, ledger)).length, 10); // only the trusted, atomic frozen baseline
+    await assert.rejects(run(empty, options), /Automatic migration requires manual bootstrap;/);
+    await inspect(empty, async db => {
+      assert.equal((await db.query("SELECT to_regclass('schema_migrations') AS t")).rows[0].t, null);
+    });
     const occupied = await postgres.database();
     await inspect(occupied, db => db.query('CREATE TABLE retained(id int)'));
-    await assert.rejects(run(occupied, options), /non.empty/i);
+    await assert.rejects(run(occupied, options), /Automatic migration requires manual bootstrap;/);
     await inspect(occupied, async db => {
       assert.equal((await db.query("SELECT to_regclass('schema_migrations') AS t")).rows[0].t, null);
+      assert.equal((await db.query("SELECT to_regclass('retained') AS t")).rows[0].t, 'retained');
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

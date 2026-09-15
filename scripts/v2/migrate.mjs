@@ -198,7 +198,15 @@ export async function migrateDatabase(client, {
     }
     if (lock?.acquired !== true) throw new MigrationError('Migration advisory lock returned an invalid result');
     locked = true;
-    if (initialize) {
+    if (env.AUTOMATIC_MIGRATION === '1') {
+      operation = 'Check automatic migration bootstrap prerequisite';
+      const { rows: [state] } = await db.query("SELECT to_regclass('public.schema_migrations') AS ledger");
+      if (!state?.ledger) {
+        throw new MigrationError('Automatic migration requires manual bootstrap; '
+          + 'run reviewed standalone migrations and SQL-reader synchronization first, then retry the web release');
+      }
+    }
+    if (initialize && env.AUTOMATIC_MIGRATION !== '1') {
       operation = 'Read frozen baseline schema.sql';
       const schema = readFileSync(SCHEMA, 'utf8');
       operation = 'Initialize empty database';
@@ -233,9 +241,9 @@ export async function migrateDatabase(client, {
         throw new MigrationError(`checksum drift: applied migration ${migration.id} (${migration.file}) was edited after apply — migrations are immutable`);
       }
     }
-    // INITIALIZE_EMPTY_DB is often set on every CI run. Its empty-only frozen
-    // baseline is trusted; guard actual pending ULIDs after that existing hook,
-    // before legacy ledger upgrades, any pending DDL, or reader password sync.
+    // Recurring INITIALIZE_EMPTY_DB cannot bootstrap through automatic mode.
+    // Check the entire pending set before ledger upgrades, DDL or reader sync;
+    // unsupported historical/new SQL must run through reviewed standalone mode.
     if (env.AUTOMATIC_MIGRATION === '1') {
       const pendingIds = new Set(pending);
       assertAutomaticMigrations(migrations.filter(migration => pendingIds.has(migration.id)));

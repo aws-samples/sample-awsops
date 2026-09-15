@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -19,27 +18,69 @@ const named = (job, name) => {
   return value;
 };
 
-test('actual pin step emits the digest of the manifest it selected', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pin-contract-'));
-  const manifest = '{"schemaVersion":2,"fixture":"approved"}';
-  try {
-    writeFileSync(join(dir, 'aws'), '#!/bin/sh\ncase "$1 $2" in\n"ecr batch-get-image") printf "%s\\n" "$TEST_MANIFEST";;\n"ecr put-image") exit 0;;\n*) exit 99;;\nesac\n', { mode: 0o700 });
-    const pin = named(workflow('deploy-web.yml').jobs.deploy, 'Pin web-latest to the approved image');
-    const script = pin.run.replaceAll('${{ steps.tf.outputs.ecr_repo }}', 'fixture-web');
-    const output = join(dir, 'outputs');
-    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { encoding: 'utf8',
-      env: { PATH: `${dir}:${process.env.PATH}`, TEST_MANIFEST: manifest, PIN_SHA: 'a'.repeat(40),
-        DISPATCH_BUILD: 'false', DISPATCH_IMAGE_SHA: '', GITHUB_OUTPUT: output } });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(output, 'utf8'), `digest=sha256:${createHash('sha256').update(manifest).digest('hex')}\n`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test('producer proof precedes migration and its digest reaches promotion, exact verification and runtime readiness', () => {
+  const { build, 'image-proof': proof, 'migrate-dev': migrate, deploy } = workflow('deploy-web.yml').jobs;
+  // The Python controller tests exercise actual guarded publication and receipts.
+  // This contract verifies that the workflow passes their evidence between jobs.
+  const image = named(build, 'Build and push (arm64)');
+  const receipt = named(build, 'Record the image producer');
+  const retained = named(build, 'Retain the build receipt for explicit reuse');
+  assert.equal(image.id, 'image');
+  assert.equal(image.with.platforms, 'linux/arm64');
+  assert.equal(build.outputs.digest, '${{ steps.image.outputs.digest }}');
+  assert.equal(build.outputs.project, '${{ steps.stack.outputs.project }}');
+  assert.equal(receipt.env.IMAGE_DIGEST, build.outputs.digest);
+  assert.equal(receipt.env.IMAGE_PROJECT, build.outputs.project);
+  assert.match(receipt.run, /ci_web_image\.py receipt/);
+  assert.ok(build.steps.indexOf(image) < build.steps.indexOf(receipt));
+  assert.ok(build.steps.indexOf(receipt) < build.steps.indexOf(retained));
+  assert.equal(retained.with['if-no-files-found'], 'error');
+  assert.deepEqual(proof.needs, ['guard', 'build']);
+  const preflight = named(proof, 'Verify producer receipt and ECR content without mutation');
+  assert.equal(preflight.id, 'proof');
+  assert.equal(preflight.run.trim(), 'python3 scripts/v2/ci_web_deploy.py preflight-image');
+  assert.equal(preflight.env.FRESH_DIGEST, '${{ needs.build.outputs.digest }}');
+  assert.equal(preflight.env.FRESH_PROJECT, '${{ needs.build.outputs.project }}');
+  assert.equal(preflight.env.IMAGE_BUILD_RUN_ID, '${{ inputs.image_build_run_id }}');
+  assert.equal(proof.outputs.digest, '${{ steps.proof.outputs.digest }}');
+  assert.deepEqual(migrate.needs, ['guard', 'image-proof']);
+  for (const job of [migrate, deploy]) {
+    assert.match(job.if, /needs\.image-proof\.result == 'success'/);
+    assert.match(job.if, /needs\.image-proof\.outputs\.digest != ''/);
+  }
+  assert.deepEqual(deploy.needs, ['guard', 'build', 'image-proof', 'migrate-dev']);
+  const pin = named(deploy, 'Promote the verified image and start its deployment');
+  const exact = named(deploy, 'Verify exact deployment and healthy running web image');
+  const gate = named(deploy, 'Authenticated development runtime readiness');
+  assert.equal(pin.id, 'pin');
+  assert.equal(pin.run.trim(), 'python3 scripts/v2/ci_web_deploy.py deploy');
+  assert.equal(pin.env.PREFLIGHT_DIGEST, '${{ needs.image-proof.outputs.digest }}');
+  assert.equal(pin.env.FRESH_DIGEST, preflight.env.FRESH_DIGEST);
+  assert.equal(pin.env.FRESH_PROJECT, preflight.env.FRESH_PROJECT);
+  assert.equal(pin.env.PIN_SHA, preflight.env.PIN_SHA);
+  assert.equal(pin.env.IMAGE_BUILD_RUN_ID, preflight.env.IMAGE_BUILD_RUN_ID);
+  assert.equal(pin.env.MIGRATED_SHA, '${{ needs.migrate-dev.outputs.source_sha }}');
+  assert.equal(pin.env.MIGRATED_PROJECT, '${{ needs.migrate-dev.outputs.project }}');
+  assert.equal(exact.run.trim(), 'python3 scripts/v2/ci_web_deploy.py verify');
+  for (const [key, output] of Object.entries({
+    WEB_DIGEST: 'digest', WEB_RUNTIME_DIGEST: 'runtime_digest',
+    WEB_DEPLOYMENT_ID: 'deployment_id', WEB_OLD_DEPLOYMENT_ID: 'old_deployment_id',
+    WEB_TASK_REVISION: 'task_revision', WEB_DESIRED_COUNT: 'desired_count',
+  })) assert.equal(exact.env[key], `\${{ steps.pin.outputs.${output} }}`);
+  assert.equal(gate.env.EXPECTED_WEB_DIGEST, exact.env.WEB_DIGEST);
+  assert.equal(deploy.outputs.expected_image_digest, exact.env.WEB_DIGEST);
+  assert.equal(deploy.outputs.expected_runtime_digest, exact.env.WEB_RUNTIME_DIGEST);
+  assert.ok(deploy.steps.indexOf(pin) < deploy.steps.indexOf(exact));
+  assert.ok(deploy.steps.indexOf(exact) < deploy.steps.indexOf(gate));
+  for (const step of deploy.steps)
+    assert.doesNotMatch(step.run || '', /\becr\s+(?:batch-get-image|put-image)\b|\becs\s+update-service\b/);
 });
 
 test('all dev web releases require private preparation, contract capture and full runtime gate', () => {
   const w = workflow('deploy-web.yml');
   const job = w.jobs.deploy;
   for (const name of ['Prepare configured demo credentials', 'Capture development runtime contract',
-    'Authenticated development runtime readiness']) {
+    'Build restricted workload verification session', 'Authenticated development runtime readiness']) {
     const step = named(job, name);
     assert.equal(step.if, "github.ref == 'refs/heads/dev'");
     assert.notEqual(step['continue-on-error'], true);
@@ -47,18 +88,38 @@ test('all dev web releases require private preparation, contract capture and ful
   const gate = named(job, 'Authenticated development runtime readiness');
   assert.equal(job.env.RUNTIME_MODE, 'collect');
   assert.equal(job.env.INVENTORY_POLICY, 'full');
+  assert.equal(job.env.TARGET, '${{ github.ref_name }}');
+  assert.equal(job.env.AWS_REGION, 'ap-northeast-2');
+  assert.equal(job.env.CI_ROLE_ARN, '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
+  assert.equal(job.env.PIN_SHA, '${{ inputs.image_sha || github.sha }}');
+  assert.equal(gate.env.RUNTIME_MODE, undefined);
+  assert.equal(gate.env.INVENTORY_POLICY, undefined);
   assert.equal(gate.env.RUNTIME_DEPLOYMENT_FILE, '${{ steps.runtime.outputs.deployment_file }}');
   assert.equal(gate.env.SMOKE_CREDENTIAL_FILE, '${{ steps.demo.outputs.credential_file }}');
   assert.equal(gate.env.EXPECTED_WEB_DIGEST, '${{ steps.pin.outputs.digest }}');
-  assert.equal(named(job, 'Pin web-latest to the approved image').id, 'pin');
+  assert.equal(named(job, 'Promote the verified image and start its deployment').id, 'pin');
   assert.match(gate.run, /node scripts\/v2\/ci\/runtime-release.mjs run/);
   assert.doesNotMatch(gate.run, /authenticated-smoke.mjs|verify_database|CI_READONLY_RUNTIME_DEV/);
-  assert.ok(job.steps.indexOf(gate) > job.steps.indexOf(named(job, 'Wait for services-stable')));
+  const ordered = [
+    'Prepare configured demo credentials',
+    'Resolve ECS cluster/service/URL + ECR repo',
+    'Capture development runtime contract',
+    'Clean restored terraform config off the runner',
+    'Promote the verified image and start its deployment',
+    'Verify exact deployment and healthy running web image',
+    'Smoke test',
+    'Build restricted workload verification session',
+    'Refresh development credentials for runtime verification',
+    'Authenticated development runtime readiness',
+  ].map(name => job.steps.indexOf(named(job, name)));
+  for (let index = 1; index < ordered.length; index++)
+    assert.ok(ordered[index - 1] < ordered[index], 'release proof order');
   assert.ok(job.steps.indexOf(named(job, 'Capture development runtime contract')) <
     job.steps.indexOf(named(job, 'Clean restored terraform config off the runner')));
   const capture = job.steps.indexOf(named(job, 'Capture development runtime contract'));
-  const mutations = job.steps.filter(step => /ecr put-image|ecs update-service/.test(step.run || ''));
-  assert.equal(mutations.length, 2);
+  const mutations = job.steps.filter(step =>
+    /ci_web_deploy\.py deploy|\becr\s+put-image\b|\becs\s+update-service\b/.test(step.run || ''));
+  assert.deepEqual(mutations, [named(job, 'Promote the verified image and start its deployment')]);
   assert.ok(mutations.every(step => capture < job.steps.indexOf(step)));
   assert.equal(named(job, 'Clean prepared demo credentials off the runner').if,
     "always() && github.ref == 'refs/heads/dev'");
@@ -71,7 +132,8 @@ test('Deploy Web always cleans its captured Terraform cache without deleting oth
   assert.equal(cleanup['working-directory'], 'terraform/foundation');
   assert.equal(job.steps.indexOf(cleanup),
     job.steps.indexOf(named(job, 'Capture development runtime contract')) + 1);
-  assert.ok(job.steps.indexOf(cleanup) < job.steps.indexOf(named(job, 'Pin web-latest to the approved image')));
+  assert.ok(job.steps.indexOf(cleanup) <
+    job.steps.indexOf(named(job, 'Promote the verified image and start its deployment')));
   for (const inputsPresent of [true, false]) {
     const dir = mkdtempSync(join(tmpdir(), 'terraform-cleanup-'));
     const foundation = join(dir, cleanup['working-directory']);
@@ -145,10 +207,14 @@ fs.writeFileSync(process.env.TEST_GATE_CAPTURE, JSON.stringify({ args, credentia
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('dev build and deployment bind configured and actual CI account before ECR or ECS writes', () => {
+test('dev runtime identity and all-branch image identity both precede ECR access or deployment', () => {
   const w = workflow('deploy-web.yml');
-  for (const job of [w.jobs.build, w.jobs.deploy]) {
+  for (const [job, role, boundary] of [
+    [w.jobs.build, 'AWS_CI_BUILD_DEV_ROLE_ARN', 'Verify the web ECR repository exists before building'],
+    [w.jobs.deploy, 'AWS_CI_DEPLOYER_DEV_ROLE_ARN', 'Promote the verified image and start its deployment'],
+  ]) {
     assert.equal(job.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
+    assert.equal(job.env.CI_ROLE_ARN, `\${{ secrets.${role} }}`);
     const steps = job.steps;
     const configured = steps.findIndex(s => s.run?.includes('ci_runtime_policy.py verify-role'));
     const credentials = steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials'));
@@ -156,8 +222,20 @@ test('dev build and deployment bind configured and actual CI account before ECR 
     assert.ok(configured >= 0 && configured < credentials && actual > credentials);
     assert.equal(steps[configured].if, "github.ref == 'refs/heads/dev'");
     assert.equal(steps[actual].if, "github.ref == 'refs/heads/dev'");
-    assert.ok(actual < steps.findIndex(s => s.name?.startsWith('Verify the web ECR') ||
-      s.name === 'Pin web-latest to the approved image'));
+    const operation = steps.indexOf(named(job, boundary));
+    assert.ok(actual < operation);
+    assert.equal(steps[credentials].with['role-to-assume'], '${{ steps.sel.outputs.role }}');
+    const imageConfigured = steps.findIndex(s => s.run?.includes('ci_web_image.py check-role'));
+    const imageActual = steps.findIndex(s => s.run?.includes('ci_web_image.py verify-role'));
+    assert.ok(imageConfigured >= 0 && imageConfigured < credentials);
+    assert.ok(imageActual > credentials && imageActual < operation);
+    for (const step of [steps[imageConfigured], steps[imageActual]]) {
+      assert.equal(step.if, undefined, 'image identity checks must cover every branch');
+      assert.equal(step.env.CI_ROLE_ARN, '${{ steps.sel.outputs.role }}');
+      assert.notEqual(step['continue-on-error'], true);
+    }
+    for (const step of steps.filter(s => /ci_web_(?:image|deploy)\.py/.test(s.run || '')))
+      assert.equal(step.env.CI_ROLE_ARN, '${{ steps.sel.outputs.role }}');
   }
 });
 
