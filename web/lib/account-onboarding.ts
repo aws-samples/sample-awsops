@@ -13,6 +13,16 @@ export interface AccountOnboardingInput {
   profile: string;
 }
 
+export function newAccountExternalId(): string {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    return `awsops-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  } catch {
+    return '';
+  }
+}
+
 const ROLE_ARN = /^arn:aws:iam::(\d{12}):role\/[A-Za-z0-9_+=,.@/-]+$/;
 
 export function onboardingInputError(input: AccountOnboardingInput): string | null {

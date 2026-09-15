@@ -19,6 +19,10 @@ The page discovers the current web task role through the authenticated, admin-on
 `GET /api/accounts/onboarding` route. No host ARN needs to be copied from Terraform.
 It generates an ExternalId for the form and script; under advanced settings, replace it
 with the existing role's value or explicitly select same-organization omission.
+Draft ExternalIds and first-party choices are keyed by target Account ID and host role,
+and saved in browser session storage when available. Editing an ID and returning to it
+restores the same choice; each previously unseen account receives its own draft.
+Role creation and registration remain unavailable until the registered-account lookup finishes.
 
 Choose **Copy AWS CLI commands** or **Download script (.sh)**. The script embeds its
 CloudFormation template, so the target administrator does not need a repository checkout.
@@ -46,12 +50,27 @@ resources, conditions and outputs, including trust and permission policies.
 
 After stack completion, return to the same form and choose **Verify and register**.
 Verification failure preserves the fields for retry. A successful registration followed by
-a failed list refresh remains successful and asks for a page refresh. If the page was reloaded, restore
-the ExternalId used to create the role. `AlreadyExists` means an existing role must be
-checked, not deleted: use its trust policy/ExternalId and verify from the form.
-Allow for IAM propagation if verification fails immediately after creation. A failed
-CloudFormation create may leave a rollback stack; inspect its events before retrying and
-coordinate cleanup separately rather than deleting an existing role.
+a failed list refresh remains successful and asks for a page refresh. When browser session
+storage is unavailable or a new session is used, restore the ExternalId from the original
+script or target role trust policy. Allow for IAM propagation after creation.
+
+`AlreadyExists` can refer to the **stack name**, even when no role exists. In CloudFormation,
+inspect `awsops-readonly-role` and distinguish these cases:
+
+- `ROLLBACK_COMPLETE`: review events to fix the creation failure, and inspect the Resources
+  tab to confirm this is the failed onboarding stack with no resources that must be retained.
+  Delete **that failed stack only**, wait for deletion to finish, then rerun the same script
+  with its original ExternalId. Do not delete a working role or another stack.
+- `CREATE_COMPLETE` / `UPDATE_COMPLETE`: retain the working stack/role, match its trust and
+  ExternalId, then verify from the form. This create-only script is not an update tool.
+- `CREATE_IN_PROGRESS`: wait for the current creation to finish; do not submit another create.
+- `ROLLBACK_FAILED` / `DELETE_FAILED`: inspect the failure events and resolve blocked cleanup
+  with the target administrator before retrying.
+
+If only an independently managed `AWSopsReadOnlyRole` exists, inspect its trust and ExternalId
+without deleting it; its name collision is different from a failed onboarding stack.
+Failed-stack cleanup requires `cloudformation:DeleteStack` on that stack and any permissions
+needed to remove its owned resources; coordinate this separate action with the target administrator.
 
 Verification proves the **web task role's** AssumeRole and caller-account identity only.
 It does not prove inventory collection, worker access or AgentCore MCP access. The selected

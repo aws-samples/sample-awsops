@@ -33,13 +33,17 @@ export default function AccountsPage() {
   const load = useCallback(async () => {
     const [r, rr] = await Promise.all([fetch('/api/accounts'), fetch('/api/accounts/regions')]);
     if (r.status === 401 || r.status === 403) { setDenied(true); return; }
-    const d = await r.json().catch(() => ({ accounts: [] }));
-    setAccounts(Array.isArray(d.accounts) ? d.accounts : []);
+    if (!r.ok) throw new Error('Account lookup failed');
+    const d = await r.json();
+    if (!Array.isArray(d.accounts)) throw new Error('Invalid account response');
+    setAccounts(d.accounts);
     const rd = rr.ok ? await rr.json().catch(() => ({ regions: [] })) : { regions: [] };
     setRegions(Array.isArray(rd.regions) ? rd.regions : []);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load().catch(() => setMsg('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.'));
+  }, [load]);
 
   const remove = async (id: string) => {
     if (!confirm(tt(`${id} 계정을 제거할까요?`))) return;
@@ -161,7 +165,7 @@ export default function AccountsPage() {
         )}
       </Card>
 
-      {msg && <p role="status" className="text-[12px] text-ink-500">{msg}</p>}
+      {msg && <p role="status" className="text-[12px] text-ink-500">{tt(msg)}</p>}
     </div>
   );
 }

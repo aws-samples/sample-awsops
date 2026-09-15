@@ -1,13 +1,15 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { buildAccountOnboarding, onboardingInputError, type AccountOnboardingConfig } from '@/lib/account-onboarding';
+import { buildAccountOnboarding, newAccountExternalId, onboardingInputError, type AccountOnboardingConfig } from '@/lib/account-onboarding';
 
 const inputClass = 'w-full rounded border border-ink-200 bg-card px-3 py-2 text-[12px] text-ink-800';
 const buttonClass = 'rounded border border-ink-200 px-3 py-1.5 text-[12px] text-ink-700 hover:bg-ink-50 disabled:opacity-50';
 
 interface RegisteredAccount { accountId: string; externalId: string | null }
+interface AccountDraft { externalId: string; firstParty: boolean }
+const draftKey = (config: AccountOnboardingConfig) => `awsops.account-onboarding.v1:${config.hostTaskRoleArn}`;
 
 export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   onRegistered: () => Promise<void>;
@@ -23,6 +25,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const [success, setSuccess] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const drafts = useRef(new Map<string, AccountDraft>());
   const registeredAccount = accounts?.find((account) => account.accountId === form.accountId);
   const externalId = registeredAccount ? registeredAccount.externalId || '' : form.externalId;
 
@@ -37,10 +40,19 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
       })
       .then((data) => {
         if (controller.signal.aborted) return;
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(draftKey(data)) || '{}');
+          for (const [accountId, value] of Object.entries(saved)) {
+            const draft = value as AccountDraft | null;
+            if (!drafts.current.has(accountId) && /^\d{12}$/.test(accountId) && draft && typeof draft.externalId === 'string'
+              && draft.externalId.length <= 1224 && typeof draft.firstParty === 'boolean') {
+              drafts.current.set(accountId, { externalId: draft.externalId, firstParty: draft.firstParty });
+            }
+          }
+        } catch {}
         setConfig(data);
         setForm((previous) => ({
           ...previous, region: previous.region || data.region,
-          externalId: previous.externalId || (previous.firstParty ? '' : crypto.randomUUID()),
         }));
       })
       .catch((error) => {
@@ -51,11 +63,23 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   }, [attempt]);
 
   const updateForm = (patch: Partial<typeof form>) => {
-    setForm((previous) => ({
-      ...previous, ...patch,
-      ...(patch.accountId && patch.accountId !== previous.accountId && /^\d{12}$/.test(patch.accountId)
-        ? { externalId: crypto.randomUUID(), firstParty: false } : {}),
-    }));
+    let next = { ...form, ...patch };
+    if (patch.accountId !== undefined && patch.accountId !== form.accountId && /^\d{12}$/.test(patch.accountId)) {
+      const registered = accounts?.find((account) => account.accountId === patch.accountId);
+      const draft = registered
+        ? { externalId: registered.externalId || '', firstParty: !registered.externalId }
+        : drafts.current.get(patch.accountId) || { externalId: newAccountExternalId(), firstParty: false };
+      next = { ...next, ...draft };
+    }
+    if (/^\d{12}$/.test(next.accountId)) {
+      drafts.current.set(next.accountId, { externalId: next.externalId, firstParty: next.firstParty });
+      if (config) {
+        try {
+          sessionStorage.setItem(draftKey(config), JSON.stringify(Object.fromEntries(drafts.current)));
+        } catch {}
+      }
+    }
+    setForm(next);
     setMessage('');
     setSuccess(false);
     setCopied(false);
@@ -63,7 +87,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   };
   const inputError = onboardingInputError(form);
   const isHost = config?.hostAccountId === form.accountId;
-  const guide = config && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(form, config) : null;
+  const guide = config && accounts !== null && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(form, config) : null;
   const canRegister = Boolean(guide && form.alias.trim() && config?.registrationEnabled && !busy);
 
   const copy = async (text: string) => {
@@ -141,7 +165,8 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
           <p className="mt-1">{tt('역할 생성만으로 등록 제한이 해제되지는 않습니다. 운영자가 다중 계정 수집을 구성한 뒤 등록할 수 있습니다. 아래 명령어는 사전 준비용입니다.')}</p>
         </div>
       )}
-      <fieldset disabled={busy} className="min-w-0">
+      {accounts === null && <p role="status" className="text-[12px] text-ink-500">{tt('등록된 계정 정보를 확인하는 중…')}</p>}
+      <fieldset disabled={busy || !config || accounts === null} className="min-w-0">
         <legend className="mb-2 text-[13px] font-semibold text-ink-800">{tt('1. 연결할 계정 정보')}</legend>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="text-[12px] text-ink-600">Account ID
@@ -163,16 +188,16 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
           <p className="my-2">{tt('ExternalId는 자동 생성되며 역할 생성과 등록에 같은 값이 사용됩니다. 기존 역할을 연결하려면 해당 역할의 ExternalId로 바꾸세요.')}</p>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label>ExternalId
-              <input className={`${inputClass} mt-1 font-mono`} readOnly={Boolean(registeredAccount)} value={externalId} onChange={(event) => updateForm({ externalId: event.target.value.trim() })} />
+              <input className={`${inputClass} mt-1 font-mono`} readOnly={Boolean(registeredAccount)} disabled={!/^\d{12}$/.test(form.accountId)} value={externalId} onChange={(event) => updateForm({ externalId: event.target.value.trim() })} />
             </label>
             <label>{tt('AWS CLI 프로필 (선택)')}
               <input className={`${inputClass} mt-1`} placeholder={tt('비워두면 현재 로그인 사용')} value={form.profile} onChange={(event) => updateForm({ profile: event.target.value })} />
             </label>
           </div>
           <label className="mt-2 flex items-start gap-2">
-            <input type="checkbox" disabled={Boolean(registeredAccount)} checked={registeredAccount ? !registeredAccount.externalId : form.firstParty} onChange={(event) => updateForm({
+            <input type="checkbox" disabled={Boolean(registeredAccount) || !/^\d{12}$/.test(form.accountId)} checked={registeredAccount ? !registeredAccount.externalId : form.firstParty} onChange={(event) => updateForm({
               firstParty: event.target.checked,
-              externalId: event.target.checked ? '' : form.externalId || crypto.randomUUID(),
+              externalId: event.target.checked ? '' : form.externalId || newAccountExternalId(),
             })} />
             {tt('같은 조직 계정: 호스트 역할 ARN을 정확히 신뢰하며 ExternalId 생략에 동의합니다.')}
           </label>
@@ -218,7 +243,9 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         {!success && message && <p className="mt-2 text-[12px] text-ink-500">{tt('역할 생성 완료 여부, 신뢰할 호스트 역할 ARN, ExternalId 일치를 확인하세요. IAM 반영에 시간이 걸리면 잠시 후 다시 확인하세요.')}</p>}
         <details className="mt-3 text-[12px] text-ink-500">
           <summary className="cursor-pointer">{tt('역할 생성 또는 연결이 실패할 때')}</summary>
-          <p className="mt-2">{tt('AlreadyExists: 기존 AWSopsReadOnlyRole의 신뢰 정책과 ExternalId를 확인한 뒤 등록하세요. 기존 역할을 삭제하지 마세요.')}</p>
+          <p className="mt-2">{tt('AlreadyExists는 스택 이름 충돌일 수도 있습니다. CloudFormation에서 awsops-readonly-role의 상태·이벤트·리소스를 먼저 확인하세요.')}</p>
+          <p className="mt-1">{tt('ROLLBACK_COMPLETE: 역할이 생성되지 않았을 수 있습니다. 실패 원인을 해결하고 필요한 리소스가 없는 실패 스택인지 확인한 뒤 해당 스택만 삭제하세요. 삭제 완료 후 같은 스크립트로 재시도하세요.')}</p>
+          <p className="mt-1">{tt('CREATE_COMPLETE / UPDATE_COMPLETE: 스택이나 정상 역할을 삭제하지 마세요. 기존 역할의 신뢰 정책과 ExternalId를 맞춰 연결을 확인하세요. CREATE_IN_PROGRESS이면 완료될 때까지 기다리세요.')}</p>
           <p className="mt-1">{tt('AccessDenied: 대상 계정의 IAM·CloudFormation 권한과 호스트 역할의 AssumeRole 권한을 확인하세요.')}</p>
           <p className="mt-1">{tt('이 가이드는 웹 연결용입니다. 워커 기반 조회에는 별도의 WorkerTaskRoleArn 신뢰 설정이 필요합니다.')}</p>
           <p className="mt-1">{tt('AgentCore 조회는 현재 공통 AWSOPS_EXTERNAL_ID 설정을 사용합니다. 계정별 자동 생성값과 별개로 운영자 설정이 필요합니다.')}</p>

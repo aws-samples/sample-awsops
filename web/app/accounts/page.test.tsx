@@ -34,6 +34,22 @@ afterEach(() => {
 });
 
 describe('AccountsPage regions', () => {
+  it('does not treat a failed registry lookup as an empty registry', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/accounts') return new Response('{}', { status: 500 });
+      if (url === '/api/accounts/onboarding') return Response.json({
+        hostAccountId: '111111111111', hostTaskRoleArn: 'arn:aws:iam::111111111111:role/task',
+        region: 'ap-northeast-2', registrationEnabled: true,
+      });
+      return Response.json({ regions: [] });
+    });
+    render(<AccountsPage />);
+    await screen.findByText('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect(screen.queryByText('등록된 계정이 없습니다.')).toBeNull();
+    expect(screen.getByLabelText('Account ID').matches(':disabled')).toBe(true);
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+  });
   it('adds another region for an existing account without re-registering the account', async () => {
     render(<AccountsPage />);
 

@@ -10,6 +10,7 @@ const config = {
 const onRegistered = vi.fn().mockResolvedValue(undefined);
 
 beforeEach(() => {
+  sessionStorage.clear();
   onRegistered.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
     url === '/api/accounts/onboarding' ? config : { ok: true, status: 'verified' },
@@ -19,7 +20,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 async function fillAccount() {
   await screen.findByText('12자리 Account ID를 입력하면 계정에 맞는 AWS CLI 명령어가 표시됩니다.');
-  await waitFor(() => expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).not.toBe(''));
+  await waitFor(() => expect(screen.getByLabelText('Account ID').matches(':disabled')).toBe(false));
   fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
   fireEvent.change(screen.getByLabelText('계정 별칭'), { target: { value: 'Production' } });
 }
@@ -104,5 +105,52 @@ describe('account onboarding flow', () => {
     const original = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
     expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).not.toBe(original);
+  });
+  it('restores the same ExternalId after correcting an ID or switching accounts', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    const original = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '22222222222' } });
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(original);
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(original);
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`"ParameterValue": "${original}"`);
+  });
+  it('preserves first-party consent when returning to the same account', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '22222222222' } });
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(/set -euo pipefail/).textContent).not.toContain('"ParameterKey": "ExternalId"');
+  });
+  it.each([false, true])('restores a draft after remount (firstParty=%s)', async (firstParty) => {
+    const first = render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    fireEvent.change(screen.getByLabelText('ExternalId'), { target: { value: 'saved-external-id' } });
+    if (firstParty) fireEvent.click(screen.getByRole('checkbox'));
+    first.unmount();
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(firstParty ? '' : 'saved-external-id');
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(firstParty);
+  });
+  it('waits for registered-account lookup before allowing setup', async () => {
+    const page = render(<AccountOnboarding onRegistered={onRegistered} accounts={null} />);
+    await screen.findByText('등록된 계정 정보를 확인하는 중…');
+    expect(screen.getByLabelText('Account ID').matches(':disabled')).toBe(true);
+    expect(screen.queryByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeNull();
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+    page.rerender(<AccountOnboarding onRegistered={onRegistered} accounts={[]} />);
+    await fillAccount();
+    expect(screen.getByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeTruthy();
   });
 });

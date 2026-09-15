@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAccountOnboarding, onboardingInputError } from './account-onboarding';
+import { buildAccountOnboarding, newAccountExternalId, onboardingInputError } from './account-onboarding';
 
 const config = {
   hostAccountId: '111111111111', hostTaskRoleArn: 'arn:aws:iam::111111111111:role/awsops-dev-task',
@@ -13,6 +13,7 @@ const input = { accountId: '222222222222', region: 'ap-northeast-2', externalId:
 const directories: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -49,6 +50,14 @@ fi
 }
 
 describe('account onboarding script', () => {
+  it('uses secure random bytes when randomUUID is unavailable and fails closed without crypto', () => {
+    vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => bytes.fill(17) });
+    const externalId = newAccountExternalId();
+    expect(externalId).toBe(`awsops-${'11'.repeat(16)}`);
+    expect(onboardingInputError({ ...input, externalId })).toBeNull();
+    vi.stubGlobal('crypto', undefined);
+    expect(newAccountExternalId()).toBe('');
+  });
   it('executes with the target guard, exact host trust, safe arguments and read-only permissions', () => {
     const result = runScript();
     expect(result.status).toBe(0);
