@@ -76,7 +76,8 @@ malformed or capped reads never prove absence. Other display reads keep their
 existing row cap. Authentication and type-specific admin checks still apply.
 Inventory and EKS reads share the abort signal; superseded loads are aborted
 and late completions cannot overwrite newer results. If a failed/incomplete load builds
-an empty graph, the previous nonempty same-account graph and its provenance are retained;
+an empty graph, the previous nonempty graph and its provenance are retained only for the same
+account, regions and `includeGlobal` scope;
 a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
 target-group row, not the independent task/subnet/pod evidence. The Refresh chip uses
 the newest source/eligible last-success capture time, so a new read does not reset old

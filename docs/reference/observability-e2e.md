@@ -91,13 +91,35 @@ The opt-in `/topology?view=e2e` page connects the full configuration graph, host
 - `hostAccountId` is the trusted 12-digit ID from the authenticated account list's unique `isHost` entry. Never derive host authority from telemetry. It resolves the inventory `self` sentinel against numeric trace claims; missing or conflicting authority withholds numeric joins.
 - Only `configurationComplete === true` permits identity arbitration. Every target kind, including instances, receives a copied veto otherwise. The caller must pass actual load/coverage status; a bare `FlowGraph` cannot certify its own completeness.
 - `networkRead` carries idle/loading/complete/partial/failed/unknown/unsupported state, failed categories and unknown-window categories. Missing state stays unknown; complete state with failure/unknown-window evidence becomes partial. Non-host selection forces unsupported. Observation rows are positive evidence, never a successful-absence assertion by themselves.
-- `servicesComplete` attests a complete, fresh service-snapshot read within its recorded scope, not all traffic. It defaults false and also requires a valid snapshot capture time. The UI derives it from successful, fresh, non-retained collection/read metadata without known truncation, with explicit zero node/edge drops, orphan/invalid spans and unresolved messaging. Missing loss counters withhold completeness. Matching workload claims cannot promote identity when this evidence is unverified; source nodes remain visible. Existing visible conflict vetoes remain in force, while unrelated configuration evidence remains usable.
+- `servicesComplete` attests a complete, fresh service-snapshot read within its recorded scope, not all traffic. It defaults false and also requires a valid snapshot capture time. The UI derives it from successful, fresh, non-retained collection/read metadata without known truncation, with explicit zero node/edge drops, orphan/invalid spans and unresolved messaging. Missing loss counters, a `from` subgraph marker, or `capped: true` withhold completeness. Matching workload claims cannot promote identity when this evidence is unverified; source nodes remain visible. Existing visible conflict vetoes remain in force, while unrelated configuration evidence remains usable.
 - Service node `capturedAt` preserves its own API row timestamp; `snapshotCapturedAt` records the separate legacy envelope clock. Missing row timestamps remain null, and service edges do not invent a capture timestamp from that envelope.
 
-Graph-generated labels use stable `labelKey` values; renderers translate those keys while preserving real source names. Display-truncated target membership is incomplete evidence, not a definitive missing match. Private implementation plans remain outside this public tree.
+Renderers localize graph-generated `labelKey` values and recognized legacy relation labels, qualify default Pod endpoint labels with namespaces, and preserve custom source identifiers for display and search. Display-truncated target membership is incomplete evidence, not a definitive missing match. Private implementation plans remain outside this public tree.
 
 Selection applies evidence/focus/query reachability before its default 350-node/700-edge bound. Explicit focus and query hits prioritize nearby complete observation groups before farther value-ranked groups. Shared context attaches once and never grants transit; incomplete residual explicit pins and other omissions remain disclosed.
 
 Complete target membership is carried by the in-memory `FlowGraph.targetMembers` sidecar, independently of capped display metadata. The persisted node projection does not gain that field. Missing or invalid full membership retains conservative uncertainty; a valid complete set permits exact exclusion of unrelated candidates and per-member Pod corroboration. IPv6 spelling variants share one comparison key, retaining all competing records.
 
 Workload scope requires at least one compatible record attesting both account and region. Other explicit claims remain constraints; complementary partial records cannot manufacture a complete scope tuple.
+
+## Evidence canvas
+
+The reusable canvas uses the canonical read/completeness and ranking contracts. It
+keeps the ranked primary observed flow and a two-hop neighborhood visible. Context
+edges contribute only at the first hop. The viewport-sized canvas can fit that
+neighborhood down to 0.05 zoom. Incomplete configuration and service reads remain
+visible even when no service nodes exist; withheld node identity has an icon and subtitle.
+Candidate context remains distinct from verified matches; group details retain at
+most 20 displayed entries with safe omission counts and member-specific identity.
+Target-group capture, node capture and legacy snapshot clocks remain distinct.
+
+The additive `omittedCategoryCounts` field counts hidden or incomplete observation
+groups after eligibility/focus/query filtering, alongside the unchanged sorted,
+nonempty source labels in `omittedCategories`. The counts map's empty key records
+missing category labels, rendered as localized "Category unknown" prose. This
+display budget is separate from source collection caps or missing telemetry.
+The canvas receives source evidence from the opt-in topology page. Its component
+tests complement the page's service/network browser checks and multilingual guide
+builds; neither fixture coverage nor source integration establishes live E2E coverage.
+
+The page applies account, region and global-resource filters to all inventory pages and enrichment reads. A scope-keyed remount cancels pending work and clears retained graph/detail provenance across any scope change. Same-scope failed refreshes preserve the previous graph with a notice; the latest-owner unknown/running ledger and missing-capture vetoes remain required. Service metadata validation preserves attempt/publication state, losses, source windows and producer clocks; root subgraphs or caps never certify full workload membership. Numeric host identity comes only from the authenticated account list.

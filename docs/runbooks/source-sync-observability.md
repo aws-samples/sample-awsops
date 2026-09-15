@@ -241,10 +241,10 @@ withhold ownership. Authentication, scope checks and read-only policy remain unc
 | `cluster_unreadable` / `cluster_limit_possible` | EKS reads, metadata or enumeration coverage are unavailable/incomplete. Known failed region/VPC scopes block matching IPs; unknown scope or truncated enumeration blocks the map. Check EKS status/permissions and the returned region/truncation metadata; do not assume missing clusters own no IPs. |
 | `eks_not_enumerated` / `ownership_reason` | Host EKS evidence is not joined to member/mixed/all-account inventory or unqueried regions. Use an appropriate host scope for host checks; cached configuration labels do not establish live ownership. |
 | Ambiguous IP | Only independently listed active pods or RUNNING tasks with complete scope can be candidates. Succeeded/Failed pods and STOPPED/DELETED tasks do not claim old IPs; unknown states/references remain unverified. The same IP in two clusters within one region/VPC stays withheld even if labels match; distinct addresses/scopes remain independent. |
-| Retained-data notice | A failed/incomplete refresh that would yield an empty graph keeps the prior nonempty graph only for the same account, including its original evidence. Current attempt errors are separate. Complete empty results replace it; account changes discard it. Retention does not establish current traffic. |
+| Retained-data notice | A failed/incomplete refresh that would yield an empty graph keeps the prior nonempty graph only for the same account, regions and `includeGlobal` scope, including its original evidence. Current attempt errors are separate. Complete empty results replace it; account, region or global-resource scope changes discard it. Retention does not establish current traffic. |
 | Old/unknown capture time | Refresh freshness comes from source capture/eligible host last-success time, never the new read's clock. Member clocks do not borrow the aggregate success timestamp. `targetCapturedAt` dates only the target-group row, not task/subnet/pod ownership evidence. |
 
-The hydrated account scope controls inventory reads; earlier loads are cancelled and
+The hydrated account, regions and `includeGlobal` scope controls inventory reads; earlier loads are cancelled and
 late responses rejected. Aggregate run health is shown under every scope, separately
 from HTTP failures and unknown per-account health. Running syncs and ordinary ambiguous
 pod IPs are not failed collections. Raw IP labels are not evidence that a workload is absent.
@@ -264,7 +264,7 @@ The bounded publication implementation in `web/lib/graph-store.ts` supplies opti
 **Local verification:** from `web/`, run:
 
 ```bash
-npx vitest run lib/inventory.test.ts app/topology/page.test.tsx app/topology/page-ownership.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
+npx vitest run lib/inventory.test.ts app/topology/page.test.tsx app/topology/page-scope.test.tsx app/topology/page-ownership.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
 ```
 
 These fixtures exercise real page/builder and graph-state-reader boundaries with local

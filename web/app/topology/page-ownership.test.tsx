@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 import TopologyPage from './page';
 import { setActiveAccount } from '@/lib/account-context';
 import * as topology from '@/lib/flow-topology';

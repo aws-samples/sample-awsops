@@ -1621,6 +1621,7 @@ describe('selectE2eGraph — filtering before bounds', () => {
       expect(view.nodes.some(node => node.label === 'targetHigh1')).toBe(false);
       expect(view.edges.filter(edge => edge.evidence === 'identity')).toHaveLength(0);
       expect(view.omittedCategories).toEqual(complete ? [] : ['INTER_AZ']);
+      expect(view.omittedCategoryCounts).toEqual(complete ? {} : { INTER_AZ: 1 });
       expect(view.omittedNodes).toBe(6 - view.nodes.length);
       expect(view.omittedEdges).toBe(5 - view.edges.length);
       expectNoDanglingEdges(view);
