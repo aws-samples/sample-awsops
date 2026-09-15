@@ -173,4 +173,8 @@ def test_catalog_teaches_completion_for_every_affected_tool():
         description = tools[name]["description"]
         assert "collectionStatus" in description, name
         assert "partial" in description and "unknown" in description and "empty" in description, name
-    assert "tracePayloadTruncated" in tools["tempo_get_trace"]["description"]
+        if name.startswith(("prometheus_", "mimir_")):
+            assert "payload_truncated" in description, name
+    trace_description = tools["tempo_get_trace"]["description"]
+    for marker in ("tracePayloadTruncated", "tracePayloadUnverified", "partial", "unknown", "absence"):
+        assert marker in trace_description, marker
