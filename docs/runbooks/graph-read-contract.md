@@ -100,10 +100,8 @@ Use browser developer tools on an already-authorized page to distinguish HTTP503
 500/timeout, client-side deadline expiry without a response, and successful partial reads.
 401/login redirects require sign-in;403 is access denial; other 4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
-One page read may issue up to five requests within a ten-second client deadline, retrying
-only typed 503/busy responses. Base waits are 250/500/1000/2000ms; a positive numeric
-`Retry-After` can lengthen a wait, but cannot extend the overall budget. A wait beyond that
-budget ends recovery instead of retrying early. Scope changes cancel waits and reads.
+Use the single [browser recovery contract](#browser-recovery-and-source-evidence)
+for attempt limits, timing, server hints and cancellation when interpreting these logs.
 Exhaustion preserves the last observed typed `busy` reason. With no such observation
 (or after a later non-busy response), the client deadline reports `timeout`; this may occur
 without any HTTP500 or SQLSTATE log. Multiple server shed logs can therefore belong to

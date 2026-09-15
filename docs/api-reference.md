@@ -290,7 +290,7 @@ runtime payloads for compatibility with older or malformed responses.
 | `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
 | `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
-| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields accepted from the inventory publication companion. This reader prerequisite does
@@ -321,7 +321,7 @@ read-unavailable metadata; it never certifies empty collection or exposes an err
 The budget also covers a single stalled request. Without a confirmed busy response, its
 expiry can synthesize `readReason: "timeout"` locally without any HTTP response or SQLSTATE.
 After confirmed admission shedding, an unfinished recovery retains `busy` as the last
-observed server cause, not a diagnosis of the final stalled request. The value alone does
+observed server cause, not a diagnosis of the final stalled request. A later non-busy response clears that prior cause; if its body then stalls, the client deadline reports timeout. The value alone does
 not identify its origin; inspect completed response bodies and server logs.
 Deploy the updated web image for both recovery and collection-panel changes.
 

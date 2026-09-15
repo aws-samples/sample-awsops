@@ -179,7 +179,7 @@ When a partial graph lacks an explanation, inspect its existing collection field
 `infraUnavailable`, and per-source `windowStartMs/windowEndMs`. Source reasons and these
 known loss counters explain partial results; arbitrary numeric metadata is not loss evidence.
 Unresolved span parents/links, invalid spans and unresolved messaging spans are not labeled
-as processing limits. The panel discloses positive loss counters and unavailable inventory context, renders
+as processing limits. The panel groups positive loss counters and unavailable inventory context in its Collection limitations list, renders
 source windows separately from publication/capture clocks, and does not infer retention
 from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
 The typed collection contract also describes optional additive producer fields; unknown
