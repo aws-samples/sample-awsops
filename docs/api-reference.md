@@ -203,7 +203,7 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/cost/availability` | GET | Cost Explorer 가용성 probe (1h 캐시, `?force=1` 재확인) | verifyUser |
 | `/api/cost/detail` | GET | 서비스별 비용 상세 (`?service=` 필수, ≤100자) | verifyUser |
 | `/api/finops/findings` | GET | ADR-020 FinOps 기본 권장 엔진 — 미해결 findings + 최근 배치 실행(`finops_runs`) 조회, Aurora만 읽음(라이브 AWS 호출 없음). `finops_baseline_enabled=false`면 `{enabled:false, findings:[], lastRun:null}` | verifyUser |
-| `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; GET policy-read failure → 503 (see below) | verifyUser |
+| `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; invalid tool policy → 400; unavailable validation/read → 503 (see below) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
 | `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
@@ -287,6 +287,21 @@ against `scripts/v2/agentcore/catalog.py`. A bare name must uniquely resolve wit
 selected gateway; unknown, ambiguous or foreign-target names grant nothing. Integration
 grants are separate exact names and cannot authorize gateway-qualified tools. No flag,
 credential boundary, arbitrary MCP support or mutating capability is enabled here.
+
+### Custom-tool declaration checks and frozen stdio limitation
+
+Skill writes reject unknown or ambiguous tool names (400). Edits and attachments also
+check current bindings, including disabled rows: each attached gateway must retain an
+effective grant for a nonempty declaration. Shared skills may contain known tools from
+several gateways; each agent resolves only its own subset. Instruction-only `[]` remains
+valid and never clears retained policy history. Unavailable validation returns 503 and
+performs no write. These are authoring preflight checks, not live tool-discovery proof.
+
+Restricted custom agents cannot address the vendor's bare ClickHouse stdio tool names
+through this gateway-qualified catalog. Reattaching a skill does not restore those stdio
+tools. `CLICKHOUSE_OFFICIAL_MCP` remains frozen/default-off; keep it off. The supported
+ClickHouse path here is the existing gated gateway/Lambda identity set; no stdio identities
+or new runtime capabilities are introduced.
 
 ## Configuration topology inventory evidence
 

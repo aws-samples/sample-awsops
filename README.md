@@ -198,7 +198,7 @@ Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --n
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
 The required migration, web connection-phase and agent tool-policy history PostgreSQL suites fail if Docker is missing;
 they use bare `docker` on PATH (the documented exceptions to optional legacy itests).
-The web suite also requires `npm ci --prefix web` for the locked driver and TypeScript.
+The web connection and policy suites also require `npm ci --prefix web` for the locked driver and TypeScript.
 These suites and their offline companion use no AWS credentials.
 Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.15.7**;
 their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
@@ -427,7 +427,7 @@ Python 3.12와 해시가 고정된 Pillow가 필요합니다. 다음 명령을 �
 Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`로
 `pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
 필요합니다. 필수 migration·웹 연결 단계·에이전트 도구 정책 이력 PostgreSQL 테스트는 레거시 선택적 itest와 달리
-Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 테스트는 잠긴 드라이버와
+Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 연결·정책 테스트는 잠긴 드라이버와
 TypeScript를 위해 `npm ci --prefix web`도 필요합니다. 이 테스트들과 오프라인 companion은
 AWS 자격증명을 사용하지 않습니다.
 인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,

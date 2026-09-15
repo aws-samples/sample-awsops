@@ -190,3 +190,19 @@ export async function writeAudit(a: { actor: string; action: string; objectType:
     [a.actor, a.action, a.objectType, a.objectId, a.beforeHash ?? null, a.afterHash ?? null],
   );
 }
+
+/** Preflight current bindings, including disabled skills/agents; no write on unavailable evidence. */
+export async function validateToolBindings(change: { skillName: string; tools: string[] } | { agentName: string; gateway: string } | { agentId: number; skillId: number }): Promise<string[]> {
+  const { toolPolicyErrors } = await import('./skill-validation');
+  if ('skillName' in change) {
+    const { rows } = await getPool().query(`SELECT DISTINCT a.gateway FROM agents a JOIN agent_skills b ON b.agent_id=a.id JOIN skills s ON s.id=b.skill_id WHERE s.name=$1`, [change.skillName]);
+    return rows.flatMap(r => toolPolicyErrors(change.tools, r.gateway));
+  }
+  if ('agentName' in change) {
+    const { rows } = await getPool().query(`SELECT s.tool_allowlist FROM skills s JOIN agent_skills b ON b.skill_id=s.id JOIN agents a ON a.id=b.agent_id WHERE a.name=$1`, [change.agentName]);
+    return rows.flatMap(r => toolPolicyErrors(r.tool_allowlist, change.gateway));
+  }
+  if (![change.agentId, change.skillId].every(id => Number.isSafeInteger(id) && id > 0)) return ['Invalid binding IDs'];
+  const { rows } = await getPool().query(`SELECT a.gateway, s.tool_allowlist FROM agents a JOIN skills s ON s.id=$2 WHERE a.id=$1`, [change.agentId, change.skillId]);
+  return rows.length === 1 ? toolPolicyErrors(rows[0].tool_allowlist, rows[0].gateway) : ['Agent or skill not found'];
+}

@@ -5,6 +5,8 @@ const isAdmin = vi.fn();
 const upsertSkill = vi.fn();
 const upsertAgent = vi.fn();
 const writeAudit = vi.fn();
+const validateToolBindings = vi.fn();
+const attachSkill = vi.fn();
 const getAgentSpace = vi.fn();
 const upsertAgentSpace = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
@@ -12,7 +14,8 @@ vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/catalog', () => ({
   upsertSkill: (...a: unknown[]) => upsertSkill(...a),
   upsertAgent: (...a: unknown[]) => upsertAgent(...a),
-  attachSkill: vi.fn(), setEnabled: vi.fn(),
+  attachSkill: (...a: unknown[]) => attachSkill(...a), setEnabled: vi.fn(),
+  validateToolBindings: (...a: unknown[]) => validateToolBindings(...a),
   listAgentsWithSkills: vi.fn(async () => []), listSkills: vi.fn(async () => []),
   writeAudit: (...a: unknown[]) => writeAudit(...a),
 }));
@@ -34,6 +37,7 @@ function getReq(cookie = 'awsops_token=t') {
 beforeEach(() => {
   verifyUser.mockReset(); isAdmin.mockReset(); upsertSkill.mockReset(); upsertAgent.mockReset(); writeAudit.mockReset();
   getAgentSpace.mockReset(); upsertAgentSpace.mockReset();
+  validateToolBindings.mockReset().mockResolvedValue([]); attachSkill.mockReset();
   verifyUser.mockResolvedValue({ sub: 'a', email: 'admin@x', groups: ['admins'] });
   isAdmin.mockResolvedValue(true);
   getAgentSpace.mockResolvedValue(null);
@@ -125,4 +129,28 @@ it('returns unavailable instead of global mode when the Agent Space policy read 
   const res = await GET(getReq());
   expect(res.status).toBe(503);
   expect(await res.json()).toEqual({ error: 'Customization policy unavailable' });
+});
+
+it('rejects an unknown tool before any catalog write', async () => {
+  const { POST } = await import('./route');
+  const response = await POST(req({ kind: 'skill', name: 'scoped', description: 'd', instructions: 'i', toolAllowlist: ['typo_tool'] }));
+  expect(response.status).toBe(400);
+  expect(upsertSkill).not.toHaveBeenCalled();
+});
+it.each([['invalid', 400], ['unavailable', 503]])('blocks an %s binding without a write', async (mode, status) => {
+  if (mode === 'invalid') validateToolBindings.mockResolvedValue(['No effective tool grant for gateway security']);
+  else validateToolBindings.mockRejectedValue(new Error('private DB error'));
+  const { PUT } = await import('./route');
+  const response = await PUT(putReq({ op: 'attach', agentId: 1, skillId: 2 }));
+  expect(response.status).toBe(status);
+  expect(await response.text()).not.toContain('private DB error');
+  expect(attachSkill).not.toHaveBeenCalled();
+});
+
+it.each(['skill','agent'])('rejects a %s edit that invalidates current bindings before upsert', async kind => {
+  validateToolBindings.mockResolvedValue(['No effective tool grant for gateway security']);
+  const { POST } = await import('./route');
+  const response = await POST(req({ kind, name: 'shared', description: 'd', instructions: 'i', persona: 'p', gateway: 'security', routingKeywords: [], toolAllowlist: ['prometheus_query'] }));
+  expect(response.status).toBe(400);
+  expect(upsertAgent).not.toHaveBeenCalled(); expect(upsertSkill).not.toHaveBeenCalled();
 });

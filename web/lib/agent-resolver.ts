@@ -4,18 +4,8 @@
 // (server-side, OUTSIDE the model). The built-in branch is byte-identical to Phase 1.
 import type { AgentWithSkills } from '@/lib/catalog';
 import type { AgentSpace } from '@/lib/agent-space';
-import GATEWAY_TOOL_CATALOG from './gateway-tool-catalog.json';
-import { isReservedAgentName } from './skill-validation';
-
-// Snapshot of scripts/v2/agentcore/catalog.py TARGETS + MCP_SERVER_TARGETS read allowlists.
-// The parity test prevents drift. These identities grant nothing beyond live discovery and
-// runtime official-MCP gates; registration never adds a target or enables a frozen capability.
-export function qualifyToolNames(names: string[], known: string[]): string[] {
-  return Array.from(new Set(names.flatMap((name) => {
-    const matches = known.filter((id) => id === name || (!name.includes('___') && id.endsWith(`___${name}`)));
-    return matches.length === 1 ? matches : []; // missing/ambiguous aliases fail closed
-  })));
-}
+import { isReservedAgentName, gatewayToolIdentities, qualifyToolNames } from './skill-validation';
+export { qualifyToolNames } from './skill-validation';
 
 // Immutable, non-overridable safety boundary prepended to every custom prompt (Addendum #5).
 export const SAFEGUARD_LINE =
@@ -141,10 +131,7 @@ export function resolveAgent(
       .filter(Boolean).join('\n\n');
     // Resolve aliases only against this gateway's server-owned target catalog. Never strip
     // arbitrary prefixes or match bare names across gateways/integrations at runtime.
-    const gatewayKey = custom.gateway === 'observability' ? 'external-obs' : custom.gateway;
-    const known = Object.entries(GATEWAY_TOOL_CATALOG)
-      .filter(([, target]) => target.gateway === gatewayKey)
-      .flatMap(([target, spec]) => spec.tools.map((tool) => `${target}___${tool}`));
+    const known = gatewayToolIdentities(custom.gateway);
     const declared = ordered.flatMap((s) => s.toolAllowlist);
     const capped = !!space?.toolAllowlist.length;
     const cap = new Set(qualifyToolNames(space?.toolAllowlist ?? [], known));

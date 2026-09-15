@@ -25,7 +25,7 @@ Catalog writes require the Cognito admin group or the configured SSM admin allow
 5. Toggle new or edited items on in the **Agents / Skills** lists; saves start them disabled. Built-in rows cannot be toggled here.
 6. Save the account's **Agent Space** with the intended agents and integrations. A confirmed missing space preserves legacy global membership; after creating a space, only its selected custom agents qualify. Its skill selection is stored metadata, not a runtime permission control. Runtime instructions come from enabled, attached skills.
 
-Gateway choices are `network`, `container`, `iac`, `data`, `security`, `monitoring`, `cost`, and `ops`. **New Skill** also offers **agent types (targeting)** checkboxes. In **Agent Space**, edit the comma-separated **Tool allowlist (account cap)** and click **Save Agent Space**; each successful save increments its version. During loading or a failed policy read the form is disabled, previously loaded values remain visible, and **Retry policy load** must succeed before saving.
+Gateway choices are `network`, `container`, `iac`, `data`, `security`, `monitoring`, `cost`, `ops`, and `observability`. **New Skill** also offers **agent types (targeting)** checkboxes. In **Agent Space**, edit the comma-separated **Tool allowlist (account cap)** and click **Save Agent Space**; each successful save increments its version. During loading or a failed policy read the form is disabled, previously loaded values remain visible, and **Retry policy load** must succeed before saving.
 
 ## Tool restrictions and revocation
 
@@ -36,6 +36,8 @@ Legacy gateway inheritance applies only when the agent has no restriction histor
 Once a bound skill declares a nonempty tool list, the agent retains that policy history. Disabling the skill, editing its list to `[]`, detaching it or deleting it after detachment cannot restore unrestricted gateway reads. The persona and instructions can still work with no tools. To restore access, attach or update an explicitly scoped skill, enable it, and confirm that its grants intersect the account cap. Clearing lists is not a reset mechanism.
 
 Data-source endpoints, credentials and schema refresh are managed in the **Integrations** hub. The advanced registry contains legacy integration kinds; its presence does not authorize arbitrary BYO-MCP or frozen transports. Official presets remain gated, ClickHouse stdio remains frozen, and READ_WRITE metadata is proposal-only. No registration changes those gates.
+
+Known tools for multiple gateways may share a skill; each attached agent must retain an effective grant in its own gateway. Unknown or ambiguous names and bindings with no effective grant are rejected before writing (400); unavailable validation returns 503. Instruction-only `[]` remains valid. Restricted agents cannot grant the bare vendor tools of frozen ClickHouse stdio: reattaching a skill cannot restore them. Keep `CLICKHOUSE_OFFICIAL_MCP` off; this catalog covers the gateway/Lambda path only.
 
 ## Availability and rollout
 

@@ -291,3 +291,21 @@ it.skipIf(!process.env.POLICY_TEST_POSTGRES_SOCKET)('serializes scope edits with
     await admin.end();
   }
 }, 15_000);
+
+describe('registration gateway validation', () => {
+  it('rejects a known tool with no grant on the bound gateway; shared unions remain valid', async () => {
+    const { validateToolBindings } = await import('./catalog');
+    query.mockResolvedValue({ rows: [{ gateway: 'security' }, { gateway: 'observability' }] });
+    expect(await validateToolBindings({ skillName: 'shared', tools: ['list_users'] })).toContain('No effective tool grant for gateway observability');
+    expect(await validateToolBindings({ skillName: 'shared', tools: ['list_users', 'prometheus_query'] })).toEqual([]);
+    expect(await validateToolBindings({ skillName: 'shared', tools: [] })).toEqual([]);
+  });
+  it('checks proposed attachments and missing references before writing', async () => {
+    const { validateToolBindings } = await import('./catalog');
+    query.mockResolvedValueOnce({ rows: [{ gateway: 'security', tool_allowlist: ['prometheus_query'] }] });
+    expect(await validateToolBindings({ agentId: 1, skillId: 2 })).toContain('No effective tool grant for gateway security');
+    query.mockResolvedValueOnce({ rows: [] });
+    expect(await validateToolBindings({ agentId: 1, skillId: 2 })).toContain('Agent or skill not found');
+    expect(query.mock.calls.every(([sql]) => /^SELECT/.test(sql))).toBe(true);
+  });
+});

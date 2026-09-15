@@ -273,7 +273,7 @@ transport/database doubles.
 From the repository root, with locked web/scripts dependencies and local Docker:
 
 ```bash
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 ```
 
 The latter uses disposable PostgreSQL 17, including the connected-client ordering case,

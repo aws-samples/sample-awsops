@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 864089e7f572 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8f9b9fab6f54 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -183,13 +183,12 @@ python3 -m pytest -q scripts/v2/test_ci_*.py
 npm ci --prefix web
 npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
 node --test scripts/v2/ci/*.test.mjs
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 ```
 
-Both PostgreSQL suites are required and fail rather than skip when prerequisites are missing.
+All three PostgreSQL suites are required and fail rather than skip when prerequisites are missing.
 They require bare `docker` on PATH, a reachable daemon, OpenSSL and `postgres:17`, without an
-automatic `sudo`/`DOCKER` override. The web connection suite uses the locked web driver and
-TypeScript, covering phase/timing logs, asynchronous passwords and original error propagation.
+automatic `sudo`/`DOCKER` override. The web connection and policy suites use the locked web driver and TypeScript. The policy suite covers sticky restrictions and concurrent edits; the web suite covers connection phases, asynchronous passwords and error propagation.
 
 The CI glob also needs Python boto3/botocore (`pip install -r agent/requirements.txt`).
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform

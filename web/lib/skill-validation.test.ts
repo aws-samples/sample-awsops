@@ -1,6 +1,7 @@
 // web/lib/skill-validation.test.ts
 import { describe, it, expect } from 'vitest';
-import { validateSkill, validateAgent, KNOWN_GATEWAYS, AGENT_TYPES } from './skill-validation';
+import catalog from './gateway-tool-catalog.json';
+import { validateSkill, validateAgent, KNOWN_GATEWAYS, AGENT_TYPES, toolPolicyErrors } from './skill-validation';
 
 describe('skill-validation', () => {
   it('accepts a well-formed skill', () => {
@@ -48,4 +49,24 @@ describe('skill-validation', () => {
 
 it.each(['security', 'observability', 'code', 'auto'])('reserves the %s command identity', name => {
   expect(validateAgent({ name, description: 'd', persona: '', gateway: 'ops', routingKeywords: ['test'] }).ok).toBe(false);
+});
+
+describe('catalog tool declarations', () => {
+  it.each(['not_a_real_tool', 'foreign___list_users', '!awsops-deny-all!'])('rejects unknown declaration %s before registration', tool => {
+    expect(validateSkill({ name: 'scope', description: 'd', instructions: 'i', toolAllowlist: [tool] }).ok).toBe(false);
+  });
+  it('accepts instruction-only and known shared-gateway declarations', () => {
+    for (const tools of [[], ['iam-mcp-target___list_users', 'prometheus-mcp-target___prometheus_query']])
+      expect(validateSkill({ name: 'scope', description: 'd', instructions: 'i', toolAllowlist: tools }).ok).toBe(true);
+  });
+});
+
+it('rejects ambiguous shorthand while preserving exact target declarations', () => {
+  const fixture = catalog as Record<string, { gateway: string; tools: string[] }>;
+  fixture['fixture-one'] = { gateway: 'security', tools: ['fixture_query'] };
+  fixture['fixture-two'] = { gateway: 'security', tools: ['fixture_query'] };
+  try {
+    expect(toolPolicyErrors(['fixture_query'], 'security')).toContain('Ambiguous tool for gateway security');
+    expect(toolPolicyErrors(['fixture-one___fixture_query'], 'security')).toEqual([]);
+  } finally { delete fixture['fixture-one']; delete fixture['fixture-two']; }
 });

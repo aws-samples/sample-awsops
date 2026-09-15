@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const save = () => screen.getByRole('button', { name: 'Save Agent Space' });
-const cap = () => screen.getByPlaceholderText('e.g. simulate_principal_policy, get_account_authorization_details') as HTMLInputElement;
+const cap = () => screen.getByPlaceholderText('e.g. simulate_principal_policy, get_account_security_summary') as HTMLInputElement;
 
 describe('policy availability', () => {
   it.each(['503', 'network', 'invalid-json', 'invalid-state'])('blocks first-load %s without claiming global mode or writing empty policy', async failure => {

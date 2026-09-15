@@ -10,7 +10,7 @@ interface SkillRow { id: number; name: string; description: string; tier: string
 interface SpaceState { enabledAgentIds: number[]; enabledSkillIds: number[]; enabledIntegrationIds: number[]; toolAllowlist: string[]; version?: number }
 interface IntegrationRow { id: number; name: string; kind: string; direction: string; capability: string; enabled: boolean; tier: string; receivePath?: string | null; }
 
-const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops'];
+const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops', 'observability'];
 // ADR-039 agent-type lifecycle roles (mirrors web/lib/skill-validation.ts AGENT_TYPES).
 const AGENT_TYPES = ['generic', 'on_demand', 'triage', 'rca', 'mitigation', 'evaluation'];
 // ADR-039 P2 — integration kinds. Imported (not re-hardcoded) so this dropdown can't drift from the
@@ -335,7 +335,7 @@ export default function CustomizationPage() {
         <div className="text-[12px]">
           <div className="mb-1 font-medium">Tool allowlist (account cap, comma-separated)</div>
           <input className="w-full rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]"
-                 placeholder="e.g. simulate_principal_policy, get_account_authorization_details"
+                 placeholder="e.g. simulate_principal_policy, get_account_security_summary"
                  value={allowlistText} onChange={(e) => setAllowlistText(e.target.value)} />
           <div className="mt-1 text-ink-400">Empty = no account cap (Phase-1 advisory). A non-empty list can only REMOVE tools a skill declared — it never grants new tools.</div>
         </div>

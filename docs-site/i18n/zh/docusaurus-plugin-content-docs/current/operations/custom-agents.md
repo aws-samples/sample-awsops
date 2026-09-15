@@ -25,7 +25,7 @@ import Screenshot from '@site/src/components/Screenshot';
 5. 在 **Agents / Skills** 列表中启用新建或编辑后的项目。保存后默认禁用，内置项目不能在此切换。
 6. 在账户的 **Agent Space** 选择代理和集成并保存。成功确认不存在空间记录时，保留原有全局选择；创建记录后，仅所选自定义代理可用。技能选择属于存储的元数据，并非运行时权限控制。运行指令来自已启用且已绑定的技能。
 
-网关可选 `network`、`container`、`iac`、`data`、`security`、`monitoring`、`cost` 和 `ops`。**New Skill** 还提供目标 **agent types** 复选框。在 **Agent Space** 中编辑逗号分隔的 **Tool allowlist (account cap)**，再点击 **Save Agent Space**；每次成功保存都会增加版本号。加载中或策略读取失败时，表单禁用并保留之前的值。必须成功**重新加载策略**后才能保存。
+网关可选 `network`、`container`、`iac`、`data`、`security`、`monitoring`、`cost`、`ops` 和 `observability`。**New Skill** 还提供目标 **agent types** 复选框。在 **Agent Space** 中编辑逗号分隔的 **Tool allowlist (account cap)**，再点击 **Save Agent Space**；每次成功保存都会增加版本号。加载中或策略读取失败时，表单禁用并保留之前的值。必须成功**重新加载策略**后才能保存。
 
 ## 工具限制与撤销
 
@@ -36,6 +36,8 @@ import Screenshot from '@site/src/components/Screenshot';
 绑定的技能一旦声明非空工具列表，代理便保留限制历史。禁用技能、将列表改为 `[]`、解绑或解绑后删除，都不会恢复无限制的网关权限。没有工具时仍可使用角色提示和指令。恢复权限时，请绑定或更新明确限定范围的技能，启用它，并确认其授权与账户上限存在交集。清空列表不是重置限制的方法。
 
 数据源端点、凭证和模式刷新在 **集成** 中心管理。高级注册表包含历史集成类型，但这不代表允许任意 BYO-MCP 或被冻结的传输方式。官方预设仍受开关控制，ClickHouse stdio 仍被冻结，READ_WRITE 元数据仅用于提出建议。注册不会改变这些限制。
+
+同一技能可以声明多个网关的已知工具，但每个已绑定代理必须在自己的网关中保有有效授权。未知或歧义名称以及没有有效授权的绑定会在写入前拒绝（400），无法验证时返回503。仅含指令的 `[]` 仍然有效。受限代理无法授予被冻结的 ClickHouse stdio 厂商工具名，重新绑定技能也不能恢复这些工具。请保持 `CLICKHOUSE_OFFICIAL_MCP` 关闭；此目录仅覆盖网关/Lambda 路径。
 
 ## 读取失败与部署
 

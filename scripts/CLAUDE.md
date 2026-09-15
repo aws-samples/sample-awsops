@@ -270,11 +270,12 @@ secrets-manager) — installed by `make deps`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
   dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
-  `v2/ci/migration.itest.mjs` includes initializer regressions. It and
-  `v2/ci/web-db-connection.itest.mjs` are **required fail-hard exceptions** to the legacy
+  `v2/ci/migration.itest.mjs` includes initializer regressions. It,
+  `v2/ci/web-db-connection.itest.mjs`, and `v2/ci/agent-tool-policy.itest.mjs` are **required fail-hard exceptions** to the legacy
   optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,
   no automatic sudo/DOCKER override, no skip if Docker is unavailable.
   See `docs/v2-merge-verification.md`; PR fixtures must remain without AWS credentials/OIDC.
+- `v2/ci/agent-tool-policy.itest.mjs` — required disposable PostgreSQL policy-history, revocation and concurrent-binding regressions; uses locked web TypeScript/pg and the scripts/v2 fixture.
 - `v2/ci/web-db-connection.itest.mjs` — real PostgreSQL/verified-TLS regressions for the
   web connection observer's phase/timing logs, async password resolution and error propagation.
   Uses the locked web driver and TypeScript via `npm ci --prefix web`, plus scripts/v2
