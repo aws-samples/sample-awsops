@@ -29,6 +29,11 @@ export const REQUIRED_CATALOG_TYPES = Object.freeze([
   'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
 ]);
 export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
+// Verified source membership, not an exemption granted by a collector response.
+export const HOST_ONLY_SDK_TYPES = Object.freeze([
+  's3', 'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
+]);
+const REACHABILITY_SCOPES = new Set(['registered_accounts', 'host_only', 'unmeasured']);
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
 // The 15s collector and 50s final web rechecks bring this to 1060s; reserve 18m with 20s margin.
 // This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
@@ -364,6 +369,8 @@ export async function release(deployment, {
           need(object(result) && result.type === type, 'collection_probe_protocol');
           if (state) for (const field of ['row_count', 'unknown_attribute_count', 'unreachable_account_count'])
             state[field] = integer(result[field]) ? result[field] : null;
+          if (state) state.account_reachability_scope = REACHABILITY_SCOPES.has(result.account_reachability_scope)
+            ? result.account_reachability_scope : null;
           if (result.status === 'busy' || (result.status === 'failed' && result.error === 'inventory sync superseded')) {
             last = 'busy';
             if (state) state.last_outcome = result.status === 'busy' ? 'busy' : 'superseded';
@@ -375,12 +382,17 @@ export async function release(deployment, {
             throw new ReleaseError(`collection_${result.status}`);
           }
           need(result.status === 'succeeded', 'collection_probe_protocol');
+          const hostOnlySdk = HOST_ONLY_SDK_TYPES.includes(type);
+          const reachabilityValid = hostOnlySdk
+            ? result.account_reachability_scope === 'host_only' && result.unreachable_account_count === null
+            : result.account_reachability_scope === 'registered_accounts' && integer(result.unreachable_account_count);
           if (!integer(result.row_count) || !integer(result.unknown_attribute_count)
-              || (targets.length && !integer(result.unreachable_account_count))) {
+              || (targets.length && !reachabilityValid)) {
             if (state) state.status = 'unknown';
             throw new ReleaseError('collection_probe_incomplete');
           }
-          if (result.unknown_attribute_count > 0 || (targets.length && result.unreachable_account_count !== 0)) {
+          if (result.unknown_attribute_count > 0
+              || (targets.length && !hostOnlySdk && result.unreachable_account_count !== 0)) {
             if (state) state.status = 'unknown';
             throw new ReleaseError('inventory_incomplete');
           }
@@ -428,6 +440,7 @@ export async function release(deployment, {
       const states = Object.fromEntries(types.map(type => [type, {
         status: 'not_started', attempts: 0, last_outcome: 'not_started',
         row_count: null, unknown_attribute_count: null, unreachable_account_count: null,
+        account_reachability_scope: null,
       }]));
       let cursor = 0, firstFailure;
       await Promise.all(Array.from({ length: Math.min(4, types.length) }, async () => {

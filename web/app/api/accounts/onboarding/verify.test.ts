@@ -7,7 +7,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: mocks.verifyUser }));
 vi.mock('@/lib/admin', () => ({ isAdmin: mocks.isAdmin }));
 vi.mock('@/lib/eks-access', () => ({ getTaskRoleArn: mocks.getTaskRoleArn }));
 vi.mock('@/lib/account-connection', () => ({ verifyAccountConnection: mocks.verifyAccountConnection }));
-import * as route from './route';
+let route: typeof import('./route');
 
 const input = { accountId: '222222222222', region: 'ap-northeast-2', externalId: 'private-external-id', firstParty: false };
 const diagnostic = {
@@ -21,14 +21,17 @@ const request = (body: unknown = input, headers: Record<string, string> = {}) =>
   method: 'POST', headers: { cookie: 'awsops_token=test', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
   vi.resetAllMocks();
   vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
   vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
+  vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["222222222222"]');
   mocks.verifyUser.mockResolvedValue({ sub: 'admin' });
   mocks.isAdmin.mockResolvedValue(true);
   mocks.verifyAccountConnection.mockResolvedValue(diagnostic);
   vi.spyOn(console, 'info').mockImplementation(() => {});
+  route = await import('./route');
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
@@ -43,6 +46,7 @@ describe('POST /api/accounts/onboarding', () => {
       hostAccountId: '111111111111', registrationEnabled: false,
     });
     expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(input.externalId);
+    expect(JSON.parse(vi.mocked(console.info).mock.calls[0][0])).toMatchObject({ actor_sub: 'admin' });
   });
 
   it('requires administrator authentication before AWS calls', async () => {
@@ -54,13 +58,60 @@ describe('POST /api/accounts/onboarding', () => {
     expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
   });
 
-  it('allows diagnosis outside the registration scope while marking registration unavailable', async () => {
+  it('rejects a probe outside the applied target scope before any AWS call', async () => {
     vi.stubEnv('INVENTORY_HOST_ONLY', 'false');
     vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["333333333333"]');
-    expect((await route.POST(request())).status).toBe(200);
-    expect(mocks.verifyAccountConnection).toHaveBeenCalledWith(input, {
-      hostAccountId: '111111111111', registrationEnabled: false,
+    const response = await route.POST(request());
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'target_not_configured' });
+    expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
+  });
+
+  it('does not open arbitrary cross-account probes in a host-only deployment', async () => {
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    const response = await route.POST(request());
+    expect(response.status).toBe(409);
+    expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
+    expect(JSON.parse(vi.mocked(console.info).mock.calls[0][0])).toMatchObject({
+      actor_sub: 'admin', accountId: input.accountId, code: 'target_not_configured',
     });
+  });
+
+  it('preserves new-target verification in legacy multi-account mode', async () => {
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'false');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    expect((await route.POST(request())).status).toBe(200);
+    expect(mocks.verifyAccountConnection).toHaveBeenCalledOnce();
+  });
+
+  it('limits repeated probes on the server and provides a retry delay', async () => {
+    const started = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(started);
+    expect((await route.POST(request())).status).toBe(200);
+    const response = await route.POST(request());
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(await response.json()).toMatchObject({ code: 'probe_cooldown', retryAfterSeconds: 10 });
+    expect(mocks.verifyAccountConnection).toHaveBeenCalledOnce();
+    vi.mocked(Date.now).mockReturnValue(started + 10_001);
+    expect((await route.POST(request())).status).toBe(200);
+    expect(mocks.verifyAccountConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it('permits only one in-flight probe even after the cooldown elapses', async () => {
+    const started = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(started);
+    let finish!: (value: typeof diagnostic) => void;
+    mocks.verifyAccountConnection.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = route.POST(request());
+    await vi.waitFor(() => expect(mocks.verifyAccountConnection).toHaveBeenCalledOnce());
+    vi.mocked(Date.now).mockReturnValue(started + 11_000);
+    const second = await route.POST(request());
+    expect(second.status).toBe(429);
+    expect(await second.json()).toMatchObject({ code: 'probe_in_flight' });
+    finish(diagnostic);
+    expect((await first).status).toBe(200);
+    expect((await route.POST(request())).status).toBe(200);
   });
 
   it.each([

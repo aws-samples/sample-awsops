@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f9dff1195c50 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 08e5e3678844 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -232,9 +232,10 @@ zero unknowns, with at most four concurrent in-flight synchronous owned calls. P
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
 Both modes default to the enabled host only. Applied targets require exact enabled
-host/member registration, every owned RPC's unreachable count zero and fresh
-account-bound EC2/CloudFront member evidence; host-only SDK collectors do not prove
-per-member43 coverage. Only Terraform onboarding preflight permits approved subsets;
+host/member registration, measured SQL reachability with zero unreachable accounts and
+fresh account-bound EC2/CloudFront member evidence. Explicit scope preserves null for
+host-only/unmeasured counts; CI allows host-only/null only for five source-AST-pinned
+SDK types, not per-member43 coverage. Only Terraform onboarding preflight permits approved subsets;
 apply reads the restored saved plan, never a newer secret. Runtime release stays exact.
 AWS CLI children use an explicit
 credential/settings allowlist, pinned path, disabled config/credential files/metadata

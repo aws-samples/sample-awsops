@@ -434,3 +434,7 @@ resource "aws_iam_role_policy" "task_inv_sync_invoke" {
 
 output "inv_sync_function" { value = one(aws_lambda_function.inv_sync[*].function_name) }
 output "steampipe_ecr_uri" { value = one(aws_ecr_repository.steampipe[*].repository_url) }
+output "inventory_task_role_arn" {
+  description = "Exact host Steampipe collector principal for target-account trust; null when inventory is disabled."
+  value       = one(aws_iam_role.steampipe_task[*].arn)
+}

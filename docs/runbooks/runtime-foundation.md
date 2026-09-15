@@ -74,7 +74,7 @@ existing approved `WORKER_IMAGE_DIGEST_DEV`; no worker rebuild is needed when wo
 source is unchanged. Next review the configured saved Terraform plan and apply it
 before registering target roles through the UI. The same apply must deploy the
 `scripts/v2/steampipe/sync_lambda.py` archive that returns explicit
-`unreachable_account_count`, including zero on success, and persist its matching
+`account_reachability_scope` and nullable `unreachable_account_count`, and persist its matching
 `runtime_deployment.inventory.sync_code_sha256`. Activation requires both the rebuilt
 inventory image and the updated Lambda archive. Plan preflight resolves effective
 Terraform targets; apply preflight reads targets from the exact restored approved
@@ -85,10 +85,19 @@ After registration, release prepare and collect require **exactly** the enabled 
 and every configured target, each unique. The controller never requests onboarding
 leniency. Missing, disabled or unexpected enabled members stop before type collection.
 
-Collect retains every aggregate catalog proof (currently 43), known counts and zero
-unknown attributes, and additionally requires numeric `unreachable_account_count=0`
-from every owned type RPC in target mode. SDK collectors remain host-only; this does
-not assert that every catalog type covers every member. Each configured member must
+Collect retains every aggregate catalog proof (currently 43), known row/unknown-attribute
+counts and zero unknown attributes. In target mode, SQL types must report
+`account_reachability_scope="registered_accounts"` and numeric
+`unreachable_account_count=0`. Only the five pinned SDK types (`s3`,
+`opensearch_serverless`, `cloudfront_vpc_origin`, `alb_listener_rule`, `s3_public_access`)
+may report `account_reachability_scope="host_only"` with a **null** count. Their list
+is tied to `SDK_SYNCS` by a source-AST regression and the deployed collector hash remains
+verified. A response cannot grant its own host-only exemption: SQL or new unpinned
+types claiming `host_only`, missing/mismatched scope/counts, and `unmeasured` success
+all fail. SDK partials report `unmeasured`/null because reachability/pruning was skipped;
+partial status remains a terminal failure. Null discloses absent cross-account
+measurement, never measured zero. This does not assert every catalog type covers
+every member. Each configured member must
 also supply its known record through `/api/inventory/<type>?accounts=<account>`, with
 exact `account_id`, `resource_id`, the supported type-specific identifier and
 `captured_at >= collectionStartedAt`. Pages contain at most five rows, capped at 500
@@ -612,7 +621,7 @@ context/source, deployment/web identity, collection/proof and local execution fa
 | `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
 | `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
 | `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
-| `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes or has unusable counts. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
+| `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes, unusable counts or incompatible reachability scope. Target-mode SQL requires registered-account zero; only pinned host-only SDK types accept explicit null. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
 | `collection_probe_busy`, `collection_probe_throttled` | Another attempt could not be admitted after busy/superseded or confirmed invoke-throttling outcomes. Check phase budget and contention, with per-type outcomes when present; do not infer success or suppress the scheduler. |
 | `collection_probe_protocol` | The collector payload is not an object with the requested type and a recognized result shape/status. Reconcile the reviewed collector/protocol without printing its raw response. |
 | `collection_probe_denied` | The owned invocation was denied. Check its exact operation under the existing identity/session/IAM boundaries; do not restore ambient profiles/endpoints or grant permissions automatically. |

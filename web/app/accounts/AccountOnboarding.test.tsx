@@ -218,11 +218,11 @@ describe('read-only account connection diagnostics', () => {
   function mockCheck(result = diagnostic, status = 200) {
     vi.mocked(fetch).mockImplementation(async (_url, options) => new Response(JSON.stringify(
       options?.method === 'POST' ? { ok: result.verified, diagnostic: result }
-        : { ...config, registrationEnabled: false },
+        : { ...config, registrationEnabled: false, registrationTargetAccountIds: [diagnostic.accountId] },
     ), { status: options?.method === 'POST' ? status : 200 }));
   }
 
-  it('checks without an alias in host-only mode and keeps registration explicitly blocked', async () => {
+  it('checks an approved target without an alias in host-only mode and keeps registration blocked', async () => {
     mockCheck();
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
@@ -242,7 +242,7 @@ describe('read-only account connection diagnostics', () => {
     const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
     expect((register as HTMLButtonElement).disabled).toBe(true);
     expect(document.getElementById(register.getAttribute('aria-describedby')!)?.textContent)
-      .toBe('호스트 전용 설정으로 등록이 제한됩니다. 연결 확인은 사용할 수 있습니다.');
+      .toBe('호스트 전용 설정으로 등록이 제한됩니다.');
     expect(screen.getByText(diagnostic.checkId)).toBeTruthy();
     expect(screen.getByText(diagnostic.checkedAt)).toBeTruthy();
     expect(screen.getByText(diagnostic.awsRequestId!)).toBeTruthy();
@@ -310,7 +310,7 @@ describe('read-only account connection diagnostics', () => {
     expect((screen.getByRole('button', { name: '연결 확인' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('explains target allowlist restrictions at registration without blocking read-only checks', async () => {
+  it('blocks both controls outside an applied allowlist and permits its approved target', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       ...config, registrationTargetAccountIds: ['333333333333'],
     })));
@@ -319,10 +319,11 @@ describe('read-only account connection diagnostics', () => {
     const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
     expect((register as HTMLButtonElement).disabled).toBe(true);
     expect(document.getElementById(register.getAttribute('aria-describedby')!)?.textContent)
-      .toBe('이 계정은 현재 배포의 등록 허용 목록에 없습니다. 연결 확인은 사용할 수 있습니다.');
-    expect((screen.getByRole('button', { name: '연결 확인' }) as HTMLButtonElement).disabled).toBe(false);
+      .toBe('이 계정은 현재 배포의 등록 허용 목록에 없습니다.');
+    expect((screen.getByRole('button', { name: '연결 확인' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
     expect((register as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '연결 확인' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('offers an explicit diagnostic after combined failure without automatically repeating STS checks', async () => {
@@ -416,5 +417,78 @@ describe('read-only account connection diagnostics', () => {
     fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: diagnostic.accountId } });
     expect(screen.getByText(inventoryRole)).toBeTruthy();
     expect(screen.getByText('The inventory collector role needs separate trust in the target role, beyond web connectivity.')).toBeTruthy();
+  });
+
+  it.each([
+    [false, undefined, false], [false, [], false], [false, ['333333333333'], false],
+    [false, [diagnostic.accountId], true], [true, undefined, true],
+  ])('enforces probe scope with registration=%s and targets=%j', async (registrationEnabled, targets, allowed) => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
+      ...config, registrationEnabled, ...(targets === undefined ? {} : { registrationTargetAccountIds: targets }),
+    })));
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    const check = screen.getByRole('button', { name: '연결 확인' });
+    expect((check as HTMLButtonElement).disabled).toBe(!allowed);
+    if (!allowed) {
+      expect(document.getElementById(check.getAttribute('aria-describedby')!)?.textContent)
+        .toBe('현재 배포에서 승인된 계정만 연결을 확인할 수 있습니다. 운영자에게 확인 범위를 요청하세요.');
+      fireEvent.click(check);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('explains invalid input before an allowlist exclusion and preserves diagnostics for alias/profile edits', async () => {
+    mockCheck();
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await screen.findByText('12자리 Account ID를 입력하면 계정에 맞는 AWS CLI 명령어가 표시됩니다.');
+    const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
+    expect(document.getElementById(register.getAttribute('aria-describedby')!)?.textContent)
+      .toContain('Account ID는 12자리 숫자여야 합니다.');
+    await fillAccount();
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인' }));
+    await screen.findByText(diagnostic.checkId);
+    fireEvent.change(screen.getByLabelText('계정 별칭'), { target: { value: 'Changed alias' } });
+    fireEvent.change(screen.getByLabelText('AWS CLI 프로필 (선택)'), { target: { value: 'local profile' } });
+    expect(screen.getByText(diagnostic.checkId)).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    fireEvent.change(screen.getByLabelText('ExternalId'), { target: { value: 'different-external-id' } });
+    expect(screen.queryByText(diagnostic.checkId)).toBeNull();
+  });
+
+  it.each([
+    [401, '로그인 후 계정 등록을 다시 시도하세요.'],
+    [403, '계정 등록은 관리자만 사용할 수 있습니다.'],
+    [409, '현재 등록 정책 또는 계정 상태로 등록할 수 없습니다. 등록 범위와 계정 목록을 확인하세요.'],
+    [429, '등록 요청이 잠시 제한되었습니다. 잠시 후 다시 시도하세요.'],
+    [500, '서버에서 등록을 완료하지 못했습니다. 계정 목록을 확인하고 운영자에게 문의하세요.'],
+    [503, '등록 설정을 확인할 수 없습니다. 운영자에게 배포 설정을 확인하세요.'],
+  ])('maps registration HTTP %s to fixed safe guidance', async (status, message) => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ message: 'PRIVATE_SERVER_ERROR' }), { status }));
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText(message);
+    expect(document.body.textContent).not.toContain('PRIVATE_SERVER_ERROR');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((screen.getByLabelText('계정 별칭') as HTMLInputElement).value).toBe('Production');
+  });
+
+  it.each([
+    [409, 'target_not_configured', '이 계정은 현재 연결 확인 범위에 없습니다. 운영자에게 배포 설정을 확인하세요.'],
+    [429, 'probe_cooldown', '연결 확인 요청이 진행 중이거나 잠시 제한되었습니다. 잠시 후 다시 시도하세요.'],
+  ])('shows boundary HTTP %s without fabricating AWS diagnostics', async (status, code, message) => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      message: 'PRIVATE_BOUNDARY_ERROR', code, retryAfterSeconds: 10,
+    }), { status, headers: { 'Retry-After': '10' } }));
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인' }));
+    await screen.findByText(message);
+    expect(screen.queryByRole('region', { name: '연결 확인 결과' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'AI 원인 분석 가이드' })).toBeNull();
+    expect(document.body.textContent).not.toContain('PRIVATE_BOUNDARY_ERROR');
+    if (status === 429) expect(screen.getByText(/10 초/)).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

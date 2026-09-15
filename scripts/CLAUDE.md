@@ -370,9 +370,11 @@ It samples the authenticated DB clock before collecting, anchors calibration at 
 start, shifts the existing deadline by the same offset, and retains strict post-marker
 ledger checks. Collector code hash and RevisionId must remain stable through collection.
 Both modes default to the enabled host only. Explicit applied verification targets
-require the exact enabled host/member registry before type calls, zero unreachable
-accounts in every owned RPC, and fresh account-bound known EC2/CloudFront member rows.
-SDK catalog collectors remain host-only; aggregate43 is not per-member43 coverage.
+require the exact enabled host/member registry before type calls, measured SQL reachability
+with zero unreachable accounts, and fresh account-bound known EC2/CloudFront member rows.
+`account_reachability_scope` distinguishes registered-account measurement from host-only
+and unmeasured results; the latter counts stay null. CI permits host-only/null only for
+the five source-AST-pinned SDK types. Aggregate43 is not per-member43 coverage.
 Only Terraform plan/apply onboarding preflight permits approved subsets; apply reads
 the restored saved plan, not a newer secret. Runtime release never requests that leniency.
 See the canonical `runtime-foundation.md#explicit-runtime-targets` contract.

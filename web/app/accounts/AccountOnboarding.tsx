@@ -3,7 +3,10 @@ import { useEffect, useId, useRef, useState } from 'react';
 import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { buildAccountOnboarding, newAccountExternalId, onboardingInputError, type AccountOnboardingConfig } from '@/lib/account-onboarding';
-import { accountConnectionCommands, readAccountConnectionDiagnostic, type AccountConnectionDiagnostic } from '@/lib/account-connection-diagnostics';
+import {
+  accountConnectionBoundaryFailure, accountConnectionCommands, accountConnectionRetryAfter,
+  accountRegistrationFailure, readAccountConnectionDiagnostic, type AccountConnectionDiagnostic,
+} from '@/lib/account-connection-diagnostics';
 import AccountConnectionDiagnostics from './AccountConnectionDiagnostics';
 
 const inputClass = 'w-full rounded border border-ink-200 bg-card px-3 py-2 text-[12px] text-ink-800';
@@ -27,6 +30,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const [diagnostic, setDiagnostic] = useState<AccountConnectionDiagnostic | null>(null);
   const [registrationFailed, setRegistrationFailed] = useState(false);
   const [diagnosticCopy, setDiagnosticCopy] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [message, setMessage] = useState('');
   const [success, setSuccess] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -36,6 +40,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const checkRequest = useRef<AbortController | null>(null);
   const checkSequence = useRef(0);
   const registrationReasonId = useId();
+  const connectionReasonId = useId();
   const registeredAccount = accounts?.find((account) => account.accountId === form.accountId)
     || (pendingRegistration?.accountId === form.accountId ? pendingRegistration : undefined);
   const externalId = registeredAccount ? registeredAccount.externalId || '' : form.firstParty ? '' : form.externalId;
@@ -80,11 +85,16 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   }, [attempt]);
 
   const updateForm = (patch: Partial<typeof form>) => {
-    checkSequence.current++;
-    checkRequest.current?.abort();
-    checkRequest.current = null;
-    setChecking(false);
-    setDiagnostic(null);
+    const connectionChanged = (['accountId', 'region', 'externalId', 'firstParty'] as const)
+      .some(key => patch[key] !== undefined && patch[key] !== form[key]);
+    if (connectionChanged) {
+      checkSequence.current++;
+      checkRequest.current?.abort();
+      checkRequest.current = null;
+      setChecking(false);
+      setDiagnostic(null);
+    }
+    setRetryAfterSeconds(null);
     setRegistrationFailed(false);
     setDiagnosticCopy('idle');
     let next = { ...form, ...patch };
@@ -117,22 +127,26 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const guide = config && accounts !== null && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(submission, config) : null;
   const outsideTargets = config?.registrationTargetAccountIds !== undefined
     && (!Array.isArray(config.registrationTargetAccountIds) || !config.registrationTargetAccountIds.includes(form.accountId));
+  const probePermitted = config?.registrationTargetAccountIds === undefined
+    ? config?.registrationEnabled === true : !outsideTargets;
+  const connectionReason = config && accounts !== null && !connectionInputError && !isHost && !registeredAccount && !probePermitted
+    ? '현재 배포에서 승인된 계정만 연결을 확인할 수 있습니다. 운영자에게 확인 범위를 요청하세요.' : null;
   const registrationReason = config && !config.registrationEnabled
-    ? '호스트 전용 설정으로 등록이 제한됩니다. 연결 확인은 사용할 수 있습니다.'
-    : outsideTargets ? '이 계정은 현재 배포의 등록 허용 목록에 없습니다. 연결 확인은 사용할 수 있습니다.'
+    ? '호스트 전용 설정으로 등록이 제한됩니다.'
+    : outsideTargets ? '이 계정은 현재 배포의 등록 허용 목록에 없습니다.'
       : diagnostic && !diagnostic.registrationEnabled ? '현재 서버 정책으로 등록이 제한됩니다. 운영자에게 등록 범위를 확인하세요.' : null;
   const disabledReason = busy || checking ? tt('진행 중인 요청이 끝나면 다시 시도하세요.')
     : !config ? tt('온보딩 설정을 확인해야 등록할 수 있습니다.')
       : accounts === null ? tt('계정 목록 확인이 끝나면 등록할 수 있습니다.')
         : isHost ? tt('호스트 계정은 새로 등록할 수 없습니다.')
           : registeredAccount ? tt('이미 등록된 계정입니다. 계정 목록에서 연결을 테스트하세요.')
-            : registrationReason ? tt(registrationReason)
-              : inputError ? `${tt('등록 불가')}: ${tt(inputError)}`
+            : inputError ? `${tt('등록 불가')}: ${tt(inputError)}`
+              : registrationReason ? tt(registrationReason)
                 : !form.alias.trim() ? tt('등록하려면 계정 별칭을 입력하세요.')
                   : success ? tt('이 계정은 등록·검증이 완료되었습니다.') : null;
   const canRegister = Boolean(guide && !disabledReason);
   const canCheck = Boolean(config && accounts !== null && !connectionInputError
-    && !isHost && !registeredAccount && !busy && !checking && !success);
+    && probePermitted && !isHost && !registeredAccount && !busy && !checking && !success);
   const commands = config && accounts !== null && !isHost && !registeredAccount
     ? accountConnectionCommands(form.accountId, form.region) : null;
 
@@ -146,6 +160,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
     setMessage('');
     setSuccess(false);
     setRegistrationFailed(false);
+    setRetryAfterSeconds(null);
     const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
       const response = await fetch('/api/accounts/onboarding', {
@@ -163,9 +178,9 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         && data?.ok === result.verified && response.ok === result.verified) {
         setDiagnostic(result);
       } else {
-        setMessage(tt(response.status === 401 ? '로그인 후 연결 확인을 다시 시도하세요.'
-          : response.status === 403 ? '연결 확인은 관리자만 사용할 수 있습니다.'
-            : '연결 확인 결과를 받지 못했습니다. 로그인 상태와 네트워크를 확인한 뒤 다시 시도하세요.'));
+        setMessage(tt(accountConnectionBoundaryFailure(response.status, data?.code)));
+        if (response.status === 429)
+          setRetryAfterSeconds(accountConnectionRetryAfter(data?.retryAfterSeconds, response.headers.get('Retry-After')));
       }
     } catch {
       if (sequence === checkSequence.current)
@@ -206,6 +221,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
     setMessage('');
     setSuccess(false);
     setRegistrationFailed(false);
+    setRetryAfterSeconds(null);
     try {
       const response = await fetch('/api/accounts', {
         method: 'POST',
@@ -216,8 +232,8 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         }),
       });
       if (!response.ok) {
-        setRegistrationFailed(true);
-        setMessage(tt('등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.'));
+        setRegistrationFailed(response.status === 400);
+        setMessage(tt(accountRegistrationFailure(response.status)));
         return;
       }
       setSuccess(true);
@@ -232,7 +248,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
       }
     } catch {
       setSuccess(false);
-      setRegistrationFailed(true);
+      setRegistrationFailed(false);
       setMessage(tt('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.'));
     } finally {
       setBusy(false);
@@ -334,7 +350,8 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         <p className="mb-3 text-[12px] text-ink-600">{tt('연결 확인은 계정을 저장하지 않습니다. 등록이 허용되면 연결 확인 및 등록을 선택하세요. 서버가 다시 검증한 뒤 저장합니다.')}</p>
         <p className="mb-3 text-[12px] text-ink-500">{tt('연결 확인은 웹 역할의 접근만 검증합니다. 인벤토리 수집·AgentCore·워커의 연결과 수집 완료를 보장하지 않습니다.')}</p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={checkConnection} disabled={!canCheck} className={buttonClass}>
+          <button type="button" onClick={checkConnection} disabled={!canCheck}
+            aria-describedby={connectionReason ? connectionReasonId : undefined} className={buttonClass}>
             {tt(checking ? '연결 확인 중…' : registrationFailed ? '연결 원인 확인' : '연결 확인')}
           </button>
           <button type="button" onClick={register} disabled={!canRegister} aria-describedby={disabledReason ? registrationReasonId : undefined}
@@ -343,8 +360,10 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
           </button>
         </div>
         {disabledReason && <p id={registrationReasonId} className="mt-2 text-[12px] text-ink-600">{disabledReason}</p>}
+        {connectionReason && <p id={connectionReasonId} className="mt-2 text-[12px] text-ink-600">{tt(connectionReason)}</p>}
         {message && <p role={success ? 'status' : 'alert'} className={`mt-2 break-words text-[12px] ${success ? 'text-positive-600' : 'text-negative-600'}`}>{message}</p>}
-        {!success && message && <p className="mt-2 text-[12px] text-ink-500">{tt('역할 생성 완료 여부, 신뢰할 호스트 역할 ARN, ExternalId 일치를 확인하세요. IAM 반영에 시간이 걸리면 잠시 후 다시 확인하세요.')}</p>}
+        {message && retryAfterSeconds !== null && <p className="mt-1 text-[12px] text-ink-500">{tt('서버 안내 대기 시간')}: {retryAfterSeconds} {tt('초')}</p>}
+        {registrationFailed && message && <p className="mt-2 text-[12px] text-ink-500">{tt('역할 생성 완료 여부, 신뢰할 호스트 역할 ARN, ExternalId 일치를 확인하세요. IAM 반영에 시간이 걸리면 잠시 후 다시 확인하세요.')}</p>}
         {diagnostic && !registeredAccount && <AccountConnectionDiagnostics diagnostic={diagnostic}
           registrationReason={registrationReason} hostOnly={config?.registrationEnabled === false} />}
         {commands && (

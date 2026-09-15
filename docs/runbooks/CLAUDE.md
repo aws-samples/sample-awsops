@@ -276,9 +276,11 @@ admission bounds, not guaranteed completion. Runtime foundation records a 43-typ
 The catalog must include the pinned baseline (currently 43 names, source-AST checked);
 valid growth is allowed up to 128 types and every returned type needs strict proof.
 Both modes default to the enabled host only. Explicit applied targets require exact
-enabled host/member registration before type calls, zero unreachable counts in every
-owned RPC, and fresh account-bound EC2/CloudFront known-member evidence. Host-only SDK
-collectors do not establish per-member43 coverage. Terraform plan/apply onboarding
+enabled host/member registration before type calls, measured SQL reachability with zero
+unreachable accounts, and fresh account-bound EC2/CloudFront known-member evidence.
+Host-only/unmeasured counts remain null under explicit `account_reachability_scope`;
+CI permits host-only/null only for five source-AST-pinned SDK types, not per-member43
+coverage. Terraform plan/apply onboarding
 alone allows approved subsets; apply derives scope from the restored saved plan.
 Runtime release never requests subset leniency. See `runtime-foundation.md#explicit-runtime-targets`.
 Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.

@@ -7,8 +7,18 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
-  '호스트 전용 설정으로 등록이 제한됩니다. 연결 확인은 사용할 수 있습니다.': { en: 'Host-only mode blocks registration. Connection checks remain available.', zh: '仅主账户模式限制注册，仍可检查连接。', ja: 'ホスト専用設定により登録は制限されています。接続確認は利用できます。' },
-  '이 계정은 현재 배포의 등록 허용 목록에 없습니다. 연결 확인은 사용할 수 있습니다.': { en: 'This account is not in the deployment registration allowlist. Connection checks remain available.', zh: '此账户不在当前部署的注册允许列表中，仍可检查连接。', ja: 'このアカウントは現在のデプロイの登録許可リストにありません。接続確認は利用できます。' },
+  '호스트 전용 설정으로 등록이 제한됩니다.': { en: 'Host-only mode blocks registration.', zh: '仅主账户模式限制注册。', ja: 'ホスト専用設定により登録は制限されています。' },
+  '이 계정은 현재 배포의 등록 허용 목록에 없습니다.': { en: 'This account is not in the deployment registration allowlist.', zh: '此账户不在当前部署的注册允许列表中。', ja: 'このアカウントは現在のデプロイの登録許可リストにありません。' },
+  '현재 배포에서 승인된 계정만 연결을 확인할 수 있습니다. 운영자에게 확인 범위를 요청하세요.': { en: 'Only accounts approved by this deployment can be checked. Ask the operator to configure the scope.', zh: '只能检查当前部署批准的账户，请运维人员配置检查范围。', ja: '現在のデプロイで承認されたアカウントのみ確認できます。運用者に確認範囲の設定を依頼してください。' },
+  '로그인 후 계정 등록을 다시 시도하세요.': { en: 'Sign in and retry account registration.', zh: '请登录后重新注册账户。', ja: 'ログインしてアカウント登録を再試行してください。' },
+  '현재 등록 정책 또는 계정 상태로 등록할 수 없습니다. 등록 범위와 계정 목록을 확인하세요.': { en: 'The current policy or account state prevents registration. Check the registration scope and account list.', zh: '当前策略或账户状态不允许注册，请检查注册范围和账户列表。', ja: '現在のポリシーまたはアカウント状態では登録できません。登録範囲とアカウント一覧を確認してください。' },
+  '등록 요청이 잠시 제한되었습니다. 잠시 후 다시 시도하세요.': { en: 'Registration requests are temporarily limited. Try again later.', zh: '注册请求暂时受限，请稍后重试。', ja: '登録リクエストが一時的に制限されています。しばらくして再試行してください。' },
+  '등록 설정을 확인할 수 없습니다. 운영자에게 배포 설정을 확인하세요.': { en: 'Registration settings are unavailable. Ask the operator to check the deployment configuration.', zh: '无法确认注册设置，请运维人员检查部署配置。', ja: '登録設定を確認できません。運用者にデプロイ設定の確認を依頼してください。' },
+  '서버에서 등록을 완료하지 못했습니다. 계정 목록을 확인하고 운영자에게 문의하세요.': { en: 'The server could not complete registration. Check the account list and contact the operator.', zh: '服务器未能完成注册，请检查账户列表并联系运维人员。', ja: 'サーバーで登録を完了できませんでした。アカウント一覧を確認し、運用者に問い合わせてください。' },
+  '이 계정은 현재 연결 확인 범위에 없습니다. 운영자에게 배포 설정을 확인하세요.': { en: 'This account is outside the current connection-check scope. Ask the operator to check the deployment configuration.', zh: '此账户不在当前连接检查范围内，请运维人员检查部署配置。', ja: 'このアカウントは現在の接続確認範囲外です。運用者にデプロイ設定の確認を依頼してください。' },
+  '연결 확인 요청이 진행 중이거나 잠시 제한되었습니다. 잠시 후 다시 시도하세요.': { en: 'A connection check is running or temporarily limited. Try again later.', zh: '连接检查正在进行或暂时受限，请稍后重试。', ja: '接続確認が実行中、または一時的に制限されています。しばらくして再試行してください。' },
+  '연결 확인 범위 설정을 확인할 수 없습니다. 운영자에게 문의하세요.': { en: 'Connection-check scope settings are unavailable. Contact the operator.', zh: '无法确认连接检查范围设置，请联系运维人员。', ja: '接続確認の範囲設定を確認できません。運用者に問い合わせてください。' },
+  '서버 안내 대기 시간': { en: 'Server-requested wait', zh: '服务器要求的等待时间', ja: 'サーバー指定の待機時間' },
   '현재 서버 정책으로 등록이 제한됩니다. 운영자에게 등록 범위를 확인하세요.': { en: 'The current server policy blocks registration. Ask the operator to confirm the permitted scope.', zh: '当前服务器策略限制注册，请向运维人员确认允许的范围。', ja: '現在のサーバーポリシーにより登録は制限されています。運用者に許可範囲を確認してください。' },
   '진행 중인 요청이 끝나면 다시 시도하세요.': { en: 'Wait for the current request to finish.', zh: '请等待当前请求完成。', ja: '実行中のリクエストが完了するまでお待ちください。' },
   '온보딩 설정을 확인해야 등록할 수 있습니다.': { en: 'Onboarding settings must be loaded before registration.', zh: '加载接入设置后才能注册。', ja: '登録するには接続設定の読み込みが必要です。' },

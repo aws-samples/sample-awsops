@@ -38,6 +38,32 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 const HOST_ROLE = /^arn:aws:iam::\d{12}:role\/[A-Za-z0-9_+=,.@/-]+$/;
 const validRegion = (value: string) => value.length <= 32 && REGION.test(value);
 
+export function accountRegistrationFailure(status: number): string {
+  if (status === 401) return '로그인 후 계정 등록을 다시 시도하세요.';
+  if (status === 403) return '계정 등록은 관리자만 사용할 수 있습니다.';
+  if (status === 409) return '현재 등록 정책 또는 계정 상태로 등록할 수 없습니다. 등록 범위와 계정 목록을 확인하세요.';
+  if (status === 429) return '등록 요청이 잠시 제한되었습니다. 잠시 후 다시 시도하세요.';
+  if (status === 503) return '등록 설정을 확인할 수 없습니다. 운영자에게 배포 설정을 확인하세요.';
+  if (status >= 500) return '서버에서 등록을 완료하지 못했습니다. 계정 목록을 확인하고 운영자에게 문의하세요.';
+  return '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.';
+}
+
+export function accountConnectionBoundaryFailure(status: number, code: unknown): string {
+  if (status === 401) return '로그인 후 연결 확인을 다시 시도하세요.';
+  if (status === 403) return '연결 확인은 관리자만 사용할 수 있습니다.';
+  if (status === 409) return '이 계정은 현재 연결 확인 범위에 없습니다. 운영자에게 배포 설정을 확인하세요.';
+  if (status === 429) return '연결 확인 요청이 진행 중이거나 잠시 제한되었습니다. 잠시 후 다시 시도하세요.';
+  if (status === 503 && code === 'scope_unavailable') return '연결 확인 범위 설정을 확인할 수 없습니다. 운영자에게 문의하세요.';
+  return '연결 확인 결과를 받지 못했습니다. 로그인 상태와 네트워크를 확인한 뒤 다시 시도하세요.';
+}
+
+export function accountConnectionRetryAfter(bodySeconds: unknown, header: string | null): number | null {
+  const values = [bodySeconds, header && /^\d{1,4}$/.test(header) ? Number(header) : null];
+  const seconds = values.filter((value): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 3600);
+  return seconds.length ? Math.max(...seconds) : null;
+}
+
 /** Treat the response as untrusted data; never forward extra fields or remote messages. */
 export function readAccountConnectionDiagnostic(value: unknown, expected: {
   accountId: string; region: string; externalIdProvided: boolean;
@@ -83,14 +109,17 @@ export function accountConnectionAiHref(diagnostic: AccountConnectionDiagnostic,
   return `/assistant?q=${encodeURIComponent(prompt)}`;
 }
 
-/** Output projections intentionally omit trust conditions and all raw failure reasons. */
+/** Output projections retain condition names, never condition values or raw failure reasons. */
 export function accountConnectionCommands(accountId: string, region: string): string | null {
   if (!ACCOUNT.test(accountId) || !validRegion(region)) return null;
-  return `target_account='${accountId}'
+  return `bash <<'AWSOPS_CHECKS'
+set -u
+target_account='${accountId}'
 region='${region}'
 caller_account=$(aws sts get-caller-identity --region "$region" --query Account --output text --no-cli-pager)
 [ "$caller_account" = "$target_account" ] || { printf '%s\\n' 'Select the target account credentials before running these checks.' >&2; exit 1; }
-aws iam get-role --role-name AWSopsReadOnlyRole --region "$region" --query 'Role.{Arn:Arn,TrustedAWSPrincipals:AssumeRolePolicyDocument.Statement[].Principal.AWS}' --output json --no-cli-pager
+aws iam get-role --role-name AWSopsReadOnlyRole --region "$region" --query 'Role.{Arn:Arn,TrustStatements:AssumeRolePolicyDocument.Statement[].{Principal:Principal.AWS,ConditionOperators:keys(Condition || \`{}\`),ConditionKeys:map(&keys(@),values(Condition || \`{}\`))}}' --output json --no-cli-pager
 aws iam list-attached-role-policies --role-name AWSopsReadOnlyRole --region "$region" --query 'AttachedPolicies[].PolicyArn' --output json --no-cli-pager
-aws cloudformation describe-events --stack-name awsops-readonly-role --filters FailedEvents=true --region "$region" --max-items 50 --query 'OperationEvents[].{Time:Timestamp,Event:EventType,Resource:LogicalResourceId,Status:ResourceStatus,OperationStatus:OperationStatus,Validation:ValidationStatus}' --output json --no-cli-pager`;
+aws cloudformation describe-events --stack-name awsops-readonly-role --filters FailedEvents=true --region "$region" --max-items 50 --query 'OperationEvents[].{Time:Timestamp,Event:EventType,Resource:LogicalResourceId,Status:ResourceStatus,OperationStatus:OperationStatus,Validation:ValidationStatus}' --output json --no-cli-pager
+AWSOPS_CHECKS`;
 }

@@ -231,9 +231,11 @@ per-type budget. Disable automatic SDK/CLI invoke retries.
 
 Both prepare and collect default to the enabled host only. Nonempty applied
 `inventory.verification_targets` instead require exact enabled host/member registration,
-zero unreachable counts from every owned type RPC and fresh account-bound known-member
-EC2/CloudFront evidence. Host-only SDK collectors remain host-only; aggregate catalog
-proof does not establish per-member43 coverage. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
+measured SQL reachability with zero unreachable accounts and fresh account-bound
+known-member EC2/CloudFront evidence. `account_reachability_scope` distinguishes
+registered-account measurement from host-only and unmeasured results, whose counts stay
+null. CI permits host-only/null only for the five source-AST-pinned SDK types; aggregate
+catalog proof does not establish per-member43 coverage. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
 Only Terraform onboarding preflight permits approved subsets, deriving apply scope
 from the restored saved plan. Release preparation never requests that leniency.
 After web/configuration/catalog checks and before

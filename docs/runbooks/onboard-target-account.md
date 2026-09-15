@@ -22,6 +22,8 @@ ExternalId, including the value used by an already downloaded script. Omission c
 is never persisted or inherited from a registered account: switching Account ID or
 remounting the form requires a fresh explicit choice. Each unseen account gets its own draft.
 Role creation and registration remain unavailable until the registered-account lookup finishes.
+An alias is required for registration, but not for a connection check. The check is available
+only for the probe scope described below; creating the target role does not authorize a probe.
 
 Choose **Copy AWS CLI commands** or **Download script (.sh)**. The script embeds its
 CloudFormation template, so the target administrator does not need a repository checkout.
@@ -46,6 +48,7 @@ passes that exact host-account principal as `InventoryTaskRoleArn`. Its separate
 statement uses the same ExternalId condition. An absent parameter preserves the existing
 web/worker trust unchanged. Existing stacks require an operator-reviewed change set to add
 the collector principal; the browser script remains create-only.
+
 New stacks leave worker trust empty. Worker reads require the additional setup below.
 The generated template's deployment contract matches `infra/cfn/awsops-target-account-role.yaml`;
 only explanatory template/parameter/output descriptions differ. The required offline
@@ -61,6 +64,11 @@ failures show a refresh error rather than an unhandled rejection or a success me
 beside stale rows. When browser session
 storage is unavailable or a new session is used, restore the ExternalId from the original
 script or target role trust policy. Allow for IAM propagation after creation.
+For a combined registration failure, the page shows a fixed status-specific explanation.
+An assume/validation failure offers **Diagnose connection** (Korean: **연결 원인 확인**);
+select it explicitly to obtain the bounded diagnostic. The page does not automatically
+repeat STS requests. Editing only the alias or CLI profile preserves the previous diagnostic;
+changing account, region, ExternalId or first-party choice clears it.
 
 `AlreadyExists` can refer to the **stack name**, even when no role exists. In CloudFormation,
 inspect `awsops-readonly-role` and distinguish these cases:
@@ -91,7 +99,10 @@ propagated there. Operators must coordinate the shared reader value and its trus
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
 
 Host-only deployments display the restriction before registration and disable the register
-button. The separate connection check remains available and performs no registry writes.
+button. A separate connection check performs no registry writes, but it requires an explicitly
+approved target in host-only mode. Without an applied target list, the new probe is disabled.
+Registered rows retain their existing **Test** (`PATCH /api/accounts`) action; the onboarding
+form does not recreate roles or change saved ExternalIds for those rows.
 Script generation remains available for preparation; running it does not change
 `inventory_host_only`, collector IAM, or readiness policy. Multi-account activation is a
 separate operator configuration step. AWSops itself never executes the generated AWS writes.
@@ -104,30 +115,91 @@ STS identity, assumes only `AWSopsReadOnlyRole`, then verifies the resulting tar
 Success establishes that web-role connection only; it neither registers the account nor
 certifies collection, worker or AgentCore access.
 
+Probe admission follows the applied configuration:
+
+- If `INVENTORY_TARGET_ACCOUNT_IDS` is present, the target must be in that list.
+- If no list is configured and `INVENTORY_HOST_ONLY=true`, probes return HTTP 409
+  with `code: target_not_configured`, before STS.
+- Legacy multi-account mode without a list retains its existing onboarding reach.
+- Host-account and invalid-input checks remain in place. The new endpoint does not use
+  registered/enabled rows as an exception to these rules.
+
+The server permits one in-flight probe per process and at least ten seconds between
+admissions. A concurrent or cooling-down request returns HTTP 429 with
+`probe_in_flight` or `probe_cooldown`, `retryAfterSeconds` and `Retry-After`.
+Respect that wait and retry manually; the page never auto-resubmits. The wait is guidance,
+not a promise that another administrator's in-flight request will have finished.
+These scope/rate rejections contain safe boundary metadata, not an AWS-stage diagnostic.
+
 Each result includes a check ID, UTC timestamp, verification stage, fixed failure code,
 duration and an AWS request ID when available. The web log event is
-`account_connection_check` with the same bounded fields. Provider exception text,
+`account_connection_check` with the same bounded fields plus the requesting administrator's
+`actor_sub`. Scope/rate rejections use `account_connection_rejected` with the actor,
+check ID, target ID and fixed code. Provider exception text,
 temporary credentials and the ExternalId value are excluded from these diagnostics.
 `access_denied` is evidence of rejection, not proof of which policy caused it: compare the
 source role permission, target trust, current ExternalId and organization/session boundaries.
 Credential failures, timeouts and identity mismatches have separate classifications.
 
+In the deployed web log group, select a bounded time range and correlate the returned
+check ID using CloudWatch Logs Insights. Rejected checks omit AWS-stage fields when no
+STS request ran; missing fields are not successful verification.
+
+```text
+fields @timestamp, event, checkId, accountId, actor_sub, stage, code, awsRequestId, durationMs
+| filter event in ["account_connection_check", "account_connection_rejected"]
+| filter checkId = "<check-id>"
+| sort @timestamp desc
+| limit 50
+```
+
 The troubleshooting panel provides read-only target-account CLI commands and an AI
 assistant draft containing only validated evidence. The draft is reviewed in the composer
-before sending; opening it does not invoke a model. Do not paste credentials or the
-ExternalId into an AI request.
+before sending; opening it does not invoke a model. The draft is a single section-pinned
+line of at most 500 characters and requests read-only analysis/check commands. Do not paste
+credentials, raw errors or the ExternalId into an AI request.
+
+The copied diagnostic commands run inside a child Bash heredoc, so a wrong-account
+`exit 1` does not close the parent CloudShell session or leave its variables behind.
+The role query displays principal metadata and condition operator/key names only, never
+condition values. Failure/preflight events use
+`aws cloudformation describe-events --stack-name awsops-readonly-role --filters FailedEvents=true`;
+the projection omits raw reason/property fields and shows at most 50 events, not a complete history.
 
 For deployments with an explicit `INVENTORY_TARGET_ACCOUNT_IDS` allowlist, registration
-is limited to the applied accounts. A malformed allowlist fails closed. An account outside
-the list can still be diagnosed, but must be added through the reviewed collection and CI
-scope configuration before registration. See [runtime activation](runtime-foundation.md)
-for the separate multi-account collection and release evidence.
+is limited to the applied accounts. Its value must be a JSON array of at most five unique
+12-digit account-ID strings, excluding the host. An explicit `[]` permits no new targets.
+Absent/empty environment values retain legacy scope; whitespace-only, malformed JSON,
+wrong types, duplicate IDs or the host ID fail closed with 503. Do not turn malformed
+configuration into an unrestricted default. Host-only registration and out-of-list targets
+return 409 before STS or database writes.
+
+Terraform supplies `INVENTORY_TASK_ROLE_ARN` when Steampipe is enabled and derives
+`INVENTORY_TARGET_ACCOUNT_IDS` from nonempty `runtime_verification_targets` for both the web
+and collector tasks. The collector role is the **Steampipe task role**
+(`${project}-steampipe-task`); `InventoryTaskRoleArn` is its target-template parameter name,
+not a separate role. Read its ARN from the `inventory_task_role_arn` Terraform output.
+The dev/full `CI_RUNTIME_TARGETS_DEV` input, saved-plan binding and strict member runtime
+proof are documented in [runtime activation](runtime-foundation.md). Rebuild and pin the
+reviewed ARM64 Steampipe image containing the scope guard before applying member scope.
+The role trust, source permission, registry and release proof must agree; role creation alone
+does not complete activation. No app request changes these deployment settings.
+
+The onboarding list is not a retroactive revocation mechanism for existing registered-account
+reads or PATCH re-tests. Collector and CI scope are enforced separately. Review/remove or
+disable obsolete registered scope through the existing operator procedure rather than assuming
+an allowlist edit revokes every previously configured read path.
 
 ## Prerequisites
+
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
-- For the manual CLI path below: the **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`). The browser path discovers it automatically.
+- For the manual CLI path below: the **host web task role ARN** — full ARN
+  `arn:aws:iam::<host>:role/awsops-v2-task`, in Terraform output
+  `runtime_deployment.web.task_role_arn`. The browser path discovers it automatically.
+  The host-side projection below uses Terraform and `jq`.
 - For inventory collection, the exact **host inventory task role ARN** must be supplied as
-  `InventoryTaskRoleArn`. The browser discovers it from the applied web configuration.
+  `InventoryTaskRoleArn`. This is the Steampipe task role, exposed through
+  `inventory_task_role_arn` and the applied web configuration.
 - **Optional** — the **host worker task role ARN**, `arn:aws:iam::<host>:role/awsops-v2-worker-task`
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
   WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
@@ -140,38 +212,64 @@ for the separate multi-account collection and release evidence.
   1st-party (same-org) accounts can omit it.
 
 ## Manual CLI alternative
-1. In the **target account**, deploy the CloudFormation template:
+
+1. In the **host checkout with its configured backend**, read the nonsecret role identities:
+   ```bash
+   terraform -chdir=terraform/foundation output -json runtime_deployment \
+     | jq -er '.web.task_role_arn | select(type == "string")'
+   terraform -chdir=terraform/foundation output -raw inventory_task_role_arn
    ```
+   Inventory must be enabled; a null or unavailable collector role is not a valid principal.
+   After adding this output to an older applied stack, persist the reviewed output before using it.
+   The already-applied `runtime_deployment.inventory.task_role_arn` is also the collector's
+   identity, available through `terraform -chdir=terraform/foundation output -json runtime_deployment`.
+   Do not substitute a guessed ARN. Record these nonsecret values for the target-account step.
+2. In the **target account**, replace the placeholders and deploy the CloudFormation template:
+   ```bash
    aws cloudformation deploy \
      --template-file infra/cfn/awsops-target-account-role.yaml \
      --stack-name awsops-readonly-role \
      --capabilities CAPABILITY_NAMED_IAM \
      --parameter-overrides \
-       HostTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-task \
-       WorkerTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-worker-task \
-       ExternalId=<YOUR_EXTERNAL_ID>
+       'HostTaskRoleArn=<host-web-task-role-arn>' \
+       'InventoryTaskRoleArn=<host-steampipe-task-role-arn>' \
+       'WorkerTaskRoleArn=<host-worker-task-role-arn>' \
+       'ExternalId=<existing-or-new-external-id>'
    ```
+   Include `InventoryTaskRoleArn` for inventory collection. Omit it only when collector
+   trust is intentionally not being configured; that omission is not collection readiness.
    Omit `WorkerTaskRoleArn` unless a worker job needs the account. Omit `ExternalId` for
-   explicitly selected first-party onboarding. Keep line continuations only between actual arguments.
+   explicitly selected first-party **new-stack** onboarding. Keep line continuations only
+   between actual arguments, and keep actual ExternalId values out of shared logs and AI prompts.
    The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`). Re-running
    `aws cloudformation deploy` with the SAME `--stack-name` against an already-onboarded account is
-   an in-place update — adding `WorkerTaskRoleArn` to an existing stack is additive and does not
-   revoke the existing web-task-role trust.
-2. In AWSops, open **Accounts (`/accounts`)** as an admin → **Connect an AWS account**
+   an update: for an existing stack, prepare and inspect a change set before execution.
+   Adding the collector/worker principal is additive only when the existing web/worker trust,
+   ExternalId condition, role name/identity and `ReadOnlyAccess` policy are preserved.
+   Do not change `RoleName` or replace a working role to add trust.
+3. In AWSops, open **Accounts (`/accounts`)** as an admin → **Connect an AWS account**
    (Korean: **AWS 계정 연결**) → enter the target Account ID, alias and initial region.
    In **Advanced: ExternalId · AWS CLI profile**, enter the ExternalId already used above.
    For first-party onboarding, explicitly select the visible same-organization checkbox;
    the submitted ExternalId becomes empty while the draft value is retained. Then select
    **Verify and register** (Korean: **연결 확인 및 등록**). Registration is
    rejected (400) if ExternalId is empty and that box is unchecked, so omission is an explicit
-   choice. AWSops assumes the role and confirms `GetCallerIdentity.Account` matches the submitted ID
+   choice. Registration must also be allowed by the applied host/target scope. AWSops assumes the role and confirms `GetCallerIdentity.Account` matches the submitted ID
    (status → `verified`) before saving.
-3. Use the **global account selector** (sidebar) to switch the active account, or pick **All accounts**
+4. Use the **global account selector** (sidebar) to switch the active account, or pick **All accounts**
    to aggregate cost / Bedrock across every enabled account (the dashboard aggregates client-side).
 
 ## Notes
 - **ExternalId is not a secret** — it is a confused-deputy guard, stored in plaintext so AWSops can pass
   it to `sts:AssumeRole`. Treat it like a coordination value, not a credential.
+- The existing web/worker trust statement and the separate collector statement share one
+  ExternalId condition. For a first-party new stack, omission removes that condition from
+  **both** statements while keeping exact principal ARNs. For an existing stack, omission is
+  not a rotation procedure: preserve the current value unless an operator-reviewed change
+  deliberately changes it. Coordinate any rotation/removal across both target trust statements,
+  the stored account value used by web/Steampipe, worker settings where used, and the separately
+  configured Agent Lambda `AWSOPS_EXTERNAL_ID`. The browser create-only script does not
+  rotate or remove an existing condition, and checking first-party does not update the target role.
 - Host account: no role needed (AWSops uses its own task-role credentials for the host).
 - To remove an account, use the **제거** button on `/accounts` (the host row is protected).
 - The host web task role is granted `sts:AssumeRole` only on `arn:aws:iam::*:role/AWSopsReadOnlyRole`
@@ -181,8 +279,12 @@ for the separate multi-account collection and release evidence.
 
 - `web/app/accounts/AccountOnboarding.tsx` and its test: setup, draft ExternalIds and explicit consent.
 - `web/app/accounts/page.tsx` and its test: account actions and reload failures.
-- `web/app/api/accounts/onboarding/route.ts`: authenticated admin discovery.
+- `web/app/api/accounts/onboarding/route.ts`: admin discovery and bounded, scoped connection diagnostics.
+- `web/lib/account-connection.ts`: bounded STS sequence and safe result classification.
+- `web/lib/account-connection-diagnostics.ts` and `web/app/accounts/AccountConnectionDiagnostics.tsx`: client-safe metadata, fixed messages, read-only commands and AI draft.
+- `web/lib/account-registration-scope.ts`: fail-closed deployment target parsing.
 - `web/lib/account-onboarding.ts`: generated create-only script and input contract.
+- `terraform/foundation/steampipe.tf`, `workload.tf` and `runtime-read-scope.tf`: collector identity output, task environment and applied member scope.
 - `infra/cfn/awsops-target-account-role.yaml` and `scripts/v2/test_account_onboarding_template.py`: canonical template parity.
 - ADR-011: explicit first-party omission and third-party ExternalId requirements.
 - ADR-005: target administrators execute the generated script outside AWSops; this is not a product mutation exception.

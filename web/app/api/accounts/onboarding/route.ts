@@ -5,8 +5,12 @@ import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 import { onboardingInputError } from '@/lib/account-onboarding';
 import { verifyAccountConnection } from '@/lib/account-connection';
 import { registrationTargetAccountIds } from '@/lib/account-registration-scope';
+import { randomUUID } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
+const PROBE_COOLDOWN_MS = 10_000;
+let probeInFlight = false;
+let nextProbeAt = 0;
 
 export async function GET(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
@@ -38,10 +42,10 @@ export async function GET(request: Request) {
   }
 }
 
-/** Diagnostic only: host-only collection never prevents a read-only IAM connection check. */
+/** Diagnostic only: approved targets can be checked without registering them. */
 export async function POST(request: Request) {
-  const reply = (body: unknown, status: number) => Response.json(body, {
-    status, headers: { 'Cache-Control': 'private, no-store' },
+  const reply = (body: unknown, status: number, headers: Record<string, string> = {}) => Response.json(body, {
+    status, headers: { 'Cache-Control': 'private, no-store', ...headers },
   });
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return reply({ message: 'unauthenticated' }, 401);
@@ -67,20 +71,44 @@ export async function POST(request: Request) {
     return reply({ message: inputError || 'The host account is already connected' }, 400);
   }
   if (!/^\d{12}$/.test(hostAccountId)) return reply({ message: 'Host account configuration is unavailable' }, 503);
+  const reject = (code: string, message: string, status: number, retryAfterSeconds?: number) => {
+    const checkId = randomUUID();
+    console.info(JSON.stringify({
+      event: 'account_connection_rejected', checkId, actor_sub: user.sub,
+      accountId: input.accountId, code,
+    }));
+    return reply({ message, code, checkId, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, status,
+      retryAfterSeconds ? { 'Retry-After': String(retryAfterSeconds) } : {});
+  };
   let targetAccountIds: string[] | undefined;
   try {
     targetAccountIds = registrationTargetAccountIds(process.env.INVENTORY_TARGET_ACCOUNT_IDS, hostAccountId);
   } catch {
-    return reply({ message: 'Deployment account scope is unavailable' }, 503);
+    return reject('scope_unavailable', 'Deployment account scope is unavailable', 503);
   }
-  const diagnostic = await verifyAccountConnection(input, {
-    hostAccountId, registrationEnabled: process.env.INVENTORY_HOST_ONLY !== 'true' &&
-      (!targetAccountIds || targetAccountIds.includes(input.accountId)),
-  });
-  // Only the typed, bounded diagnostic is logged; never provider errors or the input body.
-  console.info(JSON.stringify({ event: 'account_connection_check', ...diagnostic }));
-  const status = diagnostic.verified ? 200
-    : diagnostic.code === 'timeout' ? 504
-    : ['access_denied', 'identity_mismatch'].includes(diagnostic.code) ? 400 : 503;
-  return reply({ ok: diagnostic.verified, diagnostic }, status);
+  const now = Date.now();
+  if (probeInFlight || now < nextProbeAt) {
+    return reject(probeInFlight ? 'probe_in_flight' : 'probe_cooldown',
+      'A connection check is already running or cooling down. Retry shortly.', 429,
+      Math.max(1, Math.ceil((nextProbeAt - now) / 1000)));
+  }
+  probeInFlight = true;
+  nextProbeAt = now + PROBE_COOLDOWN_MS;
+  try {
+    const hostOnly = process.env.INVENTORY_HOST_ONLY === 'true';
+    if ((targetAccountIds && !targetAccountIds.includes(input.accountId)) || (hostOnly && !targetAccountIds)) {
+      return reject('target_not_configured', 'Configure this target in the deployment before checking its connection.', 409);
+    }
+    const diagnostic = await verifyAccountConnection(input, {
+      hostAccountId, registrationEnabled: !hostOnly,
+    });
+    // Attribute the safe diagnostic to its requesting admin; never log the request body.
+    console.info(JSON.stringify({ event: 'account_connection_check', actor_sub: user.sub, ...diagnostic }));
+    const status = diagnostic.verified ? 200
+      : diagnostic.code === 'timeout' ? 504
+      : ['access_denied', 'identity_mismatch'].includes(diagnostic.code) ? 400 : 503;
+    return reply({ ok: diagnostic.verified, diagnostic }, status);
+  } finally {
+    probeInFlight = false;
+  }
 }

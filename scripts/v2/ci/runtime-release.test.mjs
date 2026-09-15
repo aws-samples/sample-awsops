@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import { SmokeError, authenticatedSmoke } from '../authenticated-smoke.mjs';
 import { verifyRuntimeSmoke } from '../runtime-smoke.mjs';
+import * as runtimeRelease from './runtime-release.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -47,9 +48,11 @@ function deployment() {
 function catalog() {
   return { status: 'catalog', types: ['cloudfront', 'rds', ...sourceTypes.filter(t => !['cloudfront', 'rds'].includes(t))] };
 }
-const sourceTypes = JSON.parse(execFileSync('python3', ['-c',
-  'import ast,json,sys; t=ast.parse(open(sys.argv[1]).read()); print(json.dumps([k.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id in ("QUERIES","SDK_SYNCS") for a in n.targets) for k in n.value.keys]))',
+const sourceCatalogs = JSON.parse(execFileSync('python3', ['-c',
+  'import ast,json,sys; t=ast.parse(open(sys.argv[1]).read()); print(json.dumps({a.id:[k.value for k in n.value.keys] for n in t.body if isinstance(n,ast.Assign) for a in n.targets if isinstance(a,ast.Name) and a.id in ("QUERIES","SDK_SYNCS")}))',
   new URL('../steampipe/sync_lambda.py', import.meta.url).pathname], { encoding: 'utf8' }));
+const sourceTypes = [...sourceCatalogs.QUERIES, ...sourceCatalogs.SDK_SYNCS];
+const sourceSdkTypes = sourceCatalogs.SDK_SYNCS;
 function fixture(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-tests-'));
   const previousTemp = process.env.RUNNER_TEMP;
@@ -96,7 +99,10 @@ function fixture(overrides = {}) {
       writeFileSync(output, JSON.stringify(type === 'catalog' ? (overrides.catalog || catalog())
         : (overrides.probes?.[type] || (type === 'cloudfront' && overrides.probe) ||
           { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0,
-            ...(overrides.targets ? { unreachable_account_count: 0 } : {}) })), { mode: 0o600 });
+            ...(overrides.targets ? {
+              account_reachability_scope: sourceSdkTypes.includes(type) ? 'host_only' : 'registered_accounts',
+              unreachable_account_count: sourceSdkTypes.includes(type) ? null : 0,
+            } : {}) })), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
     }
     if (overrides.throwAt === key) throw new Error('PRIVATE_REMOTE_DETAIL');
@@ -172,8 +178,58 @@ test('member collection refuses missing or nonzero unreachable counts before fin
         /collection_probe_incomplete|inventory_incomplete/);
       assert.equal(f.authenticated.length, 0);
     }, { targets: memberTargets, probe: { type: 'cloudfront', status: 'succeeded',
-      row_count: 1, unknown_attribute_count: 0, unreachable_account_count: count } });
+      row_count: 1, unknown_attribute_count: 0, account_reachability_scope: 'registered_accounts',
+      unreachable_account_count: count } });
   }
+});
+test('host-only SDK acceptance is pinned to the actual source catalog, not an RPC scope claim', () => {
+  assert.deepEqual(runtimeRelease.HOST_ONLY_SDK_TYPES, sourceSdkTypes);
+  assert.ok(sourceSdkTypes.every(type => REQUIRED_CATALOG_TYPES.includes(type)));
+});
+test('member acceptance requires registered SQL zero or pinned SDK host-only null, never unmeasured evidence', async () => {
+  for (const type of ['ec2', ...sourceSdkTypes, 'future_type']) {
+    const sdk = sourceSdkTypes.includes(type);
+    const correct = { account_reachability_scope: sdk ? 'host_only' : 'registered_accounts',
+      unreachable_account_count: sdk ? null : 0 };
+    for (const [scope, count, allowed] of [
+      [correct.account_reachability_scope, correct.unreachable_account_count, true],
+      [sdk ? 'registered_accounts' : 'host_only', sdk ? 0 : null, false],
+      ['unmeasured', null, false], [undefined, correct.unreachable_account_count, false],
+      [correct.account_reachability_scope, undefined, false],
+      [correct.account_reachability_scope, sdk ? 0 : null, false],
+      ['PRIVATE_SCOPE_DETAIL', 0, false],
+    ]) await withFixture(async f => {
+      const pending = release(memberDeployment(), { env: f.env, run: f.run, authenticate: f.authenticate });
+      if (allowed) {
+        const result = await pending;
+        assert.equal(result.status, 'full_verified');
+        assert.equal(result.collection_attempts.types[type].account_reachability_scope, scope);
+        assert.equal(result.collection_attempts.types[type].unreachable_account_count, count);
+      } else {
+        await assert.rejects(pending, error => error.message === 'collection_probe_incomplete'
+          && !JSON.stringify(error.collection_attempts).includes('PRIVATE_SCOPE_DETAIL'));
+        assert.equal(f.authenticated.length, 0);
+      }
+    }, { targets: memberTargets,
+      catalog: type === 'future_type' ? { status: 'catalog', types: [...catalog().types, type] } : undefined,
+      probes: { [type]: { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0,
+        account_reachability_scope: scope, unreachable_account_count: count } } });
+  }
+});
+test('SDK partial remains a terminal failure and preserves unmeasured/null diagnostics', async () => {
+  await withFixture(async f => {
+    await assert.rejects(release(memberDeployment(), { env: f.env, run: f.run, authenticate: f.authenticate }),
+      error => {
+        assert.equal(error.message, 'collection_partial');
+        const state = error.collection_attempts.types.s3;
+        assert.equal(state.status, 'partial');
+        assert.equal(state.account_reachability_scope, 'unmeasured');
+        assert.equal(state.unreachable_account_count, null);
+        return true;
+      });
+    assert.equal(f.authenticated.length, 0);
+  }, { targets: memberTargets, probes: { s3: { type: 's3', status: 'partial', row_count: 1,
+    unknown_attribute_count: 0, account_reachability_scope: 'unmeasured', unreachable_account_count: null } } });
 });
 test('member evidence reservation prevents late collector admission without extending the marker deadline', async () => {
   for (const targets of [undefined, memberTargets]) {

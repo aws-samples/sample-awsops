@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ba95a5c600b6 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1367bbb0f912 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -217,8 +217,10 @@ admission bounds, not guaranteed completion. Runtime foundation records a 43-typ
 Require every pinned baseline name (currently 43, source-AST checked); valid growth
 is allowed up to 128 and every returned type needs strict proof. Both modes default
 to the enabled host only; explicit applied targets require exact enabled registration,
-zero unreachable RPC counts and fresh account-bound EC2/CloudFront known-member proof.
-Host-only SDK collectors do not prove per-member43 coverage. Only Terraform onboarding
+measured SQL reachability with zero unreachable accounts and fresh account-bound
+EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
+counts; CI permits host-only/null only for five source-AST-pinned SDK types, not
+per-member43 coverage. Only Terraform onboarding
 preflight permits approved subsets; apply reads the restored plan, not a newer secret.
 Runtime release stays exact. Preserve isolated
 AWS CLI environments, first chronological terminal failure and stopped admission;

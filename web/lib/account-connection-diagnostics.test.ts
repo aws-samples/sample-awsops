@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  accountConnectionAiHref, accountConnectionCommands, readAccountConnectionDiagnostic,
+  accountConnectionAiHref, accountConnectionCommands, accountConnectionRetryAfter, readAccountConnectionDiagnostic,
   type AccountConnectionDiagnostic,
 } from './account-connection-diagnostics';
 import { SECTIONS } from './sections';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const fixture: AccountConnectionDiagnostic = {
   checkId: '72b022ca-4dcd-4a08-9d8c-4da6414c490d', checkedAt: '2026-09-15T00:00:00.000Z',
@@ -57,5 +61,29 @@ describe('client-safe connection diagnostic contract', () => {
     expect(commands).not.toMatch(/assume-role|create-|update-|delete-|put-|ExternalId|ResourceProperties|StatusReason|Credentials/);
     expect(accountConnectionCommands("222222222222'; touch /tmp/injected", fixture.region)).toBeNull();
     expect(accountConnectionCommands(fixture.accountId, 'x; echo secret')).toBeNull();
+  });
+  it('isolates the wrong-account exit from the parent CloudShell session', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'connection-command-'));
+    try {
+      writeFileSync(join(directory, 'aws'), '#!/bin/sh\nprintf "%s\\n" 111111111111\n', { mode: 0o700 });
+      const result = spawnSync('bash', ['-c', `${accountConnectionCommands(fixture.accountId, fixture.region)}\nprintf 'PARENT_ALIVE\\n'\n`], {
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}` }, encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('PARENT_ALIVE');
+      expect(result.stderr).toContain('Select the target account');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  it('projects condition operator and key names without selecting condition values', () => {
+    const command = accountConnectionCommands(fixture.accountId, fixture.region)!;
+    expect(command).toContain('ConditionOperators:keys(Condition');
+    expect(command).toContain('ConditionKeys:map(&keys(@),values(Condition');
+    expect(command).not.toMatch(/Condition:Condition|StringEquals\\./);
+  });
+  it.each([
+    [10, null, 10], [3, '10', 10], ['PRIVATE_VALUE', 'PRIVATE_HEADER', null],
+    [Infinity, '9999', null], [null, '0', null], [{ value: 10 }, '-1', null],
+  ])('uses only bounded numeric Retry-After metadata', (body, header, expectedSeconds) => {
+    expect(accountConnectionRetryAfter(body, header as string | null)).toBe(expectedSeconds);
   });
 });

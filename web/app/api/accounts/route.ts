@@ -68,7 +68,7 @@ export async function POST(request: Request) {
 
   if (!validateAccountId(accountId)) return err('accountId must be 12 digits', 400);
   try {
-    const targets = registrationTargetAccountIds(process.env.INVENTORY_TARGET_ACCOUNT_IDS, process.env.HOST_ACCOUNT_ID || '');
+    const targets = registrationTargetAccountIds(process.env.INVENTORY_TARGET_ACCOUNT_IDS, (process.env.HOST_ACCOUNT_ID || '').trim());
     if (targets && !targets.includes(accountId)) {
       return err('This account is not included in the configured collection and CI verification scope.', 409);
     }

@@ -42,9 +42,12 @@ When `INVENTORY_HOST_ONLY=true`, `POST /api/accounts` rejects onboarding with 40
 authentication/admin checks and before STS or registry writes. Reads, connection re-tests
 and removal retain their behavior. Configure multi-account collection before onboarding.
 The separate admin-only `POST /api/accounts/onboarding` performs a bounded, read-only
-host/AssumeRole/target identity check and never writes the registry. Its diagnostic fields
-exclude provider error text, credentials and the ExternalId value. AI guidance prefills
-the existing assistant composer without sending. An explicit
-`INVENTORY_TARGET_ACCOUNT_IDS` deployment allowlist also gates registration; malformed
-configuration fails closed. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host
+host/AssumeRole/target identity check and never writes the registry. One probe per process
+may run at a time, with a 10-second start cooldown; rejected and completed checks log the
+requesting `actor_sub`. Host-only deployments require an explicitly allowed probe target.
+`INVENTORY_TARGET_ACCOUNT_IDS` constrains new probes and registration; malformed
+configuration fails closed. Existing registered-account readers and PATCH tests retain
+their separate authorization paths. Diagnostic fields exclude provider error text,
+credentials and the ExternalId value. AI guidance prefills the existing assistant composer
+without sending. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host Steampipe
 collector principal to the create-only CloudFormation role guide.
