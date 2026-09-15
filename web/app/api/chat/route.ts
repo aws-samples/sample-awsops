@@ -454,20 +454,17 @@ export async function POST(request: Request) {
       accountAlias = target.alias || undefined;
     }
   }
-  const customContext = await getCustomAgentContext(accountId);
-  const { agents: customAgents, space } = customContext;
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
-  // A failed policy read cannot become an unrestricted custom dispatch. An explicit
-  // built-in pin bypasses custom routing and remains usable without the custom catalog.
-  if (customContext.status === 'unavailable' && !(hybridOn && pinIsBuiltin)) {
-    return Response.json({ error: 'Custom-agent policy unavailable' }, { status: 503 });
-  }
-  // ADR-044 §2: an explicit pin (picker / pin chip) may target a CUSTOM agent, not only a built-in
-  // section — and it sits ABOVE keyword-matched custom agents and the classifier in the ladder.
-  // A non-built-in `section` is a custom-agent pin attempt (hybrid path only; legacy is unchanged).
-  const customPinTarget = (hybridOn && body.section && !pinIsBuiltin) ? body.section : null;
   const productHelpIntent = hybridOn && !body.section && isProductHelpIntent(prompt);
-  let finalPolicyUnavailable = false;
+  // Builtin pins and product help do not consult or inherit custom policy.
+  const customContext = pinIsBuiltin || productHelpIntent
+    ? { status: 'available' as const, agents: [], space: null }
+    : await getCustomAgentContext(accountId);
+  const { agents: customAgents, space } = customContext;
+  let finalPolicyUnavailable = customContext.status === 'unavailable';
+  // Preserve legacy healthy routing; even in basic mode an unavailable custom pin
+  // must not be silently converted into an unrestricted gateway request.
+  const customPinTarget = ((hybridOn || finalPolicyUnavailable) && body.section && !pinIsBuiltin) ? body.section : null;
   let customPinEnabled: boolean, unavailablePin: boolean, customPick: string | null, routeKey: string;
   try {
     customPinEnabled = customPinTarget
@@ -480,7 +477,7 @@ export async function POST(request: Request) {
       ? null
       : customPinEnabled
         ? customPinTarget                                   // explicit custom pin — highest precedence
-        : (hybridOn && pinIsBuiltin) ? null : pickCustomAgent(prompt, customAgents);
+        : pinIsBuiltin ? null : pickCustomAgent(prompt, customAgents);
     routeKey = customPinEnabled
       ? customPinTarget!
       : (customPick && (await isCustomAgentEnabled(customPick, { throwOnError: true })) ? customPick : gateway);
@@ -564,7 +561,7 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = !explicitPin && !useAssistant && finalPolicyUnavailable
+  const fallbackNotice = !explicitPin && !productHelpIntent && finalPolicyUnavailable
     ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '';
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
@@ -642,6 +639,7 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
+      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // AWSops Assistant: product/how-to answer grounded in the KB (Bedrock-direct), OR the graceful
       // fallback for an auto-routed inactive section — instead of the 🔒 dead-end.
       if (useAssistant) {
@@ -659,7 +657,6 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // ADR-044 cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
       if (doFanout) {
         const tf0 = Date.now();

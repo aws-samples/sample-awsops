@@ -1112,9 +1112,9 @@ it('returns an explicit unavailable response before dispatch when custom policy 
   verifyUser.mockResolvedValue({ sub: 'u', email: 'u@example.com' });
   pickGateway.mockReturnValue('ops');
   const { POST } = await import('./route');
-  const res = await POST(req({ prompt: 'inspect', sessionId: 's'.repeat(36) }));
-  expect(res.status).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Custom-agent policy unavailable' });
+  const res = await POST(req({ prompt: 'inspect', section: 'compliance', lang: 'en', sessionId: 's'.repeat(36) }));
+  expect(res.status).toBe(200);
+  expect(await readStream(res)).toContain('temporarily unavailable');
   expect(invokeAgent).not.toHaveBeenCalled();
 });
 

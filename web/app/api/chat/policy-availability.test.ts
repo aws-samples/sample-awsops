@@ -26,7 +26,9 @@ vi.mock('@/lib/assistant', async importOriginal => ({
   assistantAnswer: help,
 }));
 import { POST } from './route';
+import * as sections from '@/lib/sections';
 
+let policyFailure: 'space' | 'catalog' | undefined;
 let enablement: 'enabled' | 'disabled' | 'unavailable';
 const reads: string[] = [];
 beforeEach(() => {
@@ -34,6 +36,7 @@ beforeEach(() => {
   vi.stubEnv('HYBRID_ROUTING_ENABLED', 'true');
   vi.stubEnv('MULTI_ROUTE_SYNTHESIS_ENABLED', 'false');
   enablement = 'enabled';
+  policyFailure = undefined;
   reads.length = 0;
   invoke.mockReset();
   record.mockReset().mockResolvedValue(undefined);
@@ -50,11 +53,13 @@ beforeEach(() => {
     }
     if (sql.includes('FROM agent_spaces')) {
       reads.push('space');
+      if (policyFailure === 'space') throw new Error('private policy error');
       return { rows: [{ account_id: 'self', enabled_agent_ids: [1], enabled_skill_ids: [],
         enabled_integration_ids: [], tool_allowlist: ['get_role_details'], version: 1 }] };
     }
     if (sql.includes('FROM agents a')) {
       reads.push('catalog');
+      if (policyFailure === 'catalog') throw new Error('private policy error');
       return { rows: [{ id: 1, name: 'compliance', description: 'Compliance', persona: 'CUSTOM_POLICY',
         gateway: 'security', gateways: ['security'], tier: 'custom', enabled: true, version: 1,
         routing_keywords: ['IAM'], tool_policy_configured: true,
@@ -64,7 +69,7 @@ beforeEach(() => {
     throw new Error(`Unexpected query: ${sql}`);
   });
 });
-afterEach(() => { vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 async function chat(section?: string, prompt = 'IAM users') {
   const response = await POST(new Request('http://localhost/api/chat', {
@@ -154,4 +159,52 @@ describe('final custom-agent enablement availability', () => {
     expect(reads).not.toContain('enablement');
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ agentName: 'security' }));
   });
+});
+
+describe.each(['space', 'catalog'] as const)('initial %s policy failure', source => {
+  it.each(['true', 'false'])('keeps ordinary routing and builtin pins usable (hybrid=%s)', async hybrid => {
+    vi.stubEnv('HYBRID_ROUTING_ENABLED', hybrid);
+    policyFailure = source;
+    const auto = await chat();
+    expect(auto.response.status).toBe(200);
+    expect(auto.answer).toContain('using built-in routing');
+    expect(auto.text).not.toMatch(/CUSTOM_POLICY|private policy error/);
+    expect(record.mock.calls[0][0].assistantContent).toBe(auto.answer);
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ agentName: 'security', toolAllowlist: undefined }));
+    const pin = await chat('security');
+    expect(pin.response.status).toBe(200);
+    expect(pin.answer).not.toContain('using built-in routing');
+  });
+  it('refuses an explicit custom pin without a substitute or invocation', async () => {
+    policyFailure = source;
+    const result = await chat('compliance');
+    expect(result.response.status).toBe(200);
+    expect(result.answer).toContain('temporarily unavailable');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(help).not.toHaveBeenCalled();
+  });
+  it('product help bypasses custom policy completely', async () => {
+    policyFailure = source;
+    const result = await chat(undefined, 'IAM custom agent setup');
+    expect(result.answer).toBe('Product help without custom execution');
+    expect(reads).not.toContain('space');
+    expect(reads).not.toContain('catalog');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+it('streams and persists the policy notice once when independent routing falls back to Assistant', async () => {
+  policyFailure = 'space';
+  const original = sections.sectionByKey;
+  vi.spyOn(sections, 'sectionByKey').mockImplementation(key => {
+    const section = original(key);
+    return section && key === 'security' ? { ...section, active: false } : section;
+  });
+  const { answer } = await chat();
+  expect(help).toHaveBeenCalledOnce();
+  expect(answer.match(/using built-in routing/g)).toHaveLength(1);
+  expect(answer).toContain('Product help without custom execution');
+  expect(record.mock.calls[0][0].assistantContent).toBe(answer);
+  expect(record.mock.calls[0][0].gateway).toBe('assistant');
+  expect(invoke).not.toHaveBeenCalled();
 });

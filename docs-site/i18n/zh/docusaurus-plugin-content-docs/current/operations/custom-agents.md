@@ -8,67 +8,41 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # 自定义代理
 
-此页面可直接配置 AI 助手如何运作的代理、技能、集成与工具。
+在 `/customization` 配置角色提示、可复用指令和只读工具权限。通过 **集成 → Agents & Skills** 链接进入。
 
-<Screenshot src="/screenshots/operations/custom-agents.png" alt="自定义代理 & 技能" />
+<Screenshot src="/screenshots/operations/custom-agents.png" alt="自定义代理与技能管理页面" />
 
 :::info 仅限管理员
-只有**管理员**才能访问此页面（Cognito 管理员组或 SSM 管理员允许列表）。无权限的用户将看到访问被拒绝的界面。
+修改目录需要 Cognito 管理员组或 SSM 管理员允许列表权限。集成凭证保存在服务器端，保存后不会再次显示。
 :::
 
-## 主要功能
+## 注册与绑定
 
-### New Agent（新建代理）
-创建定义助手响应方式的新代理。
+1. 在 **New Agent** 输入 kebab-case 名称、描述、角色提示、网关和路由关键词。可选类型为 `generic`、`on_demand`、`triage`、`rca`、`mitigation`、`evaluation`。选择类型不会启用自动修复或自主执行。
+2. 与内置路由键同名的名称（如 `ops`、`security`、`observability`、`code`、`auto`）均为保留名称。已有冲突记录会保留，但不能覆盖内置路由。请使用非保留名称创建代理，并更新技能绑定和账户选择。
+3. **New Skill** 创建仅含指令的技能。管理员通过 `POST /api/customization` 指定 `kind: "skill"` 和 `toolAllowlist` 来声明工具权限。例如 `iam-mcp-target___list_users` 必须属于所选网关。短名称仅在该网关内唯一时有效；未知、歧义或其他目标的名称不会授予权限。
+4. 使用现有管理员 API 绑定技能：向 `PUT /api/customization` 提交 `{"op":"attach","agentId":1,"skillId":2,"ord":0}`，将示例 ID 换成实际目录 ID。Agent Space 中的技能选择**不是**绑定操作。
+5. 在 **Agents / Skills** 列表中启用新建或编辑后的项目。保存后默认禁用，内置项目不能在此切换。
+6. 在账户的 **Agent Space** 选择代理和集成并保存。成功确认不存在空间记录时，保留原有全局选择；创建记录后，仅所选自定义代理可用。技能选择属于存储的元数据，并非运行时权限控制。运行指令来自已启用且已绑定的技能。
 
-- **name**：代理名称（kebab-case）
-- **description**：代理说明
-- **persona**：系统提示词（代理的语气·视角）
-- **gateway**：负责领域 — **network**、**container**、**iac**、**data**、**security**、**monitoring**、**cost**、**ops**
-- **routing keywords**：将问题路由到此代理的路由关键词（逗号分隔）
-- **agent type**：角色类型 — **generic**、**on_demand**、**triage**、**rca**、**mitigation**、**evaluation**
+## 工具限制与撤销
 
-### New Skill（新建技能）
-创建可供多个代理共享的可复用技能。
+账户工具允许列表是自定义权限的上限。空账户列表表示没有账户上限；但**非空上限与权限没有交集时，全部拒绝**。内置代理独立于自定义策略。
 
-- **name** / **description**：技能名称与说明
-- **instructions**：技能执行指令
-- **agent types (targeting)**：应用此技能的目标代理类型（复选框多选）
+只有同时不存在限制历史、账户上限和集成工具授权时，才继承原有网关权限。上限不会为仅含指令的技能创建工具授权。仅含指令的代理如果有集成工具授权，只获得符合条件的集成工具，不会获得整个网关目录。集成工具使用精确名称，不能授予带网关目标前缀的工具，并保持服务器及凭证边界。
 
-### Agents / Skills 列表
-- 新建的代理和技能以**禁用（Disabled）**状态开始，需在列表中切换开关来启用。
-- 内置项目会显示 **built-in** 标签，不属于切换对象。
+绑定的技能一旦声明非空工具列表，代理便保留限制历史。禁用技能、将列表改为 `[]`、解绑或解绑后删除，都不会恢复无限制的网关权限。没有工具时仍可使用角色提示和指令。恢复权限时，请绑定或更新明确限定范围的技能，启用它，并确认其授权与账户上限存在交集。清空列表不是重置限制的方法。
 
-### Integrations (advanced)
-只读可观测性数据源（**Prometheus**、**Loki**、**Tempo**、**Mimir**、**ClickHouse**）和连接器（**Notion** 等）现在不在此页面，而是在**集成（Integrations）中心**（`/integrations`）的**数据源** / **连接器**标签页中管理连接、凭证注册和 schema 缓存。此部分仅保留用于直接注册不属于上述范畴的**自定义 egress/ingress 集成**的 **Register integration**。
+数据源端点、凭证和模式刷新在 **集成** 中心管理。高级注册表包含历史集成类型，但这不代表允许任意 BYO-MCP 或被冻结的传输方式。官方预设仍受开关控制，ClickHouse stdio 仍被冻结，READ_WRITE 元数据仅用于提出建议。注册不会改变这些限制。
 
-### Agent Space
-选择要在账户中启用的代理、技能、集成以及**工具允许列表（tool allowlist）**后保存。每次保存版本号都会递增。
+## 读取失败与部署
 
-## 使用方法
-1. 通过侧边栏**集成**（`/integrations`）→ **Agents & Skills** 标签页中的链接进入此页面（`/customization`）（不在侧边栏直接显示）
-2. 在 **New Agent** 中输入 name、description、persona，选择 **gateway** 和 **agent type**，填写路由关键词后创建
-3. 如有需要，在 **New Skill** 中创建技能并选择要应用的 **agent types**
-4. 在下方 **Agents** / **Skills** 列表中切换新项目的开关以启用
-5. 数据源和连接器的连接在侧边栏**集成**（`/integrations`）中进行 — 此页面的 **Integrations (advanced)** 部分用于注册该范畴之外的自定义集成
-6. 在 **Agent Space** 中选择要启用的项目和工具允许列表，并通过 **Save Agent Space** 保存
-
-:::tip 以禁用状态开始
-新建的代理和技能不会自动启用。需要在列表中切换开关，并将其纳入 **Agent Space** 保存后才会反映到助手中。
-:::
-
-:::info 凭证不会再次显示
-集成凭证保存后不会显示在界面上。如需变更，请重新输入值并 **Update**。
-:::
+- 策略读取失败时，`GET /api/customization` 返回 HTTP **503**。数据库恢复后重试；错误不表示空配置或无限制配置。
+- 显式指定的自定义聊天路由不可用或已禁用时，返回 HTTP **200 SSE** 提示，不调用替代代理。自动选择遇到策略故障时使用独立判断的内置路由，并显示、保存提示，回退到 Assistant 时也一样。基本模式仍支持内置代理指定；混合路由模式的产品帮助跳过自定义选择。
+- 通过经过审查的独立迁移流程，在 Web 读取器更新前应用 `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql`，然后按现有发布流程部署运行时。Web 自动迁移会拒绝 ALTER 和触发器语句，请勿绕过该检查。检查已有名称和工具列表。迁移会补录当前绑定（包括已禁用的限制技能），但无法恢复迁移前已删除的限制，需另行核查。
+- 已配置的空结果会编码为拒绝，兼容旧、新精确匹配运行时。源代码合并不代表迁移或运行时已经部署。AWS 资源变更、自主执行和集成写入开关保持不变。
 
 ## 相关页面
-- [数据源浏览](../observability/datasources) - 浏览在集成中心连接的可观测性数据源
-- [AI 助手](../overview/assistant) - 与配置好的代理对话
 
-## 策略兼容性与发布
-
-内置/收集器路由键（如 `security`、`aws-data`）是保留名称：新自定义名称返回 400，已有冲突记录保留但不再参与路由。请检查已保存的名称和技能绑定。网关授权使用 `target___tool`；短名称必须在该网关内唯一匹配。不再匹配的 cap 可能变为全部拒绝。cap 仅缩小已声明工具范围；仅声明外部集成的代理不会隐式获得网关工具。
-
-已配置的工具限制在清空、禁用或解绑技能后仍保留。迁移回填当前绑定（包括禁用技能），API 不提供恢复无限制模式的重置操作。迁移前已删除的历史限制无法重建，请检查现有配置。仅在没有保留的工具限制，且当前没有 cap 或集成工具授权时，才保留旧版无限制模式。
-
-先通过经审核的独立迁移流程应用 `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql`，再发布 Web。自动 Web 迁移会拒绝其中的 ALTER/trigger。初始自定义策略读取失败时 `/api/chat` 返回 503，唯一例外是 hybrid 模式下的显式内置 pin（默认 hybrid=false 无例外，产品帮助也会因初始失败而返回 503）。初始读取成功后，最终启用检查失败会阻止自定义 pin 调用；自动路由独立选择内置路径并持久化提示。产品帮助跳过该最终读取。`/api/customization` GET 策略读取失败也返回 503。
+- [数据源探索](../observability/datasources) — 探索已连接的可观测性数据源
+- [AI 助手](../overview/assistant) — 使用已配置的助手
