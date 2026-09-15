@@ -4,6 +4,17 @@
 Domain-logic modules shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
 
 ## Key Files
+- `e2e-topology.ts` / `e2e-topology-types.ts` — **unwired pure correlation prerequisite**:
+  compose loaded configuration/service/network records without SDK calls, fetch, clocks or
+  layout. Keep the existing scoped identity vetoes, cached/qualified context and per-source times.
+  `mainE2eConnection(nodes)` chooses from eligible uncapped nodes: DATA_TRANSFERRED first,
+  then deterministic metric/unit groups, descending valid nonnegative value within a group,
+  stable ID ties. Never compare raw magnitudes across metrics/units.
+  `selectE2eGraph` preserves explicit focus/query priority and reserves complete network
+  groups before optional neighbors. `omittedCategories` counts hidden connection observations
+  after filters/caps, not endpoints/edges or filtered-out data; missing categories use UNKNOWN.
+  Explicit hits may remain partial when their group cannot fit; node/edge omissions still apply.
+  No page/API/canvas is activated. Tests: `e2e-topology.test.ts`; reference: `docs/reference/observability-e2e.md`.
 - `topology-config.ts` — client-safe EKS pod/endpoint evidence for the runtime IP-target view; returns scoped candidates and explicit read/coverage failures.
 - `aws.ts` — `listClusterInventory` reports the configured EKS region and continuation state, with at most 25 descriptions. `listClusters` remains the array-only compatibility wrapper; this does not enumerate other regions or certify pod ownership.
 - `topology-observations.ts` — standalone, unwired NFM category loader; owns `NetworkObservation`.
@@ -46,7 +57,7 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 - The Refresh chip uses captureThrough from source/eligible last-success evidence, not browser load time; refreshing an old snapshot keeps its stale indicator. Incomplete first pages withhold ownership without claiming the maximum row cap.
 - Only target nodes receive `targetCapturedAt`: a valid target-group row capture time or null. It is not the task/subnet/pod evidence time, and must not be relabeled as an ownership timestamp. Snapshot agreement never proves continuous/live ownership. All materialized/member target labels and every resolved ECS snapshot label are cached configuration.
 - Page-built out-of-region IP targets can retain `candidate` metadata with `scope_unverified` and no exclusive cluster filter. The materializer does not emit that page-only candidate. SQL-reader may expose bare region/cluster/ecsService/task fields but excludes VPC/subnet, provenance and targetCapturedAt fields; projected flow labels remain configuration context. See `docs/runbooks/agent-sql-reader.md`.
-- A failed/incomplete load that builds an empty graph retains a prior nonempty graph only for the same account, preserving its provenance and name maps. A complete empty load replaces it normally; account changes never reuse prior data. This runtime contains no E2E correlation/identity-edge implementation.
+- A failed/incomplete load that builds an empty graph retains a prior nonempty graph only for the same account, preserving its provenance and name maps. A complete empty load replaces it normally; account changes never reuse prior data. The live topology path does not call the separate unwired E2E correlation module above.
 
 ## Rules
 - New live-AWS-query layers should clone `nfm.ts`'s TTL-cache + in-flight-dedupe pattern.

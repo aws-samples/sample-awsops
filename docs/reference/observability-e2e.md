@@ -21,6 +21,43 @@ connectors. No new telemetry backend or AWS-mutating tool.
 - Distinguish observed zero, successful empty, unavailable, failed, partial and stale observations.
 - Keep bounded queries; a cap or failed source must be visible to API, UI and diagnosis consumers.
 
+## Current correlation module boundary
+
+`web/lib/e2e-topology.ts` and `web/lib/e2e-topology-types.ts` are a pure, **unwired**
+prerequisite. They consume already-loaded configuration graphs, service snapshots and
+network observations; they make no SDK/API calls and activate no page or canvas.
+Existing routes, collection metadata and their authorization remain separate contracts.
+Future consumers must validate their API envelopes and retain collection/unknown states.
+
+`buildE2eGraph` keeps source records and evidence classes separate. Account, region/VPC,
+pod/workload agreement and existing ownership/read-gap vetoes govern identity edges.
+Cached configuration stays context and cannot become live/exclusive ownership.
+Source capture times and observation windows retain their distinct meanings.
+The non-self composition guard is not an authorization boundary.
+
+`filterE2eGraph` and `matchesE2eQuery` expose eligible evidence for consumers.
+`mainE2eConnection(nodes)` chooses a primary observation before display caps: prefer
+`DATA_TRANSFERRED`, then sort metric and unit groups lexically; within a group choose
+the largest finite nonnegative value, with stable ID ties. Empty metadata unit falls
+back to the row unit. Invalid measurements are not a main flow. Values are not compared
+across metric/unit groups or normalized into a common time window.
+
+`selectE2eGraph` retains explicit focus/query priorities and fits complete network
+connection groups before optional identity/configuration neighbors. Explicit hits can
+remain partial if their whole group cannot fit. Context attaches once and never grants
+transit reachability. Defaults remain 350 nodes and 700 edges.
+`omittedCategories: Record<string, number>` counts connection observations hidden by
+those caps **after** eligibility/focus/query filtering. It excludes hidden endpoints,
+configuration nodes and filtered-out observations; missing category metadata uses
+`UNKNOWN`. A visible partial explicit hit is not an entirely omitted observation:
+`omittedNodes` and `omittedEdges` still disclose its missing display context.
+
+Regression coverage is in `web/lib/e2e-topology.test.ts`, including seven categories
+with 50 rows each, reversed input order, metric/unit selection, explicit priorities and
+identity vetoes. `web/lib/flow-layout.ts` remains a generic layout helper; its immutable
+node-size regression is in `web/lib/flow-layout.test.ts`. These tests establish module
+contracts, not completed API/UI integration or live AWS traffic coverage.
+
 ## Delivery and verification / 구현 및 검증
 
 1. **Source integration / 원본 통합**
