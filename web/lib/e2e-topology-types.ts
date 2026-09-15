@@ -15,6 +15,7 @@ export interface E2eEdge {
   id: string;
   source: string;
   target: string;
+  /** Configured record equality is distinct from a corroborated pod tuple; neither proves current/exclusive ownership. */
   relation: string;
   evidence: E2eEvidence;
   directed: boolean;
@@ -53,6 +54,7 @@ export interface E2eGraph {
     configuredNodes: number;
     serviceNodes: number;
     networkFlows: number;
+    /** Endpoints with identity-evidence links, including configured-record matches; not an ownership count. */
     correlatedEndpoints: number;
     unmatchedEndpoints: number;
     ambiguousEndpoints: number;
