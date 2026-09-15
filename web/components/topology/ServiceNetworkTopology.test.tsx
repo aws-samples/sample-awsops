@@ -96,6 +96,8 @@ describe('ServiceNetworkTopology', () => {
     [true, { status: 'partial' }, false], [true, { readTruncated: true }, false],
     [true, { retainedPrevious: true }, false], [true, { sources: [] }, false],
     [true, { metadataTruncated: true }, false], [true, { nodeDrops: 1 }, false],
+    ...['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging']
+      .map(key => [true, { [key]: undefined }, false] as const),
     [true, { sources: [{ ...completeCollection.sources[0], status: 'partial' }] }, false]] as const)
   ('requires trusted host and complete fresh service evidence: %j', async (known, quality, expected) => {
     const host = '111111111111', region = 'ap-northeast-2', vpcId = 'vpc-shop';

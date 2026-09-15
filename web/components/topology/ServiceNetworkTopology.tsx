@@ -132,7 +132,7 @@ function serviceReadComplete(snapshot: ObservedServices | null): boolean {
   if (['retainedPrevious', 'metadataTruncated', 'readTruncated', 'inputTruncated', 'graphTruncated', 'infraUnavailable']
     .some(key => c[key] !== undefined && c[key] !== false)) return false;
   if (['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging']
-    .some(key => c[key] !== undefined && c[key] !== 0)) return false;
+    .some(key => c[key] !== 0)) return false;
   const sources = c.publishedSources ?? c.sources;
   return Array.isArray(sources) && sources.length > 0 && sources.every(source => object(source)
     && ['ok', 'empty'].includes(String(source.status)) && Array.isArray(source.reasons) && !source.reasons.length
