@@ -84,4 +84,4 @@ documentation alone do not establish completion.
 
 ## Service/network graph status
 
-The pure correlator, shared value-aware display selection and reusable evidence canvas now exist as unwired prerequisites. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source acquisition and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.
+The pure correlator and shared value-aware display selection now exist as unwired prerequisites. The canvas and its tests remain with the UI integration. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source orchestration and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.
