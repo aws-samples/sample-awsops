@@ -708,7 +708,7 @@ describe('buildE2eGraph — display-truncated membership', () => {
     }
   });
 
-  it.each(['missing', 'short', 'null', 'bad-id', 'bad-pod', 'wrong-prefix'])(
+  it.each(['missing', 'short', 'null', 'bad-id', 'bad-pod', 'wrong-prefix', 'missing-type', 'unknown-type', 'unparseable-member'])(
     'keeps overlapping uncertainty for a %s sidecar', damage => {
       const config = group(undefined, 'ip', true), node = config.nodes.find(n => n.kind === 'target')!;
       const members = config.targetMembers?.[node.id] ?? [];
@@ -717,6 +717,9 @@ describe('buildE2eGraph — display-truncated membership', () => {
           ...m, ...(damage === 'bad-id' ? { id: '' } : damage === 'bad-pod' ? { pod: 42 } : { id: '10.0.9.9' }),
         });
       config.targetMembers = { [node.id]: value } as FlowGraph['targetMembers'];
+      if (damage.endsWith('-type')) node.meta!.targetType = damage === 'missing-type' ? '' : 'unknown';
+      if (damage === 'unparseable-member') Object.assign(node.meta!, { id: undefined,
+        count: 1, members: ['2001:db8::15:443'], membersTruncated: 0 });
       const eligible = configured([target({ id: '10.0.9.9' })]);
       config.nodes.push(...eligible.nodes); config.edges.push(...eligible.edges);
       const graph = compose(config, endpoint({ ip: '10.0.9.9' }));

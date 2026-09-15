@@ -100,7 +100,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string, 
   for (const node of nodes) {
     if (node.layer !== 'configuration' || node.kind !== 'target') continue;
     const type = node.meta.targetType;
-    if (type !== 'ip' && type !== 'instance') continue;
+    if (type === 'lambda' || type === 'alb') continue;
     const parents = scopes.get(node.id) ?? [];
     const rows = parents.map(meta => record(meta.row));
     const common = (field: string): string => {
@@ -109,9 +109,14 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string, 
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
     const region = common('region'), vpcId = common('vpc_id');
+    if (type !== 'ip' && type !== 'instance') {
+      for (const type of ['ip', 'instance'] as const) truncated.push({ node, type, region, vpcId });
+      continue;
+    }
     const full = completeMembers(node.meta, targetMembers.get(node.id));
     // Without full membership, hidden records carry uncertainty, never identity.
     if (!full && ((typeof node.meta.membersTruncated === 'number' && node.meta.membersTruncated > 0)
+      || list(node.meta.members).some(member => !memberValue(text(member)))
       || (typeof node.meta.count === 'number' && node.meta.count > list(node.meta.members).length))) {
       truncated.push({ node, type, region, vpcId });
     }
