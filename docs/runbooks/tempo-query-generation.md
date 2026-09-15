@@ -59,14 +59,10 @@ Limited qualifiers such as `today`, `yesterday`, `last hour/day/week`, `오늘`,
 
 After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify that the draft uses observed HTTP attributes and types. An `&&` query can legitimately combine service and HTTP conditions on separate spans. A successful generation does not guarantee server acceptance; review the draft and inspect its execution result. If execution still returns 400, inspect the Tempo error and server version.
 
-### Search result evidence
-
-`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available; missing completion metadata is uncertainty, not an API failure. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
-
 Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py -q)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py test_collection_boundaries.py -q)
 (cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
@@ -75,13 +71,13 @@ python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers
 
 ### Search completion and publication
 
-`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment. Graph adapters report completion-unknown softly; valid nonempty bounded results may form a partial snapshot, while unconfirmed empty or missing-child results retain prior data. See the [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
+`tempo_search` explicitly requests **20** traces by default and clamps supplied integer limits to **1–50**. Reaching the requested limit, HTTP 206, output truncation, warnings or an explicit partial signal remains partial. Parallel search returns the first matches, not a deterministic latest/top or exhaustive selection. Existing query windows and limits are fixed bounds, not new recovery controls.
 
-The [Tempo Search API](https://grafana.com/docs/tempo/latest/api_docs/) examples do not
-always include job counters. Their absence is not a collector error. The wrapper explicitly
-requests 20 instead of relying on the server's configurable default. Parallel search returns
-the first matching results, not a deterministic latest/top or exhaustive selection. Missing
-completion metadata does not trigger an extra query or invented fallback proof.
+A recognizable, validated synchronous HTTP 200 `SearchResponse` establishes query completion when no negative signal is present. Tempo's [HTTPFinal](https://github.com/grafana/tempo/blob/main/modules/frontend/combiner/common.go) checks errors and finalizes before returning 200. Its default JSON marshaler can omit repeated empty `traces` and zero-valued job fields; the [empty-response test](https://github.com/grafana/tempo/blob/main/modules/frontend/combiner/search_test.go) even reports completed jobs without a total. The wrapper therefore accepts omitted traces with valid metrics, or an explicit traces list with omitted metrics. It does not require a positive counter pair or infer completion from inspected bytes/blocks.
+
+An explicit positive `totalJobs` with fewer completed jobs is partial; contradictory or malformed metrics are unknown. Bare/unrecognized responses, null/non-list traces and null/malformed metrics carry `completionReason: search_response_unverified`, not a fabricated query error. Explicit errors remain errors. These source-backed semantics are not live acceptance evidence for any deployment. See the [Search API](https://grafana.com/docs/tempo/latest/api_docs/) and [protobuf response types](https://github.com/grafana/tempo/blob/main/pkg/tempopb/tempo.proto). No extra query is issued to manufacture completion.
+
+`tempo_get_trace` above the byte cap returns no raw preview. Only an actually trace-shaped omitted payload receives computed `tracePayloadTruncated: true` with `partial`; upstream-supplied flags cannot assert this. Such a bounded child may coexist with useful spans or another useful source in a partial snapshot. An all-empty partial attempt still retains the prior graph. Missing, unmarked-empty or failed children retain the prior graph even with useful siblings. See the [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 

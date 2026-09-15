@@ -16,6 +16,7 @@ import { buildInfraGraph } from './infra-topology';
 import { rebuildTraceGraph } from './graph-store';
 import { TempoTraceSource, ClickHouseOtelTraceSource, MetricsCallsSource } from './trace-source';
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
+import childContracts from '../../agent/fixtures/tempo-child-contract.json';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -93,6 +94,40 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect(after.details.retainedPrevious).toBe(true);
     expect(after.captured_at).toEqual(previous.captured_at);
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
+  });
+
+  it.each(['alone', 'child', 'other-source'] as const)('handles real byte-bounded child output: %s', async mode => {
+    const mixed = mode === 'child', useful = mode !== 'alone';
+    await rebuildTraceGraph(pool, [], undefined, [{ available: async () => true,
+      calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:saved',
+        items: [{ client: 'saved-api', server: 'saved-db', count: 1 }], status: 'ok', reasons: [],
+        windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) }]);
+    const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+    const end = previous.attempted_at.getTime() + 1000;
+    const child = { batches: [{ resource: { attributes: [
+      { key: 'service.name', value: { stringValue: 'bounded-sibling' } },
+    ] }, scopeSpans: [{ spans: [{ traceId: 'b2', spanId: '0000000000000001', kind: 1,
+      startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
+      endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+    producer.invoke.mockReset().mockResolvedValueOnce({ collectionStatus: 'ok',
+      traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
+      .mockResolvedValueOnce(childContracts[0].body).mockResolvedValueOnce(child);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
+    try { await rebuildTraceGraph(pool, [new TempoTraceSource(7)], undefined, mode === 'other-source' ? [{
+      available: async () => true,
+      calls: async (mins, endMs = end) => ({ sourceId: 'metrics:useful',
+        items: [{ client: 'other-api', server: 'other-db', count: 3 }], status: 'ok',
+        reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
+    }] : []); }
+    finally { clock.mockRestore(); }
+    const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+    expect(after.status).toBe('partial');
+    expect(after.details.retainedPrevious).toBe(!useful);
+    expect(after.captured_at.getTime()).toBe(useful ? end : previous.captured_at.getTime());
+    const labels = (await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows.map(row => row.label);
+    expect(labels).toHaveLength(mixed ? 1 : 2);
+    expect(labels).toEqual(mixed ? ['bounded-sibling'] : expect.arrayContaining(
+      useful ? ['other-api', 'other-db'] : ['saved-api', 'saved-db']));
   });
 
   it.each(['tempo', 'clickhouse', 'prometheus', 'mimir'] as const)(

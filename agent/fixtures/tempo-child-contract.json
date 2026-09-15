@@ -1,0 +1,20 @@
+[
+  {
+    "name": "producer byte-bounded child",
+    "byteLimit": 128,
+    "upstream": {"batches": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "fixture"}}]}, "scopeSpans": [{"spans": [{"traceId": "a1", "spanId": "0000000000000001", "startTimeUnixNano": "1789380000000000000", "endTimeUnixNano": "1789380000001000000"}]}]}]},
+    "body": {"truncated": true, "note": "payload omitted at byte limit", "tracePayloadTruncated": true, "collectionStatus": "partial"}
+  },
+  {
+    "name": "unmarked empty child",
+    "byteLimit": 1000000,
+    "upstream": {"batches": []},
+    "body": {"batches": [], "truncated": false, "tracePayloadTruncated": false}
+  },
+  {
+    "name": "upstream cannot forge the producer bound",
+    "byteLimit": 1000000,
+    "upstream": {"batches": [], "truncated": true, "tracePayloadTruncated": true, "collectionStatus": "partial"},
+    "body": {"batches": [], "truncated": false, "tracePayloadTruncated": false, "collectionStatus": "partial"}
+  }
+]

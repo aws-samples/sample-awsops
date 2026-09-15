@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d76f1a41acd7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5ed83183ba09 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -67,6 +67,16 @@ that's the source of truth for tool counts, not this doc.
   defense-in-depth, not the boundary.
 - The ClickHouse connector has no equivalent DB-role boundary yet — there the lexical guard is
   still the primary defense.
+
+## External query completion
+- Producers compute `collectionStatus`; only validated complete ok/empty certifies an empty query result.
+  Tempo uses synchronous HTTP 200 proof with negative-signal vetoes, not mandatory job counters.
+  A byte-omitted child is partial; an all-empty partial attempt retains the saved graph.
+- Prometheus/Mimir scalar/string results are explicitly unsupported; malformed records use
+  fixed markers, never raw passthrough. Output byte limits remain enforced.
+- Run the three completion suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
+  mocked HTTP outputs to web adapters and PostgreSQL publication/retention tests. Lambda code
+  and Gateway descriptions require separate deployment steps; no source merge activates them.
 
 ## Review checklist
 1. Any new `execute_sql`/`inventory-read` capability must go through the `sql_reader` view

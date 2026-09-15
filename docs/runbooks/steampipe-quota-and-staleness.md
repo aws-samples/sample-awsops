@@ -369,6 +369,8 @@ Sync `row_count` and per-account snapshots count unique persisted `(account_id, 
 
 This uses ADR-021's persisted freshness-evidence basis; it changes no collection permission or release gate.
 
+Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q`.
+
 ## 6. 안전한 튜닝 / Safe tuning
 
 throttling, sync latency 증가 또는 service instability가 보이면 `max_concurrency`, bucket size,
@@ -387,12 +389,6 @@ concurrency change needs a whole-plan check showing no DNS changes.
 **Raising a limit requires observed production headroom.** Increase only after evidence shows the current setting has sustained headroom without AWS throttling, increased sync age, Lambda throttles, or impact to production deployment/scaling operations. Change one control at a time, observe at least a full 15-minute cycle, and retain the prior values for rollback.
 
 The values are safeguards, not assertions of universal AWS quotas; service, operation, account, and Region quotas differ.
-
-### Persisted identity counts
-
-Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.
-
-Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q` (ADR-021 collection accounting).
 
 ## 7. 롤백 / Rollback
 

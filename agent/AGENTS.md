@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 04bbe784d3c9 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f44dca1c6fd4 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -16,7 +16,8 @@ cd agent && python3 -m pytest test_agent.py test_readiness.py -q
 Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11-slim,
 port 8080.
 
-`fixtures/*-topology-contract.json` is shared with web adapter tests. Lambda completion
+`fixtures/*-contract.json` binds web adapter tests and disposable PostgreSQL
+publication/retention tests (`web/lib/graph-read-postgres.test.ts`). Lambda completion
 tests bind mocked HTTP payloads to the producer bodies; keep partial/unknown evidence
 distinct from query errors.
 

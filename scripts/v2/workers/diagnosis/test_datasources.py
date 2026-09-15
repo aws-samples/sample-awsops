@@ -222,6 +222,23 @@ def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
     assert signal["summary"]["collectionStatus"] == "partial"
 
 
+@pytest.mark.parametrize("kind", ["scalar", "string"])
+def test_non_series_pairs_never_become_two_observed_records(kind):
+    summary = src._summarize_result({"resultType": kind, "result": [1, "PRIVATE"],
+                                     "collectionStatus": "ok"})
+    assert summary["reason"] == "unsupported_result_type"
+    assert summary["incomplete"] is True
+    assert "count" not in summary and "observedCount" not in summary
+    assert "PRIVATE" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("rows,expected", [([None], None), ([None, {"metric": {}, "value": [1, "7"]}], 1)])
+def test_invalid_series_placeholders_do_not_count_as_observations(rows, expected):
+    summary = src._summarize_result({"resultType": "vector", "result": rows, "collectionStatus": "unknown"})
+    assert summary.get("observedCount") == expected
+    assert "count" not in summary
+
+
 @pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "redacted"}])])
 def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
     _patch_lambda(monkeypatch, FakeLambda(body={

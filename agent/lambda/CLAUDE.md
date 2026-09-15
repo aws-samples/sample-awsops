@@ -26,6 +26,17 @@ files themselves — read those rather than this file for current tool counts.
 **`execute_sql`'s read-only guarantee rests on DB-level role permissions**, not a lexical
 guard — see the section below.
 
+## External query completion
+
+ClickHouse, Tempo and Prometheus/Mimir compute `collectionStatus` from validated HTTP
+responses, never copied upstream flags. Only complete ok/empty certifies empty. Tempo
+uses synchronous HTTP 200 response validation, not mandatory job counters; byte-omitted
+children are partial and cannot alone clear saved graphs. Prometheus/Mimir scalar/string
+results are explicitly unsupported; malformed records are fixed markers with bounded output.
+Run `python3 -m pytest agent/lambda/test_collection_markers.py agent/lambda/test_collection_boundaries.py agent/lambda/test_graph_source_producer_contract.py -q` from the root.
+Deploy Lambda code separately from the updated `scripts/v2/agentcore/catalog.py` descriptions;
+see `docs/runbooks/source-sync-observability.md` for rollout and retention boundaries.
+
 ## Rules
 - Gateway Targets: must use Python/boto3 — the CLI has inlinePayload issues.
 - `credentialProviderConfigurations: GATEWAY_IAM_ROLE` is required on every **Lambda-backed**

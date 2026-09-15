@@ -78,17 +78,17 @@ def test_clickhouse_computes_completion_from_observed_response(response, expecte
 
 
 @pytest.mark.parametrize("metrics,expected", [
-    ("absent", "unknown"), (None, "unknown"), ({}, "unknown"),
-    ({"inspectedBytes": 17}, "unknown"),
-    ({"completedJobs": 0, "totalJobs": 0}, "unknown"),
-    ({"completedJobs": 1}, "unknown"), ({"totalJobs": 1}, "unknown"),
+    ("absent", "complete"), (None, "unknown"), ({}, "complete"),
+    ({"inspectedBytes": 17}, "complete"),
+    ({"completedJobs": 0, "totalJobs": 0}, "complete"),
+    ({"completedJobs": 1}, "complete"), ({"totalJobs": 1}, "partial"),
     ({"completedJobs": True, "totalJobs": 1}, "unknown"),
     ({"completedJobs": 2, "totalJobs": 1}, "unknown"),
     ({"completedJobs": 0, "totalJobs": 1}, "partial"),
     ({"completedJobs": 1, "totalJobs": 1}, "complete"),
 ])
 @pytest.mark.parametrize("nonempty", [False, True])
-def test_tempo_requires_affirmative_jobs_before_complete_collection(metrics, expected, nonempty):
+def test_tempo_http_final_shape_and_explicit_job_vetoes(metrics, expected, nonempty):
     traces = [{"traceID": "a1"}] if nonempty else []
     upstream = {"traces": traces}
     if metrics != "absent":

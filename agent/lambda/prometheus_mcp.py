@@ -36,6 +36,7 @@ SCHEMA_METRIC_CAP = 3000
 
 MAX_POINTS_PER_SERIES = 500
 MAX_TOTAL_SAMPLES = 5000
+MAX_RESULT_BYTES = 1_000_000
 
 _REL = re.compile(r"^(\d+)([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -103,63 +104,78 @@ class _ApiError(Exception):
     pass
 
 
+def _sample(value):
+    if (not isinstance(value, list) or len(value) != 2
+            or type(value[0]) not in (int, float) or not isinstance(value[1], str)
+            or len(value[1]) > 128):
+        return False
+    try:
+        float(value[1])  # NaN and +/-Inf are valid Prometheus sample strings.
+        return math.isfinite(value[0])
+    except (ValueError, OverflowError):
+        return False
+
+
+def _bounded_result(payload):
+    body = json.dumps(payload, default=str)
+    if len(body.encode("utf-8")) > MAX_RESULT_BYTES:
+        empty = {key: [] for key in ("result", "labels", "series") if key in payload}
+        if payload.get("resultType") in ("vector", "matrix"):
+            empty["resultType"] = payload["resultType"]
+        state = payload.get("collectionStatus")
+        empty.update(truncated=True, reason="payload_truncated",
+                     collectionStatus=state if state in ("unknown", "error") else "partial")
+        body = json.dumps(empty)
+    return {"statusCode": 200, "body": body}
+
+
 def _bound(data):
-    """Cap series, points-per-series, and a global sample budget for matrix/vector results."""
+    """Keep bounded valid series; replace invalid records without echoing their contents."""
     if not isinstance(data, dict):
-        return data, False
+        return None, False
+    kind = data.get("resultType")
     result = data.get("result")
-    if not isinstance(result, list):
-        return data, False
+    if kind not in ("vector", "matrix") or not isinstance(result, list):
+        return {"resultType": kind if kind in ("vector", "matrix") else None, "result": None}, False
     truncated = len(result) > MAX_SERIES
-    result = result[:MAX_SERIES]
-    budget = MAX_TOTAL_SAMPLES
-    out = []
-    for series in result:
-        if not isinstance(series, dict):
-            out.append(series)  # Preserve malformed evidence; the marker cannot confirm it.
+    budget, out = MAX_TOTAL_SAMPLES, []
+    for series in result[:MAX_SERIES]:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in metric.items()):
+            out.append(None)
             continue
-        s = dict(series)
-        vals = s.get("values")
-        if isinstance(vals, list):
-            if len(vals) > MAX_POINTS_PER_SERIES:
-                truncated = True
-            allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
-            if len(vals) > allowed:
-                truncated = True
-            s["values"] = vals[:allowed]
-            budget -= len(s["values"])
-        out.append(s)
-    return {"resultType": data.get("resultType"), "result": out}, truncated
+        if kind == "vector":
+            out.append({"metric": metric, "value": series["value"]} if _sample(series.get("value")) else None)
+            continue
+        values = series.get("values")
+        if not isinstance(values, list):
+            out.append(None)
+            continue
+        allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
+        truncated |= len(values) > allowed
+        kept = values[:allowed]
+        budget -= len(kept)
+        out.append({"metric": metric, "values": kept} if all(_sample(value) for value in kept) else None)
+    return {"resultType": kind, "result": out}, truncated
+
 
 
 def _query_result(observed):
     data, state = observed
+    kind = data.get("resultType") if isinstance(data, dict) else None
+    if kind in ("scalar", "string"):
+        return {"statusCode": 400, "body": json.dumps({"error": "unsupported_result_type",
+                "reason": "unsupported_result_type", "resultType": kind, "collectionStatus": "unknown"})}
     bounded, truncated = _bound(data)
     rows = bounded.get("result") if isinstance(bounded, dict) else None
-    kind = bounded.get("resultType") if isinstance(bounded, dict) else None
-    def sample(value):
-        if (not isinstance(value, list) or len(value) != 2
-                or type(value[0]) not in (int, float) or not math.isfinite(value[0])
-                or not isinstance(value[1], str)):
-            return False
-        try:
-            float(value[1])  # Prometheus also permits NaN and +/-Inf sample strings.
-            return True
-        except ValueError:
-            return False
-    valid = kind in ("vector", "matrix") and isinstance(rows, list)
-    if valid:
-        valid = all(isinstance(row, dict) and isinstance(row.get("metric"), dict)
-                    and (sample(row.get("value")) if kind == "vector" else
-                         isinstance(row.get("values"), list) and all(sample(v) for v in row["values"]))
-                    for row in rows)
+    valid = kind in ("vector", "matrix") and isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
     if not valid and state != "error":
         state = "unknown"
     elif state == "ok":
         state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
-    return ok({"truncated": truncated,
-               **(bounded if isinstance(bounded, dict) else {"result": bounded}),
-               "collectionStatus": state})
+    return _bounded_result({**(bounded if isinstance(bounded, dict) else {"result": None}),
+                            "truncated": truncated, "collectionStatus": state})
+
 
 
 def _timeout_param(v):
@@ -208,7 +224,8 @@ def _list_result(observed, field, limit, kind):
              "unknown" if not isinstance(data, list) else
              "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
              "ok" if rows else "empty")
-    return ok({field: rows, "truncated": truncated, "collectionStatus": state})
+    rows = [row if isinstance(row, kind) else None for row in rows]
+    return _bounded_result({field: rows, "truncated": truncated, "collectionStatus": state})
 
 
 def prometheus_labels(args):
@@ -371,4 +388,6 @@ def ok(body):
 
 
 def err(msg):
+    if len(str(msg)) > 400:
+        msg = "upstream error response exceeded limit"
     return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

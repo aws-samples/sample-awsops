@@ -486,11 +486,18 @@ def _summarize_result(body):
     out = {}
     if not isinstance(body, dict):
         return out
+    if body.get("resultType") in ("scalar", "string"):
+        failed = body.get("collectionStatus") == "error"
+        return {"resultType": body["resultType"], "reason": "unsupported_result_type",
+                "collectionStatus": "error" if failed else "unknown",
+                **({"error": "source collection error"} if failed else {"incomplete": True})}
     # top-level list-bearing key (prom/loki `result`, tempo `traces`, clickhouse `rows`, generic `data`/`series`)
     for key in ("result", "traces", "rows", "data", "series"):
         v = body.get(key)
         if isinstance(v, list):
             out["source"], out["count"] = key, len(v)
+            if key == "result" and body.get("resultType") in ("vector", "matrix"):
+                out["count"] = sum(isinstance(item, dict) for item in v)
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:
@@ -514,6 +521,8 @@ def _summarize_result(body):
     # Explicit upstream incompleteness is evidence, not a healthy zero. Only bounded
     # status codes cross this boundary; raw errors/warnings can contain source data.
     status = body.get("collectionStatus")
+    if body.get("completionReason") == "search_response_unverified":
+        out["completionReason"] = "search_response_unverified"
     if "collectionStatus" in body:
         out["collectionStatus"] = status if isinstance(status, str) and status in (
             "ok", "empty", "partial", "error", "unknown",

@@ -86,7 +86,7 @@ function validWindow(window: ReadWindow): boolean {
 }
 function readResult<T>(
   sourceId: string, window: ReadWindow, items: T[] = [], reasons: Reason[] = [],
-  status?: SourceRead<T>['status'],
+  status?: SourceRead<T>['status'], boundedEmpty = false,
 ): SourceRead<T> {
   const unique = [...new Set(reasons)];
   const boundedReason = (r: Reason) => [
@@ -98,7 +98,7 @@ function readResult<T>(
   // malformed data still forbids replacement; Tempo adds its mixed-child guard below.
   const lostData = unique.some(r => !boundedReason(r));
   const retain = lostData || outcome === 'error' || outcome === 'unavailable'
-    || (outcome !== 'ok' && items.length === 0);
+    || (outcome !== 'ok' && items.length === 0 && !boundedEmpty);
   return {
     items, sourceId, ...window, reasons: unique,
     ...(retain ? { canSweep: false as const } : {}),
@@ -349,6 +349,12 @@ export class ClickHouseOtelTraceSource implements TraceSource {
 
 const TEMPO_TRACE_CAP = 20; // graph_catalog.py tempo_v1; <=21 invokes per source
 
+function byteBoundedTempoTrace(value: unknown): boolean {
+  const r = object(value);
+  return r?.tracePayloadTruncated === true && r.truncated === true
+    && r.collectionStatus === 'partial' && r.error === undefined && r.status !== 'error';
+}
+
 function otlpAttrs(value: unknown, reasons: Reason[]): Obj {
   if (value === undefined) return {};
   if (!Array.isArray(value)) { reasons.push('malformed_rows'); return {}; }
@@ -372,6 +378,7 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
   if (reasons.includes('query_failed')) return { items, reasons };
   const normalizedTraceId = normalizeTempoId(traceId, 16);
   if (!normalizedTraceId) return { items, reasons: [...reasons, 'malformed_rows'] };
+  if (byteBoundedTempoTrace(r)) return { items, reasons };
   const batches = r?.batches ?? r?.resourceSpans;
   if (!Array.isArray(batches)) return { items, reasons: [...reasons, 'malformed_payload'] };
   for (const batch of batches) {
@@ -467,6 +474,7 @@ export class TempoTraceSource implements TraceSource {
     }))].slice(0, TEMPO_TRACE_CAP);
     const items: TraceSpan[] = [];
     let missingChild = false;
+    let boundedChildren = 0;
     for (const traceId of traceIds) {
       if (items.length >= limit) { reasons.push('cap_reached'); break; }
       try {
@@ -475,7 +483,9 @@ export class TempoTraceSource implements TraceSource {
         });
         const parsed = parseTempoTrace(traceId, payload);
         reasons.push(...parsed.reasons);
-        if (!parsed.items.length) {
+        const bounded = byteBoundedTempoTrace(payload);
+        if (bounded) boundedChildren++;
+        if (!parsed.items.length && !bounded) {
           missingChild = true;
           if (!parsed.reasons.length) reasons.push('incomplete_collection');
         }
@@ -488,7 +498,7 @@ export class TempoTraceSource implements TraceSource {
       }
     }
     requireEmptyProof(search, items, reasons);
-    return { ...readResult(sourceId, window, items, reasons),
+    return { ...readResult(sourceId, window, items, reasons, undefined, boundedChildren > 0 && !missingChild),
       ...(missingChild ? { canSweep: false as const } : {}) };
   }
 }

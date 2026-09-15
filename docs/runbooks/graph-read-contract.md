@@ -39,7 +39,7 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
 Recognized producer `unknown` uses `incomplete_collection`, not a failed-query diagnosis.
 That reason also includes producer warnings/partial results and missing Tempo children;
-the child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
+the child-fetch path sets `canSweep: false` for a missing, failed or unmarked-empty child.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
 the entire previous graph and capture clock even when a sibling has useful data. Current
@@ -50,8 +50,10 @@ metadata use the existing atomic **partial snapshot** publication path. They can
 refresh a graph at the fixed query bounds. The returned bounded generation replaces the prior
 one; it is not complete source coverage or evidence that omitted resources disappeared.
 Warnings stay partial: the application does not guess that an annotation is benign. Empty
-partial results cannot authorize replacement. Only confirmed complete empty results clear a
-graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
+partial attempts with no useful items cannot authorize replacement. A producer-certified
+byte-omitted Tempo child (`tracePayloadTruncated: true`, partial) may accompany useful
+siblings in a partial snapshot; it cannot clear a graph by itself. Only confirmed complete
+empty results clear a graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
 Valid fetched spans outside the query window are not missing children. Existing query
 limits and windows remain fixed bounds, not new operator recovery controls.
 
