@@ -5,6 +5,7 @@ import Card from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
+import AccountOnboarding from './AccountOnboarding';
 
 // Admin-only multi-account registration. The /api/accounts route is the real admin gate
 // (403 → denied here). Cross-account reads assume AWSopsReadOnlyRole in each target using its
@@ -26,39 +27,44 @@ export default function AccountsPage() {
   const [denied, setDenied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const [form, setForm] = useState({ accountId: '', alias: '', region: 'ap-northeast-2', externalId: '', firstParty: false });
   const [regionForm, setRegionForm] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<string | null>(null); // v1-parity per-row connection re-test
 
   const load = useCallback(async () => {
     const [r, rr] = await Promise.all([fetch('/api/accounts'), fetch('/api/accounts/regions')]);
     if (r.status === 401 || r.status === 403) { setDenied(true); return; }
-    const d = await r.json().catch(() => ({ accounts: [] }));
-    setAccounts(Array.isArray(d.accounts) ? d.accounts : []);
+    if (!r.ok) throw new Error('Account lookup failed');
+    const d = await r.json();
+    if (!Array.isArray(d.accounts)) throw new Error('Invalid account response');
+    setAccounts(d.accounts);
     const rd = rr.ok ? await rr.json().catch(() => ({ regions: [] })) : { regions: [] };
     setRegions(Array.isArray(rd.regions) ? rd.regions : []);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load().catch(() => setMsg('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.'));
+  }, [load]);
 
-  const add = async () => {
-    setBusy(true); setMsg('');
+  const reloadAfterAction = async () => {
     try {
-      const r = await fetch('/api/accounts', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(form),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setMsg(tt(`실패: ${d.message || r.status}`)); return; }
-      setMsg(tt('등록·검증 완료')); setForm({ accountId: '', alias: '', region: 'ap-northeast-2', externalId: '', firstParty: false });
       await load();
-    } finally { setBusy(false); }
+      return true;
+    } catch {
+      setMsg('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+      return false;
+    }
   };
 
   const remove = async (id: string) => {
     if (!confirm(tt(`${id} 계정을 제거할까요?`))) return;
-    const r = await fetch(`/api/accounts?accountId=${id}`, { method: 'DELETE' });
-    if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(tt(`삭제 실패: ${d.message || r.status}`)); return; }
-    await load();
+    setMsg('');
+    try {
+      const r = await fetch(`/api/accounts?accountId=${id}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(tt(`삭제 실패: ${d.message || r.status}`)); return; }
+      await reloadAfterAction();
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
+    }
   };
 
   // v1-parity connection test: re-assume the registered role and refresh status/lastVerifiedAt.
@@ -69,8 +75,11 @@ export default function AccountsPage() {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId }),
       });
       const d = await r.json().catch(() => ({}));
-      setMsg(tt(r.ok ? `${accountId} 연결 확인됨 (verified)` : `${accountId} 연결 실패: ${d.message || r.status}`));
-      await load(); // status badge + last_verified_at reflect the outcome either way
+      if (await reloadAfterAction()) {
+        setMsg(tt(r.ok ? `${accountId} 연결 확인됨 (verified)` : `${accountId} 연결 실패: ${d.message || r.status}`));
+      }
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
     } finally { setTesting(null); }
   };
 
@@ -86,9 +95,10 @@ export default function AccountsPage() {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setMsg(tt(`리전 추가 실패: ${d.message || r.status}`)); return; }
-      setMsg(tt('리전 추가 완료'));
       setRegionForm((prev) => ({ ...prev, [accountId]: '' }));
-      await load();
+      if (await reloadAfterAction()) setMsg(tt('리전 추가 완료'));
+    } catch {
+      setMsg('요청을 완료하지 못했습니다. 계정 목록과 네트워크를 확인한 뒤 다시 시도하세요.');
     } finally { setBusy(false); }
   };
 
@@ -107,10 +117,11 @@ export default function AccountsPage() {
   }
 
   return (
-    <div className="p-6 flex flex-col gap-4">
+    <div className="p-4 md:p-6 flex min-w-0 flex-col gap-4">
       <PageHeader title="계정 관리" subtitle="연결된 AWS 계정 (크로스계정 read-only via AWSopsReadOnlyRole)" />
+      <AccountOnboarding onRegistered={load} accounts={accounts} />
 
-      <Card className="p-4">
+      <Card className="p-4 min-w-0 overflow-x-auto">
         <div className="text-[13px] font-semibold text-ink-800 mb-3">{tt('등록된 계정')}</div>
         {accounts === null && <div className="text-[12px] text-ink-400">{tt('로딩 중…')}</div>}
         {accounts !== null && accounts.length === 0 && <div className="text-[12px] text-ink-400">{tt('등록된 계정이 없습니다.')}</div>}
@@ -173,32 +184,7 @@ export default function AccountsPage() {
         )}
       </Card>
 
-      <Card className="p-4 flex flex-col gap-2">
-        <div className="text-[13px] font-semibold text-ink-800">{tt('계정 추가')}</div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-          <input className="border border-ink-200 bg-card rounded px-2 py-1 text-[12px] font-mono text-ink-800" placeholder="Account ID (12 digits)" value={form.accountId} onChange={(e) => setForm({ ...form, accountId: e.target.value.trim() })} />
-          <input className="border border-ink-200 bg-card rounded px-2 py-1 text-[12px] text-ink-800" placeholder="Alias" value={form.alias} onChange={(e) => setForm({ ...form, alias: e.target.value })} />
-          <input className="border border-ink-200 bg-card rounded px-2 py-1 text-[12px] text-ink-800" placeholder="Region" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value.trim() })} />
-          <input className="border border-ink-200 bg-card rounded px-2 py-1 text-[12px] text-ink-800" placeholder="ExternalId (optional, 1st-party)" value={form.externalId} onChange={(e) => setForm({ ...form, externalId: e.target.value.trim() })} />
-        </div>
-        <label className="flex items-center gap-2 text-[11px] text-ink-500">
-          <input type="checkbox" checked={form.firstParty} onChange={(e) => setForm({ ...form, firstParty: e.target.checked })} />
-          {tt('1st-party 계정 (ExternalId 생략) — 대상 trust가 호스트 task-role ARN을 정확히 핀할 때만. 3rd-party는 ExternalId 필수.')}
-        </label>
-        <div className="flex items-center gap-3">
-          <button onClick={add} disabled={busy} className="self-start rounded-md bg-brand-500 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-brand-600 disabled:opacity-50">
-            {tt(busy ? '검증 중…' : '추가 + 검증')}
-          </button>
-          {msg && <span className="text-[12px] text-ink-500">{msg}</span>}
-        </div>
-      </Card>
-
-      <Card className="p-4 text-[12px] text-ink-600 flex flex-col gap-1">
-        <div className="text-[13px] font-semibold text-ink-800 mb-1">{tt('타깃 계정 온보딩')}</div>
-        <p>{tt('각 타깃 계정에 AWSopsReadOnlyRole을 배포해야 합니다 (호스트 web task role 신뢰 + ReadOnlyAccess). 1st-party(같은 조직, trust가 호스트 task-role ARN을 정확히 핀)는 ExternalId를 생략할 수 있고, 3rd-party/공유 계정은 ExternalId 조건이 필요합니다 (ADR-011).')}</p>
-        <p>{tt('CloudFormation 템플릿: infra/cfn/awsops-target-account-role.yaml — 배포 가이드는 docs/runbooks/onboard-target-account.md 참조.')}</p>
-        <p className="text-ink-400">{tt('배포 후 위 폼에 Account ID·Alias·Region을 입력하면 assume를 검증(상태=verified)한 뒤 등록합니다. ExternalId는 선택(1st-party는 생략 가능)이며 confused-deputy 가드일 뿐 비밀이 아닙니다.')}</p>
-      </Card>
+      {msg && <p role="status" className="text-[12px] text-ink-500">{tt(msg)}</p>}
     </div>
   );
 }
