@@ -60,7 +60,10 @@ Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
 `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
 `make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
 `INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
-separately. This document supplies no deployment authorization. Check the canonical
+separately. Redeploy the updated `inventory_read_mcp` Lambda code through the existing
+operator-owned Terraform release flow so its future-clock and metadata-omission
+staleness checks match this source version. A web image or AgentCore Runtime image
+deployment does not ship that Lambda code. This document supplies no deployment authorization. Check the canonical
 [source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
 A source merge or automatic web CD result is not proof that these steps completed.
 
