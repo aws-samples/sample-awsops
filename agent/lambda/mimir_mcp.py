@@ -6,6 +6,7 @@ Prometheus-API-compatible under a /prometheus prefix and multi-tenant (X-Scope-O
 READ-ONLY by construction (no SQL guard). SSRF via datasource_http. Stdlib + boto3 only.
 """
 import json
+import math
 import re
 import time
 from urllib.parse import urlencode
@@ -58,17 +59,39 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params, http_timeout=None):
+def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     kwargs = {"headers": _headers(creds)}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)
     if status >= 400:
-        raise _ApiError(f"Mimir HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
+        detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
+        raise _ApiError(f"Mimir HTTP {status}: {str(detail)[:300]}")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Mimir query failed ({data.get('errorType', 'error')}): {data.get('error', 'unknown')}")
-    return data.get("data") if isinstance(data, dict) else data
+    result = data.get("data") if isinstance(data, dict) else data
+    if not with_status:
+        return result
+    state = "unknown"
+    if status in (200, 206) and isinstance(data, dict) and data.get("status") == "success":
+        state = "partial" if status == 206 else "ok"
+    if isinstance(data, dict):
+        for key in ("warnings", "infos"):
+            if key in data:
+                if not isinstance(data[key], list) or not all(isinstance(item, str) for item in data[key]):
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        for key in ("partial", "truncated"):
+            if key in data:
+                if type(data[key]) is not bool:
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        if any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception")):
+            state = "error"
+    return result, state
 
 
 def _bound(data):
@@ -80,6 +103,9 @@ def _bound(data):
     budget = MAX_TOTAL_SAMPLES
     out = []
     for series in result:
+        if not isinstance(series, dict):
+            out.append(None)  # Fixed malformed marker; no raw passthrough.
+            continue
         s = dict(series)
         vals = s.get("values")
         if isinstance(vals, list):
@@ -90,6 +116,50 @@ def _bound(data):
             budget -= len(s["values"])
         out.append(s)
     return {"resultType": data.get("resultType"), "result": out}, truncated
+
+
+def _query_result(observed, *, allow_scalar=False):
+    data, state = observed
+    raw_rows = data.get("result") if isinstance(data, dict) else None
+    if isinstance(raw_rows, list) and any(isinstance(row, dict) and
+            ("histogram" in row or "histograms" in row) for row in raw_rows[:MAX_SERIES]):
+        return err("Native histogram output is unsupported; request float-valued results.")
+    bounded, truncated = _bound(data)
+    rows = bounded.get("result") if isinstance(bounded, dict) else None
+    kind = bounded.get("resultType") if isinstance(bounded, dict) else None
+    def sample(value):
+        if (not isinstance(value, list) or len(value) != 2
+                or type(value[0]) not in (int, float) or not math.isfinite(value[0])
+                or not isinstance(value[1], str)):
+            return False
+        try:
+            float(value[1])
+            return True
+        except ValueError:
+            return False
+    if kind in ("scalar", "string"):
+        raw = data.get("result")
+        pair = isinstance(raw, list) and len(raw) == 2
+        oversized = pair and isinstance(raw[1], str) and (
+            len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+        valid_scalar = (allow_scalar and pair and type(raw[0]) in (int, float)
+                        and math.isfinite(raw[0]) and isinstance(raw[1], str)
+                        and not oversized and (kind == "string" or sample(raw)))
+        return ok({"resultType": kind, "result": raw if valid_scalar else [],
+                   "truncated": bool(oversized),
+                   "collectionStatus": state if valid_scalar or state == "error" else "unknown"})
+    valid = kind in ("vector", "matrix") and isinstance(rows, list)
+    if valid:
+        valid = all(isinstance(row, dict) and isinstance(row.get("metric"), dict)
+                    and (sample(row.get("value")) if kind == "vector" else
+                         isinstance(row.get("values"), list) and all(sample(v) for v in row["values"]))
+                    for row in rows)
+    if not valid and state != "error":
+        state = "unknown"
+    elif state == "ok":
+        state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
+    return ok({**(bounded if isinstance(bounded, dict) else {"result": bounded}),
+               "truncated": truncated, "collectionStatus": state})
 
 
 def _timeout_param(v):
@@ -114,9 +184,7 @@ def mimir_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), f"{BASE}/query", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), f"{BASE}/query", params, with_status=True), allow_scalar=True)
 
 
 def mimir_query_range(args):
@@ -128,24 +196,30 @@ def mimir_query_range(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), f"{BASE}/query_range", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), f"{BASE}/query_range", params, with_status=True))
+
+
+def _list_result(observed, field, limit, kind):
+    data, source_status = observed
+    rows = data[:limit] if isinstance(data, list) else []
+    truncated = isinstance(data, list) and len(data) > limit
+    state = (source_status if source_status in ("unknown", "error") else
+             "unknown" if not isinstance(data, list) else
+             "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
+             "ok" if rows else "empty")
+    return ok({field: rows, "truncated": truncated, "collectionStatus": state})
 
 
 def mimir_labels(args):
-    data = _get(_ds(), f"{BASE}/labels", {})
-    names = data if isinstance(data, list) else []
-    return ok({"labels": names[:1000], "truncated": len(names) > 1000})
+    return _list_result(_get(_ds(), f"{BASE}/labels", {}, with_status=True), "labels", 1000, str)
 
 
 def mimir_series(args):
     match = (args.get("match") or "").strip()
     if not match:
         return err("match (series selector) required")
-    data = _get(_ds(), f"{BASE}/series", {"match[]": match})
-    series = data if isinstance(data, list) else []
-    return ok({"series": series[:MAX_SERIES], "truncated": len(series) > MAX_SERIES})
+    return _list_result(_get(_ds(), f"{BASE}/series", {"match[]": match}, with_status=True),
+                        "series", MAX_SERIES, dict)
 
 
 def mimir_schema(args):
@@ -289,4 +363,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

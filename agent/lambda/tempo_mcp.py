@@ -24,6 +24,7 @@ from datasource_http import (
 
 SLUG = "tempo"
 MAX_TRACES = 50
+DEFAULT_SEARCH_LIMIT = 20
 MAX_TOTAL_BYTES = 1_000_000  # cap serialized trace payload well under the 6 MB Lambda limit
 MAX_SCHEMA_TAGS = 200
 MAX_SCHEMA_BYTES = 64_000
@@ -75,14 +76,14 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None):
+def _get(creds, path, params=None, *, timeout=None, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     request_options = {"timeout": timeout} if timeout is not None else {}
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else data
         raise _ApiError(f"Tempo HTTP {status}: {str(detail)[:300]}", status)
-    return data
+    return (data, status) if with_status else data
 
 
 def _byte_bound(obj):
@@ -90,7 +91,8 @@ def _byte_bound(obj):
     body = json.dumps(obj, default=str, ensure_ascii=False)
     if len(body.encode("utf-8")) <= MAX_TOTAL_BYTES:
         return obj, False
-    return {"truncated": True, "note": "payload omitted at byte limit"}, True
+    return {"truncated": True,
+            "note": f"trace payload exceeded {MAX_TOTAL_BYTES} bytes; fetch fewer/narrower"}, True
 
 
 def _proto_integer(value, bits, signed=False):
@@ -229,15 +231,48 @@ def tempo_search(args):
     if not query:
         return err("query (TraceQL) required")
     params = {"q": query, "start": _parse_time_s(args.get("start"), 3600), "end": _parse_time_s(args.get("end"))}
-    if args.get("limit"):
-        params["limit"] = str(args["limit"])
-    data = _get(_ds(), "/api/search", params)
-    traces = data.get("traces", []) if isinstance(data, dict) else []
-    truncated = len(traces) > MAX_TRACES
-    payload, btr = _byte_bound({"traces": traces[:MAX_TRACES], "metrics": data.get("metrics") if isinstance(data, dict) else None})
+    params["limit"] = str(args.get("limit") or DEFAULT_SEARCH_LIMIT)
+    try:
+        requested = int(params["limit"])
+    except ValueError:
+        requested = 0
+    data, status = _get(_ds(), "/api/search", params, with_status=True)
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
+        return err("Tempo search returned an error")
+    raw = data.get("traces") if isinstance(data, dict) else None
+    traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
+    truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
+    valid = (status in (200, 206) and requested > 0 and isinstance(raw, list)
+             and all(isinstance(t, dict) and isinstance(t.get("traceID"), str)
+                     and _HEX.fullmatch(t["traceID"]) for t in traces))
+    state = "unknown" if not valid else "partial" if status == 206 or truncated or len(raw) >= requested else "ok" if traces else "empty"
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        for key in ("warnings", "partial", "truncated"):
+            if key in data:
+                value = data[key]
+                if not (isinstance(value, list) and all(isinstance(item, str) for item in value)
+                        if key == "warnings" else type(value) is bool):
+                    state = "unknown"
+                elif value and state != "unknown":
+                    state = "partial"
+        if "metrics" in data and not isinstance(metrics, dict):
+            state = "unknown"
+    completed = metrics.get("completedJobs") if isinstance(metrics, dict) else None
+    total = metrics.get("totalJobs") if isinstance(metrics, dict) else None
+    has_job_counts = (type(completed) is int and type(total) is int
+                      and 0 <= completed <= total and total > 0)
+    proof = {"collectionReason": "count_not_confirmed"} if valid and not has_job_counts else {}
+    if state in ("ok", "empty"):
+        if not has_job_counts:
+            state = "unknown"  # Missing counters or zero jobs are not affirmative completion.
+        elif completed < total:
+            state = "partial"
+    payload, btr = _byte_bound({"traces": traces, "metrics": metrics})
     if btr:
-        return ok(payload)
-    return ok({"truncated": truncated, **payload})
+        return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial", **proof})
+    return ok({"truncated": truncated, **payload, "collectionStatus": state, **proof})
 
 
 def tempo_get_trace(args):
