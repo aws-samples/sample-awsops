@@ -39,6 +39,24 @@ describe('buildInfraGraph', () => {
     expect(g.nodes.find((n) => n.id === 'sg:sg-1')?.meta?.default).toBe(false);
   });
 
+  it.each([{ availability_zones: ['ap-northeast-2a', 'ap-northeast-2b'] }, { availability_zones: 'ap-northeast-2a' }])(
+    'does not turn Neptune availability-zone names into subnet identities: %j', ({ availability_zones }) => {
+      const g = buildInfraGraph({ resources: [{ resource_type: 'neptune_cluster', resource_id: 'graph-db',
+        data: { availability_zones, db_subnet_group: 'database-subnets',
+          vpc_security_groups: [{ VpcSecurityGroupId: 'sg-1' }] } }],
+      vpcs: [], subnets: [], securityGroups });
+      expect(g.nodes.filter(node => node.kind === 'subnet')).toEqual([]);
+      expect(g.edges.map(edge => [edge.rel, edge.target])).toEqual([['infra:uses_sg', 'sg:sg-1']]);
+    });
+
+  it('uses only explicit subnet identifiers from load-balancer availability-zone objects', () => {
+    const g = buildInfraGraph({ resources: [{ resource_type: 'alb', resource_id: 'lb',
+      data: { availability_zones: [{ ZoneName: 'ap-northeast-2a', SubnetId: 'subnet-a' },
+        { ZoneName: 'ap-northeast-2b' }, { GroupId: 'sg-not-a-subnet' }, 'ap-northeast-2c', null] } }],
+    vpcs: [], subnets: [], securityGroups: [] });
+    expect(g.edges.map(edge => [edge.rel, edge.target])).toEqual([['infra:in_subnet', 'subnet:subnet-a']]);
+  });
+
   it('preserves ElastiCache placement from the actual producer SecurityGroupId shape', () => {
     const g = buildInfraGraph({ resources: [{ resource_type: 'elasticache', resource_id: 'cache',
       data: { security_groups: [{ SecurityGroupId: 'sg-1', Status: 'active' }] } }],
