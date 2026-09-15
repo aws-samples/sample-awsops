@@ -58,8 +58,8 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     profile = target == "dev" and enabled == "true"
     rate_override = {}
     if steampipe_fill_rate != "":
-        if not profile:
-            raise ValueError("CI_STEAMPIPE_AWS_FILL_RATE_DEV requires dev with CI_READONLY_RUNTIME_DEV=true")
+        if not profile or scope != "full":
+            raise ValueError("CI_STEAMPIPE_AWS_FILL_RATE_DEV requires full dev scope with CI_READONLY_RUNTIME_DEV=true")
         try:
             if not isinstance(steampipe_fill_rate, str):
                 raise ValueError

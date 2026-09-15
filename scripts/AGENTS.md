@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3bfc328908aa · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e29b74972d38 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -67,7 +67,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an
   ADR-005 exception. Tests: `test_ci_verifier_sessions.py`; guide: `docs/runbooks/runtime-verifier-sessions.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
-  Plan's optional nonsecret `CI_STEAMPIPE_AWS_FILL_RATE_DEV` requires that verified dev profile;
+  Plan's optional nonsecret `CI_STEAMPIPE_AWS_FILL_RATE_DEV` requires full scope and that verified dev profile;
   empty preserves configuration. Apply replays the saved plan, not the current repository variable.
   Canonical contract: [Steampipe refill override](../docs/runbooks/steampipe-quota-and-staleness.md#development-ci-refill-override).
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.

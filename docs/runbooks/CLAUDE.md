@@ -160,6 +160,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   externalize a managed certificate or delete/replace owned validation CNAMEs even when DNS is
   allowed; ownership migration and validation-record retirement need separate reviewed procedures.
 - ALLDNS includes private Cloud Map, certificate validation and registered ECS task changes.
+  The optional full-dev Plan refill override is documented in [Steampipe quota and staleness](steampipe-quota-and-staleness.md#development-ci-refill-override).
   Steampipe tuning, hydrate-fallback remedies and rollback/disable can change private DNS and are
   blocked too. No private-DNS exception. Future authorized cutovers explicitly set
   `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.

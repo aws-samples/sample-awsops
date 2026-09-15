@@ -65,6 +65,16 @@ class RuntimePolicyTests(unittest.TestCase):
             with self.subTest(value=raw), self.assertRaisesRegex(ValueError, "CI_STEAMPIPE_AWS_FILL_RATE_DEV"):
                 self.rate_overrides(raw)
 
+    def test_fill_rate_requires_full_scope_and_does_not_change_bootstrap_defaults(self):
+        for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap"):
+            with self.subTest(scope=scope):
+                with self.assertRaisesRegex(ValueError, "full dev scope"):
+                    self.module.runtime_overrides("dev", "true", ACCOUNT, scope,
+                        DIGEST, DIGEST, False, steampipe_fill_rate="10")
+                baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, scope,
+                    DIGEST, DIGEST, False)
+                self.assertNotIn("steampipe_aws_fill_rate", baseline)
+
     def test_actual_plan_step_scopes_the_rate_to_dev_and_refuses_invalid_input(self):
         from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step
         step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")

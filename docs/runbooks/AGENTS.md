@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b42936920ff3 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1af8b6487566 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -130,7 +130,7 @@ legacy runbook's steps as the current operational path).
   even with DNS permission. Ownership migration and record retirement need separate review.
 - ALLDNS includes private Cloud Map, validation CNAMEs and registered ECS task changes:
   Steampipe tuning, hydrate-fallback remedies and rollback/disable can change private DNS.
-  The Plan-only dev refill override is documented in
+  The Plan-only full-dev refill override is documented in
   [Steampipe quota and staleness](steampipe-quota-and-staleness.md#development-ci-refill-override).
   Ordinary full plans (`domain_rollout=false`) retain broad DNS behavior only with explicit
   permission. No private-DNS exception. Authorized cutovers set `allow_dns_changes=true` on
