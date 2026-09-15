@@ -1,8 +1,8 @@
-// Next.js server-boot hook: the gated graph timer runs IN the request-serving web process.
-// Inventory reads use bounded per-account snapshots and release the shared pool connection
-// before building. Publication uses nonwaiting class locks and transaction deadlines. The
-// timer's in-flight guard skips overlapping ticks; it does not enqueue a worker job.
-// Larger fleets beyond these budgets require a separately reviewed worker path.
+// Existing default-off graph timer runs in the web process, outside HTTP handlers.
+// Flow failure does not block infra; trace depends on successful same-cycle infra execution.
+// Existing web-task permissions and the enabling tfvar are documented in terraform/foundation/variables.tf.
+// Class advisory locks serialize writes across ECS tasks; the local guard avoids duplicate reads.
+// If work outgrows this process, an EventBridge/ECS worker path needs separate review, not a timer tweak.
 //
 // Default OFF (GRAPH_REBUILD_INTERVAL_MINS unset/0) — manual `scripts/v2/graph-rebuild.mjs` remains
 // the baseline path; this just automates it once the interval is configured (recommended: 15, matching
@@ -22,15 +22,10 @@ export async function register() {
     const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } = await import('./lib/graph-store');
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
+    const { executeGraphLayer } = await import('./lib/graph-execution');
     const pool = getPool();
     const execute = async (stage: string, action: () => ReturnType<typeof rebuildGraph>) => {
-      try {
-        const result = await action();
-        console.log(`[graph-rebuild] ${stage}: ${JSON.stringify(result)}`);
-        if (result.failed) console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, { code: result.failureCode })}`);
-      } catch (error) {
-        console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
-      }
+      return executeGraphLayer(stage, action, (line, failed) => console[failed ? 'error' : 'log'](line));
     };
 
     // In-flight guard: the advisory lock in writeGraph() only serializes the WRITE section, not the
@@ -44,23 +39,31 @@ export async function register() {
       running = true;
       try {
         await execute('flow', () => rebuildGraph(pool));
-        await execute('infra', () => rebuildInfraGraph(pool));
+        const infra = await execute('infra', () => rebuildInfraGraph(pool));
+        if (infra.failed) {
+          console.error('[graph-rebuild] trace skipped: infra execution failed');
+          return;
+        }
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
         // graph-query catalog (datasource_graph_queries), not one hardcoded default — see
         // docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md.
         try {
-          const { sources, metricsSources } = await loadGraphSources(pool);
+          const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
+          if (registryFailed) console.error('[graph-rebuild] trace_sources: registry_read_failed');
           await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
         } catch (error) {
           await execute('trace', () => recordTraceSourceFailure(pool));
           console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
         }
+      } catch (error) {
+        // An unexpected coordination error must not escape a background timer callback.
+        console.error(`[graph-rebuild] failed ${graphDiagnostic('graph_state', error)}`);
       } finally {
         running = false;
       }
     };
 
-    setTimeout(run, 60_000); // first run ~60s after boot, so a fresh deploy materializes promptly
+    setTimeout(run, 60_000); // first attempt ~60s after boot; interval ticks keep the same overlap guard
     setInterval(run, mins * 60_000);
   }
 }

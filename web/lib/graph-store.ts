@@ -198,7 +198,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       await new Promise<void>(resolve => setImmediate(resolve));
     }
     // Keep successful account outcomes and only the first allow-listed diagnostic.
-    // Entry points still exit/report failure, but independently attempt later layers.
+    // Entry points report failure; flow/infra progress and the trace dependency remain explicit.
     return failed ? { ...totals, failed, failureCode: JSON.parse(graphDiagnostic(cls, firstFailure)).code } : totals;
   } finally {
     active.delete(cls);

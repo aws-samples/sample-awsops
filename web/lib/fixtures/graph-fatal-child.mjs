@@ -36,6 +36,7 @@ function load(file) {
 const store = load(resolve('lib/graph-store.ts'));
 const { graphTransaction } = load(resolve('lib/graph-inventory.ts'));
 const state = load(resolve('lib/graph-state.ts'));
+const execution = load(resolve('lib/graph-execution.ts'));
 let original;
 let injected = false;
 let failureAttempts = 0;
@@ -121,7 +122,7 @@ try {
     const link = async specifier => {
       const exports = specifier.includes('/db') ? { getPool: () => target }
         : specifier.includes('graph-sources') ? { loadGraphSources: async () => ({ sources: [], metricsSources }) }
-        : specifier.includes('graph-state') ? state : store;
+        : specifier.includes('graph-execution') ? execution : specifier.includes('graph-state') ? state : store;
       const module = new vm.SyntheticModule(Object.keys(exports), function() {
         for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
       }, { context });
