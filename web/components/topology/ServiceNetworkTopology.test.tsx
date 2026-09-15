@@ -5,13 +5,14 @@ import ServiceNetworkTopology, { type ConfigurationStatus } from './ServiceNetwo
 import type { FlowGraph } from '@/lib/flow-topology';
 import { buildFlowGraph } from '@/lib/flow-topology';
 import { buildTraceGraph } from '@/lib/trace-graph';
+import * as e2e from '@/lib/e2e-topology';
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub);
   window.history.replaceState({}, '', '/topology?view=e2e');
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const configured: FlowGraph = {
   nodes: [{ id: 'front-door', kind: 'alb', label: 'configured-front-door' }], edges: [],
@@ -36,7 +37,7 @@ const completeCollection = {
 };
 const snapshot = {
   class: 'trace', account: 'self', captured_at: '2026-09-11T11:55:00Z', collection: completeCollection,
-  nodes: [{ id: 'checkout', kind: 'service', label: 'checkout-service', meta: {} }], edges: [],
+  nodes: [{ id: 'checkout', kind: 'service', label: 'checkout-service', meta: {}, captured_at: '2026-09-11T11:56:00Z' }], edges: [],
 };
 const json = (body: unknown, code = 200) => new Response(JSON.stringify(body), {
   status: code, headers: { 'Content-Type': 'application/json' },
@@ -131,6 +132,7 @@ describe('ServiceNetworkTopology', () => {
     expect(screen.queryByText('표시할 네트워크 관측이 없습니다.')).toBeNull();
   });
   it('loads independent sources concurrently but does not query NFM before an explicit click', async () => {
+    const compose = vi.spyOn(e2e, 'buildE2eGraph');
     const service = deferred<Response>();
     const http = serve({ service: () => service.promise });
     render(<ServiceNetworkTopology {...props} />);
@@ -151,6 +153,7 @@ describe('ServiceNetworkTopology', () => {
     await act(async () => { service.resolve(json(snapshot)); });
     search('checkout-service');
     expect(await screen.findByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+    expect(compose.mock.lastCall?.[0].services?.nodes[0]).toMatchObject({ captured_at: snapshot.nodes[0].captured_at });
   });
 
   it.each([

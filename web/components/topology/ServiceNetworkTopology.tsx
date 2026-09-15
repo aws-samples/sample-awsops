@@ -107,7 +107,8 @@ function readServices(body: Record<string, unknown>): ObservedServices {
     throw new SourceReadError('올바르지 않은 서비스 스냅샷 응답입니다.');
   }
   return {
-    nodes: body.nodes.map((node) => ({ id: node.id, kind: node.kind, label: node.label, ...(node.meta ? { meta: node.meta } : {}) })),
+    nodes: body.nodes.map((node) => ({ id: node.id, kind: node.kind, label: node.label, ...(node.meta ? { meta: node.meta } : {}),
+      ...(validTime(node.captured_at) ? { captured_at: node.captured_at } : {}) })),
     edges: body.edges.map((edge) => ({
       source: edge.source, target: edge.target, rel: edge.rel,
       ...(edge.confidence != null ? { confidence: edge.confidence } : {}),
