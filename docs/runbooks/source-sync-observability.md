@@ -314,6 +314,9 @@ the PostgreSQL regressions independently enforce missing-child retention.
 
 ### Diagnosis signal completeness
 
+Any loss during record validation is disclosed as incomplete regardless of producer-marker presence, including Loki/legacy bodies. Valid unmarked records retain their previous count behavior; malformed nonempty lists cannot become a clean zero.
+
+
 Observed counts exclude null/empty placeholders. Known metric records require a metric object and usable numeric sample, trace records require a valid nonzero hex trace identity, and log streams require a usable timestamp/line pair. Generic table/aggregate counts include nonempty structured rows only. A missing validated count is not a confirmed zero.
 
 
@@ -321,7 +324,4 @@ The diagnosis worker preserves connector `collectionStatus` and truncation befor
 
 Tempo search complete/empty proof requires an observed positive completed/total job pair. Absent, malformed or zero-job counters cannot certify empty; valid fetched items remain available as partial evidence under the publication contract above. See [the canonical Tempo runbook](tempo-query-generation.md) for the pinned default of 20, limit/partial semantics, source-contract checks and the required Lambda deployment plus AgentCore description reconciliation.
 
-Legacy diagnosis responses without a completion marker, including current Loki responses,
-retain their preexisting count behavior; a zero there is not new proof of query completeness.
-This is separate from the graph adapter's stricter empty-publication rule. `observedCount`
-counts returned records, not automatically violations; interpret it with the query's scope.
+Unmarked responses use the same structural validation. Valid, untruncated output keeps a `count` field without asserting collection completion. Validation loss or truncation produces incomplete evidence and only a validated nonzero `observedCount`, even for Loki or pre-rollout bodies. A legacy unmarked literal empty list still has its existing compatibility behavior; this does not introduce affirmative empty proof. `observedCount` counts validated returned records, not automatically violations; interpret it with the query scope.
