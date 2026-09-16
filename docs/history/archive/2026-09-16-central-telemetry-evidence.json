@@ -1,0 +1,55 @@
+{
+  "record_type": "anonymized_operator_report",
+  "execution_date": "2026-09-16",
+  "independent_public_reproduction": false,
+  "product_integration_acceptance": false,
+  "explicit_test_data": true,
+  "delivery_observed_at": "2026-09-16T10:37:57Z",
+  "readiness_observed_at": "2026-09-16T10:48:07Z",
+  "source_aliases": ["A", "B", "C", "D", "E", "F", "G", "H"],
+  "central_source_alias": "H",
+  "reported_signal_paths": 24,
+  "reported_readiness": {
+    "cluster_collectors": {"ready": 8, "desired": 8},
+    "node_collectors": {"ready": 32, "desired": 32},
+    "tracers": {"ready": 32, "desired": 32},
+    "storage_workloads": {"ready": 6, "desired": 6},
+    "central_gateway": {"ready": 1, "desired": 1}
+  },
+  "reported_marker_destinations": {
+    "metrics/prometheus": {"expected": ["A", "B", "C", "H"], "observed": ["A", "B", "C", "H"]},
+    "metrics/mimir": {"expected": ["D", "E", "F", "G"], "observed": ["D", "E", "F", "G"]},
+    "logs/loki": {"expected": ["B", "C", "D", "H"], "observed": ["B", "C", "D", "H"]},
+    "logs/clickhouse": {"expected": ["A", "E", "F", "G"], "observed": ["A", "E", "F", "G"]},
+    "traces/tempo": {"expected": ["A", "C", "F"], "observed": ["A", "C", "F"]},
+    "traces/jaeger": {"expected": ["B", "D", "G"], "observed": ["B", "D", "G"]},
+    "traces/clickhouse": {"expected": ["E", "H"], "observed": ["E", "H"]}
+  },
+  "reported_existing_collection_check": {
+    "workloads_checked": 50,
+    "fields_compared": ["container_images", "replica_counts"],
+    "differences": 0,
+    "complete_configuration_audit": false
+  },
+  "reported_capacity_action": {
+    "worker_groups": 3,
+    "workers_before_per_group": 4,
+    "workers_after_per_group": 5,
+    "nginx_relocations_per_group": [18, 17, 16],
+    "nginx_desired_after_per_group": 180,
+    "nginx_available_after_per_group": 180,
+    "remaining_cordoned_nodes": 0,
+    "minimum_free_pod_slots_per_node": 2
+  },
+  "unproven": [
+    "lossless_delivery",
+    "exactly_once_delivery",
+    "restart_and_queue_replay_recovery",
+    "complete_cross_cluster_traces_in_one_store",
+    "all_application_business_spans",
+    "hardened_multi_tenant_security",
+    "continuous_pipeline_health",
+    "full_retention_period_durability",
+    "sustained_capacity_or_cost"
+  ]
+}
