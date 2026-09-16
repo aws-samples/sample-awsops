@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify-deck.sh — single source of truth for the awsops-intro.pptx CI gates.
-# Called by BOTH .github/workflows/merge-verify.yml (pre-merge, static/) and
-# deploy-guide.yml (pre-deploy, build/) so the two never drift.
+# Called by .github/workflows/merge-verify.yml for documentation changes.
+# Also run manually against build/ before publishing a generated site.
 #
 # Usage: bash scripts/verify-deck.sh <path-to-deck.pptx>   (cwd = docs-site/)
 #

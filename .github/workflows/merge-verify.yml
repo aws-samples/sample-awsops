@@ -13,6 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect documentation changes
+        id: docs
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^ HEAD -- docs-site/ .github/workflows/merge-verify.yml)
+          if [[ -n "$changed" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -23,6 +36,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Verify documentation build and presentation provenance
+        if: steps.docs.outputs.changed == 'true'
+        working-directory: docs-site
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx
 
       - uses: hashicorp/setup-terraform@v3
         with:
