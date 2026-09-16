@@ -103,7 +103,7 @@ ClusterIP 服务无法从集群外部直接访问。如需外部访问，请使�
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Deployments](../compute/eks-deployments) - Service 关联的 Deployment
 - [VPC](../network/vpc) - 网络配置及负载均衡器
 - [EKS Explorer](../compute/eks-explorer) - 查看 Ingress 详情

@@ -25,6 +25,13 @@ principal need an Access Entry/read policy for the registered member role before
 default member queries can succeed. The generated guide names the required role;
 the owner applies it. The app does not add or remove AWS access entries.
 
+Kubernetes access alone does not enable the adjacent data panels. CloudWatch
+diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the
+selected read role, and Container Insights must actually publish its series.
+Node ENI details require the account/region to be in the enabled inventory scan
+scope with a completed EC2 inventory collection. A denied query, absent metric
+series, and inventory not yet collected are distinct operational conditions.
+
 The cluster list, registration, and subsequent resource reads retain the selected
 account and region. Member-account and nondefault-region clusters use their EKS
 ARN as the API and registry identifier; the visible cluster name remains separate.

@@ -33,6 +33,8 @@ Cards show Cluster Name, Status, Kubernetes Version, Account, Region, VPC ID, an
 3. The cluster owner creates a `STANDARD` Access Entry for the applicable role on that cluster and associates the required read policy, such as the guide's `AmazonEKSAdminViewPolicy`. For a member cluster this is the **registered member role**, not the host web task role. An old host-principal entry alone does not authorize the new default member path.
 4. Choose **Register for query**. The app directly verifies the selected cluster with `DescribeCluster` and checks the corresponding existing Access Entry. It does not search the host cluster list or create AWS resources. Registration and detail navigation preserve account and region.
 
+**Diagnosis and ENI prerequisites:** CloudWatch diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the target read role. Container Insights metrics must actually be published. The ENI panel needs the selected account/region in the inventory collection scope and a completed EC2 inventory collection. Permission failures, absent metric series, and uncollected inventory are different states; AWSops does not grant permissions or install agents automatically.
+
 The owner runs displayed onboarding commands; the app does not run them. `make configure` → `eks.tf` remains the host-account Terraform provisioning path. Member/nondefault-region clusters require manual query registration after their owner prepares access; the host EventBridge observer is not an automatic member-registration mechanism.
 
 ### Explicit Authentication Options

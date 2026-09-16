@@ -51,7 +51,7 @@ Visualize Pod status distribution with a pie chart:
 ## How to Use
 
 1. Click **Compute > K8s > Pods** in the sidebar
-2. Review overall Pod status distribution from the stats cards
+2. Review the statistics cards for resources observed in the selected scope.
 3. If there are Pending or Failed Pods, investigate the cause
 4. Check node placement for specific Pods in the table
 
@@ -88,7 +88,7 @@ You can analyze with the AI Assistant using queries like "Pending Pod list", "Fa
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Nodes](../compute/eks-nodes) - Check node resources
 - [EKS Explorer](../compute/eks-explorer) - Detailed resource exploration
 - [EKS Container Cost](../compute/eks-container-cost) - Pod cost analysis

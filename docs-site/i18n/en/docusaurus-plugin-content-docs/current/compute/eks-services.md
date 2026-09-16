@@ -104,7 +104,7 @@ You can analyze with the AI Assistant using queries like "Service list", "LoadBa
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Deployments](../compute/eks-deployments) - Deployments connected to Services
 - [VPC](../network/vpc) - Network configuration and load balancers
 - [EKS Explorer](../compute/eks-explorer) - Ingress details

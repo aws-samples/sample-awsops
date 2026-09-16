@@ -50,7 +50,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 
 1. 在侧边栏点击 **Compute > K8s > Pods**
-2. 在统计卡片中查看所选范围内已观测 Pod 的状态分布
+2. 通过统计卡查看在所选范围内观测到的资源。
 3. 如有 Pending 或 Failed Pod，调查其原因
 4. 在表格中确认特定 Pod 的节点分布
 
@@ -87,7 +87,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Nodes](../compute/eks-nodes) - 查看节点资源
 - [EKS Explorer](../compute/eks-explorer) - 详细资源探索
 - [EKS Container Cost](../compute/eks-container-cost) - Pod 成本分析

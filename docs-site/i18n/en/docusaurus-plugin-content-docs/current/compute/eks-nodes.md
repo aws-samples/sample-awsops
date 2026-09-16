@@ -74,7 +74,7 @@ Clicking a node opens the pods-scheduled-on-this-node table — Namespace / Pod 
 ## How to Use
 
 1. Click **Compute > K8s > Nodes** in the sidebar
-2. Review overall node status from the stats cards
+2. Review the statistics cards for resources observed in the selected scope.
 3. Identify nodes with high resource usage in the CPU/Memory Usage charts
 4. Consider scaling for nodes at 80% or higher (red)
 5. Check detailed capacity for each node in the table
@@ -97,7 +97,7 @@ You can analyze with the AI Assistant using queries like "Node resource usage", 
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Check Pod status
 - [EC2](../compute/ec2) - EC2 instances underlying nodes
 - [EKS Container Cost](../compute/eks-container-cost) - Node/Pod cost analysis

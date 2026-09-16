@@ -103,7 +103,7 @@ AI Assistant で「Service の一覧」「LoadBalancer サービスの状況」�
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Deployments](../compute/eks-deployments) - Service が接続された Deployment
 - [VPC](../network/vpc) - ネットワーク構成とロードバランサー
 - [EKS Explorer](../compute/eks-explorer) - Ingress の詳細確認

@@ -8,7 +8,7 @@ description: AWSops EC2 인스턴스에서 EKS 클러스터에 접근하기 위�
 
 
 :::caution v1 아카이브 문서 — v2 미적용
-이 페이지는 v1(EC2 인스턴스 + Steampipe)의 인증 절차를 보관한 문서입니다. v2는 ECS Fargate 기반이며, 호스트 계정의 Terraform 온보딩은 `terraform/foundation/eks.tf`를 사용합니다. 멤버 계정 등록과 계정별 인증 역할·Access Entry 설정은 [EKS Overview의 교차 계정 연결 안내](./eks)를 따르세요. 이 페이지의 SSH, `AmazonEKSClusterAdminPolicy`, `data/config.json` 명령을 v2에 적용하지 마세요.
+이 페이지는 v1(EC2 + Steampipe)의 인증 절차를 보관한 문서입니다. v2는 ECS Fargate 기반이며 호스트 Terraform 온보딩에는 `terraform/foundation/eks.tf`를 사용합니다. 멤버의 메타데이터 조회와 기본 Kubernetes 인증은 등록된 멤버 읽기 역할(일반적으로 `AWSopsReadOnlyRole`)을 사용하고, 그 역할의 Access Entry·읽기 정책이 필요합니다. 멤버의 명시적 AssumeRole도 같은 멤버 계정의 역할로 제한됩니다. [현재 EKS 연결 가이드](./eks)를 따르고, 이 아카이브의 SSH, `AmazonEKSClusterAdminPolicy`, `data/config.json` 절차를 v2에 적용하지 마세요.
 :::
 
 AWSops의 Kubernetes 대시보드(`/k8s/*`)는 Steampipe의 `kubernetes` 플러그인을 통해 EKS 클러스터 데이터를 조회합니다. 이를 위해 **AWSops EC2 인스턴스 역할이 EKS 클러스터에 인증**되어야 합니다.

@@ -1,7 +1,8 @@
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
-import { eksControlPlane, eksClusterCI, eksNodesCI } from '@/lib/metrics';
+import { eksDiagnosisMetrics } from '@/lib/metrics';
 import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
+import type { EksDiagnosisMetricsResponse } from '@/lib/eks-metrics-types';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,13 +22,12 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     const rangeRaw = Number(search.get('range') ?? 3600);
     const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
-    const [controlPlane, cluster, nodes] = await Promise.all([
-      eksControlPlane(context.name, context.region, range, context.accountId),
-      eksClusterCI(context.name, context.region, range, context.accountId),
-      eksNodesCI(context.name, context.region, range, 100, context.accountId),
-    ]);
-    return Response.json({ range, controlPlane, cluster, nodes });
+    const metrics = await eksDiagnosisMetrics(context.name, context.region, range, context.accountId);
+    const body: EksDiagnosisMetricsResponse = { range, accountId: context.accountId, region: context.region, ...metrics };
+    return Response.json(body, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({
+      status: 'error', message: e instanceof EksScopeError ? e.message : 'EKS metrics are unavailable.',
+    }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

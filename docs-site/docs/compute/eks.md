@@ -33,6 +33,8 @@ import Screenshot from '@site/src/components/Screenshot';
 3. 클러스터 소유자가 해당 클러스터에 사용할 역할의 `STANDARD` Access Entry와 필요한 읽기 정책(안내의 `AmazonEKSAdminViewPolicy` 등)을 설정합니다. 멤버 클러스터에서는 호스트 web 태스크 역할이 아니라 **등록된 멤버 역할**이 대상입니다. 기존 호스트 역할의 Access Entry만으로는 새로운 기본 멤버 인증을 허용하지 않습니다.
 4. **조회 등록**을 누릅니다. 앱은 `DescribeCluster`로 선택한 클러스터를 직접 확인하고 해당 역할의 기존 Access Entry를 점검합니다. 호스트 클러스터 목록으로 검증하거나 AWS 리소스를 만들지 않습니다. 등록과 상세 이동에는 계정·리전 정보가 유지됩니다.
 
+**진단·ENI 데이터 준비:** CloudWatch 진단 지표에는 대상 읽기 역할의 `cloudwatch:GetMetricData`와 `cloudwatch:ListMetrics` 권한이 필요합니다. Container Insights 지표는 실제로 게시되고 있어야 합니다. ENI 패널은 선택한 계정·리전이 인벤토리 수집 범위에 포함되고 EC2 인벤토리 수집이 완료되어야 합니다. 권한 오류, 지표 없음, 미수집 인벤토리는 서로 다른 상태이며, AWSops가 권한이나 에이전트를 자동 설치하지 않습니다.
+
 표시되는 온보딩 명령은 소유자가 실행하며 앱이 실행하지 않습니다. `make configure` → `eks.tf`는 호스트 계정의 Terraform 프로비저닝 경로입니다. 멤버 계정·기본 리전 외 클러스터는 소유자가 권한을 준비한 뒤 수동으로 조회 등록해야 하며, 호스트 EventBridge 관찰자가 멤버 등록을 자동 처리하지 않습니다.
 
 ### 명시적 인증 옵션

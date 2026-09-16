@@ -40,6 +40,8 @@ Each cluster renders as a card showing **Status**, **Version**, **Account**, **R
 
 Registered, enabled member accounts are supported. The default identity is the **web task role for host clusters** or the **registered member read role for member clusters**, normally `AWSopsReadOnlyRole`. Member metadata discovery and Kubernetes token signing both use member-role credentials, and that role needs an EKS Access Entry/read policy; an old host-role entry alone is insufficient. Explicit **SA-token / AssumeRole** authentication is also supported. SA authentication does not require an IAM Access Entry, but metadata permissions remain necessary. An AssumeRole identity must be assumable by the web task and authorized for cluster reads; a member override ARN must belong to the same member account. Admins can **register/unregister** queries or view an **onboarding script** for the owner to apply. AWSops does not change clusters; its queries are read-only.
 
+**Diagnosis and ENI prerequisites:** CloudWatch diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the target read role. Container Insights metrics must actually be published. The ENI panel needs the selected account/region in the inventory collection scope and a completed EC2 inventory collection. Permission failures, absent metric series, and uncollected inventory are different states; AWSops does not grant permissions or install agents automatically.
+
 ### Fleet resource summary
 When at least one cluster is connected, extra visualizations appear below the cards.
 

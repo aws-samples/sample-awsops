@@ -38,6 +38,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 支持查询已注册且已启用的成员账户。宿主账户集群的默认身份是 **web 任务角色**，成员集群的默认身份是**已注册的成员只读角色**（通常为 `AWSopsReadOnlyRole`）。成员集群的元数据查询和 Kubernetes 令牌签名都使用成员角色凭证，并要求该角色具有 **EKS Access Entry** 和只读策略；仅有旧的宿主角色 Entry 不足以授权。也支持显式配置 **SA 令牌 / AssumeRole** 认证。SA 认证不需要 IAM Access Entry，但仍需要元数据查询权限。AssumeRole 所用角色必须可由 web 任务承担且具有集群内读取权限；成员集群的角色 ARN 必须属于同一成员账户。管理员可以**注册/解除**查询访问，或查看由所有者应用到目标集群的**入驻脚本**。AWSops 本身不会变更集群，查询均为只读。
 
+**诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
+
 ### 舰队资源摘要
 存在已连接的集群时，卡片下方会出现额外的可视化内容。
 

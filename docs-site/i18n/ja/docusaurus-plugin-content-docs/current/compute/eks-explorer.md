@@ -100,7 +100,7 @@ AI Assistant で「kube-system ネームスペースの Pod 一覧」「Pending 
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Pods](../compute/eks-pods) - Pod の詳細ダッシュボード
 - [EKS Deployments](../compute/eks-deployments) - デプロイメントの詳細
 - [EKS Services](../compute/eks-services) - サービスの詳細

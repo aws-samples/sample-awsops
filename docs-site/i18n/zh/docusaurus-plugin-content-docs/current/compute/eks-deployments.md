@@ -86,7 +86,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - 查看 Deployment 的 Pod
 - [EKS Explorer](../compute/eks-explorer) - 查看 ReplicaSet 详情
 - [EKS Services](../compute/eks-services) - 关联 Deployment 的 Service

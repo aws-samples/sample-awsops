@@ -73,7 +73,7 @@ Kubernetes ノードの容量、割り当て可能リソース、Pod のリク�
 ## 使い方
 
 1. サイドバーで **Compute > K8s > Nodes** をクリックします
-2. 統計カードで選択範囲の観測済みノードの状況を把握します
+2. 統計カードで選択範囲内に観測されたリソースを確認します。
 3. CPU/Memory Usage チャートでリソース使用率の高いノードを特定します
 4. 80% 以上(赤)のノードはスケーリングを検討します
 5. テーブルで各ノードの詳細な容量を確認します
@@ -96,7 +96,7 @@ AI Assistant で「ノードのリソース使用量」「CPU 80% 以上のノ�
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Pods](../compute/eks-pods) - Pod の状態確認
 - [EC2](../compute/ec2) - ノードの基盤となる EC2 インスタンス
 - [EKS Container Cost](../compute/eks-container-cost) - ノード/Pod のコスト分析

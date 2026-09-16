@@ -73,7 +73,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 
 1. 在侧边栏中点击 **Compute > K8s > Nodes**
-2. 通过统计卡片了解所选范围内已观测节点的状况
+2. 通过统计卡查看在所选范围内观测到的资源。
 3. 在 CPU/Memory Usage 图表中识别资源使用率较高的节点
 4. 对使用率 80% 以上（红色）的节点考虑扩容
 5. 在表格中查看每个节点的详细容量
@@ -96,7 +96,7 @@ Available 可能为负数。这表示 Pod 只设置了 Request 而未设置 Limi
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体概况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - 查看 Pod 状态
 - [EC2](../compute/ec2) - 节点对应的 EC2 实例
 - [EKS Container Cost](../compute/eks-container-cost) - 节点/Pod 成本分析

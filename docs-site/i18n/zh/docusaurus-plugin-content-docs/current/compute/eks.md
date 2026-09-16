@@ -33,6 +33,8 @@ import Screenshot from '@site/src/components/Screenshot';
 3. 集群所有者在该集群上为适用角色创建 `STANDARD` Access Entry，并关联所需的只读策略，例如指南中的 `AmazonEKSAdminViewPolicy`。对于成员集群，该角色是**已注册的成员角色**，而非宿主 web 任务角色。仅有旧的宿主主体 Entry 无法授权新的默认成员访问路径。
 4. 选择**查询注册**。应用通过 `DescribeCluster` 直接验证所选集群，并检查对应的现有 Access Entry。它不会搜索宿主集群列表，也不会创建 AWS 资源。注册和详情导航会保留账户与区域信息。
 
+**诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
+
 页面显示的接入命令由所有者执行，应用不会执行。`make configure` → `eks.tf` 仍是宿主账户的 Terraform 资源配置路径。成员账户或非默认区域的集群，需要在所有者准备好访问权限后手动查询注册；宿主 EventBridge 观察器并不是自动注册成员集群的机制。
 
 ### 显式认证选项

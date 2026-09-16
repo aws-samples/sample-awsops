@@ -101,7 +101,7 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 | `/api/eks/[cluster]/incluster` | GET | Read-only Kubernetes resources selected by `kind`; canonical registration allowlist applies | verifyUser |
 | `/api/eks/[cluster]/incluster/describe` | GET | One Kubernetes object; secrets remain unsupported and config-map values are redacted | verifyUser |
 | `/api/eks/[cluster]/k8sgpt` | GET | Flag-gated read-only diagnosis (ADR-006); admin and cluster allowlist checks remain | verifyUser |
-| `/api/eks/[cluster]/metrics` | GET | Control-plane and Container Insights metrics from the cluster's account/region; raw cluster name remains the CloudWatch dimension | verifyUser |
+| `/api/eks/[cluster]/metrics` | GET | Scoped control-plane/Container Insights metrics, resolved account/region, and per-source `ok`/`no-data`/`denied`/`unavailable`/`partial` outcomes; raw name remains the CloudWatch dimension | verifyUser |
 | `/api/eks/[cluster]/pod-transfer` | GET | NFM pod-transfer query, at most one hour; member/nondefault-region requests return `available:false` with an unsupported-scope reason | verifyUser |
 | `/api/eks/[cluster]/register` | POST, DELETE | Admin-only app registration/removal using a validated canonical ID; POST directly describes the selected cluster before checking its Access Entry | verifyUser |
 
@@ -154,6 +154,24 @@ registered member read-only role. Its Access Entry/read policy is required.
 Host clusters retain the web task role. Explicit member AssumeRole overrides must
 belong to the selected member account; the host bearer is never a member fallback.
 Saved SA authentication remains separate. See [EKS onboarding](reference/07-eks.md).
+
+### EKS metric read quality
+
+`/api/eks/[cluster]/metrics` retains `range`, `controlPlane`, `cluster`, and `nodes`
+and adds resolved `accountId`/`region` and `sources.controlPlane`, `sources.cluster`,
+and `sources.nodes`. Each source has a `status` and an optional fixed, sanitized
+`reason`. `no-data` represents a successful read with no values; it is not proof
+that an observability agent is uninstalled. `denied` and `unavailable` identify
+failed reads, while `partial` preserves usable values alongside incomplete results.
+CloudWatch response/query failures, bounded continuation/discovery, and conflicting
+instance tuples for a node name are included in that quality assessment. Ambiguous
+node values are withheld rather than choosing an arbitrary instance. No raw SDK denial or credential value is returned in
+these source reasons. The response uses `Cache-Control: no-store`.
+
+Diagnosis consumers must use this metadata instead of inferring installation state
+from null metrics. Independent successful sources remain usable when another source
+fails. CloudWatch permissions (`GetMetricData` and `ListMetrics`) and actual
+Container Insights publication are separate prerequisites from Kubernetes access.
 
 ### Overview EKS provenance
 

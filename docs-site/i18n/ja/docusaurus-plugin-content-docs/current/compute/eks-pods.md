@@ -50,7 +50,7 @@ Pod のステータス別分布を円グラフで可視化します:
 ## 使い方
 
 1. サイドバーで **Compute > K8s > Pods** をクリックします
-2. 統計カードで選択範囲の観測済み Pod のステータス分布を確認します
+2. 統計カードで選択範囲内に観測されたリソースを確認します。
 3. Pending または Failed の Pod があれば原因を調査します
 4. テーブルで特定 Pod のノード配置を確認します
 
@@ -87,7 +87,7 @@ AI Assistant で「Pending Pod の一覧」「Failed Pod の原因分析」「�
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Nodes](../compute/eks-nodes) - ノードリソースの確認
 - [EKS Explorer](../compute/eks-explorer) - 詳細なリソース探索
 - [EKS Container Cost](../compute/eks-container-cost) - Pod のコスト分析

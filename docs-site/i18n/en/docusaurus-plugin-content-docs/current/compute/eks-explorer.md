@@ -101,7 +101,7 @@ You can analyze with the AI Assistant using queries like "kube-system namespace 
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Pod detailed dashboard
 - [EKS Deployments](../compute/eks-deployments) - Deployment details
 - [EKS Services](../compute/eks-services) - Service details

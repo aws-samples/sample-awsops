@@ -87,7 +87,7 @@ You can analyze with the AI Assistant using queries like "Deployment status", "F
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Check Pods of Deployments
 - [EKS Explorer](../compute/eks-explorer) - ReplicaSet details
 - [EKS Services](../compute/eks-services) - Services connected to Deployments

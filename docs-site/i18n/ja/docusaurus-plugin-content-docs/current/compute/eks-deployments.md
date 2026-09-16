@@ -86,7 +86,7 @@ AI Assistant で「Deployment の状態」「レプリカが不一致の Deploym
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Pods](../compute/eks-pods) - Deployment の Pod を確認
 - [EKS Explorer](../compute/eks-explorer) - ReplicaSet の詳細確認
 - [EKS Services](../compute/eks-services) - Deployment に接続された Service

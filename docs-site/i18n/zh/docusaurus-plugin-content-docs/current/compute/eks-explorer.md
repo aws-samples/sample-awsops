@@ -100,7 +100,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体概况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - Pod 详细仪表板
 - [EKS Deployments](../compute/eks-deployments) - 部署详情
 - [EKS Services](../compute/eks-services) - 服务详情
