@@ -33,7 +33,7 @@ AWSops 是由 **Terraform**（`terraform/foundation/`，部分 S3 backend）预�
 |------|------|
 | **IaC** | Terraform（S3 partial backend，`use_lockfile`）。CDK 已废弃 |
 | **边缘** | CloudFront（TLS）→ VPC Origin（`https-only:443`）→ 内部 ALB HTTPS:443（区域 ACM）→ Fargate。**没有公开 ALB** |
-| **计算** | ECS Fargate（arm64）。web 是 Next.js 14 thin-BFF，在**根路径（`/`）**提供服务 |
+| **计算** | ECS Fargate（arm64）。web 是 Next.js 15 thin-BFF，在**根路径（`/`）**提供服务 |
 | **数据** | Aurora Serverless v2（PostgreSQL 17），通过 node-pg 访问 |
 | **AI** | AgentCore Runtime + 9 个分区网关的 MCP Lambda 工具（实时查询） |
 | **异步 worker** | SQS → ESM（kill-switch）→ dispatcher Lambda → Step Functions → Lambda 或 Fargate |

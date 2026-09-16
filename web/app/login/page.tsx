@@ -13,7 +13,7 @@ type ErrCode = 'invalid_credentials' | 'challenge' | 'unavailable';
  * active theme). Posts to the BFF (POST /api/auth/login), which sets the awsops_token
  * cookie; on success we replace() to the sanitized `next` so back doesn't return here.
  *
- * useSearchParams must sit behind a Suspense boundary (Next 14 requirement).
+ * useSearchParams must sit behind a Suspense boundary (App Router requirement).
  */
 function LoginForm() {
   const { t } = useI18n();

@@ -24,8 +24,8 @@ The files in `prototype/` are **design references built in HTML/React (Babel JSX
 they show the intended look and behavior. **They are not production code to copy
 verbatim.** The task is to **recreate these designs inside the existing AWSops
 codebase** (Next.js 15 App Router + Tailwind CSS) using its established patterns
-(React components in `src/components/`, Tailwind classes, the existing page files
-in `src/app/*/page.tsx`).
+(React components in `web/components/`, Tailwind classes, the existing page files
+in `web/app/*/page.tsx`).
 
 To **run the prototype** locally: open `prototype/AWSops v2.html` in a browser (it
 is self-contained — the design-system bundle and tokens are bundled under
@@ -303,7 +303,7 @@ hover pop `0 6px 24px rgba(31,30,29,.18)` · focus ring `0 0 0 3px rgba(217,119,
 
 ## Components catalog
 
-Build these as reusable React components in `src/components/` (TypeScript). Exact
+Build these as reusable React components in `web/components/` (TypeScript). Exact
 styling is in `prototype/_ds/` (the design-system source) and `prototype/app/`.
 
 | Component | Spec |
@@ -385,5 +385,5 @@ design_handoff_awsops_v2/
         └── app.jsx               ← shell wiring + theming variations
 ```
 
-> Recreate these in `src/components/` + `src/app/*/page.tsx` using Tailwind + the
+> Recreate these in `web/components/` + `web/app/*/page.tsx` using Tailwind + the
 > tokens above. The HTML/JSX here is a **reference**, not code to ship as-is.
