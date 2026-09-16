@@ -106,6 +106,9 @@ data/memory/
 reports/
 .superpowers/
 .worktrees/
+
+# Private operator execution records and local verification output.
+/.artifacts/
 terraform/**/.terraform/*
 terraform/**/terraform.tfvars
 terraform/**/staging.tfvars

@@ -135,3 +135,8 @@ register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계�
 
 Per-phase execution history (plans, verification logs, design notes) lives under
 [`../history/archive/`](../history/archive/) — see its README. 각 단계의 실행 이력은 `../history/archive/`를 참조한다.
+
+The [2026-09-16 central telemetry operator record](../history/archive/2026-09-16-central-telemetry-operation.md)
+is an anonymized historical note with explicit verification limits. It is not a
+current component specification, a deployment recipe, or a change to the
+application's read-only posture.

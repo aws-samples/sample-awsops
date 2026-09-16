@@ -12,6 +12,12 @@ graphs or evaluating invariants. 기존 읽기 전용 수집기·Aurora 그래�
 **Tech stack:** Next.js/TypeScript, Python, PostgreSQL, existing ClickHouse/Tempo/Prometheus/Mimir
 connectors. No new telemetry backend or AWS-mutating tool.
 
+That constraint describes the AWSops application integration. Separately authorized,
+operator-owned lab infrastructure is outside it; the
+[2026-09-16 central telemetry operation record](../history/archive/2026-09-16-central-telemetry-operation.md)
+is historical evidence only and neither provisions a product backend nor changes ADR-005.
+It does not establish datasource registration or product-level E2E acceptance.
+
 ## Constraints / 제약
 
 - Preserve ADR-005: diagnosis and remediation proposals only. AWS mutation stays frozen.
