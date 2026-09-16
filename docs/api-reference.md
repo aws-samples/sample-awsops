@@ -149,9 +149,11 @@ connection/auth reads. POST registration returns 404 for an absent selected clus
 400/403/503 validation/authorization/unavailability responses. It writes only the app's
 registration state; it does not create AWS roles, entries, policies, or connectivity.
 
-Discovery assumes the registered target read-only role. Default Kubernetes access
-uses the host web task-role principal registered on that target; an explicit saved
-authentication override selects its own bearer identity. See [EKS onboarding](reference/07-eks.md).
+For member clusters, discovery and default Kubernetes token signing use the
+registered member read-only role. Its Access Entry/read policy is required.
+Host clusters retain the web task role. Explicit member AssumeRole overrides must
+belong to the selected member account; the host bearer is never a member fallback.
+Saved SA authentication remains separate. See [EKS onboarding](reference/07-eks.md).
 
 ### Overview EKS provenance
 

@@ -16,7 +16,6 @@ A page for browsing your EKS cluster fleet and in-cluster resources in one place
 The top filter applies to EKS discovery and resource reads. Partial-collection, failure, or limit notices mean the displayed numbers cover observed results and cannot prove complete absence. All-region discovery discloses its configured/already-registered-region limit.
 :::
 
-
 ## Features
 
 ### KPI cards
@@ -39,7 +38,7 @@ Each cluster renders as a card showing **Status**, **Version**, **Account**, **R
 - **Not connected**: no default Access Entry connection and no saved SA-token/AssumeRole authentication configuration
 - **Unknown**: access state could not be determined
 
-Default authentication requires an **EKS Access Entry for the web task role** on the target cluster. Explicit SA-token/AssumeRole authentication uses that identity's Kubernetes authorization; account metadata discovery must still be configured separately. Admins can **register/unregister** query access or view an **onboarding script** to apply to the cluster themselves. AWSops never changes clusters — everything here is read-only.
+Registered, enabled member accounts are supported. The default identity is the **web task role for host clusters** or the **registered member read role for member clusters**, normally `AWSopsReadOnlyRole`. Member metadata discovery and Kubernetes token signing both use member-role credentials, and that role needs an EKS Access Entry/read policy; an old host-role entry alone is insufficient. Explicit **SA-token / AssumeRole** authentication is also supported. SA authentication does not require an IAM Access Entry, but metadata permissions remain necessary. An AssumeRole identity must be assumable by the web task and authorized for cluster reads; a member override ARN must belong to the same member account. Admins can **register/unregister** queries or view an **onboarding script** for the owner to apply. AWSops does not change clusters; its queries are read-only.
 
 ### Fleet resource summary
 When at least one cluster is connected, extra visualizations appear below the cards.
@@ -70,7 +69,7 @@ You only need to type part of a name in the search box. The namespace filter is 
 :::
 
 :::info Connection requirement
-Default authentication needs the **web task-role EKS Access Entry**; explicit SA-token/AssumeRole authentication is also supported. Check actual read success and partial-collection notices together. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
+Default authentication needs the host web task-role or member registered-role EKS Access Entry; explicit SA-token/AssumeRole authentication is also supported. Check actual read success and partial-collection notices together. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
 :::
 
 ## AI analysis tips

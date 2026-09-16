@@ -12,13 +12,18 @@ A page for viewing detailed information about Kubernetes node capacity, allocata
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Nodes**: Total node count (cyan)
+- **Total Nodes**: Observed node count in the selected scope (cyan)
 - **Ready**: Ready status node count (green)
-- **Total CPU**: Total vCPU capacity sum (purple)
-- **Total Memory**: Total memory capacity sum (orange) — with an allocatable total and reserved % (Capacity − Allocatable) hint (omitted when allocatable is unreported)
+- **Total CPU**: vCPU capacity sum of observed nodes in the selected scope (purple)
+- **Total Memory**: Memory capacity sum of observed nodes in the selected scope (orange) — with an allocatable total and reserved % (Capacity − Allocatable) hint (omitted when allocatable is unreported)
 
 ### CPU Usage per Node Chart
 Display CPU resource status per node with 3-level bar chart:

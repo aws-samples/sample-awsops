@@ -12,10 +12,15 @@ Kubernetes Service의 목록과 네트워크 설정을 확인할 수 있는 페�
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info 선택 범위와 관측 결과
+상단 계정·리전 필터가 이 페이지에 적용됩니다. 합계는 선택한 등록 클러스터 범위에서 실제 조회한 리소스 수이며, 모든 AWS 리소스의 총수가 아닙니다. 동명 클러스터의 선택 항목은 계정·리전을 함께 표시합니다. 부분 실패나 조회 한도 안내가 있으면 결과가 불완전할 수 있으므로, 범위를 좁혀 다시 확인하세요.
+:::
+
+
 ## 주요 기능
 
 ### 통계 카드
-- **Total Services**: 전체 Service 수 (시안)
+- **Total Services**: 선택 범위에서 조회된 Service 수 (시안)
 - **ClusterIP**: ClusterIP 타입 서비스 수 (녹색)
 - **NodePort**: NodePort 타입 서비스 수 (보라색)
 - **LoadBalancer**: LoadBalancer 타입 서비스 수 (주황색)
@@ -99,7 +104,7 @@ AI Assistant에서 "Service 목록", "LoadBalancer 서비스 현황", "External 
 
 ## 관련 페이지
 
-- [EKS Overview](../compute/eks) - 클러스터 전체 현황
+- [EKS Overview](../compute/eks) - 선택 범위의 클러스터 현황
 - [EKS Deployments](../compute/eks-deployments) - Service가 연결된 Deployment
 - [VPC](../network/vpc) - 네트워크 구성 및 로드밸런서
 - [EKS Explorer](../compute/eks-explorer) - Ingress 상세 확인

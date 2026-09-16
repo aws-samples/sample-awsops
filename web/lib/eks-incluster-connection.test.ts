@@ -7,6 +7,8 @@ import { Sha256 } from '@aws-crypto/sha256-js';
 const getAccount = vi.fn();
 const getClusterAuth = vi.fn();
 const assumedClient = vi.fn();
+const credsForAccount = vi.fn();
+const hostProvider = vi.fn();
 const hostSend = vi.fn();
 const memberSend = vi.fn();
 const stsSend = vi.fn();
@@ -15,7 +17,10 @@ const request = vi.fn();
 vi.mock('./accounts', () => ({ getAccount: (...args: unknown[]) => getAccount(...args) }));
 vi.mock('./account-regions', () => ({ listScanScope: async () => [{ accountId: '222222222222', regions: ['*'] }] }));
 vi.mock('./eks-registry', () => ({ getClusterAuth: (...args: unknown[]) => getClusterAuth(...args) }));
-vi.mock('./aws-assume', () => ({ assumedClient: (...args: unknown[]) => assumedClient(...args) }));
+vi.mock('./aws-assume', () => ({
+  assumedClient: (...args: unknown[]) => assumedClient(...args),
+  credsForAccount: (...args: unknown[]) => credsForAccount(...args),
+}));
 vi.mock('@aws-sdk/client-eks', () => ({
   EKSClient: class { send = (...args: unknown[]) => hostSend(...args); },
   DescribeClusterCommand: class { constructor(public input: unknown) {} },
@@ -27,9 +32,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
   GetCallerIdentityCommand: class { constructor(public input: unknown) {} },
 }));
 vi.mock('@aws-sdk/credential-providers', () => ({
-  fromNodeProviderChain: () => async () => ({
-    accessKeyId: 'HOST_TASK_KEY', secretAccessKey: 'host-test-secret', sessionToken: 'host-session',
-  }),
+  fromNodeProviderChain: () => hostProvider(),
 }));
 vi.mock('node:https', () => ({
   default: {
@@ -49,6 +52,13 @@ beforeEach(() => {
   vi.stubEnv('AWS_REGION', 'ap-northeast-2');
   getAccount.mockReset().mockResolvedValue({
     accountId: '222222222222', isHost: false, enabled: true, region: 'us-east-1',
+    roleName: 'TenantEksReader',
+  });
+  hostProvider.mockReset().mockReturnValue(async () => ({
+    accessKeyId: 'HOST_TASK_KEY', secretAccessKey: 'host-test-secret', sessionToken: 'host-session',
+  }));
+  credsForAccount.mockReset().mockResolvedValue({
+    accessKeyId: 'MEMBER_ROLE_KEY', secretAccessKey: 'member-test-secret', sessionToken: 'member-session',
   });
   getClusterAuth.mockReset().mockResolvedValue(null);
   hostSend.mockReset().mockResolvedValue({
@@ -108,15 +118,15 @@ describe('EKS scoped connections and token identity', () => {
     expect(hostSend).not.toHaveBeenCalled();
   });
 
-  it('signs the raw name and target region with HOST task credentials by default', async () => {
+  it('signs the raw name and target region with member credentials without loading the host provider', async () => {
     vi.useFakeTimers().setSystemTime(new Date('2026-09-16T00:00:00Z'));
     const { eksToken } = await import('./eks-incluster');
     const url = decode(await eksToken(MEMBER_ID, 'us-east-1'));
     expect(url.hostname).toBe('sts.us-east-1.amazonaws.com');
-    expect(url.searchParams.get('X-Amz-Credential')).toContain('HOST_TASK_KEY/');
+    expect(url.searchParams.get('X-Amz-Credential')).toContain('MEMBER_ROLE_KEY/');
     const expected = await new SignatureV4({
       region: 'us-east-1', service: 'sts', sha256: Sha256,
-      credentials: { accessKeyId: 'HOST_TASK_KEY', secretAccessKey: 'host-test-secret', sessionToken: 'host-session' },
+      credentials: { accessKeyId: 'MEMBER_ROLE_KEY', secretAccessKey: 'member-test-secret', sessionToken: 'member-session' },
     }).presign(new HttpRequest({
       method: 'GET', protocol: 'https:', hostname: 'sts.us-east-1.amazonaws.com', path: '/',
       headers: { host: 'sts.us-east-1.amazonaws.com', 'x-k8s-aws-id': 'shared' },
@@ -126,6 +136,42 @@ describe('EKS scoped connections and token identity', () => {
     expect(getClusterAuth).toHaveBeenCalledWith(MEMBER_ID);
     expect(assumedClient).not.toHaveBeenCalled();
     expect(stsSend).not.toHaveBeenCalled();
+    expect(credsForAccount).toHaveBeenCalledWith('222222222222');
+    expect(hostProvider).not.toHaveBeenCalled();
+  });
+
+  it('uses different credentials for a same-name host and member cluster in the same region', async () => {
+    vi.useFakeTimers().setSystemTime(new Date('2026-09-16T00:00:00Z'));
+    const { eksToken } = await import('./eks-incluster');
+    const host = decode(await eksToken(HOST_OTHER_REGION));
+    const member = decode(await eksToken(MEMBER_ID));
+    expect(host.searchParams.get('X-Amz-Credential')).toContain('HOST_TASK_KEY/');
+    expect(member.searchParams.get('X-Amz-Credential')).toContain('MEMBER_ROLE_KEY/');
+    expect(member.searchParams.get('X-Amz-Signature')).not.toBe(host.searchParams.get('X-Amz-Signature'));
+    expect(hostProvider).toHaveBeenCalledTimes(1);
+    expect(credsForAccount).toHaveBeenCalledTimes(1);
+    expect(credsForAccount).toHaveBeenCalledWith('222222222222');
+    expect(stsSend).not.toHaveBeenCalled();
+  });
+
+  it.each([null, undefined, {}, { accessKeyId: 'MEMBER_ROLE_KEY', secretAccessKey: 'member-test-secret' }])(
+    'refuses missing or incomplete member credentials without host fallback: %j', async credentials => {
+      credsForAccount.mockResolvedValue(credentials);
+      const { eksToken, listInCluster } = await import('./eks-incluster');
+      await expect(eksToken(MEMBER_ID)).rejects.toMatchObject({ status: 503 });
+      await expect(listInCluster(MEMBER_ID, 'pods')).rejects.toMatchObject({ status: 503 });
+      expect(hostProvider).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+
+  it('sanitizes a denied member credential lookup and never uses host credentials', async () => {
+    credsForAccount.mockRejectedValue(Object.assign(new Error('private upstream credential detail'), { name: 'AccessDenied' }));
+    const { eksToken } = await import('./eks-incluster');
+    await expect(eksToken(MEMBER_ID)).rejects.toMatchObject({
+      status: 403, message: 'EKS authentication unavailable',
+    });
+    expect(hostProvider).not.toHaveBeenCalled();
   });
 
   it('rejects a token region that conflicts with the ARN', async () => {
@@ -145,8 +191,9 @@ describe('EKS scoped connections and token identity', () => {
       expect(options.method).toBe('GET');
       const url = decode(options.headers.Authorization.slice('Bearer '.length));
       expect(url.hostname).toBe('sts.us-east-1.amazonaws.com');
-      expect(url.searchParams.get('X-Amz-Credential')).toContain('HOST_TASK_KEY/');
+      expect(url.searchParams.get('X-Amz-Credential')).toContain('MEMBER_ROLE_KEY/');
     }
+    expect(hostProvider).not.toHaveBeenCalled();
   });
 
   it('keeps saved assume-role identity separate and includes ExternalId in credential cache keys', async () => {
@@ -169,6 +216,38 @@ describe('EKS scoped connections and token identity', () => {
     stsSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
     const { eksToken } = await import('./eks-incluster');
     await expect(eksToken(MEMBER_ID, 'us-east-1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it.each(['111111111111', '333333333333'])('blocks a stored override from account %s before STS or a member request', async accountId => {
+    getClusterAuth.mockResolvedValue({
+      mode: 'assume-role', roleArn: `arn:aws:iam::${accountId}:role/OtherReader`,
+    });
+    const { eksToken, listInCluster } = await import('./eks-incluster');
+    await expect(eksToken(MEMBER_ID)).rejects.toMatchObject({ status: 403 });
+    await expect(listInCluster(MEMBER_ID, 'pods')).rejects.toMatchObject({ status: 403 });
+    expect(stsSend).not.toHaveBeenCalled();
+    expect(credsForAccount).not.toHaveBeenCalled();
+    expect(hostProvider).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('blocks host-role credentials even if an explicit host registration already warmed that role cache', async () => {
+    getClusterAuth.mockResolvedValue({
+      mode: 'assume-role', roleArn: 'arn:aws:iam::111111111111:role/HostReader', externalId: 'same',
+    });
+    const { eksToken } = await import('./eks-incluster');
+    expect(decode(await eksToken('shared')).searchParams.get('X-Amz-Credential')).toContain('OVERRIDE_KEY/');
+    await expect(eksToken(MEMBER_ID)).rejects.toMatchObject({ status: 403 });
+    expect(stsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a user-provided service-account token without loading either AWS signing identity', async () => {
+    getClusterAuth.mockResolvedValue({ mode: 'sa-token', token: 'user-supplied-member-token' });
+    const { eksToken } = await import('./eks-incluster');
+    expect(await eksToken(MEMBER_ID)).toBe('user-supplied-member-token');
+    expect(hostProvider).not.toHaveBeenCalled();
+    expect(credsForAccount).not.toHaveBeenCalled();
+    expect(stsSend).not.toHaveBeenCalled();
   });
 
   it('does not return even a saved service-account token for a disabled target', async () => {

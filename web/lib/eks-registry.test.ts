@@ -225,4 +225,27 @@ describe('eks-registry', () => {
     await registerCluster('reused', 'u');
     expect(await getClusterAuth('reused')).toBeNull();
   });
+
+  it.each(['111111111111', '333333333333'])('rejects persisting and reading member overrides from account %s', async accountId => {
+    const member = 'arn:aws:eks:us-east-1:222222222222:cluster/shared';
+    const auth = { mode: 'assume-role' as const, roleArn: `arn:aws:iam::${accountId}:role/OtherReader` };
+    const { setClusterAuth, getClusterAuth } = await import('./eks-registry');
+    await expect(setClusterAuth(member, 'admin', auth)).rejects.toMatchObject({ status: 403 });
+    expect(query).not.toHaveBeenCalled();
+    // Existing rows from the former host-token design are also rejected on read.
+    query.mockResolvedValue({ rows: [{ auth }] });
+    await expect(getClusterAuth(member)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('allows a scoped member role override and keeps its cached auth isolated from the host key', async () => {
+    const member = 'arn:aws:eks:us-east-1:222222222222:cluster/shared';
+    const auth = { mode: 'assume-role' as const, roleArn: 'arn:aws:iam::222222222222:role/ScopedReader' };
+    query.mockResolvedValue({ rows: [{ auth }] });
+    const { setClusterAuth, getClusterAuth } = await import('./eks-registry');
+    expect(await setClusterAuth(member, 'admin', auth)).toBe(true);
+    expect(await getClusterAuth(member)).toEqual(auth);
+    query.mockResolvedValue({ rows: [] });
+    expect(await getClusterAuth('shared')).toBeNull();
+    expect(await getClusterAuth(member)).toEqual(auth);
+  });
 });

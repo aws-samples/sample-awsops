@@ -12,10 +12,15 @@ A page for viewing the list and network configuration of Kubernetes Services.
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Services**: Total Service count (cyan)
+- **Total Services**: Observed Service count in the selected scope (cyan)
 - **ClusterIP**: ClusterIP type service count (green)
 - **NodePort**: NodePort type service count (purple)
 - **LoadBalancer**: LoadBalancer type service count (orange)

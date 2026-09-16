@@ -1,109 +1,67 @@
 ---
 sidebar_position: 5
 title: EKS Overview
-description: EKS cluster status, node resources, Pod status summary
+description: Scoped EKS cluster registration, node resources, and Pod status
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-A page for viewing the overall status of EKS clusters, node resources, and Pod status at a glance.
+View EKS clusters and Kubernetes resources in the selected account and region scope. AWSops queries cloud and cluster resources read-only; registration stores app settings only (ADR-005).
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 
 ## Key Features
 
-### Cluster Filter
-- Filter by EKS cluster
-- Filter by VPC
-- Multi-select support
+### Account, Region, and Cluster Filters
 
-### EKS Cluster Cards
-Display key information for each cluster in card format:
-- Cluster Name, Status (ACTIVE)
-- Kubernetes Version, Account, Region, VPC ID, Platform Version
-- **Access Entry badge**: K8s Connected (green) / No Access (red)
-- **Cluster registration button (admin)**: use existing-Access-Entry query registration, a ServiceAccount token, or an explicit AssumeRole identity. AWSops stores registration settings; it does not create AWS roles, Access Entries, or policies (ADR-005).
-- **Click to filter**: Click a cluster card to filter all data to that cluster (cyan border)
+Select accounts and regions in the top filter, then narrow by cluster or VPC. Multi-select is supported. Changes refresh the list and aggregates without registering another cluster. Account/region-qualified identities keep same-named clusters distinct.
 
-:::tip Cluster Access
-When registered clusters cannot supply live data, the page shows the failure reason and a link to this guide. Default query registration needs the web task-role Access Entry on the target; explicit SA/AssumeRole authentication needs Kubernetes authorization for that identity. The selected cluster owner executes any commands returned with a 409, then an admin retries query registration.
+:::info Observed scope
+Counts and charts describe successfully observed resources in the selected scope. Partial failures and query limits are disclosed and do not prove that unobserved resources are absent. All-region discovery currently covers configured regions and regions of registered clusters; narrow the selection to query a specific region.
 :::
 
-### Connect a cross-account cluster
+### Cluster Cards and Connection State
 
-1. Register and enable the target account in **Accounts**, and configure the regions to query. Metadata discovery uses the registered target read-only role, normally `AWSopsReadOnlyRole`.
-2. Select the target account and region in the top filter. Changing the filter refreshes lists and aggregates without registering another cluster. **Account** and **Region** on each card distinguish clusters with the same name.
-3. For default **Access Entry query registration**, the cluster owner must create a `STANDARD` entry for the **host account's web task role** on the target cluster and associate the required read policy. The role used for metadata discovery and the default Kubernetes bearer identity are separate.
-4. Choose **Register for query**. Registration directly checks that cluster in the selected account and region; it does not verify membership in the host account's cluster list. Registration and detail requests retain the same account/region identity.
+Cards show Cluster Name, Status, Kubernetes Version, Account, Region, VPC ID, and Platform Version. The Connected **badge** means a default entry path or saved authentication is configured; it does not validate saved credentials or guarantee reachability. Counts appear after live reads succeed. The Connected **KPI** counts clusters with successful live reads in the displayed scope.
 
-A **ServiceAccount token** authenticates Kubernetes reads as the read-only SA authorized inside the cluster. It does not require an IAM Access Entry, but target-account metadata discovery must still be configured. **AssumeRole authentication** uses a role that the web task can assume and that is authorized for the target Kubernetes API. The default deployment's AssumeRole grant targets `AWSopsReadOnlyRole`; an operator must separately authorize another role. Both methods still require network access to the cluster API.
+### Cross-Account Query Registration
 
-`make configure` → `eks.tf` is the **host-account Terraform onboarding path**. For member/nondefault-region clusters, the owner executes the displayed commands and then an admin registers query access manually. Do not assume the host EventBridge observer will register them automatically.
+1. Register and enable the target account in **Accounts**, configure its regions, and supply the external ID when its trust policy requires one. The usual target role is `AWSopsReadOnlyRole`; it must be assumable by the web task and permitted to read EKS metadata.
+2. Select the target account and region. For a **member account**, default metadata discovery and Kubernetes token signing both use that account's registered read-only role. Host-account clusters retain the web task role as their default identity. AWSops does not send the host task-role bearer to member clusters.
+3. The cluster owner creates a `STANDARD` Access Entry for the applicable role on that cluster and associates the required read policy, such as the guide's `AmazonEKSAdminViewPolicy`. For a member cluster this is the **registered member role**, not the host web task role. An old host-principal entry alone does not authorize the new default member path.
+4. Choose **Register for query**. The app directly verifies the selected cluster with `DescribeCluster` and checks the corresponding existing Access Entry. It does not search the host cluster list or create AWS resources. Registration and detail navigation preserve account and region.
 
-:::info Scope and failure states
-All-region discovery currently covers configured regions and regions of already registered clusters; it does not prove exhaustive AWS-region coverage. Narrow the scope when partial-collection or limit notices appear. `404` means the selected target cluster was not found; `409` means an Access Entry is missing or could not be verified. A `503` or another query failure is not evidence that no cluster exists.
-:::
+The owner runs displayed onboarding commands; the app does not run them. `make configure` → `eks.tf` remains the host-account Terraform provisioning path. Member/nondefault-region clusters require manual query registration after their owner prepares access; the host EventBridge observer is not an automatic member-registration mechanism.
 
-### Stats Cards (Click to Navigate)
-Click each card to navigate to the detail page:
-- **Nodes** → Node Details (`/eks/nodes`)
-- **Pods** → Pod Details (`/eks/pods`)
-- **Deployments** → Deployment Details (`/eks/deployments`)
-- **Services** → Service Details (`/eks/services`)
+### Explicit Authentication Options
 
-### Node Card Grid
-Visually display resource usage for each node:
-- Node name, Pod count, status (Ready/NotReady)
-- **CPU usage bar**: Pod requests / total capacity (percent)
-- **Memory usage bar**: Pod requests / total capacity (percent)
-- 80% or higher: red, 50% or higher: orange, otherwise: cyan/purple
+- **ServiceAccount token**: use a read-only SA identity authorized inside the target cluster. Its Kubernetes authentication does not require an IAM Access Entry, but target-account metadata discovery and API-server connectivity are still required.
+- **AssumeRole**: use a role the web task can assume and the target Kubernetes API authorizes. For a member cluster, the role ARN must belong to that same member account; a host/other-account role is rejected. Supply the external ID if required. The default deployment grants assumption of `AWSopsReadOnlyRole`; other roles need separate operator authorization.
 
-### Node Detail View
-Click a node card to navigate to the detail page:
-- **CPU/Memory/Pod Info cards**: Capacity, Allocatable, Requested, Available
-- **ENI list**: IP allocation per network interface + instance network traffic tiles (In/Out bytes·packets — cumulative and average rate over the completed previous hour bucket; CloudWatch has no per-ENI dimension, so values are instance-level)
-- **Pods table**: List of Pods running on that node
+### Registration Errors
 
-### Visualization Charts
+`404` means the selected cluster was not found. `409` means the required Access Entry is absent or could not be verified. `403` can mean the account/region or role identity is not allowed. `503` indicates unavailable discovery or storage. These errors do not establish a successful empty fleet. Check the displayed target and give its onboarding guide to the cluster owner.
 
-- **Pod Status Distribution**: Running, Pending, Failed, Succeeded distribution (pie chart)
-- **Pods per Namespace**: Pod count by namespace (bar chart)
+### Live Resources and Detail Pages
 
-### Warning Events Table
-Display Kubernetes Warning events in real-time:
-- Kind, Object, Reason, Message, Count, Last Seen
+- **Nodes / Pods / Deployments / Services** open their respective scoped resource pages.
+- Node panels show capacity, allocatable resources, requests, and Pod information; request ratios are reservations, not measured CPU/memory utilization.
+- ENI details use scoped EC2 inventory and instance-level CloudWatch traffic when available.
+- Pod-status, namespace, instance-type charts and Warning Events summarize observed data. Unreachable clusters remain disclosed.
+- A connected card's title opens the cluster detail view. OpenCost status/configuration and resource requests retain the cluster identity.
 
-## How to Use
-
-1. Click **Compute > EKS** in the sidebar
-2. Click a cluster card to filter to a specific cluster
-3. Click stats cards to navigate to Pods/Nodes/Deployments/Services detail pages
-4. Identify nodes with high resource usage from the node cards
-5. Click a node to view detailed resources and Pod list
-6. Monitor problem events in Warning Events
-
-## Tips
-
-:::tip Node Resource Monitoring
-If a node card's CPU/Memory bar is red (80% or higher), there's a risk of resource shortage. Consider adding nodes or rebalancing Pods.
-:::
-
-:::tip ENI IP Usage
-In the node detail view, if ENI IP Slots Used is close to 15/15, new Pod scheduling may fail.
-:::
-
-:::info AI Analysis
-You can analyze with the AI Assistant using queries like "EKS cluster status", "CPU usage by node", "Analyze Warning events", etc.
+:::tip Access and data availability
+A configured badge alone does not prove a valid token, read policy, or network path. Use the actual live-read result and failure notice. For member defaults, grant the registered member role access; do not repair the failure by broadening the host role's cluster access.
 :::
 
 ## Related Pages
 
-- [EKS Authentication Setup](./eks-auth) - Access Entry / aws-auth authentication guide
-- [EKS Explorer](./eks-explorer) - K9s-style terminal UI
-- [EKS Pods](./eks-pods) - Pod detailed list
-- [EKS Nodes](./eks-nodes) - Node detailed list
-- [EKS Deployments](./eks-deployments) - Deployment list
-- [EKS Services](./eks-services) - Service list
-- [EKS Container Cost](./eks-container-cost) - Pod cost analysis (OpenCost)
+- [EKS authentication archive and current handoff](./eks-auth)
+- [EKS Explorer](./eks-explorer)
+- [EKS Nodes](./eks-nodes)
+- [EKS Pods](./eks-pods)
+- [EKS Deployments](./eks-deployments)
+- [EKS Services](./eks-services)
+- [EKS Container Cost](./eks-container-cost)

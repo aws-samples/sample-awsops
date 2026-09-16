@@ -28,6 +28,7 @@ describe('eks-access', () => {
     process.env.AWS_REGION = 'ap-northeast-2';
     getAccount.mockReset().mockResolvedValue({
       accountId: '222222222222', enabled: true, isHost: false, region: 'us-east-1',
+      roleName: 'TenantEksReader',
     });
     assumedClient.mockReset().mockImplementation(async (id: string) => ({ send: id === 'self' ? eksSend : targetSend }));
     const { _resetForTests } = await import('./eks-access');
@@ -82,16 +83,17 @@ describe('eks-access', () => {
     expect(g.note).toContain('make configure');
   });
 
-  it('discovers the member Access Entry for the HOST task role, using the target region and raw name', async () => {
-    stsSend.mockResolvedValue({ Arn: 'arn:aws:sts::111111111111:assumed-role/awsops-v2-task/session' });
+  it('discovers the member Access Entry for its registered role without asking for host identity', async () => {
+    stsSend.mockRejectedValue(new Error('host identity must not be read'));
     targetSend.mockResolvedValue({ accessEntry: { type: 'STANDARD' } });
     const { hasAccessEntry } = await import('./eks-access');
     expect(await hasAccessEntry('arn:aws:eks:us-east-1:222222222222:cluster/shared')).toBe(true);
     expect(assumedClient).toHaveBeenCalledWith('222222222222', expect.anything(), { region: 'us-east-1' });
     expect(targetSend.mock.calls[0][0].input).toEqual({
-      clusterName: 'shared', principalArn: 'arn:aws:iam::111111111111:role/awsops-v2-task',
+      clusterName: 'shared', principalArn: 'arn:aws:iam::222222222222:role/TenantEksReader',
     });
     expect(eksSend).not.toHaveBeenCalled();
+    expect(stsSend).not.toHaveBeenCalled();
   });
 
   it('directly describes a selected cluster without relying on a capped list', async () => {
@@ -119,16 +121,42 @@ describe('eks-access', () => {
     expect(eksSend).not.toHaveBeenCalled();
   });
 
-  it('uses raw names and target regions in cross-account guides, retaining the host principal', async () => {
-    stsSend.mockResolvedValue({ Arn: 'arn:aws:iam::111111111111:role/awsops-v2-task' });
+  it('uses the registered member role, raw name, and target region in cross-account guides', async () => {
+    stsSend.mockRejectedValue(new Error('host identity must not be read'));
     const { onboardingGuide } = await import('./eks-access');
     const guide = await onboardingGuide('arn:aws:eks:us-east-1:222222222222:cluster/shared');
     for (const command of guide.commands) {
       expect(command).toContain('--cluster-name shared --region us-east-1');
-      expect(command).toContain('--principal-arn arn:aws:iam::111111111111:role/awsops-v2-task');
+      expect(command).toContain('--principal-arn arn:aws:iam::222222222222:role/TenantEksReader');
       expect(command).not.toContain('--cluster-name arn:');
     }
     expect(guide.note).toContain('222222222222');
+    expect(stsSend).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'reader;echo injected', 'reader\n', 'reader/unsupported-path', 'r'.repeat(65), undefined])(
+    'rejects invalid registered role names before CLI interpolation or discovery: %j', async roleName => {
+      getAccount.mockResolvedValue({
+        accountId: '222222222222', enabled: true, isHost: false, region: 'us-east-1', roleName,
+      });
+      const { onboardingGuide, hasAccessEntry } = await import('./eks-access');
+      const id = 'arn:aws:eks:us-east-1:222222222222:cluster/shared';
+      await expect(onboardingGuide(id)).rejects.toMatchObject({ status: 503 });
+      await expect(hasAccessEntry(id)).rejects.toMatchObject({ status: 503 });
+      expect(targetSend).not.toHaveBeenCalled();
+      expect(stsSend).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still checks the current task-role principal for a host cluster', async () => {
+    stsSend.mockResolvedValue({ Arn: 'arn:aws:sts::111111111111:assumed-role/awsops-v2-task/session' });
+    eksSend.mockResolvedValue({ accessEntry: { type: 'STANDARD' } });
+    const { hasAccessEntry } = await import('./eks-access');
+    expect(await hasAccessEntry('shared')).toBe(true);
+    expect(eksSend.mock.calls[0][0].input).toEqual({
+      clusterName: 'shared', principalArn: 'arn:aws:iam::111111111111:role/awsops-v2-task',
+    });
+    expect(getAccount).not.toHaveBeenCalled();
   });
 
   it.each([

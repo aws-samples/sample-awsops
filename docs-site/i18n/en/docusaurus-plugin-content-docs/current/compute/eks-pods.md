@@ -12,10 +12,15 @@ A page for viewing the detailed list and status of Kubernetes Pods.
 
 <Screenshot src="/screenshots/compute/eks-pods.png" alt="EKS Pods" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Pods**: Total Pod count (cyan)
+- **Total Pods**: Observed Pod count in the selected scope (cyan)
 - **Running**: Running Pod count (green)
 - **Pending**: Pending Pod count (orange)
 - **Failed**: Failed Pod count (red)

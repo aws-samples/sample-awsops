@@ -12,13 +12,17 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 统计卡片
-- **Total Nodes**：全部节点数量（青色）
+- **Total Nodes**：所选范围内观测到的节点数量（青色）
 - **Ready**：Ready 状态的节点数量（绿色）
-- **Total CPU**：全部 vCPU 容量总和（紫色）
-- **Total Memory**：全部内存容量总和（橙色）— 同时以提示显示 allocatable 总和与 reserved %（Capacity − Allocatable）（allocatable 未上报时省略提示）
+- **Total CPU**：所选范围内观测到的节点 vCPU 容量总和（紫色）
+- **Total Memory**：所选范围内观测到的节点内存容量总和（橙色）— 同时以提示显示 allocatable 总和与 reserved %（Capacity − Allocatable）（allocatable 未上报时省略提示）
 
 ### CPU Usage per Node 图表
 以三段式柱状图显示各节点的 CPU 资源状态：
@@ -69,7 +73,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 
 1. 在侧边栏中点击 **Compute > K8s > Nodes**
-2. 通过统计卡片了解节点整体状况
+2. 通过统计卡片了解所选范围内已观测节点的状况
 3. 在 CPU/Memory Usage 图表中识别资源使用率较高的节点
 4. 对使用率 80% 以上（红色）的节点考虑扩容
 5. 在表格中查看每个节点的详细容量

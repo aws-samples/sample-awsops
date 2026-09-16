@@ -6,6 +6,8 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { parseCpuCores, parseMem, type NodeRow, type PodRow } from './eks-resources';
 import { resolveEksCluster, EksScopeError } from './eks-context';
 import { describeEksCluster } from './eks-access';
+import { credsForAccount } from './aws-assume';
+import { assertEksRoleArn, registeredEksRoleArn } from './eks-role';
 
 // Re-export the client-safe row types so existing importers keep resolving them here.
 export type { NodeRow, PodRow } from './eks-resources';
@@ -18,7 +20,7 @@ const K8S_REQUEST_TIMEOUT_MS = 4000;
 /**
  * Replicate `aws eks get-token`: presign an STS GetCallerIdentity GET with the
  * `x-k8s-aws-id: <cluster>` header SIGNED, then `k8s-aws-v1.` + base64url(url).
- * The web task role's P1e Access Entry + AmazonEKSAdminViewPolicy authorize the read.
+ * The selected account's signing principal must have an Access Entry authorizing the read.
  */
 // Explicit saved Kubernetes-role credentials only. Discovery credentials never enter
 // this cache; changing ExternalId must force a fresh STS authorization check.
@@ -44,7 +46,8 @@ async function assumeRoleCreds(roleArn: string, externalId?: string) {
 
 /** Bearer token for a cluster. Auth override from Aurora (v1 kubeconfig parity) wins:
  *  sa-token → stored ServiceAccount bearer as-is; assume-role → presigned STS token minted
- *  with the assumed role's creds; null → task-role presigned token (Access Entry required). */
+ *  with the assumed role's creds (member overrides must belong to that account);
+ *  null → registered member-role creds, or the task role for a host cluster. */
 export async function eksToken(cluster: string, region?: string): Promise<string> {
   const context = await resolveEksCluster(cluster, region === undefined ? undefined : new URLSearchParams({ region }));
   try {
@@ -52,16 +55,26 @@ export async function eksToken(cluster: string, region?: string): Promise<string
     const auth = await getClusterAuth(context.id);
     if (auth?.mode === 'sa-token') return auth.token;
     if (auth?.mode === 'assume-role') {
+      assertEksRoleArn(context, auth.roleArn);
       const creds = await assumeRoleCreds(auth.roleArn, auth.externalId);
       return await presignEksToken(context.name, context.region, creds);
     }
+    if (context.accountId !== 'self') {
+      // EKS signs only the raw cluster name, not the cluster account. Never send
+      // a host-signed bearer to a member endpoint where it could be replayed.
+      await registeredEksRoleArn(context);
+      const creds = await credsForAccount(context.accountId);
+      if (!creds?.accessKeyId || !creds.secretAccessKey || !creds.sessionToken) {
+        throw new EksScopeError('EKS member credentials are unavailable', 503);
+      }
+      return await presignEksToken(context.name, context.region, creds);
+    }
+    return await presignEksToken(context.name, context.region, fromNodeProviderChain());
   } catch (e) {
     if (e instanceof EksScopeError) throw e;
     const denied = e instanceof Error && (e.name === 'AccessDenied' || e.name === 'AccessDeniedException');
-    throw new EksScopeError('EKS saved authentication unavailable', denied ? 403 : 503);
+    throw new EksScopeError('EKS authentication unavailable', denied ? 403 : 503);
   }
-  // A STANDARD cross-account Access Entry can trust the HOST task principal directly.
-  return presignEksToken(context.name, context.region, fromNodeProviderChain());
 }
 
 async function presignEksToken(

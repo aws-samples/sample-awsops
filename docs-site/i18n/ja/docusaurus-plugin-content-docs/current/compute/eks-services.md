@@ -12,10 +12,14 @@ Kubernetes Service の一覧とネットワーク設定を確認できるペー�
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 統計カード
-- **Total Services**: 全 Service 数（シアン）
+- **Total Services**: 選択範囲で観測した Service 数（シアン）
 - **ClusterIP**: ClusterIP タイプのサービス数（緑）
 - **NodePort**: NodePort タイプのサービス数（紫）
 - **LoadBalancer**: LoadBalancer タイプのサービス数（オレンジ）

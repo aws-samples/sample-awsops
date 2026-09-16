@@ -1,5 +1,6 @@
 import { getPool } from './db';
 import { resolveEksCluster, EksScopeError } from './eks-context';
+import { assertEksRoleArn } from './eks-role';
 
 // Single source for "which EKS clusters may the app query".
 // Allow-list = ONBOARDED_EKS_CLUSTERS env (Terraform-managed, immutable here) ∪ eks_registrations (runtime).
@@ -59,12 +60,16 @@ export type EksAuth =
 const AUTH_TTL_MS = 30_000;
 const authCache = new Map<string, { auth: EksAuth | null; at: number }>();
 
-/** Stored auth (null = default task-role path). DB failures cannot silently change
+/** Stored auth (null = default signing principal for the selected account). DB failures cannot silently change
  * the Kubernetes identity. Scope is revalidated before even a cached auth is returned. */
 export async function getClusterAuth(cluster: string): Promise<EksAuth | null> {
-  cluster = (await resolveEksCluster(cluster)).id;
+  const context = await resolveEksCluster(cluster);
+  cluster = context.id;
   const hit = authCache.get(cluster);
-  if (hit && Date.now() - hit.at < AUTH_TTL_MS) return hit.auth;
+  if (hit && Date.now() - hit.at < AUTH_TTL_MS) {
+    if (hit.auth?.mode === 'assume-role') assertEksRoleArn(context, hit.auth.roleArn);
+    return hit.auth;
+  }
   let auth: EksAuth | null = null;
   if (dbOn()) {
     try {
@@ -76,13 +81,16 @@ export async function getClusterAuth(cluster: string): Promise<EksAuth | null> {
       throw new EksScopeError('EKS authentication storage unavailable', 503);
     }
   }
+  if (auth?.mode === 'assume-role') assertEksRoleArn(context, auth.roleArn);
   authCache.set(cluster, { auth, at: Date.now() });
   return auth;
 }
 
-/** Upsert the row + auth (null clears → task-role default). Admin-gated at the route. */
+/** Upsert the row + auth (null clears → account's default signer). Admin-gated at the route. */
 export async function setClusterAuth(cluster: string, registeredBy: string, auth: EksAuth | null): Promise<boolean> {
-  cluster = (await resolveEksCluster(cluster)).id;
+  const context = await resolveEksCluster(cluster);
+  cluster = context.id;
+  if (auth?.mode === 'assume-role') assertEksRoleArn(context, auth.roleArn);
   if (!dbOn()) return false;
   try {
     await getPool().query(

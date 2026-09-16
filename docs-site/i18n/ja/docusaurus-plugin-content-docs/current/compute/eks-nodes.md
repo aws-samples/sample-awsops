@@ -12,13 +12,17 @@ Kubernetes ノードの容量、割り当て可能リソース、Pod のリク�
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 統計カード
-- **Total Nodes**: ノードの総数(シアン)
+- **Total Nodes**: 選択範囲で観測したノード数(シアン)
 - **Ready**: Ready 状態のノード数(緑)
-- **Total CPU**: 全体の vCPU 容量の合計(紫)
-- **Total Memory**: 全体のメモリ容量の合計(オレンジ) — allocatable 合計と reserved %（Capacity − Allocatable）をヒントとして併記（allocatable が未報告の場合はヒント省略）
+- **Total CPU**: 選択範囲で観測したノードの vCPU 容量合計(紫)
+- **Total Memory**: 選択範囲で観測したノードのメモリ容量合計(オレンジ) — allocatable 合計と reserved %（Capacity − Allocatable）をヒントとして併記（allocatable が未報告の場合はヒント省略）
 
 ### CPU Usage per Node チャート
 ノード別の CPU リソースの状態を 3 段階の棒グラフで表示:
@@ -69,7 +73,7 @@ Kubernetes ノードの容量、割り当て可能リソース、Pod のリク�
 ## 使い方
 
 1. サイドバーで **Compute > K8s > Nodes** をクリックします
-2. 統計カードでノード全体の状況を把握します
+2. 統計カードで選択範囲の観測済みノードの状況を把握します
 3. CPU/Memory Usage チャートでリソース使用率の高いノードを特定します
 4. 80% 以上(赤)のノードはスケーリングを検討します
 5. テーブルで各ノードの詳細な容量を確認します

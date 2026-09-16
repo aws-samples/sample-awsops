@@ -12,10 +12,15 @@ Kubernetes Pod의 상세 목록과 상태를 확인할 수 있는 페이지입�
 
 <Screenshot src="/screenshots/compute/eks-pods.png" alt="EKS Pods" />
 
+:::info 선택 범위와 관측 결과
+상단 계정·리전 필터가 이 페이지에 적용됩니다. 합계는 선택한 등록 클러스터 범위에서 실제 조회한 리소스 수이며, 모든 AWS 리소스의 총수가 아닙니다. 동명 클러스터의 선택 항목은 계정·리전을 함께 표시합니다. 부분 실패나 조회 한도 안내가 있으면 결과가 불완전할 수 있으므로, 범위를 좁혀 다시 확인하세요.
+:::
+
+
 ## 주요 기능
 
 ### 통계 카드
-- **Total Pods**: 전체 Pod 수 (시안)
+- **Total Pods**: 선택 범위에서 조회된 Pod 수 (시안)
 - **Running**: 실행 중인 Pod 수 (녹색)
 - **Pending**: 대기 중인 Pod 수 (주황색)
 - **Failed**: 실패한 Pod 수 (빨간색)
@@ -46,7 +51,7 @@ Pod 상태별 분포를 파이 차트로 시각화:
 ## 사용 방법
 
 1. 사이드바에서 **Compute > K8s > Pods**를 클릭합니다
-2. 통계 카드에서 전체 Pod 상태 분포를 확인합니다
+2. 통계 카드에서 선택 범위에서 관측된 Pod 상태 분포를 확인합니다
 3. Pending 또는 Failed Pod가 있으면 원인을 조사합니다
 4. 테이블에서 특정 Pod의 노드 배치를 확인합니다
 
@@ -83,7 +88,7 @@ AI Assistant에서 "Pending Pod 목록", "Failed Pod 원인 분석", "특정 네
 
 ## 관련 페이지
 
-- [EKS Overview](../compute/eks) - 클러스터 전체 현황
+- [EKS Overview](../compute/eks) - 선택 범위의 클러스터 현황
 - [EKS Nodes](../compute/eks-nodes) - 노드 리소스 확인
 - [EKS Explorer](../compute/eks-explorer) - 상세 리소스 탐색
 - [EKS Container Cost](../compute/eks-container-cost) - Pod 비용 분석

@@ -16,7 +16,6 @@ A page for analyzing EKS Pod costs. It supports two data sources: OpenCost (defa
 Cost lists query connected clusters in the selected account/region scope and keep same-named clusters distinct. Partial-collection, limit, or failure notices indicate incomplete results; narrow the scope and retry. The separate **NFM pod-transfer** view supports only the host account in the deployment region and reports member/other-region scopes as unsupported. This restriction is separate from the Network cost supplied by OpenCost.
 :::
 
-
 ## Key Features
 
 ### Data Source Indicator

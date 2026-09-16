@@ -9,13 +9,21 @@ runtime registration through the web API.
 
 Account registration and Kubernetes authorization are separate. EKS management API
 reads (`ListClusters`, `DescribeCluster`, and `DescribeAccessEntry`) use the selected
-account's registered read-only role. By default, the Kubernetes bearer token still
-uses the **web task role**, which must have its own `STANDARD` Access Entry and the
-required read policy on the target cluster. A `STANDARD` entry can identify that
-role from the host account. An explicitly saved AssumeRole authentication override
-instead uses that override's principal for the bearer token. Registering an account
+account's registered read-only role. For member clusters, the default Kubernetes
+bearer also uses that **registered member role's temporary credentials**. Its
+`STANDARD` Access Entry and required read policy must exist on the member cluster.
+Host clusters retain the web task role as their default identity. Host task-role
+bearers are not sent to member endpoints: EKS tokens bind the cluster name, which
+does not by itself distinguish same-named clusters in different accounts.
+An explicitly saved AssumeRole override for a member must belong to that same
+member account; historical out-of-account overrides fail closed. Registering an account
 or a cluster in AWSops does not create IAM roles, Access Entries, access policy
 associations, or network connectivity.
+
+Existing member configurations that registered only the host web task-role
+principal need an Access Entry/read policy for the registered member role before
+default member queries can succeed. The generated guide names the required role;
+the owner applies it. The app does not add or remove AWS access entries.
 
 The cluster list, registration, and subsequent resource reads retain the selected
 account and region. Member-account and nondefault-region clusters use their EKS
@@ -74,7 +82,8 @@ not relax ADR-005: AWS-resource mutation and autonomy remain frozen. Generated
 Access Entry commands and OpenCost installation bundles are operator handoffs;
 returning a bundle does not execute it or enable an in-app mutation tool.
 
-The web task role's default bearer identity is specific to this workflow.
+Host web queries use the web task role; member web queries use the registered
+member role by default.
 [Network Path Check EKS access](../runbooks/network-path-eks-access.md) describes the
 separate worker/target-role principal, and
 [Istio agent EKS access](../runbooks/istio-agent-eks-access.md) describes an agent
@@ -90,9 +99,10 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `scripts/v2/configure.mjs` | Host discovery and authentication-mode preflight |
 | `web/lib/eks-cluster-id.ts` | Strict name/ARN parsing and display labels |
 | `web/lib/eks-context.ts` | Canonical account/region identity, selector conflicts, enabled member scope |
+| `web/lib/eks-role.ts` | Registered member-role ARN and same-account authentication checks |
 | `web/lib/eks-registry.ts` | Legacy host and qualified runtime registrations, cached read quality, saved auth |
 | `web/lib/eks-scope.ts` | Collection selection, wildcard disclosure, discovery and fleet limits |
-| `web/lib/eks-access.ts` | Target metadata lookup and host-principal Access Entry checks |
+| `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |

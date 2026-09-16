@@ -3,9 +3,10 @@ import { EKSClient, DescribeAccessEntryCommand, DescribeClusterCommand, type Clu
 import { assumedClient } from './aws-assume';
 import { resolveEksCluster, EksScopeError, type EksClusterContext } from './eks-context';
 import { parseEksClusterId } from './eks-cluster-id';
+import { registeredEksRoleArn } from './eks-role';
 
-// Access-entry awareness for the EKS page: who am I (task role), does a cluster
-// already trust me (DescribeAccessEntry), and the v1-style onboarding guide.
+// Access-entry awareness: host clusters trust the task role; member clusters
+// trust their registered account role, matching the default Kubernetes signer.
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const ARN_TTL_MS = 10 * 60 * 1000; // task-role ARN is effectively static; an IAM role swap (rare) self-heals within ≤10m (PR #36 r4)
@@ -15,8 +16,7 @@ let arnCache: { arn: string; at: number } | null = null;
 
 export function _resetForTests() { sts = null; arnCache = null; }
 
-/** Control-plane discovery may assume the registered target role. This never selects
- * the Kubernetes bearer identity: its default remains the HOST task role. */
+/** Control-plane discovery uses the registered target role for members. */
 async function targetClient(context: EksClusterContext): Promise<EKSClient> {
   try {
     return await assumedClient(context.accountId, EKSClient, { region: context.region });
@@ -59,12 +59,13 @@ export async function getTaskRoleArn(): Promise<string> {
   return arn;
 }
 
-/** Does the cluster have an access entry for our task role? null = couldn't determine. */
+/** Does the cluster trust its default signing principal? null = couldn't determine. */
 export async function hasAccessEntry(cluster: string): Promise<boolean | null> {
   const context = await resolveEksCluster(cluster);
+  const memberPrincipal = context.accountId === 'self' ? undefined : await registeredEksRoleArn(context);
   const client = await targetClient(context);
   try {
-    const principalArn = await getTaskRoleArn(); // inside try: an STS hiccup degrades to unknown, not a 500 (P4 gate)
+    const principalArn = memberPrincipal ?? await getTaskRoleArn(); // host STS hiccups still degrade to unknown
     await client.send(new DescribeAccessEntryCommand({ clusterName: context.name, principalArn }));
     return true;
   } catch (e) {
@@ -78,7 +79,7 @@ export interface OnboardingGuide { commands: string[]; note: string }
 /** v1-parity copy-paste onboarding guide with the role ARN and region filled in. */
 export async function onboardingGuide(cluster: string): Promise<OnboardingGuide> {
   const context = await resolveEksCluster(cluster);
-  const arn = await getTaskRoleArn();
+  const arn = context.accountId === 'self' ? await getTaskRoleArn() : await registeredEksRoleArn(context);
   // Only host/deployment-region registrations canonicalize to a bare name. The
   // host CloudTrail auto-registration and Terraform guidance do not cover ARN IDs.
   const targetAccount = parseEksClusterId(context.id)?.accountId;

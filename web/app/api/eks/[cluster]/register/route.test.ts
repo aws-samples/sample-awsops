@@ -51,6 +51,7 @@ beforeEach(() => {
   isAdmin.mockReset().mockResolvedValue(true);
   getAccount.mockReset().mockResolvedValue({
     accountId: '222222222222', enabled: true, isHost: false, region: 'us-east-1',
+    roleName: 'TenantEksReader',
   });
   listScanScope.mockReset().mockResolvedValue([{ accountId: '222222222222', regions: ['us-east-1'] }]);
   listClusters.mockReset().mockResolvedValue([]); // valid cluster can be beyond the first 25
@@ -76,7 +77,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe('scoped EKS registration', () => {
   it.each([['shared', memberQuery], [MEMBER_ID, '']])(
-    'registers %s in the member account using direct Describe and the HOST access principal', async (id, search) => {
+    'registers %s in the member account using direct Describe and its registered role principal', async (id, search) => {
       const { POST } = await import('./route');
       const result = await POST(request(id, search), params(id));
       expect(result.status).toBe(200);
@@ -88,7 +89,7 @@ describe('scoped EKS registration', () => {
       expect(assumedClient).toHaveBeenCalledWith('222222222222', expect.anything(), { region: 'us-east-1' });
       expect(memberSend.mock.calls.map(([command]) => [command.constructor.name, command.input])).toEqual([
         ['DescribeClusterCommand', { name: 'shared' }],
-        ['DescribeAccessEntryCommand', { clusterName: 'shared', principalArn: 'arn:aws:iam::111111111111:role/awsops-v2-task' }],
+        ['DescribeAccessEntryCommand', { clusterName: 'shared', principalArn: 'arn:aws:iam::222222222222:role/TenantEksReader' }],
       ]);
     },
   );
@@ -125,6 +126,7 @@ describe('scoped EKS registration', () => {
       auth: { mode: 'assume-role', roleArn: 'arn:aws:iam::222222222222:role/KubernetesReader', externalId: 'tenant' },
     }), params(MEMBER_ID));
     expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ registered: true, authMode: 'assume-role' });
     expect(rows.get(MEMBER_ID)).toEqual({
       mode: 'assume-role', roleArn: 'arn:aws:iam::222222222222:role/KubernetesReader', externalId: 'tenant',
     });
@@ -162,9 +164,12 @@ describe('scoped EKS registration', () => {
     expect(hostSend).not.toHaveBeenCalled();
   });
 
-  it('returns 409 with a target-scoped guide for a missing host-principal Access Entry', async () => {
+  it('returns 409 with a target-role guide when the member only trusts the old host principal', async () => {
     memberSend.mockImplementation(async command => {
       if (command.constructor.name === 'DescribeClusterCommand') return { cluster: { name: 'shared' } };
+      if (command.input.principalArn === 'arn:aws:iam::111111111111:role/awsops-v2-task') {
+        return { accessEntry: { type: 'STANDARD' } };
+      }
       throw Object.assign(new Error('entry missing'), { name: 'ResourceNotFoundException' });
     });
     const { POST } = await import('./route');
@@ -173,7 +178,34 @@ describe('scoped EKS registration', () => {
     const body = await result.json();
     expect(body).toMatchObject({ registered: false, cluster: MEMBER_ID, access: 'no-entry' });
     expect(body.guide.commands[0]).toContain('--cluster-name shared --region us-east-1');
+    expect(body.guide.commands[0]).toContain('--principal-arn arn:aws:iam::222222222222:role/TenantEksReader');
     expect(rows.size).toBe(0);
+  });
+
+  it.each(['111111111111', '333333333333'])(
+    'rejects a member authentication override from account %s without saving or echoing it', async accountId => {
+      const { POST } = await import('./route');
+      const roleArn = `arn:aws:iam::${accountId}:role/PrivateRoleName`;
+      const result = await POST(request(MEMBER_ID, '', 'POST', {
+        auth: { mode: 'assume-role', roleArn, externalId: 'private-external-id' },
+      }), params(MEMBER_ID));
+      expect(result.status).toBe(403);
+      const body = await result.text();
+      expect(body).not.toContain(roleArn);
+      expect(body).not.toContain('private-external-id');
+      expect(rows.size).toBe(0);
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
+
+  it('continues accepting user-provided member SA auth without returning the token', async () => {
+    const { POST } = await import('./route');
+    const result = await POST(request(MEMBER_ID, '', 'POST', {
+      auth: { mode: 'sa-token', token: 'private-member-token' },
+    }), params(MEMBER_ID));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ registered: true, authMode: 'sa-token' });
+    expect(rows.get(MEMBER_ID)).toEqual({ mode: 'sa-token', token: 'private-member-token' });
   });
 
   it.each(['scope', 'write'])('returns 503 for %s registry failure', async boundary => {
