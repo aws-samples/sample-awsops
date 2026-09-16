@@ -38,7 +38,7 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 | --- | --- | --- | --- | --- |
 | S1 | Frozen and gated Terraform resources stay default-off, gated by `count` or `for_each`, and tracked tfvars do not enable gated flags. | `docs/decisions/BASELINE.md`, ADR-005, ADR-006, ADR-007 | `scripts/v2/test_merge_invariants.py`, `scripts/v2/merge_invariants.py` | `python3 -m pytest scripts/v2/test_merge_invariants.py -q` |
 | S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-038 | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
-| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL migration and web connection-phase tests, and backend-disabled Terraform mock tests. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | All four commands below |
+| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL migration and web connection-phase tests, backend-disabled Terraform mock tests, and conditional documentation build/presentation checks. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | The four common commands and conditional documentation commands below |
 
 ## Runner Usage
 
@@ -77,8 +77,8 @@ ARM64/x86-64. Do not combine it with the unhashed requirements command above.
 Both the file-isolated image pytest suite and the panel-prompt structure check
 invoked by `bash tests/run-all.sh` require this codec; their fixtures are offline.
 
-Run all four commands for the CI-equivalent merge checks from the repository root:
-CI와 같은 범위의 검증에는 루트에서 네 명령을 모두 실행한다.
+Run all four common merge checks from the repository root. Documentation changes
+also require the additional commands below:
 
 ```bash
 bash scripts/v2/merge-verify.sh
@@ -86,6 +86,18 @@ node --test scripts/v2/ci/*.test.mjs
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 bash scripts/v2/terraform-test.sh
 ```
+
+For changes under `docs-site/` or to `.github/workflows/merge-verify.yml`, also run:
+
+```bash
+(cd docs-site && npm ci && npm run typecheck && npm run build &&
+  bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx)
+```
+
+This validates the locked documentation dependencies, all locale builds and full
+presentation archive parity with the reviewed generator. Use the Linux tools
+available in CI: Bash, GNU coreutils/grep/sed, unzip and Python 3, plus Node.js 20
+and npm. A documentation check failure fails the required Merge Verify job.
 
 **Required PostgreSQL CI suites:** `scripts/v2/ci/migration.itest.mjs` (including initializer
 regressions), `scripts/v2/ci/web-db-connection.itest.mjs`, and
@@ -171,23 +183,33 @@ aggregate-run false failures.
 
 `.github/workflows/merge-verify.yml` runs on pull requests targeting **main and dev**:
 
-1. Check out the PR and set up Node.js 20, Python 3.12 and Terraform **1.15.7** (wrapper disabled).
-2. Install web dependencies, `scripts/v2/requirements-test.txt` (**pytest and PyYAML**) and
+1. Check out the PR merge ref with `fetch-depth: 2`. Compare `HEAD^` with `HEAD`
+   for changes under `docs-site/` or to `.github/workflows/merge-verify.yml`;
+   comparison errors fail the job.
+2. Set up Node.js 20 and Python 3.12. When those paths changed, run `npm ci`,
+   `npm run typecheck`, `npm run build`, and
+   `bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx`
+   from `docs-site/`. The documentation gate includes full presentation archive
+   parity, not just a file-existence check.
+3. Set up Terraform **1.15.7** (wrapper disabled). Install web dependencies,
+   `scripts/v2/requirements-test.txt` (**pytest and PyYAML**) and
    the existing agent/incident/remediation/Steampipe/worker requirements. Separately install
    `scripts/pr-review/image-requirements.txt` with `--require-hashes --only-binary=:all:`.
-3. Run `bash scripts/v2/merge-verify.sh`: file-isolated pytest (including workflow fixtures and
+4. Prepare the isolated image codec, then run `bash scripts/v2/merge-verify.sh`:
+   file-isolated pytest (including workflow fixtures and
    the localhost Terraform state-read test), web vitest, required deployment Node tests
    (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
-4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
+5. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
    `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
    The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
-5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs`
+6. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs`
    against disposable PostgreSQL. Keep all migration cases:
    real initialization/ULIDs, rollback/retry/checksums, concurrent lock exclusion, actionable contention/retry, automatic SQL rejection, reader guards,
    permission denial, password rotation and TLS rejection. Also verify the web connection
    observer's phase/timing and error propagation. Docker failure is a gate failure.
-6. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
+7. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
    initialized with `-backend=false`. A validation or test failure fails CI.
+8. Clean up the owned codec containers and image tag, including after failures.
 
 CI는 **main/dev** 대상 PR에서 Node 20·Python 3.12·Terraform 1.15.7을 설치한다.
 pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을
