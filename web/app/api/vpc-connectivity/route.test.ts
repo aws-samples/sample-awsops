@@ -12,7 +12,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue({ sub: 'immutable-sub' });
   mocks.lookup.mockResolvedValue({
-    source: { vpcId: 'vpc-11111111', accountId: '111111111111', region: 'us-east-1' },
+    source: { vpcId: 'vpc-11111111', accountId: '111111111111', ownerId: '111111111111', region: 'us-east-1' },
     checkedAt: '2026-09-16T10:00:00Z', peerings: [], transitGateways: [], incompleteSources: [],
   });
 });

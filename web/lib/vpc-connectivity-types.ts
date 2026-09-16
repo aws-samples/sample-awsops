@@ -1,6 +1,7 @@
 /** Configuration observations only. Shared TGW attachments do not establish reachability. */
 export type VpcConnectivity = {
-  source: { vpcId: string; accountId: string; region: string; name?: string; cidr?: string };
+  /** accountId is the collecting/credential account; ownerId is disclosure only. */
+  source: { vpcId: string; accountId: string; ownerId: string | null; region: string; name?: string; cidr?: string };
   checkedAt: string;
   peerings: Array<{
     id: string; state: string;

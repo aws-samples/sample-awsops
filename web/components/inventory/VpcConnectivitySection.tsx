@@ -11,7 +11,7 @@ interface VpcChoice { key: string; id: string; account: string; region: string; 
 const button = 'rounded-md border border-ink-200 bg-card px-3 py-2 text-[13px] hover:bg-ink-50 disabled:opacity-50';
 const SOURCE_LABELS: Record<string, string> = {
   'peering-requester': 'VPC 피어링 (요청자)', 'peering-accepter': 'VPC 피어링 (수락자)',
-  'tgw-attachments': 'TGW 어태치먼트', 'tgw-peers': 'TGW 연결 VPC', source: 'VPC',
+  'tgw-attachments': 'TGW 어태치먼트', 'tgw-peers': 'TGW 연결 VPC', source: 'VPC 소유 계정',
 };
 const str = (value: unknown) => typeof value === 'string' ? value : '';
 
@@ -30,6 +30,7 @@ function matchesResult(data: VpcConnectivity, choice: VpcChoice): boolean {
   const nullableText = (value: unknown) => value === null || typeof value === 'string';
   return data?.source?.vpcId === choice.id && data.source.region === choice.region
     && (choice.account === 'self' ? /^\d{12}$/.test(data.source.accountId) : data.source.accountId === choice.account)
+    && (data.source.ownerId === null || typeof data.source.ownerId === 'string' && /^\d{12}$/.test(data.source.ownerId))
     && (data.source.name === undefined || typeof data.source.name === 'string')
     && Number.isFinite(Date.parse(data.checkedAt))
     && Array.isArray(data.peerings) && data.peerings.every(p => p && typeof p.id === 'string' && typeof p.state === 'string' && typeof p.peer?.vpcId === 'string'
@@ -38,7 +39,8 @@ function matchesResult(data: VpcConnectivity, choice: VpcChoice): boolean {
       && typeof t.attachmentId === 'string' && nullableText(t.routeTableId)
       && Array.isArray(t.peers) && t.peers.every(p => p && typeof p.vpcId === 'string' && typeof p.state === 'string'
         && typeof p.attachmentId === 'string' && nullableText(p.accountId) && nullableText(p.routeTableId)))
-    && Array.isArray(data.incompleteSources) && data.incompleteSources.every(s => typeof s === 'string');
+    && Array.isArray(data.incompleteSources) && data.incompleteSources.every(s => typeof s === 'string')
+    && (data.source.ownerId === data.source.accountId || data.incompleteSources.includes('source'));
 }
 
 function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: boolean }) {
@@ -131,6 +133,10 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
                 <div className="rounded-md border border-brand-200 bg-brand-500/5 p-3 text-[13px]">
                   <strong>{data.source.name || data.source.vpcId}</strong>
                   <div className="break-all font-mono text-[12px]">{data.source.vpcId} · {identity(data.source.accountId, data.source.region)}</div>
+                  <div className="mt-1 break-all text-[12px]">{tt('VPC 소유 계정')}: {data.source.ownerId || unknown}</div>
+                  {data.source.ownerId !== data.source.accountId && <p className="mt-1 text-[12px] text-ink-600">{tt(data.source.ownerId
+                    ? '공유 VPC의 전체 연결은 소유 계정에서 확인하세요.'
+                    : '소유 계정이 미확인이므로 연결 목록의 완전성을 판단할 수 없습니다.')}</p>}
                   <div className="mt-1 text-[12px] text-ink-500">{tt('조회 시점:')} {new Date(data.checkedAt).toLocaleString()}</div>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">

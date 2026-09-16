@@ -113,7 +113,8 @@ async function inventorySource(input: Input, accountId: string, host: boolean, d
   const result = await boundedQuery(
     `SELECT account_id, region, resource_id,
        CASE WHEN length(data->>'name') <= 256 THEN data->>'name' END AS name,
-       CASE WHEN length(data->>'cidr_block') <= 64 THEN data->>'cidr_block' END AS cidr
+       CASE WHEN length(data->>'cidr_block') <= 64 THEN data->>'cidr_block' END AS cidr,
+       CASE WHEN length(data->>'owner_id') = 12 THEN data->>'owner_id' END AS owner_id
      FROM inventory_resources
      WHERE account_id = $1 AND region = $2 AND resource_id = $3 AND resource_type = 'vpc'
      LIMIT 2`, [host ? 'self' : accountId, input.region, input.vpcId], deadline,
@@ -122,7 +123,7 @@ async function inventorySource(input: Input, accountId: string, host: boolean, d
   if (result.rows.length !== 1 || row.account_id !== (host ? 'self' : accountId) ||
       row.region !== input.region || row.resource_id !== input.vpcId) throw new VpcConnectivityError('not_found');
   return {
-    vpcId: input.vpcId, accountId, region: input.region,
+    vpcId: input.vpcId, accountId, ownerId: valid(ACCOUNT, row.owner_id) ? row.owner_id : null, region: input.region,
     ...(text(row.name) ? { name: row.name } : {}),
     ...(cidr(row.cidr) ? { cidr: row.cidr } : {}),
   };
@@ -154,8 +155,10 @@ async function ec2Client(account: Account, host: boolean, region: string, deadli
 }
 
 async function fetchConnectivity(source: VpcConnectivity['source'], account: Account, host: boolean, deadline: Deadline): Promise<VpcConnectivity> {
-  const checkedAt = new Date().toISOString();
   const incomplete = new Set<Source>();
+  // RAM participants collect the VPC under their own account key. Owner metadata
+  // qualifies visibility only; it must never select credentials or authorize a read.
+  if (source.ownerId !== source.accountId) incomplete.add('source');
   let successfulPages = 0;
   const client = await ec2Client(account, host, source.region, deadline);
   const options = { abortSignal: deadline.signal };
@@ -291,7 +294,7 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
   try {
     const [, , gateways] = await Promise.all([peeringDirection('requester'), peeringDirection('accepter'), transitGateways()]);
     if (!successfulPages) throw new VpcConnectivityError('lookup_failed');
-    return { source, checkedAt, peerings: [...peerings.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    return { source, checkedAt: new Date().toISOString(), peerings: [...peerings.values()].sort((a, b) => a.id.localeCompare(b.id)),
       transitGateways: gateways, incompleteSources: SOURCES.filter(s => incomplete.has(s)) };
   } finally { client.destroy(); }
 }
@@ -302,7 +305,7 @@ export async function getVpcConnectivity(input: Input): Promise<VpcConnectivity>
   try {
     const selected = await selectedAccount(input, deadline);
     const source = await inventorySource(input, selected.account.accountId, selected.host, deadline);
-    const key = `${source.accountId}|${source.region}|${source.vpcId}`;
+    const key = `${source.accountId}|${source.region}|${source.vpcId}|${source.ownerId ?? 'unknown'}`;
     const hit = cache.get(key);
     if (hit && Date.parse(hit.checkedAt) + TTL > Date.now()) return { ...hit, source };
     cache.delete(key);
@@ -313,8 +316,11 @@ export async function getVpcConnectivity(input: Input): Promise<VpcConnectivity>
     inflight.set(key, work);
     try {
       const result = await work;
-      if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value!);
-      cache.set(key, result);
+      // A retry must actually reread denied/truncated sources after recovery.
+      if (!result.incompleteSources.length) {
+        if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value!);
+        cache.set(key, result);
+      }
       return result;
     } finally { inflight.delete(key); }
   } catch (error) {

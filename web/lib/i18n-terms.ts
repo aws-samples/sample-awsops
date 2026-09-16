@@ -7,6 +7,9 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  'VPC 소유 계정': { en: 'VPC owner account', zh: 'VPC 所有者账户', ja: 'VPC 所有者アカウント' },
+  '공유 VPC의 전체 연결은 소유 계정에서 확인하세요.': { en: 'Check the owner account for the shared VPC’s full connection view.', zh: '请在所有者账户中查看共享 VPC 的完整连接信息。', ja: '共有 VPC の接続全体は所有者アカウントで確認してください。' },
+  '소유 계정이 미확인이므로 연결 목록의 완전성을 판단할 수 없습니다.': { en: 'The owner account is unknown, so connection coverage cannot be confirmed.', zh: '所有者账户未知，因此无法确认连接列表是否完整。', ja: '所有者アカウントが不明なため、接続一覧の完全性を確認できません。' },
   'VPC 피어링 (요청자)': { en: 'VPC peering (requester)', zh: 'VPC 对等连接（请求方）', ja: 'VPC ピアリング（リクエスター）' },
   'VPC 피어링 (수락자)': { en: 'VPC peering (accepter)', zh: 'VPC 对等连接（接受方）', ja: 'VPC ピアリング（アクセプター）' },
   'TGW 어태치먼트': { en: 'TGW attachments', zh: 'TGW 连接', ja: 'TGW アタッチメント' },

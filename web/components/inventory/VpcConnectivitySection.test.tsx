@@ -18,7 +18,7 @@ const vpc = { resource_id: 'vpc-aaaa1111', account_id: 'self', region: 'ap-north
   data: { name: 'source-vpc', cidr_block: '10.1.0.0/16' } };
 const inventory = { rows: [vpc], run: { status: 'succeeded' } };
 const result = {
-  source: { vpcId: vpc.resource_id, accountId: '111111111111', region: vpc.region },
+  source: { vpcId: vpc.resource_id, accountId: '111111111111', ownerId: '111111111111', region: vpc.region },
   checkedAt: '2026-09-16T00:00:00Z',
   peerings: [{ id: 'pcx-aaaa1111', state: 'active',
     peer: { vpcId: 'vpc-bbbb2222', accountId: '222222222222', region: 'us-east-1', cidr: '10.2.0.0/16' } }],
@@ -41,6 +41,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('VpcConnectivitySection', () => {
+  it.each(['222222222222', null])('explains incomplete shared/unknown ownership (%s) without claiming no connections', async ownerId => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, source: { ...result.source, ownerId }, peerings: [], transitGateways: [], incompleteSources: ['source'],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    await screen.findByRole('alert');
+    expect(screen.getByText(/VPC 소유 계정:/)).toBeTruthy();
+    expect(screen.getByText(ownerId ? '공유 VPC의 전체 연결은 소유 계정에서 확인하세요.' : '소유 계정이 미확인이므로 연결 목록의 완전성을 판단할 수 없습니다.')).toBeTruthy();
+    expect(screen.queryByText('조회 범위에서 VPC 연결이 발견되지 않았습니다.')).toBeNull();
+  });
+
+  it('rejects a legacy response that has no ownership disclosure instead of claiming absence', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, source: { ...result.source, ownerId: undefined }, peerings: [], transitGateways: [],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    await screen.findByRole('alert');
+    expect(screen.queryByText('조회 범위에서 VPC 연결이 발견되지 않았습니다.')).toBeNull();
+  });
+
   it('opens the scoped VPC picker on demand and shows peerings and shared TGW attachments', async () => {
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {

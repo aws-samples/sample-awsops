@@ -24,7 +24,7 @@ const account = (id = HOST, overrides = {}) => ({
 });
 const inventory = (owner = 'self', overrides = {}) => ({
   account_id: owner, region: REGION, resource_id: VPC,
-  name: 'Selected VPC', cidr: '10.0.0.0/16', ...overrides,
+  name: 'Selected VPC', cidr: '10.0.0.0/16', owner_id: owner === 'self' ? HOST : owner, ...overrides,
 });
 const side = (vpcId = VPC, owner = HOST, region = REGION) => ({ VpcId: vpcId, OwnerId: owner, Region: region, CidrBlock: '10.0.0.0/16' });
 const peering = (id = 'pcx-11111111', requester = side(), accepter = side(OTHER, MEMBER)) => ({
@@ -64,6 +64,54 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('scoped configuration lookup', () => {
+  it.each([MEMBER, undefined, 'invalid'])('discloses shared or unknown VPC ownership (%s) without changing the authorized account', async ownerId => {
+    mocks.query.mockResolvedValue({ rows: [inventory('self', { owner_id: ownerId })] });
+    const result = await load(input);
+    expect(result.incompleteSources).toContain('source');
+    expect(result.source).toMatchObject({ accountId: HOST, ownerId: ownerId === MEMBER ? MEMBER : null });
+    expect(STSClient.prototype.send).not.toHaveBeenCalled();
+    expect(sdk().mock.calls.every(([c]) =>
+      !hasFilter(c, 'requester-vpc-info.owner-id', MEMBER) && !hasFilter(c, 'resource-owner-id', MEMBER))).toBe(true);
+  });
+
+  it('does not replay an owned-VPC cached absence after ownership metadata changes', async () => {
+    expect((await load(input)).incompleteSources).toEqual([]);
+    mocks.query.mockResolvedValue({ rows: [inventory('self', { owner_id: MEMBER })] });
+    const result = await load(input);
+    expect(result.incompleteSources).toContain('source');
+    expect(sdk()).toHaveBeenCalledTimes(6);
+  });
+
+  it('retries an incomplete read immediately and caches the recovered complete result', async () => {
+    let denied = true;
+    sdk().mockImplementation(async command => {
+      if (hasFilter(command, 'requester-vpc-info.vpc-id')) {
+        if (denied) throw new Error('denied');
+        return { VpcPeeringConnections: [peering()] };
+      }
+      return empty(command);
+    });
+    expect((await load(input)).incompleteSources).toEqual(['peering-requester']);
+    denied = false;
+    const recovered = await load(input);
+    expect(recovered.incompleteSources).toEqual([]);
+    expect(recovered.peerings).toHaveLength(1);
+    expect(await load(input)).toEqual(recovered);
+    expect(sdk()).toHaveBeenCalledTimes(6);
+  });
+
+  it('timestamps a completed lookup after the last response arrives', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-16T10:00:00Z'));
+    sdk().mockImplementation(async command => {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      return empty(command);
+    });
+    const pending = load(input);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await pending).checkedAt).toBe('2026-09-16T10:00:03.000Z');
+  });
+
   it('reads requester and accepter independently, merging only exactly scoped connections', async () => {
     sdk().mockImplementation(async command => {
       if (hasFilter(command, 'requester-vpc-info.vpc-id')) return { VpcPeeringConnections: [
@@ -76,7 +124,7 @@ describe('scoped configuration lookup', () => {
       return empty(command);
     });
     const result = await load(input);
-    expect(result.source).toEqual({ vpcId: VPC, accountId: HOST, region: REGION, name: 'Selected VPC', cidr: '10.0.0.0/16' });
+    expect(result.source).toEqual({ vpcId: VPC, accountId: HOST, ownerId: HOST, region: REGION, name: 'Selected VPC', cidr: '10.0.0.0/16' });
     expect(result.peerings.map(p => p.id)).toEqual(['pcx-11111111', 'pcx-22222222']);
     expect(result.peerings[0].peer).toEqual({ vpcId: OTHER, accountId: MEMBER, region: REGION, cidr: '10.0.0.0/16' });
     expect(result.incompleteSources).toContain('peering-requester');
@@ -277,6 +325,11 @@ describe('identity, caching and bounds', () => {
     expect(sdk().mock.calls.every(([, options]) => (options as { abortSignal: AbortSignal }).abortSignal.aborted)).toBe(true);
     expect(EC2Client.prototype.destroy).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+    sdk().mockImplementation(async command => empty(command));
+    const recovered = await load(input);
+    expect(recovered.incompleteSources).toEqual([]);
+    expect(recovered.peerings).toEqual([]);
+    expect(EC2Client.prototype.destroy).toHaveBeenCalledTimes(2);
   });
 
   it('does not start abandoned SQL after a delayed pool checkout', async () => {

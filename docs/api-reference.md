@@ -183,6 +183,28 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
+## vpc-connectivity (1)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/vpc-connectivity` | GET | On-demand, read-only VPC peering and TGW attachment observations for exactly one `account` (`self` or a 12-digit account ID), `region` (explicit commercial-region allowlist) and `vpcId`. Requires an enabled registered account and an exact indexed inventory match, including host-to-`self` mapping. `source.ownerId` is disclosure only; it never selects authorization or credentials. Returns source identity, read-completion `checkedAt`, peerings, TGW groups and `incompleteSources`. All replies use `Cache-Control: private, no-store`. See [VPC connectivity](reference/vpc-connectivity.md). | `verifyUser` |
+
+Each scope parameter must occur exactly once. Errors return
+`{ status: "error", code }` with the following stable mapping:
+
+| Code | HTTP status | Meaning |
+|------|-------------|---------|
+| `invalid_request` | 400 | Missing, repeated or invalid scope input, including a region outside the commercial-region allowlist. |
+| `not_found` | 404 | No unique VPC matches the indexed collecting account, region and resource ID. |
+| `account_unavailable` | 403 | Missing, disabled or inconsistent registry account/host identity, or an invalid registered read-role name. |
+| `lookup_failed` | 502 | The lookup failed, exhausted its deadline without usable evidence, or exceeded the process's in-flight limit. |
+| `unauthenticated` | 401 | `verifyUser` rejected the session cookie. |
+
+Successful partial reads remain HTTP 200 with `incompleteSources`; they are not
+cached. Complete results alone may reuse a four-minute process-local cache, keyed
+by collecting account, region, VPC ID and disclosed owner identity. The HTTP
+`private, no-store` policy applies to both success and error responses.
+
 ## 기타 (55)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
