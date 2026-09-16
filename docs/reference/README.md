@@ -90,8 +90,14 @@ view 정책(읽기 전용).
 **E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
 
 **VPC connectivity — [vpc-connectivity.md](vpc-connectivity.md).** On-demand peering
-and TGW attachment observations on `/inventory/vpc`, scoped to an enabled collecting
-account, region and indexed VPC. The reference covers `GET /api/vpc-connectivity`,
+and TGW attachment observations on `/inventory/vpc` and the
+`/topology/infra?view=vpc` tab, scoped to an enabled collecting account, region and
+indexed VPC. A bounded ReactFlow graph shows active PCX/TGW relationships above the
+record lists, with scoped identities, unknown peers, omissions and clickable details.
+The generic tab loads inventory choices only; **Fetch connections** or a uniquely
+resolved scoped deep link triggers connectivity lookup. The default infra view
+remains persisted resource placement; live connection results do not become saved
+graph edges. The reference covers `GET /api/vpc-connectivity`,
 owner disclosure, structural visibility limits, operational read gaps, bounded
 reads and four-minute caching when operational reads are complete. Peering and TGW
 attachment records retain unknown metadata and qualify lifecycle and route-table
@@ -114,7 +120,7 @@ owners must provision scoped access and plan-prefix lifecycle before publication
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
 | E2E observability | [observability-e2e.md](observability-e2e.md) | `web/lib/e2e-topology.ts`, `web/lib/e2e-topology-types.ts`, `web/lib/topology-observations.ts`, `web/lib/flow-topology.ts`, `web/components/topology/ServiceNetworkTopology.tsx`, `web/components/topology/E2eGraphCanvas.tsx` |
-| VPC connectivity | [vpc-connectivity.md](vpc-connectivity.md) | `web/lib/vpc-connectivity.ts`, `web/lib/vpc-connectivity-types.ts`, `web/lib/vpc-connectivity-scope.ts`, `web/app/api/vpc-connectivity/route.ts`, `web/components/inventory/VpcConnectivitySection.tsx` |
+| VPC connectivity | [vpc-connectivity.md](vpc-connectivity.md) | `web/lib/vpc-connectivity.ts`, `web/lib/vpc-connectivity-types.ts`, `web/lib/vpc-connectivity-scope.ts`, `web/lib/vpc-connection-graph.ts`, `web/app/api/vpc-connectivity/route.ts`, `web/components/inventory/VpcConnectivitySection.tsx`, `web/components/topology/VpcConnectionGraph.tsx`, `web/app/topology/infra/page.tsx` |
 | Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py`, `.github/workflows/terraform.yml` |
 
 ## Status / 상태

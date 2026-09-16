@@ -495,6 +495,16 @@ Readiness is a separate capability controlled by
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
 `CI_STEAMPIPE_AWS_FILL_RATE_DEV` optionally overrides refill 0.1–20 on full dev plans with the verified runtime profile; empty/unset preserves tfvars/defaults. Apply replays the reviewed plan. See the [refill contract](steampipe-quota-and-staleness.md#development-ci-refill-override).
+`CI_GRAPH_REBUILD_INTERVAL_MINS_DEV` is an optional nonsecret integer variable
+from 0 to 1440, accepted only for full dev plans with `CI_READONLY_RUNTIME_DEV=true`.
+It writes `graph_rebuild_interval_mins` to `ci-runtime.auto.tfvars.json` without
+editing `TF_TFVARS_DEV`; empty/unset preserves explicit tfvars or default 0.
+After merge, the operator can set `15`, review the full saved plan and apply that
+exact plan to configure the existing graph timer. Neither the variable nor source
+integration proves activation. The timer writes application graph records, not
+AWS-resource changes, and its cadence does not relax source freshness limits.
+See the [graph timer contract](graph-read-contract.md#optional-dev-ci-timer-override)
+for scope checks, verification and explicit `0` disablement.
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 

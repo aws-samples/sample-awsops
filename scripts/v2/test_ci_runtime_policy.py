@@ -36,6 +36,97 @@ class RuntimePolicyTests(unittest.TestCase):
         return self.module.runtime_overrides(target, profile, account, "full",
             DIGEST, DIGEST, False, steampipe_fill_rate=rate)
 
+    def graph_overrides(self, interval, **changes):
+        args = dict(target="dev", enabled="true", expected_account=ACCOUNT, scope="full",
+                    steampipe_digest=DIGEST, worker_digest=DIGEST, rollout=False)
+        return self.module.runtime_overrides(**{**args, **changes}, graph_rebuild_interval_mins=interval)
+
+    def test_graph_interval_is_optional_and_only_overrides_the_existing_variable(self):
+        baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, False)
+        self.assertEqual(self.graph_overrides(""), baseline)
+        for raw, expected in (("0", 0), ("1", 1), ("15", 15), ("1440", 1440)):
+            with self.subTest(raw=raw):
+                values = self.graph_overrides(raw)
+                self.assertEqual(values, {**baseline, "graph_rebuild_interval_mins": expected})
+                self.assertIs(type(values["graph_rebuild_interval_mins"]), int)
+        for raw in ("-1", "1441", "15.0", "1e1", "NaN", "Infinity", " ", " 15", "15\n",
+                    "+15", "1_5", "１５", "true", "$(touch injected)", "15; exit 0",
+                    "9" * 5000, True, 15, 15.0, None, []):
+            with self.subTest(raw=str(raw)[:40]), self.assertRaisesRegex(ValueError, "CI_GRAPH_REBUILD_INTERVAL_MINS_DEV"):
+                self.graph_overrides(raw)
+
+    def test_graph_interval_preserves_dev_profile_scope_account_and_digest_gates(self):
+        for changes in ([{"target": target} for target in ("main", "atomoh", "ssminji", "whchoi")]
+                        + [{"enabled": flag} for flag in ("", "false")]
+                        + [{"scope": scope} for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap")]):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "full dev scope.*CI_READONLY_RUNTIME_DEV"):
+                self.graph_overrides("0", **changes)
+            self.assertNotIn("graph_rebuild_interval_mins", self.graph_overrides("", **changes))
+        for changes, message in (({"expected_account": ""}, "AWS_ACCOUNT_ID_DEV"),
+                                 ({"worker_digest": ""}, "Build both runtime images"),
+                                 ({"steampipe_digest": "latest"}, "immutable sha256")):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, message):
+                self.graph_overrides("15", **changes)
+
+    def test_graph_interval_cli_emits_integer_and_removes_stale_override_on_rejection(self):
+        baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, False)
+        for raw, expected in ((None, None), ("", None), ("0", 0), ("15", 15), ("1440", 1440),
+                              ("NaN", None), ("1.5", None), ("-1", None), ("1441", None),
+                              ("$(touch injected)", None)):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "ci-runtime.auto.tfvars.json"
+                output.write_text('{"graph_rebuild_interval_mins":99}')
+                env = dict(CI_READONLY_RUNTIME_DEV="true", AWS_ACCOUNT_ID_DEV=ACCOUNT,
+                           STEAMPIPE_IMAGE_DIGEST_DEV=DIGEST, WORKER_IMAGE_DIGEST_DEV=DIGEST)
+                if raw is not None:
+                    env["CI_GRAPH_REBUILD_INTERVAL_MINS_DEV"] = raw
+                result = subprocess.run([sys.executable, str(Path(self.module.__file__)), "overrides",
+                    "--target", "dev", "--scope", "full"], cwd=root, env=env,
+                    capture_output=True, text=True, timeout=15)
+                allowed = raw in (None, "") or expected is not None
+                self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                if allowed:
+                    values = json.loads(output.read_text())
+                    self.assertEqual(values, {**baseline, **(
+                        {} if expected is None else {"graph_rebuild_interval_mins": expected})})
+                else:
+                    self.assertIn("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV", result.stderr)
+                    self.assertFalse(output.exists())
+                self.assertFalse((root / "injected").exists())
+
+    def test_graph_interval_workflow_binding_is_dev_full_only(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step, expression
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        cases = [("dev", {}, "true", "0", 0), ("dev", {"plan_scope": "full"}, "true", "15", 15),
+                 ("dev", {}, "true", "", None), ("dev", {}, "false", "15", "refused"),
+                 ("dev", {}, "true", "$(touch injected)", "refused")]
+        cases += [(target, {"plan_scope": scope}, "true", "invalid-unused", None)
+                  for target, scope in (("main", "full"), ("atomoh", "full"), ("ssminji", "full"),
+                                        ("whchoi", "full"), ("dev", "ecr-bootstrap"),
+                                        ("dev", "runtime-ecr-bootstrap"))]
+        for target, inputs, profile, raw, expected in cases:
+            with self.subTest(target=target, inputs=inputs, raw=raw):
+                context = {"github": {"event_name": "workflow_dispatch"}, "env": {"TARGET": target},
+                    "inputs": {"runtime_rollout": False, **inputs}, "vars": {
+                        "CI_READONLY_RUNTIME_DEV": profile, "CI_GRAPH_REBUILD_INTERVAL_MINS_DEV": raw,
+                        "STEAMPIPE_IMAGE_DIGEST_DEV": DIGEST, "WORKER_IMAGE_DIGEST_DEV": DIGEST}}
+                self.assertEqual(expression(step["env"].get("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV", ""), context),
+                    raw if target == "dev" and inputs.get("plan_scope", "full") == "full" else "")
+                result, calls = DeploymentWorkflowTests().run_step([step], TARGET=target, PLAN_SCOPE="",
+                    files={"ci-runtime.auto.tfvars.json": '{"graph_rebuild_interval_mins":99}',
+                           "terraform.tfvars": "graph_rebuild_interval_mins = 30\n"}, context=context)
+                self.assertEqual(result.returncode == 0, expected != "refused", result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(result.files["terraform.tfvars"], "graph_rebuild_interval_mins = 30\n")
+                if expected == "refused":
+                    self.assertIn("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV", result.stderr)
+                    self.assertNotIn("ci-runtime.auto.tfvars.json", result.files)
+                else:
+                    self.assertEqual(json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                                     .get("graph_rebuild_interval_mins"), expected)
+                self.assertNotIn("injected", result.files)
+
     def test_explicit_targets_are_dev_full_only_and_disable_host_only_without_other_flag_changes(self):
         member = {"account_id": "999999999999", "resource_type": "ec2", "resource_id": "i-fixture"}
         baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, False)
