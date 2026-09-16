@@ -40,6 +40,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 **诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
 
+**可选读取权限：** View 和节点绑定不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
+
 ### 舰队资源摘要
 存在已连接的集群时，卡片下方会出现额外的可视化内容。
 

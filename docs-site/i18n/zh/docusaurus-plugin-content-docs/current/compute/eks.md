@@ -28,10 +28,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 跨账户查询注册
 
+注册和取消注册仅限管理员操作。
+
 1. 在 **Accounts** 中注册并启用目标账户，配置其区域，并在信任策略要求时提供 external ID。通常使用的目标角色是 `AWSopsReadOnlyRole`；该角色必须可由 web 任务承担，并获准读取 EKS 元数据。
 2. 选择目标账户和区域。对于**成员账户**，默认元数据发现和 Kubernetes 令牌签名都使用该账户已注册的只读角色。宿主账户的集群仍以 web 任务角色作为默认身份。AWSops 不会向成员集群发送宿主任务角色的 bearer 令牌。
-3. 集群所有者在该集群上为适用角色创建 `STANDARD` Access Entry，并关联所需的只读策略，例如指南中的 `AmazonEKSAdminViewPolicy`。对于成员集群，该角色是**已注册的成员角色**，而非宿主 web 任务角色。仅有旧的宿主主体 Entry 无法授权新的默认成员访问路径。
+3. 集群所有者为相应角色准备 `STANDARD` Access Entry。共享成员读取角色应使用 **`AmazonEKSViewPolicy`，并为组 `awsops:eks-readonly` 绑定最小节点读取 RBAC**（仅对 `nodes` 的 `get/list/watch`）。不要给该共享角色附加可读取 Secrets 的 `AmazonEKSAdminViewPolicy`。添加 View 不会撤销已有 AdminView 关联，所有者必须移除原关联。宿主集群继续使用既有 Terraform 权限配置。
 4. 选择**查询注册**。应用通过 `DescribeCluster` 直接验证所选集群，并检查对应的现有 Access Entry。它不会搜索宿主集群列表，也不会创建 AWS 资源。注册和详情导航会保留账户与区域信息。
+
+**可选读取权限：** View 和节点绑定不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
 
 **诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
 
@@ -44,7 +48,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 注册错误
 
-`404` 表示找不到所选集群。`409` 表示所需的 Access Entry 不存在或无法验证。`403` 可能表示账户、区域或角色身份不被允许。`503` 表示发现服务或存储不可用。这些错误并不表示查询成功且集群列表为空。请核对显示的目标，并将其接入指南交给集群所有者。
+`400` 表示 ID、选择器或认证正文无效，`413` 表示正文过大。`404` 表示找不到所选集群。`409` 表示所需的 Access Entry 不存在或无法验证。`403` 可能表示账户、区域或角色身份不被允许。`503` 表示发现服务或存储不可用。这些错误并不表示查询成功且集群列表为空。请核对显示的目标，并将其接入指南交给集群所有者。
 
 ### 实时资源与详情页面
 

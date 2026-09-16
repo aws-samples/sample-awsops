@@ -28,10 +28,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 교차 계정 조회 등록
 
+등록과 등록 해제는 관리자만 수행할 수 있습니다.
+
 1. **Accounts**에서 대상 계정을 등록·활성화하고 리전을 설정합니다. 신뢰 정책이 요구하면 external ID를 입력합니다. 일반적인 대상 역할은 `AWSopsReadOnlyRole`이며, web 태스크가 AssumeRole할 수 있고 EKS 메타데이터를 읽을 권한이 있어야 합니다.
 2. 대상 계정과 리전을 선택합니다. **멤버 계정**에서는 메타데이터 조회와 기본 Kubernetes 토큰 서명에 모두 그 계정에 등록된 읽기 역할을 사용합니다. 호스트 계정 클러스터의 기본 인증은 web 태스크 역할을 유지합니다. 호스트 태스크 역할의 bearer 토큰을 멤버 클러스터에 보내지 않습니다.
-3. 클러스터 소유자가 해당 클러스터에 사용할 역할의 `STANDARD` Access Entry와 필요한 읽기 정책(안내의 `AmazonEKSAdminViewPolicy` 등)을 설정합니다. 멤버 클러스터에서는 호스트 web 태스크 역할이 아니라 **등록된 멤버 역할**이 대상입니다. 기존 호스트 역할의 Access Entry만으로는 새로운 기본 멤버 인증을 허용하지 않습니다.
+3. 클러스터 소유자가 해당 역할의 `STANDARD` Access Entry를 준비합니다. 멤버의 공유 읽기 역할에는 **`AmazonEKSViewPolicy`와 `awsops:eks-readonly` 그룹의 최소 노드 읽기 RBAC**(`nodes`의 `get/list/watch`)를 사용합니다. 이 공유 역할에는 Secrets를 읽을 수 있는 `AmazonEKSAdminViewPolicy`를 부여하지 마세요. 이미 연결되어 있으면 View를 추가하는 것만으로 권한이 줄지 않으므로 소유자가 기존 AdminView 연결을 제거해야 합니다. 호스트 계정은 기존 Terraform 권한 구성을 따릅니다.
 4. **조회 등록**을 누릅니다. 앱은 `DescribeCluster`로 선택한 클러스터를 직접 확인하고 해당 역할의 기존 Access Entry를 점검합니다. 호스트 클러스터 목록으로 검증하거나 AWS 리소스를 만들지 않습니다. 등록과 상세 이동에는 계정·리전 정보가 유지됩니다.
+
+**선택적 읽기 권한:** View와 노드 바인딩은 Secrets를 허용하지 않습니다. OpenCost API 프록시에는 `opencost` 네임스페이스의 해당 서비스에 한정된 `services/proxy` GET 권한이, K8sGPT에는 `result.core.k8sgpt.ai`의 `results` 읽기 바인딩이 별도로 필요합니다. 소유자가 필요한 기능에만 최소 권한을 추가하며 앱은 적용하지 않습니다.
 
 **진단·ENI 데이터 준비:** CloudWatch 진단 지표에는 대상 읽기 역할의 `cloudwatch:GetMetricData`와 `cloudwatch:ListMetrics` 권한이 필요합니다. Container Insights 지표는 실제로 게시되고 있어야 합니다. ENI 패널은 선택한 계정·리전이 인벤토리 수집 범위에 포함되고 EC2 인벤토리 수집이 완료되어야 합니다. 권한 오류, 지표 없음, 미수집 인벤토리는 서로 다른 상태이며, AWSops가 권한이나 에이전트를 자동 설치하지 않습니다.
 
@@ -44,7 +48,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 등록 오류
 
-`404`는 선택한 클러스터를 찾지 못한 경우입니다. `409`는 필요한 Access Entry가 없거나 확인할 수 없는 경우이며, `403`은 계정·리전 또는 역할이 허용되지 않은 경우일 수 있습니다. `503`은 조회나 저장소 사용 불가를 뜻합니다. 이를 성공적으로 조회한 빈 함대로 해석하지 마세요. 표시된 대상을 확인하고 해당 소유자에게 온보딩 안내를 전달하세요.
+`400`은 잘못된 ID·선택값·인증 본문, `413`은 본문 크기 초과를 나타냅니다. `404`는 선택한 클러스터를 찾지 못한 경우입니다. `409`는 필요한 Access Entry가 없거나 확인할 수 없는 경우이며, `403`은 계정·리전 또는 역할이 허용되지 않은 경우일 수 있습니다. `503`은 조회나 저장소 사용 불가를 뜻합니다. 이를 성공적으로 조회한 빈 함대로 해석하지 마세요. 표시된 대상을 확인하고 해당 소유자에게 온보딩 안내를 전달하세요.
 
 ### 라이브 리소스와 상세 페이지
 

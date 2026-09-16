@@ -1,5 +1,5 @@
 import { getPool } from './db';
-import { resolveEksCluster, EksScopeError } from './eks-context';
+import { resolveEksCluster, resolveEksClusterForRemoval, EksScopeError } from './eks-context';
 import { assertEksRoleArn } from './eks-role';
 
 // Single source for "which EKS clusters may the app query".
@@ -148,15 +148,18 @@ export async function registerCluster(cluster: string, userSub: string): Promise
 export type UnregisterResult = 'deleted' | 'not-found' | 'unavailable';
 
 export async function unregisterCluster(cluster: string): Promise<UnregisterResult> {
-  cluster = (await resolveEksCluster(cluster)).id;
+  // Removal must still work after disabling/removing the owning account. Validate
+  // only the stored identity, never resolve credentials or enabled account scope.
+  cluster = resolveEksClusterForRemoval(cluster).id;
+  if (isEnvCluster(cluster)) throw new EksScopeError('Terraform-managed EKS registration cannot be removed here', 400);
   if (!dbOn()) return 'unavailable';
   try {
     const r = await getPool().query(`DELETE FROM eks_registrations WHERE cluster_name = $1`, [cluster]);
     cache = null;
     authCache.delete(cluster);
     return (r.rowCount ?? 0) > 0 ? 'deleted' : 'not-found';
-  } catch (e) {
-    console.warn(`[eks-registry] unregister failed: ${e instanceof Error ? e.message : e}`);
+  } catch {
+    console.warn('[eks-registry] unregister storage unavailable');
     return 'unavailable';
   }
 }

@@ -28,10 +28,14 @@ Cards show Cluster Name, Status, Kubernetes Version, Account, Region, VPC ID, an
 
 ### Cross-Account Query Registration
 
+Registration and unregistration are admin-only.
+
 1. Register and enable the target account in **Accounts**, configure its regions, and supply the external ID when its trust policy requires one. The usual target role is `AWSopsReadOnlyRole`; it must be assumable by the web task and permitted to read EKS metadata.
 2. Select the target account and region. For a **member account**, default metadata discovery and Kubernetes token signing both use that account's registered read-only role. Host-account clusters retain the web task role as their default identity. AWSops does not send the host task-role bearer to member clusters.
-3. The cluster owner creates a `STANDARD` Access Entry for the applicable role on that cluster and associates the required read policy, such as the guide's `AmazonEKSAdminViewPolicy`. For a member cluster this is the **registered member role**, not the host web task role. An old host-principal entry alone does not authorize the new default member path.
+3. The cluster owner prepares a `STANDARD` Access Entry for the applicable role. For a shared member read role, use **`AmazonEKSViewPolicy` plus minimal node-read RBAC for group `awsops:eks-readonly`** (`get/list/watch` on `nodes`). Do not attach Secrets-readable `AmazonEKSAdminViewPolicy` to this shared role. Adding View does not revoke an existing AdminView association; the owner must remove that association. Host clusters retain their existing Terraform permission configuration.
 4. Choose **Register for query**. The app directly verifies the selected cluster with `DescribeCluster` and checks the corresponding existing Access Entry. It does not search the host cluster list or create AWS resources. Registration and detail navigation preserve account and region.
+
+**Optional read permissions:** View and the node binding do not allow Secrets. The OpenCost API proxy separately needs GET on `services/proxy` limited to its service in namespace `opencost`; K8sGPT separately needs a read binding for `results` in `result.core.k8sgpt.ai`. The owner adds only the permissions required for enabled features; the app does not apply them.
 
 **Diagnosis and ENI prerequisites:** CloudWatch diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the target read role. Container Insights metrics must actually be published. The ENI panel needs the selected account/region in the inventory collection scope and a completed EC2 inventory collection. Permission failures, absent metric series, and uncollected inventory are different states; AWSops does not grant permissions or install agents automatically.
 
@@ -44,7 +48,7 @@ The owner runs displayed onboarding commands; the app does not run them. `make c
 
 ### Registration Errors
 
-`404` means the selected cluster was not found. `409` means the required Access Entry is absent or could not be verified. `403` can mean the account/region or role identity is not allowed. `503` indicates unavailable discovery or storage. These errors do not establish a successful empty fleet. Check the displayed target and give its onboarding guide to the cluster owner.
+`400` indicates an invalid ID, selector or auth body; `413` indicates an oversized body. `404` means the selected cluster was not found. `409` means the required Access Entry is absent or could not be verified. `403` can mean the account/region or role identity is not allowed. `503` indicates unavailable discovery or storage. These errors do not establish a successful empty fleet. Check the displayed target and give its onboarding guide to the cluster owner.
 
 ### Live Resources and Detail Pages
 

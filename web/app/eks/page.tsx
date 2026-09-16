@@ -342,7 +342,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
         <div className="rounded-lg border border-amber-300 border-l-[3px] bg-amber-50 p-4">
           <div className="text-[14px] font-semibold text-amber-800">{tt('K8s 데이터에 접근할 수 없습니다')}</div>
           <p className="mt-1 text-[13px] text-amber-700">
-            {tt('등록된 클러스터가 있지만 어느 클러스터에서도 라이브 데이터를 읽지 못했습니다. Access Entry(AmazonEKSAdminViewPolicy) 부여와 클러스터 등록(인증) 상태를 확인하세요.')}
+            {tt('등록된 클러스터의 라이브 조회에 실패했습니다. 선택한 계정의 온보딩 안내에 따라 Access Entry·읽기 권한, 저장된 인증 정보와 API 연결을 확인하세요.')}
           </p>
           {(() => { const errs = fleet.filter((f) => f.error).slice(0, 2); return errs.length > 0 ? (
             <pre className="mt-2 overflow-x-auto rounded bg-white/70 p-2 font-mono text-[11.5px] text-amber-900">{errs.map((f) => `${eksClusterLabel(f.id ?? f.name)}: ${f.error}`).join('\n')}</pre>

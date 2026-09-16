@@ -42,6 +42,8 @@ EKS 클러스터 함대와 클러스터 내부 리소스를 읽기 전용으로 
 
 **진단·ENI 데이터 준비:** CloudWatch 진단 지표에는 대상 읽기 역할의 `cloudwatch:GetMetricData`와 `cloudwatch:ListMetrics` 권한이 필요합니다. Container Insights 지표는 실제로 게시되고 있어야 합니다. ENI 패널은 선택한 계정·리전이 인벤토리 수집 범위에 포함되고 EC2 인벤토리 수집이 완료되어야 합니다. 권한 오류, 지표 없음, 미수집 인벤토리는 서로 다른 상태이며, AWSops가 권한이나 에이전트를 자동 설치하지 않습니다.
 
+**선택적 읽기 권한:** View와 노드 바인딩은 Secrets를 허용하지 않습니다. OpenCost API 프록시에는 `opencost` 네임스페이스의 해당 서비스에 한정된 `services/proxy` GET 권한이, K8sGPT에는 `result.core.k8sgpt.ai`의 `results` 읽기 바인딩이 별도로 필요합니다. 소유자가 필요한 기능에만 최소 권한을 추가하며 앱은 적용하지 않습니다.
+
 ### 함대 리소스 요약
 연결된 클러스터가 있으면 카드 아래에 추가 시각화가 나타납니다.
 

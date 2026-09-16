@@ -2,7 +2,7 @@ import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
 import { registerCluster, unregisterCluster, isEnvCluster, setClusterAuth, type EksAuth } from '@/lib/eks-registry';
 import { describeEksCluster, hasAccessEntry, onboardingGuide } from '@/lib/eks-access';
-import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
+import { resolveEksCluster, resolveEksClusterForRemoval, EksScopeError } from '@/lib/eks-context';
 import { assertEksRoleArn } from '@/lib/eks-role';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 
@@ -90,7 +90,7 @@ export async function DELETE(request: Request, { params }: { params: { cluster: 
     const user = await verifyUser(request.headers.get('cookie'));
     if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
     if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
-    const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
+    const context = resolveEksClusterForRemoval(params.cluster, new URL(request.url).searchParams);
     if (isEnvCluster(context.id)) {
       return json({ status: 'error', message: 'Terraform(onboard_eks_clusters) 관할 — tfvars에서 제거하세요' }, 400);
     }

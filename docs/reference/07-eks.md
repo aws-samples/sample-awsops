@@ -25,12 +25,64 @@ principal need an Access Entry/read policy for the registered member role before
 default member queries can succeed. The generated guide names the required role;
 the owner applies it. The app does not add or remove AWS access entries.
 
+### Member least-privilege permissions
+
+The shared member role uses `AmazonEKSViewPolicy` at cluster scope, plus a
+ClusterRole/ClusterRoleBinding that grants group `awsops:eks-readonly` only
+`get/list/watch` on core `nodes`. The generated guide includes this minimal
+manifest and an explicit cluster context. The managed View policy supplies the
+other supported built-in reads, including namespaces, but excludes Secrets.
+Do not associate `AmazonEKSAdminViewPolicy` with the shared member role: other
+consumers able to assume that role would otherwise inherit Secret reads.
+
+For an existing Access Entry, the owner adds the group without replacing its
+unrelated groups. Access policies are additive: associating View does not revoke
+an existing AdminView policy. The owner must remove any such broad association
+after preparing the necessary narrow read bindings. Host Terraform onboarding
+retains its existing single-consumer web task-role configuration.
+
+Optional APIs need separate narrow bindings. K8sGPT Result access is described
+in [the operator runbook](../runbooks/k8sgpt-operator-install.md). OpenCost's
+fixed service-proxy path separately needs the following namespace-limited read
+permission after the `opencost` namespace/service exist. The cluster owner
+applies it; AWSops does not. It grants no pod exec, node proxy, Secret or write
+permissions:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awsops-opencost-proxy-reader
+  namespace: opencost
+rules:
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["opencost:9003"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awsops-opencost-proxy-reader
+  namespace: opencost
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awsops-opencost-proxy-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: awsops:eks-readonly
+```
+
 Kubernetes access alone does not enable the adjacent data panels. CloudWatch
 diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the
 selected read role, and Container Insights must actually publish its series.
 Node ENI details require the account/region to be in the enabled inventory scan
 scope with a completed EC2 inventory collection. A denied query, absent metric
 series, and inventory not yet collected are distinct operational conditions.
+
+### Query scope and cleanup
 
 The cluster list, registration, and subsequent resource reads retain the selected
 account and region. Member-account and nondefault-region clusters use their EKS
@@ -47,6 +99,13 @@ before checking its Access Entry, rather than searching the first page of the ho
 account's cluster list. A `404 unknown cluster` therefore means the selected target
 was not found; an absent or unverifiable entry remains a separate registration
 failure. Invalid or disabled target accounts do not fall back to the host.
+
+Admin DELETE is a local cleanup operation: a syntactically valid canonical
+registration can be removed, including its saved auth, after its member account
+is disabled or removed. It does not require AWS discovery or an enabled member
+scope, and it does not revoke AWS permissions. Bare-name member
+references require an explicit region or a full ARN. Host Terraform-managed entries remain
+protected; POST and reads keep their enabled-scope checks.
 
 The account/region selector refreshes EKS lists and fleet aggregates without a
 registration side effect. Queries wait for the persisted selection and discard
@@ -107,6 +166,7 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `web/lib/eks-cluster-id.ts` | Strict name/ARN parsing and display labels |
 | `web/lib/eks-context.ts` | Canonical account/region identity, selector conflicts, enabled member scope |
 | `web/lib/eks-role.ts` | Registered member-role ARN and same-account authentication checks |
+| `web/lib/eks-member-rbac.ts` | Minimal member node-read group and operator manifest |
 | `web/lib/eks-registry.ts` | Legacy host and qualified runtime registrations, cached read quality, saved auth |
 | `web/lib/eks-scope.ts` | Collection selection, wildcard disclosure, discovery and fleet limits |
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |

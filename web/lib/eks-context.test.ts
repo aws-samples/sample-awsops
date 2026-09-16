@@ -116,3 +116,46 @@ describe('resolveEksCluster', () => {
     await expect(resolveEksCluster('shared', new URLSearchParams('region=us-east-1'))).rejects.toMatchObject({ status: 503 });
   });
 });
+
+describe('resolveEksClusterForRemoval', () => {
+  it('canonicalizes an ARN without consulting account or enabled-region registries', async () => {
+    getAccount.mockRejectedValue(new Error('account no longer exists'));
+    listScanScope.mockRejectedValue(new Error('scope unavailable'));
+    const { resolveEksClusterForRemoval } = await import('./eks-context');
+    expect(resolveEksClusterForRemoval(ARN)).toEqual({
+      id: ARN, name: 'shared', accountId: MEMBER, region: 'us-east-1',
+    });
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listScanScope).not.toHaveBeenCalled();
+  });
+
+  it('derives the exact member ID from an explicit account and region without account lookup', async () => {
+    const { resolveEksClusterForRemoval } = await import('./eks-context');
+    expect(resolveEksClusterForRemoval('shared', new URLSearchParams(`account=${MEMBER}&region=us-east-1`)).id).toBe(ARN);
+    expect(getAccount).not.toHaveBeenCalled();
+  });
+
+  it('requires a region for a bare member name rather than guessing a registry default', async () => {
+    const { resolveEksClusterForRemoval } = await import('./eks-context');
+    expect(() => resolveEksClusterForRemoval('shared', new URLSearchParams(`account=${MEMBER}`)))
+      .toThrow(expect.objectContaining({ status: 400 }));
+    expect(getAccount).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy host identity and normalizes host default-region ARN aliases', async () => {
+    const { resolveEksClusterForRemoval } = await import('./eks-context');
+    expect(resolveEksClusterForRemoval('shared').id).toBe('shared');
+    expect(resolveEksClusterForRemoval(`arn:aws:eks:ap-northeast-2:${HOST}:cluster/shared`).id).toBe('shared');
+  });
+
+  it.each([
+    'account=self', 'region=us-west-2', `accounts=${MEMBER}`, 'regions=us-east-1',
+    `account=${MEMBER}&account=${MEMBER}`, 'region=us-east-1&region=us-east-1',
+  ])('rejects conflicting/ambiguous cleanup selectors: %s', async search => {
+    const { resolveEksClusterForRemoval } = await import('./eks-context');
+    expect(() => resolveEksClusterForRemoval(ARN, new URLSearchParams(search)))
+      .toThrow(expect.objectContaining({ status: 400 }));
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listScanScope).not.toHaveBeenCalled();
+  });
+});

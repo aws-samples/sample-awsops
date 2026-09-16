@@ -42,6 +42,8 @@ Registered, enabled member accounts are supported. The default identity is the *
 
 **Diagnosis and ENI prerequisites:** CloudWatch diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the target read role. Container Insights metrics must actually be published. The ENI panel needs the selected account/region in the inventory collection scope and a completed EC2 inventory collection. Permission failures, absent metric series, and uncollected inventory are different states; AWSops does not grant permissions or install agents automatically.
 
+**Optional read permissions:** View and the node binding do not allow Secrets. The OpenCost API proxy separately needs GET on `services/proxy` limited to its service in namespace `opencost`; K8sGPT separately needs a read binding for `results` in `result.core.k8sgpt.ai`. The owner adds only the permissions required for enabled features; the app does not apply them.
+
 ### Fleet resource summary
 When at least one cluster is connected, extra visualizations appear below the cards.
 

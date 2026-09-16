@@ -3,9 +3,11 @@
 > 🛑 **OPERATOR ACTION — requires cluster-admin on the target EKS cluster. AWSops does NOT execute any step here (mirrors ADR-005's out-of-band install precedent — "KEDA install is out-of-band").**
 > 🛑 **오퍼레이터 작업 — 대상 EKS 클러스터의 cluster-admin 권한이 필요합니다. 이 런북의 어떤 단계도 AWSops가 실행하지 않습니다 (ADR-005의 아웃-오브-밴드 설치 선례 — "KEDA 설치는 아웃-오브-밴드"와 동일 원칙).**
 
-AWSops only **READS** the `Result` CRDs that the K8sGPT operator produces (HTTP GET only via the P1e `awsops-v2-task` Access Entry token — **no write verb is ever issued against the cluster API**). The operator install, its RBAC, the `--fix`-off configuration, and binding the Result-CRD read RBAC to `awsops-v2-task` are **all** cluster-admin / operator actions documented here. None of them run from AWSops.
-
-AWSops는 K8sGPT 오퍼레이터가 생성한 `Result` CRD를 **읽기만** 합니다(P1e `awsops-v2-task` Access Entry 토큰으로 HTTP GET만 — **클러스터 API에 대한 쓰기 동사는 절대 발행하지 않음**). 오퍼레이터 설치, RBAC, `--fix` 비활성 설정, Result-CRD 읽기 RBAC를 `awsops-v2-task`에 바인딩하는 작업은 **모두** 여기에 문서화된 cluster-admin/오퍼레이터 작업이며, 어느 것도 AWSops에서 실행되지 않습니다.
+AWSops only reads the operator's Result CRDs through Kubernetes HTTP GET. Host
+clusters use the web task role by default; member clusters use their registered
+member read role. Installation, permissions, and disabling remediation are operator
+actions, never app-executed steps. The client read binding below is distinct from
+the operator controller's own chart-managed permissions.
 
 ---
 
@@ -74,15 +76,30 @@ YAML
 
 ---
 
-## 조치 / Action — read-only RBAC + bind to the AWSops task principal
+## Action — bind Result reads to the actual query principal
 
-**Read-only RBAC + bind to the AWSops task principal (Rules 1/9 — out-of-band):**
-- The operator runs with a **read-only ClusterRole**: `get/list/watch` only; `create/update/patch/delete` explicitly absent. (`--fix`/auto-remediation disabled at the config level.)
-- Bind a **read-only ClusterRole for the `results.result.core.k8sgpt.ai` CRD** to the IAM principal that the **P1e Access Entry** maps for `awsops-v2-task`, so the AWSops BFF's presigned-STS token can `get/list` `Result` objects. The AWSops `awsops-v2-task` role is registered as a STANDARD Access Entry with the AWS-managed `AmazonEKSViewPolicy` at cluster scope (see `terraform/foundation/eks.tf`); this binding grants the additional Result-CRD read. Example (the operator applies it):
+The app's Result reader needs only `get/list/watch` on
+`results.result.core.k8sgpt.ai`. Keep remediation disabled; this section does not
+grant workload writes, Secret reads, or cluster-admin to the application principal.
 
-**읽기 전용 RBAC + AWSops 태스크 principal 바인딩 (Rule 1/9 — 아웃-오브-밴드):**
-- 오퍼레이터는 **읽기 전용 ClusterRole**(`get/list/watch`만; `create/update/patch/delete` 명시적 부재)로 동작합니다. (`--fix`/자동 remediation은 설정 레벨에서 비활성.)
-- **`results.result.core.k8sgpt.ai` CRD에 대한 읽기 전용 ClusterRole**을 **P1e Access Entry**가 `awsops-v2-task`에 매핑하는 IAM principal에 바인딩하면, AWSops BFF의 presigned-STS 토큰이 `Result` 객체를 `get/list`할 수 있습니다. AWSops의 `awsops-v2-task` 역할은 STANDARD Access Entry로 등록되어 클러스터 스코프에서 AWS 관리형 `AmazonEKSViewPolicy`를 받습니다(`terraform/foundation/eks.tf` 참조). 이 바인딩은 추가로 Result-CRD 읽기 권한을 부여합니다. 예시(오퍼레이터가 적용):
+- **Host cluster:** the default web task-role Access Entry is managed by host
+  onboarding. The existing Terraform configuration uses `AmazonEKSAdminViewPolicy`,
+  which already covers broad reads. If the host uses a tighter policy, map an
+  explicit group on that role's Access Entry and bind only the Result-read rule.
+- **Member cluster:** the actual bearer uses the registered member role, normally
+  `AWSopsReadOnlyRole`. Use `AmazonEKSViewPolicy` plus the minimal node-read binding
+  described in [EKS onboarding](../reference/07-eks.md). Never attach AdminView to
+  this shared member role. The managed View policy does not grant this custom CRD,
+  so bind the Result reader to the member Entry's `awsops:eks-readonly` group.
+  An Entry/group for only the host web task role does not authorize member reads.
+- **Explicit auth:** bind the selected same-member IAM role's Entry group, or the
+  exact ServiceAccount name/namespace for an SA token. Do not use a broad group
+  such as `system:authenticated` to avoid selecting the real principal.
+
+The cluster owner applies the following client-read binding. For the default
+member path, the group is `awsops:eks-readonly`; for a tighter host or explicit
+identity, substitute the verified group actually mapped by that identity's Entry.
+Add a group to an existing Entry without discarding its unrelated groups.
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -91,21 +108,23 @@ metadata: { name: awsops-k8sgpt-result-reader }
 rules:
   - apiGroups: ["result.core.k8sgpt.ai"]
     resources: ["results"]
-    verbs: ["get","list","watch"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata: { name: awsops-k8sgpt-result-reader }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: awsops-k8sgpt-result-reader }
 subjects:
-  # Group/user that the P1e Access Entry maps awsops-v2-task to (see aws-auth / Access Entry).
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
-    name: <THE_GROUP_THE_P1E_ACCESS_ENTRY_GRANTS>
+    name: awsops:eks-readonly
 ```
 
-> ℹ️ The placeholders `<PINNED_OPERATOR_VERSION>`, `<PINNED_K8SGPT_IMAGE>`, and `<THE_GROUP_THE_P1E_ACCESS_ENTRY_GRANTS>` are filled in by the operator at install time (the last is whatever group the cluster's Access Entry maps the `awsops-v2-task` role to).
-> ℹ️ 플레이스홀더 `<PINNED_OPERATOR_VERSION>`, `<PINNED_K8SGPT_IMAGE>`, `<THE_GROUP_THE_P1E_ACCESS_ENTRY_GRANTS>`는 설치 시점에 오퍼레이터가 채웁니다(마지막 값은 클러스터의 Access Entry가 `awsops-v2-task` 역할을 매핑하는 그룹).
+Use the intended cluster context explicitly. Verify the actual Entry principal,
+its groups, and the Result permissions before treating an empty response as lack
+of findings. `kubectl auth can-i --as-group=...` is an operator RBAC check; it does
+not by itself prove that the IAM principal is mapped to that group or that the
+app's signed-token path succeeds.
 
 ---
 
@@ -166,5 +185,5 @@ H3a 경로는 결정론적 K8sGPT 발견이 하위 인시던트/remediation 기�
 - `web/lib/k8sgpt-adapter.ts` — `ADAPTER_K8SGPT_VERSION` (must match the pinned version above)
 - `web/lib/k8sgpt.ts` — gate / read / dedup / narrate (fact vs hypothesis split)
 - `web/lib/eks-incluster.ts` — the read-only `eksToken`/`clusterConn`/`k8sGet` path AWSops reuses (GET only)
-- `terraform/foundation/eks.tf` — P1e Access Entry + `AmazonEKSViewPolicy` for `awsops-v2-task`
+- `terraform/foundation/eks.tf` — host web task-role Access Entry; member View/node/Result bindings are separate operator setup
 - `terraform/foundation/variables.tf` — `k8sgpt_enabled` flag (default false → route dark, $0)

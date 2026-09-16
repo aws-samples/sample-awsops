@@ -151,9 +151,18 @@ registration state; it does not create AWS roles, entries, policies, or connecti
 
 For member clusters, discovery and default Kubernetes token signing use the
 registered member read-only role. Its Access Entry/read policy is required.
+The shared role uses `AmazonEKSViewPolicy` plus minimal node-read RBAC; do not
+grant it AdminView/Secret reads. Optional Result-CRD and OpenCost service-proxy
+reads need separately scoped bindings.
 Host clusters retain the web task role. Explicit member AssumeRole overrides must
 belong to the selected member account; the host bearer is never a member fallback.
 Saved SA authentication remains separate. See [EKS onboarding](reference/07-eks.md).
+
+Admin DELETE validates the registration identity and removes the local row/auth
+without requiring an enabled member account or AWS discovery. This preserves
+offboarding cleanup after an account is disabled/removed. A bare member
+name needs its explicit region (or use the full ARN); Terraform-managed host entries remain protected. This
+cleanup changes no AWS role, Access Entry, or policy.
 
 ### EKS metric read quality
 

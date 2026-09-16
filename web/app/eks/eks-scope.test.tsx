@@ -56,6 +56,16 @@ function mockApi(overrides: {
 beforeEach(() => { window.localStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('directs an unreachable member to scoped onboarding without recommending AdminView', async () => {
+  setActiveScope(targetScope);
+  mockApi({ fleet: () => response({ clusters: [{ ...fleet(target, 0), reachable: false, error: 'read denied' }] }) });
+  render(<EksPage />);
+  await waitFor(() => expect(screen.getByText('K8s 데이터에 접근할 수 없습니다')).toBeTruthy());
+  expect(screen.getByText(/선택한 계정의 온보딩 안내/)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('AmazonEKSAdminViewPolicy');
+  expect(screen.getByRole('link', { name: 'EKS 인증 가이드 문서 →' })).toBeTruthy();
+});
+
 const pages = [
   { name: 'overview', render: () => <EksPage />, marker: 'shared' },
   { name: 'fleet', render: () => <FleetKindPage kind="nodes" />, marker: 'target-row' },

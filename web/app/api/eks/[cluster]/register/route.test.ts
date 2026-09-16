@@ -9,6 +9,7 @@ const hostSend = vi.fn();
 const memberSend = vi.fn();
 const assumedClient = vi.fn();
 const query = vi.fn();
+const stsSend = vi.fn();
 
 vi.mock('@/lib/auth', () => ({ verifyUser: (...args: unknown[]) => verifyUser(...args) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...args: unknown[]) => isAdmin(...args) }));
@@ -24,7 +25,7 @@ vi.mock('@aws-sdk/client-eks', () => ({
 }));
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: class {
-    async send() { return { Arn: 'arn:aws:sts::111111111111:assumed-role/awsops-v2-task/session' }; }
+    send = (...args: unknown[]) => stsSend(...args);
   },
   GetCallerIdentityCommand: class { constructor(public input: unknown) {} },
 }));
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.stubEnv('AURORA_ENDPOINT', 'test-db');
   vi.stubEnv('ONBOARDED_EKS_CLUSTERS', '');
   rows.clear();
+  stsSend.mockReset().mockResolvedValue({ Arn: 'arn:aws:sts::111111111111:assumed-role/awsops-v2-task/session' });
   verifyUser.mockReset().mockResolvedValue({ sub: 'admin-sub' });
   isAdmin.mockReset().mockResolvedValue(true);
   getAccount.mockReset().mockResolvedValue({
@@ -147,9 +149,15 @@ describe('scoped EKS registration', () => {
   it.each([undefined, { accountId: '222222222222', enabled: false }])(
     'returns 403 for unknown/disabled targets without host discovery or persistence', async account => {
       getAccount.mockResolvedValue(account);
-      const { POST, DELETE } = await import('./route');
+      const { POST } = await import('./route');
       expect((await POST(request(MEMBER_ID), params(MEMBER_ID))).status).toBe(403);
-      expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(403);
+      const { isAllowed } = await import('@/lib/eks-registry');
+      await expect(isAllowed(MEMBER_ID)).rejects.toMatchObject({ status: 403 });
+      const { GET } = await import('../incluster/route');
+      expect((await GET(
+        new Request(`http://x/api/eks/${encodeURIComponent(MEMBER_ID)}/incluster?kind=pods`),
+        params(MEMBER_ID),
+      )).status).toBe(403);
       expect(hostSend).not.toHaveBeenCalled();
       expect(memberSend).not.toHaveBeenCalled();
       expect(query).not.toHaveBeenCalled();
@@ -234,5 +242,111 @@ describe('scoped EKS registration', () => {
     expect(getAccount).not.toHaveBeenCalled();
     expect(memberSend).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin EKS registration cleanup', () => {
+  it.each([401, 403])('requires authentication and admin authority before cleanup: %s', async status => {
+    if (status === 401) verifyUser.mockResolvedValue(null);
+    else isAdmin.mockResolvedValue(false);
+    rows.set(MEMBER_ID, { mode: 'sa-token', token: 'obsolete-token' });
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(status);
+    expect(rows.has(MEMBER_ID)).toBe(true);
+    expect(query).not.toHaveBeenCalled();
+    expect(getAccount).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, { accountId: '222222222222', enabled: false }])(
+    'deletes auth rows for removed or disabled members without account/scope/AWS calls', async account => {
+      rows.set(MEMBER_ID, { mode: 'sa-token', token: 'obsolete-token' });
+      rows.set('shared', null);
+      getAccount.mockResolvedValue(account);
+      const { DELETE } = await import('./route');
+      const response = await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ unregistered: true });
+      expect([...rows.keys()]).toEqual(['shared']);
+      expect(getAccount).not.toHaveBeenCalled();
+      expect(listScanScope).not.toHaveBeenCalled();
+      expect(assumedClient).not.toHaveBeenCalled();
+      expect(hostSend).not.toHaveBeenCalled();
+      expect(memberSend).not.toHaveBeenCalled();
+      expect(stsSend).not.toHaveBeenCalled();
+    },
+  );
+
+  it('clears cached registrations and auth after disabled-account cleanup', async () => {
+    rows.set(MEMBER_ID, { mode: 'sa-token', token: 'cached-token' });
+    const registry = await import('@/lib/eks-registry');
+    expect((await registry.getAllowedClusters()).has(MEMBER_ID)).toBe(true);
+    expect(await registry.getClusterAuth(MEMBER_ID)).toEqual({ mode: 'sa-token', token: 'cached-token' });
+    getAccount.mockRejectedValue(new Error('account registry no longer reachable'));
+    getAccount.mockClear();
+    listScanScope.mockClear();
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(200);
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listScanScope).not.toHaveBeenCalled();
+    expect((await registry.getAllowedClusters()).has(MEMBER_ID)).toBe(false);
+    getAccount.mockResolvedValue({
+      accountId: '222222222222', enabled: true, isHost: false, region: 'us-east-1',
+    });
+    expect(await registry.getClusterAuth(MEMBER_ID)).toBeNull();
+  });
+
+  it('removes exactly the selected member account/region when a bare name is supplied', async () => {
+    rows.set(MEMBER_ID, { mode: 'sa-token', token: 'obsolete' });
+    const otherRegion = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
+    rows.set(otherRegion, null);
+    getAccount.mockResolvedValue(undefined);
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request('shared', memberQuery, 'DELETE'), params('shared'))).status).toBe(200);
+    expect([...rows.keys()]).toEqual([otherRegion]);
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listScanScope).not.toHaveBeenCalled();
+  });
+
+  it('requires a region for member-name cleanup rather than guessing among stored registrations', async () => {
+    rows.set(MEMBER_ID, null);
+    rows.set('arn:aws:eks:us-west-2:222222222222:cluster/shared', null);
+    const { DELETE } = await import('./route');
+    const response = await DELETE(request('shared', 'account=222222222222', 'DELETE'), params('shared'));
+    expect(response.status).toBe(400);
+    expect((await response.json()).message).toMatch(/region/i);
+    expect(rows.size).toBe(2);
+    expect(query).not.toHaveBeenCalled();
+    expect(getAccount).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['bad/../cluster', ''], [MEMBER_ID, 'account=self'], [MEMBER_ID, 'region=us-west-2'],
+    [MEMBER_ID, 'accounts=222222222222'], [MEMBER_ID, 'region=us-east-1&region=us-east-1'],
+  ])('blocks invalid or conflicting cleanup scope: %s %s', async (id, search) => {
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request(id, search, 'DELETE'), params(id))).status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listScanScope).not.toHaveBeenCalled();
+  });
+
+  it.each(['shared', HOST_ARN])('keeps Terraform-managed host registration %s undeletable', async id => {
+    vi.stubEnv('ONBOARDED_EKS_CLUSTERS', 'shared');
+    rows.set('shared', null);
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request(id, '', 'DELETE'), params(id))).status).toBe(400);
+    expect(rows.has('shared')).toBe(true);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes missing rows from storage failure even when the account was removed', async () => {
+    getAccount.mockResolvedValue(undefined);
+    const { DELETE } = await import('./route');
+    expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(404);
+    query.mockRejectedValue(new Error('private database diagnostic'));
+    const response = await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID));
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain('private database diagnostic');
+    expect(getAccount).not.toHaveBeenCalled();
   });
 });

@@ -248,4 +248,21 @@ describe('eks-registry', () => {
     expect(await getClusterAuth('shared')).toBeNull();
     expect(await getClusterAuth(member)).toEqual(auth);
   });
+
+  it('removes a canonical member registration even after the account registry becomes unavailable', async () => {
+    const member = 'arn:aws:eks:us-east-1:222222222222:cluster/shared';
+    getAccount.mockRejectedValue(new Error('account removed'));
+    query.mockResolvedValue({ rows: [], rowCount: 1 });
+    const { unregisterCluster } = await import('./eks-registry');
+    expect(await unregisterCluster(member)).toBe('deleted');
+    expect(query).toHaveBeenCalledWith('DELETE FROM eks_registrations WHERE cluster_name = $1', [member]);
+    expect(getAccount).not.toHaveBeenCalled();
+  });
+
+  it('protects Terraform env registrations even for direct unregister helper calls', async () => {
+    const { unregisterCluster } = await import('./eks-registry');
+    await expect(unregisterCluster('arn:aws:eks:ap-northeast-2:111111111111:cluster/tf-a'))
+      .rejects.toMatchObject({ status: 400 });
+    expect(query).not.toHaveBeenCalled();
+  });
 });

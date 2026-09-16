@@ -4,6 +4,7 @@ import { assumedClient } from './aws-assume';
 import { resolveEksCluster, EksScopeError, type EksClusterContext } from './eks-context';
 import { parseEksClusterId } from './eks-cluster-id';
 import { registeredEksRoleArn } from './eks-role';
+import { MEMBER_EKS_GROUP, MEMBER_EKS_NODES_MANIFEST } from './eks-member-rbac';
 
 // Access-entry awareness: host clusters trust the task role; member clusters
 // trust their registered account role, matching the default Kubernetes signer.
@@ -80,6 +81,23 @@ export interface OnboardingGuide { commands: string[]; note: string }
 export async function onboardingGuide(cluster: string): Promise<OnboardingGuide> {
   const context = await resolveEksCluster(cluster);
   const arn = context.accountId === 'self' ? await getTaskRoleArn() : await registeredEksRoleArn(context);
+  if (context.accountId !== 'self') {
+    const target = `--cluster-name ${context.name} --region ${context.region} --principal-arn ${arn}`;
+    // Generated instructions for the owner only. The application never creates
+    // Access Entries, associates policies, or applies this RBAC manifest.
+    return {
+      commands: [
+        `aws eks create-access-entry ${target} --type STANDARD --kubernetes-groups ${MEMBER_EKS_GROUP}`,
+        `aws eks associate-access-policy ${target} --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster`,
+        `aws eks update-kubeconfig --name ${context.name} --region ${context.region} --alias ${context.id}`,
+        `kubectl --context ${context.id} apply -f - <<'AWSOPS_EKS_NODES'\n${MEMBER_EKS_NODES_MANIFEST}\nAWSOPS_EKS_NODES`,
+      ],
+      note: `As the cluster owner in AWS account ${context.accountId}, region ${context.region}, run these commands, then click [조회 등록] (Register for query). `
+        + `For an existing entry, use update-access-entry to add ${MEMBER_EKS_GROUP}, preserving all existing Kubernetes groups; the create command is only for new entries. `
+        + `Access policies are additive: the owner must remove any existing AmazonEKSAdminViewPolicy using aws eks disassociate-access-policy ${target} --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminViewPolicy; adding AmazonEKSViewPolicy does not revoke it. `
+        + 'OpenCost needs namespace/service-limited services/proxy GET; K8sGPT needs separate Result-CRD read RBAC for the actual Entry group.',
+    };
+  }
   // Only host/deployment-region registrations canonicalize to a bare name. The
   // host CloudTrail auto-registration and Terraform guidance do not cover ARN IDs.
   const targetAccount = parseEksClusterId(context.id)?.accountId;
