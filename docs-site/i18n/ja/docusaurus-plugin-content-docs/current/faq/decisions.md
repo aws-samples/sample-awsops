@@ -74,7 +74,7 @@ AWSops は**アプリ内ログインフォーム**(`/login`)を使用します (
 AWSops は v1 の**単一 EC2 モノリシック**を **Terraform ベースの MSA** に再構築しました (ADR-037、ADR-030)。
 
 - **IaC**: Terraform(部分 S3 backend)。CDK は廃止されました (ADR-024 → ADR-037 が承継)。
-- **コンピュート**: ECS Fargate(arm64)。web は Next.js 14 thin-BFF としてルートパスで配信されます。
+- **コンピュート**: ECS Fargate(arm64)。web は Next.js 15 thin-BFF としてルートパスで配信されます。
 - **非同期ワーカー**: 重い・長い/OOM リスクのある作業は web が直接処理せず、SQS → ESM(キルスイッチ) → dispatcher Lambda(冪等) → Step Functions → Lambda または `ecs:runTask.sync` Fargate に送ります。
 
 ADR-037 は ADR-024 を全面承継し、ADR-030 のメカニズムを洗練しました(ライブ Steampipe なし、flag-gated インベントリ sync のみ確定)。

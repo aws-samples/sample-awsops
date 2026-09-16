@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f3a5d381d11b · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fd34997fe399 · generated-at: 2026-09-16 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,7 +17,7 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **🚩 Flag any PR that enables mutation/autonomy/BYO-MCP** — flips a frozen flag or wires the dark substrate live.
 
 ## Stack / runtime
-- **Web:** Next.js 14 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, PR #195/ADR-009).
+- **Web:** Next.js 15 / React 19 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, PR #195/ADR-009).
 - **Data:** Aurora Serverless v2 (PG 17.9) via node-pg (`web/lib/db.ts`, shared `getPool`). App state in Aurora, **not `data/*.json`** (v1 pattern). Schema = `terraform/foundation/data/schema.sql` + ULID migrations (`migrations/<ULID>_*.sql`, never append to schema.sql — a migration's `-- since:` header is checksum-immutable once merged, never retag it).
 - **IaC:** Terraform only (CDK dropped). Single root `terraform/foundation/`, partial S3 backend (`backend.hcl`, no DynamoDB), TF ≥1.15, provider `~>6.0`.
 - **Edge:** CloudFront(TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only → 504).

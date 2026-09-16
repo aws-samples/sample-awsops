@@ -13,9 +13,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Also (P1-review MAJOR-2, merged from #199): because Lambda@Edge only checks JWT signature/expiry
 // and knows nothing about session_revocations, an unauthenticated route here also bypassed
 // revocation entirely — verifyUser() is revocation-aware, so this one call closes both.
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
+  const params = await pendingParams;
   const id = params.id;
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ message: 'invalid job id' }, { status: 400 });

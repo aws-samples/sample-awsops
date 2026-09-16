@@ -21,9 +21,10 @@ async function readArtifact(uri: string): Promise<string | null> {
   return (await r.Body?.transformToString()) ?? null;
 }
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
+  const params = await pendingParams;
   const id = Number(params.id);
   if (!Number.isInteger(id)) return NextResponse.json({ message: 'invalid report id' }, { status: 400 });
   const report = await getReport(id);
@@ -83,7 +84,8 @@ async function loadMutable(req: Request, params: { id: string }) {
   return { id };
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
+  const params = await pendingParams;
   const g = await loadMutable(req, params);
   if (g.err) return g.err;
   let body: any = {};
@@ -102,7 +104,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
+  const params = await pendingParams;
   const g = await loadMutable(req, params);
   if (g.err) return g.err;
   await softDeleteReport(g.id!);

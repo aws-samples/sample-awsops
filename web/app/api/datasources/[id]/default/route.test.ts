@@ -20,22 +20,22 @@ describe('POST /api/datasources/[id]/default', () => {
   it('admin-only', async () => {
     isAdmin.mockResolvedValue(false);
     const { POST } = await import('./route');
-    expect((await POST(req(), { params: { id: '7' } })).status).toBe(403);
+    expect((await POST(req(), { params: Promise.resolve({ id: '7' }) })).status).toBe(403);
     expect(setDefaultDatasource).not.toHaveBeenCalled();
   });
   it('sets the default and returns ok', async () => {
     const { POST } = await import('./route');
-    const resp = await POST(req(), { params: { id: '7' } });
+    const resp = await POST(req(), { params: Promise.resolve({ id: '7' }) });
     expect(resp.status).toBe(200);
     expect(setDefaultDatasource).toHaveBeenCalledWith(7);
   });
   it('400 on a bad id', async () => {
     const { POST } = await import('./route');
-    expect((await POST(req(), { params: { id: 'abc' } })).status).toBe(400);
+    expect((await POST(req(), { params: Promise.resolve({ id: 'abc' }) })).status).toBe(400);
   });
   it('404 when the datasource is missing', async () => {
     setDefaultDatasource.mockRejectedValue(new Error('datasource not found'));
     const { POST } = await import('./route');
-    expect((await POST(req(), { params: { id: '9' } })).status).toBe(404);
+    expect((await POST(req(), { params: Promise.resolve({ id: '9' }) })).status).toBe(404);
   });
 });

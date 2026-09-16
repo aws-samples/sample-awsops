@@ -14,21 +14,21 @@ beforeEach(() => { verifyUser.mockReset(); getDiagSignals.mockReset(); });
 describe('GET /api/datasources/[id]/diag-signals', () => {
   it('401 when unauthenticated', async () => {
     verifyUser.mockResolvedValue(null);
-    const res = await GET(req(), { params: { id: '7' } });
+    const res = await GET(req(), { params: Promise.resolve({ id: '7' }) });
     expect(res.status).toBe(401);
     expect(getDiagSignals).not.toHaveBeenCalled();
   });
 
   it('400 on a non-numeric id', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
-    const res = await GET(req(), { params: { id: 'abc' } });
+    const res = await GET(req(), { params: Promise.resolve({ id: 'abc' }) });
     expect(res.status).toBe(400);
   });
 
   it('returns ready/unavailable for a valid id', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     getDiagSignals.mockResolvedValue({ ready: [{ signalKey: 'oom_kills' }], unavailable: [] });
-    const res = await GET(req(), { params: { id: '7' } });
+    const res = await GET(req(), { params: Promise.resolve({ id: '7' }) });
     expect(res.status).toBe(200);
     expect(getDiagSignals).toHaveBeenCalledWith(7);
     const body = await res.json();
@@ -38,7 +38,7 @@ describe('GET /api/datasources/[id]/diag-signals', () => {
   it('500 surfaces a read error', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     getDiagSignals.mockRejectedValue(new Error('db'));
-    const res = await GET(req(), { params: { id: '7' } });
+    const res = await GET(req(), { params: Promise.resolve({ id: '7' }) });
     expect(res.status).toBe(500);
   });
 });

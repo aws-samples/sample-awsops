@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation';
 // row → per-instance Explore. Preserve an existing ?instance= deep link by mapping it to the instance route.
 export const dynamic = 'force-dynamic';
 
-export default function DatasourcesRedirect({ searchParams }: { searchParams?: { instance?: string } }) {
-  const instance = searchParams?.instance;
+export default async function DatasourcesRedirect({ searchParams }: { searchParams?: Promise<{ instance?: string }> }) {
+  const instance = (await searchParams)?.instance;
   redirect(instance ? `/integrations/datasources/${encodeURIComponent(instance)}` : '/integrations?tab=datasources');
 }

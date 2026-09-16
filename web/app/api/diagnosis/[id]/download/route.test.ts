@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockSend = vi.fn();
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn(() => ({ send: mockSend })),
-  GetObjectCommand: vi.fn((args) => args),
+  S3Client: vi.fn(function () { return { send: mockSend }; }),
+  GetObjectCommand: vi.fn(function (args) { return args; }),
 }));
 vi.mock('@/lib/auth', () => ({ verifyUser: vi.fn() }));
 vi.mock('@/lib/diagnosis', () => ({ getReport: vi.fn(), canMutateReport: vi.fn() }));
@@ -14,7 +14,7 @@ import { getReport, canMutateReport } from '@/lib/diagnosis';
 
 const req = (id: string, format?: string) =>
   new Request(`http://x/api/diagnosis/${id}/download${format ? `?format=${format}` : ''}`);
-const ctx = (id: string) => ({ params: { id } });
+const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   vi.clearAllMocks();

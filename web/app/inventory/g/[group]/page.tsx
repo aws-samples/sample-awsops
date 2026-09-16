@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 // Server wrapper validates the slug against the overview-eligible (non-singleton)
 // groups and 404s otherwise, so /inventory/g/<bad> and /inventory/g/monitoring
 // (singleton) hit the real Next.js not-found boundary instead of a half-empty page.
-export default function GroupOverviewPage({ params }: { params: { group: string } }) {
-  const node = groupBySlug(params.group);
+export default async function GroupOverviewPage({ params }: { params: Promise<{ group: string }> }) {
+  const node = groupBySlug((await params).group);
   if (!node) notFound();
   return <GroupOverviewClient slug={node.slug} />;
 }

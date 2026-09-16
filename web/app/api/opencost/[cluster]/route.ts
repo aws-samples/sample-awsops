@@ -12,19 +12,21 @@ function json(obj: unknown, status: number) {
 }
 
 // GET — read saved config (any authenticated user). null config = none saved (page uses defaults).
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
+  const params = await pendingParams;
   if (!(await isClusterOnboarded(params.cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
   const config = await getOpencostConfig(params.cluster);
   return json({ cluster: params.cluster, config }, 200);
 }
 
 // PUT — save config (admin only). Writes only the app's own Aurora (no cluster/AWS write).
-export async function PUT(request: Request, { params }: { params: { cluster: string } }) {
+export async function PUT(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
+  const params = await pendingParams;
   if (!(await isClusterOnboarded(params.cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
   let body: { chartVersion?: string | null; config?: Record<string, unknown> } = {};
   try { body = (await readJsonBounded(request)) as typeof body; } // bound BEFORE parse (OOM guard)

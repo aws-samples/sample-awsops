@@ -33,7 +33,7 @@ AWSops は **Terraform**(`terraform/foundation/`、部分 S3 backend)でプロ�
 |------|------|
 | **IaC** | Terraform (S3 partial backend, `use_lockfile`)。CDK は廃止済み |
 | **エッジ** | CloudFront(TLS) → VPC Origin(`https-only:443`) → 内部 ALB HTTPS:443(リージョン ACM) → Fargate。**公開 ALB なし** |
-| **コンピュート** | ECS Fargate(arm64)。web は Next.js 14 thin-BFF、**ルートパス(`/`)**で配信 |
+| **コンピュート** | ECS Fargate(arm64)。web は Next.js 15 thin-BFF、**ルートパス(`/`)**で配信 |
 | **データ** | Aurora Serverless v2 (PostgreSQL 17)、node-pg でアクセス |
 | **AI** | AgentCore Runtime + 9 個のセクションゲートウェイの MCP Lambda ツール(ライブクエリ) |
 | **非同期ワーカー** | SQS → ESM(キルスイッチ) → dispatcher Lambda → Step Functions → Lambda または Fargate |

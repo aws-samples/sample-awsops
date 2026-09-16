@@ -41,10 +41,11 @@ function parseAuth(body: unknown): EksAuth | null | 'invalid' {
   return 'invalid';
 }
 
-export async function POST(request: Request, { params }: { params: { cluster: string } }) {
+export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
+  const params = await pendingParams;
   if (!CLUSTER_NAME_RE.test(params.cluster)) return json({ status: 'error', message: 'invalid cluster name' }, 400);
   // Cluster must actually exist (spec §3.2 ①) — never emit a guide for arbitrary input.
   const known = (await listClusters()).some((c) => c.name === params.cluster);
@@ -82,11 +83,12 @@ export async function POST(request: Request, { params }: { params: { cluster: st
   return json({ registered: true }, 200);
 }
 
-export async function DELETE(request: Request, { params }: { params: { cluster: string } }) {
+export async function DELETE(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
   // Same charset gate as POST — defense-in-depth consistency (panel r5: gemini).
+  const params = await pendingParams;
   if (!CLUSTER_NAME_RE.test(params.cluster)) return json({ status: 'error', message: 'invalid cluster name' }, 400);
   if (isEnvCluster(params.cluster)) {
     return json({ status: 'error', message: 'Terraform(onboard_eks_clusters) 관할 — tfvars에서 제거하세요' }, 400);

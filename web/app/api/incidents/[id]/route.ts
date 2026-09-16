@@ -15,9 +15,10 @@ import { getIncident } from '@/lib/incident';
 export const dynamic = 'force-dynamic';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user || !(await isAdmin(user))) return NextResponse.json({ message: 'admin required' }, { status: 403 });
+  const params = await pendingParams;
   if (!UUID_RE.test(params.id)) return NextResponse.json({ message: 'invalid incident id' }, { status: 400 });
   const incident = await getIncident(params.id);
   if (!incident) return NextResponse.json({ message: 'incident not found' }, { status: 404 });

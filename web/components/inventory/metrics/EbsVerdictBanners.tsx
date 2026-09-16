@@ -17,7 +17,7 @@ export function EbsVerdictBanners({ data }: { data: Record<string, unknown> }) {
   // 'available' in the SYNCED SNAPSHOT — a stale snapshot can't prove it is still detached,
   // so the banner says so (the FinOps rule wraps the same signal in staleness guards).
   const idle = data.state === 'available';
-  const banners = [] as JSX.Element[];
+  const banners = [] as React.JSX.Element[];
   if (isTrue(enc)) {
     banners.push(
       <div key="enc" className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800">

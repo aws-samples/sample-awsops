@@ -9,7 +9,7 @@ vi.mock('@/lib/network-path', async () => {
   return { ...actual, getRunDetail: (...a: unknown[]) => getRunDetail(...a) };
 });
 
-const params = { runId: 'run-1' };
+const params = Promise.resolve({ runId: 'run-1' });
 const req = () => new Request('http://x/api/network-path-runs/run-1', { headers: { cookie: 'awsops_token=t' } });
 
 beforeEach(() => {

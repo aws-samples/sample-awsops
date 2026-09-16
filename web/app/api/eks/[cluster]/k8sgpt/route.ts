@@ -8,7 +8,7 @@ import { isAllowed } from '@/lib/eks-registry';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   if (!(await isAdmin(user))) return Response.json({ status: 'error', message: 'admin required' }, { status: 403 });
@@ -18,6 +18,7 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     return Response.json({ enabled: false, message: 'k8sgpt diagnosis disabled' }, { status: 503 });
   }
 
+  const params = await pendingParams;
   if (!(await isAllowed(params.cluster))) {
     return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
   }

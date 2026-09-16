@@ -15,7 +15,7 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query
 
 const UUID = '11111111-1111-1111-1111-111111111111';
 const req = (cookie = 'awsops_token=t') => new Request(`http://x/api/jobs/${UUID}`, { headers: { cookie } });
-const ctx = { params: { id: UUID } };
+const ctx = { params: Promise.resolve({ id: UUID }) };
 
 beforeEach(() => {
   verifyUser.mockReset(); isAdmin.mockReset(); query.mockReset();
@@ -31,7 +31,7 @@ describe('GET /api/jobs/[id]', () => {
   it('400 on a malformed id (checked only after auth)', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     const { GET } = await import('./route');
-    const res = await GET(req(), { params: { id: 'not-a-uuid' } });
+    const res = await GET(req(), { params: Promise.resolve({ id: 'not-a-uuid' }) });
     expect(res.status).toBe(400);
   });
   it('404 job not found', async () => {

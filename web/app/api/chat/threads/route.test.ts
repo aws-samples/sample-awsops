@@ -36,7 +36,7 @@ describe('threads API', () => {
     verifyUser.mockResolvedValue({ sub: 'u1' });
     getThread.mockResolvedValue(null);
     const { GET } = await import('./[id]/route');
-    const res = await GET(req('http://x/api/chat/threads/tX'), { params: { id: 'tX' } });
+    const res = await GET(req('http://x/api/chat/threads/tX'), { params: Promise.resolve({ id: 'tX' }) });
     expect(res.status).toBe(404);
   });
 
@@ -44,7 +44,7 @@ describe('threads API', () => {
     verifyUser.mockResolvedValue({ sub: 'u1' });
     getThread.mockResolvedValue({ thread: { id: 't1', title: 'T', sessionId: 's', updatedAt: 'now' }, messages: [] });
     const { GET } = await import('./[id]/route');
-    const res = await GET(req('http://x/api/chat/threads/t1'), { params: { id: 't1' } });
+    const res = await GET(req('http://x/api/chat/threads/t1'), { params: Promise.resolve({ id: 't1' }) });
     expect(res.status).toBe(200);
     expect(getThread).toHaveBeenCalledWith('u1', 't1');
   });
@@ -53,9 +53,9 @@ describe('threads API', () => {
     verifyUser.mockResolvedValue({ sub: 'u1' });
     const { DELETE } = await import('./[id]/route');
     deleteThread.mockResolvedValue(false);
-    expect((await DELETE(req('http://x/api/chat/threads/t1', 'DELETE'), { params: { id: 't1' } })).status).toBe(404);
+    expect((await DELETE(req('http://x/api/chat/threads/t1', 'DELETE'), { params: Promise.resolve({ id: 't1' }) })).status).toBe(404);
     deleteThread.mockResolvedValue(true);
-    expect((await DELETE(req('http://x/api/chat/threads/t1', 'DELETE'), { params: { id: 't1' } })).status).toBe(200);
+    expect((await DELETE(req('http://x/api/chat/threads/t1', 'DELETE'), { params: Promise.resolve({ id: 't1' }) })).status).toBe(200);
   });
 
   it('GET list: DB failure degrades to empty list (not 500)', async () => {

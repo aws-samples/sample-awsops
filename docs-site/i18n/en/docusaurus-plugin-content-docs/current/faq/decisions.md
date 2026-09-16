@@ -74,7 +74,7 @@ Admin features are allowed only for users who are members of the Cognito `admins
 AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA** (ADR-037, ADR-030).
 
 - **IaC**: Terraform (partial S3 backend). CDK is dropped (ADR-024 → superseded by ADR-037).
-- **Compute**: ECS Fargate (arm64). web is a Next.js 14 thin-BFF served at the root path.
+- **Compute**: ECS Fargate (arm64). web is a Next.js 15 thin-BFF served at the root path.
 - **Async workers**: heavy / long / OOM-risk work is never run inline by web — it goes through SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
 
 ADR-037 supersedes ADR-024 in full and refines ADR-030's mechanism (no live Steampipe; flag-gated inventory sync only).

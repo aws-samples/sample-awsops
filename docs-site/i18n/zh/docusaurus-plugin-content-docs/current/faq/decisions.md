@@ -74,7 +74,7 @@ AWSops 使用**应用内登录表单**（`/login`）（ADR-042）。
 AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA**（ADR-037、ADR-030）。
 
 - **IaC**：Terraform（部分 S3 backend）。CDK 已废弃（ADR-024 → 由 ADR-037 承继）。
-- **计算**：ECS Fargate（arm64）。web 作为 Next.js 14 thin-BFF 在根路径提供服务。
+- **计算**：ECS Fargate（arm64）。web 作为 Next.js 15 thin-BFF 在根路径提供服务。
 - **异步 worker**：繁重或长时/有 OOM 风险的任务不由 web 直接处理，而是发送到 SQS → ESM（kill-switch）→ dispatcher Lambda（幂等）→ Step Functions → Lambda 或 `ecs:runTask.sync` Fargate。
 
 ADR-037 全面承继了 ADR-024，并精炼了 ADR-030 的机制（无实时 Steampipe，仅确定 flag-gated 库存 sync）。
