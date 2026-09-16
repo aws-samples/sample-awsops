@@ -215,6 +215,9 @@ bash scripts/v2/merge-verify.sh   # required Python, web and deployment tests
 node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs # real PG migration + web connections + agent policy regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
+# Also CI-required when docs-site/ or .github/workflows/merge-verify.yml changes:
+(cd docs-site && npm ci && npm run typecheck && npm run build &&
+  bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx)
 node --test scripts/v2/deployment-smoke.test.mjs # offline health/auth/credential preparation and workflow checks
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
 (cd web && npx vitest run)        # web unit tests only
@@ -222,6 +225,8 @@ bash tests/run-all.sh             # repo-wide hook/structure tests + agent Pytho
 
 The private migration fixture command includes runtime, controller, workflow and mocked-plan
 checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform **1.15.7**.
+See [merge verification](docs/v2-merge-verification.md) for the complete CI scope,
+including the conditional documentation build and full presentation archive check.
 
 ## API Documentation
 
@@ -445,6 +450,9 @@ bash scripts/v2/merge-verify.sh   # 필수 Python·웹·배포 테스트
 node --test scripts/v2/ci/*.test.mjs # private migration runtime 오프라인 fixture (CI 필수)
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs # 실제 PG migration·웹 연결·에이전트 정책 회귀 테스트 (CI 필수)
 bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
+# docs-site/ 또는 .github/workflows/merge-verify.yml 변경 시 아래도 CI 필수:
+(cd docs-site && npm ci && npm run typecheck && npm run build &&
+  bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx)
 node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 health·인증·자격증명 준비·워크플로 검사
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest
 (cd web && npx vitest run)        # web 유닛 테스트만
@@ -452,6 +460,8 @@ bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent
 
 위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
 controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·Terraform **1.15.7**도 필요합니다.
+조건부 문서 빌드와 프레젠테이션 전체 아카이브 검증을 포함한 CI 범위는
+[머지 검증 가이드](docs/v2-merge-verification.md)를 참고하세요.
 
 ## API 문서
 
