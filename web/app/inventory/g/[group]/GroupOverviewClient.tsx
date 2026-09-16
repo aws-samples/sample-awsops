@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
@@ -12,6 +12,7 @@ import { TYPE_ICON, GROUP_ICON, variantIcon, highlightIcon } from '@/lib/type-ic
 // Gap L82: the per-type micro-stat subline map is SHARED with the dashboard tiles
 // (web/lib/tile-micro.ts) so the two surfaces cannot drift.
 import { typeMicroLine, type TileSplits } from '@/lib/tile-micro';
+import { scopeParams, useActiveScope } from '@/lib/account-context';
 
 interface ByType { type: string; label: string; count: number; [k: string]: unknown }
 interface Summary { byType: ByType[]; total: number; splits?: TileSplits }
@@ -25,27 +26,51 @@ const DASH = '—';
  * slots here (inert, no fetch — API contracts TBD).
  */
 export default function GroupOverviewClient({ slug }: { slug: string }) {
+  const [scope, , ready] = useActiveScope();
+  if (!ready) return null;
+  const query = scopeParams(scope);
+  return <ScopedGroupOverview key={`${slug}:${query}`} slug={slug} query={query} />;
+}
+
+function ScopedGroupOverview({ slug, query }: { slug: string; query: string }) {
   const { t } = useI18n();
   const node = groupBySlug(slug);
   const [sum, setSum] = useState<Summary | null>(null);
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  const loadGen = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    const gen = ++loadGen.current;
+    activeRequest.current?.abort();
+    const ctl = new AbortController();
+    activeRequest.current = ctl;
+    const current = () => loadGen.current === gen && !ctl.signal.aborted;
     setBusy(true);
     try {
-      const r = await fetch('/api/inventory/summary');
+      const r = await fetch(`/api/inventory/summary?${query}`, { signal: ctl.signal });
       if (!r.ok) throw new Error(String(r.status));
-      setSum(await r.json());
+      const result = await r.json();
+      if (!current()) return;
+      setSum(result);
       setErr('');
       setCapturedAt(new Date().toISOString()); // only stamp on success (not on 401/500)
     } catch (e) {
-      setErr(String(e));
+      if (current()) setErr(String(e));
+    } finally {
+      if (current()) setBusy(false);
+      if (activeRequest.current === ctl) activeRequest.current = null;
     }
-    setBusy(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  }, [query]);
+  useEffect(() => {
+    load();
+    return () => {
+      loadGen.current++;
+      activeRequest.current?.abort();
+    };
+  }, [load]);
 
   if (!node) return null; // server already guarded; defensive
 
