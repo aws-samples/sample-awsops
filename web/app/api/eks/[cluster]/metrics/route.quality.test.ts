@@ -48,7 +48,7 @@ const deny = () => Object.assign(new Error('Denied arn:aws:iam::222222222222:rol
 });
 async function read() {
   const { GET } = await import('./route');
-  const response = await GET(new Request('http://local/?account=222222222222&region=us-west-2'), { params: { cluster: 'shared' } });
+  const response = await GET(new Request('http://local/?account=222222222222&region=us-west-2'), { params: Promise.resolve({ cluster: 'shared' }) });
   expect(response.status).toBe(200);
   return response.json();
 }

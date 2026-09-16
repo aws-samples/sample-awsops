@@ -39,7 +39,7 @@ const request = (id: string, search = '', method = 'POST', body?: unknown) =>
     method, headers: { cookie: 'awsops_token=t', 'content-type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-const params = (cluster: string) => ({ params: { cluster } });
+const params = (cluster: string) => ({ params: Promise.resolve({ cluster }) });
 
 beforeEach(() => {
   vi.resetModules();
