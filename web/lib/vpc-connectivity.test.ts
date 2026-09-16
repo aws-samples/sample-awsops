@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EC2Client, DescribeVpcPeeringConnectionsCommand, DescribeTransitGatewayAttachmentsCommand } from '@aws-sdk/client-ec2';
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
+import { isVpcConnectivityRegion } from './vpc-connectivity-scope';
 
 const mocks = vi.hoisted(() => ({
   account: vi.fn(), host: vi.fn(), current: vi.fn(), query: vi.fn(), connect: vi.fn(),
@@ -33,7 +34,7 @@ const peering = (id = 'pcx-11111111', requester = side(), accepter = side(OTHER,
 const attachment = (overrides = {}) => ({
   TransitGatewayId: TGW, TransitGatewayOwnerId: HOST, TransitGatewayAttachmentId: 'tgw-attach-11111111111111111',
   ResourceId: VPC, ResourceType: 'vpc', ResourceOwnerId: HOST, State: 'available',
-  Association: { TransitGatewayRouteTableId: 'tgw-rtb-11111111111111111' }, ...overrides,
+  Association: { TransitGatewayRouteTableId: 'tgw-rtb-11111111111111111', State: 'associated' }, ...overrides,
 });
 function hasFilter(command: { input: unknown }, name: string, value?: string) {
   const filters = (command.input as { Filters?: { Name: string; Values: string[] }[] }).Filters;
@@ -67,8 +68,12 @@ describe('scoped configuration lookup', () => {
   it.each([MEMBER, undefined, 'invalid'])('discloses shared or unknown VPC ownership (%s) without changing the authorized account', async ownerId => {
     mocks.query.mockResolvedValue({ rows: [inventory('self', { owner_id: ownerId })] });
     const result = await load(input);
-    expect(result.incompleteSources).toContain('source');
+    expect(result.incompleteSources).toEqual([]);
+    expect(result.limitations).toEqual([ownerId === MEMBER ? 'shared-vpc' : 'owner-unknown']);
     expect(result.source).toMatchObject({ accountId: HOST, ownerId: ownerId === MEMBER ? MEMBER : null });
+    expect(await load(input)).toEqual(result);
+    expect(sdk()).toHaveBeenCalledTimes(3);
+    expect(mocks.query).toHaveBeenCalledTimes(2);
     expect(STSClient.prototype.send).not.toHaveBeenCalled();
     expect(sdk().mock.calls.every(([c]) =>
       !hasFilter(c, 'requester-vpc-info.owner-id', MEMBER) && !hasFilter(c, 'resource-owner-id', MEMBER))).toBe(true);
@@ -78,7 +83,8 @@ describe('scoped configuration lookup', () => {
     expect((await load(input)).incompleteSources).toEqual([]);
     mocks.query.mockResolvedValue({ rows: [inventory('self', { owner_id: MEMBER })] });
     const result = await load(input);
-    expect(result.incompleteSources).toContain('source');
+    expect(result.incompleteSources).toEqual([]);
+    expect(result.limitations).toEqual(['shared-vpc']);
     expect(sdk()).toHaveBeenCalledTimes(6);
   });
 
@@ -95,6 +101,7 @@ describe('scoped configuration lookup', () => {
     denied = false;
     const recovered = await load(input);
     expect(recovered.incompleteSources).toEqual([]);
+    expect(recovered.limitations).toEqual([]);
     expect(recovered.peerings).toHaveLength(1);
     expect(await load(input)).toEqual(recovered);
     expect(sdk()).toHaveBeenCalledTimes(6);
@@ -117,6 +124,7 @@ describe('scoped configuration lookup', () => {
       if (hasFilter(command, 'requester-vpc-info.vpc-id')) return { VpcPeeringConnections: [
         peering(), peering('pcx-33333333', side(VPC, MEMBER)),
         peering('pcx-44444444', side(VPC, HOST, 'us-west-2')),
+        peering('pcx-55555555', { ...side(), Region: undefined } as never),
       ] };
       if (hasFilter(command, 'accepter-vpc-info.vpc-id')) return { VpcPeeringConnections: [
         peering('pcx-22222222', side(OTHER, MEMBER), side()),
@@ -136,6 +144,58 @@ describe('scoped configuration lookup', () => {
     expect(EC2Client.prototype.destroy).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['requester', 'accepter'] as const)('retains and caches reduced-info pending peerings on the %s side', async direction => {
+    sdk().mockImplementation(async command => hasFilter(command, `${direction}-vpc-info.vpc-id`) ? {
+      VpcPeeringConnections: [
+        { ...peering(), Status: { Code: 'pending-acceptance' },
+          [direction === 'requester' ? 'AccepterVpcInfo' : 'RequesterVpcInfo']: { VpcId: OTHER },
+          [direction === 'requester' ? 'RequesterVpcInfo' : 'AccepterVpcInfo']: side() },
+        { ...peering('pcx-22222222'), Status: { Code: 'deleted' },
+          [direction === 'requester' ? 'AccepterVpcInfo' : 'RequesterVpcInfo']: undefined,
+          [direction === 'requester' ? 'RequesterVpcInfo' : 'AccepterVpcInfo']: side() },
+      ],
+    } : empty(command));
+    const result = await load(input);
+    expect(result.peerings).toEqual([
+      { id: 'pcx-11111111', state: 'pending-acceptance', peer: { vpcId: OTHER, accountId: null, region: null, cidr: null } },
+      { id: 'pcx-22222222', state: 'deleted', peer: { vpcId: null, accountId: null, region: null, cidr: null } },
+    ]);
+    expect(result.incompleteSources).toEqual([]);
+    expect(result.limitations).toEqual([]);
+    expect(await load(input)).toEqual(result);
+    expect(sdk()).toHaveBeenCalledTimes(3);
+  });
+
+  it('retains a syntactically valid future peer region without authorizing it as an input scope', async () => {
+    const region = 'ap-southeast-99';
+    sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
+      VpcPeeringConnections: [peering('pcx-11111111', side(), side(OTHER, MEMBER, region))],
+    } : empty(command));
+    const result = await load(input);
+    expect(result.peerings).toHaveLength(1);
+    expect(result.peerings[0].peer.region).toBe(region);
+    expect(result.incompleteSources).toEqual([]);
+    expect(await load(input)).toEqual(result);
+    await expect(load({ ...input, region })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(sdk()).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ['OwnerId', 'invalid', 'accountId'], ['VpcId', 'vpc-invalid', 'vpcId'],
+    ['Region', 'us-east-1;invalid', 'region'], ['CidrBlock', '10.0.0.0/16/24', 'cidr'],
+    ['OwnerId', `${MEMBER}\n`, 'accountId'], ['VpcId', `${OTHER}\n`, 'vpcId'],
+  ])('retains a peering but withholds malformed peer %s and does not cache it', async (field, value, key) => {
+    sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
+      VpcPeeringConnections: [peering('pcx-11111111', side(), { ...side(OTHER, MEMBER), [field]: value })],
+    } : empty(command));
+    const result = await load(input);
+    expect(result.peerings).toHaveLength(1);
+    expect(result.peerings[0].peer).toHaveProperty(key, null);
+    expect(result.incompleteSources).toEqual(['peering-requester']);
+    await load(input);
+    expect(sdk()).toHaveBeenCalledTimes(6);
+  });
+
   it('queries only verified TGWs and never infers routes or includes non-VPC/source attachments', async () => {
     const neighbor = attachment({ ResourceId: OTHER, ResourceOwnerId: MEMBER, TransitGatewayAttachmentId: 'tgw-attach-22222222222222222' });
     sdk().mockImplementation(async command => {
@@ -151,8 +211,9 @@ describe('scoped configuration lookup', () => {
     const result = await load(input);
     expect(result.transitGateways).toEqual([{
       id: TGW, attachmentId: 'tgw-attach-11111111111111111', state: 'available',
-      routeTableId: 'tgw-rtb-11111111111111111',
-      peers: [{ vpcId: OTHER, accountId: MEMBER, state: 'available', attachmentId: 'tgw-attach-22222222222222222', routeTableId: 'tgw-rtb-11111111111111111' }],
+      routeTableId: 'tgw-rtb-11111111111111111', associationState: 'associated',
+      peers: [{ vpcId: OTHER, accountId: MEMBER, state: 'available', attachmentId: 'tgw-attach-22222222222222222',
+        routeTableId: 'tgw-rtb-11111111111111111', associationState: 'associated' }],
     }]);
     expect(result.incompleteSources).toEqual(expect.arrayContaining(['tgw-attachments', 'tgw-peers']));
     const neighborCalls = sdk().mock.calls.filter(([c]) => hasFilter(c, 'transit-gateway-id'));
@@ -206,7 +267,8 @@ describe('scoped configuration lookup', () => {
       ? { VpcPeeringConnections: [null, {}, peering('pcx-11111111', side(), { ...side(OTHER), OwnerId: undefined } as never)] }
       : hasFilter(command, 'resource-id') ? { TransitGatewayAttachments: [attachment({ ResourceOwnerId: undefined })] } : {});
     const result = await load(input);
-    expect(result.peerings).toEqual([]);
+    expect(result.peerings).toHaveLength(1);
+    expect(result.peerings[0].peer.accountId).toBeNull();
     expect(result.transitGateways).toEqual([]);
     expect(result.incompleteSources).toEqual(['peering-requester', 'peering-accepter', 'tgw-attachments']);
   });
@@ -218,6 +280,17 @@ describe('scoped configuration lookup', () => {
 });
 
 describe('identity, caching and bounds', () => {
+  it.each(['af-south-1', 'ap-east-2', 'ap-southeast-7', 'mx-central-1', 'us-east-1'])('shares supported input region %s', async region => {
+    const { validVpcConnectivityInput } = await import('./vpc-connectivity');
+    expect(isVpcConnectivityRegion(region)).toBe(true);
+    expect(validVpcConnectivityInput({ ...input, region })).toBe(true);
+  });
+
+  it.each([undefined, null, 1, {}, '', '__all__', 'us-east-999', 'cn-north-1', 'us-gov-west-1', 'US-EAST-1'])
+    ('rejects unsupported or non-string region %j in the shared predicate', region => {
+      expect(isVpcConnectivityRegion(region)).toBe(false);
+    });
+
   it.each([
     { account: '__all__' }, { account: '' }, { account: '123' }, { region: '' },
     { region: 'us-east-999' }, { region: 'cn-north-1' }, { region: 'us-gov-west-1' },
@@ -225,6 +298,8 @@ describe('identity, caching and bounds', () => {
   ])('rejects invalid requests before accessing dependencies: %j', async overrides => {
     await expect(load({ ...input, ...overrides })).rejects.toMatchObject({ code: 'invalid_request' });
     expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.account).not.toHaveBeenCalled();
+    expect(STSClient.prototype.send).not.toHaveBeenCalled();
     expect(sdk()).not.toHaveBeenCalled();
   });
 
@@ -453,22 +528,116 @@ describe('incomplete evidence and conflicting records', () => {
     expect(result.incompleteSources).toContain('tgw-peers');
   });
 
-  it('discloses missing optional peering CIDR without inventing metadata', async () => {
+  it('caches a missing optional primary CIDR without inventing metadata from IPv6 sets', async () => {
     sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
-      VpcPeeringConnections: [peering('pcx-11111111', side(), { ...side(OTHER, MEMBER), CidrBlock: undefined } as never)],
+      VpcPeeringConnections: [peering('pcx-11111111', side(), {
+        ...side(OTHER, MEMBER), CidrBlock: undefined, Ipv6CidrBlockSet: [{ Ipv6CidrBlock: '2001:db8::/56' }],
+      } as never)],
     } : empty(command));
     const result = await load(input);
     expect(result.peerings[0].peer.cidr).toBeNull();
-    expect(result.incompleteSources).toEqual(['peering-requester']);
+    expect(result.incompleteSources).toEqual([]);
+    expect(await load(input)).toEqual(result);
+    expect(sdk()).toHaveBeenCalledTimes(3);
   });
 
-  it('discloses participant-only TGW visibility even when the peers query succeeds empty', async () => {
+  it.each(['10.0.0.0/16/24', '10.0.0.0/33', '10.0.0.0/-1', '10.0.0.0/016', '10.0.0.256/16', '10.0.0.0/', '10.0.0.0/16\n', ''])
+    ('rejects malformed primary CIDR %s', async cidr => {
+      sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
+        VpcPeeringConnections: [peering('pcx-11111111', side(), { ...side(OTHER, MEMBER), CidrBlock: cidr })],
+      } : empty(command));
+      const result = await load(input);
+      expect(result.peerings[0].peer.cidr).toBeNull();
+      expect(result.incompleteSources).toEqual(['peering-requester']);
+    });
+
+  it.each(['0.0.0.0/0', '10.0.0.1/32'])('accepts boundary IPv4 prefix %s', async cidr => {
+    sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
+      VpcPeeringConnections: [peering('pcx-11111111', side(), { ...side(OTHER, MEMBER), CidrBlock: cidr })],
+    } : empty(command));
+    const result = await load(input);
+    expect(result.peerings[0].peer.cidr).toBe(cidr);
+    expect(result.incompleteSources).toEqual([]);
+  });
+
+  it('withdraws contradictory duplicate peer identities and keeps the read uncached', async () => {
+    sdk().mockImplementation(async command => hasFilter(command, 'requester-vpc-info.vpc-id') ? {
+      VpcPeeringConnections: [peering(), peering('pcx-11111111', side(), side('vpc-33333333', MEMBER)), peering()],
+    } : empty(command));
+    const result = await load(input);
+    expect(result.peerings).toEqual([]);
+    expect(result.incompleteSources).toEqual(['peering-requester']);
+    await load(input);
+    expect(sdk()).toHaveBeenCalledTimes(6);
+  });
+
+  it('caches participant-only TGW visibility even when the peers query succeeds empty', async () => {
     sdk().mockImplementation(async command => hasFilter(command, 'resource-id') ? {
       TransitGatewayAttachments: [attachment({ TransitGatewayOwnerId: MEMBER })],
     } : empty(command));
     const result = await load(input);
     expect(result.transitGateways[0].peers).toEqual([]);
+    expect(result.incompleteSources).toEqual([]);
+    expect(result.limitations).toEqual(['shared-tgw']);
+    expect(await load(input)).toEqual(result);
+    expect(sdk()).toHaveBeenCalledTimes(4);
+    expect(STSClient.prototype.send).not.toHaveBeenCalled();
+  });
+
+  it('keeps operational failures uncached even with structural limitations', async () => {
+    mocks.query.mockResolvedValue({ rows: [inventory('self', { owner_id: MEMBER })] });
+    sdk().mockImplementation(async command => {
+      if (hasFilter(command, 'resource-id')) return { TransitGatewayAttachments: [attachment({ TransitGatewayOwnerId: MEMBER })] };
+      if (hasFilter(command, 'transit-gateway-id')) throw new Error('denied');
+      return empty(command);
+    });
+    const result = await load(input);
+    expect(result.limitations).toEqual(['shared-vpc', 'shared-tgw']);
     expect(result.incompleteSources).toEqual(['tgw-peers']);
+    await load(input);
+    expect(sdk()).toHaveBeenCalledTimes(8);
+  });
+
+  it.each(['associated', 'associating', 'disassociating', 'disassociated', undefined, 'future-state'])
+    ('retains raw attachment and association states (%s) on both source and peer', async associationState => {
+      const Association = { TransitGatewayRouteTableId: 'tgw-rtb-11111111111111111', State: associationState };
+      sdk().mockImplementation(async command => {
+        if (hasFilter(command, 'resource-id')) return { TransitGatewayAttachments: [attachment({ State: 'pendingAcceptance', Association })] };
+        if (hasFilter(command, 'transit-gateway-id')) return { TransitGatewayAttachments: [
+          attachment({ ResourceId: OTHER, ResourceOwnerId: MEMBER, TransitGatewayAttachmentId: 'tgw-attach-22222222222222222',
+            State: 'deleting', Association }),
+        ] };
+        return empty(command);
+      });
+      const result = await load(input);
+      expect(result.transitGateways[0]).toMatchObject({
+        state: 'pendingAcceptance', associationState: associationState ?? null, routeTableId: Association.TransitGatewayRouteTableId,
+        peers: [expect.objectContaining({ state: 'deleting', associationState: associationState ?? null,
+          routeTableId: Association.TransitGatewayRouteTableId })],
+      });
+      expect(result.incompleteSources).toEqual([]);
+      expect(await load(input)).toEqual(result);
+      expect(sdk()).toHaveBeenCalledTimes(4);
+    });
+
+  it.each([
+    [undefined, null, null, false],
+    [{ State: 'disassociated' }, null, 'disassociated', false],
+    [{ TransitGatewayRouteTableId: 'invalid', State: 'associating' }, null, 'associating', true],
+    [{ TransitGatewayRouteTableId: 'tgw-rtb-11111111111111111\n', State: 'associated' }, null, 'associated', true],
+    [{ TransitGatewayRouteTableId: 'tgw-rtb-11111111111111111', State: '\ninvalid' }, 'tgw-rtb-11111111111111111', null, true],
+  ])('preserves absent association fields and withholds malformed evidence: %j', async (Association, routeTableId, associationState, incomplete) => {
+    sdk().mockImplementation(async command => {
+      if (hasFilter(command, 'resource-id')) return { TransitGatewayAttachments: [attachment({ Association })] };
+      if (hasFilter(command, 'transit-gateway-id')) return { TransitGatewayAttachments: [
+        attachment({ ResourceId: OTHER, TransitGatewayAttachmentId: 'tgw-attach-22222222222222222', Association }),
+      ] };
+      return empty(command);
+    });
+    const result = await load(input);
+    expect(result.transitGateways[0]).toMatchObject({ routeTableId, associationState });
+    expect(result.transitGateways[0].peers[0]).toMatchObject({ routeTableId, associationState });
+    expect(result.incompleteSources).toEqual(incomplete ? ['tgw-attachments', 'tgw-peers'] : []);
   });
 
   it('does not turn a source attachment with changed ownership into a neighbor', async () => {

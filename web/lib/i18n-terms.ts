@@ -7,6 +7,13 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '활성 연결 기록': { en: 'Active connection record', zh: '活动连接记录', ja: 'アクティブな接続記録' },
+  '연결 대기·종료 기록 (현재 연결 미확인)': { en: 'Pending or inactive record (current connection unconfirmed)', zh: '待处理或非活动记录（当前连接未确认）', ja: '保留中・非アクティブの記録（現在の接続は未確認）' },
+  'TGW 라우트 테이블 연결 기록': { en: 'TGW route-table association record', zh: 'TGW 路由表关联记录', ja: 'TGW ルートテーブル関連付け記録' },
+  '계정·리전이 미확인이거나 지원하지 않는 VPC는 선택 목록에서 제외했습니다.': { en: 'VPCs with unknown or unsupported accounts/regions were excluded from the picker.', zh: '账户或区域未知或不受支持的 VPC 已从选择列表中排除。', ja: 'アカウント・リージョンが不明または未対応の VPC は選択一覧から除外しました。' },
+  '공유 TGW는 조회 계정에서 볼 수 있는 어태치먼트만 표시합니다.': { en: 'Shared TGWs show only attachments visible to the queried account.', zh: '共享 TGW 仅显示查询账户可见的连接。', ja: '共有 TGW では照会アカウントに表示されるアタッチメントのみを表示します。' },
+  '동일 TGW의 VPC 어태치먼트 기록': { en: 'VPC attachment records on the same TGW', zh: '同一 TGW 上的 VPC 连接记录', ja: '同じ TGW の VPC アタッチメント記録' },
+  '어태치먼트 상태': { en: 'Attachment state', zh: '连接状态', ja: 'アタッチメントの状態' },
   'VPC 소유 계정': { en: 'VPC owner account', zh: 'VPC 所有者账户', ja: 'VPC 所有者アカウント' },
   '공유 VPC의 전체 연결은 소유 계정에서 확인하세요.': { en: 'Check the owner account for the shared VPC’s full connection view.', zh: '请在所有者账户中查看共享 VPC 的完整连接信息。', ja: '共有 VPC の接続全体は所有者アカウントで確認してください。' },
   '소유 계정이 미확인이므로 연결 목록의 완전성을 판단할 수 없습니다.': { en: 'The owner account is unknown, so connection coverage cannot be confirmed.', zh: '所有者账户未知，因此无法确认连接列表是否完整。', ja: '所有者アカウントが不明なため、接続一覧の完全性を確認できません。' },

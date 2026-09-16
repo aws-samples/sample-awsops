@@ -9,6 +9,7 @@ import { assumedClient } from './aws-assume';
 import { currentAccountId } from './account';
 import { getAccount, type Account } from './accounts';
 import { getPool } from './db';
+import { isVpcConnectivityRegion } from './vpc-connectivity-scope';
 import type { VpcConnectivity } from './vpc-connectivity-types';
 
 type Input = { account: string; region: string; vpcId: string };
@@ -22,14 +23,8 @@ const PCX = /^pcx-(?:[a-f0-9]{8}|[a-f0-9]{17})$/;
 const TGW = /^tgw-[a-f0-9]{17}$/;
 const ATTACHMENT = /^tgw-attach-[a-f0-9]{17}$/;
 const TABLE = /^tgw-rtb-[a-f0-9]{17}$/;
-// Commercial regions only; unknown/aggregate scopes must never select an SDK default.
-const REGIONS = new Set((
-  'af-south-1 ap-east-1 ap-east-2 ap-northeast-1 ap-northeast-2 ap-northeast-3 ' +
-  'ap-south-1 ap-south-2 ap-southeast-1 ap-southeast-2 ap-southeast-3 ap-southeast-4 ' +
-  'ap-southeast-5 ap-southeast-6 ap-southeast-7 ca-central-1 ca-west-1 eu-central-1 ' +
-  'eu-central-2 eu-north-1 eu-south-1 eu-south-2 eu-west-1 eu-west-2 eu-west-3 ' +
-  'il-central-1 me-central-1 me-south-1 mx-central-1 sa-east-1 us-east-1 us-east-2 us-west-1 us-west-2'
-).split(' '));
+// Provider observations may name future peer regions; they never select credentials.
+const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 const SOURCES = ['peering-requester', 'peering-accepter', 'tgw-attachments', 'tgw-peers', 'source'] as const;
 type Source = typeof SOURCES[number];
 const TTL = 4 * 60_000, MAX_CACHE = 64, MAX_INFLIGHT = 8;
@@ -39,10 +34,10 @@ const valid = (pattern: RegExp, value: unknown): value is string => typeof value
 const text = (value: unknown, max = 256): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
 const cidr = (value: unknown): value is string => typeof value === 'string' &&
-  /^.+\/(?:[0-9]|[12][0-9]|3[0-2])$/.test(value) && isIPv4(value.split('/')[0]);
+  /^[^/]+\/(?:[0-9]|[12][0-9]|3[0-2])$/.test(value) && isIPv4(value.split('/')[0]);
 
 export function validVpcConnectivityInput(input: Input): boolean {
-  return (input.account === 'self' || valid(ACCOUNT, input.account)) && REGIONS.has(input.region) && valid(VPC, input.vpcId);
+  return (input.account === 'self' || valid(ACCOUNT, input.account)) && isVpcConnectivityRegion(input.region) && valid(VPC, input.vpcId);
 }
 
 /** One budget covers registry, inventory, credential acquisition, retries and every page. */
@@ -156,9 +151,16 @@ async function ec2Client(account: Account, host: boolean, region: string, deadli
 
 async function fetchConnectivity(source: VpcConnectivity['source'], account: Account, host: boolean, deadline: Deadline): Promise<VpcConnectivity> {
   const incomplete = new Set<Source>();
+  const limitations: VpcConnectivity['limitations'] = [];
   // RAM participants collect the VPC under their own account key. Owner metadata
   // qualifies visibility only; it must never select credentials or authorize a read.
-  if (source.ownerId !== source.accountId) incomplete.add('source');
+  if (source.ownerId === null) limitations.push('owner-unknown');
+  else if (source.ownerId !== source.accountId) limitations.push('shared-vpc');
+  const optionalField = (value: unknown, check: (value: unknown) => value is string, label: Source): string | null => {
+    if (value == null) return null;
+    if (check(value)) return value;
+    incomplete.add(label); return null;
+  };
   let successfulPages = 0;
   const client = await ec2Client(account, host, source.region, deadline);
   const options = { abortSignal: deadline.signal };
@@ -193,8 +195,6 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
   const blockedPeerings = new Set<string>();
   const matchesSource = (v: VpcPeeringConnectionVpcInfo | undefined) =>
     v?.VpcId === source.vpcId && v.OwnerId === source.accountId && v.Region === source.region;
-  const validVpc = (v: VpcPeeringConnectionVpcInfo | undefined) =>
-    v && valid(VPC, v.VpcId) && valid(ACCOUNT, v.OwnerId) && REGIONS.has(v.Region ?? '');
   async function peeringDirection(direction: 'requester' | 'accepter') {
     const label = `peering-${direction}` as Source;
     const records = await collect(
@@ -207,11 +207,16 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
       const own = direction === 'requester' ? record?.RequesterVpcInfo : record?.AccepterVpcInfo;
       const peer = direction === 'requester' ? record?.AccepterVpcInfo : record?.RequesterVpcInfo;
       if (!record || !valid(PCX, record.VpcPeeringConnectionId) || !text(record.Status?.Code, 64) ||
-          !matchesSource(own) || !validVpc(peer)) { incomplete.add(label); continue; }
-      if (!cidr(peer!.CidrBlock)) incomplete.add(label);
+          !matchesSource(own)) { incomplete.add(label); continue; }
+      if (peer != null && (typeof peer !== 'object' || Array.isArray(peer))) incomplete.add(label);
       const item = {
         id: record.VpcPeeringConnectionId, state: record.Status!.Code!,
-        peer: { vpcId: peer!.VpcId!, accountId: peer!.OwnerId!, region: peer!.Region!, cidr: cidr(peer!.CidrBlock) ? peer!.CidrBlock! : null },
+        peer: {
+          vpcId: optionalField(peer?.VpcId, v => valid(VPC, v), label),
+          accountId: optionalField(peer?.OwnerId, v => valid(ACCOUNT, v), label),
+          region: optionalField(peer?.Region, v => text(v, 64) && valid(REGION, v), label),
+          cidr: optionalField(peer?.CidrBlock, cidr, label),
+        },
       };
       const previous = peerings.get(item.id);
       if (previous && JSON.stringify(previous) !== JSON.stringify(item)) {
@@ -223,11 +228,13 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
     a && valid(TGW, a.TransitGatewayId) && valid(ATTACHMENT, a.TransitGatewayAttachmentId) &&
     valid(VPC, a.ResourceId) && valid(ACCOUNT, a.ResourceOwnerId) &&
     valid(ACCOUNT, a.TransitGatewayOwnerId) && text(a.State, 64);
-  const routeTable = (a: TransitGatewayAttachment, label: Source) => {
-    const id = a.Association?.TransitGatewayRouteTableId;
-    if (id === undefined && !a.Association) return null; // unassociated is legitimate
-    if (valid(TABLE, id)) return id;
-    incomplete.add(label); return null;
+  const association = (a: TransitGatewayAttachment, label: Source) => {
+    const observed = a.Association;
+    if (observed != null && (typeof observed !== 'object' || Array.isArray(observed))) incomplete.add(label);
+    return {
+      routeTableId: optionalField(observed?.TransitGatewayRouteTableId, v => valid(TABLE, v), label),
+      associationState: optionalField(observed?.State, v => text(v, 64), label),
+    };
   };
   function uniqueAttachments(records: TransitGatewayAttachment[], label: Source) {
     const unique = new Map<string, TransitGatewayAttachment>();
@@ -262,7 +269,7 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
     }
     // A participant can only see its own attachments, including a successful empty
     // Describe response. That cannot certify the complete set of same-TGW neighbors.
-    if ([...sources.values()].some(a => a.TransitGatewayOwnerId !== source.accountId)) incomplete.add('tgw-peers');
+    if ([...sources.values()].some(a => a.TransitGatewayOwnerId !== source.accountId)) limitations.push('shared-tgw');
     const ids = [...new Set([...sources.values()].map(a => a.TransitGatewayId!))];
     if (!ids.length) return [];
     const attachmentsOnGateways = await collect('tgw-peers',
@@ -284,10 +291,10 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
     }
     return [...sources.values()].map(a => ({
       id: a.TransitGatewayId!, attachmentId: a.TransitGatewayAttachmentId!, state: a.State!,
-      routeTableId: routeTable(a, 'tgw-attachments'),
+      ...association(a, 'tgw-attachments'),
       peers: [...neighbors.values()].filter(p => p.TransitGatewayId === a.TransitGatewayId).map(p => ({
         vpcId: p.ResourceId!, accountId: p.ResourceOwnerId!, state: p.State!,
-        attachmentId: p.TransitGatewayAttachmentId!, routeTableId: routeTable(p, 'tgw-peers'),
+        attachmentId: p.TransitGatewayAttachmentId!, ...association(p, 'tgw-peers'),
       })),
     }));
   }
@@ -295,7 +302,7 @@ async function fetchConnectivity(source: VpcConnectivity['source'], account: Acc
     const [, , gateways] = await Promise.all([peeringDirection('requester'), peeringDirection('accepter'), transitGateways()]);
     if (!successfulPages) throw new VpcConnectivityError('lookup_failed');
     return { source, checkedAt: new Date().toISOString(), peerings: [...peerings.values()].sort((a, b) => a.id.localeCompare(b.id)),
-      transitGateways: gateways, incompleteSources: SOURCES.filter(s => incomplete.has(s)) };
+      transitGateways: gateways, limitations, incompleteSources: SOURCES.filter(s => incomplete.has(s)) };
   } finally { client.destroy(); }
 }
 

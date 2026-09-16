@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import VpcConnectivitySection from './VpcConnectivitySection';
 
 const state = vi.hoisted(() => ({
@@ -23,9 +23,9 @@ const result = {
   peerings: [{ id: 'pcx-aaaa1111', state: 'active',
     peer: { vpcId: 'vpc-bbbb2222', accountId: '222222222222', region: 'us-east-1', cidr: '10.2.0.0/16' } }],
   transitGateways: [{ id: 'tgw-aaaa1111', attachmentId: 'tgw-attach-aaaa1111', state: 'available',
-    routeTableId: 'tgw-rtb-aaaa1111', peers: [{ vpcId: 'vpc-cccc3333', accountId: '111111111111',
-      state: 'available', attachmentId: 'tgw-attach-bbbb2222', routeTableId: 'tgw-rtb-bbbb2222' }] }],
-  incompleteSources: [],
+    routeTableId: 'tgw-rtb-aaaa1111', associationState: 'associated', peers: [{ vpcId: 'vpc-cccc3333', accountId: '111111111111',
+      state: 'available', attachmentId: 'tgw-attach-bbbb2222', routeTableId: 'tgw-rtb-bbbb2222', associationState: 'associated' }] }],
+  incompleteSources: [], limitations: [] as string[],
 };
 function reply(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -43,11 +43,13 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('VpcConnectivitySection', () => {
   it.each(['222222222222', null])('explains incomplete shared/unknown ownership (%s) without claiming no connections', async ownerId => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
-      ...result, source: { ...result.source, ownerId }, peerings: [], transitGateways: [], incompleteSources: ['source'],
+      ...result, source: { ...result.source, ownerId }, peerings: [], transitGateways: [],
+      limitations: [ownerId ? 'shared-vpc' : 'owner-unknown'],
     })));
     render(<VpcConnectivitySection />);
     await open();
-    await screen.findByRole('alert');
+    await screen.findByText(/VPC 소유 계정:/);
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText(/VPC 소유 계정:/)).toBeTruthy();
     expect(screen.getByText(ownerId ? '공유 VPC의 전체 연결은 소유 계정에서 확인하세요.' : '소유 계정이 미확인이므로 연결 목록의 완전성을 판단할 수 없습니다.')).toBeTruthy();
     expect(screen.queryByText('조회 범위에서 VPC 연결이 발견되지 않았습니다.')).toBeNull();
@@ -76,7 +78,7 @@ describe('VpcConnectivitySection', () => {
     await screen.findByText('pcx-aaaa1111');
     expect(screen.getByText('vpc-bbbb2222')).toBeTruthy();
     expect(screen.getByText('vpc-cccc3333')).toBeTruthy();
-    expect(screen.getByText('동일 TGW에 연결된 VPC')).toBeTruthy();
+    expect(screen.getByText('동일 TGW의 VPC 어태치먼트 기록')).toBeTruthy();
     expect(screen.getByText(/실제 통신 가능 여부는/)).toBeTruthy();
     const query = new URL(requests[1], 'https://example.com').searchParams;
     expect(Object.fromEntries(query)).toEqual({ account: 'self', region: 'ap-northeast-2', vpcId: 'vpc-aaaa1111' });
@@ -132,6 +134,65 @@ describe('VpcConnectivitySection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'VPC 간 연결 보기' }));
     await screen.findByText(/목록 상한/);
     expect(screen.getAllByRole('option')).toHaveLength(499);
-    expect(screen.getByText(/계정·리전을 확인할 수 없는 VPC/)).toBeTruthy();
+    expect(screen.getByText(/미확인이거나 지원하지 않는 VPC/)).toBeTruthy();
+  });
+
+  it('labels pending/deleted records and transitional route-table associations without drawing a live peering arrow', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, peerings: [{ ...result.peerings[0], state: 'pending-acceptance' }],
+      transitGateways: [{ ...result.transitGateways[0], state: 'deleted', associationState: 'disassociating',
+        peers: [{ ...result.transitGateways[0].peers[0], state: 'failed', associationState: null }] }],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    const peering = (await screen.findByText('pcx-aaaa1111')).closest('article')!;
+    expect(within(peering).getByText('연결 대기·종료 기록 (현재 연결 미확인)')).toBeTruthy();
+    expect(peering.querySelector('svg')).toBeNull();
+    expect(screen.queryByText('활성 연결 기록')).toBeNull();
+    expect(screen.queryByText(/^연결된 TGW 라우트 테이블:/)).toBeNull();
+    expect(screen.getByText(/TGW 라우트 테이블 연결 기록:.*disassociating/)).toBeTruthy();
+  });
+
+  it('keeps a reduced-info pending peering visible with unknown fields', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, peerings: [{ id: 'pcx-aaaa1111', state: 'pending-acceptance',
+        peer: { vpcId: null, accountId: null, region: null, cidr: null } }], transitGateways: [],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    await screen.findByText('pcx-aaaa1111');
+    expect(screen.getByText('미확인 · 미확인')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not call a retained association current when its attachment is deleted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, peerings: [], transitGateways: [{ ...result.transitGateways[0], state: 'deleted', peers: [] }],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    await screen.findByText('tgw-aaaa1111');
+    expect(screen.queryByText(/^연결된 TGW 라우트 테이블:/)).toBeNull();
+  });
+
+  it('discloses shared TGW visibility separately from a failed read', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
+      ...result, limitations: ['shared-tgw'],
+    })));
+    render(<VpcConnectivitySection />);
+    await open();
+    await screen.findByText('공유 TGW는 조회 계정에서 볼 수 있는 어태치먼트만 표시합니다.');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('excludes regions the API cannot accept before offering a VPC selection', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ ...inventory, rows: [
+      vpc, { ...vpc, region: 'cn-north-1' }, { ...vpc, region: 'us-central-9' },
+    ] })));
+    render(<VpcConnectivitySection />);
+    fireEvent.click(screen.getByRole('button', { name: 'VPC 간 연결 보기' }));
+    await screen.findByRole('option', { name: /source-vpc/ });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByText(/미확인이거나 지원하지 않는 VPC/)).toBeTruthy();
   });
 });

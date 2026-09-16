@@ -5,6 +5,7 @@ import { ArrowDown, Network } from 'lucide-react';
 import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { isVpcConnectivityRegion } from '@/lib/vpc-connectivity-scope';
 import type { VpcConnectivity } from '@/lib/vpc-connectivity-types';
 
 interface VpcChoice { key: string; id: string; account: string; region: string; name: string }
@@ -20,7 +21,7 @@ function choices(rows: unknown[]): VpcChoice[] {
     if (!raw || typeof raw !== 'object') return [];
     const row = raw as Record<string, unknown>;
     const id = str(row.resource_id), account = str(row.account_id), region = str(row.region);
-    if (!/^vpc-(?:[0-9a-f]{8}|[0-9a-f]{17})$/.test(id) || !/^(self|\d{12})$/.test(account) || !/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(region)) return [];
+    if (!/^vpc-(?:[0-9a-f]{8}|[0-9a-f]{17})$/.test(id) || !/^(self|\d{12})$/.test(account) || !isVpcConnectivityRegion(region)) return [];
     const data = row.data && typeof row.data === 'object' ? row.data as Record<string, unknown> : {};
     return [{ key: `${account}/${region}/${id}`, id, account, region, name: str(data.name) || id }];
   });
@@ -33,14 +34,15 @@ function matchesResult(data: VpcConnectivity, choice: VpcChoice): boolean {
     && (data.source.ownerId === null || typeof data.source.ownerId === 'string' && /^\d{12}$/.test(data.source.ownerId))
     && (data.source.name === undefined || typeof data.source.name === 'string')
     && Number.isFinite(Date.parse(data.checkedAt))
-    && Array.isArray(data.peerings) && data.peerings.every(p => p && typeof p.id === 'string' && typeof p.state === 'string' && typeof p.peer?.vpcId === 'string'
+    && Array.isArray(data.peerings) && data.peerings.every(p => p && typeof p.id === 'string' && typeof p.state === 'string' && p.peer && nullableText(p.peer.vpcId)
       && nullableText(p.peer.accountId) && nullableText(p.peer.region) && nullableText(p.peer.cidr))
     && Array.isArray(data.transitGateways) && data.transitGateways.every(t => t && typeof t.id === 'string' && typeof t.state === 'string'
-      && typeof t.attachmentId === 'string' && nullableText(t.routeTableId)
+      && typeof t.attachmentId === 'string' && nullableText(t.routeTableId) && nullableText(t.associationState)
       && Array.isArray(t.peers) && t.peers.every(p => p && typeof p.vpcId === 'string' && typeof p.state === 'string'
-        && typeof p.attachmentId === 'string' && nullableText(p.accountId) && nullableText(p.routeTableId)))
+        && typeof p.attachmentId === 'string' && nullableText(p.accountId) && nullableText(p.routeTableId) && nullableText(p.associationState)))
     && Array.isArray(data.incompleteSources) && data.incompleteSources.every(s => typeof s === 'string')
-    && (data.source.ownerId === data.source.accountId || data.incompleteSources.includes('source'));
+    && Array.isArray(data.limitations) && data.limitations.every(s => ['shared-vpc', 'owner-unknown', 'shared-tgw'].includes(s))
+    && (data.source.ownerId === data.source.accountId || data.limitations.includes(data.source.ownerId ? 'shared-vpc' : 'owner-unknown'));
 }
 
 function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: boolean }) {
@@ -69,6 +71,7 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
   const loadList = async () => {
     setOpened(true);
     const next = start();
+    setListRead(false); setListCapped(false); setInvalidRows(false);
     try {
       const response = await fetch(`/api/inventory/vpc?limit=500&${scopeQuery}`, { signal: next.controller.signal });
       if (!response.ok) throw new Error();
@@ -76,7 +79,7 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
       if (!Array.isArray(body.rows)) throw new Error();
       if (!current(next.generation)) return;
       const options = choices(body.rows);
-      setVpcs(options); setSelected(options[0]?.key ?? ''); setListRead(true);
+      setVpcs(options); setSelected(previous => options.some(v => v.key === previous) ? previous : options[0]?.key ?? ''); setListRead(true);
       setListCapped(body.rows.length >= 500); setInvalidRows(options.length !== body.rows.length);
     } catch {
       if (current(next.generation)) setError('VPC 목록을 불러오지 못했습니다. 다시 시도하세요.');
@@ -100,6 +103,12 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
   const unknown = tt('미확인');
   const identity = (account: string | null, region?: string | null) => `${account || unknown}${region !== undefined ? ` · ${region || unknown}` : ''}`;
   const tag = (state: string) => <span className="rounded bg-ink-100 px-2 py-0.5 text-[12px] text-ink-700">{state}</span>;
+  const lifecycle = (state: string, live: string) => <p className="my-1 text-[12px] text-ink-600">
+    {tt(state === live ? '활성 연결 기록' : '연결 대기·종료 기록 (현재 연결 미확인)')}
+  </p>;
+  const association = (a: { state: string; routeTableId: string | null; associationState: string | null }) =>
+    <div className="break-all text-[12px] text-ink-500">{tt(a.state === 'available' && a.associationState === 'associated'
+      ? '연결된 TGW 라우트 테이블' : 'TGW 라우트 테이블 연결 기록')}: {a.routeTableId || unknown} · {a.associationState || unknown}</div>;
 
   return (
     <section id="vpc-connectivity" className="scroll-mt-6" aria-label={tt('VPC 간 연결')}>
@@ -122,13 +131,16 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
             {busy && <p role="status" className="text-[13px] text-ink-500">{tt('불러오는 중…')}</p>}
             {error && <p role="alert" className="text-[13px] text-rose-600">{tt(error)}</p>}
             {listCapped && <p className="text-[12px] text-amber-700 [[data-theme=dark]_&]:text-amber-300">{tt('VPC 목록 상한에 도달했습니다. 계정·리전 범위를 좁혀 조회하세요.')}</p>}
-            {invalidRows && <p className="text-[12px] text-amber-700 [[data-theme=dark]_&]:text-amber-300">{tt('계정·리전을 확인할 수 없는 VPC는 선택 목록에서 제외했습니다.')}</p>}
-            {listRead && !busy && !vpcs.length && <p className="text-[13px] text-ink-500">{tt('선택 범위에 표시할 VPC가 없습니다. 인벤토리 수집 상태를 확인하세요.')}</p>}
+            {invalidRows && <p className="text-[12px] text-amber-700 [[data-theme=dark]_&]:text-amber-300">{tt('계정·리전이 미확인이거나 지원하지 않는 VPC는 선택 목록에서 제외했습니다.')}</p>}
+            {listRead && !busy && !error && !vpcs.length && <p className="text-[13px] text-ink-500">{tt('선택 범위에 표시할 VPC가 없습니다. 인벤토리 수집 상태를 확인하세요.')}</p>}
             {data && (
               <div className="space-y-4">
                 {data.incompleteSources.length > 0 && <p role="alert" className="rounded-md bg-amber-500/10 p-3 text-[13px] text-amber-700 [[data-theme=dark]_&]:text-amber-300">
                   {tt('일부 연결 정보를 확인하지 못했습니다. 표시되지 않은 연결이 있을 수 있습니다.')}
                   {' '}{data.incompleteSources.map(s => tt(SOURCE_LABELS[s] ?? '미확인')).join(' · ')}
+                </p>}
+                {data.limitations.includes('shared-tgw') && <p role="status" className="rounded-md bg-ink-50 p-3 text-[13px] text-ink-600">
+                  {tt('공유 TGW는 조회 계정에서 볼 수 있는 어태치먼트만 표시합니다.')}
                 </p>}
                 <div className="rounded-md border border-brand-200 bg-brand-500/5 p-3 text-[13px]">
                   <strong>{data.source.name || data.source.vpcId}</strong>
@@ -144,8 +156,9 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
                     <h3 className="text-[14px] font-semibold">VPC Peering</h3>
                     {data.peerings.map(p => <article key={p.id} className="rounded-lg border border-ink-200 p-3 text-[13px]">
                       <div className="flex flex-wrap items-center gap-2"><strong className="break-all font-mono">{p.id}</strong>{tag(p.state)}</div>
-                      <ArrowDown size={16} className="my-2 text-ink-400" aria-hidden="true" />
-                      <div className="break-all font-mono">{p.peer.vpcId}</div>
+                      {lifecycle(p.state, 'active')}
+                      {p.state === 'active' && <ArrowDown size={16} className="my-2 text-ink-400" aria-hidden="true" />}
+                      <div className="break-all font-mono">{p.peer.vpcId || unknown}</div>
                       <div className="break-all text-[12px] text-ink-500">{identity(p.peer.accountId, p.peer.region)}</div>
                       {p.peer.cidr && <div className="font-mono text-[12px]">{p.peer.cidr}</div>}
                     </article>)}
@@ -153,22 +166,25 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
                   <div className="space-y-2">
                     <h3 className="text-[14px] font-semibold">Transit Gateway</h3>
                     {data.transitGateways.map(t => <article key={t.attachmentId} className="rounded-lg border border-ink-200 p-3 text-[13px]">
-                      <div className="flex flex-wrap items-center gap-2"><strong className="break-all font-mono">{t.id}</strong>{tag(t.state)}</div>
+                      <div className="flex flex-wrap items-center gap-2"><strong className="break-all font-mono">{t.id}</strong>
+                        <span className="text-[12px]">{tt('어태치먼트 상태')}: {tag(t.state)}</span></div>
                       <div className="mt-1 break-all font-mono text-[12px] text-ink-500">{t.attachmentId}</div>
-                      <div className="break-all text-[12px] text-ink-500">{tt('연결된 TGW 라우트 테이블')}: {t.routeTableId || unknown}</div>
-                      <div className="mt-3 text-[12px] font-medium">{tt('동일 TGW에 연결된 VPC')}</div>
+                      {lifecycle(t.state, 'available')}
+                      {association(t)}
+                      <div className="mt-3 text-[12px] font-medium">{tt('동일 TGW의 VPC 어태치먼트 기록')}</div>
                       <ul className="mt-2 max-h-80 space-y-2 overflow-auto">
                         {t.peers.map(p => <li key={p.attachmentId} className="rounded-md bg-ink-50 p-2">
                           <div className="flex flex-wrap items-center gap-2"><span className="break-all font-mono">{p.vpcId}</span>{tag(p.state)}</div>
+                          {lifecycle(p.state, 'available')}
                           <div className="break-all text-[12px] text-ink-500">{identity(p.accountId)} · {p.attachmentId}</div>
-                          <div className="break-all text-[12px] text-ink-500">{tt('연결된 TGW 라우트 테이블')}: {p.routeTableId || unknown}</div>
+                          {association(p)}
                         </li>)}
                       </ul>
                       {!t.peers.length && <p className="mt-2 text-[12px] text-ink-500">{tt('표시할 상대 VPC가 없습니다. TGW 소유 계정에서 전체 어태치먼트를 확인하세요.')}</p>}
                     </article>)}
                   </div>
                 </div>
-                {!data.incompleteSources.length && !data.peerings.length && !data.transitGateways.length &&
+                {!data.incompleteSources.length && !data.limitations.length && !data.peerings.length && !data.transitGateways.length &&
                   <p className="text-[13px] text-ink-500">{tt('조회 범위에서 VPC 연결이 발견되지 않았습니다.')}</p>}
                 <Link href="/network-paths" className="inline-block text-[13px] text-brand-700 underline">{tt('네트워크 경로 점검 열기')}</Link>
               </div>

@@ -511,12 +511,12 @@ function ScopedInventoryTypePage({ type, scope, queryScope }: {
             {type === 'ec2' && <Ec2Metrics rows={filteredRows} />}
             {type === 'lambda' && <LambdaMetrics rows={filteredRows} />}
             {type === 'transit_gateway' && <TgwSection rows={filteredRows} />}
-            {type === 'vpc' && <VpcConnectivitySection />}
             {/* SG usage analysis moved to /network/security-groups/usage (docs/superpowers/specs/
                 2026-08-13-security-group-rules-usage-design.md) — see the "Security Group" sidebar
                 submenu under Network. Not embedded here anymore. */}
           </>
         )}
+        {type === 'vpc' && <VpcConnectivitySection />}
       </div>
       <DetailPanel
         title={selected?.resource_id as string | undefined}

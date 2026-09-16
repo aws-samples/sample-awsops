@@ -13,7 +13,7 @@ beforeEach(() => {
   mocks.auth.mockResolvedValue({ sub: 'immutable-sub' });
   mocks.lookup.mockResolvedValue({
     source: { vpcId: 'vpc-11111111', accountId: '111111111111', ownerId: '111111111111', region: 'us-east-1' },
-    checkedAt: '2026-09-16T10:00:00Z', peerings: [], transitGateways: [], incompleteSources: [],
+    checkedAt: '2026-09-16T10:00:00Z', peerings: [], transitGateways: [], limitations: [], incompleteSources: [],
   });
 });
 
@@ -32,7 +32,7 @@ describe('GET /api/vpc-connectivity', () => {
     expect(response.status).toBe(200);
     expect(mocks.lookup).toHaveBeenCalledWith({ account: '222222222222', region: 'us-east-1', vpcId: 'vpc-11111111' });
     expect(response.headers.get('cache-control')).toBe('private, no-store');
-    expect(await response.json()).toMatchObject({ checkedAt: '2026-09-16T10:00:00Z', incompleteSources: [] });
+    expect(await response.json()).toMatchObject({ checkedAt: '2026-09-16T10:00:00Z', limitations: [], incompleteSources: [] });
   });
 
   it.each([
