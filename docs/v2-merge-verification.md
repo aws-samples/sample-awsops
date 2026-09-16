@@ -38,9 +38,11 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 | --- | --- | --- | --- | --- |
 | S1 | Frozen and gated Terraform resources stay default-off, gated by `count` or `for_each`, and tracked tfvars do not enable gated flags. | `docs/decisions/BASELINE.md`, ADR-005, ADR-006, ADR-007 | `scripts/v2/test_merge_invariants.py`, `scripts/v2/merge_invariants.py` | `python3 -m pytest scripts/v2/test_merge_invariants.py -q` |
 | S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-038 | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
-| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL migration and web connection-phase tests, backend-disabled Terraform mock tests, and conditional documentation build/presentation checks. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | The four common commands and conditional documentation commands below |
+| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL migration and web connection-phase tests, backend-disabled Terraform mock tests, and conditional documentation build/presentation checks. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `docs-site/package.json`, `docs-site/package-lock.json`, `docs-site/scripts/verify-deck.sh`, `.github/workflows/merge-verify.yml` | The four common commands and conditional documentation commands below |
 
 ## Runner Usage
+
+The English command lists in this guide define the current CI scope.
 
 The image-codec confinement tests require Docker and a prepared
 `AWSOPS_REVIEW_CODEC_STATE`. Follow the setup and cleanup commands in

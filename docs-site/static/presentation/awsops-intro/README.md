@@ -44,6 +44,7 @@ node scripts/pptx/build-awsops-intro-pptx.js
 
 ```bash
 cd docs-site
+npm ci
 npm run build
 bash scripts/verify-deck.sh build/presentation/awsops-intro/awsops-intro.pptx
 ```

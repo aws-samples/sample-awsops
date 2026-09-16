@@ -47,6 +47,9 @@ The overrides retain patched `serialize-javascript` for the webpack plugins,
 Remove an override only after its parent accepts a patched release and the
 commands above plus `npm audit` pass without a vulnerable nested copy.
 
+Before publishing, also follow the [presentation verification instructions](static/presentation/awsops-intro/README.md)
+to check the deck copied into `build/`.
+
 ## Deployment
 
 Using SSH:
