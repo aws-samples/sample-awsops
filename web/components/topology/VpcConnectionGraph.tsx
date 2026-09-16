@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Background, Controls, Position, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
+import { Background, Controls, Position, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { VpcConnectivity } from '@/lib/vpc-connectivity-types';
 import { buildVpcConnectionGraph } from '@/lib/vpc-connection-graph';
@@ -17,12 +17,34 @@ const COLORS = {
   unknown: ['#F8F0DF', '#3A2A0E', '#AA6500'],
 } as const;
 
+function FitMeasuredGraph({ matches, height }: { matches: Set<string>; height: number }) {
+  const viewportReady = useStore(state => state.width > 0 && state.height === height);
+  const { fitView, viewportInitialized } = useReactFlow();
+  // Observe the positions/dimensions actually committed to ReactFlow's store.
+  // Selection and manual zoom do not change this key, so opening evidence does
+  // not reset a user's viewport. This is the only automatic-fit owner.
+  // Controlled input nodes do not receive measurement changes when there is no
+  // onNodesChange setter. Read the measured internal nodes, not those inputs.
+  const layoutKey = useStore(state => JSON.stringify([...state.nodeLookup.values()].map(n =>
+    [n.id, n.position.x, n.position.y, n.measured?.width ?? 0, n.measured?.height ?? 0])));
+  const targetKey = JSON.stringify([...matches]);
+  useEffect(() => {
+    const measured: [string, number, number, number, number][] = JSON.parse(layoutKey);
+    if (!viewportInitialized || !viewportReady || !measured.length || measured.some(n => !n[3] || !n[4])) return;
+    const frame = requestAnimationFrame(() => {
+      const ids: string[] = JSON.parse(targetKey);
+      void fitView({ ...(ids.length ? { nodes: ids.map(id => ({ id })) } : {}), padding: 0.25, maxZoom: 1.1 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [viewportInitialized, viewportReady, layoutKey, targetKey, fitView]);
+  return null;
+}
+
 export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConnectivity; query?: string }) {
   const { tt } = useI18n();
   const dark = useTheme() === 'dark';
   const model = useMemo(() => buildVpcConnectionGraph(data), [data]);
   const [selected, setSelected] = useState<{ kind: 'node' | 'edge'; id: string } | null>(null);
-  const canvas = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
   const [vertical, setVertical] = useState(false);
   useEffect(() => {
@@ -66,13 +88,6 @@ export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConn
     labelStyle: { fontSize: 11, fill: dark ? '#F1F5F9' : '#16202A' },
     labelBgStyle: { fill: dark ? '#232C34' : '#FFFFFF', fillOpacity: 0.95 },
   }));
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => canvas.current?.fitView({
-      ...(matches.size ? { nodes: [...matches].map(id => ({ id })) } : {}),
-      padding: 0.25, maxZoom: 1.1, duration: 150,
-    }));
-    return () => cancelAnimationFrame(frame);
-  }, [positions, matches]);
   const selectedNode = selected?.kind === 'node' ? model.nodes.find(n => n.id === selected.id) : null;
   const selectedEdge = selected?.kind === 'edge' ? model.edges.find(e => e.id === selected.id) : null;
   const details = selectedNode ? selectedNode.details : selectedEdge ? {
@@ -94,14 +109,14 @@ export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConn
       </p>}
       {!edges.length && <p role="status" className="px-3 pt-2 text-[12px] text-ink-600">{tt('현재 조회 결과에서 그릴 활성 연결선이 없습니다. 조회 제한과 상세 기록을 확인하세요.')}</p>}
       <div ref={frame} className="w-full" style={{ height: vertical ? 560 : 440 }} data-testid="vpc-connection-canvas">
-        <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.25, maxZoom: 1.1 }}
+        <ReactFlow nodes={nodes} edges={edges}
           minZoom={0.01} maxZoom={2} colorMode={dark ? 'dark' : 'light'} nodesDraggable={false} nodesConnectable={false}
-          onInit={instance => { canvas.current = instance; }}
           onNodeClick={(_, node) => setSelected({ kind: 'node', id: node.id })}
           onEdgeClick={(_, edge) => setSelected({ kind: 'edge', id: edge.id })}
           proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls showInteractive={false} />
+          <FitMeasuredGraph matches={matches} height={vertical ? 560 : 440} />
         </ReactFlow>
       </div>
       {details && <div className="border-t border-ink-100 p-3 text-[12px] text-ink-600">
