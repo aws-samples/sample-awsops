@@ -14,6 +14,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a)
 vi.mock('@/lib/eks-registry', () => ({ getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a) }));
 vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => listInCluster(...a) }));
 import { GET } from './route';
+import { EksScopeError } from '@/lib/eks-context';
 
 const req = () => new Request('http://x/api/eks/fleet', { headers: { cookie: 'awsops_token=t' } });
 const NODE = { name: 'n1', status: 'Ready', roles: 'worker', version: 'v1.30', instanceType: 'm5.large', zone: 'a', age: '1d', cpuCapacity: 4, cpuAllocatable: 3.9, memCapacity: 16000, memAllocatable: 15000 };
@@ -65,8 +66,24 @@ describe('GET /api/eks/fleet', () => {
     const down = body.clusters.find((c: { name: string }) => c.name === 'down');
     expect(down.reachable).toBe(false);
     expect(down.counts.nodes).toBe(0);
-    // gap L227: the /eks no-access banner shows WHY — the truncated error string survives
-    expect(down.error).toBe('403');
+    expect(down.error).toBe('Kubernetes resource read unavailable');
+  });
+  it.each([
+    new Error('arn:aws:iam::222222222222:role/private ExternalId=private-id sessionToken=private-token'),
+    { status: 403, message: 'ExternalId=private-id sessionToken=private-token' },
+    'sessionToken=private-token',
+  ])('sanitizes upstream fleet failures without implying an empty reachable cluster: %#', async error => {
+    listInCluster.mockRejectedValue(error);
+    const response = await GET(req());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'Kubernetes resource read unavailable' });
+    expect(JSON.stringify(body)).not.toMatch(/private|ExternalId|sessionToken/);
+  });
+  it('preserves a trusted scope reason in a failed cluster', async () => {
+    listInCluster.mockRejectedValue(new EksScopeError('EKS region is not enabled for this account', 403));
+    const body = await (await GET(req())).json();
+    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'EKS region is not enabled for this account' });
   });
   it('an events-only failure keeps the cluster reachable with empty events', async () => {
     listInCluster.mockImplementation(async (_c: string, kind: string) => {

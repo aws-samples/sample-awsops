@@ -19,11 +19,12 @@ const ARN = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
 const search = 'account=222222222222&region=us-west-2';
 const params = { params: { cluster: 'shared' } };
 const routes = [
-  { name: 'config', load: () => import('./route'), read: readConfig },
-  { name: 'status', load: () => import('./status/route'), read: installStatus },
-  { name: 'allocation', load: () => import('./allocation/route'), read: allocation },
-  { name: 'bundle', load: () => import('./bundle/route'), read: readConfig },
+  { name: 'config', load: () => import('./route'), read: readConfig, fallback: 500, message: 'OpenCost configuration is unavailable.' },
+  { name: 'status', load: () => import('./status/route'), read: installStatus, fallback: 500, message: 'OpenCost status is unavailable.' },
+  { name: 'allocation', load: () => import('./allocation/route'), read: allocation, fallback: 200, message: 'OpenCost allocation is unavailable.' },
+  { name: 'bundle', load: () => import('./bundle/route'), read: readConfig, fallback: 500, message: 'OpenCost bundle is unavailable.' },
 ];
+const SENTINEL = 'arn:aws:iam::222222222222:role/private-role ExternalId=private-external SessionToken=private-session';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -34,6 +35,30 @@ beforeEach(() => {
 });
 
 describe.each(routes)('OpenCost $name scope', route => {
+  it.each(['error', 'string', 'object'])('sanitizes a returned upstream %s failure without logging it', async kind => {
+    route.read.mockRejectedValue(kind === 'error' ? Object.assign(new Error(SENTINEL), { stack: SENTINEL, $metadata: { requestId: SENTINEL } })
+      : kind === 'string' ? SENTINEL : { message: SENTINEL, status: 403, toString: () => SENTINEL });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { GET } = await route.load();
+      const response = await GET(new Request(`http://local/?${search}`), params);
+      expect(response.status).toBe(route.fallback);
+      expect(await response.json()).toEqual(route.name === 'allocation'
+        ? { available: false, message: route.message } : { status: 'error', message: route.message });
+      expect(log).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); warn.mockRestore(); }
+  });
+
+  it('sanitizes an unexpected scope-resolution error', async () => {
+    resolve.mockRejectedValue(new Error(SENTINEL));
+    const { GET } = await route.load();
+    const response = await GET(new Request(`http://local/?${search}`), params);
+    expect(response.status).toBe(route.fallback);
+    expect((await response.json()).message).toBe(route.message);
+    expect(route.read).not.toHaveBeenCalled();
+  });
+
   it('uses canonical registry/storage/proxy identity for explicit account and region', async () => {
     const { GET } = await route.load();
     const response = await GET(new Request(`http://local/?${search}`), params);
@@ -56,9 +81,32 @@ describe.each(routes)('OpenCost $name scope', route => {
     const { EksScopeError } = await import('@/lib/eks-context');
     resolve.mockRejectedValue(new EksScopeError('invalid scope', status));
     const { GET } = await route.load();
-    expect((await GET(new Request(`http://local/?${search}`), params)).status).toBe(status);
+    const response = await GET(new Request(`http://local/?${search}`), params);
+    expect(response.status).toBe(status);
+    expect((await response.json()).message).toBe('invalid scope');
     expect(route.read).not.toHaveBeenCalled();
   });
+});
+
+it.each(['scope', 'save'])('sanitizes an unexpected PUT %s error', async stage => {
+  (stage === 'scope' ? resolve : saveConfig).mockRejectedValue(new Error(SENTINEL));
+  const { PUT } = await import('./route');
+  const response = await PUT(new Request(`http://local/?${search}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{"config":{}}',
+  }), params);
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ status: 'error', message: 'OpenCost configuration is unavailable.' });
+});
+
+it('keeps PUT validation errors fixed instead of reflecting input embedded in an exception', async () => {
+  const { PUT } = await import('./route');
+  const response = await PUT(new Request(`http://local/?${search}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ config: {}, chartVersion: SENTINEL }),
+  }), params);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ status: 'error', message: 'invalid config' });
+  expect(saveConfig).not.toHaveBeenCalled();
 });
 
 it('saves config only under the canonical ID', async () => {

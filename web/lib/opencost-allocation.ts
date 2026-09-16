@@ -3,6 +3,7 @@
 import { k8sGetPath, listInCluster } from './eks-incluster';
 import { estimateDailyParts } from '@/lib/cost-basis';
 import type { PodRow } from './eks-resources';
+import { EksScopeError } from './eks-context';
 
 export interface PodCost {
   namespace: string; pod: string; node: string;
@@ -40,7 +41,7 @@ export async function getAllocation(cluster: string): Promise<AllocationResult> 
     // v1 parity: OpenCost unavailable → request-based estimate (pods' requests × unit prices).
     const est = await requestEstimate(cluster).catch(() => null);
     if (est) return est;
-    return { ...empty, message: e instanceof Error ? e.message : String(e) };
+    return { ...empty, message: e instanceof EksScopeError ? e.message : 'OpenCost allocation is unavailable.' };
   }
   try {
     const parsed = JSON.parse(body) as { data?: Array<Record<string, Record<string, unknown>>> };

@@ -18,6 +18,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     return Response.json(await getAllocation(context.id));
   } catch (e) {
-    return Response.json({ available: false, message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 200 });
+    return Response.json({ available: false, message: e instanceof EksScopeError ? e.message : 'OpenCost allocation is unavailable.' }, { status: e instanceof EksScopeError ? e.status : 200 });
   }
 }

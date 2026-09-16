@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EksScopeError } from './eks-context';
 
 const listAccounts = vi.fn();
 const listAccountRegions = vi.fn();
@@ -37,6 +38,21 @@ beforeEach(() => {
 });
 
 describe('EKS collection scope', () => {
+  it('only exposes messages from application-owned scope error types', async () => {
+    const { eksErrorMessage, getEksScope } = await import('./eks-scope');
+    expect(eksErrorMessage(new EksScopeError('Invalid EKS cluster identifier', 400), 'unavailable'))
+      .toBe('Invalid EKS cluster identifier');
+    try {
+      await getEksScope(new URLSearchParams('account=invalid'));
+      expect.fail('expected invalid scope to fail');
+    } catch (error) {
+      expect(eksErrorMessage(error, 'unavailable')).toBe('Invalid accounts selection');
+    }
+    const untrusted = Object.assign(new Error('sessionToken=private-token'), { status: 403, name: 'EksScopeError' });
+    expect(eksErrorMessage(untrusted, 'unavailable')).toBe('unavailable');
+    expect(eksErrorMessage({ message: 'ExternalId=private-id', status: 403 }, 'unavailable')).toBe('unavailable');
+    expect(eksErrorMessage('sessionToken=private-token', 'unavailable')).toBe('unavailable');
+  });
   it('keeps the legacy no-parameter request on the host deployment region', async () => {
     const { getEksScope } = await import('./eks-scope');
     expect(await getEksScope(new URLSearchParams())).toEqual({

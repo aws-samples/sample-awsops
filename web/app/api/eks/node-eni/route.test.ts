@@ -28,6 +28,41 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('node ENI identity', () => {
+  it.each(['error', 'string', 'object'])('does not expose an upstream %s or its credentials', async kind => {
+    const sentinel = 'arn:aws:iam::222222222222:role/private-role ExternalId=private-external SessionToken=private-session';
+    const failure = kind === 'error' ? Object.assign(new Error(sentinel), { stack: sentinel, $metadata: { requestId: sentinel } })
+      : kind === 'string' ? sentinel : { message: sentinel, status: 403, toString: () => sentinel };
+    query.mockRejectedValue(failure);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { GET } = await import('./route');
+      const res = await GET(request(`&cluster=${encodeURIComponent(ARN)}`));
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ status: 'error', message: 'Node ENI details are unavailable.' });
+      expect(errorLog).not.toHaveBeenCalled(); expect(warnLog).not.toHaveBeenCalled();
+    } finally { errorLog.mockRestore(); warnLog.mockRestore(); }
+  });
+
+  it('preserves a safe typed scope error before inventory is read', async () => {
+    const { EksScopeError } = await import('@/lib/eks-context');
+    resolve.mockRejectedValue(new EksScopeError('EKS account is disabled', 403));
+    const { GET } = await import('./route');
+    const res = await GET(request(`&cluster=${encodeURIComponent(ARN)}`));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ status: 'error', message: 'EKS account is disabled' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('keeps found inventory and omits traffic when the optional metric read fails', async () => {
+    query.mockResolvedValue({ rows: [{ id: 'i-member', data: { network_interfaces: [] } }] });
+    traffic.mockRejectedValue(new Error('private ExternalId and SessionToken'));
+    const { GET } = await import('./route');
+    const res = await GET(request(`&cluster=${encodeURIComponent(ARN)}`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ found: true, instanceId: 'i-member', traffic: null });
+  });
+
   it('never matches same-DNS host inventory for a member cluster', async () => {
     // Simulate two synchronized EC2 rows sharing private DNS. Only a complete scope can select the member.
     query.mockImplementation(async (sql: string, values: unknown[]) => {

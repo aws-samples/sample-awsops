@@ -20,6 +20,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     const status = await detectOpencostInstall(context.id);
     return json(status, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost status is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
   }
 }

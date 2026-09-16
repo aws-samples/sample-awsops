@@ -3,6 +3,7 @@
 // Degrades on any in-cluster error (incl. 403 = Access Entry revoked) — never throws (consensus).
 import { listInCluster, type DeploymentRow } from '@/lib/eks-incluster';
 import { OPENCOST_NAMESPACE } from '@/lib/opencost';
+import { EksScopeError } from '@/lib/eks-context';
 
 export interface OpencostStatus {
   installed: boolean;
@@ -26,6 +27,6 @@ export async function detectOpencostInstall(cluster: string): Promise<OpencostSt
     return { installed: true, ready, deployment: dep };
   } catch (e) {
     // 403 (entry revoked) / transport / not-found → degrade to not-installed, do NOT throw
-    return { installed: false, ready: false, deployment: null, reason: e instanceof Error ? e.message : 'unreachable' };
+    return { installed: false, ready: false, deployment: null, reason: e instanceof EksScopeError ? e.message : 'OpenCost status is unavailable.' };
   }
 }

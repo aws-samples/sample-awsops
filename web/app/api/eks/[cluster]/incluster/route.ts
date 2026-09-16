@@ -21,6 +21,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     return Response.json({ kind, rows: await listInCluster(context.id, kind) });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'EKS resources are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

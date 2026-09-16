@@ -106,7 +106,39 @@ describe('GET /api/eks', () => {
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(body.clusters).toHaveLength(1);
-    expect(body.errors).toEqual([expect.objectContaining({ accountId: '222222222222', message: 'AssumeRole denied' })]);
+    expect(body.errors).toEqual([expect.objectContaining({ accountId: '222222222222', message: 'EKS inventory query failed' })]);
+  });
+  it.each([
+    new Error('arn:aws:iam::222222222222:role/private ExternalId=private-id sessionToken=private-token'),
+    { status: 403, message: 'ExternalId=private-id sessionToken=private-token' },
+    'sessionToken=private-token',
+  ])('does not expose unexpected inventory failures: %#', async error => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockRejectedValue(error);
+    const { GET } = await import('./route');
+    const response = await GET(req());
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.message).toBe('EKS inventory query failed');
+    expect(body.errors[0].message).toBe('EKS inventory query failed');
+    expect(JSON.stringify(body)).not.toMatch(/private|ExternalId|sessionToken/);
+  });
+  it('sanitizes unexpected registry failures before discovery', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    getAllowedClusters.mockRejectedValue(new Error('password=private-token'));
+    const { GET } = await import('./route');
+    const response = await GET(req());
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS inventory is unavailable' });
+    expect(listClusters).not.toHaveBeenCalled();
+  });
+  it('preserves the trusted disabled-account reason and status', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://x/api/eks?accounts=333333333333'));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS account is not registered or is disabled' });
+    expect(listClusters).not.toHaveBeenCalled();
   });
   it('returns useful wildcard results with incomplete-discovery metadata without marking successful calls failed', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

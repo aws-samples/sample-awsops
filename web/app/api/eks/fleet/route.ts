@@ -1,5 +1,5 @@
 import { verifyUser } from '@/lib/auth';
-import { getScopedEksRegistrations, eksErrorStatus, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
+import { getScopedEksRegistrations, eksErrorStatus, eksErrorMessage, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
 import { listInCluster, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
 import { aggregateNodeResources, instanceTypeDistribution } from '@/lib/eks-resources';
 import { podStatusCounts, podsByNamespace } from '@/lib/eks-tab-stats';
@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 
 // v1 /k8s Overview parity: per-cluster live aggregates, computed SERVER-side.
 // Raw pod rows never ship to the client (thin-BFF) — only small aggregates do.
-// Per-cluster failures degrade to reachable:false; even a registry failure
-// returns 200 + an empty fleet (the fleet view must not 500).
+// Per-cluster failures degrade to reachable:false; registry failures return an
+// explicit unavailable response rather than a successful empty fleet.
 // NOTE: per-cluster podsByNamespace is pre-capped at 10, so any cross-cluster
 // merge is an approximation near the cut — acceptable for an overview.
 
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
   let scope: Awaited<ReturnType<typeof getScopedEksRegistrations>>;
   try { scope = await getScopedEksRegistrations(new URL(request.url).searchParams); }
   catch (error) {
-    return Response.json({ clusters: [], status: 'error', message: 'EKS scope could not be loaded' },
+    return Response.json({ clusters: [], status: 'error', message: eksErrorMessage(error, 'EKS scope could not be loaded') },
       { status: eksErrorStatus(error, 503) });
   }
   const clusters = await mapEksConcurrent(scope.clusters, async (identity) => {
@@ -60,11 +60,7 @@ export async function GET(request: Request) {
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
       };
     } catch (e) {
-      // gap L227: surface the live-read failure (truncated) so the /eks no-access banner can
-      // show WHY (v1 parity — it showed the raw error string); still degrades to reachable:false.
-      // INVARIANT this leans on: eks-incluster's eksToken() swallows credential-path errors
-      // internally, so no secret material can appear in this message — keep it that way.
-      return { ...empty(identity), error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+      return { ...empty(identity), error: eksErrorMessage(e, 'Kubernetes resource read unavailable') };
     }
   });
   return Response.json({ clusters, truncated: scope.truncated });

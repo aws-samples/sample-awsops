@@ -31,6 +31,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     return Response.json({ object: await describeInCluster(context.id, kind, name, namespace) });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'EKS resource details are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

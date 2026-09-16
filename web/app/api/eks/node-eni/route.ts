@@ -97,6 +97,6 @@ export async function GET(request: Request) {
       enis,
     });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 500 });
+    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'Node ENI details are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 500 });
   }
 }

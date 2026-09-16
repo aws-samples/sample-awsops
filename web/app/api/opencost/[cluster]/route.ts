@@ -22,7 +22,7 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     const config = await getOpencostConfig(context.id);
     return json({ cluster: context.id, config }, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
   }
 }
 
@@ -36,7 +36,7 @@ export async function PUT(request: Request, { params }: { params: { cluster: str
     cluster = (await resolveEksCluster(params.cluster, new URL(request.url).searchParams)).id;
     if (!(await isClusterOnboarded(cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
   }
   let body: { chartVersion?: string | null; config?: Record<string, unknown> } = {};
   try { body = (await readJsonBounded(request)) as typeof body; } // bound BEFORE parse (OOM guard)
@@ -59,15 +59,19 @@ export async function PUT(request: Request, { params }: { params: { cluster: str
   try {
     assertSafeYamlKeys((body.config ?? {}) as any);
     if (body.chartVersion) assertSafeName('chartVersion', body.chartVersion);
-  } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : 'invalid config' }, 400);
+  } catch {
+    return json({ status: 'error', message: 'invalid config' }, 400);
   }
-  const ok = await upsertOpencostConfig({
-    cluster,
-    chartVersion: body.chartVersion ?? null,
-    config: body.config ?? {},
-    updatedBy: user.sub,
-  });
-  if (!ok) return json({ status: 'error', message: 'config storage unavailable' }, 503);
-  return json({ saved: true }, 200);
+  try {
+    const ok = await upsertOpencostConfig({
+      cluster,
+      chartVersion: body.chartVersion ?? null,
+      config: body.config ?? {},
+      updatedBy: user.sub,
+    });
+    if (!ok) return json({ status: 'error', message: 'config storage unavailable' }, 503);
+    return json({ saved: true }, 200);
+  } catch (e) {
+    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
+  }
 }

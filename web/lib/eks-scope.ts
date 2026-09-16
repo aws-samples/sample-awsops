@@ -2,6 +2,7 @@ import { currentAccountId } from './account';
 import { listAccounts } from './accounts';
 import { listAccountRegions, listScanScope } from './account-regions';
 import { parseEksClusterId } from './eks-cluster-id';
+import { EksScopeError } from './eks-context';
 import { getAllowedClusters } from './eks-registry';
 
 export interface EksTarget { accountId: string; region: string }
@@ -132,7 +133,12 @@ export async function getScopedEksRegistrations(params: URLSearchParams): Promis
   return { clusters: clusters.slice(0, FLEET_CAP), truncated: scope.truncated || clusters.length > FLEET_CAP };
 }
 
-/** Match typed scope errors without coupling collection callers to the detail-route resolver. */
+/** Upstream messages may contain credentials; only application-owned scope errors are public. */
+export function eksErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof ScopeError || error instanceof EksScopeError ? error.message : fallback;
+}
+
+/** Preserve the existing status contract separately from the public-message trust boundary. */
 export function eksErrorStatus(error: unknown, fallback = 500): number {
   if (error instanceof Error && 'status' in error && typeof error.status === 'number') {
     return [400, 403, 404, 409, 503].includes(error.status) ? error.status : fallback;

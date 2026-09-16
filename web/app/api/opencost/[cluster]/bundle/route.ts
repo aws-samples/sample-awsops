@@ -36,6 +36,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     });
     return json({ valuesYaml, installSh, chartVersion }, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost bundle is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
   }
 }
