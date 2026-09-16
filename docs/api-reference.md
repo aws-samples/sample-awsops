@@ -183,6 +183,50 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
+## vpc-connectivity (1)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/vpc-connectivity` | GET | On-demand, read-only VPC peering and TGW attachment observations for exactly one `account` (`self` or a 12-digit account ID), `region` (commercial-region allowlist shared with the picker) and `vpcId`. Requires an enabled registered account and an exact indexed inventory match, including host-to-`self` mapping. `source.ownerId` is disclosure only; it never selects authorization or credentials. Returns source identity, read-completion `checkedAt`, peering records, TGW groups and required `limitations` and `incompleteSources` arrays. All replies use `Cache-Control: private, no-store`. See [VPC connectivity](reference/vpc-connectivity.md). | `verifyUser` |
+
+Each scope parameter must occur exactly once. Errors return
+`{ status: "error", code }` with the following stable mapping:
+
+| Code | HTTP status | Meaning |
+|------|-------------|---------|
+| `invalid_request` | 400 | Missing, repeated or invalid scope input, including a region outside the commercial-region allowlist. |
+| `not_found` | 404 | No unique VPC matches the indexed collecting account, region and resource ID. |
+| `account_unavailable` | 403 | Missing, disabled or inconsistent registry account/host identity, or an invalid registered read-role name. |
+| `lookup_failed` | 502 | The lookup failed, exhausted its deadline without usable evidence, or exceeded the process's in-flight limit. |
+| `unauthenticated` | 401 | `verifyUser` rejected the session cookie. |
+
+`limitations` contains structural visibility signals (`shared-vpc`, `owner-unknown`,
+`shared-tgw`). `incompleteSources` identifies failed, denied, truncated, conflicting
+or malformed reads. Usable partial results remain HTTP 200. Either nonempty array
+prevents a definitive empty-connection claim. Results with no operational read
+gaps may reuse a four-minute process-local cache even with limitations, keyed by
+collecting account, region, VPC ID and disclosed owner identity. Nonempty
+`incompleteSources` prevents caching, so retries read AWS again. The HTTP
+`private, no-store` policy applies to both success and error responses.
+
+Reduced-info and pending peerings remain records: `peer.vpcId`, `peer.accountId`,
+`peer.region` and `peer.cidr` are each `string | null`. Missing optional fields
+remain unknown; present malformed metadata marks the affected read incomplete.
+Input regions use the shared `isVpcConnectivityRegion` predicate's current
+34-region commercial allowlist, and unsupported picker rows are excluded with a
+notice. Provider-reported peer regions need only valid syntax and may name a
+future region without authorizing queries there.
+
+TGW source and peer attachments expose `routeTableId: string | null` and
+`associationState: string | null`. Only `active` peerings and `available`
+attachments receive the active-record label; other lifecycle states remain
+configuration records with the current connection unconfirmed. The UI labels a
+table **Associated TGW route table** only for an `available` attachment with an
+`associated` association; otherwise it shows an association record with the ID and
+state or unknown. TGW peer lists describe VPC attachment records on that TGW.
+Retained pending or historical records and route-table associations do not prove
+reachability.
+
 ## 기타 (55)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|

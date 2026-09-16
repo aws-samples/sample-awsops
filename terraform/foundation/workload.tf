@@ -159,6 +159,12 @@ resource "aws_iam_role_policy" "task_metrics" {
         "network-firewall:DescribeLoggingConfiguration",
       ]
       Resource = "*"
+      }, {
+      Sid       = "VpcConnectivityRead"
+      Effect    = "Allow"
+      Action    = ["ec2:DescribeVpcPeeringConnections"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
     }]
   })
 }

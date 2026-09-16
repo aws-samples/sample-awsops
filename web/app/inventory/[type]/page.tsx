@@ -17,6 +17,7 @@ import EcsCostBasisPanel from '@/components/inventory/EcsCostBasisPanel';
 import { EcsCostByService } from '@/components/inventory/metrics/EcsCostByService';
 import { S3BucketMap } from '@/components/inventory/S3BucketMap';
 import VpcResourceMap from '@/components/inventory/VpcResourceMap';
+import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySection';
 import { ElasticacheNodeMetrics, OpensearchDomainMetrics, MskBrokerNodes, RdsInstanceMetrics, DynamoTableMetrics, AlbMetrics, NlbMetrics, S3Metrics, EbsMetrics, Ec2Metrics, LambdaMetrics, TgwSection } from '@/components/inventory/NodeMetricsTables';
 import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf, worstFirst } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, highlightIcon } from '@/lib/type-icons';
@@ -450,7 +451,10 @@ function ScopedInventoryTypePage({ type, scope, queryScope }: {
       <PageHeader
         title={spec.label}
         subtitle={rows === null ? undefined : `${spec.group} · ${totalCount.toLocaleString()}개 리소스`}
-        right={<RefreshButton busy={busy || (rows === null && !err)} onClick={refresh} capturedAt={captured} />}
+        right={<div className="flex flex-wrap items-center gap-2">
+          {type === 'vpc' && <a href="#vpc-connectivity" className="rounded-md border border-ink-200 bg-card px-3 py-1.5 text-[12px] hover:bg-ink-50">{tt('VPC 간 연결')}</a>}
+          <RefreshButton busy={busy || (rows === null && !err)} onClick={refresh} capturedAt={captured} />
+        </div>}
       />
       <div className="px-8 py-8 flex flex-col gap-6">
         {err && <div className="text-[13px] text-rose-600">{err}</div>}
@@ -512,6 +516,7 @@ function ScopedInventoryTypePage({ type, scope, queryScope }: {
                 submenu under Network. Not embedded here anymore. */}
           </>
         )}
+        {type === 'vpc' && <VpcConnectivitySection />}
       </div>
       <DetailPanel
         title={selected?.resource_id as string | undefined}
