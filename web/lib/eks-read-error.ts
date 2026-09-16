@@ -15,6 +15,7 @@ export class EksKubernetesHttpError extends Error {
 
 const OPERATIONS = {
   'eks-read': ['EKS read is unavailable.', 502],
+  'eks-metrics': ['EKS metrics are unavailable.', 502],
   'incluster-list': ['EKS resources are unavailable.', 502],
   'incluster-describe': ['EKS resource details are unavailable.', 502],
   k8sgpt: ['K8sGPT diagnosis is unavailable.', 502],

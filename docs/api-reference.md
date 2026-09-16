@@ -193,13 +193,21 @@ cleanup changes no AWS role, Access Entry, or policy.
 `/api/eks/[cluster]/metrics` retains `range`, `controlPlane`, `cluster`, and `nodes`
 and adds resolved `accountId`/`region` and `sources.controlPlane`, `sources.cluster`,
 and `sources.nodes`. Each source has a `status` and an optional fixed, sanitized
-`reason`. `no-data` represents a successful read with no values; it is not proof
+`reason`. For submitted metric queries, `no-data` requires complete result envelopes
+for the requested IDs with no datapoints. Missing or zero result envelopes are
+`unavailable`; a missing later chunk retains earlier values as `partial`. Known
+global error classifications such as `denied` are preserved. Successful node
+discovery with no matching metrics still represents `no-data`. It is not proof
 that an observability agent is uninstalled. `denied` and `unavailable` identify
 failed reads, while `partial` preserves usable values alongside incomplete results.
 CloudWatch response/query failures, bounded continuation/discovery, and conflicting
 instance tuples for a node name are included in that quality assessment. Ambiguous
 node values are withheld rather than choosing an arbitrary instance. No raw SDK denial or credential value is returned in
 these source reasons. The response uses `Cache-Control: no-store`.
+The host response exposes the configured `HOST_ACCOUNT_ID` when available, while
+internal AWS reads continue to use the `self` target. Errors escaping the source
+readers use the shared `reason` envelope and controlled `eks-metrics` log record.
+See the AWS [MetricDataResult contract](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_MetricDataResult.html).
 
 Diagnosis consumers must use this metadata instead of inferring installation state
 from null metrics. Independent successful sources remain usable when another source

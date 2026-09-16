@@ -158,9 +158,31 @@ describe('EKS metrics quality through the service boundary', () => {
     forbiddenLeak(body);
   });
 
-  it('treats successful empty arrays as no-data but missing query result envelopes as unavailable', async () => {
-    cwSend.mockImplementation((cmd: Command) => cmd.constructor.name === 'ListMetricsCommand' ? { Metrics: [] } : { MetricDataResults: [] });
-    expect((await read()).sources.cluster.status).toBe('no-data');
+  it('requires complete query envelopes before treating empty datapoints as no-data', async () => {
+    cwSend.mockImplementation((cmd: Command) => cmd.constructor.name === 'ListMetricsCommand'
+      ? { Metrics: [nodeMetric()] } : complete(cmd));
+    const body = await read();
+    expect(body.sources).toMatchObject({
+      controlPlane: { status: 'no-data' }, cluster: { status: 'no-data' }, nodes: { status: 'no-data' },
+    });
+    expect(cwSend.mock.calls.every(([cmd]) => (cmd.input.MetricDataQueries ?? []).every(
+      (query: { ReturnData: boolean }) => query.ReturnData === true,
+    ))).toBe(true);
+  });
+
+  it('reports zero result envelopes for submitted queries as unavailable for every source', async () => {
+    cwSend.mockImplementation((cmd: Command) => cmd.constructor.name === 'ListMetricsCommand'
+      ? { Metrics: [nodeMetric()] } : { MetricDataResults: [] });
+    const body = await read();
+    expect(body.sources).toMatchObject({
+      controlPlane: { status: 'unavailable' }, cluster: { status: 'unavailable' }, nodes: { status: 'unavailable' },
+    });
+    expect(Object.values(body.cluster).every(value => value === null)).toBe(true);
+    expect(body.nodes['node-0'].cpu).toBeNull();
+    expect(hostSend).not.toHaveBeenCalled();
+  });
+
+  it('reports missing response envelopes as unavailable', async () => {
     cwSend.mockResolvedValue({});
     const body = await read();
     expect(body.sources).toMatchObject({
@@ -211,6 +233,22 @@ describe('EKS metrics quality through the service boundary', () => {
     expect(body.nodes['node-60'].cpu).toBeNull();
     expect(body.sources.cluster.status).toBe('ok');
     expect(hostSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps earlier node chunks but marks missing later envelopes partial', async () => {
+    cwSend.mockImplementation((cmd: Command) => {
+      if (cmd.constructor.name === 'ListMetricsCommand') return { Metrics: Array.from({ length: 70 }, (_, i) => nodeMetric(i)) };
+      const first = cmd.input.MetricDataQueries[0].MetricStat.Metric;
+      if (first.Dimensions.find((d: { Name: string; Value: string }) => d.Name === 'NodeName')?.Value === 'node-60') {
+        return { MetricDataResults: [] };
+      }
+      return complete(cmd, 19);
+    });
+    const body = await read();
+    expect(body.sources.nodes.status).toBe('partial');
+    expect(body.nodes['node-0'].cpu).toBe(19);
+    expect(body.nodes['node-60'].cpu).toBeNull();
+    expect(body.sources.cluster.status).toBe('ok');
   });
 
   it('does not turn missing statuses or missing query results into successful no-data', async () => {

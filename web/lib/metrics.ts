@@ -1341,13 +1341,11 @@ async function readEksMetricFleet(
       const globalIssues = eksMessageIssues(response.Messages);
       for (const issue of globalIssues) quality.issues.add(issue);
       if (response.NextToken) quality.issues.add('partial'); // Bounded read, not exhaustive.
-      if (!Array.isArray(response.MetricDataResults)) {
-        quality.issues.add('unavailable');
-        continue;
-      }
-      if (response.MetricDataResults.length === 0) {
-        // An explicit successful empty result is different from a missing/error envelope.
-        if (!globalIssues.size && !response.NextToken) quality.complete += queries.length;
+      if (!Array.isArray(response.MetricDataResults) || response.MetricDataResults.length === 0) {
+        // Every submitted query requests ReturnData. Missing result envelopes
+        // cannot prove absence; only Complete envelopes with empty Values can.
+        // Preserve a known global failure (for example denied) over a generic one.
+        if (!globalIssues.size) quality.issues.add('unavailable');
         continue;
       }
       const seen = new Set<string>();

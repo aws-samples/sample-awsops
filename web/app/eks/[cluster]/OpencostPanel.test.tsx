@@ -150,8 +150,8 @@ describe('OpencostPanel', () => {
     });
     render(<OpencostPanel cluster="c1" />);
     await waitFor(() => expect(screen.getByText(/저장/)).toBeTruthy());
-    // lazy config GET fired for the cluster
-    expect(fn.mock.calls.some((c) => /\/api\/opencost\/c1$/.test(String(c[0])))).toBe(true);
+    // The button render can precede the lazy effect; wait for the actual request.
+    await waitFor(() => expect(fn.mock.calls.some((c) => /\/api\/opencost\/c1$/.test(String(c[0])))).toBe(true));
     fireEvent.click(screen.getByText(/저장/));
     await waitFor(() => expect(screen.getByText(/관리자 전용/)).toBeTruthy());
   });

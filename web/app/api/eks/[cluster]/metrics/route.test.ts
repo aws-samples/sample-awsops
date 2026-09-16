@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { verifyUser, allowed, resolve, diagnosis } = vi.hoisted(() => ({
   verifyUser: vi.fn(), allowed: vi.fn(), resolve: vi.fn(), diagnosis: vi.fn(),
@@ -15,6 +15,8 @@ const context = { id: ARN, name: 'shared', accountId: '222222222222', region: 'u
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   verifyUser.mockResolvedValue({ sub: 'u' });
   resolve.mockReset().mockResolvedValue(context);
   allowed.mockResolvedValue(true);
@@ -23,6 +25,7 @@ beforeEach(() => {
     sources: { controlPlane: { status: 'no-data' }, cluster: { status: 'no-data' }, nodes: { status: 'no-data' } },
   });
 });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('EKS detail metrics scope', () => {
   it.each(['shared', ARN])('resolves %s before checking registration and querying CloudWatch', async cluster => {
@@ -41,7 +44,7 @@ describe('EKS detail metrics scope', () => {
     resolve.mockResolvedValue({ id: 'shared', name: 'shared', accountId: 'self', region: 'ap-northeast-2' });
     const { GET } = await import('./route');
     const res = await GET(new Request('http://local/?range=invalid'), { params: Promise.resolve({ cluster: 'shared' }) });
-    expect((await res.json()).range).toBe(3600);
+    expect(await res.json()).toMatchObject({ range: 3600, accountId: '111111111111' });
     expect(diagnosis).toHaveBeenCalledWith('shared', 'ap-northeast-2', 3600, 'self');
   });
 
@@ -65,6 +68,24 @@ describe('EKS detail metrics scope', () => {
     const { GET } = await import('./route');
     const res = await GET(new Request('http://local/'), { params: Promise.resolve({ cluster: 'shared' }) });
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ status: 'error', message: 'EKS metrics are unavailable.' });
+    expect(await res.json()).toEqual({ status: 'error', message: 'EKS metrics are unavailable.', reason: 'upstream-error' });
+    expect(console.warn).toHaveBeenCalledWith({ operation: 'eks-metrics', reason: 'upstream-error', status: 502 });
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toMatch(/private-role|SECRET/);
+  });
+
+  it.each([
+    ['AccessDeniedException', undefined, 'denied'],
+    ['TimeoutError', undefined, 'timeout'],
+    ['Error', 'ECONNREFUSED', 'unreachable'],
+  ])('classifies escaping %s failures without exposing provider text', async (name, code, reason) => {
+    diagnosis.mockRejectedValue(Object.assign(new Error('SECRET private-role'), { name, code }));
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://local/'), { params: Promise.resolve({ cluster: ARN }) });
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.reason).toBe(reason);
+    expect(body.message).toContain('EKS metrics are unavailable.');
+    expect(JSON.stringify(body)).not.toMatch(/SECRET|private-role/);
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toMatch(/SECRET|private-role/);
   });
 });

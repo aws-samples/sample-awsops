@@ -40,6 +40,13 @@ it('keeps successful source values visible beside an unavailable source', async 
   expect(screen.queryByText(/설치/)).toBeNull();
 });
 
+it('does not suggest installation when metric result envelopes are unavailable', async () => {
+  showQuality('unavailable', 'unavailable');
+  await screen.findAllByText(/CloudWatch 조회 실패/);
+  expect(screen.queryByText(/조회는 성공했지만 선택 기간의 지표가 없습니다/)).toBeNull();
+  expect(screen.queryByText(/설치/)).toBeNull();
+});
+
 it('only suggests checking installation after both Container Insights queries successfully return no data', async () => {
   showQuality('no-data');
   await screen.findByText(/조회는 성공했지만 선택 기간의 지표가 없습니다/);
