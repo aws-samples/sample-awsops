@@ -36,7 +36,7 @@ Each cluster renders as a card showing **Status**, **Version**, **Account**, **R
 
 - **Connected**: queryable, with node/pod/deployment counts (click the card title to open the detail view)
 - **Entry present**: an Access Entry exists but query access is not yet registered
-- **Not connected**: no Access Entry, so the cluster cannot be queried
+- **Not connected**: no default Access Entry connection and no saved SA-token/AssumeRole authentication configuration
 - **Unknown**: access state could not be determined
 
 Default authentication requires an **EKS Access Entry for the web task role** on the target cluster. Explicit SA-token/AssumeRole authentication uses that identity's Kubernetes authorization; account metadata discovery must still be configured separately. Admins can **register/unregister** query access or view an **onboarding script** to apply to the cluster themselves. AWSops never changes clusters — everything here is read-only.

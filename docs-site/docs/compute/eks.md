@@ -22,9 +22,9 @@ EKS 클러스터의 전체 현황과 노드 리소스, Pod 상태를 한눈에 �
 ### EKS 클러스터 카드
 각 클러스터의 핵심 정보를 카드 형태로 표시:
 - Cluster Name, Status (ACTIVE)
-- Kubernetes Version, Account, VPC ID, Platform Version, Region
+- Kubernetes Version, Account, Region, VPC ID, Platform Version
 - **Access Entry 상태 배지**: K8s Connected (초록) / 미등록 (빨강)
-- **클러스터 등록 버튼(관리자)**: 기존 Access Entry 확인 후 조회 등록, ServiceAccount 토큰, 또는 명시적 AssumeRole 인증을 지원합니다. AWSops는 등록 정보만 저장하며 AWS 역할·Access Entry·정책을 생성하지 않습니다.
+- **클러스터 등록 버튼(관리자)**: 기존 Access Entry 확인 후 조회 등록, ServiceAccount 토큰, 또는 명시적 AssumeRole 인증을 지원합니다. AWSops는 등록 정보만 저장하며 AWS 역할·Access Entry·정책을 생성하지 않습니다(ADR-005).
 - **클릭 필터링**: 클러스터 카드를 클릭하면 해당 클러스터만 필터링 (시안 테두리)
 
 :::tip 클러스터 접근 권한

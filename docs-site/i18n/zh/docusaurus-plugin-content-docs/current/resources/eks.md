@@ -33,7 +33,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 - **Connected**：查询已连接，可显示节点/Pod/Deployment 数量（点击卡片标题可进入详情）
 - **有 Entry**：存在 Access Entry 但尚未注册查询
-- **未连接**：没有默认 Access Entry 连接，也没有可用的 SA 令牌 / AssumeRole 配置
+- **未连接**：没有默认 Access Entry 连接，也没有已保存的 SA 令牌 / AssumeRole 认证配置
 - **无法确认**：无法判别访问状态
 
 支持查询已注册且已启用的成员账户。默认模式使用目标集群中宿主 web 任务角色的 **EKS Access Entry** 和只读策略，也支持显式配置 **SA 令牌 / AssumeRole** 认证；SA 认证不需要 IAM Access Entry。AssumeRole 所用角色必须可由 web 任务承担，且具有集群内的读取权限。对于成员账户，所有模式仍需要已注册的只读角色提供元数据查询权限。管理员可以**注册/解除**查询访问，或查看由所有者应用到目标集群的**入驻脚本**。AWSops 本身不会变更集群，查询均为只读。

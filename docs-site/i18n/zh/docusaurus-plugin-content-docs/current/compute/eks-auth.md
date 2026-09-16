@@ -8,7 +8,7 @@ description: 在 AWSops EC2 实例上访问 EKS 集群的认证配置指南
 
 
 :::caution v1 归档文档 — 不适用于 v2
-本页描述的是 v1（EC2 实例 + Steampipe）架构的认证步骤。v2 基于 ECS Fargate，EKS 认证改为由 `terraform/foundation/eks.tf` 为 **web 任务角色授予 Access Entry + `AmazonEKSAdminViewPolicy`**。请不要将本页的命令（SSH、`AmazonEKSClusterAdminPolicy`、`data/config.json` 等）应用于 v2 环境。
+本页归档 v1（EC2 实例 + Steampipe）的认证步骤。v2 基于 ECS Fargate，宿主账户的 Terraform 接入使用 `terraform/foundation/eks.tf`。成员账户注册以及当前 web 任务角色的 Access Entry/认证方式，请遵循 [EKS Overview 的跨账户连接指南](./eks)。不要将本归档中的 SSH、`AmazonEKSClusterAdminPolicy` 或 `data/config.json` 命令用于 v2。
 :::
 
 AWSops 的 Kubernetes 仪表板（`/k8s/*`）通过 Steampipe 的 `kubernetes` 插件查询 EKS 集群数据。为此，**AWSops EC2 实例角色必须通过 EKS 集群的认证**。

@@ -22,9 +22,9 @@ A page for viewing the overall status of EKS clusters, node resources, and Pod s
 ### EKS Cluster Cards
 Display key information for each cluster in card format:
 - Cluster Name, Status (ACTIVE)
-- Kubernetes Version, Account, VPC ID, Platform Version, Region
+- Kubernetes Version, Account, Region, VPC ID, Platform Version
 - **Access Entry badge**: K8s Connected (green) / No Access (red)
-- **Cluster registration button (admin)**: use existing-Access-Entry query registration, a ServiceAccount token, or an explicit AssumeRole identity. AWSops stores registration settings; it does not create AWS roles, Access Entries, or policies.
+- **Cluster registration button (admin)**: use existing-Access-Entry query registration, a ServiceAccount token, or an explicit AssumeRole identity. AWSops stores registration settings; it does not create AWS roles, Access Entries, or policies (ADR-005).
 - **Click to filter**: Click a cluster card to filter all data to that cluster (cyan border)
 
 :::tip Cluster Access
