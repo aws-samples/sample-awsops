@@ -33,7 +33,7 @@ AWSops is a microservice architecture provisioned with **Terraform** (`terraform
 |-------|-------------|
 | **IaC** | Terraform (S3 partial backend, `use_lockfile`). CDK is dropped |
 | **Edge** | CloudFront (TLS) → VPC Origin (`https-only:443`) → internal ALB HTTPS:443 (regional ACM) → Fargate. **No public ALB** |
-| **Compute** | ECS Fargate (arm64). web is a Next.js 14 thin-BFF served at the **root path (`/`)** |
+| **Compute** | ECS Fargate (arm64). web is a Next.js 15 thin-BFF served at the **root path (`/`)** |
 | **Data** | Aurora Serverless v2 (PostgreSQL 17), accessed via node-pg |
 | **AI** | AgentCore Runtime + MCP Lambda tools across 9 section gateways (live query) |
 | **Async workers** | SQS → ESM (kill-switch) → dispatcher Lambda → Step Functions → Lambda or Fargate |

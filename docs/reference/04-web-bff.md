@@ -19,7 +19,7 @@ permissions. Resource reads stay behind the curated MCP tools.
 
 **EN**
 
-- **Framework**: Next.js 14 thin-BFF in `web/`, App Router, `output: 'standalone'`, built for **arm64**.
+- **Framework**: Next.js 15 / React 19 thin-BFF in `web/`, App Router, `output: 'standalone'`, built for **arm64**.
 - **Path**: served at the **root path `/`** — there is **no `basePath`** (v1's `/awsops` prefix is gone in v2).
 - **Routes**:
   - `/api/health` — **public** liveness; the deploy smoke target and the health-check path for both the container and the ALB target group.
@@ -32,7 +32,7 @@ permissions. Resource reads stay behind the curated MCP tools.
 
 **KO**
 
-- **프레임워크**: `web/`의 Next.js 14 얇은 BFF, App Router, `output: 'standalone'`, **arm64** 빌드.
+- **프레임워크**: `web/`의 Next.js 15 / React 19 얇은 BFF, App Router, `output: 'standalone'`, **arm64** 빌드.
 - **경로**: **루트 경로 `/`** 에서 서비스 — **`basePath` 없음** (v1의 `/awsops` 접두사는 v2에서 제거).
 - **라우트**: `/api/health`(공개 liveness, 배포 스모크 + 컨테이너/타깃그룹 헬스 경로), `/api/stream`(SSE, ~15s 하트비트), `/api/db`(node-`pg` 공유 풀 `getPool`로 Aurora ping), `/api/jobs`(+`/[id]`, P2 비동기 — 단 범용 라우트는 `noop`/`noop-heavy`만 허용). 무거운 작업은 인라인 실행 없이 `web/lib/jobs.ts`의 `enqueueJob()`으로 큐잉되지만, 사용자 경로 기준 `report`/`compliance`는 범용 라우트가 아니라 각자의 소유권-스코프 전용 라우트(`POST /api/diagnosis`, `POST /api/compliance/run`, 둘 다 `requestedBy`를 서버 측에서 계산)로만 도달 가능하며 예약 리포트의 신뢰된 `schedule_dispatcher.py` 내부 직접 enqueue는 예외다 — 클라이언트가 넘긴 `report_id`/`run_id`/`requested_by`를 소유권 검증 없이 신뢰하면 cross-user IDOR write가 되므로(PR #195 pentest-remediation에서 차단) 범용 라우트는 이 두 타입을 거부한다.
 - **이미지 배포 — 듀얼 티어 ECR**: dev-private `awsops-v2-web`, prod-public `public.ecr.aws/r7z4t3s6/awsops-v2-web`.

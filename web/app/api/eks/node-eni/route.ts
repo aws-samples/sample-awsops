@@ -1,3 +1,4 @@
+import { eksReadFailure, type EksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { ec2DiagFleetLive } from '@/lib/metrics';
@@ -78,18 +79,20 @@ export async function GET(request: Request) {
     // completeBuckets: 타일이 rate(÷3600)를 파생하므로 진행 중 부분 버킷이 아니라 '완결된
     // 직전 1시간' 버킷을 사용(부분 Sum÷3600은 정시 직후 ~12× 과소 표시 — metrics.ts perSecond 선례).
     let traffic: { netIn: number | null; netOut: number | null; pktIn: number | null; pktOut: number | null } | null = null;
+    let trafficFailure: EksReadFailure | undefined;
     try {
       const m = (await ec2DiagFleetLive([row.id], context.region, 3600, true, context.accountId))[row.id] ?? {};
       traffic = {
         netIn: m.netIn ?? null, netOut: m.netOut ?? null,
         pktIn: m.pktIn ?? null, pktOut: m.pktOut ?? null,
       };
-    } catch { /* traffic omitted */ }
+    } catch (error) { trafficFailure = eksReadFailure(error, 'node-eni-traffic'); }
     return Response.json({
       found: true,
       instanceId: row.id,
       ipv4PerEni,
       traffic,
+      ...(trafficFailure ? { trafficReason: trafficFailure.reason, trafficMessage: trafficFailure.message } : {}),
       instanceType: (d.instance_type as string | undefined) ?? null,
       maxEnis,
       eniCount: enis.length,
@@ -97,6 +100,6 @@ export async function GET(request: Request) {
       enis,
     });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'Node ENI details are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 500 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'node-eni') }, { status: e instanceof EksScopeError ? e.status : 500 });
   }
 }

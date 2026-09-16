@@ -1,3 +1,4 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
 import { isClusterOnboarded } from '@/lib/opencost-allowlist';
@@ -13,30 +14,32 @@ function json(obj: unknown, status: number) {
 }
 
 // GET — read saved config (any authenticated user). null config = none saved (page uses defaults).
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   try {
+    const params = await pendingParams;
     const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
     if (!(await isClusterOnboarded(context.id))) return json({ status: 'error', message: 'unknown cluster' }, 404);
     const config = await getOpencostConfig(context.id);
     return json({ cluster: context.id, config }, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', ...eksReadFailure(e, 'opencost-config') }, e instanceof EksScopeError ? e.status : 500);
   }
 }
 
 // PUT — save config (admin only). Writes only the app's own Aurora (no cluster/AWS write).
-export async function PUT(request: Request, { params }: { params: { cluster: string } }) {
+export async function PUT(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
   let cluster: string;
   try {
+    const params = await pendingParams;
     cluster = (await resolveEksCluster(params.cluster, new URL(request.url).searchParams)).id;
     if (!(await isClusterOnboarded(cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', ...eksReadFailure(e, 'opencost-config') }, e instanceof EksScopeError ? e.status : 500);
   }
   let body: { chartVersion?: string | null; config?: Record<string, unknown> } = {};
   try { body = (await readJsonBounded(request)) as typeof body; } // bound BEFORE parse (OOM guard)
@@ -72,6 +75,6 @@ export async function PUT(request: Request, { params }: { params: { cluster: str
     if (!ok) return json({ status: 'error', message: 'config storage unavailable' }, 503);
     return json({ saved: true }, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost configuration is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', ...eksReadFailure(e, 'opencost-config') }, e instanceof EksScopeError ? e.status : 500);
   }
 }

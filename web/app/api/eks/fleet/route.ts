@@ -1,5 +1,6 @@
 import { verifyUser } from '@/lib/auth';
-import { getScopedEksRegistrations, eksErrorStatus, eksErrorMessage, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
+import { getScopedEksRegistrations, eksErrorStatus, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
+import { eksReadFailure, type EksReadFailure } from '@/lib/eks-read-error';
 import { listInCluster, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
 import { aggregateNodeResources, instanceTypeDistribution } from '@/lib/eks-resources';
 import { podStatusCounts, podsByNamespace } from '@/lib/eks-tab-stats';
@@ -29,18 +30,22 @@ export async function GET(request: Request) {
   let scope: Awaited<ReturnType<typeof getScopedEksRegistrations>>;
   try { scope = await getScopedEksRegistrations(new URL(request.url).searchParams); }
   catch (error) {
-    return Response.json({ clusters: [], status: 'error', message: eksErrorMessage(error, 'EKS scope could not be loaded') },
+    return Response.json({ clusters: [], status: 'error', ...eksReadFailure(error, 'eks-fleet') },
       { status: eksErrorStatus(error, 503) });
   }
   const clusters = await mapEksConcurrent(scope.clusters, async (identity) => {
     const name = identity.id;
+    let eventsFailure: EksReadFailure | undefined;
     try {
       const [nodes, pods, deployments, services, events] = await Promise.all([
         listInCluster(name, 'nodes') as Promise<NodeRow[]>,
         listInCluster(name, 'pods') as Promise<PodRow[]>,
         listInCluster(name, 'deployments') as Promise<DeploymentRow[]>,
         listInCluster(name, 'services') as Promise<ServiceRow[]>,
-        (listInCluster(name, 'events') as Promise<EventRow[]>).catch(() => [] as EventRow[]), // events-only failure must not kill the cluster entry
+        (listInCluster(name, 'events') as Promise<EventRow[]>).catch(error => {
+          eventsFailure = eksReadFailure(error, 'eks-fleet-events');
+          return [] as EventRow[];
+        }), // events-only failure must not kill the cluster entry
       ]);
       return {
         ...identity,
@@ -58,9 +63,11 @@ export async function GET(request: Request) {
         podStatus: podStatusCounts(pods),
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
+        ...(eventsFailure ? { eventsReason: eventsFailure.reason, eventsError: eventsFailure.message } : {}),
       };
     } catch (e) {
-      return { ...empty(identity), error: eksErrorMessage(e, 'Kubernetes resource read unavailable') };
+      const failure = eksReadFailure(e, 'eks-fleet-cluster');
+      return { ...empty(identity), error: failure.message, reason: failure.reason };
     }
   });
   return Response.json({ clusters, truncated: scope.truncated });

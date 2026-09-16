@@ -10,11 +10,12 @@ export const dynamic = 'force-dynamic';
 // CloudWatch-only — in-cluster signals (conditions, addon health) come from the incluster route.
 const RANGE_ALLOWED = [3600, 21600, 86400, 604800];
 
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
   try {
+    const params = await pendingParams;
     const search = new URL(request.url).searchParams;
     const context = await resolveEksCluster(params.cluster, search);
     if (!(await isAllowed(context.id))) {
@@ -23,7 +24,7 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     const rangeRaw = Number(search.get('range') ?? 3600);
     const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
     const metrics = await eksDiagnosisMetrics(context.name, context.region, range, context.accountId);
-    const body: EksDiagnosisMetricsResponse = { range, accountId: context.accountId, region: context.region, ...metrics };
+    const body: EksDiagnosisMetricsResponse = { ...metrics, range, accountId: context.accountId, region: context.region };
     return Response.json(body, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     return Response.json({

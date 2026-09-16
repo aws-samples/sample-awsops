@@ -35,7 +35,7 @@ vi.mock('@/lib/eks-access', () => ({
 }));
 
 const req = (method = 'POST') => new Request('http://x/api/eks/c1/register', { method, headers: { cookie: 'awsops_token=t' } });
-const P = { params: { cluster: 'c1' } };
+const P = { params: Promise.resolve({ cluster: 'c1' }) };
 
 describe('GET /api/eks access synthesis', () => {
   beforeEach(() => { vi.clearAllMocks(); });
@@ -94,7 +94,7 @@ describe('POST /api/eks/[cluster]/register', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
     const { POST } = await import('./[cluster]/register/route');
-    expect((await POST(req(), { params: { cluster: 'bad/../name' } })).status).toBe(400);
+    expect((await POST(req(), { params: Promise.resolve({ cluster: 'bad/../name' }) })).status).toBe(400);
   });
 
   it('200 registers when the access entry exists', async () => {
@@ -160,7 +160,7 @@ describe('POST /api/eks/[cluster]/register', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
     const { DELETE } = await import('./[cluster]/register/route');
-    expect((await DELETE(req('DELETE'), { params: { cluster: 'bad/../name' } })).status).toBe(400);
+    expect((await DELETE(req('DELETE'), { params: Promise.resolve({ cluster: 'bad/../name' }) })).status).toBe(400);
   });
 
   it('DELETE 400 for a Terraform(env) cluster', async () => {

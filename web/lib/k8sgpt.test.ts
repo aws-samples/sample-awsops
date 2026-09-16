@@ -73,6 +73,44 @@ describe('dedup (Rule 11) — do not re-narrate an unchanged finding', () => {
 });
 
 describe('stale-scan degrade (Rule 9)', () => {
+  it.each([
+    [{ statusCode: 403 }, 'denied'],
+    [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ code: 'ECONNREFUSED' }, 'unreachable'],
+  ])('preserves classification after the Result-CRD read fails: %j', async (metadata, reason) => {
+    listK8sgptResults.mockRejectedValue(Object.assign(new Error('private-role private-session'), metadata));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { getDiagnosis } = await load();
+      const result = await getDiagnosis('fsi-demo-cluster');
+      expect(result).toMatchObject({ enabled: true, operator_detected: false, operator_missing: false, stale: true, errorReason: reason, findings: [] });
+      expect(result.message).toMatch(/^K8sGPT diagnosis is unavailable\./);
+      expect(JSON.stringify([result, warn.mock.calls])).not.toContain('private');
+      expect(invokeAgent).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('distinguishes a real missing Result-CRD endpoint from failed reads', async () => {
+    const { EksKubernetesHttpError } = await import('./eks-read-error');
+    listK8sgptResults.mockRejectedValue(new EksKubernetesHttpError(404));
+    const { getDiagnosis } = await load();
+    const result = await getDiagnosis('fsi-demo-cluster');
+    expect(result).toMatchObject({ enabled: true, operator_detected: false, operator_missing: true, findings: [] });
+    expect(result.errorReason).toBeUndefined();
+    expect(result.message).toBeUndefined();
+  });
+
+  it('does not mistake a discovery 404 or a spoofed error object for a missing operator', async () => {
+    const { EksScopeError } = await import('./eks-context');
+    const { getDiagnosis } = await load();
+    for (const failure of [new EksScopeError('Unknown EKS cluster', 404), { name: 'KubernetesHttpError', statusCode: 404, message: 'private' }]) {
+      listK8sgptResults.mockRejectedValue(failure);
+      const result = await getDiagnosis('fsi-demo-cluster');
+      expect(result).toMatchObject({ operator_missing: false, errorReason: 'upstream-error' });
+      expect(JSON.stringify(result)).not.toContain('private');
+    }
+  });
+
   it('operator unreachable → operator_detected:false, stale:true, still returns (no throw)', async () => {
     listK8sgptResults.mockRejectedValue(new Error('connect ETIMEDOUT'));
     query.mockResolvedValue({ rows: [] });

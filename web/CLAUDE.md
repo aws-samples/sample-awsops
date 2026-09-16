@@ -1,7 +1,7 @@
 # Web Module
 
 ## Role
-Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/api/*`. Standalone build deployed as an arm64 container to ECS Fargate. Heavy or long-running work is never run inline — it's enqueued to the worker tier. The generic `POST /api/jobs` accepts only allowlisted (`noop`-family) job types; domain jobs like `report`/`compliance` go through their own ownership-checked dedicated routes instead (ADR-009).
+Next.js 15 / React 19 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/api/*`. Standalone build deployed as an arm64 container to ECS Fargate. Heavy or long-running work is never run inline — it's enqueued to the worker tier. The generic `POST /api/jobs` accepts only allowlisted (`noop`-family) job types; domain jobs like `report`/`compliance` go through their own ownership-checked dedicated routes instead (ADR-009).
 
 ## Key Files
 - `lib/graph-inventory-read.ts` — internal bounded account/count/snapshot reads and attempt-evidence derivation; no graph/state writes or publisher wiring. Background/request transaction helpers share two admissions per pool. See `docs/runbooks/graph-read-contract.md`.
@@ -19,7 +19,7 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   The private `scripts/v2/runtime-smoke.mjs` prepare mode checks the host registry; verify
   consumes collection metadata and requires Lambda/Fargate completion checks.
 - `middleware.ts` — global 2MB body cap over all of `/api/*` (defense-in-depth above each route's own `readJsonBounded`).
-- `instrumentation.ts` — server-boot hook: runs the periodic graph rebuild, default off (`GRAPH_REBUILD_INTERVAL_MINS`).
+- `instrumentation.ts` — stable Next.js 15 server-boot hook (no experimental config flag): runs the periodic graph rebuild, default off (`GRAPH_REBUILD_INTERVAL_MINS`).
   Its outer catch and process-local overlap guard remain in force. `lib/graph-execution.ts` reports
   validated publication counts, fixed reasons and sanitized failures. Trace uses complete self infra
   or explicitly partial telemetry-only output for published stale/degraded self; other bad host
@@ -27,16 +27,20 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   non-publishing recorders without invented counts/windows.
   CLI exits 1 for failure, 2 for incomplete publication (including degradation), otherwise 0.
 - `lib/inventory-redaction.ts` — shared targeted origin-header/OIDC secret projection for graph and inventory reads plus new graph writes; SQL-reader view boundaries remain required.
-- `next.config.mjs` — `output: 'standalone'` + `experimental.instrumentationHook` + legacy-path redirects (`/ec2`, `/opencost`).
+- `next.config.mjs` — `output: 'standalone'` + legacy-path redirects (`/ec2`, `/opencost`).
 - `Dockerfile` — node:20-alpine 2-stage standalone build, `CMD ["node","server.js"]`.
 
 ## Rules
+- Next.js 15 request APIs are asynchronous: route/page `params` and server-page
+  `searchParams` are Promises; resolve them before reading values. Await `cookies()`
+  in server code. Preserve authentication/authorization before data access. Client
+  pages may use `useParams()` or React 19 `use(params)` to read segment values.
 - Setup/build/test:
   ```
-  npm install
+  npm ci
   npm run dev                              # next dev
   npm run build                            # next build (standalone, used by the deploy image)
-  npm test                                 # vitest run — full suite (2000+ tests, ~10s)
+  npm test                                 # vitest run — full suite
   ```
   Tests are colocated with source as `*.test.ts(x)`. The required cross-tree
   `scripts/v2/ci/web-db-connection.itest.mjs` also gates `lib/db-connection.ts` using the pinned

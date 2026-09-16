@@ -4,6 +4,36 @@
 
 Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
 
+### Placement and live VPC connections
+
+`/topology/infra` defaults to the persisted placement view from
+`GET /api/graph?class=infra`. It shows resource placement relationships such as
+VPC, subnet and security-group membership. The separate
+`/topology/infra?view=vpc` tab renders active peering and TGW attachment
+relationships from `GET /api/vpc-connectivity`. Those live results are not
+persisted as graph nodes or edges; enabling placement collection does not import
+them into the default graph.
+
+In the reported dev investigation on 2026-09-16, an authenticated placement read
+returned zero nodes and edges with `collection.attempted_at=null`, while
+`graph_rebuild_interval_mins` was 0. A separate scoped connectivity read returned
+one TGW with two peer VPCs and no operational read gaps. The disabled timer
+explained the lack of a scheduled placement attempt; the empty placement response
+was not evidence that TGW or peering connections were absent. These observations
+do not establish later timer activation, publication or deployment.
+
+For the same symptom, inspect collection status and the running web task's
+`GRAPH_REBUILD_INTERVAL_MINS`. Null attempt metadata alone cannot distinguish a
+disabled timer from legacy/missing state. A successful live connectivity read
+does not prove that a materialized graph rebuild ran. The placement view's
+**Open VPC connection graph** empty-state action opens the VPC tab, which loads
+inventory choices only until an explicit connection query. Clicking a placement
+VPC node passes its raw ID; the tab queries only after resolving exactly one
+current-scoped inventory choice. Qualified links from the VPC section preserve
+the account/region/VPC selection key. See the
+[VPC connectivity reference](../reference/vpc-connectivity.md) for identity,
+lifecycle, display caps and partial-result semantics.
+
 ## Request contract
 
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
@@ -253,6 +283,44 @@ loader, publishers and coordinator with mocked SQL and connector IO:
 npx vitest run lib/graph-rebuild-runner.test.ts lib/graph-sources.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
 ```
 
+### Optional dev CI timer override
+
+The nonsecret repository variable `CI_GRAPH_REBUILD_INTERVAL_MINS_DEV` supplies
+an optional Plan-time override through `scripts/v2/ci_runtime_policy.py` and
+`.github/workflows/terraform.yml`. Empty or unset leaves
+`graph_rebuild_interval_mins` absent from `ci-runtime.auto.tfvars.json`, preserving
+the existing tfvars decision or Terraform default 0. It does not edit
+`TF_TFVARS_DEV`.
+
+A supplied value must be an integer string from **0 to 1440**, and requires
+`target=dev`, `plan_scope=full` and `CI_READONLY_RUNTIME_DEV=true`. The helper emits
+the numeric `graph_rebuild_interval_mins` into `ci-runtime.auto.tfvars.json`;
+invalid values or unsupported helper contexts fail closed. The workflow forwards
+this variable only for full dev plans. Existing runtime-profile validation,
+image prerequisites and manual login/DB/host-registry preflight remain required.
+See the [development variable catalog](dev-repo-setup.md#development-variable-catalog--개발-변수-목록).
+
+For the planned dev rollout, after the source change is merged, the operator sets
+the variable to `15`, creates a full saved plan through the existing Terraform
+workflow, reviews its complete effects privately and applies that exact plan
+through the approved flow. Apply consumes the saved plan, not a newly evaluated
+variable or edited tfvars secret. Verify the running web task has
+`GRAPH_REBUILD_INTERVAL_MINS=15`, then inspect actual collection attempts,
+publication outcomes and source clocks after the initial approximately
+60-second attempt and subsequent 15-minute ticks. A variable edit, source merge,
+successful plan or elapsed timer interval is not publication proof. To disable
+again, plan and apply an explicit `0`; unsetting the variable merely removes the
+CI override and preserves any underlying tfvars value.
+
+The existing web-process timer coordinates flow, infra and qualified trace
+collection and writes application graph records in Aurora. It does not mutate
+AWS resources or enable remediation/autonomy under ADR-005. Its overlap guard,
+cross-task write locks, trace dependency gates, retention and read/publication
+budgets remain unchanged. The 15-minute cadence does not refresh inventory by
+itself or relax source freshness limits: `INVENTORY_STALE_AFTER_MINUTES` and the
+existing source-quality/clock rules still apply. These steps describe operator
+work to perform; timer activation and a live release require separate evidence.
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
@@ -441,6 +509,9 @@ those rollout steps automatically.
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
 `web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
+`scripts/v2/ci_runtime_policy.py`, `.github/workflows/terraform.yml`,
+`web/lib/vpc-connection-graph.ts`, `web/components/topology/VpcConnectionGraph.tsx`,
+`web/components/inventory/VpcConnectivitySection.tsx`, `web/app/topology/infra/page.tsx`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
 `web/components/topology/ServiceNetworkTopology.tsx`, `web/components/topology/ServiceNetworkTopology.test.tsx`,
 `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,

@@ -2,6 +2,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
+import { RouterContext } from 'next/dist/shared/lib/router-context.shared-runtime';
+import type { NextRouter } from 'next/router';
 import { AppRouterContext, type AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime';
 import TopologyPage from './page';
@@ -95,11 +97,15 @@ function mount(initial = '/topology', component = <TopologyPage />) {
   function Harness() {
     const [href, setHref] = useState(initial);
     update = setHref;
-    return <AppRouterContext.Provider value={router}>
+    // Outside Next's compiler, next/link reads RouterContext; use the same navigation
+    // adapter as useRouter so the real Link handler still drives this harness.
+    return <RouterContext.Provider value={router as unknown as NextRouter}>
+      <AppRouterContext.Provider value={router}>
       <SearchParamsContext.Provider value={new URL(href, 'http://localhost').searchParams}>
         {component}
       </SearchParamsContext.Provider>
-    </AppRouterContext.Provider>;
+    </AppRouterContext.Provider>
+    </RouterContext.Provider>;
   }
   render(<Harness />);
   return router;

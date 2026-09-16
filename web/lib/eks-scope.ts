@@ -134,6 +134,10 @@ export async function getScopedEksRegistrations(params: URLSearchParams): Promis
 }
 
 /** Upstream messages may contain credentials; only application-owned scope errors are public. */
+export function isEksScopeError(error: unknown): boolean {
+  return error instanceof ScopeError || error instanceof EksScopeError;
+}
+
 export function eksErrorMessage(error: unknown, fallback: string): string {
   return error instanceof ScopeError || error instanceof EksScopeError ? error.message : fallback;
 }

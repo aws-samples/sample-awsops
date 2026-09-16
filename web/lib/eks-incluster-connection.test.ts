@@ -87,6 +87,57 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe('EKS scoped connections and token identity', () => {
+  it.each([403, 503])('preserves actual Kubernetes HTTP %s without its response body', async status => {
+    request.mockImplementation((_options, callback) => {
+      const outgoing = new EventEmitter() as EventEmitter & { setTimeout: () => void; end: () => void };
+      outgoing.setTimeout = vi.fn();
+      outgoing.end = () => {
+        const response = new EventEmitter() as EventEmitter & { statusCode: number };
+        response.statusCode = status;
+        callback(response);
+        response.emit('data', Buffer.from('{"message":"private-role private-external private-session"}'));
+        response.emit('end');
+      };
+      return outgoing;
+    });
+    const { listInCluster } = await import('./eks-incluster');
+    const error = await listInCluster(MEMBER_ID, 'pods').catch(e => e);
+    expect(error).toMatchObject({ name: 'KubernetesHttpError', statusCode: status });
+    expect(String(error)).not.toContain('private');
+    const { classifyEksReadError } = await import('./eks-read-error');
+    expect(classifyEksReadError(error)).toBe(status === 403 ? 'denied' : 'upstream-error');
+    expect(hostProvider).not.toHaveBeenCalled();
+  });
+
+  it('marks the real request-timeout callback so callers can classify it', async () => {
+    request.mockImplementation(() => {
+      const outgoing = new EventEmitter() as EventEmitter & { setTimeout: (ms: number, cb: () => void) => void; destroy: (error: Error) => void; end: () => void };
+      let timeout: () => void;
+      outgoing.setTimeout = (_ms, callback) => { timeout = callback; };
+      outgoing.destroy = error => { outgoing.emit('error', error); };
+      outgoing.end = () => timeout();
+      return outgoing;
+    });
+    const { listInCluster } = await import('./eks-incluster');
+    const error = await listInCluster(MEMBER_ID, 'pods').catch(e => e);
+    expect(error).toMatchObject({ name: 'TimeoutError', code: 'ETIMEDOUT' });
+    const { classifyEksReadError } = await import('./eks-read-error');
+    expect(classifyEksReadError(error)).toBe('timeout');
+  });
+
+  it.each(['ECONNREFUSED', 'ENOTFOUND'])('retains transport code %s for classification without echoing secrets', async code => {
+    request.mockImplementation(() => {
+      const outgoing = new EventEmitter() as EventEmitter & { setTimeout: () => void; end: () => void };
+      outgoing.setTimeout = vi.fn();
+      outgoing.end = () => { outgoing.emit('error', Object.assign(new Error('private-role private-session'), { code })); };
+      return outgoing;
+    });
+    const { listInCluster } = await import('./eks-incluster');
+    const error = await listInCluster(MEMBER_ID, 'pods').catch(e => e);
+    const { classifyEksReadError } = await import('./eks-read-error');
+    expect(classifyEksReadError(error)).toBe('unreachable');
+  });
+
   it('discovers target endpoint and CA with the member role and raw cluster name', async () => {
     const { clusterConn } = await import('./eks-incluster');
     expect(await clusterConn(MEMBER_ID)).toEqual({

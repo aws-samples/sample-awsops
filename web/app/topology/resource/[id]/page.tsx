@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import { useActiveAccount, accountParam } from '@/lib/account-context';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -32,9 +32,9 @@ const relLabel: Record<string, string> = {
   'infra:in_vpc': 'in vpc', 'infra:in_subnet': 'in subnet', 'infra:uses_sg': 'uses sg',
 };
 
-export default function ResourceTopologyPage({ params }: { params: { id: string } }) {
+export default function ResourceTopologyPage({ params }: { params: Promise<{ id: string }> }) {
   const { tt } = useI18n();
-  const fromId = decodeURIComponent(params.id);
+  const fromId = decodeURIComponent(use(params).id);
   const [activeAccount] = useActiveAccount();
   const [depth, setDepth] = useState(2);
   const [graph, setGraph] = useState<Graph | null>(null);

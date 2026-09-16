@@ -5,7 +5,8 @@ import { hasAccessEntry, onboardingGuide } from '@/lib/eks-access';
 import { isAdmin } from '@/lib/admin';
 import { currentAccountId } from '@/lib/account';
 import { qualifiedEksClusterId } from '@/lib/eks-cluster-id';
-import { getEksScope, eksErrorStatus, eksErrorMessage, mapEksConcurrent } from '@/lib/eks-scope';
+import { getEksScope, eksErrorStatus, mapEksConcurrent } from '@/lib/eks-scope';
+import { eksReadFailure } from '@/lib/eks-read-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
         return { clusters, truncated: inventory.truncated, error: undefined };
       } catch (error) {
         return { clusters: [], truncated: false, error: {
-          ...target, message: eksErrorMessage(error, 'EKS inventory query failed'),
+          ...target, ...eksReadFailure(error, 'eks-list-target'),
         } };
       }
     });
@@ -66,9 +67,9 @@ export async function GET(request: Request) {
       clusters: results.flatMap(result => result.clusters), admin,
       region: scope.targets.length === 1 ? scope.targets[0].region : undefined,
       truncated: scope.truncated || results.some(result => result.truncated), errors,
-      ...(failed ? { status: 'error', message: queryErrors[0].message } : {}),
+      ...(failed ? { status: 'error', message: queryErrors[0].message, reason: queryErrors[0].reason } : {}),
     }, { status: failed ? 502 : 200 });
   } catch (e) {
-    return Response.json({ status: 'error', message: eksErrorMessage(e, 'EKS inventory is unavailable') }, { status: eksErrorStatus(e) });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'eks-list') }, { status: eksErrorStatus(e) });
   }
 }

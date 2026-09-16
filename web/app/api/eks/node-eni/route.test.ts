@@ -39,8 +39,10 @@ describe('node ENI identity', () => {
       const { GET } = await import('./route');
       const res = await GET(request(`&cluster=${encodeURIComponent(ARN)}`));
       expect(res.status).toBe(500);
-      expect(await res.json()).toEqual({ status: 'error', message: 'Node ENI details are unavailable.' });
-      expect(errorLog).not.toHaveBeenCalled(); expect(warnLog).not.toHaveBeenCalled();
+      expect(await res.json()).toEqual({ status: 'error', message: 'Node ENI details are unavailable.', reason: 'upstream-error' });
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(warnLog).toHaveBeenCalledWith({ operation: 'node-eni', reason: 'upstream-error', status: 500 });
+      expect(JSON.stringify(warnLog.mock.calls)).not.toContain('private');
     } finally { errorLog.mockRestore(); warnLog.mockRestore(); }
   });
 
@@ -50,7 +52,7 @@ describe('node ENI identity', () => {
     const { GET } = await import('./route');
     const res = await GET(request(`&cluster=${encodeURIComponent(ARN)}`));
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ status: 'error', message: 'EKS account is disabled' });
+    expect(await res.json()).toEqual({ status: 'error', message: 'EKS account is disabled', reason: 'denied' });
     expect(query).not.toHaveBeenCalled();
   });
 

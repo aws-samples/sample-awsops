@@ -25,7 +25,7 @@ vi.mock('@/lib/network-path-gate', async () => {
   return { ...actual, networkPathLiveTopologyCapabilityGate: (...a: unknown[]) => networkPathLiveTopologyCapabilityGate(...a) };
 });
 
-const params = { id: 'chk-1' };
+const params = Promise.resolve({ id: 'chk-1' });
 const req = () =>
   new Request('http://x/api/network-paths/chk-1/runs', { method: 'POST', headers: { cookie: 'awsops_token=t' } });
 

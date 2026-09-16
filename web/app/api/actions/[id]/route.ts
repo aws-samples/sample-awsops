@@ -23,17 +23,19 @@ async function killSwitchOn(name: string | undefined): Promise<boolean> {
   catch { return false; }
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user || !(await isAdmin(user))) return NextResponse.json({ message: 'admin required' }, { status: 403 });
+  const params = await pendingParams;
   if (!UUID_RE.test(params.id)) return NextResponse.json({ message: 'invalid plan id' }, { status: 400 });
   const plan = await getPlan(params.id);
   return plan ? NextResponse.json(plan) : NextResponse.json({ message: 'plan not found' }, { status: 404 });
 }
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user || !(await isAdmin(user))) return NextResponse.json({ message: 'admin required' }, { status: 403 });
+  const params = await pendingParams;
   if (!UUID_RE.test(params.id)) return NextResponse.json({ message: 'invalid plan id' }, { status: 400 });
   let body: any;
   try { body = await readJsonBounded(req); }

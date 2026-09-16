@@ -1,15 +1,8 @@
 #!/bin/bash
-# Doc↔code consistency: CLAUDE.md must name the EKS access-entry policy the code actually binds.
-#
-# The web task role's EKS Access Entry is associated with AmazonEKSAdminViewPolicy
-# (terraform/foundation/eks.tf:34) — NOT AmazonEKSViewPolicy. Plain View has no cluster-scoped
-# resources, so it can't list nodes (see the eks.tf comment); AmazonEKSViewPolicy is used ONLY for
-# the separate, out-of-band istio-read role (eks.tf:46), which CLAUDE.md does not document.
-#
-# Assertions are scoped to CLAUDE.md (NOT repo-wide — eks.tf legitimately keeps AmazonEKSViewPolicy
-# for the istio role) and use fixed-string matching (grep -F) to avoid any regex ambiguity. The "Admin"
-# prefix breaks both forbidden literals (" + View" != " + AdminView"; "EKSViewPolicy" != "EKSAdminViewPolicy"),
-# so the corrected "AdminView" text cannot false-fail.
+# Doc↔code consistency: host and member EKS roles have different access contracts.
+# The existing Terraform host association uses AdminView. Member defaults use View
+# plus minimal node-read RBAC. Assertions must distinguish those documented scopes;
+# banning the View name throughout CLAUDE.md would reject correct member guidance.
 #
 # Standalone, no deps (no vitest/tfvars/node): bash tests/structure/test-doc-code-consistency.sh
 set -uo pipefail
@@ -32,18 +25,29 @@ else
   notok "eks.tf no longer binds AmazonEKSAdminViewPolicy — update this test's premise"
 fi
 
-# 1. CLAUDE.md must NOT name the web-role policy as plain AmazonEKSViewPolicy.
-if grep -Fq "AmazonEKSViewPolicy" "$DOC"; then
-  notok "CLAUDE.md still says AmazonEKSViewPolicy (web task role uses AdminView per eks.tf:34)"
+# 1. Keep the host contract explicit, without importing the member policy.
+host_line=$(grep -F -- "- **EKS host onboarding**:" "$DOC")
+if [[ "$host_line" == *"Access Entry + AmazonEKSAdminViewPolicy"* ]] &&
+   [[ "$host_line" != *"AmazonEKSViewPolicy"* ]]; then
+  ok "host onboarding documents the actual Terraform AdminView policy"
 else
-  ok "CLAUDE.md has no stale 'AmazonEKSViewPolicy'"
+  notok "host onboarding must explicitly retain AdminView, not member View"
 fi
 
-# 2. CLAUDE.md must NOT pair 'Access Entry' with a bare 'View policy' (the web-role phrasing).
-if grep -Fq "Access Entry + View policy" "$DOC"; then
-  notok "CLAUDE.md still says 'Access Entry + View policy' (should be 'Access Entry + AdminView policy')"
+# 2. Member guidance must include the node permission missing from View.
+member_line=$(grep -F -- "- **EKS member onboarding**:" "$DOC")
+if [[ "$member_line" == *"Access Entry + AmazonEKSViewPolicy"* ]] &&
+   [[ "$member_line" == *"awsops:eks-readonly"* ]] &&
+   [[ "$member_line" != *"AmazonEKSAdminViewPolicy"* ]]; then
+  ok "member onboarding documents View plus minimal node-read RBAC"
 else
-  ok "CLAUDE.md has no stale 'Access Entry + View policy'"
+  notok "member onboarding must document View plus node RBAC without AdminView"
+fi
+if grep -Fq 'AmazonEKSViewPolicy' web/lib/eks-access.ts &&
+   grep -Fq 'awsops:eks-readonly' web/lib/eks-member-rbac.ts; then
+  ok "member guide and generated RBAC implement the documented policy/group"
+else
+  notok "member guide or generated node-read group is missing"
 fi
 
 echo "# $PASS passed, $FAIL failed, $N total"

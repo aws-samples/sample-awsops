@@ -15,6 +15,7 @@ import { listK8sgptResults } from '@/lib/eks-incluster';
 import { adaptResultList, type AnalyzerResult } from '@/lib/k8sgpt-adapter';
 import { triageAndCreateOrLink, enqueueInitialStage } from '@/lib/incident';
 import type { AlertEvent } from '@/lib/incident-normalize';
+import { eksReadFailure, EksKubernetesHttpError, type EksReadFailure, type EksReadReason } from '@/lib/eks-read-error';
 
 const STALE_MS = (parseInt(process.env.K8SGPT_STALE_MINUTES || '5', 10) || 5) * 60 * 1000; // Rule 9
 
@@ -36,6 +37,9 @@ export interface DiagnosisResult {
   stale: boolean;                            // true ⇒ operator down/slow; facts may be old
   operator_detected: boolean;
   findings: DiagnosisFinding[];
+  operator_missing?: boolean;               // true only for an actual Result-CRD HTTP 404
+  errorReason?: EksReadReason;
+  message?: string;
 }
 
 const NARRATION_PROMPT =
@@ -72,10 +76,14 @@ export async function getDiagnosis(cluster: string): Promise<DiagnosisResult> {
   // 1) Read the deterministic Result CRDs (P3-D STS path). Operator absent / unreachable ⇒ degrade.
   let crds: Awaited<ReturnType<typeof listK8sgptResults>> = [];
   let operatorDetected = true;
+  let operatorMissing = false;
+  let readFailure: EksReadFailure | undefined;
   try {
     crds = await listK8sgptResults(cluster);
-  } catch {
+  } catch (error) {
     operatorDetected = false; // Rule 9: down/absent operator → degrade gracefully, no throw
+    operatorMissing = error instanceof EksKubernetesHttpError && error.statusCode === 404;
+    if (!operatorMissing) readFailure = eksReadFailure(error, 'k8sgpt');
   }
   const facts = adaptResultList(crds);
 
@@ -106,7 +114,11 @@ export async function getDiagnosis(cluster: string): Promise<DiagnosisResult> {
   // 4) Staleness (Rule 9): the newest persisted scan older than STALE_MS ⇒ stale.
   const lastScan = await lastScanTimestamp(cluster).catch(() => null);
   const stale = !operatorDetected || (lastScan ? Date.now() - new Date(lastScan).getTime() > STALE_MS : true);
-  return { enabled: true, cluster, last_scan_timestamp: lastScan, stale, operator_detected: operatorDetected, findings: out };
+  return {
+    enabled: true, cluster, last_scan_timestamp: lastScan, stale,
+    operator_detected: operatorDetected, operator_missing: operatorMissing, findings: out,
+    ...(readFailure ? { errorReason: readFailure.reason, message: readFailure.message } : {}),
+  };
 }
 
 // --- DB helpers (degrade-safe; tables are migration v7, always-present) ---

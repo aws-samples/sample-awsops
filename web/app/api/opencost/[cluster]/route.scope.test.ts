@@ -17,7 +17,7 @@ vi.mock('@/lib/opencost-status', () => ({ detectOpencostInstall: installStatus }
 
 const ARN = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
 const search = 'account=222222222222&region=us-west-2';
-const params = { params: { cluster: 'shared' } };
+const params = { params: Promise.resolve({ cluster: 'shared' }) };
 const routes = [
   { name: 'config', load: () => import('./route'), read: readConfig, fallback: 500, message: 'OpenCost configuration is unavailable.' },
   { name: 'status', load: () => import('./status/route'), read: installStatus, fallback: 500, message: 'OpenCost status is unavailable.' },
@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 
 describe.each(routes)('OpenCost $name scope', route => {
-  it.each(['error', 'string', 'object'])('sanitizes a returned upstream %s failure without logging it', async kind => {
+  it.each(['error', 'string', 'object'])('sanitizes an upstream %s and logs only its classification', async kind => {
     route.read.mockRejectedValue(kind === 'error' ? Object.assign(new Error(SENTINEL), { stack: SENTINEL, $metadata: { requestId: SENTINEL } })
       : kind === 'string' ? SENTINEL : { message: SENTINEL, status: 403, toString: () => SENTINEL });
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -45,8 +45,11 @@ describe.each(routes)('OpenCost $name scope', route => {
       const response = await GET(new Request(`http://local/?${search}`), params);
       expect(response.status).toBe(route.fallback);
       expect(await response.json()).toEqual(route.name === 'allocation'
-        ? { available: false, message: route.message } : { status: 'error', message: route.message });
-      expect(log).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled();
+        ? { available: false, message: route.message, reason: 'upstream-error' }
+        : { status: 'error', message: route.message, reason: 'upstream-error' });
+      expect(log).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith({ operation: `opencost-${route.name}`, reason: 'upstream-error', status: route.fallback });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
     } finally { log.mockRestore(); warn.mockRestore(); }
   });
 
@@ -95,7 +98,7 @@ it.each(['scope', 'save'])('sanitizes an unexpected PUT %s error', async stage =
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{"config":{}}',
   }), params);
   expect(response.status).toBe(500);
-  expect(await response.json()).toEqual({ status: 'error', message: 'OpenCost configuration is unavailable.' });
+  expect(await response.json()).toEqual({ status: 'error', message: 'OpenCost configuration is unavailable.', reason: 'upstream-error' });
 });
 
 it('keeps PUT validation errors fixed instead of reflecting input embedded in an exception', async () => {

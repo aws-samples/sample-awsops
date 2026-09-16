@@ -1,13 +1,13 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import type { Pool, PoolConfig } from 'pg';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 // Real pg sockets: these servers stop at different protocol boundaries.
 // Removing the observer must fail the phase assertions below.
 const sockets = new Set<Socket>();
 const servers: Server[] = [];
 let pool: Pool | undefined;
-let warning: ReturnType<typeof vi.spyOn>;
+let warning: MockInstance<typeof console.warn>;
 
 async function localPool(onSocket: (socket: Socket) => void) {
   const server = createServer(socket => {

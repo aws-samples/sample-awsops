@@ -45,9 +45,9 @@ describe('datasource authorization matrix', () => {
     const manage = await import('./manage/route');
     expect((await manage.POST(reqJson({ name: 'p', kind: 'prometheus', endpoint: 'http://10.0.0.5' }, 'POST'))).status).toBe(403);
     const del = await import('./[id]/route');
-    expect((await del.DELETE(reqJson({}, 'DELETE'), { params: { id: '1' } })).status).toBe(403);
+    expect((await del.DELETE(reqJson({}, 'DELETE'), { params: Promise.resolve({ id: '1' }) })).status).toBe(403);
     const def = await import('./[id]/default/route');
-    expect((await def.POST(reqJson({}, 'POST'), { params: { id: '1' } })).status).toBe(403);
+    expect((await def.POST(reqJson({}, 'POST'), { params: Promise.resolve({ id: '1' }) })).status).toBe(403);
     const test = await import('./test/route');
     expect((await test.POST(reqJson({ kind: 'prometheus', endpoint: 'http://10.0.0.5' }, 'POST'))).status).toBe(403);
   });
@@ -57,6 +57,6 @@ describe('datasource authorization matrix', () => {
     const manage = await import('./manage/route');
     expect((await manage.POST(reqJson({}, 'POST'))).status).toBe(401);
     const del = await import('./[id]/route');
-    expect((await del.DELETE(reqJson({}, 'DELETE'), { params: { id: '1' } })).status).toBe(401);
+    expect((await del.DELETE(reqJson({}, 'DELETE'), { params: Promise.resolve({ id: '1' }) })).status).toBe(401);
   });
 });

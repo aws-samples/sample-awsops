@@ -35,7 +35,7 @@ afterEach(() => vi.unstubAllEnvs());
 describe.each(routes)('$name canonical Kubernetes scope', route => {
   it('uses the canonical ID for registration and the Kubernetes call', async () => {
     const { GET } = await route.load();
-    expect((await GET(request(), { params: { cluster: 'shared' } })).status).toBe(200);
+    expect((await GET(request(), { params: Promise.resolve({ cluster: 'shared' }) })).status).toBe(200);
     expect(resolve).toHaveBeenCalledWith('shared', new URL(request().url).searchParams);
     expect(allowed).toHaveBeenCalledWith(ARN);
     expect(route.read).toHaveBeenCalledWith(...route.args);
@@ -44,7 +44,7 @@ describe.each(routes)('$name canonical Kubernetes scope', route => {
   it('rejects a member if only its namesake host is registered', async () => {
     allowed.mockImplementation(async id => id === 'shared');
     const { GET } = await route.load();
-    expect((await GET(request(), { params: { cluster: 'shared' } })).status).toBe(404);
+    expect((await GET(request(), { params: Promise.resolve({ cluster: 'shared' }) })).status).toBe(404);
     expect(route.read).not.toHaveBeenCalled();
   });
 
@@ -52,7 +52,7 @@ describe.each(routes)('$name canonical Kubernetes scope', route => {
     const { EksScopeError } = await import('@/lib/eks-context');
     resolve.mockRejectedValue(new EksScopeError('scope rejected', status));
     const { GET } = await route.load();
-    expect((await GET(request(), { params: { cluster: 'shared' } })).status).toBe(status);
+    expect((await GET(request(), { params: Promise.resolve({ cluster: 'shared' }) })).status).toBe(status);
     expect(route.read).not.toHaveBeenCalled();
   });
 });

@@ -22,6 +22,7 @@ import { eksClusterLabel, eksClusterName } from '@/lib/eks-cluster-id';
 const OTHER_CATEGORIES: readonly NfmCategory[] = ['INTER_REGION', 'AMAZON_S3', 'AMAZON_DYNAMODB', 'UNCLASSIFIED'];
 // NFM 모니터 쿼리 한도: 최대 1시간 윈도우 → 프리셋을 15m/30m/1h로 제한.
 const NFM_RANGES = [['15m', 900], ['30m', 1800], ['1h', 3600]] as const;
+const REQUEST_FAILURE = '요청을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.';
 
 const fmtBytes = (n: number): string => {
   if (!Number.isFinite(n) || n < 1) return '0 B';
@@ -96,9 +97,17 @@ export default function PodTransferSection({ clusters }: { clusters: string[] })
     let alive = true;
     setLoading(true);
     fetch(`/api/eks/${encodeURIComponent(cluster)}/pod-transfer?range=${rangeSec}`)
-      .then((r) => (r.ok ? (r.json() as Promise<PodTransferResult>) : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (alive) setData(d); })
-      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : String(e)); })
+      .then(async (r) => {
+        const body = await r.json();
+        if (!alive) return;
+        if (!r.ok) {
+          // API error messages are sanitized; fetch/JSON exception text is not.
+          setErr(typeof body?.message === 'string' && body.message.trim() ? body.message : REQUEST_FAILURE);
+          return;
+        }
+        setData(body);
+      })
+      .catch(() => { if (alive) setErr(REQUEST_FAILURE); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [cluster, rangeSec]);
@@ -151,7 +160,7 @@ export default function PodTransferSection({ clusters }: { clusters: string[] })
       }
     >
       {err && (
-        <div className="px-4 py-3 text-[13px] text-rose-600">{tt('조회 실패')}: {err}</div>
+        <div role="alert" className="px-4 py-3 text-[13px] text-rose-600">{tt('조회 실패')}: {tt(err)}</div>
       )}
       {loading && (
         <div className="px-4 py-3 text-[12.5px] text-ink-400">{tt('NFM 쿼리 실행 중… (수 초~수십 초 소요)')}</div>

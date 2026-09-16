@@ -40,13 +40,15 @@ function parseAuth(body: unknown): EksAuth | null | 'invalid' {
   return 'invalid';
 }
 
-export async function POST(request: Request, { params }: { params: { cluster: string } }) {
+export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   try {
     const user = await verifyUser(request.headers.get('cookie'));
     if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
     if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
+    const params = await pendingParams;
     const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
-    // Direct, scoped DescribeCluster avoids a false 404 beyond a capped inventory page.
+    // Strict identity validation and a successful scoped DescribeCluster must precede
+    // any CLI guide. Direct discovery also avoids false 404s beyond capped inventory pages.
     // Member discovery and default tokens use the registered target role; its
     // Access Entry is checked here. No AWS resource is created or changed by this route.
     await describeEksCluster(context.id);
@@ -85,11 +87,12 @@ export async function POST(request: Request, { params }: { params: { cluster: st
   }
 }
 
-export async function DELETE(request: Request, { params }: { params: { cluster: string } }) {
+export async function DELETE(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   try {
     const user = await verifyUser(request.headers.get('cookie'));
     if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
     if (!(await isAdmin(user))) return json({ status: 'error', message: 'admin only' }, 403);
+    const params = await pendingParams;
     const context = resolveEksClusterForRemoval(params.cluster, new URL(request.url).searchParams);
     if (isEnvCluster(context.id)) {
       return json({ status: 'error', message: 'Terraform(onboard_eks_clusters) 관할 — tfvars에서 제거하세요' }, 400);

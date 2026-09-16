@@ -34,10 +34,10 @@ vi.mock('@aws-sdk/client-sqs', () => ({
 
 const ID = '11111111-1111-1111-1111-111111111111';
 function get(id = ID, cookie = 'awsops_token=t') {
-  return [new Request(`http://x/api/actions/${id}`, { headers: { cookie } }) as any, { params: { id } }] as const;
+  return [new Request(`http://x/api/actions/${id}`, { headers: { cookie } }) as any, { params: Promise.resolve({ id }) }] as const;
 }
 function post(id: string, body: unknown, cookie = 'awsops_token=t') {
-  return [new Request(`http://x/api/actions/${id}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) }) as any, { params: { id } }] as const;
+  return [new Request(`http://x/api/actions/${id}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) }) as any, { params: Promise.resolve({ id }) }] as const;
 }
 
 const enabledAction = { name: 'ec2-create-tags', executorType: 'ssm', enabled: true } as any;

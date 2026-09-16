@@ -8,6 +8,7 @@ import { resolveEksCluster, EksScopeError } from './eks-context';
 import { describeEksCluster } from './eks-access';
 import { credsForAccount } from './aws-assume';
 import { assertEksRoleArn, registeredEksRoleArn } from './eks-role';
+import { EksKubernetesHttpError } from './eks-read-error';
 
 // Re-export the client-safe row types so existing importers keep resolving them here.
 export type { NodeRow, PodRow } from './eks-resources';
@@ -561,9 +562,8 @@ function k8sGet(endpoint: string, path: string, token: string, caPem: Buffer): P
           const body = Buffer.concat(chunks).toString('utf8');
           const status = res.statusCode ?? 0;
           if (status < 200 || status >= 300) {
-            let msg = `HTTP ${status}`;
-            try { msg = (JSON.parse(body) as { message?: string }).message ?? msg; } catch { /* keep msg */ }
-            reject(new Error(msg));
+            // Preserve machine-readable status without retaining the Kubernetes error body.
+            reject(new EksKubernetesHttpError(status));
             return;
           }
           resolve(body);
@@ -574,7 +574,9 @@ function k8sGet(endpoint: string, path: string, token: string, caPem: Buffer): P
     // Server-side bound: a slow/stuck K8s API must not occupy the web task indefinitely
     // (thin-BFF). On timeout, destroy the socket → 'error' rejects this read; callers
     // (e.g. /api/eks/fleet) degrade that cluster to empty rather than hanging the request.
-    r.setTimeout(K8S_REQUEST_TIMEOUT_MS, () => r.destroy(new Error('k8s request timeout')));
+    r.setTimeout(K8S_REQUEST_TIMEOUT_MS, () => r.destroy(Object.assign(
+      new Error('Kubernetes API request timed out.'), { name: 'TimeoutError', code: 'ETIMEDOUT' },
+    )));
     r.end();
   });
 }

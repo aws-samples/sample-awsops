@@ -1,3 +1,4 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { isClusterOnboarded } from '@/lib/opencost-allowlist';
 import { getOpencostConfig } from '@/lib/opencost-config';
@@ -13,10 +14,11 @@ function json(obj: unknown, status: number) {
 // GET — downloadable install bundle (values.yaml + install.sh). Generated from saved config
 // (or defaults). Cluster identity + region are resolved from the request, never trusted from
 // stored config. Read-only: the user runs the bundle out-of-band on their own kubeconfig.
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   try {
+    const params = await pendingParams;
     const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
     if (!(await isClusterOnboarded(context.id))) return json({ status: 'error', message: 'unknown cluster' }, 404);
     const saved = await getOpencostConfig(context.id);
@@ -36,6 +38,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     });
     return json({ valuesYaml, installSh, chartVersion }, 200);
   } catch (e) {
-    return json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'OpenCost bundle is unavailable.' }, e instanceof EksScopeError ? e.status : 500);
+    return json({ status: 'error', ...eksReadFailure(e, 'opencost-bundle') }, e instanceof EksScopeError ? e.status : 500);
   }
 }

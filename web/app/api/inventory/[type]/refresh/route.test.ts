@@ -12,7 +12,7 @@ vi.mock('@/lib/inventory', () => ({
   assertInventoryTypeAllowed: (...a: unknown[]) => assertInventoryTypeAllowed(...a),
 }));
 const req = () => new Request('http://x/api/inventory/ec2/refresh', { method: 'POST', headers: { cookie: 'awsops_token=t' } });
-const ctx = { params: { type: 'ec2' } };
+const ctx = { params: Promise.resolve({ type: 'ec2' }) };
 beforeEach(() => {
   verifyUser.mockReset(); isAdmin.mockReset(); triggerSync.mockReset();
   readResources.mockReset(); assertInventoryTypeAllowed.mockReset();
@@ -68,7 +68,7 @@ describe('POST refresh', () => {
     triggerSync.mockResolvedValue({ status: 'queued' });
     process.env.INV_SYNC_FUNCTION = 'inv-sync-fn';
     const { POST } = await import('./route');
-    const res = await POST(req(), { params: { type: 'all' } });
+    const res = await POST(req(), { params: Promise.resolve({ type: 'all' }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'queued', dispatched: 'all' });
     expect(triggerSync).toHaveBeenCalledWith('all');
@@ -79,14 +79,14 @@ describe('POST refresh', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(false);
     const { POST } = await import('./route');
-    expect((await POST(req(), { params: { type: 'all' } })).status).toBe(403);
+    expect((await POST(req(), { params: Promise.resolve({ type: 'all' }) })).status).toBe(403);
     expect(triggerSync).not.toHaveBeenCalled();
   });
   it("type 'all' → 503 unconfigured when INV_SYNC_FUNCTION is unset (steampipe disabled)", async () => {
     verifyUser.mockResolvedValue({ sub: 'admin-u' });
     delete process.env.INV_SYNC_FUNCTION;
     const { POST } = await import('./route');
-    const res = await POST(req(), { params: { type: 'all' } });
+    const res = await POST(req(), { params: Promise.resolve({ type: 'all' }) });
     expect(res.status).toBe(503);
     expect((await res.json()).status).toBe('unconfigured');
     expect(triggerSync).not.toHaveBeenCalled();
@@ -96,7 +96,7 @@ describe('POST refresh', () => {
     process.env.INV_SYNC_FUNCTION = 'inv-sync-fn';
     triggerSync.mockRejectedValue(new Error('AccessDenied: arn:aws:sts::999999999999:assumed-role/x'));
     const { POST } = await import('./route');
-    const res = await POST(req(), { params: { type: 'all' } });
+    const res = await POST(req(), { params: Promise.resolve({ type: 'all' }) });
     expect(res.status).toBe(503);
     const body = JSON.stringify(await res.json());
     expect(body).not.toContain('999999999999');
@@ -107,7 +107,7 @@ describe('POST refresh', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     assertInventoryTypeAllowed.mockResolvedValue({ status: 403, message: '관리자 전용 메뉴입니다 (IAM)' });
     const { POST } = await import('./route');
-    const res = await POST(req(), { params: { type: 'iam_user' } });
+    const res = await POST(req(), { params: Promise.resolve({ type: 'iam_user' }) });
     expect(res.status).toBe(403);
     expect(triggerSync).not.toHaveBeenCalled();
   });

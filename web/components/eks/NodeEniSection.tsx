@@ -11,8 +11,11 @@ interface NodeEni {
   ipv4PerEni?: number;
   /** 인스턴스 트래픽(1h 누적) — CloudWatch에 ENI별 메트릭은 없어 인스턴스 레벨로 표시. */
   traffic?: { netIn: number | null; netOut: number | null; pktIn: number | null; pktOut: number | null } | null;
+  trafficReason?: 'denied' | 'unreachable' | 'timeout' | 'upstream-error';
+  trafficMessage?: string;
 }
 
+const REQUEST_FAILURE = '요청을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.';
 const mb = (v: number | null | undefined) => (v == null ? '—' : `${(v / 1024 / 1024).toFixed(1)} MB`);
 const cnt = (v: number | null | undefined) => (v == null ? '—' : Math.round(v).toLocaleString());
 // v1-parity rate view (gap L228): the tiles carried only the cumulative sum; v1 showed
@@ -30,16 +33,26 @@ const ratePkts = (v: number | null | undefined) => (v == null ? null : `${(v / 3
 export default function NodeEniSection({ nodeName, cluster }: { nodeName: string; cluster?: string }) {
   const { tt } = useI18n();
   const [d, setD] = useState<NodeEni | null>(null);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState('');
+  const trafficFailed = Boolean(d?.trafficReason || d?.trafficMessage);
 
   useEffect(() => {
     let alive = true;
-    setD(null); setErr(false);
+    setD(null); setErr('');
     const scope = cluster === undefined ? '' : `&cluster=${encodeURIComponent(cluster)}`;
     fetch(`/api/eks/node-eni?node=${encodeURIComponent(nodeName)}${scope}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((body) => { if (alive) setD(body); })
-      .catch(() => { if (alive) setErr(true); });
+      .then(async (r) => {
+        const body = await r.json();
+        if (!alive) return;
+        if (!r.ok) {
+          // The API supplies sanitized messages; transport/JSON exceptions below
+          // must never be rendered with their potentially privileged details.
+          setErr(typeof body?.message === 'string' && body.message.trim() ? body.message : REQUEST_FAILURE);
+          return;
+        }
+        setD(body);
+      })
+      .catch(() => { if (alive) setErr(REQUEST_FAILURE); });
     return () => { alive = false; };
   }, [nodeName, cluster]);
 
@@ -50,7 +63,8 @@ export default function NodeEniSection({ nodeName, cluster }: { nodeName: string
         {tt('네트워크 인터페이스 (ENI)')}
       </h3>
       {!d && !err && <p className="text-[12px] text-ink-400">{tt('조회 중…')}</p>}
-      {(err || (d && !d.found)) && <p className="text-[12px] text-ink-300">{tt('인벤토리에서 노드 인스턴스를 찾지 못했습니다')}</p>}
+      {err && <p role="alert" className="text-[12px] text-rose-600">{tt('조회 실패')}: {tt(err)}</p>}
+      {!err && d?.found === false && <p className="text-[12px] text-ink-300">{tt('인벤토리에서 노드 인스턴스를 찾지 못했습니다')}</p>}
       {d?.found && (
         <>
           <p className="mb-2 text-[12px] text-ink-600">
@@ -58,7 +72,14 @@ export default function NodeEniSection({ nodeName, cluster }: { nodeName: string
             {d.instanceType && <span> · {d.instanceType}</span>}
             <span> · ENI {d.eniCount}{d.maxEnis ? ` / max ${d.maxEnis}` : ''} · {tt(`IP ${d.totalIps}개`)}</span>
           </p>
-          {d.traffic && (
+          {trafficFailed && (
+            <p role="alert" className="mb-2 text-[12px] text-amber-700">
+              {typeof d.trafficMessage === 'string' && d.trafficMessage.trim()
+                ? d.trafficMessage
+                : tt('노드 트래픽 지표를 조회하지 못했습니다.')}
+            </p>
+          )}
+          {d.traffic && !trafficFailed && (
             <div className="mb-2 grid grid-cols-4 gap-2" title="인스턴스 트래픽 — 완결된 직전 1시간 버킷의 누적 + 평균 rate (진행 중 부분 버킷 아님); CloudWatch에 ENI별 메트릭은 없어 인스턴스 레벨로 표시">
               {([
                 ['In', mb(d.traffic.netIn), rateBytes(d.traffic.netIn)],

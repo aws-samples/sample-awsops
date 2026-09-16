@@ -33,7 +33,7 @@ AWSops는 **Terraform**(`terraform/foundation/`, 부분 S3 backend)으로 프로
 |------|------|
 | **IaC** | Terraform (S3 partial backend, `use_lockfile`). CDK는 폐기됨 |
 | **엣지** | CloudFront(TLS) → VPC Origin(`https-only:443`) → 내부 ALB HTTPS:443(리전 ACM) → Fargate. **공개 ALB 없음** |
-| **컴퓨트** | ECS Fargate(arm64). web은 Next.js 14 thin-BFF, **루트 경로(`/`)** 서빙 |
+| **컴퓨트** | ECS Fargate(arm64). web은 Next.js 15 thin-BFF, **루트 경로(`/`)** 서빙 |
 | **데이터** | Aurora Serverless v2 (PostgreSQL 17), node-pg로 접근 |
 | **AI** | AgentCore Runtime + 9개 섹션 게이트웨이의 MCP Lambda 도구(라이브 조회) |
 | **비동기 워커** | SQS → ESM(킬스위치) → dispatcher Lambda → Step Functions → Lambda 또는 Fargate |

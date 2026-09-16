@@ -7,11 +7,12 @@ export const dynamic = 'force-dynamic';
 
 // pentest-remediation P2-1: no ownership check — any authenticated user could read any run's full
 // CIS benchmark results (alarmed/failed controls, resource ids, regions) by id.
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) {
     return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   }
+  const params = await pendingParams;
   const id = Number(params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ message: 'invalid run id' }, { status: 400 });

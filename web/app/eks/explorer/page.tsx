@@ -19,6 +19,20 @@ import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/
 // DataTable stays (no dark fork).
 
 type Row = Record<string, unknown>;
+const READ_MESSAGES = {
+  denied: 'EKS resources are unavailable. Access denied; check read permissions.',
+  unreachable: 'EKS resources are unavailable. Endpoint unreachable; check network connectivity and DNS.',
+  timeout: 'EKS resources are unavailable. Request timed out; check connectivity and retry.',
+  'upstream-error': 'EKS resources are unavailable.',
+};
+type ReadFailureReason = keyof typeof READ_MESSAGES;
+interface ReadFailure { reason: ReadFailureReason; message: string }
+function responseFailure(body: Partial<ReadFailure> | null, status: number): ReadFailure {
+  const reason = body?.reason && Object.hasOwn(READ_MESSAGES, body.reason) ? body.reason
+    : status === 401 || status === 403 ? 'denied'
+      : status === 408 || status === 504 ? 'timeout' : 'upstream-error';
+  return { reason, message: typeof body?.message === 'string' && body.message ? body.message : READ_MESSAGES[reason] };
+}
 type Kind =
   | 'pods' | 'deployments' | 'services' | 'replicasets' | 'daemonsets'
   | 'statefulsets' | 'jobs' | 'configmaps' | 'pvcs' | 'nodes' | 'events';
@@ -191,7 +205,14 @@ function ScopedEksExplorer({ scopeQuery }: { scopeQuery: string }) {
   useEffect(() => {
     let live = true;
     fetch(`/api/eks?${scopeQuery}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) {
+          const failure = responseFailure(body, r.status);
+          throw new Error(`${failure.reason}: ${failure.message}`);
+        }
+        return body;
+      })
       .then((d) => {
         if (!live) return;
         const names = ((d.clusters ?? []) as ClusterInfo[])
@@ -221,15 +242,15 @@ function ScopedEksExplorer({ scopeQuery }: { scopeQuery: string }) {
       const results = await Promise.all(targets.map(async (name) => {
         try {
           const r = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`);
-          if (!r.ok) return { name, rows: null as Row[] | null };
-          const d = await r.json();
-          return { name, rows: (d.rows ?? []) as Row[] };
+          const d = await r.json().catch(() => null);
+          if (!r.ok || !Array.isArray(d?.rows)) return { name, rows: null, failure: responseFailure(d, r.status) };
+          return { name, rows: d.rows as Row[], failure: null };
         } catch {
-          return { name, rows: null as Row[] | null };
+          return { name, rows: null, failure: { reason: 'unreachable' as const, message: READ_MESSAGES.unreachable } };
         }
       }));
       if (!fresh()) return;
-      const failed = results.filter((x) => x.rows === null).map((x) => x.name);
+      const failed = results.filter((x) => x.failure);
       const merged: Row[] = results.flatMap((x) => (x.rows ?? []).map((row) => ({ ...row, cluster: x.name, clusterLabel: eksClusterLabel(x.name) })));
       // Events have no stable server order → newest first (v1 parity).
       const sorted = kind === 'events'
@@ -237,7 +258,7 @@ function ScopedEksExplorer({ scopeQuery }: { scopeQuery: string }) {
         : merged;
       setRows(sorted);
       setWarn(failed.length
-        ? `일부 kind는 클러스터 RBAC 갱신 필요 — 인증 재등록 스크립트 참조 (조회 실패: ${failed.map(eksClusterLabel).join(', ')})`
+        ? failed.map(x => `${eksClusterLabel(x.name)} · ${kind} · ${x.failure!.reason}: ${x.failure!.message}`).join('\n')
         : '');
       setCapturedAt(new Date().toISOString());
     } finally {
@@ -398,7 +419,7 @@ function ScopedEksExplorer({ scopeQuery }: { scopeQuery: string }) {
         {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
         <EksCollectionNotice status={collection} />
         {warn && (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
+          <div className="whitespace-pre-line rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
             {warn}
           </div>
         )}

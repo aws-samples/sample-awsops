@@ -14,7 +14,7 @@ const CONTENT_TYPE: Record<string, string> = {
   pdf: 'application/pdf',
 };
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
 
@@ -23,6 +23,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ message: 'unsupported format' }, { status: 400 });
   }
 
+  const params = await pendingParams;
   const id = Number(params.id);
   if (!Number.isInteger(id)) {
     return NextResponse.json({ message: 'invalid report id' }, { status: 400 });

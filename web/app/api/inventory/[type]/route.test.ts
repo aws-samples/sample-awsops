@@ -12,7 +12,7 @@ vi.mock('@/lib/inventory', () => ({
 const getEcsClusterCosts = vi.fn();
 vi.mock('@/lib/aws', () => ({ getEcsClusterCosts: (...a: unknown[]) => getEcsClusterCosts(...a) }));
 const req = (url = 'http://x/api/inventory/ec2', cookie = 'awsops_token=t') => new Request(url, { headers: { cookie } });
-const ctx = { params: { type: 'ec2' } };
+const ctx = { params: Promise.resolve({ type: 'ec2' }) };
 beforeEach(() => {
   verifyUser.mockReset(); readResources.mockReset(); assertInventoryTypeAllowed.mockReset();
   verifyUser.mockResolvedValue({ sub: 'u' });
@@ -38,7 +38,7 @@ describe('GET /api/inventory/[type]', () => {
   it('403 when assertInventoryTypeAllowed rejects (e.g. non-admin on iam_user)', async () => {
     assertInventoryTypeAllowed.mockResolvedValue({ status: 403, message: '관리자 전용 메뉴입니다 (IAM)' });
     const { GET } = await import('./route');
-    const res = await GET(req('http://x/api/inventory/iam_user'), { params: { type: 'iam_user' } });
+    const res = await GET(req('http://x/api/inventory/iam_user'), { params: Promise.resolve({ type: 'iam_user' }) });
     expect(res.status).toBe(403);
     expect(readResources).not.toHaveBeenCalled();
   });
@@ -82,14 +82,14 @@ describe('ecs_cluster cost merge opt-out (cost=0)', () => {
   });
   it('default: the billable CE merge runs and stamps mtd_cost_usd', async () => {
     const { GET } = await import('./route');
-    const res = await GET(req('http://x/api/inventory/ecs_cluster'), { params: { type: 'ecs_cluster' } });
+    const res = await GET(req('http://x/api/inventory/ecs_cluster'), { params: Promise.resolve({ type: 'ecs_cluster' }) });
     const j = await res.json();
     expect(getEcsClusterCosts).toHaveBeenCalledTimes(1);
     expect(j.rows[0].data.mtd_cost_usd).toBe(12.5);
   });
   it('cost=0 skips the Cost Explorer call entirely (overview page consumer)', async () => {
     const { GET } = await import('./route');
-    const res = await GET(req('http://x/api/inventory/ecs_cluster?cost=0'), { params: { type: 'ecs_cluster' } });
+    const res = await GET(req('http://x/api/inventory/ecs_cluster?cost=0'), { params: Promise.resolve({ type: 'ecs_cluster' }) });
     const j = await res.json();
     expect(getEcsClusterCosts).not.toHaveBeenCalled();
     expect(j.rows[0].data.mtd_cost_usd).toBeUndefined();
@@ -114,7 +114,7 @@ describe('view=agg (gap L102 — full-fleet aggregates)', () => {
   it('keeps the type gate (admin-only iam types 403 on agg too)', async () => {
     assertInventoryTypeAllowed.mockResolvedValue({ status: 403, message: 'admin only' });
     const { GET } = await import('./route');
-    const res = await GET(req('http://x/api/inventory/iam_user?view=agg'), { params: { type: 'iam_user' } });
+    const res = await GET(req('http://x/api/inventory/iam_user?view=agg'), { params: Promise.resolve({ type: 'iam_user' }) });
     expect(res.status).toBe(403);
     expect(readAggregates).not.toHaveBeenCalled();
   });

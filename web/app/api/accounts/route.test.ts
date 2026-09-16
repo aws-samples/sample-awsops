@@ -21,9 +21,9 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query
 vi.mock('@/lib/http-body', () => ({ readJsonBounded: (...a: unknown[]) => readJsonBounded(...a) }));
 vi.mock('@/lib/account-regions', () => ({ upsertAccountRegion: (...a: unknown[]) => upsertAccountRegion(...a) }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn(() => ({ send })),
-  AssumeRoleCommand: vi.fn((i: unknown) => ({ cmd: 'assume', i })),
-  GetCallerIdentityCommand: vi.fn((i: unknown) => ({ cmd: 'ident', i })),
+  STSClient: vi.fn(function () { return { send }; }),
+  AssumeRoleCommand: vi.fn(function (i: unknown) { return { cmd: 'assume', i }; }),
+  GetCallerIdentityCommand: vi.fn(function (i: unknown) { return { cmd: 'ident', i }; }),
 }));
 
 const TARGET = '210987654321';

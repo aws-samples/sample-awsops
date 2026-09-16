@@ -9,9 +9,10 @@ function json(obj: unknown, status: number) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 }
 
-export async function GET(request: Request, { params }: { params: { id: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ error: 'unauthenticated' }, 401);
+  const params = await pendingParams;
   const id = Number(params?.id);
   if (!Number.isInteger(id) || id <= 0) return json({ error: 'valid id required' }, 400);
   try {

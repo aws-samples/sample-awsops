@@ -120,6 +120,14 @@ truncation are returned separately from a successful empty result. Kubernetes
 endpoints must still be reachable from the web task, and downstream collectors can
 report unsupported scopes separately.
 
+Read failures retain a coarse classification (`denied`, `unreachable`, `timeout`, or
+`upstream-error`) and a safe explanation. The same controlled classification is
+logged without raw provider messages, bodies, stack traces or credentials.
+A denied K8sGPT Result read or OpenCost detection read does not prove the operator
+is absent; even a degraded HTTP 200 response must be interpreted with its failure
+metadata. The generated member guide and optional bindings above address permissions;
+network and timeout failures require connectivity checks instead.
+
 ## Terraform host-account provisioning
 
 `make configure` uses `scripts/v2/configure.mjs` to discover host clusters and offer

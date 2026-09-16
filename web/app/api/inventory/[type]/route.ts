@@ -4,11 +4,12 @@ import { getEcsClusterCosts } from '@/lib/aws';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request, { params }: { params: { type: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ type: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
+  const params = await pendingParams;
   const gate = await assertInventoryTypeAllowed(params.type, user);
   if (gate) return Response.json({ status: 'error', message: gate.message }, { status: gate.status });
   const url = new URL(request.url);

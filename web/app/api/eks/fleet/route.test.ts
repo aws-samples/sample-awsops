@@ -83,7 +83,23 @@ describe('GET /api/eks/fleet', () => {
   it('preserves a trusted scope reason in a failed cluster', async () => {
     listInCluster.mockRejectedValue(new EksScopeError('EKS region is not enabled for this account', 403));
     const body = await (await GET(req())).json();
-    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'EKS region is not enabled for this account' });
+    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'EKS region is not enabled for this account', reason: 'denied' });
+  });
+  it.each([
+    [{ statusCode: 403 }, 'denied'],
+    [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ code: 'ECONNREFUSED' }, 'unreachable'],
+  ])('classifies failed cluster reads from metadata %j', async (metadata, reason) => {
+    listInCluster.mockRejectedValue(Object.assign(new Error('private-role private-session'), metadata));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const response = await GET(req());
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.clusters[0]).toMatchObject({ reachable: false, reason });
+      expect(body.clusters[0].error).toMatch(/^Kubernetes resource read unavailable/);
+      expect(JSON.stringify([body, warn.mock.calls])).not.toContain('private');
+    } finally { warn.mockRestore(); }
   });
   it('an events-only failure keeps the cluster reachable with empty events', async () => {
     listInCluster.mockImplementation(async (_c: string, kind: string) => {

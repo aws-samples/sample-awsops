@@ -23,7 +23,7 @@ describe('detectOpencostInstall', () => {
       : kind === 'string' ? sentinel : { message: sentinel, toString: () => sentinel });
     const { detectOpencostInstall } = await import('./opencost-status');
     expect(await detectOpencostInstall('c')).toEqual({
-      installed: false, ready: false, deployment: null, reason: 'OpenCost status is unavailable.',
+      installed: false, ready: false, deployment: null, failureReason: 'upstream-error', reason: 'OpenCost status is unavailable.',
     });
   });
   it('keeps a typed safe scope reason in the existing degraded shape', async () => {
@@ -31,7 +31,7 @@ describe('detectOpencostInstall', () => {
     listInCluster.mockRejectedValue(new EksScopeError('EKS account is disabled', 403));
     const { detectOpencostInstall } = await import('./opencost-status');
     expect(await detectOpencostInstall('c')).toEqual({
-      installed: false, ready: false, deployment: null, reason: 'EKS account is disabled',
+      installed: false, ready: false, deployment: null, failureReason: 'denied', reason: 'EKS account is disabled',
     });
   });
 
@@ -55,6 +55,7 @@ describe('detectOpencostInstall', () => {
     const { detectOpencostInstall } = await import('./opencost-status');
     const r = await detectOpencostInstall('c');
     expect(r.installed).toBe(false);
+    expect(r.failureReason).toBe('upstream-error');
     expect(r.reason).toBe('OpenCost status is unavailable.');
   });
 });

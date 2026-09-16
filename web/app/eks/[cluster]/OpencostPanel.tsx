@@ -10,11 +10,21 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 // bundle (values.yaml / install.sh) the user runs out-of-band on their own kubeconfig. AWSops
 // never writes to the cluster (ADR-029 reversed). Backend routes/libs are reused unchanged.
 
+// Client-local API contract; do not import the Node-only server error classifier.
+type ReadFailureReason = 'denied' | 'unreachable' | 'upstream-error' | 'timeout';
 interface InstallStatus {
   installed: boolean;
   ready: boolean;
-  reason?: string;
+  reason?: string; // legacy safe human-readable explanation
+  failureReason?: ReadFailureReason;
+  message?: string;
 }
+const READ_FAILURE_MESSAGES: Record<ReadFailureReason, string> = {
+  denied: 'OpenCost status is unavailable. Access denied; check read permissions.',
+  unreachable: 'OpenCost status is unavailable. Endpoint unreachable; check network connectivity and DNS.',
+  timeout: 'OpenCost status is unavailable. Request timed out; check connectivity and retry.',
+  'upstream-error': 'OpenCost status is unavailable.',
+};
 interface SavedConfig {
   chartVersion: string | null;
   config: { values?: Record<string, unknown>; override?: Record<string, unknown> } | null;
@@ -31,6 +41,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
   const [chartVersion, setChartVersion] = useState('');
   const [overrideText, setOverrideText] = useState('');
   const [msg, setMsg] = useState('');
+  const readFailed = !!status && (!!status.reason || !!status.failureReason || !!status.message);
 
   // Auto-open is decided ONCE per cluster (so a user toggle isn't clobbered by a refresh).
   const initedRef = useRef(false);
@@ -54,6 +65,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
     const fresh = () => seq === seqRef.current;
     setStatus(null);
     setNotOnboarded(false);
+    setOpen(false);
     setMsg('');
     setChartVersion('');
     setOverrideText('');
@@ -63,17 +75,26 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
       try {
         const r = await fetch(`/api/opencost/${encodeURIComponent(cluster)}/status`);
         if (!fresh()) return;
-        if (r.status === 404) { setNotOnboarded(true); return; }
         const body = await r.json();
-        const s: InstallStatus = r.ok ? body : { installed: false, ready: false, reason: body.message ?? `HTTP ${r.status}` };
         if (!fresh()) return;
+        if (r.status === 404 && body.message === 'unknown cluster' && !body.reason && !body.failureReason) {
+          setNotOnboarded(true);
+          return;
+        }
+        const s: InstallStatus = r.ok && typeof body.installed === 'boolean' && typeof body.ready === 'boolean'
+          ? body
+          : {
+            installed: false, ready: false,
+            failureReason: body.reason ?? (r.status === 401 || r.status === 403 ? 'denied' : 'upstream-error'),
+            message: body.message ?? READ_FAILURE_MESSAGES['upstream-error'],
+          };
         setStatus(s);
-        if (!initedRef.current) { setOpen(!s.installed); initedRef.current = true; }
+        if (!initedRef.current) { setOpen(!s.installed && !s.reason && !s.failureReason && !s.message); initedRef.current = true; }
       } catch {
         if (!fresh()) return;
-        // unreachable/transport → degrade to "not installed" with a reason; never throw.
-        setStatus({ installed: false, ready: false, reason: 'unreachable' });
-        if (!initedRef.current) { setOpen(true); initedRef.current = true; }
+        // A transport failure leaves installation status unknown.
+        setStatus({ installed: false, ready: false, failureReason: 'unreachable', reason: READ_FAILURE_MESSAGES.unreachable });
+        if (!initedRef.current) { setOpen(false); initedRef.current = true; }
       }
     })();
     return () => { seqRef.current += 1; };
@@ -81,7 +102,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
 
   // Admin advanced config — lazily fetched the first time the (open) panel is shown to an admin.
   useEffect(() => {
-    if (!open || !isAdmin || notOnboarded) return;
+    if (!open || !isAdmin || notOnboarded || !status || readFailed) return;
     if (configLoadedRef.current === cluster) return;
     configLoadedRef.current = cluster;
     const seq = seqRef.current;
@@ -94,7 +115,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
         setOverrideText(saved?.config?.override ? JSON.stringify(saved.config.override, null, 2) : '');
       })
       .catch(() => {});
-  }, [open, isAdmin, notOnboarded, cluster]);
+  }, [open, isAdmin, notOnboarded, cluster, status, readFailed]);
 
   const download = useCallback(async (which: 'values.yaml' | 'install.sh') => {
     setMsg('');
@@ -128,6 +149,8 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
     <Badge tone="neutral" variant="soft">{tt('미온보딩')}</Badge>
   ) : !status ? (
     <span className="text-[12px] text-ink-400">{tt('조회 중…')}</span>
+  ) : readFailed ? (
+    <Badge tone="negative" variant="soft">{tt('조회 실패')}</Badge>
   ) : status.installed ? (
     <Badge tone={status.ready ? 'positive' : 'brand'} variant="soft" dot>
       {status.ready ? tt('설치됨 · Ready') : tt('설치됨 · Not Ready')}
@@ -147,6 +170,13 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
         </div>
       ) : !status ? (
         <div className="flex items-center gap-2.5 px-4 py-3">{Label}{badge}</div>
+      ) : readFailed ? (
+        <div className="flex flex-col gap-2 px-4 py-3">
+          <div className="flex items-center gap-2.5">{Label}{badge}</div>
+          <p role="alert" className="text-[12px] text-amber-700">
+            {status.message || status.reason || READ_FAILURE_MESSAGES[status.failureReason ?? 'upstream-error']}
+          </p>
+        </div>
       ) : (
         <button
           type="button"
@@ -160,7 +190,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
         </button>
       )}
 
-      {open && !notOnboarded && status && (
+      {open && !notOnboarded && status && !readFailed && (
         <div className="flex flex-col gap-3 border-t border-ink-100 px-4 py-3">
           {status.installed ? (
             <p className="text-[12px] text-ink-500">{tt('설치됨 — 재설치/업그레이드용 번들을 다시 받을 수 있습니다.')}</p>
@@ -170,8 +200,6 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
               <pre className="overflow-auto rounded bg-ink-50 p-2 text-[11px] text-ink-700">{`helm repo add opencost https://opencost.github.io/opencost-helm-chart\n# 아래 번들을 받아 본인 kubeconfig로 실행\nbash install.sh   # values.yaml 사용`}</pre>
             </div>
           )}
-          {status.reason && <p className="text-[12px] text-amber-700">{tt('조회 제한:')} {status.reason}</p>}
-
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => download('values.yaml')} className={`${btn} border border-ink-200 text-ink-700 hover:bg-ink-50`}>values.yaml</button>
             <button type="button" onClick={() => download('install.sh')} className={`${btn} border border-ink-200 text-ink-700 hover:bg-ink-50`}>install.sh</button>

@@ -7,7 +7,7 @@ export const maxDuration = 120;
 
 // Manual inventory collection spends the shared control-plane quota budget, so every type is
 // admin-only. The per-type gate remains as defense in depth for sensitive IAM inventory.
-export async function POST(request: Request, { params }: { params: { type: string } }) {
+export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ type: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
@@ -20,6 +20,7 @@ export async function POST(request: Request, { params }: { params: { type: strin
   // reserved-concurrency backpressure — the same path the 15-min EventBridge schedule takes).
   // No rows are read back (readResources('all') is not a type), so the per-type
   // ADMIN_ONLY_TYPES read-gate is not in play — the admin check above is the authorization.
+  const params = await pendingParams;
   if (params.type === 'all') {
     if (!process.env.INV_SYNC_FUNCTION) {
       return Response.json({ status: 'unconfigured', message: 'inventory sync disabled' }, { status: 503 });

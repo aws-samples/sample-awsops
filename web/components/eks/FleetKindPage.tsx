@@ -34,6 +34,34 @@ export type FleetKind = 'nodes' | 'pods' | 'deployments' | 'services';
 
 type Row = Record<string, unknown>;
 
+const READ_MESSAGES = {
+  denied: 'EKS resources are unavailable. Access denied; check read permissions.',
+  unreachable: 'EKS resources are unavailable. Endpoint unreachable; check network connectivity and DNS.',
+  timeout: 'EKS resources are unavailable. Request timed out; check connectivity and retry.',
+  'upstream-error': 'EKS resources are unavailable.',
+};
+type ReadFailureReason = keyof typeof READ_MESSAGES;
+interface ReadFailure { reason: ReadFailureReason; message: string }
+interface ClusterFailure extends ReadFailure { cluster: string; kind: string }
+function responseFailure(body: Partial<ReadFailure> | null, status: number): ReadFailure {
+  const reason = body?.reason && Object.hasOwn(READ_MESSAGES, body.reason) ? body.reason
+    : status === 401 || status === 403 ? 'denied'
+      : status === 408 || status === 504 ? 'timeout' : 'upstream-error';
+  return { reason, message: typeof body?.message === 'string' && body.message ? body.message : READ_MESSAGES[reason] };
+}
+async function readClusterRows(name: string, kind: string): Promise<{ name: string; rows: Row[] | null; failure?: ClusterFailure }> {
+  try {
+    const r = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`);
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !Array.isArray(body?.rows)) {
+      return { name, rows: null, failure: { cluster: name, kind, ...responseFailure(body, r.status) } };
+    }
+    return { name, rows: body.rows };
+  } catch {
+    return { name, rows: null, failure: { cluster: name, kind, reason: 'unreachable', message: READ_MESSAGES.unreachable } };
+  }
+}
+
 const KIND_META: Record<FleetKind, { title: string; noun: string }> = {
   nodes: { title: 'EKS Nodes — 전체 클러스터', noun: '노드' },
   pods: { title: 'EKS Pods — 전체 클러스터', noun: '파드' },
@@ -103,6 +131,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
   const [rows, setRows] = useState<Row[] | null>(null);
   const [clusters, setClusters] = useState<string[]>([]);
   const [failed, setFailed] = useState<string[]>([]);
+  const [failures, setFailures] = useState<ClusterFailure[]>([]);
   const [err, setErr] = useState('');
   const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [busy, setBusy] = useState(false);
@@ -133,6 +162,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
     const fresh = () => seq === loadSeqRef.current;
     setBusy(true);
     setErr('');
+    setFailures([]);
     // A refresh must not pair NEW node rows with the PREVIOUS run's request numbers.
     setPodReq({});
     setPodReqReady(false);
@@ -140,7 +170,10 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
     setSvcPodsReady(false);
     try {
       const r = await fetch(`/api/eks?${scopeQuery}`);
-      if (!r.ok) throw new Error(String(r.status));
+      if (!r.ok) {
+        const failure = responseFailure(await r.json().catch(() => null), r.status);
+        throw new Error(`${failure.reason}: ${failure.message}`);
+      }
       const d = await r.json();
       const names = ((d.clusters ?? []) as { id?: string; name?: string; access?: string }[])
         .filter((c) => c.access === 'connected' && c.name)
@@ -150,18 +183,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
       setClusters(names);
       // Per-cluster fetch: a failing cluster degrades to null (→ amber note),
       // never blanking the merged page.
-      const results = await Promise.all(
-        names.map(async (name) => {
-          try {
-            const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`);
-            if (!rr.ok) return { name, rows: null as Row[] | null };
-            const dd = await rr.json();
-            return { name, rows: (dd.rows ?? []) as Row[] };
-          } catch {
-            return { name, rows: null as Row[] | null };
-          }
-        }),
-      );
+      const results = await Promise.all(names.map(name => readClusterRows(name, kind)));
       if (!fresh()) return;
       const merged: Row[] = [];
       const failedNames: string[] = [];
@@ -171,20 +193,20 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
       }
       setRows(merged);
       setFailed(failedNames);
+      const primaryFailures = results.flatMap(result => result.failure ? [result.failure] : []);
+      setFailures(primaryFailures);
       setCapturedAt(new Date().toISOString());
       // Gap L132: the capacity bars need scheduler-requested totals — one pods fetch per
       // cluster, aggregated by node. Failures degrade per cluster (null), never the page.
       if (kind === 'nodes') {
         const podResults = await Promise.all(
           names.map(async (name) => {
-            try {
-              const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=pods`);
-              if (!rr.ok) return { name, agg: null as Record<string, { cpu: number; mem: number }> | null };
-              const dd = await rr.json();
+              const result = await readClusterRows(name, 'pods');
+              if (!result.rows) return { ...result, agg: null as Record<string, { cpu: number; mem: number }> | null };
               // Null prototype: a node legally named 'constructor' must not collide with
               // inherited Object members during accumulation.
               const agg: Record<string, { cpu: number; mem: number }> = Object.create(null);
-              for (const pod of (dd.rows ?? []) as { node?: string; status?: string; cpuRequest?: number; memRequest?: number }[]) {
+              for (const pod of result.rows as { node?: string; status?: string; cpuRequest?: number; memRequest?: number }[]) {
                 if (!pod.node) continue;
                 // Same exclusion as aggregateNodeResources: terminal pods hold no reservation.
                 if (isTerminalPodPhase(pod.status)) continue;
@@ -192,35 +214,23 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                 cur.cpu += Number(pod.cpuRequest) || 0;
                 cur.mem += Number(pod.memRequest) || 0;
               }
-              return { name, agg };
-            } catch {
-              return { name, agg: null as Record<string, { cpu: number; mem: number }> | null };
-            }
+              return { ...result, agg };
           }),
         );
         if (!fresh()) return;
         setPodReq(Object.fromEntries(podResults.map((p) => [p.name, p.agg])));
         setPodReqReady(true);
+        setFailures([...primaryFailures, ...podResults.flatMap(result => result.failure ? [result.failure] : [])]);
       }
       // Gap L229 (services only): raw pods per cluster for the Service-selector join.
       // Failures degrade per cluster (null) — that cluster's services are excluded from the
       // resource charts (disclosed), never charted as 0 from missing pods.
       if (kind === 'services') {
-        const podResults = await Promise.all(
-          names.map(async (name) => {
-            try {
-              const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=pods`);
-              if (!rr.ok) return { name, rows: null as PodRow[] | null };
-              const dd = await rr.json();
-              return { name, rows: (dd.rows ?? []) as PodRow[] };
-            } catch {
-              return { name, rows: null as PodRow[] | null };
-            }
-          }),
-        );
+        const podResults = await Promise.all(names.map(name => readClusterRows(name, 'pods')));
         if (!fresh()) return;
-        setSvcPods(Object.fromEntries(podResults.map((p) => [p.name, p.rows])));
+        setSvcPods(Object.fromEntries(podResults.map((p) => [p.name, p.rows as unknown as PodRow[] | null])));
         setSvcPodsReady(true);
+        setFailures([...primaryFailures, ...podResults.flatMap(result => result.failure ? [result.failure] : [])]);
       }
     } catch (e) {
       if (fresh()) setErr(e instanceof Error ? e.message : String(e));
@@ -281,9 +291,14 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
       <div className="px-8 py-8 flex flex-col gap-6">
         {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
         <EksCollectionNotice status={collection} />
-        {failed.length > 0 && (
+        {failures.length > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-            조회 실패 클러스터 (제외됨): {failed.map(eksClusterLabel).join(', ')}
+            <div>조회 실패 (해당 리소스 집계에서 제외됨)</div>
+            {failures.map(failure => (
+              <div key={`${failure.cluster}/${failure.kind}`}>
+                {eksClusterLabel(failure.cluster)} · {failure.kind} · {failure.reason}: {failure.message}
+              </div>
+            ))}
           </div>
         )}
         {!rows && !err && <div className="text-ink-400">로딩 중…</div>}

@@ -29,7 +29,7 @@ describe('host-only pod transfer', () => {
   ])('does not query host NFM for account=%s region=%s', async (accountId, region) => {
     resolve.mockResolvedValue({ id: ARN, name: 'shared', accountId, region });
     const { GET } = await import('./route');
-    const res = await GET(new Request(`http://local/?account=${accountId}&region=${region}&range=900`), { params: { cluster: 'shared' } });
+    const res = await GET(new Request(`http://local/?account=${accountId}&region=${region}&range=900`), { params: Promise.resolve({ cluster: 'shared' }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ available: false, rangeSec: 900, message: expect.stringMatching(/host account.*default region/i) });
     expect(allowed).toHaveBeenCalledWith(ARN);
@@ -39,14 +39,14 @@ describe('host-only pod transfer', () => {
   it('queries the raw host name with an allowed range', async () => {
     resolve.mockResolvedValue({ id: 'shared', name: 'shared', accountId: 'self', region: 'ap-northeast-2' });
     const { GET } = await import('./route');
-    expect((await GET(new Request('http://local/?range=86400'), { params: { cluster: 'shared' } })).status).toBe(200);
+    expect((await GET(new Request('http://local/?range=86400'), { params: Promise.resolve({ cluster: 'shared' }) })).status).toBe(200);
     expect(transfer).toHaveBeenCalledWith('shared', 3600);
   });
 
   it('does not use a same-name host registration for a member', async () => {
     allowed.mockImplementation(async id => id === 'shared');
     const { GET } = await import('./route');
-    expect((await GET(new Request('http://local/?account=222222222222'), { params: { cluster: 'shared' } })).status).toBe(404);
+    expect((await GET(new Request('http://local/?account=222222222222'), { params: Promise.resolve({ cluster: 'shared' }) })).status).toBe(404);
     expect(transfer).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 // web/app/api/eks/[cluster]/k8sgpt/route.ts
 // ADR-035 read-only diagnosis route. Auth (verifyUser) + admin (isAdmin) + cluster-allowlist gated.
 // Flag OFF (K8SGPT_ENABLED !== 'true') → 503 {enabled:false} and getDiagnosis does NO cluster read.
@@ -9,7 +10,7 @@ import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   if (!(await isAdmin(user))) return Response.json({ status: 'error', message: 'admin required' }, { status: 403 });
@@ -20,12 +21,13 @@ export async function GET(request: Request, { params }: { params: { cluster: str
   }
 
   try {
+    const params = await pendingParams;
     const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
     if (!(await isAllowed(context.id))) {
       return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
     }
     return Response.json(await getDiagnosis(context.id));
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'K8sGPT diagnosis is unavailable.' }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'k8sgpt') }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

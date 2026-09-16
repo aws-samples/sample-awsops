@@ -129,7 +129,7 @@ describe('GET /api/eks', () => {
     const { GET } = await import('./route');
     const response = await GET(req());
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ status: 'error', message: 'EKS inventory is unavailable' });
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS inventory is unavailable', reason: 'upstream-error' });
     expect(listClusters).not.toHaveBeenCalled();
   });
   it('preserves the trusted disabled-account reason and status', async () => {
@@ -137,8 +137,26 @@ describe('GET /api/eks', () => {
     const { GET } = await import('./route');
     const response = await GET(new Request('http://x/api/eks?accounts=333333333333'));
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ status: 'error', message: 'EKS account is not registered or is disabled' });
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS account is not registered or is disabled', reason: 'denied' });
     expect(listClusters).not.toHaveBeenCalled();
+  });
+  it.each([
+    [{ name: 'AccessDeniedException' }, 'denied'],
+    [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ code: 'ENOTFOUND' }, 'unreachable'],
+  ])('classifies inventory failures from metadata %j', async (metadata, reason) => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockRejectedValue(Object.assign(new Error('private-role private-session'), metadata));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { GET } = await import('./route');
+      const response = await GET(req());
+      const body = await response.json();
+      expect(response.status).toBe(502);
+      expect(body.reason).toBe(reason);
+      expect(body.errors[0].reason).toBe(reason);
+      expect(JSON.stringify([body, warn.mock.calls])).not.toContain('private');
+    } finally { warn.mockRestore(); }
   });
   it('returns useful wildcard results with incomplete-discovery metadata without marking successful calls failed', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

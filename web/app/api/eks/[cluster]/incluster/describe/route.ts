@@ -1,3 +1,4 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
 import { describeInCluster, isDescribableKind } from '@/lib/eks-incluster';
@@ -10,11 +11,12 @@ export const dynamic = 'force-dynamic';
 // configmap data VALUES are redacted in the lib; managedFields stripped.
 const NAME_RE = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/; // RFC1123 subdomain
 
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
   try {
+    const params = await pendingParams;
     const search = new URL(request.url).searchParams;
     const context = await resolveEksCluster(params.cluster, search);
     if (!(await isAllowed(context.id))) {
@@ -31,6 +33,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     return Response.json({ object: await describeInCluster(context.id, kind, name, namespace) });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'EKS resource details are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'incluster-describe') }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

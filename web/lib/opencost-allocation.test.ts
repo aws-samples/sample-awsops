@@ -10,6 +10,22 @@ beforeEach(() => {
 });
 
 describe('OpenCost Kubernetes proxy scope', () => {
+  it('classifies a successful transport with invalid JSON without echoing the payload', async () => {
+    proxy.mockResolvedValue('{"role":"private-role","token":"private-session"');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { getAllocation } = await import('./opencost-allocation');
+      const result = await getAllocation(ARN);
+      expect(result).toMatchObject({
+        available: false, pods: [], namespaces: [], reason: 'upstream-error',
+        message: 'OpenCost allocation is unavailable.',
+      });
+      expect(warn).toHaveBeenCalledWith({ operation: 'opencost-allocation', reason: 'upstream-error', status: 200 });
+      expect(JSON.stringify([result, warn.mock.calls])).not.toContain('private');
+      expect(list).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
   it.each(['error', 'string', 'object'])('sanitizes a swallowed upstream %s when the estimate is unavailable', async kind => {
     const sentinel = 'arn:aws:iam::222222222222:role/private-role ExternalId=private-external SessionToken=private-session';
     proxy.mockRejectedValue(kind === 'error' ? Object.assign(new Error(sentinel), { stack: sentinel, $metadata: { requestId: sentinel } })
@@ -18,7 +34,7 @@ describe('OpenCost Kubernetes proxy scope', () => {
     const { getAllocation } = await import('./opencost-allocation');
     const result = await getAllocation(ARN);
     expect(result).toMatchObject({
-      available: false, message: 'OpenCost allocation is unavailable.', pods: [], namespaces: [],
+      available: false, message: 'OpenCost allocation is unavailable.', reason: 'upstream-error', pods: [], namespaces: [],
       hasNetwork: false, hasPv: false, hasGpu: false,
     });
     expect(JSON.stringify(result)).not.toMatch(/private-role|private-external|private-session/);
@@ -28,7 +44,7 @@ describe('OpenCost Kubernetes proxy scope', () => {
     const { EksScopeError } = await import('./eks-context');
     proxy.mockRejectedValue(new EksScopeError('EKS account is disabled', 403));
     const { getAllocation } = await import('./opencost-allocation');
-    expect(await getAllocation(ARN)).toMatchObject({ available: false, message: 'EKS account is disabled', pods: [] });
+    expect(await getAllocation(ARN)).toMatchObject({ available: false, message: 'EKS account is disabled', reason: 'denied', pods: [] });
   });
 
   it('preserves a successful request estimate after an upstream failure', async () => {

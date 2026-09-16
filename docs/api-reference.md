@@ -133,6 +133,27 @@ endpoint converts a failed registration-table read into a complete empty populat
 Consumers must preserve failure/cap metadata and must not fuse these registered
 counts with a separately scoped discovery count based only on equal cardinality.
 
+### EKS read failure classification
+
+Failed EKS and OpenCost reads expose a coarse classification:
+`denied`, `unreachable`, `timeout`, or `upstream-error`. `message` remains a fixed,
+credential-free explanation (or an application-owned scope validation message).
+Classification uses allowlisted SDK error codes/names and numeric HTTP status,
+not raw error text. Kubernetes transport retains HTTP status and a timeout code
+internally so a real RBAC denial can be distinguished from connectivity failure.
+Logs contain only the fixed operation label, coarse reason, and validated/fallback
+status; they never serialize the exception, stack, response body, or credentials.
+
+Existing HTTP/status envelopes remain: list target failures and fleet rows carry
+their failure metadata; a failed required fleet read is still `reachable:false`.
+Error responses and unavailable allocation results use `reason`. Degraded K8sGPT
+results use `errorReason` with `message`; OpenCost status retains its human-readable
+`reason` and adds `failureReason`. These degraded results may retain HTTP 200.
+These results do not establish operator absence, a successful empty scan, or a
+zero cost. A K8sGPT 503 means the feature is disabled only when the payload explicitly
+says `enabled:false`; other 503 responses are read/scope failures. See
+[`eks-read-error.ts`](../web/lib/eks-read-error.ts) for the controlled classifications.
+
 ### EKS identity and registration
 
 For `[cluster]`, URL-encode the complete EKS ARN once for member/nondefault-region
@@ -148,6 +169,9 @@ connection/auth reads. POST registration returns 404 for an absent selected clus
 409 for an absent/unverifiable Access Entry, 413 for an oversized body, and typed
 400/403/503 validation/authorization/unavailability responses. It writes only the app's
 registration state; it does not create AWS roles, entries, policies, or connectivity.
+For compatibility, an empty or syntactically invalid JSON body selects the default
+signer; a parseable but invalid `auth` object returns 400. Saved authentication is
+reported through `authMode`, so clients must not infer that an omitted mode was saved.
 
 For member clusters, discovery and default Kubernetes token signing use the
 registered member read-only role. Its Access Entry/read policy is required.

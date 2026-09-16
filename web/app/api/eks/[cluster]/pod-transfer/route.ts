@@ -1,3 +1,4 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
 import { nfmPodTransfer } from '@/lib/nfm';
@@ -12,11 +13,12 @@ const RANGE_ALLOWED = [900, 1800, 3600];
 // EKS 비용 메뉴의 "Pod 전송량 (NFM)" 데이터: 클러스터 모니터의 DATA_TRANSFERRED를
 // 카테고리 전체에 대해 질의해 파드별로 합산 + billable(INTER_AZ/VPC/REGION) 추정 비용.
 // 모니터 미온보딩 클러스터는 available:false (페이지가 안내로 degrade).
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
   try {
+    const params = await pendingParams;
     const search = new URL(request.url).searchParams;
     const context = await resolveEksCluster(params.cluster, search);
     if (!(await isAllowed(context.id))) {
@@ -36,6 +38,6 @@ export async function GET(request: Request, { params }: { params: { cluster: str
     }
     return Response.json(await nfmPodTransfer(context.name, range));
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof EksScopeError ? e.message : 'Pod transfer metrics are unavailable.' }, { status: e instanceof EksScopeError ? e.status : 502 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'pod-transfer') }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }
