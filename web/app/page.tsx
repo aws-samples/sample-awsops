@@ -20,7 +20,7 @@ import AreaTrend from '@/components/charts/AreaTrend';
 import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
-import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
 import { nearestSnapshot, netChange, covCompleteForScope, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
 import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -76,6 +76,12 @@ function typeIcon(type: string): ReactNode {
 }
 
 export default function Home() {
+  const [scope, , ready] = useActiveScope();
+  if (!ready) return null;
+  return <ScopedHome key={scopeParams(scope)} scope={scope} />;
+}
+
+function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const { tt, lang } = useI18n();
   const [ov, setOv] = useState<Overview | null>(null);
   const [ovErr, setOvErr] = useState('');
@@ -88,73 +94,97 @@ export default function Home() {
   // and the panel would be invisible on the default view.
   const [impactTrend, setImpactTrend] = useState<ResourceTrend | null>(null);
   const [fleet, setFleet] = useState<Fleet | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   // Sync-all visibility (round-2 review): /api/me's isAdmin exists exactly so the UI can hide
   // admin-only controls accurately — the button renders for admins only (the server-side
   // isAdmin gate on the route stays as the actual authorization, this is presentation).
   const [isAdminUser, setIsAdminUser] = useState(false);
-  const [scope] = useActiveScope();
   const [trendDays, setTrendDays] = useState(14);
 
   // Request generation token: loadAll re-runs on scope/period change, and a SLOW response
   // from the previous scope must not overwrite a newer scope's state (the trend fetches are
   // scope-keyed now, so a stale overwrite would silently present the wrong account scope).
   const loadGen = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const fleetTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadAll = useCallback(async () => {
     const gen = ++loadGen.current;
-    const fresh = <T,>(set: (v: T) => void) => (v: T) => { if (loadGen.current === gen) set(v); };
+    activeRequest.current?.abort();
+    clearTimeout(fleetTimeout.current);
+    const ctl = new AbortController();
+    activeRequest.current = ctl;
+    const current = () => loadGen.current === gen && !ctl.signal.aborted;
+    const fresh = <T,>(set: (v: T) => void) => (v: T) => { if (current()) set(v); };
     setBusy(true);
     // Core summaries (Aurora-backed, fast) gate the refresh spinner. Each degrades on its
     // own (allSettled) so one failure never blanks the others.
     await Promise.allSettled([
-      fetch(`/api/overview?account=${encodeURIComponent(scope.accounts === '__all__' ? '__all__' : scope.accounts[0] ?? 'self')}`)
+      fetch(`/api/overview?account=${encodeURIComponent(scope.accounts === '__all__' ? '__all__' : scope.accounts[0] ?? 'self')}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then(fresh((d: Overview) => { setOv(d); setOvErr(''); }))
         .catch((e) => fresh(setOvErr)(String(e))),
-      fetch(`/api/inventory/summary?${scopeParams(scope)}`)
+      fetch(`/api/inventory/summary?${scopeParams(scope)}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then(fresh((d: Summary) => { setSum(d); setSumErr(''); }))
         .catch((e) => fresh(setSumErr)(String(e))),
-      fetch('/api/cost')
+      fetch('/api/cost', { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then(fresh(setCost))
         .catch(() => fresh(setCost)({ trend: [] })),
       // Trend is account-scoped (gap L124; snapshots have no region dimension, so only the
       // accounts half of the scope is passed — the region-gated KPIs below account for that).
-      fetch(`/api/inventory/trend?days=${trendDays}${trendAcctParam(scope)}`)
+      fetch(`/api/inventory/trend?days=${trendDays}${trendAcctParam(scope)}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then(fresh(setResTrend))
         .catch(() => fresh(setResTrend)({ trend: [] })),
-      fetch(`/api/inventory/trend?days=35${trendAcctParam(scope)}`)
+      fetch(`/api/inventory/trend?days=35${trendAcctParam(scope)}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then(fresh(setImpactTrend))
         .catch(() => fresh(setImpactTrend)({ trend: [] })),
     ]);
-    if (loadGen.current === gen) setBusy(false);
+    if (!current()) return;
+    setBusy(false);
 
     // EKS fleet is a LIVE K8s read (nodes/pods/events per cluster). Kept OUT of the
     // busy-gated set so it never blocks the spinner, and bounded on BOTH ends: the client
     // AbortController (6s) drops the request here, while the server-side k8sGet timeout
     // (K8S_REQUEST_TIMEOUT_MS in eks-incluster) closes the actual K8s socket so a slow/stuck
     // API can't occupy the web task (thin-BFF). The charts fill in on resolve, else stay empty.
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 6000);
+    const t = setTimeout(() => {
+      if (current()) {
+        setFleet({ clusters: [] });
+        ctl.abort();
+      }
+    }, 6000);
+    fleetTimeout.current = t;
     fetch('/api/eks/fleet', { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(setFleet)
-      .catch(() => setFleet({ clusters: [] }))
-      .finally(() => clearTimeout(t));
+      .then(fresh(setFleet))
+      .catch(() => fresh(setFleet)({ clusters: [] }))
+      .finally(() => {
+        clearTimeout(t);
+        if (fleetTimeout.current === t) fleetTimeout.current = undefined;
+        if (activeRequest.current === ctl) activeRequest.current = null;
+      });
   }, [scope, trendDays]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => {
+    loadAll();
+    return () => {
+      loadGen.current++;
+      activeRequest.current?.abort();
+      clearTimeout(fleetTimeout.current);
+    };
+  }, [loadAll]);
   useEffect(() => {
     let alive = true;
-    fetch('/api/me')
+    const ctl = new AbortController();
+    fetch('/api/me', { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (alive && d) setIsAdminUser(Boolean(d.isAdmin)); })
       .catch(() => {});
-    return () => { alive = false; };
+    return () => { alive = false; ctl.abort(); };
   }, []);
 
   // Header freshness = when the inventory was last SYNCED (falls back to fetch time).
