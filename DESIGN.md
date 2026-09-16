@@ -23,7 +23,7 @@ inherit the same token set, components, and patterns — extend them the same wa
 The files in `prototype/` are **design references built in HTML/React (Babel JSX)** —
 they show the intended look and behavior. **They are not production code to copy
 verbatim.** The task is to **recreate these designs inside the existing AWSops
-codebase** (Next.js 14 App Router + Tailwind CSS) using its established patterns
+codebase** (Next.js 15 App Router + Tailwind CSS) using its established patterns
 (React components in `src/components/`, Tailwind classes, the existing page files
 in `src/app/*/page.tsx`).
 

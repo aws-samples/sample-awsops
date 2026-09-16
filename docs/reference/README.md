@@ -62,7 +62,7 @@ fallback. 인앱 `/login` 폼 1차 + Hosted UI PKCE 다크 폴백, RS256 JWKS �
 is `data/schema.sql` + ULID migrations tracked in `schema_migrations`. App state lives in Aurora,
 not `data/*.json`. node-pg로 접근하는 Aurora 영속 상태.
 
-**Web thin-BFF — [`04-web-bff.md`](04-web-bff.md).** **Next.js 14 thin-BFF** (`web/`, standalone
+**Web thin-BFF — [`04-web-bff.md`](04-web-bff.md).** **Next.js 15 thin-BFF** (`web/`, standalone
 **arm64**, served at the **root path** — no basePath). Heavy/long/OOM-risk work is enqueued rather
 than run inline — the generic `POST /api/jobs` accepts `noop` types ONLY; domain work goes through its
 own ownership-scoped route (`POST /api/diagnosis`, `POST /api/compliance/run`) and the rest is
@@ -109,7 +109,7 @@ owners must provision scoped access and plan-prefix lifecycle before publication
 | Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
 | Auth & Identity | [02-auth.md](02-auth.md) | `terraform/foundation/auth.tf` (+ `edge-lambda/cognito_edge.py.tftpl`), `web/app/login/`, `web/app/api/auth/login/` |
 | Data / Aurora | [03-data-aurora.md](03-data-aurora.md) | `terraform/foundation/data.tf` (+ `data/schema.sql`), `web/lib/db.ts` |
-| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 14 BFF; `terraform/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
+| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 15 BFF; `terraform/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
