@@ -1,6 +1,8 @@
 import { EC2Client, DescribeNetworkInterfacesCommand, DescribeAddressesCommand } from '@aws-sdk/client-ec2';
 import { getAllowedClusters, getClusterAuth } from './eks-registry';
 import { listInCluster, type PodRow } from './eks-incluster';
+import { parseEksClusterId } from './eks-cluster-id';
+import { currentAccountId } from './account';
 
 // IP 인벤토리 (Network 메뉴) — 계정의 모든 IP는 ENI에 귀속되므로 ENI가 원천이다:
 // EC2/ALB/NLB/NAT/Lambda/RDS/ElastiCache/OpenSearch/MSK/VPCE/EFS/TGW/CloudFront/AgentCore…
@@ -148,7 +150,14 @@ export async function listEips(): Promise<EipRow[]> {
 export async function podIpMap(): Promise<Record<string, PodIpInfo>> {
   return cached('podips', async () => {
     const out: Record<string, PodIpInfo> = {};
-    const clusters = [...(await getAllowedClusters().catch(() => new Set<string>()))];
+    // ENIs above are collected with host credentials in REGION. Never enrich them using
+    // another account/region's overlapping pod IPs just because its cluster is registered.
+    const clusters = [...(await getAllowedClusters().catch(() => new Set<string>()))].filter(id => {
+      const parsed = parseEksClusterId(id);
+      return parsed !== null
+        && (!parsed.accountId || parsed.accountId === currentAccountId())
+        && (!parsed.region || parsed.region === REGION);
+    });
     await Promise.all(clusters.map(async (cluster) => {
       try {
         if (!(await getClusterAuth(cluster))) return;

@@ -11,6 +11,7 @@ import { RangePicker, dash } from '@/components/inventory/metrics/shared';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import type { NfmCategory, PodTransferResult, PodTransferRow } from '@/lib/nfm';
 import type { InvType } from '@/lib/inventory-types';
+import { eksClusterLabel, eksClusterName } from '@/lib/eks-cluster-id';
 
 // EKS 비용 메뉴의 "Pod 전송량 (NFM)" 섹션 — CloudWatch Network Flow Monitor의
 // DATA_TRANSFERRED를 파드별로 집계한 /api/eks/<cluster>/pod-transfer를 소비한다.
@@ -78,25 +79,22 @@ function xferDetail(r: PodTransferRow): Record<string, unknown> {
 
 export default function PodTransferSection({ clusters }: { clusters: string[] }) {
   const { tt } = useI18n();
-  const [cluster, setCluster] = useState(clusters[0] ?? '');
+  const [selectedCluster, setCluster] = useState(clusters[0] ?? '');
+  const cluster = clusters.includes(selectedCluster) ? selectedCluster : (clusters[0] ?? '');
   const [rangeSec, setRangeSec] = useState(3600);
-  const [data, setData] = useState<PodTransferResult | null>(null);
+  const [data, setData] = useState<(PodTransferResult & { message?: string }) | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<PodTransferRow | null>(null);
 
-  // 새로고침으로 클러스터 목록이 바뀌어 선택이 무효가 되면 첫 클러스터로 복귀.
-  useEffect(() => {
-    if (clusters.length > 0 && !clusters.includes(cluster)) setCluster(clusters[0]);
-  }, [clusters, cluster]);
-
   // cluster/range 변경 시에만 재조회 — 서버가 TTL 캐시 + in-flight 공유를 하므로 재선택은 저렴.
   useEffect(() => {
+    setData(null);
+    setSelected(null);
+    setErr('');
     if (!cluster) return;
     let alive = true;
     setLoading(true);
-    setErr('');
-    setSelected(null);
     fetch(`/api/eks/${encodeURIComponent(cluster)}/pod-transfer?range=${rangeSec}`)
       .then((r) => (r.ok ? (r.json() as Promise<PodTransferResult>) : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (alive) setData(d); })
@@ -146,7 +144,7 @@ export default function PodTransferSection({ clusters }: { clusters: string[] })
       right={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <select value={cluster} onChange={(e) => setCluster(e.target.value)} className={selectCls} aria-label="Cluster">
-            {clusters.map((c) => <option key={c} value={c}>{c}</option>)}
+            {clusters.map((c) => <option key={c} value={c}>{eksClusterLabel(c)}</option>)}
           </select>
           <RangePicker value={rangeSec} onChange={setRangeSec} ranges={NFM_RANGES} />
         </div>
@@ -164,9 +162,11 @@ export default function PodTransferSection({ clusters }: { clusters: string[] })
 
       {data && !data.available && !loading && (
         <p className="px-4 py-3 text-[13px] text-ink-600">
-          {tt('해당 클러스터에 NFM 모니터가 온보딩되지 않았습니다')}{' '}
-          (<code className="font-mono text-[11.5px] text-ink-500">nfm-eks-{cluster}</code>).{' '}
-          {tt('CloudWatch Network Flow Monitor 온보딩 후 데이터가 표시됩니다.')}
+          {data.message ?? <>
+            {tt('해당 클러스터에 NFM 모니터가 온보딩되지 않았습니다')}{' '}
+            (<code className="font-mono text-[11.5px] text-ink-500">nfm-eks-{eksClusterName(cluster)}</code>).{' '}
+            {tt('CloudWatch Network Flow Monitor 온보딩 후 데이터가 표시됩니다.')}
+          </>}
         </p>
       )}
 

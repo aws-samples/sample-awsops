@@ -27,7 +27,7 @@ const rateBytes = (v: number | null | undefined) => {
 const ratePkts = (v: number | null | undefined) => (v == null ? null : `${(v / 3600).toFixed(1)}/s`);
 
 /** 노드 ENI 패널 (v1 parity): 노드의 EC2 네트워크 인터페이스 + IP 용량 — 동기화된 ec2 행에서 매칭. */
-export default function NodeEniSection({ nodeName }: { nodeName: string }) {
+export default function NodeEniSection({ nodeName, cluster }: { nodeName: string; cluster?: string }) {
   const { tt } = useI18n();
   const [d, setD] = useState<NodeEni | null>(null);
   const [err, setErr] = useState(false);
@@ -35,12 +35,13 @@ export default function NodeEniSection({ nodeName }: { nodeName: string }) {
   useEffect(() => {
     let alive = true;
     setD(null); setErr(false);
-    fetch(`/api/eks/node-eni?node=${encodeURIComponent(nodeName)}`)
+    const scope = cluster === undefined ? '' : `&cluster=${encodeURIComponent(cluster)}`;
+    fetch(`/api/eks/node-eni?node=${encodeURIComponent(nodeName)}${scope}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((body) => { if (alive) setD(body); })
       .catch(() => { if (alive) setErr(true); });
     return () => { alive = false; };
-  }, [nodeName]);
+  }, [nodeName, cluster]);
 
   return (
     <div>

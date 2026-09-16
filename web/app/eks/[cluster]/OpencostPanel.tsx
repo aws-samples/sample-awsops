@@ -55,13 +55,17 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
     setStatus(null);
     setNotOnboarded(false);
     setMsg('');
+    setChartVersion('');
+    setOverrideText('');
+    configLoadedRef.current = '';
     initedRef.current = false;
     (async () => {
       try {
         const r = await fetch(`/api/opencost/${encodeURIComponent(cluster)}/status`);
         if (!fresh()) return;
         if (r.status === 404) { setNotOnboarded(true); return; }
-        const s = (await r.json()) as InstallStatus;
+        const body = await r.json();
+        const s: InstallStatus = r.ok ? body : { installed: false, ready: false, reason: body.message ?? `HTTP ${r.status}` };
         if (!fresh()) return;
         setStatus(s);
         if (!initedRef.current) { setOpen(!s.installed); initedRef.current = true; }
@@ -72,6 +76,7 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
         if (!initedRef.current) { setOpen(true); initedRef.current = true; }
       }
     })();
+    return () => { seqRef.current += 1; };
   }, [cluster]);
 
   // Admin advanced config — lazily fetched the first time the (open) panel is shown to an admin.
@@ -79,9 +84,11 @@ export default function OpencostPanel({ cluster }: { cluster: string }) {
     if (!open || !isAdmin || notOnboarded) return;
     if (configLoadedRef.current === cluster) return;
     configLoadedRef.current = cluster;
+    const seq = seqRef.current;
     fetch(`/api/opencost/${encodeURIComponent(cluster)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
+        if (seq !== seqRef.current) return;
         const saved = d?.config as SavedConfig | null;
         setChartVersion(saved?.chartVersion ?? '');
         setOverrideText(saved?.config?.override ? JSON.stringify(saved.config.override, null, 2) : '');

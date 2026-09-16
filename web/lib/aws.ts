@@ -17,28 +17,30 @@ export interface ClusterInfo {
   region: string; vpcId: string; platformVersion: string;
 }
 
-export async function listClusterInventory(accountId?: string): Promise<{ clusters: ClusterInfo[]; region: string; truncated: boolean }> {
-  const c = accountId && accountId !== 'self' ? await assumedClient(accountId, EKSClient, { region: REGION }) : eksClient();
-  const { clusters = [], nextToken } = await c.send(new ListClustersCommand({ maxResults: 25 }));
+export async function listClusterInventory(accountId?: string, region = REGION): Promise<{ clusters: ClusterInfo[]; region: string; truncated: boolean }> {
+  const c = (!accountId || accountId === 'self') && region === REGION
+    ? eksClient() : await assumedClient(accountId, EKSClient, { region });
+  const options = { abortSignal: AbortSignal.timeout(12_000) };
+  const { clusters = [], nextToken } = await c.send(new ListClustersCommand({ maxResults: 25 }), options);
   const out: ClusterInfo[] = [];
   for (const name of clusters.slice(0, 25)) {
-    const { cluster } = await c.send(new DescribeClusterCommand({ name }));
+    const { cluster } = await c.send(new DescribeClusterCommand({ name }), options);
     out.push({
       name,
       status: cluster?.status ?? '?',
       version: cluster?.version ?? '?',
       endpoint: cluster?.endpoint ?? '',
       createdAt: cluster?.createdAt instanceof Date ? cluster.createdAt.toISOString() : '',
-      region: REGION,
+      region,
       vpcId: cluster?.resourcesVpcConfig?.vpcId ?? '',
       platformVersion: cluster?.platformVersion ?? '',
     });
   }
-  return { clusters: out, region: REGION, truncated: !!nextToken || clusters.length > 25 };
+  return { clusters: out, region, truncated: !!nextToken || clusters.length > 25 };
 }
 
-export async function listClusters(accountId?: string): Promise<ClusterInfo[]> {
-  return (await listClusterInventory(accountId)).clusters;
+export async function listClusters(accountId?: string, region = REGION): Promise<ClusterInfo[]> {
+  return (await listClusterInventory(accountId, region)).clusters;
 }
 
 export interface CostBreakdown { total: number; currency: string; byService: { service: string; amount: number }[] }

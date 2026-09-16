@@ -7,7 +7,8 @@ import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import Badge from '@/components/ui/Badge';
 import StatCard from '@/components/ui/StatCard';
-import { useActiveAccount, accountParam } from '@/lib/account-context';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 import Card from '@/components/ui/Card';
 import Meter from '@/components/ui/Meter';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
@@ -15,7 +16,7 @@ import BarDistribution from '@/components/charts/BarDistribution';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
-import EksFilterPanel, { NO_VPC, type EksFilterState } from '@/components/eks/EksFilterPanel';
+import EksFilterPanel, { EksCollectionNotice, NO_VPC, type EksCollectionStatus, type EksFilterState } from '@/components/eks/EksFilterPanel';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import type { NodeRow, PodRow } from '@/lib/eks-resources';
@@ -26,7 +27,7 @@ import type { NodeRow, PodRow } from '@/lib/eks-resources';
 // node resource bars, pod charts and warning events from the live fleet endpoint.
 
 interface Cluster {
-  name: string; status?: string; version?: string; region?: string;
+  id?: string; name: string; accountId?: string; status?: string; version?: string; region?: string;
   vpcId?: string; platformVersion?: string;
   access: 'connected' | 'entry-only' | 'no-entry' | 'unknown';
   authMode?: 'sa-token' | 'assume-role';
@@ -48,7 +49,7 @@ interface FleetEvent {
   count: number; lastSeen: string; lastSeenTs: number;
 }
 interface FleetCluster {
-  name: string; reachable: boolean; error?: string;
+  id?: string; name: string; accountId?: string; region?: string; reachable: boolean; error?: string;
   counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
   nodeAgg: NodeAgg[];
   instanceTypes: Array<{ type: string; count: number }>;
@@ -61,9 +62,18 @@ interface FleetCluster {
 const fmtMib = (mib: number): string => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
 
 export default function EksPage() {
+  const [scope, , ready] = useActiveScope();
+  const query = scopeParams(scope);
+  // Remount the scoped view so old rows, selections and child requests cannot leak across scopes.
+  return ready ? <EksOverview key={query} scopeQuery={query} /> : null;
+}
+
+function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   const { tt, lang } = useI18n();
-  const [activeAccount] = useActiveAccount();
   const [rows, setRows] = useState<Cluster[] | null>(null);
+  const [collection, setCollection] = useState<EksCollectionStatus>({});
+  const [fleetCollection, setFleetCollection] = useState<EksCollectionStatus>({});
+  const [fleetErr, setFleetErr] = useState('');
   const [admin, setAdmin] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
@@ -94,62 +104,63 @@ export default function EksPage() {
   const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string } | null>(null);
   const openNode = useCallback((cluster: string, name: string) => setNodeSel({ cluster, name }), []);
 
-  const load = useCallback(() => {
-    fetch(`/api/eks?${accountParam(activeAccount) || 'account=self'}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { setRows(d.clusters); setAdmin(!!d.admin); })
-      .catch((e) => setErr(String(e)));
-  }, [activeAccount]);
-  // Monotonic fleet sequence — register/unregister re-fetches must not be
-  // overwritten by an older in-flight response (P4 gate: codex). Failures keep
-  // the previous fleet (best-effort live data beats a blank page).
+  const alive = useRef(true);
+  const listSeqRef = useRef(0);
   const fleetSeqRef = useRef(0);
-  const loadFleet = useCallback(() => { // fleet-wide live aggregates (v1 K8s-Overview parity) — best-effort
+  const refreshSeqRef = useRef(0);
+  const load = useCallback(() => {
+    const seq = ++listSeqRef.current;
+    const fresh = () => alive.current && seq === listSeqRef.current;
+    return fetch(`/api/eks?${scopeQuery}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => { if (fresh()) { setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr(''); } })
+      .catch((e) => { if (fresh()) setErr(String(e)); });
+  }, [scopeQuery]);
+  const loadFleet = useCallback(() => {
     const seq = ++fleetSeqRef.current;
-    fetch('/api/eks/fleet')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d && seq === fleetSeqRef.current) { setFleet(d.clusters ?? []); setFleetLoaded(true); } })
-      .catch(() => {});
-  }, []);
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadFleet(); }, [loadFleet]);
+    const fresh = () => alive.current && seq === fleetSeqRef.current;
+    return fetch(`/api/eks/fleet?${scopeQuery}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => { if (fresh()) { setFleet(d.clusters ?? []); setFleetLoaded(true); setFleetCollection(d); setFleetErr(''); } })
+      .catch((e) => { if (fresh()) setFleetErr(String(e)); });
+  }, [scopeQuery]);
 
   // Manual refresh: re-fetch both the access list and the live fleet; stamp
   // capturedAt once the fleet load settles (best-effort — never throws).
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
+    const fresh = () => alive.current && seq === refreshSeqRef.current;
     setBusy(true);
     try {
-      await Promise.allSettled([
-        fetch(`/api/eks?${accountParam(activeAccount) || 'account=self'}`)
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-          .then((d) => { setRows(d.clusters); setAdmin(!!d.admin); setErr(''); })
-          .catch((e) => setErr(String(e))),
-        (async () => {
-          const seq = ++fleetSeqRef.current;
-          try {
-            const r = await fetch('/api/eks/fleet');
-            const d = r.ok ? await r.json() : null;
-            if (d && seq === fleetSeqRef.current) { setFleet(d.clusters ?? []); setFleetLoaded(true); }
-          } catch { /* keep previous fleet */ }
-        })(),
-      ]);
-      setCapturedAt(new Date().toISOString());
+      await Promise.all([load(), loadFleet()]);
+      if (fresh()) setCapturedAt(new Date().toISOString());
     } finally {
-      setBusy(false);
+      if (fresh()) setBusy(false);
     }
-  }, []);
+  }, [load, loadFleet]);
+  useEffect(() => {
+    alive.current = true;
+    void refresh();
+    return () => {
+      alive.current = false;
+      ++listSeqRef.current;
+      ++fleetSeqRef.current;
+      ++refreshSeqRef.current;
+    };
+  }, [refresh]);
 
   async function register(cluster: string) {
     setBusyCluster(cluster); setNotice(''); setGuide(null);
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'POST' });
-      if (res.status === 200) { setNotice(tt(`${cluster} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet(); }
-      else if (res.status === 409) { const d = await res.json(); setGuide({ cluster, data: d.guide }); }
+      if (!alive.current) return;
+      if (res.status === 200) { setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet(); }
+      else if (res.status === 409) { const d = await res.json(); if (alive.current) setGuide({ cluster, data: d.guide }); }
       else if (res.status === 403) setNotice(tt('관리자 전용 기능입니다.'));
       else if (res.status === 503) setNotice(tt('등록 저장소(Aurora)가 설정되지 않았습니다.'));
       else setNotice(tt(`등록 실패 (${res.status})`));
-    } catch { setNotice(tt('등록 요청 실패')); }
-    setBusyCluster('');
+    } catch { if (alive.current) setNotice(tt('등록 요청 실패')); }
+    if (alive.current) setBusyCluster('');
   }
 
   async function saveAuth(cluster: string, mode: 'sa-token' | 'assume-role') {
@@ -163,26 +174,29 @@ export default function EksPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ auth }),
       });
+      if (!alive.current) return;
       if (res.status === 200) {
-        setNotice(tt(`${cluster} 인증 저장 완료 — 바로 조회할 수 있습니다.`));
+        setNotice(tt(`${eksClusterLabel(cluster)} 인증 저장 완료 — 바로 조회할 수 있습니다.`));
         setAuthFor(null); setRegOpen(false); setAuthToken(''); setAuthRole(''); setAuthExtId('');
         load(); loadFleet();
       } else {
         const d = await res.json().catch(() => null);
+        if (!alive.current) return;
         setNotice(tt(`인증 저장 실패 (${res.status}${d?.message ? `: ${d.message}` : ''})`));
       }
-    } catch { setNotice(tt('인증 저장 요청 실패')); }
-    finally { setBusyCluster(''); }
+    } catch { if (alive.current) setNotice(tt('인증 저장 요청 실패')); }
+    finally { if (alive.current) setBusyCluster(''); }
   }
 
   async function unregister(cluster: string) {
     setBusyCluster(cluster); setNotice('');
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'DELETE' });
-      setNotice(res.ok ? tt(`${cluster} 등록 해제됨.`) : tt(`해제 실패 (${res.status})`));
+      if (!alive.current) return;
+      setNotice(res.ok ? tt(`${eksClusterLabel(cluster)} 등록 해제됨.`) : tt(`해제 실패 (${res.status})`));
       load(); loadFleet();
-    } catch { setNotice(tt('해제 요청 실패')); }
-    setBusyCluster('');
+    } catch { if (alive.current) setNotice(tt('해제 요청 실패')); }
+    if (alive.current) setBusyCluster('');
   }
 
   const btn = 'rounded-md border border-ink-200 px-2 py-0.5 text-[11px] text-ink-600 hover:bg-ink-100 disabled:opacity-50';
@@ -190,17 +204,17 @@ export default function EksPage() {
   // fleet entry by cluster name (only allowed/reachable-or-failed clusters appear).
   const fleetBy = useMemo(() => {
     const m = new Map<string, FleetCluster>();
-    for (const f of fleet) m.set(f.name, f);
+    for (const f of fleet) m.set(f.id ?? f.name, f);
     return m;
   }, [fleet]);
 
   const facetActive = facet.clusters.length > 0 || facet.vpcs.length > 0;
   const facetRows = useMemo(() => (rows ?? []).filter((c) => {
-    if (facet.clusters.length && !facet.clusters.includes(c.name)) return false;
+    if (facet.clusters.length && !facet.clusters.includes(c.id ?? c.name)) return false;
     if (facet.vpcs.length && !facet.vpcs.includes(c.vpcId || NO_VPC)) return false;
     return true;
   }), [rows, facet]);
-  const facetNames = useMemo(() => new Set(facetRows.map((c) => c.name)), [facetRows]);
+  const facetNames = useMemo(() => new Set(facetRows.map((c) => c.id ?? c.name)), [facetRows]);
   // The card-click scope must not silently zero every panel when the facet excludes it.
   useEffect(() => {
     if (facetActive && clusterFilter && !facetNames.has(clusterFilter)) setClusterFilter('');
@@ -209,7 +223,7 @@ export default function EksPage() {
   // cluster/VPC must not pin the page on the no-match empty state.
   useEffect(() => {
     if (!rows) return;
-    const names = new Set(rows.map((c) => c.name));
+    const names = new Set(rows.map((c) => c.id ?? c.name));
     const vpcs = new Set(rows.map((c) => c.vpcId || NO_VPC));
     setFacet((cur) => {
       const clusters = cur.clusters.filter((c) => names.has(c));
@@ -219,8 +233,8 @@ export default function EksPage() {
   }, [rows]);
   const visibleFleet = useMemo(
     () => fleet.filter((f) =>
-      (clusterFilter ? f.name === clusterFilter : true)
-      && (facetActive ? facetNames.has(f.name) : true)),
+      (clusterFilter ? (f.id ?? f.name) === clusterFilter : true)
+      && (facetActive ? facetNames.has(f.id ?? f.name) : true)),
     [fleet, clusterFilter, facetActive, facetNames],
   );
   const reachable = useMemo(() => visibleFleet.filter((f) => f.reachable), [visibleFleet]);
@@ -273,7 +287,7 @@ export default function EksPage() {
 
   // Warning events merged across the fleet, newest first, with a cluster column.
   const eventRows = useMemo(() => reachable
-    .flatMap((f) => f.events.map((e) => ({ cluster: f.name, ...e })))
+    .flatMap((f) => f.events.map((e) => ({ ...e, cluster: eksClusterLabel(f.id ?? f.name) })))
     .sort((a, b) => b.lastSeenTs - a.lastSeenTs), [reachable]);
 
   const totalPods = totals.pods;
@@ -294,7 +308,7 @@ export default function EksPage() {
                   setRegMode('sa-token');
                   // Default the picker to the first not-yet-connected cluster.
                   const first = (rows ?? []).find((r) => r.access !== 'connected') ?? (rows ?? [])[0];
-                  if (first) setRegCluster(first.name);
+                  if (first) setRegCluster(first.id ?? first.name);
                 }}
               >
                 <span className="mr-1">+</span>{tt('클러스터 등록')}
@@ -315,6 +329,9 @@ export default function EksPage() {
       </div>
 
       {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+      <EksCollectionNotice status={collection} />
+      <EksCollectionNotice status={fleetCollection} />
+      {fleetErr && <div className="text-[13px] text-amber-700">{tt('Fleet 조회 실패:')} {fleetErr}</div>}
       {notice && <div className="text-[13px] text-brand-700">{notice}</div>}
       {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
@@ -328,7 +345,7 @@ export default function EksPage() {
             {tt('등록된 클러스터가 있지만 어느 클러스터에서도 라이브 데이터를 읽지 못했습니다. Access Entry(AmazonEKSAdminViewPolicy) 부여와 클러스터 등록(인증) 상태를 확인하세요.')}
           </p>
           {(() => { const errs = fleet.filter((f) => f.error).slice(0, 2); return errs.length > 0 ? (
-            <pre className="mt-2 overflow-x-auto rounded bg-white/70 p-2 font-mono text-[11.5px] text-amber-900">{errs.map((f) => `${f.name}: ${f.error}`).join('\n')}</pre>
+            <pre className="mt-2 overflow-x-auto rounded bg-white/70 p-2 font-mono text-[11.5px] text-amber-900">{errs.map((f) => `${eksClusterLabel(f.id ?? f.name)}: ${f.error}`).join('\n')}</pre>
           ) : null; })()}
           {/* v2-current EKS overview guide (registration + Access Entry / Register ViewPolicy
               flow) — NOT the archived v1 eks-auth page. Locale-aware: ko is the docs-site
@@ -355,8 +372,8 @@ export default function EksPage() {
                 className="w-full max-w-md rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[12px]"
               >
                 {(rows ?? []).map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name} {r.access === 'connected' ? tt('· 연결됨') : tt('· 미연결')}{r.authMode ? ` (${r.authMode})` : ''}
+                  <option key={r.id ?? r.name} value={r.id ?? r.name}>
+                    {eksClusterLabel(r.id ?? r.name)} {r.access === 'connected' ? tt('· 연결됨') : tt('· 미연결')}{r.authMode ? ` (${r.authMode})` : ''}
                   </option>
                 ))}
               </select>
@@ -431,7 +448,7 @@ export default function EksPage() {
 
       {guide && (
         <div className="rounded-lg border border-ink-200 bg-paper-muted p-4 flex flex-col gap-3">
-          <div className="text-[13px] font-semibold text-ink-800">🔧 {tt(`${guide.cluster} 온보딩 가이드`)}</div>
+          <div className="text-[13px] font-semibold text-ink-800">🔧 {tt(`${eksClusterLabel(guide.cluster)} 온보딩 가이드`)}</div>
           {guide.data.commands.map((cmd) => (
             <div key={cmd} className="flex items-start gap-2">
               <code className="flex-1 rounded bg-ink-800 text-paper text-[11px] p-2 overflow-x-auto whitespace-pre">{cmd}</code>
@@ -455,7 +472,7 @@ export default function EksPage() {
 
       {rows && rows.length > 0 && (
         <EksFilterPanel
-          clusters={rows.map((c) => ({ name: c.name, vpcId: c.vpcId }))}
+          clusters={rows}
           value={facet}
           onChange={setFacet}
           filteredCount={facetRows.length}
@@ -467,25 +484,26 @@ export default function EksPage() {
       {rows && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {facetRows.map((c) => {
-            const f = fleetBy.get(c.name);
+            const id = c.id ?? c.name;
+            const f = fleetBy.get(id);
             return (
               <div
-                key={c.name}
+                key={id}
                 role="button"
                 tabIndex={0}
                 onClick={(e) => {
                   // 카드 내부의 버튼/링크/폼 조작(등록·인증·이름 링크)은 필터 토글로 새지 않게.
                   if ((e.target as HTMLElement).closest('button, a, input, textarea, select, label')) return;
-                  setClusterFilter((cur) => (cur === c.name ? '' : c.name));
+                  setClusterFilter((cur) => (cur === id ? '' : id));
                 }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) setClusterFilter((cur) => (cur === c.name ? '' : c.name)); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) setClusterFilter((cur) => (cur === id ? '' : id)); }}
                 title="클릭하면 아래 패널이 이 클러스터로 필터링됩니다"
-                className={`cursor-pointer rounded-lg transition ${clusterFilter === c.name ? 'ring-2 ring-brand-400' : ''}`}
+                className={`cursor-pointer rounded-lg transition ${clusterFilter === id ? 'ring-2 ring-brand-400' : ''}`}
               >
               <Card className="p-4 h-full">
                 <div className="flex items-start justify-between gap-2">
                   {c.access === 'connected' ? (
-                    <Link href={`/eks/${encodeURIComponent(c.name)}`} className="font-mono text-[13px] font-semibold text-brand-600 hover:underline">{c.name}</Link>
+                    <Link href={`/eks/${encodeURIComponent(id)}`} className="font-mono text-[13px] font-semibold text-brand-600 hover:underline">{c.name}</Link>
                   ) : (
                     <span className="font-mono text-[13px] font-semibold text-ink-700">{c.name}</span>
                   )}
@@ -498,6 +516,7 @@ export default function EksPage() {
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
                   <div><span className="text-ink-400">Status</span> <span className={c.status === 'ACTIVE' ? 'text-emerald-700' : 'text-ink-700'}>{c.status || '—'}</span></div>
                   <div><span className="text-ink-400">Version</span> <span className="text-ink-700">{c.version}</span></div>
+                  {c.accountId && <div><span className="text-ink-400">Account</span> <span className="text-ink-700">{c.accountId}</span></div>}
                   <div><span className="text-ink-400">Region</span> <span className="text-ink-700">{c.region}</span></div>
                   <div><span className="text-ink-400">VPC</span> <span className="text-ink-700">{c.vpcId || '—'}</span></div>
                   <div><span className="text-ink-400">Platform</span> <span className="text-ink-700">{c.platformVersion || '—'}</span></div>
@@ -519,22 +538,22 @@ export default function EksPage() {
                 ) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {admin && (c.access === 'entry-only' || c.access === 'unknown') && (
-                      <button className={btn} disabled={busyCluster === c.name} onClick={() => register(c.name)}>{tt('조회 등록')}</button>
+                      <button className={btn} disabled={busyCluster === id} onClick={() => register(id)}>{tt('조회 등록')}</button>
                     )}
                     {c.access !== 'connected' && c.guide && (
-                      <button className={btn} onClick={() => setGuide({ cluster: c.name, data: c.guide! })}>{tt('스크립트')}</button>
+                      <button className={btn} onClick={() => setGuide({ cluster: id, data: c.guide! })}>{tt('스크립트')}</button>
                     )}
                     {admin && (
-                      <button className={btn} onClick={() => { setAuthFor(authFor === c.name ? null : c.name); setAuthMode('sa-token'); setRegOpen(false); }}>
+                      <button className={btn} onClick={() => { setAuthFor(authFor === id ? null : id); setAuthMode('sa-token'); setRegOpen(false); }}>
                         {c.authMode ? tt(`인증 변경 (${c.authMode})`) : tt('인증 등록')}
                       </button>
                     )}
                     {admin && c.runtime && (
-                      <button className={btn} disabled={busyCluster === c.name} onClick={() => unregister(c.name)}>{tt('해제')}</button>
+                      <button className={btn} disabled={busyCluster === id} onClick={() => unregister(id)}>{tt('해제')}</button>
                     )}
                   </div>
                 )}
-                {admin && authFor === c.name && (
+                {admin && authFor === id && (
                   <div className="mt-3 rounded-lg border border-ink-100 bg-paper-muted/60 p-3 text-[12px]">
                     <p className="mb-2 text-ink-600">
                       {tt('클러스터 인증을 Aurora에 저장합니다 — Access Entry 없이 조회할 수 있습니다 (v1 kubeconfig 등록 대응).')}
@@ -576,8 +595,8 @@ export default function EksPage() {
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         className={btn}
-                        disabled={busyCluster === c.name || (authMode === 'sa-token' ? !authToken.trim() : !authRole.trim())}
-                        onClick={() => saveAuth(c.name, authMode)}
+                        disabled={busyCluster === id || (authMode === 'sa-token' ? !authToken.trim() : !authRole.trim())}
+                        onClick={() => saveAuth(id, authMode)}
                       >
                         {tt('저장')}
                       </button>
@@ -594,7 +613,7 @@ export default function EksPage() {
 
       {clusterFilter && (
         <div className="flex items-center gap-2 text-[12.5px] text-brand-700">
-          <span>클러스터 필터: <b className="font-mono">{clusterFilter}</b> — 아래 패널이 이 클러스터로 스코프됩니다</span>
+          <span>클러스터 필터: <b className="font-mono">{eksClusterLabel(clusterFilter)}</b> — 아래 패널이 이 클러스터로 스코프됩니다</span>
           <button type="button" className="rounded-md border border-ink-200 px-2 py-0.5 text-[11px] text-ink-500 hover:bg-ink-100" onClick={() => setClusterFilter('')}>필터 해제</button>
         </div>
       )}
@@ -603,15 +622,15 @@ export default function EksPage() {
         <Card title="노드 리소스" subtitle="Pod 요청 합계 대비 노드 allocatable (CPU 코어 · 메모리/디스크 G=GiB·M=MiB · request/allocatable 기준 — 디스크는 Pod가 ephemeral-storage request를 명시할 때만 채워짐)">
           <div className="flex flex-col gap-4">
             {reachable.filter((f) => f.nodeAgg.length > 0).map((f) => (
-              <div key={f.name} className="flex flex-col gap-2">
-                <div className="font-mono text-[12px] text-ink-500">{f.name}</div>
+              <div key={f.id ?? f.name} className="flex flex-col gap-2">
+                <div className="font-mono text-[12px] text-ink-500">{eksClusterLabel(f.id ?? f.name)}</div>
                 {f.nodeAgg.map((n) => (
                   <div
                     key={n.name}
                     role="button"
                     tabIndex={0}
-                    onClick={() => openNode(f.name, n.name)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') openNode(f.name, n.name); }}
+                    onClick={() => openNode(f.id ?? f.name, n.name)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') openNode(f.id ?? f.name, n.name); }}
                     title="클릭하면 노드 상세 (CPU/Memory/Pod Info/ENI/Pods)"
                     className="grid grid-cols-1 gap-y-1 sm:grid-cols-[minmax(0,14rem)_repeat(3,minmax(0,1fr))] sm:items-center sm:gap-x-4 text-[12px] -mx-2 rounded-md px-2 py-0.5 cursor-pointer hover:bg-ink-50">
                     <span className="min-w-0 truncate font-mono text-ink-700" title={n.name}>

@@ -1,6 +1,7 @@
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
 import { describeInCluster, isDescribableKind } from '@/lib/eks-incluster';
+import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,22 +14,23 @@ export async function GET(request: Request, { params }: { params: { cluster: str
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
-  if (!(await isAllowed(params.cluster))) {
-    return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
-  }
-  const url = new URL(request.url);
-  const kind = url.searchParams.get('kind') ?? '';
-  const name = url.searchParams.get('name') ?? '';
-  const namespace = url.searchParams.get('namespace') ?? undefined;
-  if (!isDescribableKind(kind)) {
-    return Response.json({ status: 'error', message: 'kind not describable' }, { status: 400 });
-  }
-  if (!NAME_RE.test(name) || (namespace && !NAME_RE.test(namespace))) {
-    return Response.json({ status: 'error', message: 'invalid name/namespace' }, { status: 400 });
-  }
   try {
-    return Response.json({ object: await describeInCluster(params.cluster, kind, name, namespace) });
+    const search = new URL(request.url).searchParams;
+    const context = await resolveEksCluster(params.cluster, search);
+    if (!(await isAllowed(context.id))) {
+      return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
+    }
+    const kind = search.get('kind') ?? '';
+    const name = search.get('name') ?? '';
+    const namespace = search.get('namespace') ?? undefined;
+    if (!isDescribableKind(kind)) {
+      return Response.json({ status: 'error', message: 'kind not describable' }, { status: 400 });
+    }
+    if (!NAME_RE.test(name) || (namespace && !NAME_RE.test(namespace))) {
+      return Response.json({ status: 'error', message: 'invalid name/namespace' }, { status: 400 });
+    }
+    return Response.json({ object: await describeInCluster(context.id, kind, name, namespace) });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 502 });
+    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

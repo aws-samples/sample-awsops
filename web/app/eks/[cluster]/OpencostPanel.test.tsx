@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import OpencostPanel from './OpencostPanel';
 
 afterEach(cleanup);
@@ -44,6 +44,26 @@ function stubFetch(routes: Routes = {}) {
 }
 
 describe('OpencostPanel', () => {
+  it('ignores late host config after switching to the same-name member', async () => {
+    const member = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
+    let resolveHost!: (response: Response) => void;
+    const hostConfig = new Promise<Response>(resolve => { resolveHost = resolve; });
+    const fn = vi.fn(async (url: string) => {
+      if (url === '/api/me') return jsonRes({ isAdmin: true });
+      if (url.endsWith('/status')) return jsonRes({ installed: false, ready: false });
+      if (url === '/api/opencost/shared') return hostConfig;
+      return jsonRes({ config: { chartVersion: 'member-version', config: {} } });
+    });
+    vi.stubGlobal('fetch', fn);
+    const { rerender } = render(<OpencostPanel cluster="shared" />);
+    await waitFor(() => expect(fn).toHaveBeenCalledWith('/api/opencost/shared'));
+    rerender(<OpencostPanel cluster={member} />);
+    await screen.findByDisplayValue('member-version');
+    await act(async () => { resolveHost(jsonRes({ config: { chartVersion: 'host-version', config: {} } })); });
+    expect(screen.queryByDisplayValue('host-version')).toBeNull();
+    expect(screen.getByDisplayValue('member-version')).toBeTruthy();
+  });
+
   it('shows a loading line before status resolves', () => {
     // never-resolving status → stays loading
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));

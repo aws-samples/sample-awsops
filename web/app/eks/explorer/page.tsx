@@ -7,6 +7,9 @@ import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import Input from '@/components/ui/Input';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
 
 // EKS 탐색기 — v1 K9s-style explorer parity. Read-only browser over the
 // in-cluster BFF: kind tabs (k9s lowercase), cluster picker ('전체 클러스터'
@@ -29,7 +32,7 @@ const KINDS: Kind[] = [
 const ALL_CLUSTERS = '__all__';
 const ALL = '전체';
 
-const CLUSTER_COL: Column = { key: 'cluster', label: 'CLUSTER' };
+const CLUSTER_COL: Column = { key: 'clusterLabel', label: 'CLUSTER' };
 
 // Per-kind columns mirror the normalized row types in lib/eks-incluster.ts
 // (PodRow/DeploymentRow/ServiceRow + explorer kinds ReplicaSetRow{desired,ready},
@@ -141,15 +144,22 @@ const PAGE_SIZE = 100;
 const selCls = 'rounded-md border border-ink-200 bg-card px-2 py-1 font-mono text-[12px] text-ink-700';
 const btnCls = 'rounded-md border border-ink-200 px-2 py-0.5 text-[11px] text-ink-600 hover:bg-ink-100 disabled:opacity-50';
 
-interface ClusterInfo { name: string; access: 'connected' | 'entry-only' | 'no-entry' | 'unknown' }
+interface ClusterInfo { id?: string; name: string; access: 'connected' | 'entry-only' | 'no-entry' | 'unknown' }
 
 export default function EksExplorerPage() {
+  const [scope, , ready] = useActiveScope();
+  const query = scopeParams(scope);
+  return ready ? <ScopedEksExplorer key={query} scopeQuery={query} /> : null;
+}
+
+function ScopedEksExplorer({ scopeQuery }: { scopeQuery: string }) {
   const [clusters, setClusters] = useState<string[] | null>(null);
   const [cluster, setCluster] = useState<string>(ALL_CLUSTERS);
   const [kind, setKind] = useState<Kind>('pods');
   const [rows, setRows] = useState<Row[] | null>(null);
   const [err, setErr] = useState('');
   const [warn, setWarn] = useState('');
+  const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const [auto, setAuto] = useState(false);
@@ -165,12 +175,12 @@ export default function EksExplorerPage() {
   const openRow = useCallback((row: Row) => {
     setSelected(row);
     setDescribe(null);
+    const seq = ++describeSeq.current;
     const name = typeof row.name === 'string' ? row.name : '';
     if (!name || kind === 'events') return; // events는 행 자체가 내용
     const rowCluster = typeof row.cluster === 'string' ? row.cluster : cluster;
     if (!rowCluster || rowCluster === ALL_CLUSTERS) return;
     const nsQ = typeof row.namespace === 'string' && row.namespace ? `&namespace=${encodeURIComponent(row.namespace)}` : '';
-    const seq = ++describeSeq.current;
     fetch(`/api/eks/${encodeURIComponent(rowCluster)}/incluster/describe?kind=${kind}&name=${encodeURIComponent(name)}${nsQ}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d?.object && seq === describeSeq.current) setDescribe(d.object as Record<string, unknown>); })
@@ -179,16 +189,20 @@ export default function EksExplorerPage() {
 
   // Connected clusters only — everything else is not queryable via the BFF.
   useEffect(() => {
-    fetch('/api/eks?account=self')
+    let live = true;
+    fetch(`/api/eks?${scopeQuery}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => {
+        if (!live) return;
         const names = ((d.clusters ?? []) as ClusterInfo[])
           .filter((c) => c.access === 'connected')
-          .map((c) => c.name);
+          .map((c) => c.id ?? c.name);
+        setCollection(d);
         setClusters(names);
       })
-      .catch((e) => { setClusters([]); setErr(e instanceof Error ? e.message : String(e)); });
-  }, []);
+      .catch((e) => { if (live) { setClusters([]); setErr(e instanceof Error ? e.message : String(e)); } });
+    return () => { live = false; };
+  }, [scopeQuery]);
 
   // Monotonic load sequence — a late response from a superseded load (rapid
   // kind/cluster switch, overlapping auto-refresh) must not write stale rows.
@@ -216,14 +230,14 @@ export default function EksExplorerPage() {
       }));
       if (!fresh()) return;
       const failed = results.filter((x) => x.rows === null).map((x) => x.name);
-      const merged: Row[] = results.flatMap((x) => (x.rows ?? []).map((row) => ({ cluster: x.name, ...row })));
+      const merged: Row[] = results.flatMap((x) => (x.rows ?? []).map((row) => ({ ...row, cluster: x.name, clusterLabel: eksClusterLabel(x.name) })));
       // Events have no stable server order → newest first (v1 parity).
       const sorted = kind === 'events'
         ? merged.sort((a, b) => Number(b.lastSeenTs ?? 0) - Number(a.lastSeenTs ?? 0))
         : merged;
       setRows(sorted);
       setWarn(failed.length
-        ? `일부 kind는 클러스터 RBAC 갱신 필요 — 인증 재등록 스크립트 참조 (조회 실패: ${failed.join(', ')})`
+        ? `일부 kind는 클러스터 RBAC 갱신 필요 — 인증 재등록 스크립트 참조 (조회 실패: ${failed.map(eksClusterLabel).join(', ')})`
         : '');
       setCapturedAt(new Date().toISOString());
     } finally {
@@ -237,7 +251,10 @@ export default function EksExplorerPage() {
     setNs(ALL);
     setStatus(ALL);
     setSelected(null);
+    setDescribe(null);
+    ++describeSeq.current;
     void load();
+    return () => { ++loadSeqRef.current; ++describeSeq.current; };
   }, [load]);
 
   // 자동 새로고침 30s — silent (keeps the table on screen while re-fetching).
@@ -296,6 +313,7 @@ export default function EksExplorerPage() {
   );
 
   const hasFilter = query.trim() !== '' || ns !== ALL || status !== ALL;
+  const discoveryComplete = !collection.errors?.length && !collection.truncated;
 
   const detailTitle =
     typeof selected?.name === 'string' && selected.name
@@ -327,7 +345,7 @@ export default function EksExplorerPage() {
           >
             <option value={ALL_CLUSTERS}>전체 클러스터</option>
             {(clusters ?? []).map((c) => (
-              <option key={c} value={c}>{c}</option>
+              <option key={c} value={c}>{eksClusterLabel(c)}</option>
             ))}
           </select>
           <label className="flex items-center gap-1.5 text-ink-600">
@@ -378,6 +396,7 @@ export default function EksExplorerPage() {
         </div>
 
         {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
+        <EksCollectionNotice status={collection} />
         {warn && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
             {warn}
@@ -385,7 +404,9 @@ export default function EksExplorerPage() {
         )}
         {clusters && clusters.length === 0 && !err && (
           <div className="text-[13px] text-ink-400">
-            연결된 클러스터가 없습니다 — EKS 페이지에서 클러스터를 등록하세요.
+            {discoveryComplete
+              ? '연결된 클러스터가 없습니다 — EKS 페이지에서 클러스터를 등록하세요.'
+              : '일부 계정/리전 조회가 완료되지 않아 연결된 클러스터 유무를 확인할 수 없습니다 — 계정/리전 범위를 좁혀 다시 조회하세요.'}
           </div>
         )}
 
@@ -408,7 +429,7 @@ export default function EksExplorerPage() {
       <DetailPanel
         title={detailTitle}
         data={selected ? (describe ? { ...selected, ...describe } : selected) : null}
-        onClose={() => { setSelected(null); setDescribe(null); }}
+        onClose={() => { ++describeSeq.current; setSelected(null); setDescribe(null); }}
       />
     </>
   );

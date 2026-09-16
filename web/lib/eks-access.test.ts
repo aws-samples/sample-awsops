@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const stsSend = vi.fn();
 const eksSend = vi.fn();
+const targetSend = vi.fn();
+const assumedClient = vi.fn();
+const getAccount = vi.fn();
+vi.mock('./accounts', () => ({ getAccount: (...args: unknown[]) => getAccount(...args) }));
+vi.mock('./account-regions', () => ({ listScanScope: async () => [{ accountId: '222222222222', regions: ['*'] }] }));
+vi.mock('./aws-assume', () => ({ assumedClient: (...args: unknown[]) => assumedClient(...args) }));
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: class { send = (...a: unknown[]) => stsSend(...a); },
   GetCallerIdentityCommand: class { constructor(public input: unknown) {} },
@@ -9,11 +15,21 @@ vi.mock('@aws-sdk/client-sts', () => ({
 vi.mock('@aws-sdk/client-eks', () => ({
   EKSClient: class { send = (...a: unknown[]) => eksSend(...a); },
   DescribeAccessEntryCommand: class { constructor(public input: unknown) {} },
+  DescribeClusterCommand: class { constructor(public input: unknown) {} },
 }));
 
 describe('eks-access', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   beforeEach(async () => {
     stsSend.mockReset(); eksSend.mockReset();
+    targetSend.mockReset();
+    process.env.HOST_ACCOUNT_ID = '111111111111';
+    process.env.AWS_REGION = 'ap-northeast-2';
+    getAccount.mockReset().mockResolvedValue({
+      accountId: '222222222222', enabled: true, isHost: false, region: 'us-east-1',
+    });
+    assumedClient.mockReset().mockImplementation(async (id: string) => ({ send: id === 'self' ? eksSend : targetSend }));
     const { _resetForTests } = await import('./eks-access');
     _resetForTests();
   });
@@ -64,5 +80,78 @@ describe('eks-access', () => {
     expect(g.commands[1]).toContain('associate-access-policy');
     expect(g.commands[1]).toContain('AmazonEKSAdminViewPolicy');
     expect(g.note).toContain('make configure');
+  });
+
+  it('discovers the member Access Entry for the HOST task role, using the target region and raw name', async () => {
+    stsSend.mockResolvedValue({ Arn: 'arn:aws:sts::111111111111:assumed-role/awsops-v2-task/session' });
+    targetSend.mockResolvedValue({ accessEntry: { type: 'STANDARD' } });
+    const { hasAccessEntry } = await import('./eks-access');
+    expect(await hasAccessEntry('arn:aws:eks:us-east-1:222222222222:cluster/shared')).toBe(true);
+    expect(assumedClient).toHaveBeenCalledWith('222222222222', expect.anything(), { region: 'us-east-1' });
+    expect(targetSend.mock.calls[0][0].input).toEqual({
+      clusterName: 'shared', principalArn: 'arn:aws:iam::111111111111:role/awsops-v2-task',
+    });
+    expect(eksSend).not.toHaveBeenCalled();
+  });
+
+  it('directly describes a selected cluster without relying on a capped list', async () => {
+    targetSend.mockResolvedValue({ cluster: { name: 'shared', endpoint: 'https://member.eks.amazonaws.com' } });
+    const { describeEksCluster } = await import('./eks-access');
+    expect(await describeEksCluster('arn:aws:eks:us-east-1:222222222222:cluster/shared'))
+      .toMatchObject({ name: 'shared', endpoint: 'https://member.eks.amazonaws.com' });
+    expect(targetSend.mock.calls[0][0].input).toEqual({ name: 'shared' });
+    expect(eksSend).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing target cluster to 404', async () => {
+    targetSend.mockRejectedValue(Object.assign(new Error('missing'), { name: 'ResourceNotFoundException' }));
+    const { describeEksCluster } = await import('./eks-access');
+    await expect(describeEksCluster('arn:aws:eks:us-east-1:222222222222:cluster/shared')).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('propagates disabled accounts instead of returning unknown or falling back to host', async () => {
+    getAccount.mockResolvedValue({ accountId: '222222222222', enabled: false });
+    const { hasAccessEntry, onboardingGuide } = await import('./eks-access');
+    const id = 'arn:aws:eks:us-east-1:222222222222:cluster/shared';
+    await expect(hasAccessEntry(id)).rejects.toMatchObject({ status: 403 });
+    await expect(onboardingGuide(id)).rejects.toMatchObject({ status: 403 });
+    expect(targetSend).not.toHaveBeenCalled();
+    expect(eksSend).not.toHaveBeenCalled();
+  });
+
+  it('uses raw names and target regions in cross-account guides, retaining the host principal', async () => {
+    stsSend.mockResolvedValue({ Arn: 'arn:aws:iam::111111111111:role/awsops-v2-task' });
+    const { onboardingGuide } = await import('./eks-access');
+    const guide = await onboardingGuide('arn:aws:eks:us-east-1:222222222222:cluster/shared');
+    for (const command of guide.commands) {
+      expect(command).toContain('--cluster-name shared --region us-east-1');
+      expect(command).toContain('--principal-arn arn:aws:iam::111111111111:role/awsops-v2-task');
+      expect(command).not.toContain('--cluster-name arn:');
+    }
+    expect(guide.note).toContain('222222222222');
+  });
+
+  it.each([
+    ['222222222222', 'us-east-1'],
+    ['222222222222', 'ap-northeast-2'],
+    ['111111111111', 'us-east-1'],
+  ])('requires manual registration in target %s/%s even when host auto-registration is enabled', async (accountId, region) => {
+    vi.stubEnv('EKS_AUTO_REGISTER', 'true');
+    stsSend.mockResolvedValue({ Arn: 'arn:aws:iam::111111111111:role/awsops-v2-task' });
+    const { onboardingGuide } = await import('./eks-access');
+    const guide = await onboardingGuide(`arn:aws:eks:${region}:${accountId}:cluster/shared`);
+    expect(guide.note).toContain(`AWS account ${accountId}`);
+    expect(guide.note).toContain(region);
+    expect(guide.note).toContain('then click [조회 등록]');
+    expect(guide.note).not.toMatch(/EventBridge|1~2|자동|Terraform|make configure|onboard_eks_clusters/);
+  });
+
+  it('preserves auto-registration and Terraform guidance for the host deployment-region alias', async () => {
+    vi.stubEnv('EKS_AUTO_REGISTER', 'true');
+    stsSend.mockResolvedValue({ Arn: 'arn:aws:iam::111111111111:role/awsops-v2-task' });
+    const { onboardingGuide } = await import('./eks-access');
+    const guide = await onboardingGuide('arn:aws:eks:ap-northeast-2:111111111111:cluster/shared');
+    expect(guide.note).toContain('EventBridge');
+    expect(guide.note).toContain('make configure');
   });
 });

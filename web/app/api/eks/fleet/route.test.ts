@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
 const getAllowedClusters = vi.fn();
 const listInCluster = vi.fn();
+vi.mock('@/lib/accounts', () => ({ listAccounts: async () => [
+  { accountId: '111111111111', isHost: true, enabled: true },
+  { accountId: '222222222222', isHost: false, enabled: true },
+] }));
+vi.mock('@/lib/account-regions', () => ({
+  listAccountRegions: async () => [],
+  listScanScope: async () => [{ accountId: '222222222222', regions: ['*'] }],
+}));
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/eks-registry', () => ({ getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a) }));
 vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => listInCluster(...a) }));
@@ -13,6 +21,8 @@ const POD = { name: 'p1', namespace: 'default', status: 'Running', node: 'n1', r
 const EVENT = { kind: 'Pod', object: 'default/p1', reason: 'BackOff', message: 'm', count: 3, lastSeen: '5m', lastSeenTs: 1000 };
 
 beforeEach(() => {
+  vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+  vi.stubEnv('AWS_REGION', 'ap-northeast-2');
   verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset();
   verifyUser.mockResolvedValue({ sub: 'u' });
   getAllowedClusters.mockResolvedValue(new Set(['c1']));
@@ -76,10 +86,19 @@ describe('GET /api/eks/fleet', () => {
     expect(body.clusters[0].events).toHaveLength(25);
     expect(body.clusters[0].events[0].lastSeenTs).toBe(29);
   });
-  it('registry failure degrades to an empty fleet, not 500', async () => {
+  it('registry failure is reported instead of implying a successfully empty fleet', async () => {
     getAllowedClusters.mockRejectedValue(new Error('aurora down'));
     const res = await GET(req());
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     expect((await res.json()).clusters).toEqual([]);
+  });
+  it('only reads the selected member, preserving identity for a same-name host cluster', async () => {
+    const member = 'arn:aws:eks:ap-northeast-2:222222222222:cluster/c1';
+    getAllowedClusters.mockResolvedValue(new Set(['c1', member]));
+    listInCluster.mockResolvedValue([]);
+    const body = await (await GET(new Request('http://x/api/eks/fleet?account=222222222222'))).json();
+    expect(body.clusters).toHaveLength(1);
+    expect(body.clusters[0]).toMatchObject({ id: member, name: 'c1', accountId: '222222222222', region: 'ap-northeast-2' });
+    expect(listInCluster.mock.calls.every(call => call[0] === member)).toBe(true);
   });
 });

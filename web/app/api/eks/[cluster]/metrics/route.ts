@@ -1,6 +1,7 @@
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
 import { eksControlPlane, eksClusterCI, eksNodesCI } from '@/lib/metrics';
+import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,15 +13,21 @@ export async function GET(request: Request, { params }: { params: { cluster: str
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
-  if (!(await isAllowed(params.cluster))) {
-    return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
+  try {
+    const search = new URL(request.url).searchParams;
+    const context = await resolveEksCluster(params.cluster, search);
+    if (!(await isAllowed(context.id))) {
+      return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
+    }
+    const rangeRaw = Number(search.get('range') ?? 3600);
+    const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
+    const [controlPlane, cluster, nodes] = await Promise.all([
+      eksControlPlane(context.name, context.region, range, context.accountId),
+      eksClusterCI(context.name, context.region, range, context.accountId),
+      eksNodesCI(context.name, context.region, range, 100, context.accountId),
+    ]);
+    return Response.json({ range, controlPlane, cluster, nodes });
+  } catch (e) {
+    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
-  const rangeRaw = Number(new URL(request.url).searchParams.get('range') ?? 3600);
-  const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
-  const [controlPlane, cluster, nodes] = await Promise.all([
-    eksControlPlane(params.cluster, undefined, range),
-    eksClusterCI(params.cluster, undefined, range),
-    eksNodesCI(params.cluster, undefined, range),
-  ]);
-  return Response.json({ range, controlPlane, cluster, nodes });
 }

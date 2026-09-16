@@ -1,5 +1,5 @@
 import { verifyUser } from '@/lib/auth';
-import { getAllowedClusters } from '@/lib/eks-registry';
+import { getScopedEksRegistrations, eksErrorStatus, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
 import { listInCluster, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
 import { aggregateNodeResources, instanceTypeDistribution } from '@/lib/eks-resources';
 import { podStatusCounts, podsByNamespace } from '@/lib/eks-tab-stats';
@@ -16,8 +16,8 @@ export const dynamic = 'force-dynamic';
 const EVENTS_CAP = 25;
 const NS_CAP = 10;
 
-const empty = (name: string) => ({
-  name, reachable: false,
+const empty = (identity: ScopedEksRegistration) => ({
+  ...identity, reachable: false,
   counts: { nodes: 0, nodesReady: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
   nodeAgg: [], instanceTypes: [], podStatus: {}, podsByNamespace: [], events: [],
 });
@@ -26,9 +26,14 @@ export async function GET(request: Request) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
-  let names: string[] = [];
-  try { names = [...(await getAllowedClusters())]; } catch { return Response.json({ clusters: [] }); }
-  const clusters = await Promise.all(names.map(async (name) => {
+  let scope: Awaited<ReturnType<typeof getScopedEksRegistrations>>;
+  try { scope = await getScopedEksRegistrations(new URL(request.url).searchParams); }
+  catch (error) {
+    return Response.json({ clusters: [], status: 'error', message: 'EKS scope could not be loaded' },
+      { status: eksErrorStatus(error, 503) });
+  }
+  const clusters = await mapEksConcurrent(scope.clusters, async (identity) => {
+    const name = identity.id;
     try {
       const [nodes, pods, deployments, services, events] = await Promise.all([
         listInCluster(name, 'nodes') as Promise<NodeRow[]>,
@@ -38,7 +43,7 @@ export async function GET(request: Request) {
         (listInCluster(name, 'events') as Promise<EventRow[]>).catch(() => [] as EventRow[]), // events-only failure must not kill the cluster entry
       ]);
       return {
-        name,
+        ...identity,
         reachable: true,
         counts: {
           nodes: nodes.length,
@@ -59,8 +64,8 @@ export async function GET(request: Request) {
       // show WHY (v1 parity — it showed the raw error string); still degrades to reachable:false.
       // INVARIANT this leans on: eks-incluster's eksToken() swallows credential-path errors
       // internally, so no secret material can appear in this message — keep it that way.
-      return { ...empty(name), error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+      return { ...empty(identity), error: String(e instanceof Error ? e.message : e).slice(0, 300) };
     }
-  }));
-  return Response.json({ clusters });
+  });
+  return Response.json({ clusters, truncated: scope.truncated });
 }

@@ -30,6 +30,8 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
 
   useEffect(() => {
     let live = true;
+    setData(null);
+    setErr('');
     fetch(`/api/eks/${encodeURIComponent(cluster)}/metrics?range=${range}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (live) { setData(d); setErr(''); } })
@@ -39,6 +41,8 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
 
   useEffect(() => {
     let live = true;
+    setInNodes(null);
+    setAddons(null);
     const get = (kind: string) =>
       fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=${kind}`)
         .then((r) => (r.ok ? r.json() : null)).then((d) => d?.rows ?? null).catch(() => null);

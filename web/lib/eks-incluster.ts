@@ -3,8 +3,9 @@ import { SignatureV4 } from '@smithy/signature-v4';
 import { HttpRequest } from '@smithy/protocol-http';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { EKSClient, DescribeClusterCommand } from '@aws-sdk/client-eks';
 import { parseCpuCores, parseMem, type NodeRow, type PodRow } from './eks-resources';
+import { resolveEksCluster, EksScopeError } from './eks-context';
+import { describeEksCluster } from './eks-access';
 
 // Re-export the client-safe row types so existing importers keep resolving them here.
 export type { NodeRow, PodRow } from './eks-resources';
@@ -19,12 +20,14 @@ const K8S_REQUEST_TIMEOUT_MS = 4000;
  * `x-k8s-aws-id: <cluster>` header SIGNED, then `k8s-aws-v1.` + base64url(url).
  * The web task role's P1e Access Entry + AmazonEKSAdminViewPolicy authorize the read.
  */
-// Cached AssumeRole creds per roleArn (50-min TTL vs 1h default session).
+// Explicit saved Kubernetes-role credentials only. Discovery credentials never enter
+// this cache; changing ExternalId must force a fresh STS authorization check.
 const assumeCache = new Map<string, { creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }; at: number }>();
 const ASSUME_TTL_MS = 50 * 60 * 1000;
 
 async function assumeRoleCreds(roleArn: string, externalId?: string) {
-  const hit = assumeCache.get(roleArn);
+  const key = JSON.stringify([roleArn, externalId ?? '']);
+  const hit = assumeCache.get(key);
   if (hit && Date.now() - hit.at < ASSUME_TTL_MS) return hit.creds;
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
   const sts = new STSClient({ region: REGION });
@@ -35,26 +38,30 @@ async function assumeRoleCreds(roleArn: string, externalId?: string) {
   const c = r.Credentials;
   if (!c?.AccessKeyId || !c.SecretAccessKey) throw new Error('AssumeRole returned no credentials');
   const creds = { accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken };
-  assumeCache.set(roleArn, { creds, at: Date.now() });
+  assumeCache.set(key, { creds, at: Date.now() });
   return creds;
 }
 
 /** Bearer token for a cluster. Auth override from Aurora (v1 kubeconfig parity) wins:
  *  sa-token → stored ServiceAccount bearer as-is; assume-role → presigned STS token minted
  *  with the assumed role's creds; null → task-role presigned token (Access Entry required). */
-export async function eksToken(cluster: string, region: string): Promise<string> {
+export async function eksToken(cluster: string, region?: string): Promise<string> {
+  const context = await resolveEksCluster(cluster, region === undefined ? undefined : new URLSearchParams({ region }));
   try {
     const { getClusterAuth } = await import('./eks-registry');
-    const auth = await getClusterAuth(cluster);
+    const auth = await getClusterAuth(context.id);
     if (auth?.mode === 'sa-token') return auth.token;
     if (auth?.mode === 'assume-role') {
       const creds = await assumeRoleCreds(auth.roleArn, auth.externalId);
-      return presignEksToken(cluster, region, creds);
+      return await presignEksToken(context.name, context.region, creds);
     }
   } catch (e) {
-    console.warn(`[eks-incluster] auth override failed, task-role fallback: ${e instanceof Error ? e.message : e}`);
+    if (e instanceof EksScopeError) throw e;
+    const denied = e instanceof Error && (e.name === 'AccessDenied' || e.name === 'AccessDeniedException');
+    throw new EksScopeError('EKS saved authentication unavailable', denied ? 403 : 503);
   }
-  return presignEksToken(cluster, region, fromNodeProviderChain());
+  // A STANDARD cross-account Access Entry can trust the HOST task principal directly.
+  return presignEksToken(context.name, context.region, fromNodeProviderChain());
 }
 
 async function presignEksToken(
@@ -82,18 +89,17 @@ interface CacheEntry { conn: ClusterConn; at: number }
 const CONN_TTL_MS = 5 * 60 * 1000;
 const connCache = new Map<string, CacheEntry>();
 
-let eks: EKSClient | null = null;
-function eksClient(): EKSClient { if (!eks) eks = new EKSClient({ region: REGION }); return eks; }
-
 export async function clusterConn(cluster: string): Promise<ClusterConn> {
-  const cached = connCache.get(cluster);
+  // Revalidate the enabled target before honoring the five-minute endpoint cache.
+  const context = await resolveEksCluster(cluster);
+  const cached = connCache.get(context.id);
   if (cached && Date.now() - cached.at < CONN_TTL_MS) return cached.conn;
-  const { cluster: c } = await eksClient().send(new DescribeClusterCommand({ name: cluster }));
+  const c = await describeEksCluster(context.id);
   const endpoint = c?.endpoint;
   const caData = c?.certificateAuthority?.data;
-  if (!endpoint || !caData) throw new Error(`cluster ${cluster}: missing endpoint or certificateAuthority`);
+  if (!endpoint || !caData) throw new EksScopeError('EKS endpoint or certificate authority unavailable', 503);
   const conn: ClusterConn = { endpoint, caPem: Buffer.from(caData, 'base64') };
-  connCache.set(cluster, { conn, at: Date.now() });
+  connCache.set(context.id, { conn, at: Date.now() });
   return conn;
 }
 
@@ -563,7 +569,7 @@ function k8sGet(endpoint: string, path: string, token: string, caPem: Buffer): P
 /** GET an arbitrary in-cluster API path (e.g. an OpenCost service-proxy URL). Raw body string. */
 export async function k8sGetPath(cluster: string, path: string): Promise<string> {
   const { endpoint, caPem } = await clusterConn(cluster);
-  const token = await eksToken(cluster, REGION);
+  const token = await eksToken(cluster);
   return k8sGet(endpoint, path, token, caPem);
 }
 
@@ -595,7 +601,7 @@ export async function describeInCluster(
   if (spec.namespaced && !namespace) throw new Error('namespace required');
   const base = spec.namespaced ? spec.base.replace('{ns}', encodeURIComponent(namespace!)) : spec.base;
   const { endpoint, caPem } = await clusterConn(cluster);
-  const token = await eksToken(cluster, REGION);
+  const token = await eksToken(cluster);
   const body = await k8sGet(endpoint, `${base}/${encodeURIComponent(name)}`, token, caPem);
   const obj = JSON.parse(body) as Record<string, unknown>;
   const meta = obj.metadata as Record<string, unknown> | undefined;
@@ -611,7 +617,7 @@ export async function describeInCluster(
 
 export async function listInCluster(cluster: string, kind: Kind): Promise<InClusterRow[]> {
   const { endpoint, caPem } = await clusterConn(cluster);
-  const token = await eksToken(cluster, REGION);
+  const token = await eksToken(cluster);
   const body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
   const parsed = JSON.parse(body) as K8sList;
   const norm = NORMALIZERS[kind];
@@ -629,7 +635,7 @@ import type { K8sgptResultCrd } from '@/lib/k8sgpt-adapter';
  *  A 404 here typically means the operator/CRD is absent → the caller treats it as "no operator". */
 export async function listK8sgptResults(cluster: string): Promise<K8sgptResultCrd[]> {
   const { endpoint, caPem } = await clusterConn(cluster);   // reuse P3-D DescribeCluster+CA (cached)
-  const token = await eksToken(cluster, REGION);            // reuse P3-D presigned-STS bearer
+  const token = await eksToken(cluster);                    // reuse P3-D presigned-STS bearer
   const body = await k8sGet(endpoint, K8SGPT_RESULTS_PATH, token, caPem); // reuse P3-D GET-with-CA
   const parsed = JSON.parse(body) as { items?: K8sgptResultCrd[] };
   return parsed.items ?? [];

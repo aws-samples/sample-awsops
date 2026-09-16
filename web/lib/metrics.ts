@@ -709,6 +709,7 @@ async function fleetLatest(
   // understates a rate (the same trap the perSecond path above documents). Callers that opt
   // in must widen windowMs so a complete bucket exists (2× the period).
   completeBucketsOnly = false,
+  accountId?: string,
 ): Promise<Record<string, Record<string, number | null>>> {
   const out: Record<string, Record<string, number | null>> = {};
   if (!entities.length) return out;
@@ -716,7 +717,9 @@ async function fleetLatest(
   try {
     // CloudWatch metrics live in the resource's region — an off-region cluster (e.g. a DR MSK
     // in us-west-2) needs its own regional client; default stays the deployment region.
-    const client = region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
+    const client = accountId
+      ? await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION })
+      : region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
     const CHUNK = Math.max(1, Math.floor(480 / metrics.length));
     for (let c = 0; c < entities.length; c += CHUNK) {
       const chunk = entities.slice(c, c + CHUNK);
@@ -1143,13 +1146,13 @@ const EC2_DIAG_METRICS = [
   { key: 'ioBalance', name: 'EBSIOBalance%', stat: 'Average' },
   { key: 'byteBalance', name: 'EBSByteBalance%', stat: 'Average' },
 ] as const;
-export function ec2DiagFleetLive(instanceIds: string[], region?: string, rangeSec = 3600, completeBuckets = false) {
+export function ec2DiagFleetLive(instanceIds: string[], region?: string, rangeSec = 3600, completeBuckets = false, accountId?: string) {
   // completeBuckets (gap L228 rate fix): the node-ENI tiles derive per-second rates from these
   // Sums — a partial current-hour bucket ÷ 3600 understates ~12× at :05. The 2× window makes
   // a complete bucket always available; other consumers keep the latest (partial) bucket.
   return fleetLatest(
     'AWS/EC2', instanceIds, (id) => [{ Name: 'InstanceId', Value: id }], EC2_DIAG_METRICS,
-    region, rangeSec * 1000 * (completeBuckets ? 2 : 1), rangeSec, completeBuckets,
+    region, rangeSec * 1000 * (completeBuckets ? 2 : 1), rangeSec, completeBuckets, accountId,
   );
 }
 
@@ -1198,8 +1201,8 @@ const EKS_CONTROL_PLANE_METRICS = [
   { key: 'schedErrors', name: 'scheduler_schedule_attempts_ERROR', stat: 'Sum' },
   { key: 'schedUnschedulable', name: 'scheduler_schedule_attempts_UNSCHEDULABLE', stat: 'Sum' },
 ] as const;
-export async function eksControlPlane(cluster: string, region?: string, rangeSec = 3600): Promise<Record<string, number | null>> {
-  const out = await fleetLatest('AWS/EKS', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CONTROL_PLANE_METRICS, region, rangeSec * 1000, rangeSec);
+export async function eksControlPlane(cluster: string, region?: string, rangeSec = 3600, accountId?: string): Promise<Record<string, number | null>> {
+  const out = await fleetLatest('AWS/EKS', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CONTROL_PLANE_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   return out[cluster] ?? {};
 }
 
@@ -1217,8 +1220,8 @@ const EKS_CLUSTER_CI_METRICS = [
   { key: 'cpuOverLimit', name: 'pod_cpu_utilization_over_pod_limit', stat: 'Average' },
   { key: 'memOverLimit', name: 'pod_memory_utilization_over_pod_limit', stat: 'Average' },
 ] as const;
-export async function eksClusterCI(cluster: string, region?: string, rangeSec = 3600): Promise<Record<string, number | null>> {
-  const out = await fleetLatest('ContainerInsights', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CLUSTER_CI_METRICS, region, rangeSec * 1000, rangeSec);
+export async function eksClusterCI(cluster: string, region?: string, rangeSec = 3600, accountId?: string): Promise<Record<string, number | null>> {
+  const out = await fleetLatest('ContainerInsights', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CLUSTER_CI_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   return out[cluster] ?? {};
 }
 
@@ -1234,9 +1237,11 @@ const EKS_NODE_CI_METRICS = [
   { key: 'rxDropped', name: 'node_interface_network_rx_dropped', stat: 'Sum' },
   { key: 'txDropped', name: 'node_interface_network_tx_dropped', stat: 'Sum' },
 ] as const;
-export async function eksNodesCI(cluster: string, region?: string, rangeSec = 3600, cap = 100): Promise<Record<string, Record<string, number | null>>> {
+export async function eksNodesCI(cluster: string, region?: string, rangeSec = 3600, cap = 100, accountId?: string): Promise<Record<string, Record<string, number | null>>> {
   try {
-    const client = region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
+    const client = accountId
+      ? await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION })
+      : region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
     const lm = await client.send(new ListMetricsCommand({
       Namespace: 'ContainerInsights', MetricName: 'node_cpu_utilization',
       Dimensions: [{ Name: 'ClusterName', Value: cluster }],
@@ -1250,7 +1255,7 @@ export async function eksNodesCI(cluster: string, region?: string, rangeSec = 36
       }
     }
     const nodes = [...dimsByNode.keys()].slice(0, cap);
-    return await fleetLatest('ContainerInsights', nodes, (id) => dimsByNode.get(id) ?? [], EKS_NODE_CI_METRICS, region, rangeSec * 1000, rangeSec);
+    return await fleetLatest('ContainerInsights', nodes, (id) => dimsByNode.get(id) ?? [], EKS_NODE_CI_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   } catch {
     return {};
   }

@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, ListFilter } from 'lucide-react';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 
 // EKS overview cluster/VPC facet filter (gap L130, v1 parity): a collapsible panel with
 // multi-select cluster chips and VPC chips (each VPC chip shows its cluster count), an
@@ -11,6 +12,25 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 export const NO_VPC = '(no VPC)'; // clusters without a vpcId still get a facet bucket
 
 export interface EksFilterState { clusters: string[]; vpcs: string[] }
+
+export interface EksCollectionStatus {
+  errors?: { accountId: string; region: string; message: string }[];
+  truncated?: boolean;
+}
+
+/** Partial discovery must remain visible even when no connected clusters were returned. */
+export function EksCollectionNotice({ status }: { status: EksCollectionStatus }) {
+  const { tt } = useI18n();
+  if (!status.errors?.length && !status.truncated) return null;
+  return (
+    <div role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
+      {status.errors?.map((error, index) => (
+        <div key={`${error.accountId}/${error.region}/${index}`}>{error.accountId} / {error.region}: {error.message}</div>
+      ))}
+      {status.truncated && <div>{tt('일부 결과만 표시됩니다 — 계정/리전 범위를 좁혀 다시 조회하세요.')}</div>}
+    </div>
+  );
+}
 
 function Chip({ label, count, active, onToggle }: { label: string; count?: number; active: boolean; onToggle: () => void }) {
   return (
@@ -29,7 +49,7 @@ function Chip({ label, count, active, onToggle }: { label: string; count?: numbe
 }
 
 export default function EksFilterPanel({ clusters, value, onChange, filteredCount }: {
-  clusters: { name: string; vpcId?: string }[];
+  clusters: { id?: string; name: string; vpcId?: string }[];
   value: EksFilterState;
   onChange: (next: EksFilterState) => void;
   filteredCount: number;
@@ -85,10 +105,10 @@ export default function EksFilterPanel({ clusters, value, onChange, filteredCoun
             <span className="mr-1 text-[10.5px] uppercase tracking-[0.04em] text-ink-400">Cluster</span>
             {clusters.map((c) => (
               <Chip
-                key={c.name}
-                label={c.name}
-                active={value.clusters.includes(c.name)}
-                onToggle={() => onChange({ ...value, clusters: toggle(value.clusters, c.name) })}
+                key={c.id ?? c.name}
+                label={eksClusterLabel(c.id ?? c.name)}
+                active={value.clusters.includes(c.id ?? c.name)}
+                onToggle={() => onChange({ ...value, clusters: toggle(value.clusters, c.id ?? c.name) })}
               />
             ))}
           </div>

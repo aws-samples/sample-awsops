@@ -22,6 +22,8 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import EksDiagnosis from '@/components/eks/EksDiagnosis';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 
 type Row = Record<string, unknown>;
 type Tab = 'nodes' | 'pods' | 'deployments' | 'services' | 'events' | 'diagnosis' | 'cost';
@@ -119,8 +121,26 @@ const NAMESPACED: Set<Tab> = new Set(['pods', 'deployments', 'services']);
 export default function EksClusterPage() {
   const { tt } = useI18n();
   const params = useParams();
-  const cluster = String(params.cluster);
+  const [scope, , ready] = useActiveScope();
+  // Next14 client navigation can retain percent encoding. Decode exactly once;
+  // raw ARNs/names are unchanged, and invalid values must never reach child fetches.
+  let cluster: string | null = null;
+  try {
+    if (typeof params.cluster === 'string') {
+      const decoded = decodeURIComponent(params.cluster);
+      if (parseEksClusterId(decoded)) cluster = decoded;
+    }
+  } catch {
+    // Malformed escapes/UTF-8 are an invalid route, not a render-time exception.
+  }
+  if (!cluster) {
+    return <div role="alert" className="px-8 py-8 text-[13px] text-rose-600">{tt('유효하지 않은 EKS 클러스터 ID입니다.')}</div>;
+  }
+  return ready ? <ScopedEksCluster key={`${scopeParams(scope)}/${cluster}`} cluster={cluster} /> : null;
+}
 
+function ScopedEksCluster({ cluster }: { cluster: string }) {
+  const { tt } = useI18n();
   const [tab, setTab] = useState<Tab>('nodes');
   const [rows, setRows] = useState<Row[] | null>(null);
   const [nodeAgg, setNodeAgg] = useState<NodeResourceAgg[] | null>(null);
@@ -211,7 +231,8 @@ export default function EksClusterPage() {
     setQuery('');
     setNs('전체');
     setSelected(null);
-    load();
+    void load();
+    return () => { ++loadSeqRef.current; };
   }, [load]);
 
   const allRows = useMemo(() => rows ?? [], [rows]);
@@ -292,7 +313,7 @@ export default function EksClusterPage() {
   return (
     <>
       <PageHeader
-        title={cluster}
+        title={eksClusterLabel(cluster)}
         subtitle={
           isDiagnosis
             ? 'EKS · K8sGPT 진단 (read-only) · AI 가설은 검증 후 조치'
@@ -485,7 +506,7 @@ export default function EksClusterPage() {
             createdAt={selectedNode.createdAt}
           />
           <NodePodsSection pods={selectedNodePods} error={nodePodsErr} />
-          <NodeEniSection nodeName={selectedNode.name} />
+          <NodeEniSection nodeName={selectedNode.name} cluster={cluster} />
         </DetailPanel>
       ) : (
         <DetailPanel

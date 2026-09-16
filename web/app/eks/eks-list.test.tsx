@@ -22,7 +22,7 @@ const fleetCluster = {
   podsByNamespace: [{ namespace: 'default', count: 6 }, { namespace: 'kube-system', count: 4 }],
   events: [{ kind: 'Pod', object: 'default/p1', reason: 'BackOff', message: 'restarting', count: 3, lastSeen: '5m', lastSeenTs: 1000 }],
 };
-const FLEET = { 'GET /api/eks/fleet': () => ({ status: 200, body: { clusters: [fleetCluster] } }) };
+const FLEET = { 'GET /api/eks/fleet?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters: [fleetCluster] } }) };
 
 function mockFetch(handlers: Record<string, (init?: RequestInit) => { status: number; body: unknown }>) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -38,7 +38,7 @@ beforeEach(() => { vi.unstubAllGlobals(); });
 
 describe('EKS list page (ADR buildout)', () => {
   it('renders a connected cluster as a link, others as plain text', async () => {
-    mockFetch({ ...FLEET, 'GET /api/eks?account=self': () => ({ status: 200, body: { clusters, admin: false } }) });
+    mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
     // 'conn' now appears in several places (card name, node-resource subheading,
     // events Cluster column) — assert the card NAME specifically is a link.
@@ -54,8 +54,8 @@ describe('EKS list page (ADR buildout)', () => {
     let registered = false;
     let fleetCalls = 0;
     mockFetch({
-      'GET /api/eks/fleet': () => { fleetCalls += 1; return { status: 200, body: { clusters: [fleetCluster] } }; },
-      'GET /api/eks?account=self': () => ({
+      'GET /api/eks/fleet?regions=__all__&includeGlobal=1': () => { fleetCalls += 1; return { status: 200, body: { clusters: [fleetCluster] } }; },
+      'GET /api/eks?regions=__all__&includeGlobal=1': () => ({
         status: 200,
         body: { clusters: registered ? clusters.map((c) => (c.name === 'ready' ? { ...c, access: 'connected', runtime: true } : c)) : clusters, admin: true },
       }),
@@ -74,7 +74,7 @@ describe('EKS list page (ADR buildout)', () => {
   });
 
   it('the onboarding script is always reachable (v1 parity) — no POST needed', async () => {
-    mockFetch({ ...FLEET, 'GET /api/eks?account=self': () => ({ status: 200, body: { clusters, admin: false } }) });
+    mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
     await waitFor(() => expect(screen.getByText('cold')).toBeTruthy());
     fireEvent.click(screen.getAllByText('스크립트')[1]); // cold's script button (ready has one too)
@@ -84,7 +84,7 @@ describe('EKS list page (ADR buildout)', () => {
   });
 
   it('renders the fleet summary stats row', async () => {
-    mockFetch({ ...FLEET, 'GET /api/eks?account=self': () => ({ status: 200, body: { clusters, admin: false } }) });
+    mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
     await waitFor(() => expect(screen.getByText('Pods')).toBeTruthy());
     // Pods value (10) lives in the StatCard adjacent to the 'Pods' eyebrow.
@@ -94,7 +94,7 @@ describe('EKS list page (ADR buildout)', () => {
   });
 
   it('renders cluster cards with meta and live mini-counts', async () => {
-    mockFetch({ ...FLEET, 'GET /api/eks?account=self': () => ({ status: 200, body: { clusters, admin: false } }) });
+    mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
     await waitFor(() => expect(screen.getByRole('link', { name: 'conn' })).toBeTruthy());
     // meta grid surfaces the VPC id
@@ -104,7 +104,7 @@ describe('EKS list page (ADR buildout)', () => {
   });
 
   it('renders the node resource section and warning events for the reachable fleet', async () => {
-    mockFetch({ ...FLEET, 'GET /api/eks?account=self': () => ({ status: 200, body: { clusters, admin: false } }) });
+    mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
     // node resource bars
     await waitFor(() => expect(screen.getByText('n1')).toBeTruthy());

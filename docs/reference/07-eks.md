@@ -1,5 +1,51 @@
 # 07. EKS Onboarding — v2 Reference
 
+## Runtime cross-account registration
+
+The web EKS pages support read-only queries for enabled accounts already registered
+in `/accounts`. The Terraform onboarding sections below describe the original
+host-account provisioning path; its host-only limitation does not apply to manual
+runtime registration through the web API.
+
+Account registration and Kubernetes authorization are separate. EKS management API
+reads (`ListClusters`, `DescribeCluster`, and `DescribeAccessEntry`) use the selected
+account's registered read-only role. By default, the Kubernetes bearer token still
+uses the **web task role**, which must have its own `STANDARD` Access Entry and the
+required read policy on the target cluster. A `STANDARD` entry can identify that
+role from the host account. An explicitly saved AssumeRole authentication override
+instead uses that override's principal for the bearer token. Registering an account
+or a cluster in AWSops does not create IAM roles, Access Entries, access policy
+associations, or network connectivity.
+
+The cluster list, registration, and subsequent resource reads retain the selected
+account and region. Member-account and nondefault-region clusters use their EKS
+ARN as the API and registry identifier; the visible cluster name remains separate.
+The existing `eks_registrations.cluster_name` text key stores that qualified
+identifier, including any authentication override. Existing bare-name registrations
+and `ONBOARDED_EKS_CLUSTERS` entries retain their host/deployment-region meaning.
+This prevents a same-named host cluster from granting access to, overwriting, or
+unregistering a member cluster. It requires no schema migration.
+
+The registration endpoint accepts either a URL-encoded cluster ARN or a bare name
+with `?account=<TARGET_ACCOUNT_ID>&region=<REGION>`. It describes that exact target
+before checking its Access Entry, rather than searching the first page of the host
+account's cluster list. A `404 unknown cluster` therefore means the selected target
+was not found; an absent or unverifiable entry remains a separate registration
+failure. Invalid or disabled target accounts do not fall back to the host.
+
+The account/region selector refreshes EKS lists and fleet aggregates without a
+registration side effect. Queries wait for the persisted selection and discard
+responses from an earlier selection. Discovery is bounded to 12 account/region
+targets and 25 cluster descriptions per target. Wildcard all-region discovery
+includes configured and already-registered regions and explicitly reports that this
+is not exhaustive AWS-region discovery; select a specific region to query another
+region directly. Fleet selection includes all authorized registered regions under
+wildcard scope, with a separate 100-cluster cap. Registration-store failures return
+an unavailable result instead of a successful empty fleet. Partial failures and
+truncation are returned separately from a successful empty result. Kubernetes
+endpoints must still be reachable from the web task, and downstream collectors can
+report unsupported scopes separately.
+
 ## Purpose / 목적
 
 **EN** — Grant the v2 web task role read-only access to host-account EKS clusters so the dashboard can later query Kubernetes resources. Onboarding discovers clusters interactively, validates each cluster's auth mode, and provisions an EKS Access Entry + View policy through Terraform. Cluster connection info (endpoint/CA) is exposed as a Terraform output for P3 to consume.

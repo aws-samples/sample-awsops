@@ -1,6 +1,7 @@
 import { verifyUser } from '@/lib/auth';
 import { isClusterOnboarded } from '@/lib/opencost-allowlist';
 import { detectOpencostInstall } from '@/lib/opencost-status';
+import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,12 @@ function json(obj: unknown, status: number) {
 export async function GET(request: Request, { params }: { params: { cluster: string } }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
-  if (!(await isClusterOnboarded(params.cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
-  const status = await detectOpencostInstall(params.cluster);
-  return json(status, 200);
+  try {
+    const context = await resolveEksCluster(params.cluster, new URL(request.url).searchParams);
+    if (!(await isClusterOnboarded(context.id))) return json({ status: 'error', message: 'unknown cluster' }, 404);
+    const status = await detectOpencostInstall(context.id);
+    return json(status, 200);
+  } catch (e) {
+    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, e instanceof EksScopeError ? e.status : 500);
+  }
 }
