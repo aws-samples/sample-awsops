@@ -62,7 +62,8 @@ def verification_targets(value, host):
 
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False, readiness="", steampipe_fill_rate="", runtime_targets=""):
+                      rollout, *, advisory=False, readiness="", steampipe_fill_rate="", runtime_targets="",
+                      graph_rebuild_interval_mins=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
@@ -92,6 +93,15 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
         except ValueError:
             raise ValueError("CI_STEAMPIPE_AWS_FILL_RATE_DEV must be a finite number from 0.1 to 20") from None
         rate_override["steampipe_aws_fill_rate"] = rate
+    graph_override = {}
+    if graph_rebuild_interval_mins != "":
+        if not profile or scope != "full":
+            raise ValueError("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV requires full dev scope with CI_READONLY_RUNTIME_DEV=true")
+        if (not isinstance(graph_rebuild_interval_mins, str)
+                or not re.fullmatch(r"[0-9]{1,4}", graph_rebuild_interval_mins)
+                or int(graph_rebuild_interval_mins) > 1440):
+            raise ValueError("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV must be an integer string from 0 to 1440")
+        graph_override["graph_rebuild_interval_mins"] = int(graph_rebuild_interval_mins)
     if target not in DEV_TARGETS:
         if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
@@ -101,7 +111,7 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
     result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout,
-              **readiness_override, **rate_override}
+              **readiness_override, **rate_override, **graph_override}
     if profile or rollout:
         account_id(expected_account)
     if not profile:
@@ -454,6 +464,7 @@ def main():
                 rollout == "true", advisory=args.advisory == "true",
                 readiness=os.environ.get("CI_READINESS_ENABLED_DEV", ""),
                 steampipe_fill_rate=os.environ.get("CI_STEAMPIPE_AWS_FILL_RATE_DEV", ""),
+                graph_rebuild_interval_mins=os.environ.get("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV", ""),
                 runtime_targets=os.environ.get("CI_RUNTIME_TARGETS_DEV", ""),
             )
             with OVERRIDES.open("x") as output:

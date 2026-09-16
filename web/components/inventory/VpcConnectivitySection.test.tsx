@@ -13,6 +13,8 @@ vi.mock('@/lib/account-context', async (original) => ({
 vi.mock('@/components/shell/LanguageProvider', () => ({
   useI18n: () => ({ tt: (s: string) => s }),
 }));
+// Graph geometry is exercised in the pure builder and real-browser checks.
+vi.mock('@/components/topology/VpcConnectionGraph', () => ({ default: () => null }));
 
 const vpc = { resource_id: 'vpc-aaaa1111', account_id: 'self', region: 'ap-northeast-2',
   data: { name: 'source-vpc', cidr_block: '10.1.0.0/16' } };
@@ -41,6 +43,40 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('VpcConnectivitySection', () => {
+  it('opens the topology selector and queries an exact scoped deep link', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requests.push(url);
+      return reply(url.startsWith('/api/inventory') ? inventory : result);
+    }));
+    render(<VpcConnectivitySection topology initialVpc="self/ap-northeast-2/vpc-aaaa1111" />);
+    await screen.findByText('pcx-aaaa1111');
+    expect(requests).toHaveLength(2);
+    expect(new URL(requests[1], 'https://example.com').searchParams.get('vpcId')).toBe('vpc-aaaa1111');
+    expect(screen.queryByRole('button', { name: 'VPC 간 연결 보기' })).toBeNull();
+  });
+
+  it('never guesses an account or region for an ambiguous VPC link', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requests.push(url);
+      return reply({ ...inventory, rows: [vpc, { ...vpc, region: 'us-east-1' }] });
+    }));
+    render(<VpcConnectivitySection topology initialVpc="vpc-aaaa1111" />);
+    await screen.findByText('연결을 조회할 VPC를 계정·리전과 함께 선택하세요.');
+    expect(requests).toHaveLength(1);
+    expect(screen.queryByText('pcx-aaaa1111')).toBeNull();
+  });
+
+  it('shows unqueried state when opening the VPC graph without a source', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => { requests.push(url); return reply(inventory); }));
+    render(<VpcConnectivitySection topology />);
+    await screen.findByRole('combobox', { name: '기준 VPC' });
+    expect(screen.getByText('VPC를 선택한 뒤 연결 조회를 누르면 연결선이 표시됩니다.')).toBeTruthy();
+    expect(requests).toHaveLength(1);
+  });
+
   it.each(['222222222222', null])('explains incomplete shared/unknown ownership (%s) without claiming no connections', async ownerId => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.startsWith('/api/inventory') ? inventory : {
       ...result, source: { ...result.source, ownerId }, peerings: [], transitGateways: [],
@@ -73,7 +109,7 @@ describe('VpcConnectivitySection', () => {
     }));
     render(<VpcConnectivitySection />);
     expect(requests).toEqual([]);
-    expect(screen.getByRole('link', { name: '리소스 그래프 열기' }).getAttribute('href')).toBe('/topology/infra');
+    expect(screen.getByRole('link', { name: '리소스 그래프 열기' }).getAttribute('href')).toBe('/topology/infra?view=vpc');
     await open();
     await screen.findByText('pcx-aaaa1111');
     expect(screen.getByText('vpc-bbbb2222')).toBeTruthy();
