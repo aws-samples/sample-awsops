@@ -233,7 +233,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       CustomHeaders: { Items: [{ HeaderName: 'X-Origin', HeaderValue: 'FIXTURE_INVENTORY_SECRET' }] } }] };
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
       VALUES ('cloudfront','legacy-dist',$1::jsonb,$2)`, [JSON.stringify(data), recent]);
-    const response = await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } });
+    const response = await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: Promise.resolve({ type: 'cloudfront' }) });
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.consistency).toBe('statement-snapshot');
@@ -252,7 +252,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       VALUES ('cloudfront','broken',$1::jsonb,$2)`, [JSON.stringify(payload), recent]);
     for (const response of [
       await GET(new Request('http://localhost/api/graph?class=flow')),
-      await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } }),
+      await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: Promise.resolve({ type: 'cloudfront' }) }),
     ]) {
       expect(response.status).toBe(500);
       expect(await response.text()).not.toContain('FIXTURE_ROOT_SECRET');
