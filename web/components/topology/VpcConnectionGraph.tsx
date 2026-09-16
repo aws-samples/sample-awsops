@@ -18,6 +18,7 @@ const COLORS = {
 } as const;
 
 function FitMeasuredGraph({ matches, height }: { matches: Set<string>; height: number }) {
+  const fitted = useRef('');
   const viewportReady = useStore(state => state.width > 0 && state.height === height);
   const { fitView, viewportInitialized } = useReactFlow();
   // Observe the positions/dimensions actually committed to ReactFlow's store.
@@ -31,7 +32,10 @@ function FitMeasuredGraph({ matches, height }: { matches: Set<string>; height: n
   useEffect(() => {
     const measured: [string, number, number, number, number][] = JSON.parse(layoutKey);
     if (!viewportInitialized || !viewportReady || !measured.length || measured.some(n => !n[3] || !n[4])) return;
+    const key = `${layoutKey}\n${targetKey}`;
+    if (fitted.current === key) return;
     const frame = requestAnimationFrame(() => {
+      fitted.current = key;
       const ids: string[] = JSON.parse(targetKey);
       void fitView({ ...(ids.length ? { nodes: ids.map(id => ({ id })) } : {}), padding: 0.25, maxZoom: 1.1 });
     });
@@ -53,7 +57,6 @@ export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConn
     observer.observe(frame.current);
     return () => observer.disconnect();
   }, []);
-  const labels = { vpc: 'VPC', tgw: 'Transit Gateway', peering: 'VPC Peering', unknown: tt('식별 정보 미확인') };
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => new Set(model.nodes.filter(n =>
     needle && [n.label, n.kind, n.accountId, n.region, ...Object.values(n.details)]
@@ -61,7 +64,9 @@ export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConn
   const positions = useMemo(() => new Map(layoutFlow(model, {
     rankdir: vertical ? 'TB' : 'LR', nodeSize: () => ({ width: 244, height: 92 }),
   }).map(p => [p.id, p])), [model, vertical]);
-  const nodes: Node[] = model.nodes.map(n => ({
+  const nodes = useMemo<Node[]>(() => {
+    const labels = { vpc: 'VPC', tgw: 'Transit Gateway', peering: 'VPC Peering', unknown: tt('식별 정보 미확인') };
+    return model.nodes.map(n => ({
     id: n.id, position: positions.get(n.id) ?? { x: 0, y: 0 },
     sourcePosition: vertical ? Position.Bottom : Position.Right,
     targetPosition: vertical ? Position.Top : Position.Left,
@@ -79,15 +84,16 @@ export default function VpcConnectionGraph({ data, query = '' }: { data: VpcConn
       border: `${n.source || matches.has(n.id) ? 3 : 1}px solid ${COLORS[n.kind][2]}`,
       opacity: needle && matches.size && !matches.has(n.id) ? 0.4 : 1,
     },
-  }));
-  const edges: Edge[] = model.edges.map(e => ({
+    }));
+  }, [model, positions, vertical, dark, matches, needle, tt, data.source.ownerId]);
+  const edges = useMemo<Edge[]>(() => model.edges.map(e => ({
     id: e.id, source: e.source, target: e.target, type: 'smoothstep',
     label: e.kind === 'tgw' ? 'TGW' : 'Peering',
     // These undirected lines show configuration relationships, never a tested route.
     style: { stroke: e.kind === 'tgw' ? COLORS.tgw[2] : COLORS.peering[2], strokeWidth: 2 },
     labelStyle: { fontSize: 11, fill: dark ? '#F1F5F9' : '#16202A' },
     labelBgStyle: { fill: dark ? '#232C34' : '#FFFFFF', fillOpacity: 0.95 },
-  }));
+  })), [model, dark]);
   const selectedNode = selected?.kind === 'node' ? model.nodes.find(n => n.id === selected.id) : null;
   const selectedEdge = selected?.kind === 'edge' ? model.edges.find(e => e.id === selected.id) : null;
   const details = selectedNode ? selectedNode.details : selectedEdge ? {
