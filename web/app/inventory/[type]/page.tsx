@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import { Search, Package, Activity } from 'lucide-react';
 import DataTable from '@/components/ui/DataTable';
@@ -21,7 +21,7 @@ import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySectio
 import { ElasticacheNodeMetrics, OpensearchDomainMetrics, MskBrokerNodes, RdsInstanceMetrics, DynamoTableMetrics, AlbMetrics, NlbMetrics, S3Metrics, EbsMetrics, Ec2Metrics, LambdaMetrics, TgwSection } from '@/components/inventory/NodeMetricsTables';
 import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf, worstFirst } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, highlightIcon } from '@/lib/type-icons';
-import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { deriveRow, countFlags } from '@/lib/inventory-derived';
 
@@ -68,6 +68,16 @@ export default function InventoryTypePage() {
   const { tt } = useI18n();
   const params = useParams();
   const type = String(params.type);
+  const [scope, , ready] = useActiveScope();
+  if (!ready) return <div role="status" className="px-8 py-8 text-ink-400">{tt('불러오는 중…')}</div>;
+  const queryScope = scopeParams(scope);
+  return <ScopedInventoryTypePage key={`${type}:${queryScope}`} type={type} scope={scope} queryScope={queryScope} />;
+}
+
+function ScopedInventoryTypePage({ type, scope, queryScope }: {
+  type: string; scope: ScopeSelection; queryScope: string;
+}) {
+  const { tt } = useI18n();
   const spec = INVENTORY_TYPES[type];
 
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -86,7 +96,9 @@ export default function InventoryTypePage() {
   // Optional server-computed ranking chart (gap L138, e.g. EC2 CPU Top 15) — generic: any type
   // whose metrics route returns `bar` renders it with no page changes.
   const [metricBar, setMetricBar] = useState<{ title: string; data: { label: string; value: number }[] } | null>(null);
-  const [scope] = useActiveScope();
+  const rowsRequest = useRef<AbortController | null>(null);
+  const refreshRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { refreshRequest.current?.abort(); }, []);
 
   // Full-fleet aggregates past the 500-row cap (gaps L110 + L102): ONE scoped server-side
   // aggregation supplies the true total AND the state/dist/facet buckets (v1 ran its
@@ -108,29 +120,41 @@ export default function InventoryTypePage() {
     setTrueTotal(null);
     setAggs(null);
     if (!spec || !atCap) return;
-    let alive = true;
-    fetch(`/api/inventory/${type}?view=agg&${scopeParams(scope)}`)
+    const controller = new AbortController();
+    fetch(`/api/inventory/${type}?view=agg&${queryScope}`, { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!alive || !d) return;
+        if (controller.signal.aborted || !d) return;
         if (typeof d.total === 'number') setTrueTotal(d.total);
         setAggs(d);
       })
       .catch(() => {});
-    return () => { alive = false; };
-  }, [spec, type, scope, atCap, refreshTick]);
+    return () => { controller.abort(); };
+  }, [spec, type, queryScope, atCap, refreshTick]);
 
   const load = useCallback(async () => {
+    rowsRequest.current?.abort();
+    const controller = new AbortController();
+    rowsRequest.current = controller;
     try {
-      const r = await fetch(`/api/inventory/${type}?limit=${ROW_LIMIT}&${scopeParams(scope)}`);
+      const r = await fetch(`/api/inventory/${type}?limit=${ROW_LIMIT}&${queryScope}`, { signal: controller.signal });
       if (r.status === 403) throw new Error((await r.json().catch(() => null))?.message ?? tt('접근 권한이 없습니다'));
       if (!r.ok) throw new Error(String(r.status));
       const d = await r.json();
+      if (controller.signal.aborted) return false;
       setRows((d.rows as Row[]).map((x) => deriveRow(type, { resource_id: x.resource_id, region: x.region, ...(x.data as object) })));
       setCaptured(d.run?.finished_at ?? null);
-    } catch (e) { setErr(String(e)); }
-  }, [type, scope]);
-  useEffect(() => { if (spec) load(); }, [spec, load]);
+      setErr('');
+      return true;
+    } catch (e) {
+      if (!controller.signal.aborted) setErr(String(e));
+      return false;
+    }
+  }, [type, queryScope, tt]);
+  useEffect(() => {
+    if (spec) void load();
+    return () => { rowsRequest.current?.abort(); };
+  }, [spec, load]);
 
   // Supplementary metric cards — fetch separately so a failure never affects the table/donut.
   // Scoped the same as the main table: otherwise avg CPU/hourly-cost would stay fleet-wide
@@ -139,22 +163,30 @@ export default function InventoryTypePage() {
     setMetricCards([]);
     setMetricBar(null);
     if (!spec) return;
-    let alive = true;
-    fetch(`/api/inventory/${type}/metrics?${scopeParams(scope)}`)
+    const controller = new AbortController();
+    fetch(`/api/inventory/${type}/metrics?${queryScope}`, { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : { cards: [] }))
-      .then((d) => { if (alive) { setMetricCards(d.cards || []); setMetricBar(d.bar && Array.isArray(d.bar.data) && d.bar.data.length ? d.bar : null); } })
-      .catch(() => { if (alive) { setMetricCards([]); setMetricBar(null); } });
-    return () => { alive = false; };
-  }, [spec, type, scope]);
+      .then((d) => { if (!controller.signal.aborted) { setMetricCards(d.cards || []); setMetricBar(d.bar && Array.isArray(d.bar.data) && d.bar.data.length ? d.bar : null); } })
+      .catch(() => { if (!controller.signal.aborted) { setMetricCards([]); setMetricBar(null); } });
+    return () => { controller.abort(); };
+  }, [spec, type, queryScope, refreshTick]);
 
   const refresh = async () => {
+    if (refreshRequest.current) return;
+    const controller = new AbortController();
+    refreshRequest.current = controller;
     setBusy(true); setErr('');
     try {
-      const r = await fetch(`/api/inventory/${type}/refresh`, { method: 'POST' });
+      const r = await fetch(`/api/inventory/${type}/refresh`, { method: 'POST', signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (!r.ok) throw new Error(r.status === 401 ? tt('세션 만료 — 새로고침') : tt(`수집 실패 (${r.status})`));
-      await load();
-      setRefreshTick((c) => c + 1); // the true total must reflect the fresh sync too
-    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+      if (await load() && !controller.signal.aborted) setRefreshTick((c) => c + 1);
+    } catch (e) {
+      if (!controller.signal.aborted) setErr(String(e));
+    } finally {
+      if (refreshRequest.current === controller) refreshRequest.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
   };
 
   const allRows = useMemo(() => rows ?? [], [rows]);
@@ -418,15 +450,15 @@ export default function InventoryTypePage() {
     <>
       <PageHeader
         title={spec.label}
-        subtitle={`${spec.group} · ${totalCount.toLocaleString()}개 리소스`}
+        subtitle={rows === null ? undefined : `${spec.group} · ${totalCount.toLocaleString()}개 리소스`}
         right={<div className="flex flex-wrap items-center gap-2">
           {type === 'vpc' && <a href="#vpc-connectivity" className="rounded-md border border-ink-200 bg-card px-3 py-1.5 text-[12px] hover:bg-ink-50">{tt('VPC 간 연결')}</a>}
-          <RefreshButton busy={busy} onClick={refresh} capturedAt={captured} />
+          <RefreshButton busy={busy || (rows === null && !err)} onClick={refresh} capturedAt={captured} />
         </div>}
       />
       <div className="px-8 py-8 flex flex-col gap-6">
         {err && <div className="text-[13px] text-rose-600">{err}</div>}
-        {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+        {!rows && !err && <div role="status" className="text-ink-400">{tt('불러오는 중…')}</div>}
 
         {rows && (
           <>
