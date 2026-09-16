@@ -35,7 +35,7 @@ ENV PATH="/opt/python/bin:${PATH}"
 # The loopback pg8000 health probe does not read AWS_CONFIG_FILE.
 # No AWS access keys or session tokens are baked into the image.
 ENV AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
-RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.2 boto3==1.34.162
+RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.5 boto3==1.34.162
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
 # VERIFY_FULL on the boot generator's Aurora connection instead of CERT_NONE (M3 fix). Fetched at
 # build time — this image already requires network access at build (aws plugin from ghcr.io
