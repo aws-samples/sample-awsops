@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const eksSend = vi.fn();
+const eksConstruct = vi.fn();
 const ceSend = vi.fn();
 vi.mock('@aws-sdk/client-eks', () => ({
-  EKSClient: class { send = eksSend; },
+  EKSClient: class { constructor(config: unknown) { eksConstruct(config); } send = eksSend; },
   ListClustersCommand: class { constructor(public input: unknown) {} },
   DescribeClusterCommand: class { constructor(public input: { name: string }) {} },
 }));
@@ -35,6 +36,12 @@ describe('listClusters', () => {
     eksSend.mockResolvedValueOnce({ clusters: [] });
     const { listClusters } = await import('./aws');
     expect(await listClusters()).toEqual([]);
+  });
+  it('queries and reports the selected region instead of the deployment region', async () => {
+    eksSend.mockResolvedValueOnce({ clusters: [] });
+    const { listClusterInventory } = await import('./aws');
+    expect(await listClusterInventory(undefined, 'us-east-1')).toMatchObject({ region: 'us-east-1' });
+    expect(eksConstruct).toHaveBeenLastCalledWith(expect.objectContaining({ region: 'us-east-1' }));
   });
 });
 

@@ -8,17 +8,30 @@ import MetricTable, { type MetricCol } from '@/components/inventory/metrics/Metr
 import { HealthPill, RangePicker, num, meter, kbps } from '@/components/inventory/metrics/shared';
 import type { NodeRow } from '@/lib/eks-resources';
 import type { DeploymentRow, DaemonSetRow } from '@/lib/eks-incluster';
+import type { EksDiagnosisMetricsResponse, EksMetricStatus, EksMetricValues } from '@/lib/eks-metrics-types';
 
 // EKS 진단 계층 (owner 가이드): 컨트롤 플레인(AWS/EKS) → 노드(Container Insights + 인-클러스터
 // conditions) → 워크로드/스케줄링(CI 클러스터 롤업) → 애드온(kube-system ready/desired).
-// CI 미설치 클러스터는 CloudWatch 값이 null → '—' 정직 표시, 인-클러스터 신호는 그대로 동작.
+// Missing values stay '—'; per-source outcomes distinguish empty reads from failed reads.
 
-type M = Record<string, number | null>;
-interface DiagData { controlPlane: M; cluster: M; nodes: Record<string, M> }
+type M = EksMetricValues;
+type DiagData = Pick<EksDiagnosisMetricsResponse, 'controlPlane' | 'cluster' | 'nodes'>
+  & Partial<Pick<EksDiagnosisMetricsResponse, 'sources' | 'accountId' | 'region'>>;
 type NodeItem = { name: string; m: M; node?: NodeRow };
 type AddonItem = { kind: string; namespace: string; name: string; ready: number; desired: number };
 
 const GB = 1024 ** 3;
+const METRIC_SOURCES = [
+  ['controlPlane', 'AWS/EKS'], ['cluster', 'Container Insights · Cluster'], ['nodes', 'Container Insights · Nodes'],
+] as const;
+const QUALITY_TEXT: Record<EksMetricStatus, string> = {
+  ok: '조회 성공',
+  'no-data': '조회 성공 — 선택 기간에 데이터 없음',
+  denied: 'CloudWatch 조회 거부 — 선택한 계정/리전의 읽기 권한을 확인하세요',
+  unavailable: 'CloudWatch 조회 실패 — 자격 증명과 연결 상태를 확인하고 다시 시도하세요',
+  partial: '일부 데이터만 조회됨 — 조회 실패 또는 결과 상한을 확인하세요',
+};
+const UNKNOWN_QUALITY = '조회 상태 미확인 — 읽기 권한과 수집 상태를 확인하세요';
 
 export default function EksDiagnosis({ cluster }: { cluster: string }) {
   const { tt } = useI18n();
@@ -30,6 +43,8 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
 
   useEffect(() => {
     let live = true;
+    setData(null);
+    setErr('');
     fetch(`/api/eks/${encodeURIComponent(cluster)}/metrics?range=${range}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (live) { setData(d); setErr(''); } })
@@ -39,6 +54,8 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
 
   useEffect(() => {
     let live = true;
+    setInNodes(null);
+    setAddons(null);
     const get = (kind: string) =>
       fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=${kind}`)
         .then((r) => (r.ok ? r.json() : null)).then((d) => d?.rows ?? null).catch(() => null);
@@ -65,7 +82,7 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
 
   const cp = data?.controlPlane ?? {};
   const ci = data?.cluster ?? {};
-  const ciMissing = !!data && Object.values(ci).every((v) => v == null);
+  const ciNoData = data?.sources?.cluster.status === 'no-data' && data?.sources?.nodes.status === 'no-data';
 
   const nodeItems: NodeItem[] = useMemo(() => {
     const byName = new Map((inNodes ?? []).map((n) => [n.name, n]));
@@ -143,9 +160,20 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
       padded={false}
     >
       {err && <div className="px-3 py-2 text-[12px] text-rose-600">{tt('메트릭 조회 실패')}: {err}</div>}
-      {ciMissing && (
+      {data && (
+        <div role="status" className="mx-3 mt-2 rounded-md border border-ink-100 px-3 py-2 text-[12px] text-ink-500">
+          {data.accountId && data.region && <p className="mb-1 font-mono">Account: {data.accountId} · Region: {data.region}</p>}
+          {data.sources ? METRIC_SOURCES.map(([source, label]) => {
+            const status = data.sources?.[source]?.status;
+            return <p key={source} className={status === 'denied' || status === 'unavailable' ? 'text-rose-600' : status === 'partial' ? 'text-amber-700' : ''}>
+              {label}: {tt(status ? QUALITY_TEXT[status] ?? UNKNOWN_QUALITY : UNKNOWN_QUALITY)}
+            </p>;
+          }) : <p>{tt(UNKNOWN_QUALITY)}</p>}
+        </div>
+      )}
+      {ciNoData && (
         <div className="mx-3 mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-          {tt('Container Insights 미감지 — 노드/워크로드 CloudWatch 지표는 에이전트(CloudWatch Observability add-on) 설치 후 표시됩니다')}
+          {tt('Container Insights 조회는 성공했지만 선택 기간의 지표가 없습니다 — 수집 설정과 CloudWatch Observability add-on 설치 상태를 확인하세요')}
         </div>
       )}
 

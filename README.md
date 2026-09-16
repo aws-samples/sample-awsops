@@ -43,7 +43,7 @@ Stats: 41 pages, 99 API routes, 110 components (`web/`), 21 consolidated ADRs, T
 - **CIS compliance** -- Powerpipe benchmark runs with history (`compliance_runs`/`compliance_results`), flag-gated.
 - **Cost and FinOps** -- Cost Explorer, Bedrock usage/spend tracking, and 14-day resource-trend charts on the dashboard.
 - **Async diagnosis and jobs** -- long-running work (AI diagnosis reports via `POST /api/diagnosis`, compliance scans via `POST /api/compliance/run`) is enqueued to the same SQS + Step Functions + Lambda/Fargate worker tier as the generic `POST /api/jobs` route — the web tier never blocks on OOM-risk work. `/api/jobs` itself only accepts `noop`/`noop-heavy` job types (diagnosis/compliance compute `requestedBy` server-side and reject attacker-controlled report/run ids); `GET /api/jobs` and `GET /api/jobs/[id]` enforce owner-or-admin visibility.
-- **EKS onboarding** -- interactive `configure.mjs` flow grants the web task role an EKS Access Entry with view access, per cluster.
+- **EKS onboarding** -- `configure.mjs` provides host-account Terraform onboarding. Enabled member clusters register through the web UI using the registered member role for discovery and default Kubernetes authentication; that role needs its own Access Entry/read policy. Explicit SA-token and same-member AssumeRole authentication are supported.
 
 ### AI Gateways (Amazon Bedrock AgentCore)
 
@@ -283,7 +283,7 @@ Internet -> CloudFront (TLS, Lambda@Edge Cognito 인증) -> VPC Origin (https-on
 - **CIS 컴플라이언스** -- Powerpipe 벤치마크 실행 이력 관리(`compliance_runs`/`compliance_results`), flag-gated.
 - **비용 및 FinOps** -- Cost Explorer, Bedrock 사용량/비용 추적, 대시보드의 14일 리소스 트렌드 차트.
 - **비동기 진단·작업** -- AI 진단 리포트(`POST /api/diagnosis`)·컴플라이언스 스캔(`POST /api/compliance/run`) 등 장시간 작업은 범용 `POST /api/jobs`와 동일한 SQS + Step Functions + Lambda/Fargate 워커 계층에 큐잉 — 웹 티어는 OOM 위험 작업을 절대 직접 실행하지 않습니다. `/api/jobs` 자체는 `noop`/`noop-heavy` 타입만 허용하며(진단/컴플라이언스는 `requestedBy`를 서버 측에서 계산해 report/run id 위조를 막음), `GET /api/jobs`·`GET /api/jobs/[id]`는 소유자-또는-관리자 가시성을 강제합니다.
-- **EKS 온보딩** -- 대화형 `configure.mjs` 플로우로 클러스터별 웹 태스크 역할에 view 권한 EKS Access Entry를 부여합니다.
+- **EKS 온보딩** -- `configure.mjs`는 호스트 계정의 Terraform 온보딩을 제공합니다. 활성화된 멤버 클러스터는 웹 UI에서 등록하며 메타데이터 조회와 기본 Kubernetes 인증에 등록된 멤버 역할을 사용합니다. 해당 역할의 Access Entry·읽기 정책이 필요하고, 명시적 SA 토큰과 동일 멤버 계정의 AssumeRole 인증도 지원합니다.
 
 ### AI 게이트웨이 (Amazon Bedrock AgentCore)
 

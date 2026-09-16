@@ -1,4 +1,5 @@
 'use client';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { StackBar } from './NodeCapacityCards';
@@ -60,7 +61,7 @@ export default function NodeCapacityList({ rows, requestsPending = false }: { ro
           <div key={`${n.cluster}|${n.name}`} className="grid grid-cols-1 gap-2 px-3 py-2.5 md:grid-cols-[minmax(180px,1.2fr)_1fr_1fr] md:items-center md:gap-4">
             <div className="min-w-0">
               <div className="truncate font-mono text-[11.5px] text-ink-700" title={n.name}>{n.name}</div>
-              <div className="truncate font-mono text-[10.5px] text-ink-400">{n.cluster}</div>
+              <div className="truncate font-mono text-[10.5px] text-ink-400">{eksClusterLabel(n.cluster)}</div>
             </div>
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">

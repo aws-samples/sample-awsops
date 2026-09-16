@@ -1,94 +1,73 @@
 ---
 sidebar_position: 5
 title: EKS Overview
-description: EKS 集群概况、节点资源、Pod 状态摘要
+description: 指定范围的 EKS 集群注册、节点资源和 Pod 状态
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-用于一站式查看 EKS 集群整体概况、节点资源和 Pod 状态的页面。
+查看所选账户和区域范围内的 EKS 集群与 Kubernetes 资源。AWSops 以只读方式查询云端和集群资源；注册仅保存应用设置（ADR-005）。
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 
 ## 主要功能
 
-### 集群筛选
-- 按 EKS 集群筛选
-- 按 VPC 筛选
-- 支持多选
+### 账户、区域和集群筛选
 
-### EKS 集群卡片
-以卡片形式显示每个集群的核心信息：
-- Cluster Name、Status (ACTIVE)
-- Kubernetes Version、VPC ID、Platform Version、Region
-- **Access Entry 状态徽章**：K8s Connected（绿色）/ 未注册（红色）
-- **集群注册按钮（管理员）**：以三种模式注册未连接的集群 — Access Entry 查询注册（确认已存在的 Access Entry 后注册 — 运行时绝不新建 Access Entry [ADR-005]；不存在时返回 409 并给出 Terraform/CLI 上线脚本）、ServiceAccount 令牌（在集群内创建只读 SA 并粘贴其令牌 — 无需 AWS 侧配置）、AssumeRole（通过已在该集群持有 Access Entry 的 IAM 角色进行 K8s 认证 — 角色 ARN + external ID；角色名必须为 `AWSopsReadOnlyRole`[web 任务的 sts:AssumeRole 权限固定为该名称]，且集群本身必须属于宿主账户，注册路由会按宿主账户的集群列表校验）。Terraform 路径为 `make configure` 的 EKS 多选 → `eks.tf` 为 web 任务角色授予 Access Entry + AmazonEKSAdminViewPolicy
-- **点击筛选**：点击集群卡片后仅筛选该集群（青色边框）
+在顶部筛选器中选择账户和区域，再按集群或 VPC 缩小范围。支持多选。更改选项会刷新列表和汇总，不会注册其他集群。包含账户和区域的标识可区分同名集群。
 
-:::tip 集群访问权限
-当已注册集群但无法从任何集群读取实时数据时，页面顶部会显示无法访问横幅，包含原始失败原因和本指南的链接。未连接的集群无法查询数据 — 请通过集群注册按钮（查询注册 / SA 令牌 / AssumeRole）或 Terraform 上线（`make configure` → `eks.tf`）进行连接。若查询注册返回 409，将屏幕上显示的上线脚本交给集群所有者即可。
+:::info 观测范围
+数量和图表描述的是所选范围内成功观测到的资源。页面会明确提示部分失败和查询上限，这些情况不能证明未观测到的资源不存在。目前，全区域发现覆盖已配置的区域以及已注册集群所在的区域；请缩小选择范围以查询特定区域。
 :::
 
-### 统计卡片（点击跳转）
-点击每个卡片可跳转到详情页面：
-- **Nodes** → 节点详情（`/eks/nodes`）
-- **Pods** → Pod 详情（`/eks/pods`）
-- **Deployments** → 部署详情（`/eks/deployments`）
-- **Services** → 服务详情（`/eks/services`）
+### 集群卡片与连接状态
 
-### 节点卡片网格
-以可视化方式显示每个节点的资源使用量：
-- 节点名称、Pod 数量、状态（Ready/NotReady）
-- **CPU 使用量条**：Pod 请求量 / 总容量（百分比）
-- **Memory 使用量条**：Pod 请求量 / 总容量（百分比）
-- 80% 以上：红色，50% 以上：橙色，其他：青色/紫色
+卡片显示 Cluster Name、Status、Kubernetes Version、Account、Region、VPC ID 和 Platform Version。Connected **徽章**表示已配置默认 Entry 路径或已保存认证设置；它不会验证已保存的凭证，也不保证可达性。数量会在实时读取成功后显示。Connected **KPI** 统计显示范围内实时读取成功的集群数。
 
-### 节点详情视图
-点击节点卡片可跳转到详情页面：
-- **CPU/Memory/Pod Info 卡片**：Capacity、Allocatable、Requested、Available
-- **ENI 列表**：各网络接口的 IP 分配 + 实例网络流量磁贴（In/Out 字节·数据包 — 已完结的上一小时桶的累计与平均速率；CloudWatch 没有按 ENI 的维度，因此为实例级数值）
-- **Pods 表格**：在该节点上运行的 Pod 列表
+### 跨账户查询注册
 
-### 可视化图表
+注册和取消注册仅限管理员操作。
 
-- **Pod Status Distribution**：Running、Pending、Failed、Succeeded 分布（饼图）
-- **Pods per Namespace**：各命名空间的 Pod 数量（柱状图）
+1. 在 **Accounts** 中注册并启用目标账户，配置其区域，并在信任策略要求时提供 external ID。通常使用的目标角色是 `AWSopsReadOnlyRole`；该角色必须可由 web 任务承担，并获准读取 EKS 元数据。
+2. 选择目标账户和区域。对于**成员账户**，默认元数据发现和 Kubernetes 令牌签名都使用该账户已注册的只读角色。宿主账户的集群仍以 web 任务角色作为默认身份。AWSops 不会向成员集群发送宿主任务角色的 bearer 令牌。
+3. 集群所有者为相应角色准备 `STANDARD` Access Entry。共享成员读取角色应使用 **`AmazonEKSViewPolicy`，并为组 `awsops:eks-readonly` 绑定最小节点读取 RBAC**（仅对 `nodes` 的 `get/list/watch`）。不要给该共享角色附加可读取 Secrets 的 `AmazonEKSAdminViewPolicy`。添加 View 不会撤销已有 AdminView 关联，所有者必须移除原关联。宿主集群继续使用既有 Terraform 权限配置。
+4. 选择**查询注册**。应用通过 `DescribeCluster` 直接验证所选集群，并检查对应的现有 Access Entry。它不会搜索宿主集群列表，也不会创建 AWS 资源。注册和详情导航会保留账户与区域信息。
 
-### Warning Events 表格
-实时显示 Kubernetes Warning 事件：
-- Kind、Object、Reason、Message、Count、Last Seen
+**可选读取权限：** View 和节点绑定不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
 
-## 使用方法
+**诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
 
-1. 在侧边栏中点击 **Compute > EKS**
-2. 点击集群卡片筛选特定集群
-3. 点击统计卡片跳转到 Pods/Nodes/Deployments/Services 详情页面
-4. 在节点卡片中识别资源使用率较高的节点
-5. 点击节点查看详细资源和 Pod 列表
-6. 通过 Warning Events 监控问题事件
+页面显示的接入命令由所有者执行，应用不会执行。`make configure` → `eks.tf` 仍是宿主账户的 Terraform 资源配置路径。成员账户或非默认区域的集群，需要在所有者准备好访问权限后手动查询注册；宿主 EventBridge 观察器并不是自动注册成员集群的机制。
 
-## 使用技巧
+### 显式认证选项
 
-:::tip 节点资源监控
-如果节点卡片的 CPU/Memory 条显示为红色（80% 以上），则存在资源不足的风险。请考虑添加节点或重新调度 Pod。
-:::
+- **ServiceAccount 令牌**：使用已在目标集群内授权的只读 SA 身份。其 Kubernetes 认证不需要 IAM Access Entry，但仍需要目标账户元数据发现权限和 API 服务器连通性。
+- **AssumeRole**：使用 web 任务可以承担且目标 Kubernetes API 已授权的角色。对于成员集群，角色 ARN 必须属于同一成员账户；宿主或其他账户的角色会被拒绝。按需提供 external ID。默认部署授权承担 `AWSopsReadOnlyRole`；其他角色需要运维人员单独授权。
 
-:::tip ENI IP 使用量
-在节点详情视图中，如果某个 ENI 的 IP Slots Used 接近 15/15，新 Pod 的调度可能会失败。
-:::
+### 注册错误
 
-:::info AI 分析
-在 AI Assistant 中可以通过"EKS 集群状态"、"各节点 CPU 使用量"、"帮我分析 Warning 事件"等进行分析。
+`400` 表示 ID、选择器或认证正文无效，`413` 表示正文过大。`404` 表示找不到所选集群。`409` 表示所需的 Access Entry 不存在或无法验证。`403` 可能表示账户、区域或角色身份不被允许。`503` 表示发现服务或存储不可用。这些错误并不表示查询成功且集群列表为空。请核对显示的目标，并将其接入指南交给集群所有者。
+
+### 实时资源与详情页面
+
+- **Nodes / Pods / Deployments / Services** 分别打开对应范围的资源页面。
+- 节点面板显示 capacity、allocatable 资源、请求量和 Pod 信息；请求比率表示预留量，而非实测 CPU/内存使用率。
+- ENI 详情使用限定范围的 EC2 清单，并在可用时使用实例级 CloudWatch 流量数据。
+- Pod 状态、命名空间、实例类型图表和 Warning Events 汇总观测数据。不可达集群仍会明确显示。
+- 点击已连接卡片的标题可打开集群详情。OpenCost 状态、配置和资源请求会保留集群标识。
+
+:::tip 访问与数据可用性
+仅有已配置徽章不能证明令牌、只读策略或网络路径有效。请检查实际实时读取结果和失败提示。成员集群的默认模式应向已注册的成员角色授予访问权限，不要通过扩大宿主角色的集群访问权限来修复失败。
 :::
 
 ## 相关页面
 
-- [EKS 认证设置](./eks-auth) - Access Entry / aws-auth 认证指南
-- [EKS Explorer](./eks-explorer) - K9s 风格终端 UI
-- [EKS Pods](./eks-pods) - Pod 详细列表
-- [EKS Nodes](./eks-nodes) - 节点详细列表
-- [EKS Deployments](./eks-deployments) - 部署列表
-- [EKS Services](./eks-services) - 服务列表
-- [EKS Container Cost](./eks-container-cost) - Pod 成本分析（OpenCost）
+- [EKS 认证归档与现行指南入口](./eks-auth)
+- [EKS Explorer](./eks-explorer)
+- [EKS Nodes](./eks-nodes)
+- [EKS Pods](./eks-pods)
+- [EKS Deployments](./eks-deployments)
+- [EKS Services](./eks-services)
+- [EKS Container Cost](./eks-container-cost)

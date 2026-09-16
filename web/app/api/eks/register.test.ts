@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EksScopeError } from '@/lib/eks-context';
 
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
@@ -9,6 +10,7 @@ const isEnvCluster = vi.fn();
 const registerCluster = vi.fn();
 const unregisterCluster = vi.fn();
 const hasAccessEntry = vi.fn();
+const describeEksCluster = vi.fn();
 const onboardingGuide = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
@@ -27,6 +29,7 @@ vi.mock('@/lib/eks-registry', () => ({
   getAuthModes: async () => new Map(),
 }));
 vi.mock('@/lib/eks-access', () => ({
+  describeEksCluster: (...a: unknown[]) => describeEksCluster(...a),
   hasAccessEntry: (...a: unknown[]) => hasAccessEntry(...a),
   onboardingGuide: (...a: unknown[]) => onboardingGuide(...a),
 }));
@@ -61,7 +64,10 @@ describe('GET /api/eks access synthesis', () => {
 });
 
 describe('POST /api/eks/[cluster]/register', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    describeEksCluster.mockReset().mockResolvedValue({ name: 'c1' });
+  });
 
   it('401 unauthenticated', async () => {
     verifyUser.mockResolvedValue(null);
@@ -79,7 +85,7 @@ describe('POST /api/eks/[cluster]/register', () => {
   it('404 for a cluster that does not exist', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
-    listClusters.mockResolvedValue([]);
+    describeEksCluster.mockRejectedValue(new EksScopeError('Unknown EKS cluster', 404));
     const { POST } = await import('./[cluster]/register/route');
     expect((await POST(req(), P)).status).toBe(404);
   });

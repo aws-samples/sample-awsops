@@ -138,7 +138,7 @@ The ADR-039 multi-agent platform introduced frontier agents (DevOps/Security/Fin
 
 **It provides read-only diagnosis only** (ADR-035, DOWNGRADED 2026-06-11).
 
-The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) retains only **read-only Result-CRD integration (GET-only)**; the wiring that led to automated action (H3a → 032/034/029 proposals) was dropped. EKS queries are all read-only, based on a task-role Access Entry + View policy.
+The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) retains only **read-only Result-CRD integration (GET-only)**; the wiring that led to automated action (H3a → 032/034/029 proposals) was dropped. EKS queries are all read-only. The default identity is the web task role for host clusters or the registered member read role, normally `AWSopsReadOnlyRole`, for member clusters; the applicable role needs an Access Entry/read policy. Member metadata discovery and default Kubernetes token signing both use member-role credentials, and an old host-role entry alone is insufficient. Saved SA tokens or explicit AssumeRole authentication use separately authorized Kubernetes identities; member AssumeRole overrides are limited to that same member account. SA authentication needs no IAM Access Entry but still needs metadata discovery permissions. None of these modes enables automatic remediation.
 
 ## Operations
 

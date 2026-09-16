@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { act, cleanup, renderHook } from '@testing-library/react';
 import {
   accountParam,
   getActiveAccount,
@@ -9,9 +10,20 @@ import {
   getActiveScope,
   setActiveScope,
   scopeParams,
+  useActiveAccount,
 } from './account-context';
 
 beforeEach(() => { window.localStorage.clear(); });
+afterEach(cleanup);
+
+it('updates legacy hook readers when the structured scope picker changes accounts', () => {
+  const { result } = renderHook(() => useActiveAccount());
+  expect(result.current[0]).toBe('self');
+  act(() => setActiveScope({ accounts: ['210987654321'], regions: ['us-east-1'], includeGlobal: false }));
+  expect(result.current[0]).toBe('210987654321');
+  act(() => setActiveScope({ accounts: ALL_ACCOUNTS, regions: ALL_REGIONS, includeGlobal: true }));
+  expect(result.current[0]).toBe(ALL_ACCOUNTS);
+});
 
 describe('accountParam', () => {
   it('host/self/empty → empty (default creds)', () => {

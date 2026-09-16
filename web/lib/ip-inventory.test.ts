@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const ec2Send = vi.fn();
 vi.mock('@aws-sdk/client-ec2', () => ({
@@ -20,6 +20,8 @@ vi.mock('./eks-incluster', () => ({
 }));
 
 beforeEach(async () => {
+  vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+  vi.stubEnv('AWS_REGION', 'ap-northeast-2');
   ec2Send.mockReset();
   mockGetAllowedClusters.mockReset();
   mockGetClusterAuth.mockReset();
@@ -27,6 +29,7 @@ beforeEach(async () => {
   const { _resetIpCacheForTests } = await import('./ip-inventory');
   _resetIpCacheForTests();
 });
+afterEach(() => vi.unstubAllEnvs());
 
 type Cmd = { constructor: { name: string }; input: Record<string, unknown> };
 
@@ -176,5 +179,22 @@ describe('podIpMap', () => {
     const { podIpMap } = await import('./ip-inventory');
     expect(await podIpMap()).toEqual({});
     expect(mockGetClusterAuth).not.toHaveBeenCalled();
+  });
+
+  it('excludes member, nondefault-region and malformed registrations before host IP enrichment', async () => {
+    const region = process.env.AWS_REGION || 'ap-northeast-2';
+    mockGetAllowedClusters.mockResolvedValue(new Set([
+      `arn:aws:eks:${region}:222222222222:cluster/shared`,
+      'arn:aws:eks:us-west-2:111111111111:cluster/shared',
+      'arn:invalid',
+      'shared',
+    ]));
+    mockGetClusterAuth.mockResolvedValue({ mode: 'sa-token', token: 'test' });
+    mockListInCluster.mockImplementation(async cluster => [pod(cluster === 'shared' ? 'host-pod' : 'wrong-pod', 'default', '10.0.5.1')]);
+    const { podIpMap } = await import('./ip-inventory');
+    expect(await podIpMap()).toEqual({ '10.0.5.1': { cluster: 'shared', namespace: 'default', name: 'host-pod' } });
+    expect(mockGetClusterAuth).toHaveBeenCalledTimes(1);
+    expect(mockListInCluster).toHaveBeenCalledTimes(1);
+    expect(mockListInCluster).toHaveBeenCalledWith('shared', 'pods');
   });
 });

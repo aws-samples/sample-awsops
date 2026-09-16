@@ -19,7 +19,7 @@ const POD = (over: Record<string, unknown> = {}) => ({
 function setFetch(pods: Record<string, unknown[] | null>) {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const u = String(url);
-    if (u === '/api/eks?account=self') {
+    if (u === '/api/eks?regions=__all__&includeGlobal=1') {
       return { ok: true, status: 200, json: async () => ({ clusters: Object.keys(pods).map((name) => ({ name, access: 'connected' })) }) };
     }
     const m = u.match(/\/api\/eks\/([^/]+)\/incluster\?kind=(\w+)/);

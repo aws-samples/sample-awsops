@@ -8,7 +8,7 @@ description: AWSops EC2 インスタンスから EKS クラスターにアクセ
 
 
 :::caution v1 アーカイブ文書 — v2 には適用されません
-このページは v1（EC2 インスタンス + Steampipe）アーキテクチャの認証手順を説明しています。v2 は ECS Fargate ベースで、EKS 認証は `terraform/foundation/eks.tf` が **web タスクロールに Access Entry + `AmazonEKSAdminViewPolicy`** を付与する方式に置き換えられています。このページのコマンド（SSH、`AmazonEKSClusterAdminPolicy`、`data/config.json` など）を v2 環境に適用しないでください。
+このページは v1（EC2 + Steampipe）の認証手順を保管したものです。v2 は ECS Fargate ベースで、ホストの Terraform オンボーディングには `terraform/foundation/eks.tf` を使います。メンバーのメタデータ取得と既定の Kubernetes 認証には、登録済みメンバー読み取りロール（通常 `AWSopsReadOnlyRole`）と、その Access Entry・読み取りポリシーが必要です。明示的なメンバー AssumeRole も同じメンバーアカウントのロールに限られます。[現在の EKS 接続ガイド](./eks)に従い、このアーカイブの SSH、`AmazonEKSClusterAdminPolicy`、`data/config.json` の手順を v2 に適用しないでください。
 :::
 
 AWSops の Kubernetes ダッシュボード（`/k8s/*`）は、Steampipe の `kubernetes` プラグインを通じて EKS クラスターのデータを照会します。そのためには、**AWSops EC2 インスタンスロールが EKS クラスターに認証**されている必要があります。

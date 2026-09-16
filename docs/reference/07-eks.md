@@ -1,76 +1,201 @@
 # 07. EKS Onboarding — v2 Reference
 
-## Purpose / 목적
+## Runtime cross-account registration
 
-**EN** — Grant the v2 web task role read-only access to host-account EKS clusters so the dashboard can later query Kubernetes resources. Onboarding discovers clusters interactively, validates each cluster's auth mode, and provisions an EKS Access Entry + View policy through Terraform. Cluster connection info (endpoint/CA) is exposed as a Terraform output for P3 to consume.
+The web EKS pages support read-only queries for enabled accounts already registered
+in `/accounts`. The Terraform onboarding sections below describe the original
+host-account provisioning path; its host-only limitation does not apply to manual
+runtime registration through the web API.
 
-**KO** — v2 웹 태스크 역할에 호스트 계정 EKS 클러스터에 대한 읽기 전용 접근을 부여하여, 대시보드가 추후 Kubernetes 리소스를 조회할 수 있게 한다. 온보딩은 클러스터를 대화식으로 탐색하고 각 클러스터의 인증 모드를 검증한 뒤, Terraform으로 EKS Access Entry + View 정책을 프로비저닝한다. 클러스터 연결 정보(endpoint/CA)는 P3가 소비하도록 Terraform output으로 노출된다.
+Account registration and Kubernetes authorization are separate. EKS management API
+reads (`ListClusters`, `DescribeCluster`, and `DescribeAccessEntry`) use the selected
+account's registered read-only role. For member clusters, the default Kubernetes
+bearer also uses that **registered member role's temporary credentials**. Its
+`STANDARD` Access Entry and required read policy must exist on the member cluster.
+Host clusters retain the web task role as their default identity. Host task-role
+bearers are not sent to member endpoints: EKS tokens bind the cluster name, which
+does not by itself distinguish same-named clusters in different accounts.
+An explicitly saved AssumeRole override for a member must belong to that same
+member account; historical out-of-account overrides fail closed. Registering an account
+or a cluster in AWSops does not create IAM roles, Access Entries, access policy
+associations, or network connectivity.
 
-## Current design / 현행 설계
+Existing member configurations that registered only the host web task-role
+principal need an Access Entry/read policy for the registered member role before
+default member queries can succeed. The generated guide names the required role;
+the owner applies it. The app does not add or remove AWS access entries.
 
-**EN**
-- `scripts/v2/configure.mjs` offers an **EKS multi-select** during `make configure`:
-  - Discovers clusters via `eks:ListClusters` (`listEksClusters`).
-  - Runs an **auth-mode preflight** per cluster (`eksAuthMode`): clusters in `API`/`API_AND_CONFIG_MAP` are selectable; `CONFIG_MAP`-only clusters are listed in a handoff message (Access Entry unavailable).
-  - Writes the selection as `onboard_eks_clusters = [...]` into `terraform.tfvars`.
-- `terraform/foundation/eks.tf` iterates that list with `for_each = toset(var.onboard_eks_clusters)`:
-  - `aws_eks_access_entry.web` — registers the web task role (`awsops-v2-task`) as a `STANDARD` principal on each cluster.
-  - `aws_eks_access_policy_association.web_view` — binds the AWS-managed **`AmazonEKSViewPolicy`** at **cluster** scope.
-  - `aws_iam_role_policy.task_eks` — grants the task role `eks:DescribeCluster` / `eks:ListClusters` / `eks:DescribeAccessEntry` (created only when the list is non-empty).
-  - `data.aws_eks_cluster.onboard` + `output "onboarded_eks_clusters"` — exposes endpoint / ARN / CA data per cluster for P3 kubeconfig registration.
-- **Host-account only.** Empty default list → `for_each` over an empty set creates nothing (safe no-op until a cluster is selected).
+### Member least-privilege permissions
 
-**KO**
-- `scripts/v2/configure.mjs`는 `make configure` 중 **EKS 멀티 선택**을 제공한다:
-  - `eks:ListClusters`로 클러스터 탐색.
-  - 클러스터별 **인증 모드 사전 점검**: `API`/`API_AND_CONFIG_MAP`은 선택 가능, `CONFIG_MAP` 전용은 핸드오프 목록으로 안내(Access Entry 불가).
-  - 선택 결과를 `onboard_eks_clusters = [...]`로 `terraform.tfvars`에 기록.
-- `terraform/foundation/eks.tf`는 `for_each`로 해당 목록을 순회: Access Entry + 클러스터 스코프 View 정책 + 태스크 역할 IAM + 클러스터 연결 정보 output.
-- **호스트 계정 전용.** 기본값이 빈 목록이면 아무 리소스도 생성되지 않는다(안전한 no-op).
+The shared member role uses `AmazonEKSViewPolicy` at cluster scope, plus a
+ClusterRole/ClusterRoleBinding that grants group `awsops:eks-readonly` only
+`get/list/watch` on core `nodes`. The generated guide includes this minimal
+manifest and an explicit cluster context. The managed View policy supplies the
+other supported built-in reads, including namespaces, but excludes Secrets.
+Do not associate `AmazonEKSAdminViewPolicy` with the shared member role: other
+consumers able to assume that role would otherwise inherit Secret reads.
 
-## Decisions (ADRs) / 결정
+For an existing Access Entry, the owner adds the group without replacing its
+unrelated groups. Access policies are additive: associating View does not revoke
+an existing AdminView policy. The owner must remove any such broad association
+after preparing the necessary narrow read bindings. Host Terraform onboarding
+retains its existing single-consumer web task-role configuration.
 
-**EN** — No dedicated ADR exists for EKS onboarding (a documentation gap). Onboarding inherits the multi-account model of [ADR-011](../decisions/011-multi-account.md), but here it is **host-account only** — cross-account assume-role onboarding is intentionally excluded. kubeconfig auto-registration and the Kubernetes query UI are **deferred to P3**.
+Optional APIs need separate narrow bindings. K8sGPT Result access is described
+in [the operator runbook](../runbooks/k8sgpt-operator-install.md). OpenCost's
+fixed service-proxy path separately needs the following namespace-limited read
+permission after the `opencost` namespace/service exist. The cluster owner
+applies it; AWSops does not. It grants no pod exec, node proxy, Secret or write
+permissions:
 
-**KO** — EKS 온보딩 전용 ADR은 없다(문서 공백). [ADR-011](../decisions/011-multi-account.md)의 멀티 계정 모델을 계승하지만 여기서는 **호스트 계정 전용**이며, 교차 계정 assume-role 온보딩은 의도적으로 제외했다. kubeconfig 자동 등록과 Kubernetes 조회 UI는 **P3로 연기**되었다.
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awsops-opencost-proxy-reader
+  namespace: opencost
+rules:
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["opencost:9003"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awsops-opencost-proxy-reader
+  namespace: opencost
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awsops-opencost-proxy-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: awsops:eks-readonly
+```
 
-## Key files / 핵심 파일
+Kubernetes access alone does not enable the adjacent data panels. CloudWatch
+diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the
+selected read role, and Container Insights must actually publish its series.
+Node ENI details require the account/region to be in the enabled inventory scan
+scope with a completed EC2 inventory collection. A denied query, absent metric
+series, and inventory not yet collected are distinct operational conditions.
 
-| File / 파일 | Role / 역할 |
+### Query scope and cleanup
+
+The cluster list, registration, and subsequent resource reads retain the selected
+account and region. Member-account and nondefault-region clusters use their EKS
+ARN as the API and registry identifier; the visible cluster name remains separate.
+The existing `eks_registrations.cluster_name` text key stores that qualified
+identifier, including any authentication override. Existing bare-name registrations
+and `ONBOARDED_EKS_CLUSTERS` entries retain their host/deployment-region meaning.
+This prevents a same-named host cluster from granting access to, overwriting, or
+unregistering a member cluster. It requires no schema migration.
+
+The registration endpoint accepts either a URL-encoded cluster ARN or a bare name
+with `?account=<TARGET_ACCOUNT_ID>&region=<REGION>`. It describes that exact target
+before checking its Access Entry, rather than searching the first page of the host
+account's cluster list. A `404 unknown cluster` therefore means the selected target
+was not found; an absent or unverifiable entry remains a separate registration
+failure. Invalid or disabled target accounts do not fall back to the host.
+
+Admin DELETE is a local cleanup operation: a syntactically valid canonical
+registration can be removed, including its saved auth, after its member account
+is disabled or removed. It does not require AWS discovery or an enabled member
+scope, and it does not revoke AWS permissions. Bare-name member
+references require an explicit region or a full ARN. Host Terraform-managed entries remain
+protected; POST and reads keep their enabled-scope checks.
+
+The account/region selector refreshes EKS lists and fleet aggregates without a
+registration side effect. Queries wait for the persisted selection and discard
+responses from an earlier selection. Discovery is bounded to 12 account/region
+targets and 25 cluster descriptions per target. Wildcard all-region discovery
+includes configured and already-registered regions and explicitly reports that this
+is not exhaustive AWS-region discovery; select a specific region to query another
+region directly. Fleet selection includes all authorized registered regions under
+wildcard scope, with a separate 100-cluster cap. Registration-store failures return
+an unavailable result instead of a successful empty fleet. Partial failures and
+truncation are returned separately from a successful empty result. Kubernetes
+endpoints must still be reachable from the web task, and downstream collectors can
+report unsupported scopes separately.
+
+Read failures retain a coarse classification (`denied`, `unreachable`, `timeout`, or
+`upstream-error`) and a safe explanation. The same controlled classification is
+logged without raw provider messages, bodies, stack traces or credentials.
+A denied K8sGPT Result read or OpenCost detection read does not prove the operator
+is absent; even a degraded HTTP 200 response must be interpreted with its failure
+metadata. The generated member guide and optional bindings above address permissions;
+network and timeout failures require connectivity checks instead.
+
+## Terraform host-account provisioning
+
+`make configure` uses `scripts/v2/configure.mjs` to discover host clusters and offer
+an EKS multi-select. Its authentication-mode preflight selects clusters using `API`
+or `API_AND_CONFIG_MAP`; `CONFIG_MAP`-only clusters require an operator handoff.
+The selection becomes `onboard_eks_clusters` in `terraform.tfvars`.
+
+`terraform/foundation/eks.tf` iterates that list to create a `STANDARD` Access Entry
+for the web task role and associate a cluster-scoped AWS-managed view policy. It
+supplies the `onboarded_eks_clusters` endpoint/ARN/CA output. The always-on task-role
+discovery permissions are defined separately in `terraform/foundation/workload.tf`. The CA value comes from
+`certificate_authority[0].data`. An empty selection creates no onboarding resources.
+This Terraform path provisions host clusters only; it does not provision member
+roles, member Access Entries, or cross-account network connectivity.
+
+An operator can separately create an Access Entry and read-policy association.
+For host/deployment-region events, the optional `eks_auto_register_enabled` observer
+(`scripts/v2/eks/auto_register.py`) can reflect the event into the app registry.
+The member/nondefault-region web guide requires manual query registration and does
+not promise that the host EventBridge observer will see those events.
+
+## Principal and governance boundaries
+
+The web workflow inherits read-only multi-account discovery from ADR-011. It does
+not relax ADR-005: AWS-resource mutation and autonomy remain frozen. Generated
+Access Entry commands and OpenCost installation bundles are operator handoffs;
+returning a bundle does not execute it or enable an in-app mutation tool.
+
+Host web queries use the web task role; member web queries use the registered
+member role by default.
+[Network Path Check EKS access](../runbooks/network-path-eks-access.md) describes the
+separate worker/target-role principal, and
+[Istio agent EKS access](../runbooks/istio-agent-eks-access.md) describes an agent
+Lambda principal. An entry for one actor does not grant access to the others.
+An explicit saved web AssumeRole override also needs authorization for its own role.
+
+## Key files
+
+| File | Responsibility |
 |---|---|
-| `terraform/foundation/eks.tf` | `onboard_eks_clusters` var, Access Entry, View policy association, task-role EKS IAM, `onboarded_eks_clusters` output |
-| `scripts/v2/configure.mjs` | EKS discovery (`listEksClusters`) + auth-mode preflight (`eksAuthMode`) + multi-select → tfvars |
+| `terraform/foundation/eks.tf` | Host Terraform onboarding and endpoint/CA output |
+| `terraform/foundation/workload.tf` | Always-on web task-role EKS discovery permissions |
+| `scripts/v2/configure.mjs` | Host discovery and authentication-mode preflight |
+| `web/lib/eks-cluster-id.ts` | Strict name/ARN parsing and display labels |
+| `web/lib/eks-context.ts` | Canonical account/region identity, selector conflicts, enabled member scope |
+| `web/lib/eks-role.ts` | Registered member-role ARN and same-account authentication checks |
+| `web/lib/eks-member-rbac.ts` | Minimal member node-read group and operator manifest |
+| `web/lib/eks-registry.ts` | Legacy host and qualified runtime registrations, cached read quality, saved auth |
+| `web/lib/eks-scope.ts` | Collection selection, wildcard disclosure, discovery and fleet limits |
+| `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
+| `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
+| `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
+| `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
-## Status / 상태
+See the [API reference](../api-reference.md#eks-10) for response status and metadata
+contracts, including conditional envelope `region`, partial `errors`, and `truncated`.
+NFM pod-transfer attribution remains host/deployment-region only; member and other
+region requests return explicit unavailability rather than a host namesake's data.
 
-**EN** — **P1e ✅ done.** `fsi-demo-cluster` onboarded and verified:
-- Access entry principal = `awsops-v2-task`.
-- `AmazonEKSViewPolicy` associated at cluster scope.
-- `onboarded_eks_clusters` output returns endpoint / ARN / CA.
-- Host clusters are all in `API_AND_CONFIG_MAP` auth mode, so Access Entry works without flipping any cluster.
+## Verification and historical scope
 
-**Out-of-band expansion (live drift note, confirmed 2026-08-11):** `onboard_eks_clusters` only enumerates the Terraform-managed path. An operator can *also* onboard a cluster by running `create-access-entry` + `associate-access-policy` (view-only policies only) directly via the AWS CLI, outside Terraform. `eks_auto_register_enabled` (live: true) wires a read-only, CloudTrail-driven Lambda (`awsops-v2-eks-auto-register`, `scripts/v2/eks/auto_register.py`) that observes those calls and reflects the cluster into Aurora `eks_registrations` — the BFF's actual allow-list is `ONBOARDED_EKS_CLUSTERS` (env, Terraform) ∪ `eks_registrations` (runtime), not `onboard_eks_clusters` alone. As of 2026-08-11 the live task role (`awsops-v2-task`) holds Access Entries on **4** clusters — `fsi-demo-cluster` (Terraform) plus `mall-apne2-az-a`, `mall-apne2-az-c`, `mall-apne2-mgmt` (out-of-band, auto-registered 2026-06-11 – 2026-06-17). Ground truth: `aws eks list-access-entries --cluster-name <name>` + the `eks_registrations` table, not this doc's cluster count.
+P1e originally established host Access Entry/view-policy onboarding and exposed
+connection metadata for later Kubernetes views. Those views and runtime query
+registration are now implemented; the original P3 deferral is historical.
 
-**KO** — **P1e ✅ 완료.** `fsi-demo-cluster` 온보딩 및 검증 완료(access entry = `awsops-v2-task`, View 정책, endpoint/ARN/CA output). 호스트 클러스터는 모두 `API_AND_CONFIG_MAP` 모드라 클러스터 전환 없이 Access Entry가 동작한다.
-
-**Out-of-band 확장(라이브 드리프트 기록, 2026-08-11 확인):** `onboard_eks_clusters`는 Terraform 관리 경로만 나열한다. 운영자가 Terraform 밖에서 CLI로 `create-access-entry` + `associate-access-policy`(view-only 정책 한정)를 직접 실행해 클러스터를 추가로 온보딩할 수도 있다. `eks_auto_register_enabled`(라이브: true)가 그 CloudTrail 이벤트를 관찰하는 read-only Lambda(`awsops-v2-eks-auto-register`, `scripts/v2/eks/auto_register.py`)를 연결해두어, 그 클러스터를 Aurora `eks_registrations`에 반영한다 — BFF의 실제 allow-list는 `ONBOARDED_EKS_CLUSTERS`(env, Terraform) ∪ `eks_registrations`(runtime)이며 `onboard_eks_clusters` 단독이 아니다. 2026-08-11 기준 라이브 task role(`awsops-v2-task`)은 **4개** 클러스터에 Access Entry를 보유 — `fsi-demo-cluster`(Terraform) + `mall-apne2-az-a`/`mall-apne2-az-c`/`mall-apne2-mgmt`(out-of-band, 2026-06-11~06-17 자동등록). 사실 확인은 이 문서의 클러스터 수가 아니라 `aws eks list-access-entries --cluster-name <name>` + `eks_registrations` 테이블로.
-
-## Learnings & gotchas / 학습·함정
-
-**EN**
-- **OpenCost = read-only out-of-band install bundle.** The UI generates a bundle the operator runs themselves; AWS-resource mutation stays **FROZEN (ADR-005, do-not-enable)** — NOT an in-app mutating action.
-- **Multi-account is excluded** — host account only for P1e.
-- **The web code consumes the `onboarded_eks_clusters` output in P3, not here.** P1e provisions access + exposes connection info; kubeconfig build and queries are downstream.
-- `for_each` over the empty default list creates zero resources, so merging `eks.tf` is a safe no-op until a cluster is selected in tfvars.
-- The correct CA attribute is `data.aws_eks_cluster.onboard[*].certificate_authority[0].data`.
-
-**KO**
-- **OpenCost = read-only out-of-band 설치 번들.** UI가 번들을 생성하고 운영자가 직접 실행; AWS-리소스 변경은 **FROZEN (ADR-005, do-not-enable)** — 인앱 변경 액션 아님.
-- **멀티 계정 제외** — P1e는 호스트 계정 전용.
-- **웹 코드는 P3에서 `onboarded_eks_clusters` output을 소비**한다. P1e는 접근 권한 부여 + 연결 정보 노출까지만 담당하고, kubeconfig 생성·조회는 후속 단계다.
-- 빈 기본 목록에 대한 `for_each`는 리소스를 생성하지 않으므로 `eks.tf` 병합은 안전한 no-op이다.
-- CA 속성은 `certificate_authority[0].data`가 정확하다.
-
-## Source / 출처
-
-- `docs/history/archive/2026-05-31-awsops-v2-p1e-eks-onboarding.md` (the P1e plan, after archival)
+The 2026-08-11 assessment recorded four host-role Access Entries, including clusters
+added outside Terraform. That dated snapshot is not a current inventory or an
+exhaustive statement of Terraform ownership. Compare the actual Access Entries,
+policy associations, `ONBOARDED_EKS_CLUSTERS`, and `eks_registrations` to establish
+current state. Source support and unit/browser checks do not prove a deployed
+role's permissions, API-server reachability, or completed rollout.

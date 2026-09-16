@@ -107,7 +107,11 @@ export function useActiveAccount(): [string, (id: string) => void] {
     setId(getActiveAccount());
     const handler = () => setId(getActiveAccount());
     window.addEventListener('awsops:accountchange', handler);
-    return () => window.removeEventListener('awsops:accountchange', handler);
+    window.addEventListener('awsops:scopechange', handler);
+    return () => {
+      window.removeEventListener('awsops:accountchange', handler);
+      window.removeEventListener('awsops:scopechange', handler);
+    };
   }, []);
   return [id, (v: string) => { setActiveAccount(v); setId(v); }];
 }

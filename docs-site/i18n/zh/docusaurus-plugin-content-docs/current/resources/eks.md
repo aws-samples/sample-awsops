@@ -14,27 +14,33 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 主要功能
 
+选择账户或区域后，会重新查询该范围的集群卡片、KPI 和集群内资源。出现部分失败或获取上限提示时，结果并不完整。全区域（通配符）发现也仅覆盖已配置和已注册的区域，因此未显示不代表“整个 AWS 中不存在集群”；如有需要，请明确选择目标区域查询。
+
 ### KPI 卡片
-以顶部卡片展示整个舰队的核心指标。
+顶部卡片展示所选范围中实际完成查询部分的核心指标。
 
 | 卡片 | 含义 |
 |------|------|
-| **Clusters** | 账户中发现的集群总数 |
-| **Connected** | 已连接查询（可采集数据）的集群数 |
+| **Clusters** | 在所选且实际查询的范围内发现的集群数，并非整个 AWS 的总数 |
+| **Connected** | 当前显示范围内实时资源查询成功的集群数（区别于配置状态徽章） |
 | **Nodes** | 已连接集群的节点合计（显示 `ready` 数量） |
 | **Pods** | Pod 合计（显示 `running` 数量） |
 | **Deployments** | Deployment 合计 |
 | **Services** | Service 合计 |
 
 ### 集群卡片
-每个集群以一张卡片显示 **Status**、**Version**、**Region**、**VPC**、**Platform** 信息。连接状态以徽章区分。
+每个集群以一张卡片显示 **Status**、**Version**、**Account**、**Region**、**VPC**、**Platform** 信息。请通过 **Account** 和 **Region** 区分同名集群。连接状态以徽章区分。
 
-- **Connected**：查询已连接，可显示节点/Pod/Deployment 数量（点击卡片标题可进入详情）
+- **Connected**：已通过默认 Access Entry 路径或保存的认证信息配置查询。徽章本身不验证凭证有效性，也不保证网络可达；仅在实时查询成功时显示节点/Pod/Deployment 数量（点击标题进入详情）。
 - **有 Entry**：存在 Access Entry 但尚未注册查询
-- **未连接**：没有 Access Entry，无法查询
+- **未连接**：没有默认 Access Entry 连接，也没有已保存的 SA 令牌 / AssumeRole 认证配置
 - **无法确认**：无法判别访问状态
 
-要查询已连接的集群，需要 **EKS Access Entry**。管理员可以**注册/解除**查询访问，或查看可直接应用到集群的**入驻脚本**。AWSops 不会变更集群，所有操作均为只读。
+支持查询已注册且已启用的成员账户。宿主账户集群的默认身份是 **web 任务角色**，成员集群的默认身份是**已注册的成员只读角色**（通常为 `AWSopsReadOnlyRole`）。成员集群的元数据查询和 Kubernetes 令牌签名都使用成员角色凭证，并要求该角色具有 **EKS Access Entry** 和只读策略；仅有旧的宿主角色 Entry 不足以授权。也支持显式配置 **SA 令牌 / AssumeRole** 认证。SA 认证不需要 IAM Access Entry，但仍需要元数据查询权限。AssumeRole 所用角色必须可由 web 任务承担且具有集群内读取权限；成员集群的角色 ARN 必须属于同一成员账户。管理员可以**注册/解除**查询访问，或查看由所有者应用到目标集群的**入驻脚本**。AWSops 本身不会变更集群，查询均为只读。
+
+**诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
+
+**可选读取权限：** View 和节点绑定不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
 
 ### 舰队资源摘要
 存在已连接的集群时，卡片下方会出现额外的可视化内容。
@@ -53,7 +59,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 使用方法
 1. 在侧边栏 **Compute** 分组中点击 **EKS**
-2. 通过顶部 KPI 卡片确认舰队规模和连接状态
+2. 选择账户和区域，通过顶部 KPI 卡片确认该查询范围的规模和连接状态
 3. 点击 **Connected** 集群卡片的标题进入详情
 4. 在详情中切换标签页查看 **Nodes / Pods / Deployments / Services / Events / Diagnosis**
 5. 在搜索框输入关键词或使用命名空间过滤器缩小范围
@@ -65,7 +71,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 :::info 连接条件
-集群要显示为 **Connected**，需要 **EKS Access Entry**。未连接的集群会一并提供入驻脚本，注册/解除仅限管理员执行。显示的时刻以 KST（Asia/Seoul）为准。
+支持默认 Access Entry 连接以及显式配置的 SA 令牌 / AssumeRole 认证。**Connected** 徽章本身不保证读取成功，还需检查实际数据获取结果和部分失败提示。未连接的集群会一并提供入驻脚本，注册/解除仅限管理员执行。显示的时刻以 KST（Asia/Seoul）为准。
 :::
 
 ## AI 分析技巧

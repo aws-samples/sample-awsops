@@ -3,6 +3,7 @@
 import { k8sGetPath, listInCluster } from './eks-incluster';
 import { estimateDailyParts } from '@/lib/cost-basis';
 import type { PodRow } from './eks-resources';
+import { eksReadFailure, type EksReadReason } from './eks-read-error';
 
 export interface PodCost {
   namespace: string; pod: string; node: string;
@@ -13,6 +14,7 @@ export interface AllocationResult {
   /** 'opencost' = measured 1d allocation; 'request-estimate' = requests × unit prices fallback. */
   source?: 'opencost' | 'request-estimate';
   message?: string;
+  reason?: EksReadReason;
   nodes?: { node: string; cpuCost: number; ramCost: number; totalCost: number }[];
   pods: PodCost[];
   namespaces: { name: string; value: number }[];
@@ -37,10 +39,11 @@ export async function getAllocation(cluster: string): Promise<AllocationResult> 
   try {
     body = await k8sGetPath(cluster, PROXY_PATH);
   } catch (e) {
+    const failure = eksReadFailure(e, 'opencost-allocation');
     // v1 parity: OpenCost unavailable → request-based estimate (pods' requests × unit prices).
     const est = await requestEstimate(cluster).catch(() => null);
     if (est) return est;
-    return { ...empty, message: e instanceof Error ? e.message : String(e) };
+    return { ...empty, ...failure };
   }
   try {
     const parsed = JSON.parse(body) as { data?: Array<Record<string, Record<string, unknown>>> };
@@ -92,8 +95,8 @@ export async function getAllocation(cluster: string): Promise<AllocationResult> 
       hasPv: pods.some((p) => p.pvCost > 0),
       hasGpu: pods.some((p) => p.gpuCost > 0),
     };
-  } catch {
-    return { ...empty, message: 'OpenCost 응답 파싱 실패' };
+  } catch (error) {
+    return { ...empty, ...eksReadFailure(error, 'opencost-allocation') };
   }
 }
 

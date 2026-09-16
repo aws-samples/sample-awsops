@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
 const listClusters = vi.fn();
+const listAccounts = vi.fn();
+const listAccountRegions = vi.fn();
+vi.mock('@/lib/accounts', () => ({ listAccounts: (...a: unknown[]) => listAccounts(...a) }));
+vi.mock('@/lib/account-regions', () => ({
+  listAccountRegions: (...a: unknown[]) => listAccountRegions(...a),
+  listScanScope: async () => [{ accountId: '222222222222', regions: ['*'] }],
+}));
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/aws', () => ({ listClusterInventory: async (...a: unknown[]) =>
   ({ clusters: await listClusters(...a), region: 'ap-northeast-2', truncated: false }) }));
@@ -21,6 +28,13 @@ vi.mock('@/lib/eks-access', () => ({
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 const req = (cookie = 'awsops_token=t') => new Request('http://x/api/eks', { headers: { cookie } });
 beforeEach(() => {
+  vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+  vi.stubEnv('AWS_REGION', 'ap-northeast-2');
+  listAccounts.mockReset().mockResolvedValue([
+    { accountId: '111111111111', isHost: true, enabled: true, region: 'ap-northeast-2' },
+    { accountId: '222222222222', isHost: false, enabled: true, region: 'ap-northeast-2' },
+  ]);
+  listAccountRegions.mockReset().mockResolvedValue([]);
   verifyUser.mockReset(); listClusters.mockReset();
   getAllowedClusters.mockReset(); isEnvCluster.mockReset(); hasAccessEntry.mockReset(); isAdmin.mockReset();
   getAllowedClusters.mockResolvedValue(new Set());
@@ -50,10 +64,111 @@ describe('GET /api/eks', () => {
     const { GET } = await import('./route');
     expect(await (await GET(req())).json()).toMatchObject({ clusters: [], region: 'ap-northeast-2', truncated: false });
   });
-  it('500 on SDK error', async () => {
+  it('reports upstream failure rather than successful empty inventory', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     listClusters.mockRejectedValue(new Error('denied'));
     const { GET } = await import('./route');
-    expect((await GET(req())).status).toBe(500);
+    expect((await GET(req())).status).toBe(502);
+  });
+  it('queries every selected account and preserves same-name cluster identities', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://x/api/eks?accounts=__all__&regions=ap-northeast-2'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(listClusters).toHaveBeenCalledWith('self', 'ap-northeast-2');
+    expect(listClusters).toHaveBeenCalledWith('222222222222', 'ap-northeast-2');
+    expect(body.clusters.map((c: { id: string }) => c.id)).toEqual([
+      'same', 'arn:aws:eks:ap-northeast-2:222222222222:cluster/same',
+    ]);
+    expect(hasAccessEntry).toHaveBeenCalledWith('arn:aws:eks:ap-northeast-2:222222222222:cluster/same');
+  });
+  it('does not treat a host registration as access to a member with the same name', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    getAllowedClusters.mockResolvedValue(new Set(['same']));
+    isEnvCluster.mockImplementation((id: string) => id === 'same');
+    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    const body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+    expect(body.clusters[0]).toMatchObject({
+      id: 'arn:aws:eks:ap-northeast-2:222222222222:cluster/same', access: 'no-entry', runtime: false,
+    });
+  });
+  it('keeps partial results with an explicit failed account instead of silently substituting host', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockImplementation(async (id: string) => {
+      if (id === '222222222222') throw new Error('AssumeRole denied');
+      return [{ name: 'host' }];
+    });
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://x/api/eks?accounts=__all__'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.clusters).toHaveLength(1);
+    expect(body.errors).toEqual([expect.objectContaining({ accountId: '222222222222', message: 'EKS inventory query failed' })]);
+  });
+  it.each([
+    new Error('arn:aws:iam::222222222222:role/private ExternalId=private-id sessionToken=private-token'),
+    { status: 403, message: 'ExternalId=private-id sessionToken=private-token' },
+    'sessionToken=private-token',
+  ])('does not expose unexpected inventory failures: %#', async error => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockRejectedValue(error);
+    const { GET } = await import('./route');
+    const response = await GET(req());
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.message).toBe('EKS inventory query failed');
+    expect(body.errors[0].message).toBe('EKS inventory query failed');
+    expect(JSON.stringify(body)).not.toMatch(/private|ExternalId|sessionToken/);
+  });
+  it('sanitizes unexpected registry failures before discovery', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    getAllowedClusters.mockRejectedValue(new Error('password=private-token'));
+    const { GET } = await import('./route');
+    const response = await GET(req());
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS inventory is unavailable', reason: 'upstream-error' });
+    expect(listClusters).not.toHaveBeenCalled();
+  });
+  it('preserves the trusted disabled-account reason and status', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://x/api/eks?accounts=333333333333'));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ status: 'error', message: 'EKS account is not registered or is disabled', reason: 'denied' });
+    expect(listClusters).not.toHaveBeenCalled();
+  });
+  it.each([
+    [{ name: 'AccessDeniedException' }, 'denied'],
+    [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ code: 'ENOTFOUND' }, 'unreachable'],
+  ])('classifies inventory failures from metadata %j', async (metadata, reason) => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    listClusters.mockRejectedValue(Object.assign(new Error('private-role private-session'), metadata));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { GET } = await import('./route');
+      const response = await GET(req());
+      const body = await response.json();
+      expect(response.status).toBe(502);
+      expect(body.reason).toBe(reason);
+      expect(body.errors[0].reason).toBe(reason);
+      expect(JSON.stringify([body, warn.mock.calls])).not.toContain('private');
+    } finally { warn.mockRestore(); }
+  });
+  it('returns useful wildcard results with incomplete-discovery metadata without marking successful calls failed', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    getAllowedClusters.mockResolvedValue(new Set(['arn:aws:eks:us-west-2:222222222222:cluster/member']));
+    listClusters.mockResolvedValue([{ name: 'member', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    const response = await GET(new Request('http://x/api/eks?accounts=222222222222&regions=__all__'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.clusters).not.toHaveLength(0);
+    expect(body.status).toBeUndefined();
+    expect(body.errors).toEqual([expect.objectContaining({ accountId: '222222222222', region: '__all__' })]);
+    expect(listClusters).toHaveBeenCalledWith('222222222222', 'us-west-2');
   });
 });

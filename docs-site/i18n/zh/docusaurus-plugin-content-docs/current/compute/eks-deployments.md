@@ -12,10 +12,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-deployments.png" alt="EKS Deployments" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 统计卡片
-- **Total Deployments**: 全部 Deployment 数量（青色）
+- **Total Deployments**: 所选范围内观测到的 Deployment 数量（青色）
 - **Fully Available**: 期望副本全部可用的 Deployment 数量（绿色）
 - **Partially Available**: 仅部分副本可用的 Deployment 数量（橙色）
 
@@ -82,7 +86,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - 查看 Deployment 的 Pod
 - [EKS Explorer](../compute/eks-explorer) - 查看 ReplicaSet 详情
 - [EKS Services](../compute/eks-services) - 关联 Deployment 的 Service

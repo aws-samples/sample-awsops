@@ -18,13 +18,14 @@ resource "aws_eks_access_entry" "web" {
   type          = "STANDARD"
 }
 
-# Bind the AWS-managed read-only AdminView policy at cluster scope.
-# AdminView (not View): AmazonEKSViewPolicy mirrors the k8s 'view' ClusterRole and has NO
-# cluster-scoped resources — listing nodes 403s. AdminViewPolicy is */*/get,list,watch.
+# Existing host web-role association. Member roles are onboarded separately by their owner
+# with AmazonEKSViewPolicy plus nodes-only RBAC (web/lib/eks-member-rbac.ts); this Terraform
+# resource does not grant member access. View includes namespaces but cannot list nodes.
+# The host retains AdminView, whose read rules cover all Kubernetes resources.
 # It can read Secrets, but the BFF only proxies an allow-listed set of kinds
 # (nodes/pods/deployments/services/namespaces/events/endpoints + explorer kinds replicasets/
 # daemonsets/statefulsets/jobs/pvcs/configmaps[METADATA-ONLY]/ingresses[routing metadata only] in eks-incluster.ts isKind/KIND_PATH)
-# — secrets/configmaps never transit, and eks-incluster.test.ts pins their rejection.
+# — Secret objects and ConfigMap values never transit; tests pin this boundary.
 # ⚠️ This allow-list is the single line of defense behind AdminView: ANY new kind added
 # to eks-incluster.ts MUST update this comment + the negative-kind test in the same PR.
 resource "aws_eks_access_policy_association" "web_view" {
@@ -48,7 +49,8 @@ resource "aws_eks_access_policy_association" "web_view" {
 #    least privilege: no cluster-wide Secret/node read for the AI-agent principal; istio-read only
 #    LISTs namespaced CRDs + namespaces). Mirrors the v2 stance: AWSops never mutates a cluster; the
 #    operator grants access out-of-band. The web task-role entry above stays terraform-managed and
-#    uses AdminView because it lists cluster-scoped nodes — that rationale does NOT apply here.
+#    uses AdminView for its existing node reads. Member roles instead add minimal node RBAC
+#    to View; neither member nor istio-read guidance grants the host's broader policy.
 
 output "onboarded_eks_clusters" {
   description = "Onboarded EKS clusters -> endpoint/ARN (for P3 dashboard kubeconfig registration)."

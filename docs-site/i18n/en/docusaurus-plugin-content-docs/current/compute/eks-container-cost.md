@@ -12,6 +12,10 @@ A page for analyzing EKS Pod costs. It supports two data sources: OpenCost (defa
 
 <Screenshot src="/screenshots/compute/eks-container-cost.png" alt="EKS Container Cost" />
 
+:::info Account, region, and transfer scope
+Cost lists query connected clusters in the selected account/region scope and keep same-named clusters distinct. Partial-collection, limit, or failure notices indicate incomplete results; narrow the scope and retry. The separate **NFM pod-transfer** view supports only the host account in the deployment region and reports member/other-region scopes as unsupported. This restriction is separate from the Network cost supplied by OpenCost. A View-based member role separately needs a `services/proxy` GET binding limited to service `opencost:9003` in namespace `opencost` to read the OpenCost API. A permission failure does not prove it is uninstalled.
+:::
+
 ## Key Features
 
 ### Data Source Indicator

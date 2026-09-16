@@ -1,5 +1,6 @@
 import { verifyUser } from '@/lib/auth';
-import { listClusters, getMtdCost } from '@/lib/aws';
+import { listClusterInventory, getMtdCost } from '@/lib/aws';
+import { currentAccountId } from '@/lib/account';
 import { getPool } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,19 @@ export async function GET(request: Request) {
   const account = accountParam === '__all__' ? undefined : accountParam;
   // clusters + cost — degrade independently (a CE/EKS hiccup shouldn't blank the whole page)
   let clusterCount: number | null = null;
-  try { clusterCount = (await listClusters(account)).length; } catch { clusterCount = null; }
+  let clusterScope: { accountId: string; region: string; names: string[]; truncated: boolean } | null = null;
+  try {
+    const inventory = await listClusterInventory(account);
+    clusterCount = inventory.clusters.length;
+    // Match the fleet's canonical host alias. This describes the actual singleton read,
+    // including '__all__'→host, without claiming overview queried the full UI selection.
+    clusterScope = {
+      accountId: !account || account === 'self' || account === currentAccountId() ? 'self' : account,
+      region: inventory.region,
+      names: inventory.clusters.map(cluster => cluster.name),
+      truncated: inventory.truncated,
+    };
+  } catch { clusterCount = null; }
   let mtdCost: number | null = null;
   try { mtdCost = (await getMtdCost(account)).total; } catch { mtdCost = null; }
   // latest *succeeded* CIS run, for the dashboard compliance tile — a newer failed run is
@@ -36,5 +49,5 @@ export async function GET(request: Request) {
     );
     compliance = c.rows[0] ?? null;
   } catch { compliance = null; }
-  return Response.json({ jobs, clusterCount, mtdCost, compliance });
+  return Response.json({ jobs, clusterCount, clusterScope, mtdCost, compliance });
 }

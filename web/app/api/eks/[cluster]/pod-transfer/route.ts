@@ -1,6 +1,8 @@
+import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { isAllowed } from '@/lib/eks-registry';
 import { nfmPodTransfer } from '@/lib/nfm';
+import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // 카테고리별 NFM 쿼리 병렬 폴링
@@ -15,15 +17,27 @@ export async function GET(request: Request, { params: pendingParams }: { params:
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
-  const params = await pendingParams;
-  if (!(await isAllowed(params.cluster))) {
-    return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
-  }
-  const rangeRaw = Number(new URL(request.url).searchParams.get('range') ?? 3600);
-  const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
   try {
-    return Response.json(await nfmPodTransfer(params.cluster, range));
+    const params = await pendingParams;
+    const search = new URL(request.url).searchParams;
+    const context = await resolveEksCluster(params.cluster, search);
+    if (!(await isAllowed(context.id))) {
+      return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
+    }
+    const rangeRaw = Number(search.get('range') ?? 3600);
+    const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
+    // NFM collection is still host/default-region only. A same-name host monitor must
+    // never be attributed to a registered member or another region.
+    if (context.accountId !== 'self' || context.region !== (process.env.AWS_REGION || 'ap-northeast-2')) {
+      return Response.json({
+        available: false,
+        message: 'Pod transfer metrics are available only for the host account in the default region. This cluster scope is not supported.',
+        monitor: null, rangeSec: range, pods: [], failedCategories: [],
+        totals: { bytes: 0, billableBytes: 0, estUsd: 0, byCategory: {} },
+      });
+    }
+    return Response.json(await nfmPodTransfer(context.name, range));
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 502 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'pod-transfer') }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
 }

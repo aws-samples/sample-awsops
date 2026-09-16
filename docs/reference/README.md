@@ -82,10 +82,13 @@ SQS → ESM (kill-switch) → idempotent dispatcher Lambda → **Step Functions*
 RunLambda (short) **or** `ecs:runTask.sync` Fargate (long/OOM). A reaper reconciles stale jobs.
 OOM-안전 비동기 워커 티어.
 
-**EKS Onboarding — [`07-eks.md`](07-eks.md).** `configure.mjs` multi-select → `eks.tf` grants the
-web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped, host-account only),
-exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
-view 정책(읽기 전용).
+**EKS Onboarding — [`07-eks.md`](07-eks.md).** `configure.mjs` → `eks.tf` provides host-account
+Terraform onboarding. The web runtime also registers enabled member-account clusters
+using account/region-qualified EKS ARN identities. The registered member role is used
+for both metadata and default member Kubernetes authentication; host clusters retain
+the web task-role default. The applicable role needs an Access Entry/read policy.
+Registration changes app state only. The reference distinguishes
+scoped registered-fleet coverage from incomplete wildcard discovery.
 
 **E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
 

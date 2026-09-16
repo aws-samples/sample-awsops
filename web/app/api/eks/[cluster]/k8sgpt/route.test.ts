@@ -87,6 +87,6 @@ describe('GET /api/eks/[cluster]/k8sgpt', () => {
     const { GET } = await import('./route');
     const res = await GET(req('http://x/api/eks/fsi-demo-cluster/k8sgpt'), ctx());
     expect(res.status).toBe(502);
-    expect((await res.json()).message).toBe('result fetch failed');
+    expect((await res.json()).message).toBe('K8sGPT diagnosis is unavailable.');
   });
 });

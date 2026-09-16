@@ -287,6 +287,24 @@ an allowlist edit revokes every previously configured read path.
 4. Use the **global account selector** (sidebar) to switch the active account, or pick **All accounts**
    to aggregate cost / Bedrock across every enabled account (the dashboard aggregates client-side).
 
+## Member EKS access
+
+Account registration enables scoped AWS discovery; it does not grant Kubernetes access.
+Select the member account and region in **EKS**, then follow that cluster's registration
+guide. The default Kubernetes token uses the registered member read role, normally
+`AWSopsReadOnlyRole`, so an Access Entry for only the host web task role is insufficient.
+The cluster owner grants the member role an Entry with `AmazonEKSViewPolicy` and the
+minimal `awsops:eks-readonly` node-read binding. The generated guide includes the complete
+manifest from `web/lib/eks-member-rbac.ts`; do not grant the shared role AdminView/Secrets
+access. OpenCost proxy and K8sGPT Result reads require the separate narrow bindings in the
+[EKS reference](../reference/07-eks.md). Preserve existing Entry groups when adding this
+group and review/remove any existing broader policy association separately.
+
+AWSops verifies the selected cluster directly and saves only app registration/auth state;
+it does not run the owner-side grant commands. Permission errors, timeout and unreachable
+reads remain failures, not proof that a cluster or operator is absent. The host's existing
+Terraform-managed entry remains separate.
+
 ## Notes
 - **ExternalId is not a secret** — it is a confused-deputy guard, stored in plaintext so AWSops can pass
   it to `sts:AssumeRole`. Treat it like a coordination value, not a credential.

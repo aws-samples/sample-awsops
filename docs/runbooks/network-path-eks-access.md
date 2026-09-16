@@ -6,8 +6,10 @@ identity via `resolve_live_identity()` in `scripts/v2/workers/network_path.py` �
 cluster's own Kubernetes API, presigning the request as the **worker Fargate task role**
 (`awsops-v2-worker-task`; the `network_path` job runs entirely inside the worker Fargate task, not
 a Lambda — see `network-path.tf`'s own header comment). EKS authorization is **per IAM principal**:
-onboarding a cluster only grants the *web task role* an access entry (`eks.tf`) — the *worker task
-role* is a different principal and gets `403` on every pod/node check until it has its own entry.
+host Terraform onboarding grants the *web task role* an access entry (`eks.tf`) — the *worker task
+role* is a different principal and needs its own entry for host-cluster pod/node checks.
+Member clusters use the shared member role described below; its existing web-query grants must
+survive Network Path Check setup and removal.
 
 AWSops does **not** create this entry in terraform on purpose: granting a principal k8s access is
 the **cluster owner's** decision, and the terraform apply principal may not hold
@@ -30,9 +32,8 @@ AWSopsReadOnlyRole`.**
 **Why a minimal Kubernetes-group RBAC binding, not an AWS-managed access policy (unlike
 istio-read's `AmazonEKSViewPolicy`):** `resolve_live_identity()` GETs `/api/v1/nodes/{name}` — a
 **cluster-scoped** resource — plus one namespaced Pod GET. `AmazonEKSViewPolicy` mirrors the k8s
-`view` ClusterRole, which has **no cluster-scoped resources at all** (`eks.tf`'s own comment on the
-web task role's Access Entry notes plainly that "listing nodes 403s" under View), so it cannot be
-reused as-is. The next AWS-managed step up, `AmazonEKSAdminViewPolicy` (what `eks.tf` binds for the
+`view` ClusterRole: it includes namespaces but **does not grant node reads**, so View alone is
+insufficient. The next AWS-managed step up, `AmazonEKSAdminViewPolicy` (what `eks.tf` binds for the
 web task role's own manual-registration Access Entry), DOES cover cluster-scoped resources — but it
 also grants cluster-wide `get`/`list`/`watch` on **every Secret in every namespace**, to the SAME
 shared worker task role every other job type runs under. That is a materially larger grant than
@@ -41,7 +42,7 @@ this feature needs (exactly one Node GET, one Pod GET), and it is the exact patt
 cluster-wide Secret read to an automated agent") — round-19 CI review flagged this script as the
 one place that violated its own repo's documented convention.
 
-**The fix:** bind the worker task role's Access Entry to a Kubernetes **group**
+**The feature-specific grant:** bind the selected principal's Access Entry to a Kubernetes **group**
 (`awsops-network-path-reader` — prefixed like the ClusterRole/Binding themselves, round-24 CI
 review: an unprefixed generic name could collide with a group a cluster already maps some other
 principal into) via `--kubernetes-groups`, rather than an AWS-managed access policy, and
@@ -51,6 +52,9 @@ Access Entry's `--kubernetes-groups` only establishes the IAM-principal → k8s-
 authorization still requires the `ClusterRoleBinding` in that manifest, applied separately via
 `kubectl` (an EKS Access Entry alone cannot grant custom fine-grained RBAC — only AWS-managed
 access policies or your own RBAC objects can).
+For a shared member role, this group is additive to the web-query
+`AmazonEKSViewPolicy` and `awsops:eks-readonly` node-read group. Removing this feature's group
+does not revoke read access granted independently by those other bindings.
 
 ## Prerequisites
 - `workers_enabled = true` and the foundation applied (the worker task role exists).
@@ -59,9 +63,12 @@ access policies or your own RBAC objects can).
   true; without them, such a check still runs but fails closed on that one source with a bounded
   "could not resolve pod/node identity" error, per `resolve_live_identity()`'s own AccessDenied
   handling).
-- You hold `eks:CreateAccessEntry` + `eks:UpdateAccessEntry` on the target cluster (for the IAM
-  side), AND cluster-admin (or equivalent RBAC-write) Kubernetes access (for the `kubectl apply`
-  RBAC side).
+- Configure AWS CLI credentials/region and the kubectl context for the target cluster.
+  `ROLE_ARN` chooses the principal receiving access; it does not switch the operator's AWS account.
+- You hold `eks:CreateAccessEntry`, `eks:UpdateAccessEntry`, `eks:DescribeAccessEntry` and
+  `eks:ListAssociatedAccessPolicies` on the target cluster. Default-worker stale-policy cleanup
+  also requires `eks:DisassociateAccessPolicy`. You need cluster-admin (or equivalent RBAC-write)
+  Kubernetes access for the `kubectl apply` step.
 
 ## Grant (idempotent)
 ```bash
@@ -81,9 +88,11 @@ kubectl apply -f scripts/v2/eks/network-path-reader-rbac.yaml
 The script reads `terraform output -raw worker_task_role_arn` as its default (host-account case
 only) unless `ROLE_ARN` overrides it, then runs `aws eks create-access-entry` (or
 `update-access-entry` if the entry already exists) binding whichever role to the
-`awsops-network-path-reader` Kubernetes group — no AWS-managed access policy is associated (a stale one
-from an earlier run is actively disassociated, since `update-access-entry` alone doesn't remove
-it). The `kubectl apply` step is what actually authorizes that group (`get` on `nodes`/`pods`
+`awsops-network-path-reader` Kubernetes group, preserving every existing group. It adds no
+AWS-managed policy. For the resolved default worker task role, it removes only the known-stale
+`AmazonEKSAdminViewPolicy` association from this script's earlier behavior; other policies remain.
+For a member or other overridden principal, it lists and reports policies without disassociating
+any of them. The `kubectl apply` step authorizes this feature's group (`get` on `nodes`/`pods`
 only) — run it once per cluster, against whichever cluster this Access Entry targets.
 
 ## Verify
@@ -92,21 +101,54 @@ only) — run it once per cluster, against whichever cluster this Access Entry t
 # AWSopsReadOnlyRole)
 aws eks list-access-entries --cluster-name <cluster-name>
 aws eks describe-access-entry --cluster-name <cluster-name> --principal-arn <principal-arn> \
-  --query kubernetesGroups
+  --query 'accessEntry.kubernetesGroups'
 aws eks list-associated-access-policies --cluster-name <cluster-name> --principal-arn <principal-arn>
-  # should be EMPTY — a non-empty result means a stale AWS-managed policy (e.g. from an earlier
-  # AdminView-era run) is still attached and needs the script re-run or a manual disassociate
 kubectl get clusterrolebinding awsops-network-path-reader
 ```
+Confirm `awsops-network-path-reader` is present and other groups have been retained.
+An empty access-policy list is expected only for a dedicated default worker entry with no other
+grants. A shared member `AWSopsReadOnlyRole` legitimately has `AmazonEKSViewPolicy` for web queries,
+and may retain `awsops:eks-readonly` in its group list. **Do not disassociate that View policy or
+remove unrelated groups.** A non-empty policy list alone is not an error. Review unexpected
+associations with the cluster owner; the script intentionally does not remove policies from an
+overridden principal.
+
 Then create a Network Path Check whose source is a pod/node on that cluster and confirm the run's
 live-identity step no longer reports an AccessDenied.
 
 ## Revoke
+For either principal, remove only this feature's group. First inspect the current grants:
+
 ```bash
-aws eks delete-access-entry --cluster-name <cluster-name> --principal-arn <principal-arn>
-# optional — only if no other principal is bound to the awsops-network-path-reader group on this cluster:
+aws eks describe-access-entry --cluster-name <cluster-name> --principal-arn <principal-arn> \
+  --query 'accessEntry.kubernetesGroups' --output json
+aws eks list-associated-access-policies --cluster-name <cluster-name> --principal-arn <principal-arn>
+```
+
+Prepare `remaining-groups.json` as a JSON array containing **every current group except
+`awsops-network-path-reader`**. Preserve `awsops:eks-readonly` and any other group; use `[]` only
+when no group remains. Re-read the current groups before applying the reviewed list because
+`update-access-entry` replaces the entire group list.
+See [Update access entries](https://docs.aws.amazon.com/eks/latest/userguide/updating-access-entries.html)
+and the [UpdateAccessEntry API](https://docs.aws.amazon.com/eks/latest/APIReference/API_UpdateAccessEntry.html);
+group permissions and associated access-policy permissions are additive.
+
+```bash
+aws eks update-access-entry --cluster-name <cluster-name> --principal-arn <principal-arn> \
+  --kubernetes-groups file://remaining-groups.json
+```
+
+Only after confirming that no other principal uses `awsops-network-path-reader` on this cluster
+may the owner remove its shared RBAC objects:
+
+```bash
 kubectl delete -f scripts/v2/eks/network-path-reader-rbac.yaml
 ```
+
+**Do not delete a shared member Access Entry or disassociate its policies.** Those grants may
+still serve EKS web queries or other features. Full entry deletion is an optional owner action
+only for the resolved default worker task role when the entry belongs solely to this feature
+and both its remaining group list and policy-association list are confirmed empty.
 
 ## Notes
 - The worker task role also needs the target account registered (ENABLED row in the `accounts`

@@ -3,6 +3,10 @@ import { listClusterInventory } from '@/lib/aws';
 import { getAllowedClusters, isEnvCluster, getAuthModes } from '@/lib/eks-registry';
 import { hasAccessEntry, onboardingGuide } from '@/lib/eks-access';
 import { isAdmin } from '@/lib/admin';
+import { currentAccountId } from '@/lib/account';
+import { qualifiedEksClusterId } from '@/lib/eks-cluster-id';
+import { getEksScope, eksErrorStatus, mapEksConcurrent } from '@/lib/eks-scope';
+import { eksReadFailure } from '@/lib/eks-read-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,35 +18,58 @@ export async function GET(request: Request) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
   try {
-    const accountParam = new URL(request.url).searchParams.get('account') || undefined;
-    const account = accountParam === '__all__' ? undefined : accountParam;
-    const [inventory, allowed, authModes] = await Promise.all([listClusterInventory(account), getAllowedClusters(), getAuthModes()]);
-    const rows = await Promise.all(inventory.clusters.map(async (c) => {
-      let access: AccessState;
-      const isEnv = isEnvCluster(c.name);
-      const authMode = authModes.get(c.name);
-      if (authMode) {
-        access = 'connected'; // Aurora-stored auth (SA token / AssumeRole) — no access entry needed
-      } else if (allowed.has(c.name) && isEnv) {
-        access = 'connected'; // Terraform guarantees the entry — skip the per-row API call
-      } else {
-        const entry = await hasAccessEntry(c.name);
-        if (allowed.has(c.name)) {
-          // runtime-registered: re-verify the entry (spec: connected = allowed AND entry) —
-          // a revoked entry shows as no-entry again (guide + still unregisterable)
-          access = entry === true ? 'connected' : entry === false ? 'no-entry' : 'unknown';
-        } else {
-          access = entry === true ? 'entry-only' : entry === false ? 'no-entry' : 'unknown';
-        }
+    const [scope, allowed, authModes] = await Promise.all([
+      getEksScope(new URL(request.url).searchParams), getAllowedClusters(true), getAuthModes(),
+    ]);
+    const results = await mapEksConcurrent(scope.targets, async target => {
+      try {
+        const inventory = await listClusterInventory(target.accountId, target.region);
+        const clusters = await mapEksConcurrent(inventory.clusters, async (c) => {
+          const hostDefault = target.accountId === 'self' && target.region === (process.env.AWS_REGION || 'ap-northeast-2');
+          const id = hostDefault ? c.name : qualifiedEksClusterId(
+            c.name, target.accountId === 'self' ? currentAccountId() : target.accountId, target.region,
+          );
+          let access: AccessState;
+          const isEnv = isEnvCluster(id);
+          const authMode = authModes.get(id);
+          if (authMode) {
+            access = 'connected'; // Aurora-stored auth (SA token / AssumeRole) — no access entry needed
+          } else if (allowed.has(id) && isEnv) {
+            access = 'connected'; // Terraform guarantees the entry — skip the per-row API call
+          } else {
+            const entry = await hasAccessEntry(id);
+            if (allowed.has(id)) {
+              // runtime-registered: re-verify the entry (spec: connected = allowed AND entry) —
+              // a revoked entry shows as no-entry again (guide + still unregisterable)
+              access = entry === true ? 'connected' : entry === false ? 'no-entry' : 'unknown';
+            } else {
+              access = entry === true ? 'entry-only' : entry === false ? 'no-entry' : 'unknown';
+            }
+          }
+          // v1 parity: the onboarding script is ALWAYS visible for not-yet-connected clusters
+          // (role ARN is cached — per-row cost is string templating only).
+          const guide = access === 'connected' ? undefined : await onboardingGuide(id);
+          return { ...c, id, accountId: target.accountId === 'self' ? currentAccountId() : target.accountId,
+            region: target.region, access, runtime: allowed.has(id) && !isEnv, authMode, guide };
+        });
+        return { clusters, truncated: inventory.truncated, error: undefined };
+      } catch (error) {
+        return { clusters: [], truncated: false, error: {
+          ...target, ...eksReadFailure(error, 'eks-list-target'),
+        } };
       }
-      // v1 parity: the onboarding script is ALWAYS visible for not-yet-connected clusters
-      // (role ARN is cached — per-row cost is string templating only).
-      const guide = access === 'connected' ? undefined : await onboardingGuide(c.name);
-      return { ...c, access, runtime: allowed.has(c.name) && !isEnv, authMode, guide };
-    }));
+    });
     const admin = await isAdmin(user);
-    return Response.json({ clusters: rows, admin, region: inventory.region, truncated: inventory.truncated });
+    const queryErrors = results.flatMap(result => result.error ? [result.error] : []);
+    const errors = [...(scope.errors ?? []), ...queryErrors];
+    const failed = results.length > 0 && queryErrors.length === results.length;
+    return Response.json({
+      clusters: results.flatMap(result => result.clusters), admin,
+      region: scope.targets.length === 1 ? scope.targets[0].region : undefined,
+      truncated: scope.truncated || results.some(result => result.truncated), errors,
+      ...(failed ? { status: 'error', message: queryErrors[0].message, reason: queryErrors[0].reason } : {}),
+    }, { status: failed ? 502 : 200 });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'eks-list') }, { status: eksErrorStatus(e) });
   }
 }

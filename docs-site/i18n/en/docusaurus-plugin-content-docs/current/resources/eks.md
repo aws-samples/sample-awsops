@@ -12,6 +12,10 @@ A page for browsing your EKS cluster fleet and in-cluster resources in one place
 
 <Screenshot src="/screenshots/resources/eks.png" alt="EKS cluster fleet" />
 
+:::info Account and region scope
+The top filter applies to EKS discovery and resource reads. Partial-collection, failure, or limit notices mean the displayed numbers cover observed results and cannot prove complete absence. All-region discovery discloses its configured/already-registered-region limit.
+:::
+
 ## Features
 
 ### KPI cards
@@ -19,22 +23,26 @@ Top cards summarize the whole fleet at a glance.
 
 | Card | Meaning |
 |------|---------|
-| **Clusters** | Total clusters discovered in the account |
-| **Connected** | Clusters whose data can be queried (connected) |
+| **Clusters** | Clusters discovered in the selected account/region scope (check partial-collection notices) |
+| **Connected** | Clusters whose live resource reads succeeded in the displayed scope (distinct from the configuration badge) |
 | **Nodes** | Node total across connected clusters (`ready` count shown) |
 | **Pods** | Pod total (`running` count shown) |
 | **Deployments** | Deployment total |
 | **Services** | Service total |
 
 ### Cluster cards
-Each cluster renders as a card showing **Status**, **Version**, **Region**, **VPC**, and **Platform**. The connection state is shown as a badge.
+Each cluster renders as a card showing **Status**, **Version**, **Account**, **Region**, **VPC**, and **Platform**. The connection state is shown as a badge.
 
-- **Connected**: queryable, with node/pod/deployment counts (click the card title to open the detail view)
+- **Connected**: query access is configured through the default Access Entry path or saved authentication. The badge does not validate credentials or guarantee network reachability. Node/pod/deployment counts appear when live reads succeed (click the title for details).
 - **Entry present**: an Access Entry exists but query access is not yet registered
-- **Not connected**: no Access Entry, so the cluster cannot be queried
+- **Not connected**: no default Access Entry connection and no saved SA-token/AssumeRole authentication configuration
 - **Unknown**: access state could not be determined
 
-A connected cluster requires an **EKS Access Entry**. Admins can **register/unregister** query access or view an **onboarding script** to apply to the cluster themselves. AWSops never changes clusters — everything here is read-only.
+Registered, enabled member accounts are supported. The default identity is the **web task role for host clusters** or the **registered member read role for member clusters**, normally `AWSopsReadOnlyRole`. Member metadata discovery and Kubernetes token signing both use member-role credentials, and that role needs an EKS Access Entry/read policy; an old host-role entry alone is insufficient. Explicit **SA-token / AssumeRole** authentication is also supported. SA authentication does not require an IAM Access Entry, but metadata permissions remain necessary. An AssumeRole identity must be assumable by the web task and authorized for cluster reads; a member override ARN must belong to the same member account. Admins can **register/unregister** queries or view an **onboarding script** for the owner to apply. AWSops does not change clusters; its queries are read-only.
+
+**Diagnosis and ENI prerequisites:** CloudWatch diagnostics require `cloudwatch:GetMetricData` and `cloudwatch:ListMetrics` on the target read role. Container Insights metrics must actually be published. The ENI panel needs the selected account/region in the inventory collection scope and a completed EC2 inventory collection. Permission failures, absent metric series, and uncollected inventory are different states; AWSops does not grant permissions or install agents automatically.
+
+**Optional read permissions:** View and the node binding do not allow Secrets. The OpenCost API proxy separately needs GET on `services/proxy` limited to its service in namespace `opencost`; K8sGPT separately needs a read binding for `results` in `result.core.k8sgpt.ai`. The owner adds only the permissions required for enabled features; the app does not apply them.
 
 ### Fleet resource summary
 When at least one cluster is connected, extra visualizations appear below the cards.
@@ -65,7 +73,7 @@ You only need to type part of a name in the search box. The namespace filter is 
 :::
 
 :::info Connection requirement
-For a cluster to appear as **Connected**, it needs an **EKS Access Entry**. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
+Default authentication needs the host web task-role or member registered-role EKS Access Entry; explicit SA-token/AssumeRole authentication is also supported. Check actual read success and partial-collection notices together. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
 :::
 
 ## AI analysis tips

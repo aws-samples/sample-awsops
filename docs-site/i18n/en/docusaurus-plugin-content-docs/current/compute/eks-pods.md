@@ -12,10 +12,15 @@ A page for viewing the detailed list and status of Kubernetes Pods.
 
 <Screenshot src="/screenshots/compute/eks-pods.png" alt="EKS Pods" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Pods**: Total Pod count (cyan)
+- **Total Pods**: Observed Pod count in the selected scope (cyan)
 - **Running**: Running Pod count (green)
 - **Pending**: Pending Pod count (orange)
 - **Failed**: Failed Pod count (red)
@@ -46,7 +51,7 @@ Visualize Pod status distribution with a pie chart:
 ## How to Use
 
 1. Click **Compute > K8s > Pods** in the sidebar
-2. Review overall Pod status distribution from the stats cards
+2. Review the statistics cards for resources observed in the selected scope.
 3. If there are Pending or Failed Pods, investigate the cause
 4. Check node placement for specific Pods in the table
 
@@ -83,7 +88,7 @@ You can analyze with the AI Assistant using queries like "Pending Pod list", "Fa
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Nodes](../compute/eks-nodes) - Check node resources
 - [EKS Explorer](../compute/eks-explorer) - Detailed resource exploration
 - [EKS Container Cost](../compute/eks-container-cost) - Pod cost analysis

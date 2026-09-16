@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fd34997fe399 · generated-at: 2026-09-16 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 49617c2a0399 · generated-at: 2026-09-16 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -24,6 +24,8 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **AI:** Bedrock Sonnet 5 / Opus 4.8 / Haiku 4.5 + AgentCore (Strands, `agent/agent.py`, routes via `GATEWAYS_JSON`). Live AWS queries via AgentCore MCP Lambda tools (`agent/lambda/*.py`), never inline in the BFF. Config source of truth = SSM `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` (runtime read; no ECS `valueFrom`).
 - **Chat routing (LIVE):** regex fast-path (`web/lib/route.ts`, first-match-wins RULES) → Haiku classifier fallback; gated by `hybrid_routing_enabled`. **16 routing keys are registered** = 9 gateway-routed sections + `aws-data` + 6 auto-collect collectors (`web/lib/collectors/`); the latter 7 are web-BFF-local (not via AgentCore) and their Steampipe-backed execution is hard-disabled — they fail-open to normal routing at runtime.
 - **Async workers (P2):** enqueue → `worker_jobs` + SQS → ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions → RunLambda (short) or `ecs:runTask.sync` Fargate (long/OOM) → worker writes running/succeeded itself → status_updater on Catch sets failed (SFN can't write VPC Aurora) → reaper (5min) reconciles stale. Files: `terraform/foundation/workers.tf`, `scripts/v2/workers/`.
+
+- **EKS account isolation:** host defaults retain the web task role and Terraform AdminView entry; member discovery/tokens use the registered member role with its own AmazonEKSViewPolicy + minimal node-read RBAC (`awsops:eks-readonly`). The operator guide generates the manifest from `web/lib/eks-member-rbac.ts`; the app executes no grants. Member/nondefault-region IDs are full EKS ARNs, and no failed member read falls back to host credentials. Wildcard discovery explicitly covers configured/registered regions only; local registration cleanup after account disablement does not authorize reads.
 
 ## Build · Test · Lint (copy-paste; do not invent)
 ```bash

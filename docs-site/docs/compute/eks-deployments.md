@@ -12,10 +12,15 @@ Kubernetes Deployment의 레플리카 상태와 가용성을 확인할 수 있�
 
 <Screenshot src="/screenshots/compute/eks-deployments.png" alt="EKS Deployments" />
 
+:::info 선택 범위와 관측 결과
+상단 계정·리전 필터가 이 페이지에 적용됩니다. 합계는 선택한 등록 클러스터 범위에서 실제 조회한 리소스 수이며, 모든 AWS 리소스의 총수가 아닙니다. 동명 클러스터의 선택 항목은 계정·리전을 함께 표시합니다. 부분 실패나 조회 한도 안내가 있으면 결과가 불완전할 수 있으므로, 범위를 좁혀 다시 확인하세요.
+:::
+
+
 ## 주요 기능
 
 ### 통계 카드
-- **Total Deployments**: 전체 Deployment 수 (시안)
+- **Total Deployments**: 선택 범위에서 조회된 Deployment 수 (시안)
 - **Fully Available**: 원하는 레플리카가 모두 가용한 Deployment 수 (녹색)
 - **Partially Available**: 일부 레플리카만 가용한 Deployment 수 (주황색)
 
@@ -82,7 +87,7 @@ AI Assistant에서 "Deployment 상태", "레플리카 불일치 Deployment 찾�
 
 ## 관련 페이지
 
-- [EKS Overview](../compute/eks) - 클러스터 전체 현황
+- [EKS Overview](../compute/eks) - 선택 범위의 클러스터 현황
 - [EKS Pods](../compute/eks-pods) - Deployment의 Pod 확인
 - [EKS Explorer](../compute/eks-explorer) - ReplicaSet 상세 확인
 - [EKS Services](../compute/eks-services) - Deployment 연결 Service

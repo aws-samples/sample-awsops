@@ -20,6 +20,9 @@ import { podStatusCounts, serviceTypeCounts } from '@/lib/eks-tab-stats';
 import { serviceResources, topServiceResources } from '@/lib/eks-service-resources';
 import type { ServiceRow } from '@/lib/eks-incluster';
 import type { PodRow } from '@/lib/eks-resources';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { EksCollectionNotice, type EksCollectionStatus } from './EksFilterPanel';
 
 // Fleet-wide kind page (v1 /k8s/nodes|pods|deployments|services parity):
 // GET /api/eks → connected cluster names → per-cluster GET
@@ -30,6 +33,34 @@ import type { PodRow } from '@/lib/eks-resources';
 export type FleetKind = 'nodes' | 'pods' | 'deployments' | 'services';
 
 type Row = Record<string, unknown>;
+
+const READ_MESSAGES = {
+  denied: 'EKS resources are unavailable. Access denied; check read permissions.',
+  unreachable: 'EKS resources are unavailable. Endpoint unreachable; check network connectivity and DNS.',
+  timeout: 'EKS resources are unavailable. Request timed out; check connectivity and retry.',
+  'upstream-error': 'EKS resources are unavailable.',
+};
+type ReadFailureReason = keyof typeof READ_MESSAGES;
+interface ReadFailure { reason: ReadFailureReason; message: string }
+interface ClusterFailure extends ReadFailure { cluster: string; kind: string }
+function responseFailure(body: Partial<ReadFailure> | null, status: number): ReadFailure {
+  const reason = body?.reason && Object.hasOwn(READ_MESSAGES, body.reason) ? body.reason
+    : status === 401 || status === 403 ? 'denied'
+      : status === 408 || status === 504 ? 'timeout' : 'upstream-error';
+  return { reason, message: typeof body?.message === 'string' && body.message ? body.message : READ_MESSAGES[reason] };
+}
+async function readClusterRows(name: string, kind: string): Promise<{ name: string; rows: Row[] | null; failure?: ClusterFailure }> {
+  try {
+    const r = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`);
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !Array.isArray(body?.rows)) {
+      return { name, rows: null, failure: { cluster: name, kind, ...responseFailure(body, r.status) } };
+    }
+    return { name, rows: body.rows };
+  } catch {
+    return { name, rows: null, failure: { cluster: name, kind, reason: 'unreachable', message: READ_MESSAGES.unreachable } };
+  }
+}
 
 const KIND_META: Record<FleetKind, { title: string; noun: string }> = {
   nodes: { title: 'EKS Nodes — 전체 클러스터', noun: '노드' },
@@ -89,12 +120,20 @@ function readyParts(ready: unknown): { ready: number; desired: number } {
 }
 
 export default function FleetKindPage({ kind }: { kind: FleetKind }) {
+  const [scope, , ready] = useActiveScope();
+  const query = scopeParams(scope);
+  return ready ? <ScopedFleetKindPage key={`${query}/${kind}`} kind={kind} scopeQuery={query} /> : null;
+}
+
+function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery: string }) {
   const { tt } = useI18n();
   const meta = KIND_META[kind];
   const [rows, setRows] = useState<Row[] | null>(null);
   const [clusters, setClusters] = useState<string[]>([]);
   const [failed, setFailed] = useState<string[]>([]);
+  const [failures, setFailures] = useState<ClusterFailure[]>([]);
   const [err, setErr] = useState('');
+  const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -123,57 +162,51 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
     const fresh = () => seq === loadSeqRef.current;
     setBusy(true);
     setErr('');
+    setFailures([]);
     // A refresh must not pair NEW node rows with the PREVIOUS run's request numbers.
     setPodReq({});
     setPodReqReady(false);
     setSvcPods({});
     setSvcPodsReady(false);
     try {
-      const r = await fetch('/api/eks?account=self');
-      if (!r.ok) throw new Error(String(r.status));
+      const r = await fetch(`/api/eks?${scopeQuery}`);
+      if (!r.ok) {
+        const failure = responseFailure(await r.json().catch(() => null), r.status);
+        throw new Error(`${failure.reason}: ${failure.message}`);
+      }
       const d = await r.json();
-      const names = ((d.clusters ?? []) as { name?: string; access?: string }[])
+      const names = ((d.clusters ?? []) as { id?: string; name?: string; access?: string }[])
         .filter((c) => c.access === 'connected' && c.name)
-        .map((c) => String(c.name));
+        .map((c) => c.id ?? String(c.name));
       if (!fresh()) return;
+      setCollection(d);
       setClusters(names);
       // Per-cluster fetch: a failing cluster degrades to null (→ amber note),
       // never blanking the merged page.
-      const results = await Promise.all(
-        names.map(async (name) => {
-          try {
-            const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`);
-            if (!rr.ok) return { name, rows: null as Row[] | null };
-            const dd = await rr.json();
-            return { name, rows: (dd.rows ?? []) as Row[] };
-          } catch {
-            return { name, rows: null as Row[] | null };
-          }
-        }),
-      );
+      const results = await Promise.all(names.map(name => readClusterRows(name, kind)));
       if (!fresh()) return;
       const merged: Row[] = [];
       const failedNames: string[] = [];
       for (const res of results) {
-        if (res.rows) merged.push(...res.rows.map((row) => ({ cluster: res.name, ...row })));
+        if (res.rows) merged.push(...res.rows.map((row) => ({ ...row, cluster: res.name, clusterLabel: eksClusterLabel(res.name) })));
         else failedNames.push(res.name);
       }
       setRows(merged);
       setFailed(failedNames);
+      const primaryFailures = results.flatMap(result => result.failure ? [result.failure] : []);
+      setFailures(primaryFailures);
       setCapturedAt(new Date().toISOString());
       // Gap L132: the capacity bars need scheduler-requested totals — one pods fetch per
       // cluster, aggregated by node. Failures degrade per cluster (null), never the page.
       if (kind === 'nodes') {
         const podResults = await Promise.all(
           names.map(async (name) => {
-            try {
-              const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=pods`);
-              if (!rr.ok) return { name, agg: null as Record<string, { cpu: number; mem: number }> | null };
-              const dd = await rr.json();
+              const result = await readClusterRows(name, 'pods');
+              if (!result.rows) return { ...result, agg: null as Record<string, { cpu: number; mem: number }> | null };
               // Null prototype: a node legally named 'constructor' must not collide with
               // inherited Object members during accumulation.
               const agg: Record<string, { cpu: number; mem: number }> = Object.create(null);
-              for (const pod of (dd.rows ?? []) as { node?: string; status?: string; cpuRequest?: number; memRequest?: number }[]) {
+              for (const pod of result.rows as { node?: string; status?: string; cpuRequest?: number; memRequest?: number }[]) {
                 if (!pod.node) continue;
                 // Same exclusion as aggregateNodeResources: terminal pods hold no reservation.
                 if (isTerminalPodPhase(pod.status)) continue;
@@ -181,42 +214,30 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                 cur.cpu += Number(pod.cpuRequest) || 0;
                 cur.mem += Number(pod.memRequest) || 0;
               }
-              return { name, agg };
-            } catch {
-              return { name, agg: null as Record<string, { cpu: number; mem: number }> | null };
-            }
+              return { ...result, agg };
           }),
         );
         if (!fresh()) return;
         setPodReq(Object.fromEntries(podResults.map((p) => [p.name, p.agg])));
         setPodReqReady(true);
+        setFailures([...primaryFailures, ...podResults.flatMap(result => result.failure ? [result.failure] : [])]);
       }
       // Gap L229 (services only): raw pods per cluster for the Service-selector join.
       // Failures degrade per cluster (null) — that cluster's services are excluded from the
       // resource charts (disclosed), never charted as 0 from missing pods.
       if (kind === 'services') {
-        const podResults = await Promise.all(
-          names.map(async (name) => {
-            try {
-              const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=pods`);
-              if (!rr.ok) return { name, rows: null as PodRow[] | null };
-              const dd = await rr.json();
-              return { name, rows: (dd.rows ?? []) as PodRow[] };
-            } catch {
-              return { name, rows: null as PodRow[] | null };
-            }
-          }),
-        );
+        const podResults = await Promise.all(names.map(name => readClusterRows(name, 'pods')));
         if (!fresh()) return;
-        setSvcPods(Object.fromEntries(podResults.map((p) => [p.name, p.rows])));
+        setSvcPods(Object.fromEntries(podResults.map((p) => [p.name, p.rows as unknown as PodRow[] | null])));
         setSvcPodsReady(true);
+        setFailures([...primaryFailures, ...podResults.flatMap(result => result.failure ? [result.failure] : [])]);
       }
     } catch (e) {
       if (fresh()) setErr(e instanceof Error ? e.message : String(e));
     } finally {
       if (fresh()) setBusy(false);
     }
-  }, [kind]);
+  }, [kind, scopeQuery]);
 
   useEffect(() => {
     setQuery('');
@@ -227,6 +248,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
     setPodReq({});
     setPodReqReady(false);
     void load();
+    return () => { ++loadSeqRef.current; };
   }, [load]);
 
   const allRows = useMemo(() => rows ?? [], [rows]);
@@ -257,6 +279,8 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
     return out;
   }, [allRows, kind, clusterSel, ns, query]);
 
+  const discoveryComplete = !collection.errors?.length && !collection.truncated;
+
   return (
     <>
       <PageHeader
@@ -266,15 +290,23 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
       />
       <div className="px-8 py-8 flex flex-col gap-6">
         {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
-        {failed.length > 0 && (
+        <EksCollectionNotice status={collection} />
+        {failures.length > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-            조회 실패 클러스터 (제외됨): {failed.join(', ')}
+            <div>조회 실패 (해당 리소스 집계에서 제외됨)</div>
+            {failures.map(failure => (
+              <div key={`${failure.cluster}/${failure.kind}`}>
+                {eksClusterLabel(failure.cluster)} · {failure.kind} · {failure.reason}: {failure.message}
+              </div>
+            ))}
           </div>
         )}
         {!rows && !err && <div className="text-ink-400">로딩 중…</div>}
         {rows && !err && clusters.length === 0 && (
           <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
-            연결된(connected) 클러스터가 없습니다 — /eks에서 클러스터를 등록하세요.
+            {discoveryComplete
+              ? '연결된(connected) 클러스터가 없습니다 — /eks에서 클러스터를 등록하세요.'
+              : '일부 계정/리전 조회가 완료되지 않아 연결된 클러스터 유무를 확인할 수 없습니다 — 계정/리전 범위를 좁혀 다시 조회하세요.'}
           </div>
         )}
         {rows && !err && (
@@ -298,7 +330,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                     className="rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[12px] text-ink-700"
                   >
                     {['전체', ...clusters].map((c) => (
-                      <option key={c} value={c}>{c}</option>
+                      <option key={c} value={c}>{eksClusterLabel(c)}</option>
                     ))}
                   </select>
                 )}
@@ -419,7 +451,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                         >
                           <span className="min-w-0 truncate font-mono text-ink-700" title={`${d.cluster} · ${d.namespace}/${d.name}`}>
                             {d.namespace}/{d.name}
-                            <span className="ml-2 text-ink-400">{d.cluster}</span>
+                            <span className="ml-2 text-ink-400">{eksClusterLabel(d.cluster)}</span>
                           </span>
                           <Meter value={d.pct} />
                           <span className="tabular text-ink-400">{d.available}/{d.desired}</span>
@@ -463,7 +495,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                     // so the zero-results branch shows a real "no services" message, not just it
                     const notes = [
                       excluded > 0 ? `${tt('셀렉터 없음/매칭 Running Pod 없음으로 제외')}: ${excluded}` : '',
-                      podFailed.length ? `${tt('Pod 조회 실패로 차트에서 제외된 클러스터')}: ${podFailed.join(', ')}` : '',
+                      podFailed.length ? `${tt('Pod 조회 실패로 차트에서 제외된 클러스터')}: ${podFailed.map(eksClusterLabel).join(', ')}` : '',
                     ].filter(Boolean).join(' · ');
                     const caption = [tt('컨테이너 요청량(request) 기준 — 실사용량 아님, Running Pod만 집계'), notes]
                       .filter(Boolean).join(' · ');
@@ -477,7 +509,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                       );
                     }
                     const label = (r: { cluster: string; namespace: string; name: string }) =>
-                      okClusters.length > 1 ? `${r.cluster}/${r.namespace}/${r.name}` : `${r.namespace}/${r.name}`;
+                      okClusters.length > 1 ? `${eksClusterLabel(r.cluster)}/${r.namespace}/${r.name}` : `${r.namespace}/${r.name}`;
                     const cpuTop = topServiceResources(res, 'cpuMillicores').map((r) => ({ label: label(r), v: r.cpuMillicores }));
                     const memTop = topServiceResources(res, 'memMiB').map((r) => ({ label: label(r), v: r.memMiB }));
                     return (
@@ -495,7 +527,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
             })()}
 
             <DataTable
-              columns={COLUMNS[kind]}
+              columns={COLUMNS[kind].map((column) => column.key === 'cluster' ? { ...column, key: 'clusterLabel' } : column)}
               rows={filteredRows}
               onRowClick={(row) => {
                 // nodes는 개요와 동일한 리치 드릴다운(CPU/Memory/Pods/ENI), 그 외 kind는 기존 raw 패널.

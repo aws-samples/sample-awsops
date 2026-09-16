@@ -12,13 +12,18 @@ A page for viewing detailed information about Kubernetes node capacity, allocata
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Nodes**: Total node count (cyan)
+- **Total Nodes**: Observed node count in the selected scope (cyan)
 - **Ready**: Ready status node count (green)
-- **Total CPU**: Total vCPU capacity sum (purple)
-- **Total Memory**: Total memory capacity sum (orange) — with an allocatable total and reserved % (Capacity − Allocatable) hint (omitted when allocatable is unreported)
+- **Total CPU**: vCPU capacity sum of observed nodes in the selected scope (purple)
+- **Total Memory**: Memory capacity sum of observed nodes in the selected scope (orange) — with an allocatable total and reserved % (Capacity − Allocatable) hint (omitted when allocatable is unreported)
 
 ### CPU Usage per Node Chart
 Display CPU resource status per node with 3-level bar chart:
@@ -69,7 +74,7 @@ Clicking a node opens the pods-scheduled-on-this-node table — Namespace / Pod 
 ## How to Use
 
 1. Click **Compute > K8s > Nodes** in the sidebar
-2. Review overall node status from the stats cards
+2. Review the statistics cards for resources observed in the selected scope.
 3. Identify nodes with high resource usage in the CPU/Memory Usage charts
 4. Consider scaling for nodes at 80% or higher (red)
 5. Check detailed capacity for each node in the table
@@ -92,7 +97,7 @@ You can analyze with the AI Assistant using queries like "Node resource usage", 
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Check Pod status
 - [EC2](../compute/ec2) - EC2 instances underlying nodes
 - [EKS Container Cost](../compute/eks-container-cost) - Node/Pod cost analysis

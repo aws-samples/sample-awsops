@@ -12,10 +12,14 @@ Kubernetes Pod の詳細な一覧とステータスを確認できるページ�
 
 <Screenshot src="/screenshots/compute/eks-pods.png" alt="EKS Pods" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 統計カード
-- **Total Pods**: 全 Pod 数（シアン）
+- **Total Pods**: 選択範囲で観測した Pod 数（シアン）
 - **Running**: 実行中の Pod 数（緑）
 - **Pending**: 待機中の Pod 数（オレンジ）
 - **Failed**: 失敗した Pod 数（赤）
@@ -46,7 +50,7 @@ Pod のステータス別分布を円グラフで可視化します:
 ## 使い方
 
 1. サイドバーで **Compute > K8s > Pods** をクリックします
-2. 統計カードで全体の Pod ステータス分布を確認します
+2. 統計カードで選択範囲内に観測されたリソースを確認します。
 3. Pending または Failed の Pod があれば原因を調査します
 4. テーブルで特定 Pod のノード配置を確認します
 
@@ -83,7 +87,7 @@ AI Assistant で「Pending Pod の一覧」「Failed Pod の原因分析」「�
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Nodes](../compute/eks-nodes) - ノードリソースの確認
 - [EKS Explorer](../compute/eks-explorer) - 詳細なリソース探索
 - [EKS Container Cost](../compute/eks-container-cost) - Pod のコスト分析
