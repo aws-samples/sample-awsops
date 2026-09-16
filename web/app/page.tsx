@@ -25,10 +25,12 @@ import { nearestSnapshot, netChange, covCompleteForScope, isDerivedTrendType, sa
 import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 
 interface Overview {
   jobs: { queued: number; running: number; succeeded: number; failed: number };
   clusterCount: number | null;
+  clusterScope?: { accountId: string; region: string; names: string[]; truncated: boolean } | null;
   mtdCost: number | null;
   compliance: { pass_rate: number | null; alarm: number | null; finished_at: string | null } | null;
 }
@@ -46,13 +48,21 @@ interface Cost { trend: TrendPoint[]; monthly?: { month: string; total: number }
 interface ResourceTrendPoint { date: string; total: number; ec2?: number; [k: string]: unknown }
 interface ResourceTrend { trend: ResourceTrendPoint[]; types?: string[]; coverage?: TrendCoverage; accounts?: string[]; degraded?: boolean }
 interface FleetCluster {
+  id?: string;
   name: string;
+  accountId?: string;
+  region?: string;
   reachable: boolean;
+  error?: string;
   counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
   podStatus: Record<string, number>;
   events: { reason?: string; message?: string; object?: string; count?: number; lastSeenTs?: number; [k: string]: unknown }[];
 }
-interface Fleet { clusters: FleetCluster[] }
+interface Fleet {
+  clusters: FleetCluster[];
+  truncated?: boolean;
+  errors?: { accountId: string; region: string; message: string }[];
+}
 
 const DASH = '—';
 // Registry label, else a derived trend-series label (gap L129 — not inventory types), else raw.
@@ -94,6 +104,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   // and the panel would be invisible on the default view.
   const [impactTrend, setImpactTrend] = useState<ResourceTrend | null>(null);
   const [fleet, setFleet] = useState<Fleet | null>(null);
+  const [fleetErr, setFleetErr] = useState('');
   const [busy, setBusy] = useState(true);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   // Sync-all visibility (round-2 review): /api/me's isAdmin exists exactly so the UI can hide
@@ -117,6 +128,8 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
     const current = () => loadGen.current === gen && !ctl.signal.aborted;
     const fresh = <T,>(set: (v: T) => void) => (v: T) => { if (current()) set(v); };
     setBusy(true);
+    setFleet(null);
+    setFleetErr('');
     // Core summaries (Aurora-backed, fast) gate the refresh spinner. Each degrades on its
     // own (allSettled) so one failure never blanks the others.
     await Promise.allSettled([
@@ -150,18 +163,25 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
     // busy-gated set so it never blocks the spinner, and bounded on BOTH ends: the client
     // AbortController (6s) drops the request here, while the server-side k8sGet timeout
     // (K8S_REQUEST_TIMEOUT_MS in eks-incluster) closes the actual K8s socket so a slow/stuck
-    // API can't occupy the web task (thin-BFF). The charts fill in on resolve, else stay empty.
+    // API can't occupy the web task (thin-BFF). A failed read remains unknown, never empty.
     const t = setTimeout(() => {
       if (current()) {
-        setFleet({ clusters: [] });
+        setFleet(null);
+        setFleetErr('EKS fleet 조회 시간 초과 (6s)');
         ctl.abort();
       }
     }, 6000);
     fleetTimeout.current = t;
-    fetch('/api/eks/fleet', { signal: ctl.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(fresh(setFleet))
-      .catch(() => fresh(setFleet)({ clusters: [] }))
+    fetch(`/api/eks/fleet?${scopeParams(scope)}`, { signal: ctl.signal })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok || d.status === 'error' || !Array.isArray(d.clusters)) {
+          throw new Error(d.message || String(r.status));
+        }
+        return d as Fleet;
+      })
+      .then(fresh((d: Fleet) => { setFleet(d); setFleetErr(''); }))
+      .catch((e) => fresh((message: string) => { setFleet(null); setFleetErr(message); })(String(e)))
       .finally(() => {
         clearTimeout(t);
         if (fleetTimeout.current === t) fleetTimeout.current = undefined;
@@ -230,7 +250,19 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
 
   // Aggregate the EKS fleet across clusters (counts, pod phases, recent events).
   const clusters = fleet?.clusters ?? [];
-  const eks = clusters.reduce(
+  const reachableClusters = clusters.filter(c => c.reachable);
+  const unreachableClusters = clusters.filter(c => !c.reachable);
+  const fleetIncomplete = !!fleetErr || !!fleet?.truncated || !!fleet?.errors?.length || unreachableClusters.length > 0;
+  const fleetComplete = fleet !== null && !fleetIncomplete;
+  const fleetPopulation = `선택 범위의 등록 클러스터 · 조회 성공 ${reachableClusters.length}개 기준`;
+  const fleetEmpty = !fleet && !fleetErr
+    ? 'EKS 조회 중…'
+    : fleetIncomplete
+      ? '수집이 불완전하여 EKS 데이터를 확인할 수 없습니다 — 다시 조회하거나 범위를 좁혀 주세요.'
+      : clusters.length === 0
+        ? '선택 범위에 등록된 클러스터가 없습니다'
+        : null;
+  const eks = reachableClusters.reduce(
     (a, c) => {
       a.nodes += c.counts?.nodes ?? 0;
       a.nodesReady += c.counts?.nodesReady ?? 0;
@@ -244,23 +276,25 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const podStatusDonut = Object.entries(eks.podStatus)
     .map(([name, value]) => ({ name, value }))
     .filter((d) => d.value > 0);
-  const recentEvents = clusters
-    .flatMap((c) => (c.events ?? []).map((e) => ({ ...e, cluster: c.name })))
+  const recentEvents = reachableClusters
+    .flatMap((c) => (c.events ?? []).map((e) => ({ ...e, cluster: eksClusterLabel(c.id ?? c.name) })))
     .sort((a, b) => (Number(b.lastSeenTs) || 0) - (Number(a.lastSeenTs) || 0))
     .slice(0, 8);
   const hasFleet = clusters.length > 0;
-  // Gap L82 EKS subline honesty gates (round-1 review): (a) an unreachable cluster comes back
-  // with ZERO counts — aggregating it would fabricate a confident '0/0 ready', so the subline
-  // renders only when EVERY cluster answered; (b) the fleet registry is UNSCOPED while the
-  // tile's cluster count is account-scoped — under a non-default account selection the two
-  // would describe different populations, so the subline is suppressed there.
-  // (c) the fleet REGISTRY population (env ∪ eks_registrations) is not the same source as the
-  // tile's headline count (host-account ListClusters) — require the cardinalities to AGREE
-  // before fusing them onto one tile (an equal count is a consistency proxy, not proof of
-  // identity — the residual is disclosed in the spec/docs; on mismatch the subline is
-  // suppressed rather than shown against a contradicting headline).
-  const fleetMicroOk = hasFleet && clusters.every((c) => c.reachable)
-    && scope.accounts === '__all__' && ov?.clusterCount === clusters.length;
+  // Overview still reads one account in its deployment region. Equal counts alone cannot
+  // identify its population: require explicit singleton scope plus identical raw names and
+  // per-cluster account/region provenance. Older responses without metadata never fuse.
+  const headlineScope = ov?.clusterScope;
+  const selectedAccount = Array.isArray(scope.accounts) && scope.accounts.length === 1 ? scope.accounts[0] : null;
+  const selectedRegion = Array.isArray(scope.regions) && scope.regions.length === 1 ? scope.regions[0] : null;
+  const headlineNames = new Set(headlineScope?.names ?? []);
+  const fleetMicroOk = fleetComplete && fleet?.truncated === false && hasFleet && !ovErr
+    && !!headlineScope && headlineScope.truncated === false
+    && selectedAccount === headlineScope.accountId && selectedRegion === headlineScope.region
+    && ov?.clusterCount === headlineScope.names.length && headlineNames.size === headlineScope.names.length
+    && headlineNames.size === clusters.length
+    && new Set(clusters.map(c => c.name)).size === clusters.length
+    && clusters.every(c => c.accountId === headlineScope.accountId && c.region === headlineScope.region && headlineNames.has(c.name));
 
   // Security-issue rollup across the four /security findings (public S3 + open ingress +
   // unencrypted EBS + IAM without MFA). The public-S3 count is produced by the summary
@@ -473,6 +507,15 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
             {tt('운영 요약 로드 실패:')} {ovErr} {tt('(세션 만료면 새로고침)')}
           </div>
         )}
+        {fleetIncomplete && (
+          <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
+            <div>{tt('EKS 수집 불완전 — 누락되거나 조회 실패한 데이터는 집계에서 제외됩니다. 다시 조회하거나 계정/리전 범위를 좁혀 주세요.')}</div>
+            {fleetErr && <div>{fleetErr}</div>}
+            {fleet?.truncated && <div>{tt('조회 한도로 일부 등록 클러스터가 누락되었습니다.')}</div>}
+            {fleet?.errors?.map((error, i) => <div key={`${error.accountId}/${error.region}/${i}`}>{error.accountId} / {error.region}: {error.message}</div>)}
+            {unreachableClusters.map(c => <div key={c.id ?? c.name}>{eksClusterLabel(c.id ?? c.name)}: {c.error || tt('조회 실패')}</div>)}
+          </div>
+        )}
 
         {/* ---- AI INSIGHTS (operational anomalies — K8s/CloudWatch/cost, worker-synthesized) ---- */}
         <InsightCard />
@@ -620,9 +663,15 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
               <StatTile size="compact" label="ECS 클러스터" value={n('ecs_cluster')} href="/inventory/ecs_cluster" icon={typeIcon('ecs_cluster')} micro={micro('ecs_cluster')} />
               <StatTile size="compact" label="AgentCore" value={`${SECTION_GATEWAYS} GW`} href="/assistant" icon={<Cpu size={13} />} />
               <StatTile size="compact" label="ECR 리포지토리" value={n('ecr')} href="/inventory/ecr" icon={typeIcon('ecr')} micro={micro('ecr')} />
-              <StatTile size="compact" label="EKS 클러스터" value={ov ? ov.clusterCount ?? DASH : DASH} href="/eks" icon={<Container size={13} />} micro={fleetMicroOk ? `${eks.nodesReady}/${eks.nodes} ready · ${eks.pods} pods · ${eks.deployments} deploys` : undefined} />
+              <StatTile size="compact" label="EKS 클러스터" value={ov?.clusterCount == null ? DASH : headlineScope?.truncated ? `≥${ov.clusterCount}` : ov.clusterCount} href="/eks" icon={<Container size={13} />} micro={fleetMicroOk ? `${eks.nodesReady}/${eks.nodes} ready · ${eks.pods} pods · ${eks.deployments} deploys` : undefined} />
               <StatTile size="compact" label="CloudFront" value={n('cloudfront')} href="/inventory/cloudfront" icon={typeIcon('cloudfront')} micro={micro('cloudfront')} />
             </div>
+            {headlineScope && (
+              <div className="text-[11px] text-ink-400">
+                {tt('EKS 클러스터 수 조회 범위')}: {headlineScope.accountId} / {headlineScope.region}
+                {headlineScope.truncated && ` · ${tt('일부 결과만 표시')}`}
+              </div>
+            )}
             <div className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-ink-400 mt-1">STORAGE &amp; NETWORK</div>
             <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-3">
               <StatTile size="compact" label="VPC" value={n('vpc')} href="/inventory/vpc" icon={typeIcon('vpc')} micro={micro('vpc')} />
@@ -794,10 +843,10 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
                 </Card>
               )}
               {podStatusDonut.length > 0 ? (
-                <DonutBreakdown title="K8s 파드 상태" data={podStatusDonut} nameKey="name" valueKey="value" />
+                <DonutBreakdown title="K8s 파드 상태" subtitle={fleetPopulation} centerLabel="수집된 파드" data={podStatusDonut} nameKey="name" valueKey="value" />
               ) : (
-                <Card title="K8s 파드 상태">
-                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '파드 없음' : 'EKS 데이터 없음')}</div>
+                <Card title="K8s 파드 상태" subtitle={fleetPopulation}>
+                  <div className="text-[13px] text-ink-400">{tt(fleetEmpty ?? '파드 없음')}</div>
                 </Card>
               )}
             </div>
@@ -817,7 +866,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
                   <div className="text-[13px] text-ink-400">{tt('비용 데이터 없음')}</div>
                 </Card>
               )}
-              <Card title="최근 K8s 이벤트">
+              <Card title="최근 K8s 이벤트" subtitle={`${fleetPopulation} · ${tt('수집된 최근 이벤트 최대 8건')}`}>
                 {recentEvents.length > 0 ? (
                   <ul className="flex flex-col divide-y divide-ink-100">
                     {recentEvents.map((e, i) => (
@@ -835,7 +884,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
                     ))}
                   </ul>
                 ) : (
-                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '최근 이벤트 없음' : 'EKS 데이터 없음')}</div>
+                  <div className="text-[13px] text-ink-400">{tt(fleetEmpty ?? '최근 이벤트 없음')}</div>
                 )}
               </Card>
             </div>

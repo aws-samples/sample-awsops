@@ -92,26 +92,82 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [IP-target builder](../web/lib/flow-topology.ts).
 
 ## eks (10)
-| 경로 | 메서드 | 역할 | 인증 |
-|------|--------|------|------|
-| `/api/eks` | GET | 클러스터 목록 + 접근 상태(Access Entry 여부, 온보딩 가이드) | verifyUser |
-| `/api/eks/fleet` | GET | 전 클러스터 서버측 라이브 집계 — raw pod row 미전송, 클러스터별 실패는 `reachable:false` | verifyUser |
-| `/api/eks/node-eni` | GET | 인스턴스 타입별 ENI당 IPv4 한도 (미등재 타입 15 폴백) | verifyUser |
-| `/api/eks/summary` | GET | v1 K8s-Overview 패리티 — 연결 클러스터 라이브 카운트 (실패는 0으로 degrade, 500 금지) | verifyUser |
-| `/api/eks/[cluster]/incluster` | GET | in-cluster 리소스 목록 (`?kind=`, 클러스터 allowlist) | verifyUser |
-| `/api/eks/[cluster]/incluster/describe` | GET | 단일 오브젝트 describe (K9s 패리티, secrets는 Kind 불가) | verifyUser |
-| `/api/eks/[cluster]/k8sgpt` | GET | K8sGPT read-only 진단 (ADR-006[legacy 035]) — admin + 클러스터 allowlist | verifyUser |
-| `/api/eks/[cluster]/metrics` | GET | 컨트롤플레인 + ContainerInsights CloudWatch 메트릭 | verifyUser |
-| `/api/eks/[cluster]/pod-transfer` | GET | NFM 파드 전송 쿼리 (최대 1h 윈도우) | verifyUser |
-| `/api/eks/[cluster]/register` | POST, DELETE | 클러스터 등록/해제 (admin, EKS 공식 이름 패턴 검증) | verifyUser |
+| Path | Method | Behavior | Authentication |
+|------|--------|----------|----------------|
+| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; partial errors and enumeration limits are disclosed | verifyUser |
+| `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; unavailable scope/registration storage returns 503 | verifyUser |
+| `/api/eks/node-eni` | GET | `node` DNS lookup in EC2 inventory and traffic metrics; optional `cluster` selects its registered account/region; node-only requests retain host/deployment-region behavior | verifyUser |
+| `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |
+| `/api/eks/[cluster]/incluster` | GET | Read-only Kubernetes resources selected by `kind`; canonical registration allowlist applies | verifyUser |
+| `/api/eks/[cluster]/incluster/describe` | GET | One Kubernetes object; secrets remain unsupported and config-map values are redacted | verifyUser |
+| `/api/eks/[cluster]/k8sgpt` | GET | Flag-gated read-only diagnosis (ADR-006); admin and cluster allowlist checks remain | verifyUser |
+| `/api/eks/[cluster]/metrics` | GET | Control-plane and Container Insights metrics from the cluster's account/region; raw cluster name remains the CloudWatch dimension | verifyUser |
+| `/api/eks/[cluster]/pod-transfer` | GET | NFM pod-transfer query, at most one hour; member/nondefault-region requests return `available:false` with an unsupported-scope reason | verifyUser |
+| `/api/eks/[cluster]/register` | POST, DELETE | Admin-only app registration/removal using a validated canonical ID; POST directly describes the selected cluster before checking its Access Entry | verifyUser |
 
 ### EKS enumeration metadata
 
-The `/api/eks` envelope includes `region` and `truncated` for the bounded web enumeration.
-`region` remains present for an empty result. At most 25 clusters are described; continuation
-means enumeration is incomplete. This does not enumerate other regions or prove pod ownership.
-The envelope supplies enumeration evidence only. Array-only compatibility callers receive
-no completeness metadata and must not treat a bounded array as an exhaustive fleet count.
+The list, fleet, and summary accept `accounts`/`regions` CSV selections or `__all__`,
+with legacy singular `account`/`region` aliases. Omitted scope retains the
+host/deployment-region default. `includeGlobal` may accompany the shared UI scope
+but does not add global resources to these regional EKS reads.
+
+The `/api/eks` envelope contains `clusters`, `admin`, `errors`, and `truncated`.
+Each cluster has a separate display `name`, canonical `id`, `accountId`, and `region`.
+Envelope `region` is present only for exactly one query target, including a successful
+empty result; it is omitted for zero or multiple targets. Discovery describes at
+most 25 clusters per target and considers at most 12 account/region targets.
+Continuation or a target cap sets `truncated`. Wildcard discovery covers configured
+and registered regions and adds an explicit incomplete-discovery entry in `errors`;
+it does not certify exhaustive AWS-region coverage. Individual target failures are
+also in `errors`. All target queries failing returns 502 with that error detail,
+not a successful empty list. Invalid selectors return 400, disabled/unregistered
+member scope returns 403, and unavailable scope/registration storage returns 503.
+
+Fleet and summary use the selected registered population, including authorized
+registered regions under wildcard scope, with a separate 100-cluster cap.
+Fleet rows retain `id`, `name`, `accountId`, and `region`; individual failures have
+`reachable:false` and an error. Summary totals cover successful reads only:
+`reachable < clusters` or `truncated` means the result is incomplete. Neither
+endpoint converts a failed registration-table read into a complete empty population.
+Consumers must preserve failure/cap metadata and must not fuse these registered
+counts with a separately scoped discovery count based only on equal cardinality.
+
+### EKS identity and registration
+
+For `[cluster]`, URL-encode the complete EKS ARN once for member/nondefault-region
+clusters. Bare names retain their host/deployment-region meaning. Single-cluster
+routes also accept a bare name with singular `account` and `region`; collection-style
+plural selectors are rejected there. The legacy node-only ENI route remains a
+separate host-only compatibility path; use its `cluster` query for scoped lookup.
+
+[`eks-cluster-id.ts`](../web/lib/eks-cluster-id.ts) retains the EKS name charset/length,
+numeric 12-digit account, and region-pattern validation. [`eks-context.ts`](../web/lib/eks-context.ts)
+rejects conflicting selectors and disabled member scopes before metadata or cached
+connection/auth reads. POST registration returns 404 for an absent selected cluster,
+409 for an absent/unverifiable Access Entry, 413 for an oversized body, and typed
+400/403/503 validation/authorization/unavailability responses. It writes only the app's
+registration state; it does not create AWS roles, entries, policies, or connectivity.
+
+Discovery assumes the registered target read-only role. Default Kubernetes access
+uses the host web task-role principal registered on that target; an explicit saved
+authentication override selects its own bearer identity. See [EKS onboarding](reference/07-eks.md).
+
+### Overview EKS provenance
+
+`/api/overview` keeps its existing singleton `account` query in the deployment
+region; `account=__all__` retains host behavior, while jobs/compliance remain
+app-level. Successful EKS discovery adds `clusterScope` with `accountId` (`self`
+for host), `region`, raw `names`, and `truncated`. Discovery failure leaves both
+`clusterCount` and `clusterScope` null. This metadata describes the actual query;
+it does not claim that overview enumerated the entire account/region picker.
+
+The dashboard sends the full picker scope to `/api/eks/fleet`, labels its charts
+as selected registered-cluster observations, and discloses failures, timeouts,
+unreachable clusters, and truncation. It fuses node/pod details into the EKS
+headline only for an explicit singleton account/region whose complete discovery
+names exactly match the reachable fleet's names and account/region metadata.
+Older, incomplete, or mismatched responses do not qualify based on equal counts.
 
 ## nfm (2)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -240,11 +296,11 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/jobs/observability` | GET | 접수 기간별 작업 시간·완료 목표: `windowHours` 1–168, 선택적 `type` 및 `targetMs` 1–86400000. 소유자/관리자 범위, 최대 2000건 표본·최근 50건 상세, 누락·잘림 시 미확정 / ownership-scoped workload observations | verifyUser |
 | `/api/me` | GET | 현재 사용자 + `isAdmin` 시그널 (UI 표시용 — 쓰기 게이트는 서버측 별도 유지) | verifyUser |
 | `/api/monitoring` | GET | 모니터링 허브 — `?tab=ec2\|rds` 플릿, `?series=`+`range`로 단일 리소스 시계열 | verifyUser |
-| `/api/opencost/[cluster]` | GET, PUT | OpenCost 저장 설정 — 조회 auth / 저장 admin (null = 미저장, 페이지가 기본값 사용) | verifyUser |
-| `/api/opencost/[cluster]/allocation` | GET | 1-day allocation — KPI + 파드별 비용, degrade-safe | verifyUser |
-| `/api/opencost/[cluster]/bundle` | GET | 설치 번들(values.yaml + install.sh) 다운로드 — 사용자가 out-of-band 실행 (read-only) | verifyUser |
-| `/api/opencost/[cluster]/status` | GET | 설치 상태 배지 — 403/에러도 200 `{installed:false, reason}` | verifyUser |
-| `/api/overview` | GET | 대시보드 Overview 집계 — jobs/compliance는 계정 무관(Aurora 앱 레벨) | verifyUser |
+| `/api/opencost/[cluster]` | GET, PUT | Canonical-cluster saved config; GET requires authentication, PUT requires admin; `null` means no config returned (absent or storage unavailable) | verifyUser |
+| `/api/opencost/[cluster]/allocation` | GET | One-day allocation and per-pod cost for the selected registered identity; unavailable data returns `available:false`, while typed scope failures retain their error status | verifyUser |
+| `/api/opencost/[cluster]/bundle` | GET | Generate `values.yaml` and `install.sh` for manual operator execution; canonical request identity determines raw cluster name, region, and member-account guard | verifyUser |
+| `/api/opencost/[cluster]/status` | GET | Canonical scope/registration checks precede install detection; detection may return 200 `{installed:false, reason}`, while scope/allowlist failures retain typed 400/403/404/503 responses | verifyUser |
+| `/api/overview` | GET | App-level jobs/compliance plus singleton EKS/cost reads; `clusterScope` records actual EKS account/region, names, and truncation for safe consumer comparisons | verifyUser |
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
 | `/api/stream` | GET | SSE 스트림 | 없음 |

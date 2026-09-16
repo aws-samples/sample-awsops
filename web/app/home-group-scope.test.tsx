@@ -228,7 +228,7 @@ it('home never starts a stale load’s deferred fleet phase after a scope change
   await waitFor(() => expect(fleets(calls)).toHaveLength(1));
   await answer(old, summary(74));
   expect(fleets(calls)).toHaveLength(1);
-  expect(fleets(calls)[0].url.search).toBe(''); // Keep the existing unscoped fleet API contract.
+  expect(fleets(calls)[0].url.search).toBe('?accounts=222222222222&regions=__all__&includeGlobal=1');
 });
 
 it('home keeps the newest fleet result when an older refresh ignores cancellation', async () => {
