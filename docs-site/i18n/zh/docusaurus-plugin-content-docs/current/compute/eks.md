@@ -15,20 +15,30 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 主要功能
 
 ### 集群筛选
+- 选择账户和区域
 - 按 EKS 集群筛选
 - 按 VPC 筛选
 - 支持多选
 
+切换账户或区域后，集群列表、统计和集群内资源会重新查询。请通过卡片上的 **Account** 和 **Region** 区分同名集群。
+
+:::info 发现范围
+页面显示的是所选范围中实际完成查询的结果。部分查询失败或达到获取上限时，结果并不完整。全区域（通配符）发现也仅覆盖已配置和已注册的区域，并不遍历 AWS 的所有区域。找不到集群时，请明确选择目标区域查询，不要把未显示理解为“集群不存在”。
+:::
+
 ### EKS 集群卡片
 以卡片形式显示每个集群的核心信息：
 - Cluster Name、Status (ACTIVE)
-- Kubernetes Version、VPC ID、Platform Version、Region
+- Kubernetes Version、VPC ID、Platform Version、Account、Region
 - **Access Entry 状态徽章**：K8s Connected（绿色）/ 未注册（红色）
-- **集群注册按钮（管理员）**：以三种模式注册未连接的集群 — Access Entry 查询注册（确认已存在的 Access Entry 后注册 — 运行时绝不新建 Access Entry [ADR-005]；不存在时返回 409 并给出 Terraform/CLI 上线脚本）、ServiceAccount 令牌（在集群内创建只读 SA 并粘贴其令牌 — 无需 AWS 侧配置）、AssumeRole（通过已在该集群持有 Access Entry 的 IAM 角色进行 K8s 认证 — 角色 ARN + external ID；角色名必须为 `AWSopsReadOnlyRole`[web 任务的 sts:AssumeRole 权限固定为该名称]，且集群本身必须属于宿主账户，注册路由会按宿主账户的集群列表校验）。Terraform 路径为 `make configure` 的 EKS 多选 → `eks.tf` 为 web 任务角色授予 Access Entry + AmazonEKSAdminViewPolicy
+- **集群注册按钮（管理员）**：支持已注册且已启用的成员账户中的集群，可选择以下三种模式。
+  - **Access Entry 查询注册（默认）**：检查目标集群中宿主 web 任务角色已有的 `STANDARD` Access Entry 后注册。所有者需预先创建 Entry 并关联只读的 `AmazonEKSAdminViewPolicy`。AWSops 不会在运行时新建 Entry 或其他 AWS 资源（ADR-005）。
+  - **ServiceAccount 令牌**：保存所有者在目标集群中准备的只读 SA 令牌，用于 Kubernetes 认证。SA 认证不需要 IAM Access Entry，但获取成员账户的 EKS 元数据仍需要该账户中已注册的只读角色。
+  - **显式 AssumeRole Kubernetes 认证**：指定角色 ARN，并按需提供 external ID。该角色必须可由 web 任务承担，且已获得目标集群内的读取权限。默认部署授权覆盖 `AWSopsReadOnlyRole`。输入校验并不强制使用这一个角色名，但其他角色仍需对应的 IAM 权限和信任配置，并非任意角色都能直接使用。
 - **点击筛选**：点击集群卡片后仅筛选该集群（青色边框）
 
 :::tip 集群访问权限
-当已注册集群但无法从任何集群读取实时数据时，页面顶部会显示无法访问横幅，包含原始失败原因和本指南的链接。未连接的集群无法查询数据 — 请通过集群注册按钮（查询注册 / SA 令牌 / AssumeRole）或 Terraform 上线（`make configure` → `eks.tf`）进行连接。若查询注册返回 409，将屏幕上显示的上线脚本交给集群所有者即可。
+当已注册集群但无法从任何集群读取实时数据时，页面顶部会显示无法访问横幅，包含原始失败原因和本指南的链接。对于未连接的集群，请确认目标范围后配置查询注册 / SA 令牌 / AssumeRole。若查询注册返回 409，请将页面针对目标账户和区域生成的接入脚本交给集群所有者。
 :::
 
 ### 统计卡片（点击跳转）
@@ -60,10 +70,23 @@ import Screenshot from '@site/src/components/Screenshot';
 实时显示 Kubernetes Warning 事件：
 - Kind、Object、Reason、Message、Count、Last Seen
 
+## 跨账户接入
+
+1. 在 **Accounts** 中注册并启用成员账户和目标区域，确保宿主 web 任务能够承担目标账户中已注册的只读角色。
+2. 在 EKS 页面选择该账户和区域，并核对卡片上的 **Account** 和 **Region**。
+3. 使用默认模式时，由集群所有者在目标账户和区域执行页面提供的命令，为**宿主 web 任务角色**创建 `STANDARD` Access Entry 并关联 `AmazonEKSAdminViewPolicy`。
+4. 管理员点击**查询注册**。注册通过直接调用 `DescribeCluster` 确认目标集群，并保存应用内注册信息，不会创建 AWS 资源。
+
+元数据查询使用目标账户中已注册的只读角色，但默认 Kubernetes bearer 令牌仍由宿主 web 任务角色的凭证签名。SA 令牌 / 显式 AssumeRole 是单独选择的 Kubernetes 认证覆盖配置，不能替代元数据查询权限。所有认证模式都要求 web 任务能够通过网络访问目标 Kubernetes API。
+
+`make configure` → `eks.tf` 仅负责宿主侧的资源配置。对于成员账户或非部署区域，所有者执行命令后仍需手动查询注册，不能依赖 EventBridge 自动注册这些范围中的集群。
+
+注册时，**404** 表示在所选目标账户和区域中找不到集群；**409** 表示默认模式所需的 Access Entry 缺失或无法确认；**503** 表示目标信息查询或注册存储不可用。不要把获取失败理解为正常的“0 个结果”。
+
 ## 使用方法
 
 1. 在侧边栏中点击 **Compute > EKS**
-2. 点击集群卡片筛选特定集群
+2. 选择账户和区域，再点击集群卡片筛选特定集群
 3. 点击统计卡片跳转到 Pods/Nodes/Deployments/Services 详情页面
 4. 在节点卡片中识别资源使用率较高的节点
 5. 点击节点查看详细资源和 Pod 列表

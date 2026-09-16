@@ -14,12 +14,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 主要功能
 
+选择账户或区域后，会重新查询该范围的集群卡片、KPI 和集群内资源。出现部分失败或获取上限提示时，结果并不完整。全区域（通配符）发现也仅覆盖已配置和已注册的区域，因此未显示不代表“整个 AWS 中不存在集群”；如有需要，请明确选择目标区域查询。
+
 ### KPI 卡片
-以顶部卡片展示整个舰队的核心指标。
+顶部卡片展示所选范围中实际完成查询部分的核心指标。
 
 | 卡片 | 含义 |
 |------|------|
-| **Clusters** | 账户中发现的集群总数 |
+| **Clusters** | 在所选且实际查询的范围内发现的集群数，并非整个 AWS 的总数 |
 | **Connected** | 已连接查询（可采集数据）的集群数 |
 | **Nodes** | 已连接集群的节点合计（显示 `ready` 数量） |
 | **Pods** | Pod 合计（显示 `running` 数量） |
@@ -27,14 +29,14 @@ import Screenshot from '@site/src/components/Screenshot';
 | **Services** | Service 合计 |
 
 ### 集群卡片
-每个集群以一张卡片显示 **Status**、**Version**、**Region**、**VPC**、**Platform** 信息。连接状态以徽章区分。
+每个集群以一张卡片显示 **Status**、**Version**、**Account**、**Region**、**VPC**、**Platform** 信息。请通过 **Account** 和 **Region** 区分同名集群。连接状态以徽章区分。
 
 - **Connected**：查询已连接，可显示节点/Pod/Deployment 数量（点击卡片标题可进入详情）
 - **有 Entry**：存在 Access Entry 但尚未注册查询
-- **未连接**：没有 Access Entry，无法查询
+- **未连接**：没有默认 Access Entry 连接，也没有可用的 SA 令牌 / AssumeRole 配置
 - **无法确认**：无法判别访问状态
 
-要查询已连接的集群，需要 **EKS Access Entry**。管理员可以**注册/解除**查询访问，或查看可直接应用到集群的**入驻脚本**。AWSops 不会变更集群，所有操作均为只读。
+支持查询已注册且已启用的成员账户。默认模式使用目标集群中宿主 web 任务角色的 **EKS Access Entry** 和只读策略，也支持显式配置 **SA 令牌 / AssumeRole** 认证；SA 认证不需要 IAM Access Entry。AssumeRole 所用角色必须可由 web 任务承担，且具有集群内的读取权限。对于成员账户，所有模式仍需要已注册的只读角色提供元数据查询权限。管理员可以**注册/解除**查询访问，或查看由所有者应用到目标集群的**入驻脚本**。AWSops 本身不会变更集群，查询均为只读。
 
 ### 舰队资源摘要
 存在已连接的集群时，卡片下方会出现额外的可视化内容。
@@ -53,7 +55,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 使用方法
 1. 在侧边栏 **Compute** 分组中点击 **EKS**
-2. 通过顶部 KPI 卡片确认舰队规模和连接状态
+2. 选择账户和区域，通过顶部 KPI 卡片确认该查询范围的规模和连接状态
 3. 点击 **Connected** 集群卡片的标题进入详情
 4. 在详情中切换标签页查看 **Nodes / Pods / Deployments / Services / Events / Diagnosis**
 5. 在搜索框输入关键词或使用命名空间过滤器缩小范围
@@ -65,7 +67,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 :::info 连接条件
-集群要显示为 **Connected**，需要 **EKS Access Entry**。未连接的集群会一并提供入驻脚本，注册/解除仅限管理员执行。显示的时刻以 KST（Asia/Seoul）为准。
+支持默认 Access Entry 连接以及显式配置的 SA 令牌 / AssumeRole 认证。**Connected** 徽章本身不保证读取成功，还需检查实际数据获取结果和部分失败提示。未连接的集群会一并提供入驻脚本，注册/解除仅限管理员执行。显示的时刻以 KST（Asia/Seoul）为准。
 :::
 
 ## AI 分析技巧

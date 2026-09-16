@@ -12,6 +12,11 @@ A page for browsing your EKS cluster fleet and in-cluster resources in one place
 
 <Screenshot src="/screenshots/resources/eks.png" alt="EKS cluster fleet" />
 
+:::info Account and region scope
+The top filter applies to EKS discovery and resource reads. Partial-collection, failure, or limit notices mean the displayed numbers cover observed results and cannot prove complete absence. All-region discovery discloses its configured/already-registered-region limit.
+:::
+
+
 ## Features
 
 ### KPI cards
@@ -19,7 +24,7 @@ Top cards summarize the whole fleet at a glance.
 
 | Card | Meaning |
 |------|---------|
-| **Clusters** | Total clusters discovered in the account |
+| **Clusters** | Clusters discovered in the selected account/region scope (check partial-collection notices) |
 | **Connected** | Clusters whose data can be queried (connected) |
 | **Nodes** | Node total across connected clusters (`ready` count shown) |
 | **Pods** | Pod total (`running` count shown) |
@@ -27,14 +32,14 @@ Top cards summarize the whole fleet at a glance.
 | **Services** | Service total |
 
 ### Cluster cards
-Each cluster renders as a card showing **Status**, **Version**, **Region**, **VPC**, and **Platform**. The connection state is shown as a badge.
+Each cluster renders as a card showing **Status**, **Version**, **Account**, **Region**, **VPC**, and **Platform**. The connection state is shown as a badge.
 
 - **Connected**: queryable, with node/pod/deployment counts (click the card title to open the detail view)
 - **Entry present**: an Access Entry exists but query access is not yet registered
 - **Not connected**: no Access Entry, so the cluster cannot be queried
 - **Unknown**: access state could not be determined
 
-A connected cluster requires an **EKS Access Entry**. Admins can **register/unregister** query access or view an **onboarding script** to apply to the cluster themselves. AWSops never changes clusters — everything here is read-only.
+Default authentication requires an **EKS Access Entry for the web task role** on the target cluster. Explicit SA-token/AssumeRole authentication uses that identity's Kubernetes authorization; account metadata discovery must still be configured separately. Admins can **register/unregister** query access or view an **onboarding script** to apply to the cluster themselves. AWSops never changes clusters — everything here is read-only.
 
 ### Fleet resource summary
 When at least one cluster is connected, extra visualizations appear below the cards.
@@ -65,7 +70,7 @@ You only need to type part of a name in the search box. The namespace filter is 
 :::
 
 :::info Connection requirement
-For a cluster to appear as **Connected**, it needs an **EKS Access Entry**. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
+Default authentication needs the **web task-role EKS Access Entry**; explicit SA-token/AssumeRole authentication is also supported. Check actual read success and partial-collection notices together. Not-connected clusters come with an onboarding script, and registering/unregistering is admin-only. Timestamps are shown in KST (Asia/Seoul).
 :::
 
 ## AI analysis tips

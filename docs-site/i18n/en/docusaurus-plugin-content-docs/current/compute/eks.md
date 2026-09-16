@@ -22,13 +22,28 @@ A page for viewing the overall status of EKS clusters, node resources, and Pod s
 ### EKS Cluster Cards
 Display key information for each cluster in card format:
 - Cluster Name, Status (ACTIVE)
-- Kubernetes Version, VPC ID, Platform Version, Region
+- Kubernetes Version, Account, VPC ID, Platform Version, Region
 - **Access Entry badge**: K8s Connected (green) / No Access (red)
-- **Cluster registration button (admin)**: register an unconnected cluster in one of three modes — Access Entry lookup-register (verifies an EXISTING Access Entry then registers — never creates one at runtime [ADR-005]; a missing entry returns 409 with a Terraform/CLI onboarding script), ServiceAccount token (create a read-only SA in the cluster and paste its token — no AWS-side setup), or AssumeRole (authenticate to the K8s API via an IAM role that ALREADY holds an Access Entry on that cluster — role ARN + external ID; the role MUST be named `AWSopsReadOnlyRole` [the web task's sts:AssumeRole grant is name-pinned to it], and the cluster itself must belong to the host account, which the register route verifies against the host cluster list). The Terraform path is `make configure`'s EKS multi-select → `eks.tf` granting the web task role an Access Entry + AmazonEKSAdminViewPolicy
+- **Cluster registration button (admin)**: use existing-Access-Entry query registration, a ServiceAccount token, or an explicit AssumeRole identity. AWSops stores registration settings; it does not create AWS roles, Access Entries, or policies.
 - **Click to filter**: Click a cluster card to filter all data to that cluster (cyan border)
 
 :::tip Cluster Access
-When clusters are registered but live data can't be read from ANY of them, a page-level no-access banner appears with the raw failure reason and a link to this guide. Unconnected clusters cannot display data — connect via the cluster registration button (lookup-register / SA token / AssumeRole) or the Terraform onboarding (`make configure` → `eks.tf`). If lookup-register returns 409, hand the on-screen onboarding script to the cluster owner.
+When registered clusters cannot supply live data, the page shows the failure reason and a link to this guide. Default query registration needs the web task-role Access Entry on the target; explicit SA/AssumeRole authentication needs Kubernetes authorization for that identity. The selected cluster owner executes any commands returned with a 409, then an admin retries query registration.
+:::
+
+### Connect a cross-account cluster
+
+1. Register and enable the target account in **Accounts**, and configure the regions to query. Metadata discovery uses the registered target read-only role, normally `AWSopsReadOnlyRole`.
+2. Select the target account and region in the top filter. Changing the filter refreshes lists and aggregates without registering another cluster. **Account** and **Region** on each card distinguish clusters with the same name.
+3. For default **Access Entry query registration**, the cluster owner must create a `STANDARD` entry for the **host account's web task role** on the target cluster and associate the required read policy. The role used for metadata discovery and the default Kubernetes bearer identity are separate.
+4. Choose **Register for query**. Registration directly checks that cluster in the selected account and region; it does not verify membership in the host account's cluster list. Registration and detail requests retain the same account/region identity.
+
+A **ServiceAccount token** authenticates Kubernetes reads as the read-only SA authorized inside the cluster. It does not require an IAM Access Entry, but target-account metadata discovery must still be configured. **AssumeRole authentication** uses a role that the web task can assume and that is authorized for the target Kubernetes API. The default deployment's AssumeRole grant targets `AWSopsReadOnlyRole`; an operator must separately authorize another role. Both methods still require network access to the cluster API.
+
+`make configure` → `eks.tf` is the **host-account Terraform onboarding path**. For member/nondefault-region clusters, the owner executes the displayed commands and then an admin registers query access manually. Do not assume the host EventBridge observer will register them automatically.
+
+:::info Scope and failure states
+All-region discovery currently covers configured regions and regions of already registered clusters; it does not prove exhaustive AWS-region coverage. Narrow the scope when partial-collection or limit notices appear. `404` means the selected target cluster was not found; `409` means an Access Entry is missing or could not be verified. A `503` or another query failure is not evidence that no cluster exists.
 :::
 
 ### Stats Cards (Click to Navigate)

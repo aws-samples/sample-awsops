@@ -12,6 +12,12 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-container-cost.png" alt="EKS Container Cost" />
 
+:::info 目标范围
+切换账户或区域后，会重新查询该范围的成本数据。请通过 EKS 卡片上的 **Account** 和 **Region** 区分同名集群。部分失败或达到获取上限时结果并不完整，全区域（通配符）发现也仅覆盖已配置和已注册的区域。不要把未显示的集群或成本理解为“不存在 / 0”。
+:::
+
+**Pod 传输量（NFM）** 仅支持宿主账户中位于 AWSops 部署区域的集群。对于成员账户或其他区域，页面会显示不可用原因。它与 OpenCost 的 **Network** 成本是独立的数据源，NFM 不可用并不意味着 OpenCost 的 Network 成本也不可用。
+
 ## 主要功能
 
 ### 数据源显示

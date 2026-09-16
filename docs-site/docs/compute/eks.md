@@ -22,13 +22,28 @@ EKS 클러스터의 전체 현황과 노드 리소스, Pod 상태를 한눈에 �
 ### EKS 클러스터 카드
 각 클러스터의 핵심 정보를 카드 형태로 표시:
 - Cluster Name, Status (ACTIVE)
-- Kubernetes Version, VPC ID, Platform Version, Region
+- Kubernetes Version, Account, VPC ID, Platform Version, Region
 - **Access Entry 상태 배지**: K8s Connected (초록) / 미등록 (빨강)
-- **클러스터 등록 버튼(관리자)**: 미연결 클러스터를 3가지 모드로 등록 — Access Entry 조회 등록(이미 존재하는 Access Entry 확인 후 등록 — 런타임에 Access Entry를 새로 만들지 않음[ADR-005], 없으면 409와 함께 Terraform/CLI 온보딩 스크립트 안내), ServiceAccount 토큰(클러스터 안에 읽기 전용 SA를 만들고 토큰 붙여넣기 — AWS 쪽 설정 불필요), AssumeRole(해당 클러스터에 Access Entry를 이미 보유한 IAM Role의 ARN + external ID로 K8s 인증 — role 이름은 반드시 `AWSopsReadOnlyRole`이어야 함[web 태스크의 sts:AssumeRole 권한이 이 이름으로 고정], 클러스터 자체는 호스트 계정 소속이어야 하며 등록 라우트가 호스트 계정의 클러스터 목록으로 검증). Terraform 경로는 `make configure`의 EKS 다중 선택 → `eks.tf`가 web 태스크 롤에 Access Entry + AmazonEKSAdminViewPolicy를 부여
+- **클러스터 등록 버튼(관리자)**: 기존 Access Entry 확인 후 조회 등록, ServiceAccount 토큰, 또는 명시적 AssumeRole 인증을 지원합니다. AWSops는 등록 정보만 저장하며 AWS 역할·Access Entry·정책을 생성하지 않습니다.
 - **클릭 필터링**: 클러스터 카드를 클릭하면 해당 클러스터만 필터링 (시안 테두리)
 
 :::tip 클러스터 접근 권한
-등록된 클러스터가 있는데도 어느 클러스터에서도 라이브 데이터를 읽지 못하면, 페이지 상단에 실패 원인(원문 오류)과 이 가이드 링크가 담긴 접근 불가 배너가 표시됩니다. 미연결 클러스터는 데이터를 조회할 수 없습니다 — 위의 클러스터 등록 버튼(조회 등록 / SA 토큰 / AssumeRole) 또는 Terraform 온보딩(`make configure` → `eks.tf`)으로 연결하세요. 조회 등록이 409를 반환하면 화면에 표시되는 온보딩 스크립트를 클러스터 소유자에게 전달하면 됩니다.
+등록된 클러스터의 라이브 데이터를 읽지 못하면 실패 원인과 이 가이드 링크가 표시됩니다. 기본 조회 등록에는 대상 클러스터의 web 태스크 역할 Access Entry가 필요하고, 명시적 SA/AssumeRole 인증에는 해당 인증 주체의 Kubernetes 권한이 필요합니다. 409 안내 명령은 선택한 클러스터의 소유자가 실행해야 하며, 실행 후 조회 등록을 다시 누르세요.
+:::
+
+### 교차 계정 클러스터 연결
+
+1. **Accounts**에서 대상 계정을 등록·활성화하고 조회할 리전을 설정합니다. 클러스터 메타데이터 조회에는 등록된 대상 계정의 읽기 전용 역할(기본 `AWSopsReadOnlyRole`)을 사용합니다.
+2. 상단 계정·리전 필터에서 대상 범위를 선택합니다. 필터를 바꾸면 등록 작업 없이 목록과 집계가 갱신되며, 카드의 **Account**와 **Region**으로 동명 클러스터를 구분합니다.
+3. 기본 **Access Entry 조회 등록**을 사용할 때는 클러스터 소유자가 대상 클러스터에 **호스트 계정의 web 태스크 역할**을 `STANDARD` Access Entry로 등록하고 필요한 읽기 정책을 연결해야 합니다. 메타데이터를 읽는 대상 역할과 기본 Kubernetes 인증 역할은 별개입니다.
+4. **조회 등록**을 누릅니다. 선택한 계정·리전에서 해당 클러스터를 직접 확인하며, 호스트 계정의 클러스터 목록으로 검증하지 않습니다. 등록과 상세 조회는 같은 계정·리전 식별자를 유지합니다.
+
+**ServiceAccount 토큰**은 클러스터 안에서 허용한 읽기 전용 SA의 토큰으로 Kubernetes를 인증합니다. 이 경우 IAM Access Entry는 필요하지 않지만 대상 계정의 메타데이터 조회 설정은 여전히 필요합니다. **AssumeRole 인증**은 web 태스크가 AssumeRole할 수 있고 대상 클러스터의 Kubernetes 접근 권한을 가진 역할을 사용합니다. 기본 배포의 AssumeRole 권한은 `AWSopsReadOnlyRole`을 대상으로 하므로 다른 역할은 운영자가 별도로 허용해야 합니다. 두 방식 모두 클러스터 API에 대한 네트워크 연결이 필요합니다.
+
+`make configure` → `eks.tf`는 **호스트 계정의 Terraform 온보딩 경로**입니다. 멤버 계정·기본 리전 외 클러스터는 소유자가 안내 명령을 실행한 뒤 수동으로 조회 등록합니다. 호스트 EventBridge 관찰자가 자동 등록해 줄 것으로 가정하지 마세요.
+
+:::info 조회 범위와 실패 구분
+전체 리전 탐색은 현재 설정된 리전과 이미 등록된 클러스터의 리전을 대상으로 하며, 모든 AWS 리전을 빠짐없이 탐색했다는 의미가 아닙니다. 부분 수집·조회 한도 안내가 있으면 범위를 좁혀 다시 확인하세요. `404`는 선택한 대상 클러스터를 찾지 못한 경우, `409`는 Access Entry가 없거나 확인할 수 없는 경우입니다. `503` 등 조회 실패를 클러스터가 없는 것으로 해석하지 마세요.
 :::
 
 ### 통계 카드 (클릭 이동)
