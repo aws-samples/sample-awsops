@@ -7,6 +7,10 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  'VPC 피어링 (요청자)': { en: 'VPC peering (requester)', zh: 'VPC 对等连接（请求方）', ja: 'VPC ピアリング（リクエスター）' },
+  'VPC 피어링 (수락자)': { en: 'VPC peering (accepter)', zh: 'VPC 对等连接（接受方）', ja: 'VPC ピアリング（アクセプター）' },
+  'TGW 어태치먼트': { en: 'TGW attachments', zh: 'TGW 连接', ja: 'TGW アタッチメント' },
+  'TGW 연결 VPC': { en: 'VPCs attached to TGW', zh: '连接到 TGW 的 VPC', ja: 'TGW に接続された VPC' },
   'VPC 간 연결': { en: 'Inter-VPC connections', zh: 'VPC 间连接', ja: 'VPC 間接続' },
   'VPC Peering · Transit Gateway': { en: 'VPC Peering · Transit Gateway', zh: 'VPC 对等连接 · Transit Gateway', ja: 'VPC ピアリング · Transit Gateway' },
   '리소스 그래프 열기': { en: 'Open resource graph', zh: '打开资源图', ja: 'リソースグラフを開く' },

@@ -10,8 +10,8 @@ import type { VpcConnectivity } from '@/lib/vpc-connectivity-types';
 interface VpcChoice { key: string; id: string; account: string; region: string; name: string }
 const button = 'rounded-md border border-ink-200 bg-card px-3 py-2 text-[13px] hover:bg-ink-50 disabled:opacity-50';
 const SOURCE_LABELS: Record<string, string> = {
-  'peering-requester': 'VPC Peering (requester)', 'peering-accepter': 'VPC Peering (accepter)',
-  'tgw-attachments': 'TGW attachments', 'tgw-peers': 'TGW VPCs', source: 'VPC',
+  'peering-requester': 'VPC 피어링 (요청자)', 'peering-accepter': 'VPC 피어링 (수락자)',
+  'tgw-attachments': 'TGW 어태치먼트', 'tgw-peers': 'TGW 연결 VPC', source: 'VPC',
 };
 const str = (value: unknown) => typeof value === 'string' ? value : '';
 
@@ -101,7 +101,7 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
 
   return (
     <section id="vpc-connectivity" className="scroll-mt-6" aria-label={tt('VPC 간 연결')}>
-      <Card title={tt('VPC 간 연결')} subtitle={tt('VPC Peering · Transit Gateway')}
+      <Card title={<h2 className="whitespace-normal break-words">{tt('VPC 간 연결')}</h2>} subtitle={tt('VPC Peering · Transit Gateway')}
         right={<Link href="/topology/infra" className={`${button} inline-flex items-center gap-1`}><Network size={14} />{tt('리소스 그래프 열기')}</Link>}>
         <p className="mb-3 text-[13px] text-ink-600">{tt('선택한 VPC의 피어링과 TGW 연결 구성을 조회합니다. 실제 통신 가능 여부는 라우트·보안 정책을 별도로 확인해야 합니다.')}</p>
         {!opened ? <button type="button" className={button} disabled={!ready} onClick={loadList}>{tt('VPC 간 연결 보기')}</button> : (
@@ -118,15 +118,15 @@ function ConnectivityPanel({ scopeQuery, ready }: { scopeQuery: string; ready: b
               <button type="button" className={button} disabled={busy} onClick={loadList}>{tt('VPC 목록 새로고침')}</button>
             </div>
             {busy && <p role="status" className="text-[13px] text-ink-500">{tt('불러오는 중…')}</p>}
-            {error && <p role="alert" className="text-[13px] text-rose-600">{tt(error)}</p>}
-            {listCapped && <p className="text-[12px] text-amber-700">{tt('VPC 목록 상한에 도달했습니다. 계정·리전 범위를 좁혀 조회하세요.')}</p>}
-            {invalidRows && <p className="text-[12px] text-amber-700">{tt('계정·리전을 확인할 수 없는 VPC는 선택 목록에서 제외했습니다.')}</p>}
+            {error && <p role="alert" className="text-[13px] text-rose-600 dark:text-rose-300">{tt(error)}</p>}
+            {listCapped && <p className="text-[12px] text-amber-700 dark:text-amber-300">{tt('VPC 목록 상한에 도달했습니다. 계정·리전 범위를 좁혀 조회하세요.')}</p>}
+            {invalidRows && <p className="text-[12px] text-amber-700 dark:text-amber-300">{tt('계정·리전을 확인할 수 없는 VPC는 선택 목록에서 제외했습니다.')}</p>}
             {listRead && !busy && !vpcs.length && <p className="text-[13px] text-ink-500">{tt('선택 범위에 표시할 VPC가 없습니다. 인벤토리 수집 상태를 확인하세요.')}</p>}
             {data && (
               <div className="space-y-4">
-                {data.incompleteSources.length > 0 && <p role="alert" className="rounded-md bg-amber-500/10 p-3 text-[13px] text-amber-700">
+                {data.incompleteSources.length > 0 && <p role="alert" className="rounded-md bg-amber-500/10 p-3 text-[13px] text-amber-700 dark:text-amber-300">
                   {tt('일부 연결 정보를 확인하지 못했습니다. 표시되지 않은 연결이 있을 수 있습니다.')}
-                  {' '}{data.incompleteSources.map(s => SOURCE_LABELS[s] ?? unknown).join(' · ')}
+                  {' '}{data.incompleteSources.map(s => tt(SOURCE_LABELS[s] ?? '미확인')).join(' · ')}
                 </p>}
                 <div className="rounded-md border border-brand-200 bg-brand-500/5 p-3 text-[13px]">
                   <strong>{data.source.name || data.source.vpcId}</strong>
