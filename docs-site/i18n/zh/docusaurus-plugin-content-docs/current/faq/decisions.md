@@ -138,7 +138,7 @@ ADR-039 多 Agent 平台引入了前沿 Agent（DevOps/Security/FinOps + N）与
 
 **仅提供 read-only 诊断**（ADR-035，DOWNGRADED 2026-06-11）。
 
-K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 4.5）**仅保留 read-only Result-CRD 集成（GET-only）**，通往自动处置的接线（H3a → 032/034/029 提案）已废弃。EKS 查询基于 task-role Access Entry + View policy，全部为只读。
+K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 4.5）**仅保留 read-only Result-CRD 集成（GET-only）**，通往自动处置的接线（H3a → 032/034/029 提案）已废弃。EKS 查询全部为只读。默认 web 认证使用目标集群上 web 任务角色的 Access Entry 和读取策略。保存的 SA 令牌或显式 AssumeRole 认证使用另行授权的 Kubernetes 身份，不会启用自动修复。
 
 ## 运维 / Operations
 

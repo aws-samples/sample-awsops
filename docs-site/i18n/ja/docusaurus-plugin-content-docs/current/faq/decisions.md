@@ -138,7 +138,7 @@ ADR-039 マルチエージェントプラットフォームはフロンティア
 
 **read-only 診断のみ提供します** (ADR-035、DOWNGRADED 2026-06-11)。
 
-K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 4.5)は **read-only の Result-CRD 統合(GET-only)のみ維持**され、自動対処につながる配線(H3a → 032/034/029 提案)は廃止されました。EKS クエリは task-role Access Entry + View policy ベースで、すべて読み取り専用です。
+K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 4.5)は **read-only の Result-CRD 統合(GET-only)のみ維持**され、自動対処につながる配線(H3a → 032/034/029 提案)は廃止されました。EKS クエリはすべて読み取り専用です。既定の web 認証は、対象クラスター上の web タスクロールの Access Entry と読み取りポリシーを使います。保存された SA トークンまたは明示的な AssumeRole 認証は、別途許可された Kubernetes ID を使い、自動修復を有効にしません。
 
 ## 運用 / Operations
 

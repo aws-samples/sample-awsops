@@ -138,7 +138,7 @@ ADR-039 멀티 에이전트 플랫폼은 프런티어 에이전트(DevOps/Securi
 
 **read-only 진단만 제공합니다** (ADR-035, DOWNGRADED 2026-06-11).
 
-K8sGPT 하이브리드(MCP로 AgentCore에 통합되는 인클러스터 K8s 진단, Haiku 4.5)는 **read-only Result-CRD 통합(GET-only)만 유지**되고, 자동 조치로 이어지는 배선(H3a → 032/034/029 제안)은 폐기되었습니다. EKS 조회는 task-role Access Entry + View policy 기반으로 모두 읽기 전용입니다.
+K8sGPT 하이브리드(MCP로 AgentCore에 통합되는 인클러스터 K8s 진단, Haiku 4.5)는 **read-only Result-CRD 통합(GET-only)만 유지**되고, 자동 조치로 이어지는 배선(H3a → 032/034/029 제안)은 폐기되었습니다. EKS 조회는 모두 읽기 전용입니다. 기본 web 인증은 대상 클러스터의 web 태스크 역할 Access Entry와 읽기 정책을 사용합니다. 저장된 SA 토큰이나 명시적 AssumeRole 인증은 별도로 허용된 Kubernetes 인증 주체를 사용하며, 자동 조치를 활성화하지 않습니다.
 
 ## 운영 / Operations
 

@@ -22,7 +22,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | 卡片 | 含义 |
 |------|------|
 | **Clusters** | 在所选且实际查询的范围内发现的集群数，并非整个 AWS 的总数 |
-| **Connected** | 已连接查询（可采集数据）的集群数 |
+| **Connected** | 当前显示范围内实时资源查询成功的集群数（区别于配置状态徽章） |
 | **Nodes** | 已连接集群的节点合计（显示 `ready` 数量） |
 | **Pods** | Pod 合计（显示 `running` 数量） |
 | **Deployments** | Deployment 合计 |
@@ -31,7 +31,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ### 集群卡片
 每个集群以一张卡片显示 **Status**、**Version**、**Account**、**Region**、**VPC**、**Platform** 信息。请通过 **Account** 和 **Region** 区分同名集群。连接状态以徽章区分。
 
-- **Connected**：查询已连接，可显示节点/Pod/Deployment 数量（点击卡片标题可进入详情）
+- **Connected**：已通过默认 Access Entry 路径或保存的认证信息配置查询。徽章本身不验证凭证有效性，也不保证网络可达；仅在实时查询成功时显示节点/Pod/Deployment 数量（点击标题进入详情）。
 - **有 Entry**：存在 Access Entry 但尚未注册查询
 - **未连接**：没有默认 Access Entry 连接，也没有已保存的 SA 令牌 / AssumeRole 认证配置
 - **无法确认**：无法判别访问状态

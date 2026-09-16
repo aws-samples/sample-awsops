@@ -25,7 +25,7 @@ Top cards summarize the whole fleet at a glance.
 | Card | Meaning |
 |------|---------|
 | **Clusters** | Clusters discovered in the selected account/region scope (check partial-collection notices) |
-| **Connected** | Clusters whose data can be queried (connected) |
+| **Connected** | Clusters whose live resource reads succeeded in the displayed scope (distinct from the configuration badge) |
 | **Nodes** | Node total across connected clusters (`ready` count shown) |
 | **Pods** | Pod total (`running` count shown) |
 | **Deployments** | Deployment total |
@@ -34,7 +34,7 @@ Top cards summarize the whole fleet at a glance.
 ### Cluster cards
 Each cluster renders as a card showing **Status**, **Version**, **Account**, **Region**, **VPC**, and **Platform**. The connection state is shown as a badge.
 
-- **Connected**: queryable, with node/pod/deployment counts (click the card title to open the detail view)
+- **Connected**: query access is configured through the default Access Entry path or saved authentication. The badge does not validate credentials or guarantee network reachability. Node/pod/deployment counts appear when live reads succeed (click the title for details).
 - **Entry present**: an Access Entry exists but query access is not yet registered
 - **Not connected**: no default Access Entry connection and no saved SA-token/AssumeRole authentication configuration
 - **Unknown**: access state could not be determined
