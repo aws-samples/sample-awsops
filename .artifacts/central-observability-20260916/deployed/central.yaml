@@ -1,0 +1,1306 @@
+apiVersion: v1
+data:
+  telemetry.xml: "<clickhouse>\n  <listen_host>0.0.0.0</listen_host>\n  <path>/data/clickhouse/</path>\n\
+    \  <tmp_path>/data/tmp/</tmp_path>\n  <user_files_path>/data/user_files/</user_files_path>\n\
+    \  <format_schema_path>/data/format_schemas/</format_schema_path>\n  <max_server_memory_usage>2684354560</max_server_memory_usage>\n\
+    \  <logger><level>warning</level><console>true</console></logger>\n</clickhouse>\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: clickhouse
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "extensions:\n  healthcheckv2:\n    use_v2: true\n    http:\n     \
+    \ endpoint: 0.0.0.0:13133\n  jaeger_query:\n    storage:\n      traces: persistent\n\
+    \    http:\n      endpoint: 0.0.0.0:16686\n  jaeger_storage:\n    backends:\n\
+    \      persistent:\n        badger:\n          directories:\n            keys:\
+    \ /data/keys\n            values: /data/values\n          ephemeral: false\n \
+    \         ttl:\n            spans: 168h\nreceivers:\n  otlp:\n    protocols:\n\
+    \      grpc:\n        endpoint: 0.0.0.0:4317\nprocessors:\n  batch: {}\nexporters:\n\
+    \  jaeger_storage_exporter:\n    trace_storage: persistent\nservice:\n  extensions:\n\
+    \  - healthcheckv2\n  - jaeger_storage\n  - jaeger_query\n  pipelines:\n    traces:\n\
+    \      receivers:\n      - otlp\n      processors:\n      - batch\n      exporters:\n\
+    \      - jaeger_storage_exporter\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: jaeger
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "auth_enabled: false\nserver:\n  http_listen_port: 3100\ncommon:\n\
+    \  path_prefix: /data\n  replication_factor: 1\n  ring:\n    kvstore:\n      store:\
+    \ inmemory\n  storage:\n    filesystem:\n      chunks_directory: /data/chunks\n\
+    \      rules_directory: /data/rules\nschema_config:\n  configs:\n  - from: '2026-01-01'\n\
+    \    store: tsdb\n    object_store: filesystem\n    schema: v13\n    index:\n\
+    \      prefix: index_\n      period: 24h\ncompactor:\n  working_directory: /data/compactor\n\
+    \  retention_enabled: true\n  delete_request_store: filesystem\nlimits_config:\n\
+    \  retention_period: 168h\n  allow_structured_metadata: true\n  ingestion_rate_mb:\
+    \ 16\n  ingestion_burst_size_mb: 32\nanalytics:\n  reporting_enabled: false\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: loki
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "target: all\nmultitenancy_enabled: false\nserver:\n  http_listen_port:\
+    \ 9009\n  grpc_listen_port: 9095\ningest_storage:\n  enabled: false\ncommon:\n\
+    \  storage:\n    backend: filesystem\n    filesystem:\n      dir: /data/storage\n\
+    blocks_storage:\n  backend: filesystem\n  filesystem:\n    dir: /data/blocks\n\
+    \  tsdb:\n    dir: /data/tsdb\n  bucket_store:\n    sync_dir: /data/tsdb-sync\n\
+    ingester:\n  ring:\n    replication_factor: 1\n    kvstore:\n      store: inmemory\n\
+    compactor:\n  data_dir: /data/compactor\n  sharding_ring:\n    kvstore:\n    \
+    \  store: inmemory\nstore_gateway:\n  sharding_ring:\n    replication_factor:\
+    \ 1\n    kvstore:\n      store: inmemory\nruler:\n  rule_path: /data/rules\n \
+    \ ring:\n    kvstore:\n      store: inmemory\nruler_storage:\n  backend: filesystem\n\
+    \  filesystem:\n    dir: /data/ruler-storage\nlimits:\n  compactor_blocks_retention_period:\
+    \ 168h\n  max_global_series_per_user: 500000\nusage_stats:\n  enabled: false\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: mimir
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "global:\n  scrape_interval: 60s\nscrape_configs: []\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: prometheus
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "extensions:\n  health_check:\n    endpoint: 0.0.0.0:13133\n  file_storage:\n\
+    \    directory: /data/queue\n    create_directory: true\nreceivers:\n  otlp:\n\
+    \    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n        tls:\n \
+    \         cert_file: /tls/tls.crt\n          key_file: /tls/tls.key\n        \
+    \  client_ca_file: /tls/ca.crt\nprocessors:\n  memory_limiter:\n    check_interval:\
+    \ 1s\n    limit_mib: 1500\n    spike_limit_mib: 256\n  batch:\n    timeout: 5s\n\
+    \    send_batch_size: 2048\n    send_batch_max_size: 4096\nexporters:\n  otlp/tempo:\n\
+    \    endpoint: tempo:4317\n    tls:\n      insecure: true\n    sending_queue:\n\
+    \      enabled: true\n      queue_size: 2000\n      storage: file_storage\n  \
+    \    num_consumers: 2\n    retry_on_failure:\n      enabled: true\n      max_elapsed_time:\
+    \ 0s\n  otlp/jaeger:\n    endpoint: jaeger:4317\n    tls:\n      insecure: true\n\
+    \    sending_queue:\n      enabled: true\n      queue_size: 2000\n      storage:\
+    \ file_storage\n      num_consumers: 2\n    retry_on_failure:\n      enabled:\
+    \ true\n      max_elapsed_time: 0s\n  clickhouse:\n    endpoint: tcp://clickhouse:9000\n\
+    \    username: telemetry\n    password: ${file:/auth/password}\n    database:\
+    \ otel\n    create_schema: true\n    ttl: 168h\n    async_insert: true\n    timeout:\
+    \ 15s\n    sending_queue:\n      enabled: true\n      queue_size: 2000\n     \
+    \ storage: file_storage\n      num_consumers: 2\n    retry_on_failure:\n     \
+    \ enabled: true\n      max_elapsed_time: 0s\n  prometheusremotewrite/prometheus:\n\
+    \    endpoint: http://prometheus:9090/api/v1/write\n    resource_to_telemetry_conversion:\n\
+    \      enabled: true\n    retry_on_failure:\n      enabled: true\n      max_elapsed_time:\
+    \ 0s\n  prometheusremotewrite/mimir:\n    endpoint: http://mimir:9009/api/v1/push\n\
+    \    resource_to_telemetry_conversion:\n      enabled: true\n    retry_on_failure:\n\
+    \      enabled: true\n      max_elapsed_time: 0s\n  otlphttp/loki:\n    endpoint:\
+    \ http://loki:3100/otlp\n    sending_queue:\n      enabled: true\n      queue_size:\
+    \ 2000\n      storage: file_storage\n      num_consumers: 2\n    retry_on_failure:\n\
+    \      enabled: true\n      max_elapsed_time: 0s\nconnectors:\n  routing/metrics:\n\
+    \    error_mode: propagate\n    table:\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"GPU01\"\n      action: move\n      pipelines:\n     \
+    \ - metrics/prometheus\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"appmesh-lattice-mig\"\n      action: move\n      pipelines:\n      - metrics/prometheus\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"ekscluster01-iptables\"\
+    \n      action: move\n      pipelines:\n      - metrics/prometheus\n    - condition:\
+    \ resource.attributes[\"k8s.cluster.name\"] == \"ekscluster01-ipvs\"\n      action:\
+    \ move\n      pipelines:\n      - metrics/mimir\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"ekscluster01-nftables\"\n      action: move\n      pipelines:\n\
+    \      - metrics/mimir\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"eksworkshop\"\n      action: move\n      pipelines:\n      - metrics/mimir\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"gpu-cluster-01\"\
+    \n      action: move\n      pipelines:\n      - metrics/mimir\n    - condition:\
+    \ resource.attributes[\"k8s.cluster.name\"] == \"platform-cluster\"\n      action:\
+    \ move\n      pipelines:\n      - metrics/prometheus\n  routing/logs:\n    error_mode:\
+    \ propagate\n    table:\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"GPU01\"\n      action: move\n      pipelines:\n      - logs/clickhouse\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"appmesh-lattice-mig\"\
+    \n      action: move\n      pipelines:\n      - logs/loki\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"ekscluster01-iptables\"\n      action: move\n      pipelines:\n\
+    \      - logs/loki\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"ekscluster01-ipvs\"\n      action: move\n      pipelines:\n      - logs/loki\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"ekscluster01-nftables\"\
+    \n      action: move\n      pipelines:\n      - logs/clickhouse\n    - condition:\
+    \ resource.attributes[\"k8s.cluster.name\"] == \"eksworkshop\"\n      action:\
+    \ move\n      pipelines:\n      - logs/clickhouse\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"gpu-cluster-01\"\n      action: move\n      pipelines:\n\
+    \      - logs/clickhouse\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"platform-cluster\"\n      action: move\n      pipelines:\n      - logs/loki\n\
+    \  routing/traces:\n    error_mode: propagate\n    table:\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"GPU01\"\n      action: move\n      pipelines:\n     \
+    \ - traces/tempo\n    - condition: resource.attributes[\"k8s.cluster.name\"] ==\
+    \ \"appmesh-lattice-mig\"\n      action: move\n      pipelines:\n      - traces/jaeger\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"ekscluster01-iptables\"\
+    \n      action: move\n      pipelines:\n      - traces/tempo\n    - condition:\
+    \ resource.attributes[\"k8s.cluster.name\"] == \"ekscluster01-ipvs\"\n      action:\
+    \ move\n      pipelines:\n      - traces/jaeger\n    - condition: resource.attributes[\"\
+    k8s.cluster.name\"] == \"ekscluster01-nftables\"\n      action: move\n      pipelines:\n\
+    \      - traces/clickhouse\n    - condition: resource.attributes[\"k8s.cluster.name\"\
+    ] == \"eksworkshop\"\n      action: move\n      pipelines:\n      - traces/tempo\n\
+    \    - condition: resource.attributes[\"k8s.cluster.name\"] == \"gpu-cluster-01\"\
+    \n      action: move\n      pipelines:\n      - traces/jaeger\n    - condition:\
+    \ resource.attributes[\"k8s.cluster.name\"] == \"platform-cluster\"\n      action:\
+    \ move\n      pipelines:\n      - traces/clickhouse\nservice:\n  extensions:\n\
+    \  - health_check\n  - file_storage\n  pipelines:\n    metrics/input:\n      receivers:\n\
+    \      - otlp\n      processors:\n      - memory_limiter\n      exporters:\n \
+    \     - routing/metrics\n    metrics/mimir:\n      receivers:\n      - routing/metrics\n\
+    \      processors:\n      - batch\n      exporters:\n      - prometheusremotewrite/mimir\n\
+    \    metrics/prometheus:\n      receivers:\n      - routing/metrics\n      processors:\n\
+    \      - batch\n      exporters:\n      - prometheusremotewrite/prometheus\n \
+    \   logs/input:\n      receivers:\n      - otlp\n      processors:\n      - memory_limiter\n\
+    \      exporters:\n      - routing/logs\n    logs/clickhouse:\n      receivers:\n\
+    \      - routing/logs\n      processors:\n      - batch\n      exporters:\n  \
+    \    - clickhouse\n    logs/loki:\n      receivers:\n      - routing/logs\n  \
+    \    processors:\n      - batch\n      exporters:\n      - otlphttp/loki\n   \
+    \ traces/input:\n      receivers:\n      - otlp\n      processors:\n      - memory_limiter\n\
+    \      exporters:\n      - routing/traces\n    traces/clickhouse:\n      receivers:\n\
+    \      - routing/traces\n      processors:\n      - batch\n      exporters:\n\
+    \      - clickhouse\n    traces/jaeger:\n      receivers:\n      - routing/traces\n\
+    \      processors:\n      - batch\n      exporters:\n      - otlp/jaeger\n   \
+    \ traces/tempo:\n      receivers:\n      - routing/traces\n      processors:\n\
+    \      - batch\n      exporters:\n      - otlp/tempo\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: telemetry-gateway
+  namespace: central-observability
+---
+apiVersion: v1
+data:
+  config.yaml: "server:\n  http_listen_port: 3200\ndistributor:\n  receivers:\n  \
+    \  otlp:\n      protocols:\n        grpc:\n          endpoint: 0.0.0.0:4317\n\
+    \        http:\n          endpoint: 0.0.0.0:4318\ningester:\n  max_block_duration:\
+    \ 5m\ncompactor:\n  compaction:\n    block_retention: 168h\nstorage:\n  trace:\n\
+    \    backend: local\n    wal:\n      path: /data/wal\n    local:\n      path:\
+    \ /data/blocks\nusage_report:\n  reporting_enabled: false\n"
+kind: ConfigMap
+metadata:
+  annotations: {}
+  name: tempo
+  namespace: central-observability
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: clickhouse
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: clickhouse
+  serviceName: clickhouse
+  template:
+    metadata:
+      annotations:
+        checksum/config: 9ffc6cd9c6832f84d265b658641ee8d69ba017c6d9cc8cf64952128f56c430b7
+      labels:
+        app: clickhouse
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - --config-file=/etc/clickhouse-server/config.xml
+        command:
+        - clickhouse-server
+        image: clickhouse/clickhouse-server:26.8.5.13
+        imagePullPolicy: IfNotPresent
+        name: clickhouse
+        ports:
+        - containerPort: 8123
+          name: http
+          protocol: TCP
+        - containerPort: 9000
+          name: native
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ping
+            port: 8123
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 3Gi
+          requests:
+            cpu: 500m
+            memory: 3Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /ping
+            port: 8123
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/clickhouse-server/config.d/telemetry.xml
+          name: config
+          subPath: telemetry.xml
+        - mountPath: /etc/clickhouse-server/users.d/telemetry.xml
+          name: users
+          subPath: users.xml
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 101
+        runAsGroup: 101
+        runAsUser: 101
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: clickhouse
+        name: config
+      - name: users
+        secret:
+          defaultMode: 420
+          secretName: clickhouse-auth
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 60Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: jaeger
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: jaeger
+  serviceName: jaeger
+  template:
+    metadata:
+      annotations:
+        checksum/config: 1f635ea291d8208e0804e80af0ada9490bf1b487a69a43e89de6828e3237dad6
+      labels:
+        app: jaeger
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - --config=/conf/config.yaml
+        image: jaegertracing/jaeger:2.21.0
+        imagePullPolicy: IfNotPresent
+        name: jaeger
+        ports:
+        - containerPort: 16686
+          name: http
+          protocol: TCP
+        - containerPort: 4317
+          name: otlp
+          protocol: TCP
+        - containerPort: 13133
+          name: health
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: 16686
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /
+            port: 16686
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: jaeger
+        name: config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: loki
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: loki
+  serviceName: loki
+  template:
+    metadata:
+      annotations:
+        checksum/config: c04c963b26d92b41925f5d172a1df0c631ef610f669c5ce4f2e031e990e6d2da
+      labels:
+        app: loki
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - -config.file=/conf/config.yaml
+        image: grafana/loki:3.7.7
+        imagePullPolicy: IfNotPresent
+        name: loki
+        ports:
+        - containerPort: 3100
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 3100
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /ready
+            port: 3100
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: loki
+        name: config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 50Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: mimir
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: mimir
+  serviceName: mimir
+  template:
+    metadata:
+      annotations:
+        checksum/config: dc9d4987507e9132ad1aef34f433ee4a60b339c7935fa038367b96cd5cee3cfa
+      labels:
+        app: mimir
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - -config.file=/conf/config.yaml
+        image: grafana/mimir:3.2.1
+        imagePullPolicy: IfNotPresent
+        name: mimir
+        ports:
+        - containerPort: 9009
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 9009
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /ready
+            port: 9009
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: mimir
+        name: config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 40Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: prometheus
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: prometheus
+  serviceName: prometheus
+  template:
+    metadata:
+      annotations:
+        checksum/config: aa0242f13ed4e320af2f8d0cd45541d27233d46aec241e982dc8e23ad3feb16c
+      labels:
+        app: prometheus
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - --config.file=/conf/config.yaml
+        - --storage.tsdb.path=/data
+        - --storage.tsdb.retention.time=7d
+        - --storage.tsdb.retention.size=35GB
+        - --web.enable-remote-write-receiver
+        image: prom/prometheus:v3.14.0
+        imagePullPolicy: IfNotPresent
+        name: prometheus
+        ports:
+        - containerPort: 9090
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /-/ready
+            port: 9090
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /-/ready
+            port: 9090
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: prometheus
+        name: config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 40Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: telemetry-gateway
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: telemetry-gateway
+  serviceName: telemetry-gateway
+  template:
+    metadata:
+      annotations:
+        checksum/config: 59070283bd10bcda189972c257cf7123dcca62c1b3682bdf9ce7934085718803
+      labels:
+        app: telemetry-gateway
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - --config=/conf/config.yaml
+        image: otel/opentelemetry-collector-contrib:0.161.0
+        imagePullPolicy: IfNotPresent
+        name: telemetry-gateway
+        ports:
+        - containerPort: 4317
+          name: otlp
+          protocol: TCP
+        - containerPort: 13133
+          name: health
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: 13133
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /
+            port: 13133
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        - mountPath: /tls
+          name: tls
+          readOnly: true
+        - mountPath: /auth
+          name: auth
+          readOnly: true
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: telemetry-gateway
+        name: config
+      - name: tls
+        secret:
+          defaultMode: 420
+          secretName: telemetry-server-tls
+      - name: auth
+        secret:
+          defaultMode: 420
+          secretName: clickhouse-auth
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations: {}
+  name: tempo
+  namespace: central-observability
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: tempo
+  serviceName: tempo
+  template:
+    metadata:
+      annotations:
+        checksum/config: 0fc81aeb2691c46fb6afee8d66481d21c30fd1c8d8b09c565148b1dd947b833b
+      labels:
+        app: tempo
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - -config.file=/conf/config.yaml
+        image: grafana/tempo:2.10.8
+        imagePullPolicy: IfNotPresent
+        name: tempo
+        ports:
+        - containerPort: 3200
+          name: http
+          protocol: TCP
+        - containerPort: 4317
+          name: otlp
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 3200
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /ready
+            port: 3200
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /conf
+          name: config
+          readOnly: true
+        - mountPath: /data
+          name: data
+        workingDir: /data
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: tempo
+        name: config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+      storageClassName: telemetry-gp3
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: clickhouse
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.158.88
+  clusterIPs:
+  - 172.20.158.88
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 8123
+    protocol: TCP
+    targetPort: 8123
+  - name: native
+    port: 9000
+    protocol: TCP
+    targetPort: 9000
+  selector:
+    app: clickhouse
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: jaeger
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.243.250
+  clusterIPs:
+  - 172.20.243.250
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 16686
+    protocol: TCP
+    targetPort: 16686
+  - name: otlp
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: health
+    port: 13133
+    protocol: TCP
+    targetPort: 13133
+  selector:
+    app: jaeger
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: loki
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.1.163
+  clusterIPs:
+  - 172.20.1.163
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 3100
+    protocol: TCP
+    targetPort: 3100
+  selector:
+    app: loki
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: mimir
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.99.81
+  clusterIPs:
+  - 172.20.99.81
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 9009
+    protocol: TCP
+    targetPort: 9009
+  selector:
+    app: mimir
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: prometheus
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.224.136
+  clusterIPs:
+  - 172.20.224.136
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 9090
+    protocol: TCP
+    targetPort: 9090
+  selector:
+    app: prometheus
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: Project=central-observability,ManagedBy=Codex,Account=samples
+    service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-subnets: subnet-04df3a4a31dc47d03,subnet-0be14f7c31f22bd51
+  finalizers:
+  - service.eks.amazonaws.com/resources
+  name: telemetry-gateway
+  namespace: central-observability
+spec:
+  allocateLoadBalancerNodePorts: true
+  clusterIP: 172.20.68.7
+  clusterIPs:
+  - 172.20.68.7
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  loadBalancerClass: eks.amazonaws.com/nlb
+  loadBalancerSourceRanges:
+  - 10.90.0.0/16
+  - 10.11.0.0/16
+  - 10.100.0.0/16
+  ports:
+  - name: otlp
+    nodePort: 31776
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  selector:
+    app: telemetry-gateway
+  sessionAffinity: None
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  name: tempo
+  namespace: central-observability
+spec:
+  clusterIP: 172.20.62.40
+  clusterIPs:
+  - 172.20.62.40
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 3200
+    protocol: TCP
+    targetPort: 3200
+  - name: otlp
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  selector:
+    app: tempo
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  annotations: {}
+  name: backend-ingress
+  namespace: central-observability
+spec:
+  ingress:
+  - from:
+    - podSelector: {}
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - prometheus
+      - mimir
+      - loki
+      - tempo
+      - jaeger
+      - clickhouse
+  policyTypes:
+  - Ingress
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: clickhouse
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: jaeger
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: jaeger
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: loki
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: loki
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: mimir
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mimir
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: prometheus
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: prometheus
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: telemetry-gateway
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: telemetry-gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations: {}
+  name: tempo
+  namespace: central-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tempo

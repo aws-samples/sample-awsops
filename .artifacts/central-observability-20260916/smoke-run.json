@@ -1,0 +1,16 @@
+{
+  "id": "v103446",
+  "job": "telemetry-v103446",
+  "timestamp_ns": 1789554886099269651,
+  "namespace": "telemetry-check-20260916",
+  "traces": {
+    "GPU01": "6523edef4117875913e75101d2dccd87",
+    "appmesh-lattice-mig": "5eb573c727ef8473b6a0c7c6afd11570",
+    "ekscluster01-iptables": "9f0431bde1264b5d243bd12fb955b347",
+    "ekscluster01-ipvs": "f83fb2ca2e36df816ef537e693548fd8",
+    "ekscluster01-nftables": "2768e406541f363518dd8a9a6969759f",
+    "eksworkshop": "478026a69b56686e9d43b957d8792a36",
+    "gpu-cluster-01": "fb5f5361f20b57955dc2fbe4e5577b67",
+    "platform-cluster": "c4c72feaef76c75edea5af4b973167a0"
+  }
+}

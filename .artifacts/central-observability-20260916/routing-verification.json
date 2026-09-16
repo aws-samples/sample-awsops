@@ -1,0 +1,6 @@
+{
+  "source_clusters": 8,
+  "verified_signal_routes": 24,
+  "central_fanout_paths": 0,
+  "basis": "live ConfigMaps captured in deployed/, not merely the planned generator"
+}

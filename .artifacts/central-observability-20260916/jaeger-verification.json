@@ -1,0 +1,23 @@
+{
+  "appmesh-lattice-mig": {
+    "service": "backend",
+    "spans": 6,
+    "observed_cluster_labels": [
+      "appmesh-lattice-mig"
+    ]
+  },
+  "ekscluster01-ipvs": {
+    "service": "amazon-cloudwatch.cloudwatch-agent",
+    "spans": 2,
+    "observed_cluster_labels": [
+      "ekscluster01-ipvs"
+    ]
+  },
+  "gpu-cluster-01": {
+    "service": "isaac-controller",
+    "spans": 2,
+    "observed_cluster_labels": [
+      "gpu-cluster-01"
+    ]
+  }
+}

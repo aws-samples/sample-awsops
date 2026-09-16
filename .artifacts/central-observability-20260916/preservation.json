@@ -1,0 +1,45 @@
+{
+  "checked_at": "2026-09-16T10:48:09Z",
+  "clusters": [
+    {
+      "cluster": "GPU01",
+      "existing_collectors_checked": 0,
+      "changes": []
+    },
+    {
+      "cluster": "appmesh-lattice-mig",
+      "existing_collectors_checked": 0,
+      "changes": []
+    },
+    {
+      "cluster": "ekscluster01-iptables",
+      "existing_collectors_checked": 13,
+      "changes": []
+    },
+    {
+      "cluster": "ekscluster01-ipvs",
+      "existing_collectors_checked": 13,
+      "changes": []
+    },
+    {
+      "cluster": "ekscluster01-nftables",
+      "existing_collectors_checked": 13,
+      "changes": []
+    },
+    {
+      "cluster": "eksworkshop",
+      "existing_collectors_checked": 11,
+      "changes": []
+    },
+    {
+      "cluster": "gpu-cluster-01",
+      "existing_collectors_checked": 0,
+      "changes": []
+    },
+    {
+      "cluster": "platform-cluster",
+      "existing_collectors_checked": 1,
+      "changes": []
+    }
+  ]
+}

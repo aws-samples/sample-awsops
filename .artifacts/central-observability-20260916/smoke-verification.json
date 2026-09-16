@@ -1,0 +1,105 @@
+{
+  "test_id": "v103446",
+  "explicit_test_data": true,
+  "passed": true,
+  "results": {
+    "metrics/prometheus": {
+      "expected": [
+        "GPU01",
+        "appmesh-lattice-mig",
+        "ekscluster01-iptables",
+        "platform-cluster"
+      ],
+      "observed": [
+        "GPU01",
+        "appmesh-lattice-mig",
+        "ekscluster01-iptables",
+        "platform-cluster"
+      ],
+      "passed": true
+    },
+    "logs/clickhouse": {
+      "expected": [
+        "GPU01",
+        "ekscluster01-nftables",
+        "eksworkshop",
+        "gpu-cluster-01"
+      ],
+      "observed": [
+        "GPU01",
+        "ekscluster01-nftables",
+        "eksworkshop",
+        "gpu-cluster-01"
+      ],
+      "passed": true
+    },
+    "traces/tempo": {
+      "expected": [
+        "GPU01",
+        "ekscluster01-iptables",
+        "eksworkshop"
+      ],
+      "observed": [
+        "GPU01",
+        "ekscluster01-iptables",
+        "eksworkshop"
+      ],
+      "passed": true
+    },
+    "logs/loki": {
+      "expected": [
+        "appmesh-lattice-mig",
+        "ekscluster01-iptables",
+        "ekscluster01-ipvs",
+        "platform-cluster"
+      ],
+      "observed": [
+        "appmesh-lattice-mig",
+        "ekscluster01-iptables",
+        "ekscluster01-ipvs",
+        "platform-cluster"
+      ],
+      "passed": true
+    },
+    "traces/jaeger": {
+      "expected": [
+        "appmesh-lattice-mig",
+        "ekscluster01-ipvs",
+        "gpu-cluster-01"
+      ],
+      "observed": [
+        "appmesh-lattice-mig",
+        "ekscluster01-ipvs",
+        "gpu-cluster-01"
+      ],
+      "passed": true
+    },
+    "metrics/mimir": {
+      "expected": [
+        "ekscluster01-ipvs",
+        "ekscluster01-nftables",
+        "eksworkshop",
+        "gpu-cluster-01"
+      ],
+      "observed": [
+        "ekscluster01-ipvs",
+        "ekscluster01-nftables",
+        "eksworkshop",
+        "gpu-cluster-01"
+      ],
+      "passed": true
+    },
+    "traces/clickhouse": {
+      "expected": [
+        "ekscluster01-nftables",
+        "platform-cluster"
+      ],
+      "observed": [
+        "ekscluster01-nftables",
+        "platform-cluster"
+      ],
+      "passed": true
+    }
+  },
+  "checked_at": "2026-09-16T10:37:57Z"
+}

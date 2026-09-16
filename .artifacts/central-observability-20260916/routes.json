@@ -1,0 +1,42 @@
+{
+  "GPU01": {
+    "metrics": "prometheus",
+    "logs": "clickhouse",
+    "traces": "tempo"
+  },
+  "appmesh-lattice-mig": {
+    "metrics": "prometheus",
+    "logs": "loki",
+    "traces": "jaeger"
+  },
+  "ekscluster01-iptables": {
+    "metrics": "prometheus",
+    "logs": "loki",
+    "traces": "tempo"
+  },
+  "ekscluster01-ipvs": {
+    "metrics": "mimir",
+    "logs": "loki",
+    "traces": "jaeger"
+  },
+  "ekscluster01-nftables": {
+    "metrics": "mimir",
+    "logs": "clickhouse",
+    "traces": "clickhouse"
+  },
+  "eksworkshop": {
+    "metrics": "mimir",
+    "logs": "clickhouse",
+    "traces": "tempo"
+  },
+  "gpu-cluster-01": {
+    "metrics": "mimir",
+    "logs": "clickhouse",
+    "traces": "jaeger"
+  },
+  "platform-cluster": {
+    "metrics": "prometheus",
+    "logs": "loki",
+    "traces": "clickhouse"
+  }
+}

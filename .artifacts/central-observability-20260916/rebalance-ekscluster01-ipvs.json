@@ -1,0 +1,501 @@
+[
+  {
+    "at": "2026-09-16T10:26:54Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "plan",
+    "nodes": [
+      "ip-10-11-35-80.ap-northeast-2.compute.internal",
+      "ip-10-11-73-222.ap-northeast-2.compute.internal",
+      "ip-10-11-86-241.ap-northeast-2.compute.internal"
+    ],
+    "apply": true,
+    "desired_nginx": 180,
+    "max_evictions_per_node": 4
+  },
+  {
+    "at": "2026-09-16T10:26:56Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:26:59Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2j2c9",
+    "original_uid": "1c125bd4-9d33-4266-8626-a1e1cf49fb71",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:27:07Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:27:15Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2jdbw",
+    "original_uid": "12bd8db5-5135-4796-9284-231557c6a05d",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:27:20Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:27:29Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2qgxf",
+    "original_uid": "f7d57093-5560-432c-9a5c-2cde6161991f",
+    "number": 3
+  },
+  {
+    "at": "2026-09-16T10:27:34Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:27:41Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ]
+  },
+  {
+    "at": "2026-09-16T10:27:41Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:27:44Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:27:47Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-25bql",
+    "original_uid": "ab139657-a752-4093-9673-caac79991b80",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:27:52Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:28:01Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-26472",
+    "original_uid": "10c91c3c-0854-4b32-9c3d-388df554ef09",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:28:06Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:28:15Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-29hbl",
+    "original_uid": "e9363a1a-6c9b-4de3-bcdf-f42aeae47272",
+    "number": 3
+  },
+  {
+    "at": "2026-09-16T10:28:20Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:28:26Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ]
+  },
+  {
+    "at": "2026-09-16T10:28:27Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:28:29Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:28:31Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:29:26Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "plan",
+    "nodes": [
+      "ip-10-11-86-241.ap-northeast-2.compute.internal"
+    ],
+    "apply": true,
+    "desired_nginx": 180,
+    "max_evictions_per_node": 4
+  },
+  {
+    "at": "2026-09-16T10:29:29Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:29:33Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2lxh2",
+    "original_uid": "8f9bb1f0-7c13-44e7-8e17-dd481a5a6224",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:29:39Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:30:20Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:32:56Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "plan",
+    "nodes": [
+      "ip-10-11-86-241.ap-northeast-2.compute.internal"
+    ],
+    "apply": true,
+    "desired_nginx": 180,
+    "max_evictions_per_node": 4
+  },
+  {
+    "at": "2026-09-16T10:32:58Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:33:03Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2nq57",
+    "original_uid": "55d80d58-5c78-4c22-bde3-c1e32c059383",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:33:08Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:33:22Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-45fpc",
+    "original_uid": "74aa2dff-691d-43ed-9edb-72c13c2ec70c",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:33:27Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:33:39Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ]
+  },
+  {
+    "at": "2026-09-16T10:33:39Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:33:41Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "finished",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:43:05Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "plan",
+    "nodes": [
+      "ip-10-11-35-80.ap-northeast-2.compute.internal",
+      "ip-10-11-44-228.ap-northeast-2.compute.internal",
+      "ip-10-11-73-222.ap-northeast-2.compute.internal",
+      "ip-10-11-86-241.ap-northeast-2.compute.internal"
+    ],
+    "apply": true,
+    "desired_nginx": 180,
+    "max_evictions_per_node": 4,
+    "pod_slot_headroom": 2
+  },
+  {
+    "at": "2026-09-16T10:43:08Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:43:13Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2s54g",
+    "original_uid": "73692e00-be21-41de-a00f-f8c702024f8b",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:43:18Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:43:34Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-2vs82",
+    "original_uid": "5be4af65-a563-4738-8f0f-f61e9ac61ea5",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:43:39Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:43:52Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ],
+    "free_pod_slots": 2
+  },
+  {
+    "at": "2026-09-16T10:43:53Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-35-80.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:43:56Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-44-228.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:44:02Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-44-228.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-49dnc",
+    "original_uid": "7aae69c4-15d9-4416-a73d-09dcf8fc1ec3",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:44:07Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:44:20Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-44-228.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ],
+    "free_pod_slots": 2
+  },
+  {
+    "at": "2026-09-16T10:44:21Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-44-228.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:44:24Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:44:29Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-45rfl",
+    "original_uid": "ad2240e2-7030-4a7f-b3e0-0433292334a8",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:44:34Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:44:50Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-47s54",
+    "original_uid": "c0506b97-b3da-42bd-90d2-c985005da9ad",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:44:55Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:45:08Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ],
+    "free_pod_slots": 2
+  },
+  {
+    "at": "2026-09-16T10:45:09Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-73-222.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:45:11Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "cordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:45:16Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-5rstx",
+    "original_uid": "d91454fa-816c-4820-a894-73a25727eb47",
+    "number": 1
+  },
+  {
+    "at": "2026-09-16T10:45:20Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:45:36Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-68fhd",
+    "original_uid": "ac3cb52b-9925-4598-b7e0-a81ae1c12f7d",
+    "number": 2
+  },
+  {
+    "at": "2026-09-16T10:45:41Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:45:57Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-eviction",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "pod": "nginx-backend-59dccdd47f-7bxz2",
+    "original_uid": "f141c86d-5f4e-4914-8d45-1c6e33094de2",
+    "number": 3
+  },
+  {
+    "at": "2026-09-16T10:46:01Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "nginx-recovered",
+    "available": 180
+  },
+  {
+    "at": "2026-09-16T10:46:15Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "node-result",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal",
+    "ready_collectors": [
+      "telemetry-beyla",
+      "telemetry-node"
+    ],
+    "free_pod_slots": 2
+  },
+  {
+    "at": "2026-09-16T10:46:15Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "uncordon",
+    "node": "ip-10-11-86-241.ap-northeast-2.compute.internal"
+  },
+  {
+    "at": "2026-09-16T10:46:16Z",
+    "cluster": "ekscluster01-ipvs",
+    "action": "finished",
+    "available": 180
+  }
+]

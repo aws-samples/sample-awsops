@@ -1,0 +1,199 @@
+{
+  "checked_at": "2026-09-16T10:48:10Z",
+  "prometheus": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "cluster": "platform-cluster",
+            "k8s_cluster_name": "platform-cluster"
+          },
+          "value": [
+            1789555690.835,
+            "1115"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "ekscluster01-iptables",
+            "k8s_cluster_name": "ekscluster01-iptables"
+          },
+          "value": [
+            1789555690.835,
+            "10800"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "GPU01",
+            "k8s_cluster_name": "GPU01"
+          },
+          "value": [
+            1789555690.835,
+            "1171"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "appmesh-lattice-mig",
+            "k8s_cluster_name": "appmesh-lattice-mig"
+          },
+          "value": [
+            1789555690.835,
+            "1574"
+          ]
+        }
+      ]
+    }
+  },
+  "mimir": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "cluster": "ekscluster01-ipvs",
+            "k8s_cluster_name": "ekscluster01-ipvs"
+          },
+          "value": [
+            1789555691.506,
+            "10885"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "ekscluster01-nftables",
+            "k8s_cluster_name": "ekscluster01-nftables"
+          },
+          "value": [
+            1789555691.506,
+            "10897"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "eksworkshop",
+            "k8s_cluster_name": "eksworkshop"
+          },
+          "value": [
+            1789555691.506,
+            "8521"
+          ]
+        },
+        {
+          "metric": {
+            "cluster": "gpu-cluster-01",
+            "k8s_cluster_name": "gpu-cluster-01"
+          },
+          "value": [
+            1789555691.506,
+            "558"
+          ]
+        }
+      ]
+    }
+  },
+  "loki": {
+    "status": "success",
+    "data": [
+      "appmesh-lattice-mig",
+      "ekscluster01-iptables",
+      "ekscluster01-ipvs",
+      "platform-cluster"
+    ]
+  },
+  "tempo": {
+    "tagValues": [
+      {
+        "type": "string",
+        "value": "ekscluster01-iptables"
+      },
+      {
+        "type": "string",
+        "value": "eksworkshop"
+      },
+      {
+        "type": "string",
+        "value": "GPU01"
+      }
+    ],
+    "metrics": {
+      "inspectedBytes": "598800"
+    }
+  },
+  "jaeger": {
+    "services": [
+      "amazon-cloudwatch-observability",
+      "amazon-cloudwatch.cloudwatch-agent",
+      "appmesh-controller",
+      "aws-network-flow-monitor-agent",
+      "backend",
+      "backend-tls",
+      "cache",
+      "edge",
+      "fluent-bit",
+      "frontend",
+      "gateway-api-controller",
+      "isaac-controller",
+      "jaeger",
+      "telemetry-validation"
+    ]
+  },
+  "clickhouse": {
+    "meta": [
+      {
+        "name": "signal",
+        "type": "String"
+      },
+      {
+        "name": "cluster",
+        "type": "String"
+      },
+      {
+        "name": "records",
+        "type": "UInt64"
+      }
+    ],
+    "data": [
+      {
+        "signal": "logs",
+        "cluster": "gpu-cluster-01",
+        "records": 4
+      },
+      {
+        "signal": "logs",
+        "cluster": "GPU01",
+        "records": 54
+      },
+      {
+        "signal": "logs",
+        "cluster": "eksworkshop",
+        "records": 25703
+      },
+      {
+        "signal": "logs",
+        "cluster": "ekscluster01-nftables",
+        "records": 11380
+      },
+      {
+        "signal": "traces",
+        "cluster": "platform-cluster",
+        "records": 1468
+      },
+      {
+        "signal": "traces",
+        "cluster": "ekscluster01-nftables",
+        "records": 1740
+      }
+    ],
+    "rows": 6,
+    "statistics": {
+      "elapsed": 0.049133839,
+      "rows_read": 72135,
+      "bytes_read": 1574751
+    }
+  }
+}
