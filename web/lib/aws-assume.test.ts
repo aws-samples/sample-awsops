@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const send = vi.fn();
 const getAccount = vi.fn();
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn(() => ({ send })),
-  AssumeRoleCommand: vi.fn((input: unknown) => ({ __cmd: 'AssumeRole', input })),
+  STSClient: vi.fn(function () { return { send }; }),
+  AssumeRoleCommand: vi.fn(function (input: unknown) { return { __cmd: 'AssumeRole', input }; }),
 }));
 vi.mock('@/lib/accounts', () => ({ getAccount: (...a: unknown[]) => getAccount(...a) }));
 vi.mock('@/lib/account', () => ({ currentAccountId: () => '123456789012' }));

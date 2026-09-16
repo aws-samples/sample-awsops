@@ -24,19 +24,19 @@ describe('GET /api/incidents/[id] (detail, admin-gated, read-only)', () => {
   it('403 for non-admin', async () => {
     isAdmin.mockResolvedValue(false);
     const { GET } = await import('./route');
-    expect((await GET(get(), { params: { id: ID } })).status).toBe(403);
+    expect((await GET(get(), { params: Promise.resolve({ id: ID }) })).status).toBe(403);
   });
 
   it('400 on a non-UUID id', async () => {
     const { GET } = await import('./route');
-    expect((await GET(get('not-a-uuid'), { params: { id: 'not-a-uuid' } })).status).toBe(400);
+    expect((await GET(get('not-a-uuid'), { params: Promise.resolve({ id: 'not-a-uuid' }) })).status).toBe(400);
     expect(getIncident).not.toHaveBeenCalled();
   });
 
   it('404 when the incident is not found', async () => {
     getIncident.mockResolvedValue(null);
     const { GET } = await import('./route');
-    expect((await GET(get(), { params: { id: ID } })).status).toBe(404);
+    expect((await GET(get(), { params: Promise.resolve({ id: ID }) })).status).toBe(404);
   });
 
   it('200 returns stages/findings/rca + mitigation as recommended catalog action NAMES only', async () => {
@@ -52,7 +52,7 @@ describe('GET /api/incidents/[id] (detail, admin-gated, read-only)', () => {
       },
     });
     const { GET } = await import('./route');
-    const res = await GET(get(), { params: { id: ID } });
+    const res = await GET(get(), { params: Promise.resolve({ id: ID }) });
     expect(res.status).toBe(200);
     const j = await res.json();
     expect(j.incident.id).toBe(ID);

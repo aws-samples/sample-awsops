@@ -7,7 +7,7 @@ vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/k8sgpt', () => ({ getDiagnosis: (...a: unknown[]) => getDiagnosis(...a) }));
 
 const req = (url: string, cookie = 'awsops_token=t') => new Request(url, { headers: { cookie } });
-const ctx = (cluster = 'fsi-demo-cluster') => ({ params: { cluster } });
+const ctx = (cluster = 'fsi-demo-cluster') => ({ params: Promise.resolve({ cluster }) });
 
 beforeEach(() => {
   verifyUser.mockReset();

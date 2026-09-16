@@ -16,7 +16,7 @@ vi.mock('@/lib/network-path', async () => {
   };
 });
 
-const params = { id: 'chk-1' };
+const params = Promise.resolve({ id: 'chk-1' });
 const getReq = () => new Request('http://x/api/network-paths/chk-1', { headers: { cookie: 'awsops_token=t' } });
 const patchReq = (body: unknown) =>
   new Request('http://x/api/network-paths/chk-1', {

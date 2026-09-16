@@ -12,12 +12,13 @@ export const dynamic = 'force-dynamic';
  * itself doesn't exist; a soft-deleted check's prior runs remain visible (softDeleteCheck never
  * touches network_path_runs/*, so its evidence must stay reachable for audit/comparison).
  */
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
   if (blocked) return blocked;
 
+  const params = await pendingParams;
   const check = await getCheck(params.id);
   if (!check) return NextResponse.json({ message: 'not found' }, { status: 404 });
   const runs = await listRunsForCheck(params.id);
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
  * cache-only accelerator, gate the live guarantee separately), not a guaranteed-failure avoidance.
  * Existing checks and prior run history remain viewable regardless of this gate.
  */
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (capabilityBlocked) return capabilityBlocked;
 
   try {
+    const params = await pendingParams;
     const run = await createRun(user, params.id);
     return NextResponse.json({ run }, { status: 202 });
   } catch (e) {

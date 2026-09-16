@@ -8,10 +8,11 @@ export const dynamic = 'force-dynamic';
 // CloudWatch-only — in-cluster signals (conditions, addon health) come from the incluster route.
 const RANGE_ALLOWED = [3600, 21600, 86400, 604800];
 
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
+  const params = await pendingParams;
   if (!(await isAllowed(params.cluster))) {
     return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
   }

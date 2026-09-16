@@ -6,8 +6,8 @@ import CardDashboard from '@/components/datasources/CardDashboard';
 // one instance id (the picker is hidden).
 export const dynamic = 'force-dynamic';
 
-export default function DatasourceExplorePage({ params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export default async function DatasourceExplorePage({ params }: { params: Promise<{ id: string }> }) {
+  const id = Number((await params).id);
   return (
     <div>
       <PageHeader title="데이터소스 탐색" subtitle="선택한 데이터소스 인스턴스를 네이티브 쿼리 언어로 조회합니다 (읽기 전용)." />

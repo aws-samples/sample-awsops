@@ -11,10 +11,11 @@ const RANGE_ALLOWED = [900, 1800, 3600];
 // EKS 비용 메뉴의 "Pod 전송량 (NFM)" 데이터: 클러스터 모니터의 DATA_TRANSFERRED를
 // 카테고리 전체에 대해 질의해 파드별로 합산 + billable(INTER_AZ/VPC/REGION) 추정 비용.
 // 모니터 미온보딩 클러스터는 available:false (페이지가 안내로 degrade).
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
+  const params = await pendingParams;
   if (!(await isAllowed(params.cluster))) {
     return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
   }

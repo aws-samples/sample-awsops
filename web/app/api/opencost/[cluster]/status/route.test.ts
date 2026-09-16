@@ -8,7 +8,7 @@ vi.mock('@/lib/opencost-allowlist', () => ({ isClusterOnboarded: (...a: unknown[
 vi.mock('@/lib/opencost-status', () => ({ detectOpencostInstall: (...a: unknown[]) => detectOpencostInstall(...a) }));
 
 const req = () => new Request('http://x/api/opencost/c1/status', { headers: { cookie: 'awsops_token=t' } });
-const P = { params: { cluster: 'c1' } };
+const P = { params: Promise.resolve({ cluster: 'c1' }) };
 
 beforeEach(() => {
   vi.clearAllMocks();

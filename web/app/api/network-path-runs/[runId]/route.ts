@@ -11,12 +11,13 @@ export const dynamic = 'force-dynamic';
  * run history (spec "UI and ownership": "Any authorized viewer may run the check and view its
  * history").
  */
-export async function GET(req: NextRequest, { params }: { params: { runId: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ runId: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
   if (blocked) return blocked;
 
+  const params = await pendingParams;
   const run = await getRunDetail(params.runId);
   if (!run) return NextResponse.json({ message: 'not found' }, { status: 404 });
   return NextResponse.json({ run });

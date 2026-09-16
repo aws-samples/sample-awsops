@@ -65,12 +65,12 @@ describe('DELETE /api/datasources/[id]', () => {
   it('admin-only', async () => {
     isAdmin.mockResolvedValue(false);
     const { DELETE } = await import('./[id]/route');
-    expect((await DELETE(del(), { params: { id: '5' } })).status).toBe(403);
+    expect((await DELETE(del(), { params: Promise.resolve({ id: '5' }) })).status).toBe(403);
     expect(deleteDatasource).not.toHaveBeenCalled();
   });
   it('deletes and returns ok', async () => {
     const { DELETE } = await import('./[id]/route');
-    const resp = await DELETE(del(), { params: { id: '5' } });
+    const resp = await DELETE(del(), { params: Promise.resolve({ id: '5' }) });
     expect(resp.status).toBe(200);
     expect(deleteDatasource).toHaveBeenCalledWith(5);
   });

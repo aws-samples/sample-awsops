@@ -15,7 +15,7 @@ vi.mock('@/lib/opencost-config', () => ({
 
 const req = (method = 'GET', body?: unknown) =>
   new Request('http://x/api/opencost/c1', { method, headers: { cookie: 'awsops_token=t', 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-const P = { params: { cluster: 'c1' } };
+const P = { params: Promise.resolve({ cluster: 'c1' }) };
 
 beforeEach(() => {
   vi.clearAllMocks();

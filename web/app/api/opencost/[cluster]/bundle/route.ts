@@ -12,9 +12,10 @@ function json(obj: unknown, status: number) {
 // GET — downloadable install bundle (values.yaml + install.sh). Generated from saved config
 // (or defaults). cluster identity + region are injected from the path/env, never trusted from
 // stored config. Read-only: the user runs the bundle out-of-band on their own kubeconfig.
-export async function GET(request: Request, { params }: { params: { cluster: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
+  const params = await pendingParams;
   if (!(await isClusterOnboarded(params.cluster))) return json({ status: 'error', message: 'unknown cluster' }, 404);
   try {
     const region = process.env.AWS_REGION || 'ap-northeast-2';
