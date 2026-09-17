@@ -60,6 +60,9 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 ## Version and tag on main promotion
 
+Here `samples` means the Git remote for `aws-samples/sample-awsops`; verify its URL
+with `git remote -v` before fetching or pushing.
+
 Every `dev → main` release increments the application version in a reviewed PR
 into `dev` before the promotion is merged. Keep `web/package.json`, both root
 version fields in `web/package-lock.json`, the root README badge, and the first
@@ -67,7 +70,10 @@ released English/Korean CHANGELOG headings aligned. Move the existing Unreleased
 feature entries under the new dated version and leave an empty Unreleased section;
 do not duplicate feature bullets. The sidebar reads CHANGELOG, while migration
 release fallback reads `web/package.json`. Existing migration `-- since:` headers
-are immutable and must not be retagged for a release bump.
+are immutable and must not be retagged for a release bump. New migrations should
+declare the intended next application release before their first merge. Historical
+ledger labels are not an ordered application-release history: disclose mismatched
+labels in CHANGELOG rather than changing already-merged SQL or ledger checksums.
 
 Choose the next application version from this release line; imported legacy v1
 history and the separate `scripts/v2` tooling package are not its version source.
