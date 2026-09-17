@@ -15,10 +15,11 @@ SRE의 온콜 대응과 반복 점검에서 출발해, 데이터 수집·Resourc
 | [이전 편집 브리프](REVIEW-2026-09-13-codex-brief.md) | 철회된 지시·판정·경로를 포함한 과거 기록 |
 | [렌더러](render_preview.py), [의존성](requirements-preview.txt) | 로컬 미리보기 생성 |
 | [그림 출력 도구](drawio/build.py), [회귀 검사](drawio/test_build.py) | 원본 검증·출력과 실패 시 기존 파일 보존 검사 |
-| `preview.html` (아래 명령으로 생성) | 로컬 브라우저에서 확인하는 가독성 미리보기 |
+| [preview.html](preview.html) (아래 명령으로 재생성) | 로컬 브라우저에서 확인하는 가독성 미리보기 |
 | [technical-notes.md](technical-notes.md) | 구현 근거, 지원 범위, 편집·검토 참고 자료 |
 | [EDITORIAL-SCOPE.md](EDITORIAL-SCOPE.md) | 사용자 후속 지시를 반영한 현재 편집 기준 |
 | [복구 검증 기록](VALIDATION-2026-09-17.md) | 현재 소스 검증 범위와 미검증 항목 |
+| [과거 검증 이력](results/ARCHIVE.md) | 이전 리뷰·캡처와 알려진 오류, 현재 검증 근거 아님 |
 | [그림 1](images/fig1-sre-workflow.png) | 운영 질문과 SRE 검증 흐름 |
 | [그림 2a](images/fig2a-interactive.png) | 운영자 접근과 대화형 AI 조사 |
 | [그림 2b](images/fig2b-diagnosis.png) | 인벤토리·관계 정보와 예약 진단 |

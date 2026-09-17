@@ -27,7 +27,7 @@ ul{padding-left:24px;font-size:16px}li{margin:10px 0}
 @media(max-width:600px){body{font-size:17px;line-height:1.9}header{padding:14px 20px}main{padding:30px 20px 60px}h1{font-size:29px;letter-spacing:-.5px}h2{font-size:24px;margin-top:42px}h3{font-size:21px}blockquote{padding:16px}table{font-size:14px}th,td{padding:10px}th:first-child,td:first-child{width:31%}}
 @media print{header,.article-toc{display:none}main{max-width:none;padding:0}h2,h3{break-after:avoid}img,table,blockquote,pre{break-inside:avoid}body{font-size:11pt}h1{font-size:23pt}h2{font-size:17pt}h3{font-size:14pt}}
 </style></head><body>
-<header>AWS Blog 원고 미리보기 · 2026-09-13</header><main><h1 id="amazon-bedrock-agentcore-mcp-sre">Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기</h1><details class="article-toc"><summary>이 글의 흐름</summary><nav aria-label="글 목차"><ol><li><a href="#_1">운영 질문과 설계 요구</a></li><li><a href="#_2">전제 조건</a></li><li><a href="#_3">데이터 수집·관계·조회 경로</a></li><li><a href="#_8">알람에서 원인 후보와 비용 검토까지</a></li><li><a href="#_11">여섯 가지 기둥을 활용한 정기 진단</a></li><li><a href="#_16">접근 통제와 실행 분리</a></li><li><a href="#_19">검증 결과와 운영팀의 활용</a></li><li><a href="#aws">샘플로 첫 번째 AWS 조회 실행하기</a></li><li><a href="#_25">결론</a></li></ol></nav></details>
+<header>AWS Blog 원고 미리보기 · 최초 초안 2026-09-13 · 소스 복구 검증 2026-09-17</header><main><h1 id="amazon-bedrock-agentcore-mcp-sre">Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기</h1><details class="article-toc"><summary>이 글의 흐름</summary><nav aria-label="글 목차"><ol><li><a href="#_1">운영 질문과 설계 요구</a></li><li><a href="#_2">전제 조건</a></li><li><a href="#_3">데이터 수집·관계·조회 경로</a></li><li><a href="#_8">알람에서 원인 후보와 비용 검토까지</a></li><li><a href="#_11">여섯 가지 기둥을 활용한 정기 진단</a></li><li><a href="#_16">접근 통제와 실행 분리</a></li><li><a href="#_19">검증 결과와 운영팀의 활용</a></li><li><a href="#aws">샘플로 첫 번째 AWS 조회 실행하기</a></li><li><a href="#_25">결론</a></li></ol></nav></details>
 <p>온콜 담당자에게 API 지연, 컨테이너 재시작, 데이터베이스 연결 오류 알람이 함께 들어오면 무엇부터 확인해야 할까요? 하나의 실패가 여러 증상으로 나타난 것인지 판단하려면 영향을 받는 서비스, 리소스 관계, 최근 변경, 로그를 함께 살펴봐야 합니다. 비용 점검에서도 청구액이 늘어난 서비스와 실제 구성을 바꿀 수 있는 리소스를 연결하는 과정이 필요합니다.</p>
 <p>두 작업의 공통점은 <strong>흩어진 운영 데이터를 같은 서비스와 리소스의 맥락으로 연결해야 한다</strong>는 것입니다. AWSops는 구성 정보를 수집하고 필요한 근거를 조회해 이 과정을 돕는 AWS 운영 대시보드입니다. AWSops가 구성한 리소스 관계 그래프(이 글에서는 Resource Graph로 표기)로 조사 대상을 좁히면, Amazon Bedrock AgentCore Runtime의 에이전트가 Gateway에 등록한 읽기 전용 도구를 호출해 근거를 모읍니다. 사이트 신뢰성 엔지니어링(SRE) 담당자는 그 결과로 원인 후보와 다음 조치를 검토합니다.</p>
 <p>이 글에서는 AWS 운영 환경에 AI 진단을 도입하려는 SRE와 플랫폼 엔지니어를 위해 (1) 흩어진 운영 데이터를 조사 가능한 질문으로 바꾸는 설계, (2) Amazon Bedrock AgentCore에 읽기 전용 조회 도구를 연결하는 방법, (3) AWS Well-Architected Framework의 여섯 가지 기둥을 활용한 정기 진단 자동화를 살펴봅니다.</p>
@@ -54,7 +54,7 @@ ul{padding-left:24px;font-size:16px}li{margin:10px 0}
 <tr>
 <td>같은 리소스 구성을 반복 조회</td>
 <td>구성 정보와 수집 시각</td>
-<td>Steampipe 동기화와 Amazon Aurora 저장</td>
+<td>Steampipe·SDK 동기화와 Amazon Aurora 저장</td>
 </tr>
 <tr>
 <td>목록만으로 영향 범위 파악이 어려움</td>
@@ -82,6 +82,7 @@ ul{padding-left:24px;font-size:16px}li{margin:10px 0}
 <p>이 흐름을 나눈 이유는 질문마다 필요한 자료와 실행 시간이 다르기 때문입니다. 리소스 목록을 탐색하는 화면에는 반복해서 읽을 수 있는 구성 정보가 필요하고, 진행 중인 장애에는 현재 상태를 확인할 도구가 필요합니다. 여러 관점의 보고서를 생성하는 작업은 웹 요청보다 오래 걸릴 수 있습니다. 저장된 자료로 조사 범위를 좁히고 필요한 조회를 추가하는 방식으로 각 단계의 책임을 구분했습니다.</p>
 <p>그림에서 ALB(Application Load Balancer)는 내부 로드 밸런서를, SSE(Server-Sent Events)는 웹으로 전달하는 스트리밍 응답을 뜻합니다.</p>
 <p class="figure figure-wide"><a href="images/fig2a-interactive.png" title="원본 크기로 보기"><img alt="보호된 웹 진입 경로와 AgentCore 기반 대화형 조사" src="images/fig2a-interactive.png" /></a><a class="figure-original" href="images/fig2a-interactive.png">그림 원본 크게 보기</a></p>
+<p>그림의 두 웹 표시는 같은 BFF 서비스를 접근·채팅 흐름에서 각각 나타낸 것입니다.</p>
 <p><em>그림 2a. 보호된 웹 진입 경로에서 받은 운영자의 질문을 AgentCore와 읽기 전용 조회 도구로 연결합니다.</em></p>
 <h3 id="agentcore">AgentCore가 맡은 실행과 도구 연결</h3>
 <p>이 설계에서 해결해야 했던 핵심은 운영자의 질문을 권한 있는 데이터 조회로 이어 주는 일이었습니다. 모델에 로그나 구성을 한 번 전달해 설명하게 하는 것에서 더 나아가, 필요한 도구를 선택하고 결과를 읽은 뒤 다음 조회를 이어 갈 실행 흐름이 필요했습니다. AWSops는 그 흐름을 실행하는 곳과 도구를 제공하는 인터페이스를 나누었습니다.</p>
@@ -89,14 +90,14 @@ ul{padding-left:24px;font-size:16px}li{margin:10px 0}
 <p><strong>AgentCore Gateway는 조회 도구를 MCP(Model Context Protocol)로 연결합니다.</strong> 각 도구의 이름·설명·입력 형식을 모델이 사용할 수 있게 제공하고, 선택한 호출을 AWS Lambda 타깃에 전달합니다. AWSops가 구현하는 부분은 네트워크 인터페이스(ENI) 설정, 알람, 비용처럼 운영 질문에 필요한 조회 로직입니다. 이 로직을 Lambda에 두고 Gateway에 등록하면 에이전트가 정해진 입력으로 호출할 수 있습니다.</p>
 <p>예를 들어 네트워크 설정을 읽는 Lambda가 준비되면, <code>get_eni_details</code>의 입력에 ENI 식별자가 필요하다는 정의를 등록합니다. Runtime에서 실행되는 에이전트는 이 정의를 읽어 도구를 선택하고, Lambda가 반환한 구성 정보로 답변을 만듭니다. <strong>질문 → 도구 선택 → AWS 조회 → 근거를 이용한 설명</strong>이 이어지는 구조입니다. 실제 AWS 접근 범위는 Lambda의 실행 역할과 조회 코드가 정합니다.</p>
 <h3 id="_4">반복 탐색을 위한 구성 정보 수집</h3>
-<p>AWS Config는 리소스 구성·관계와 변경 이력을 확인하는 데, AWS Resource Explorer는 이름·태그·식별자로 리소스를 찾는 데 사용할 수 있습니다. AWSops에서는 Steampipe로 수집한 구성을 자체 인벤토리에 저장하고 관계 그래프와 진단 자료에 재사용합니다. 기존 서비스의 검색·구성 관리 기능과 함께 검토할 수 있는 애플리케이션 수준의 구성입니다.</p>
-<p>구성 정보는 오픈소스 도구 Steampipe(Turbot)로 수집합니다. 동기화를 활성화하면 기본 15분 간격으로 실행됩니다. Steampipe는 클라우드 API의 데이터를 SQL 테이블 형태로 제공하며, 동기화 작업은 AWS Fargate에서 실행되는 Steampipe를 조회해 결과를 Aurora에 적재합니다. 이렇게 반복 탐색할 자료와 질문 시점에 확인할 운영 상태를 나눕니다.</p>
+<p>AWS Config는 리소스 구성·관계와 변경 이력을 확인하는 데, AWS Resource Explorer는 이름·태그·식별자로 리소스를 찾는 데 사용할 수 있습니다. AWSops에서는 Steampipe와 직접 SDK 호출로 수집한 구성을 자체 인벤토리에 저장하고 관계 그래프와 진단 자료에 재사용합니다. 기존 서비스의 검색·구성 관리 기능과 함께 검토할 수 있는 애플리케이션 수준의 구성입니다.</p>
+<p>구성 정보는 오픈소스 도구 Steampipe(Turbot)와 동기화 Lambda의 직접 AWS SDK 호출로 수집합니다. S3·S3 공개 접근·OpenSearch Serverless·CloudFront VPC Origin·ALB 리스너 규칙은 Steampipe를 거치지 않는 SDK 수집 유형입니다. 동기화를 활성화하면 기본 15분 간격으로 실행됩니다. Steampipe는 클라우드 API의 데이터를 SQL 테이블 형태로 제공하며, 동기화 작업은 AWS Fargate에서 실행되는 Steampipe를 조회해 결과를 Aurora에 적재합니다. 이렇게 반복 탐색할 자료와 질문 시점에 확인할 운영 상태를 나눕니다.</p>
 <p>Amazon EC2 구성 정보 중 관계 생성에 필요한 속성을 읽는 SQL을 축약하면 다음과 같습니다. 인스턴스가 속한 VPC·서브넷과 보안 그룹을 함께 가져와 후속 관계 구성에 사용합니다.</p>
 <pre><code class="language-sql">SELECT instance_id, instance_type, region,
        vpc_id, subnet_id, security_groups
 FROM aws_ec2_instance;
 </code></pre>
-<p>이 쿼리는 배치 수집 경로의 예시입니다. 채팅은 저장된 인벤토리나 AgentCore 조회 도구를 사용하며, Steampipe에 실시간 SQL을 실행하는 웹 경로는 비활성화되어 있습니다. 인벤토리를 읽을 때는 마지막 동기화 시각과 성공 여부를 함께 확인해, 수집 실패와 리소스 부재를 구분합니다. 정기적으로 모은 구성은 조사 시작점을 제공하고, 방금 바뀐 설정은 해당 AWS 조회 도구로 추가 확인합니다.</p>
+<p>이 쿼리는 배치 수집 경로의 예시입니다. 채팅은 저장된 인벤토리나 AgentCore 조회 도구를 사용하며, Steampipe에 실시간 SQL을 실행하는 웹 경로는 비활성화되어 있습니다. 인벤토리를 읽을 때는 마지막 동기화 시각과 성공 여부뿐 아니라 속성 미확인 개수(<code>unknown_attribute_count</code>)와 신선도 표시(<code>freshness</code>)도 확인합니다. 시각이 최신이고 상태가 <code>succeeded</code>여도 일부 속성이 미확인이면 <code>degraded</code>일 수 있습니다. 이 경우 누락된 속성을 안전한 구성이나 리소스 부재로 해석하지 않습니다. 정기적으로 모은 구성은 조사 시작점을 제공하고, 방금 바뀐 설정은 해당 AWS 조회 도구로 추가 확인합니다.</p>
 <p>수집과 조회를 분리하면 화면에서 같은 리소스를 반복 탐색할 때 저장된 구성 정보를 사용할 수 있습니다. 대신 마지막 성공 이후 변경된 리소스는 추가 조회로 확인해야 합니다. 운영자는 조사에 필요한 최신성에 따라 저장된 자료로 충분한 질문과 서비스 API를 다시 읽어야 하는 질문을 나누어 진행합니다.</p>
 <h3 id="_5">리소스 목록에서 관계 그래프로</h3>
 <p>Resource Explorer로 조사할 리소스를 찾았다면, 다음 질문은 그 리소스가 어느 서비스 경로에 연결되어 있는가입니다. AWSops의 Resource Graph는 저장된 구성과 지원되는 관측 자료로 관계를 만들고, 화면 탐색과 AI의 후속 질문에 사용합니다.</p>
@@ -186,7 +187,7 @@ if __name__ == &quot;__main__&quot;:
 <li><strong>질문을 Runtime에 전달합니다.</strong> 웹 계층이 선택한 도메인과 사용자 질문을 전달하면 Runtime의 에이전트가 해당 Gateway에 연결합니다.</li>
 <li><strong>사용할 도구를 준비합니다.</strong> 에이전트는 Gateway에서 도구 정의를 읽고 적용되는 허용목록을 반영한 뒤 Strands <code>Agent</code>에 전달합니다.</li>
 <li><strong>모델이 필요한 조회를 선택합니다.</strong> 이 질문에서는 <code>get_eni_details</code>와 <code>eni_id</code> 인자가 도구 호출의 대상이 됩니다. Gateway는 등록된 네트워크 Lambda로 호출을 전달합니다.</li>
-<li><strong>Lambda가 AWS 구성을 읽습니다.</strong> 구현은 ENI를 조회하고 연결된 보안 그룹, 서브넷의 네트워크 ACL, 라우팅 정보를 수집합니다. 결과에는 <code>eniId</code>, <code>privateIp</code>, <code>vpcId</code>, <code>subnetId</code>, <code>securityGroups</code>, <code>nacl</code>, <code>routes</code> 같은 필드가 담깁니다.</li>
+<li><strong>Lambda가 AWS 구성을 읽습니다.</strong> 구현은 ENI를 조회하고 연결된 보안 그룹, 서브넷의 네트워크 ACL, 라우팅 정보를 수집합니다. 결과에는 <code>eniId</code>, <code>privateIp</code>, <code>vpcId</code>, <code>subnetId</code>, <code>securityGroups</code>, <code>nacl</code>, <code>routes</code>와 함께 <code>routeSelection</code>, <code>partial</code>, <code>unknown</code> 필드가 담깁니다. <code>partial=true</code>이거나 <code>unknown</code>에 항목이 있으면 해당 근거는 미평가 상태입니다. <code>routeSelection.status</code>도 확인하며, 빈 목록을 규칙이나 경로가 없다는 뜻으로 해석하지 않습니다.</li>
 <li><strong>도구 결과를 설명으로 바꿉니다.</strong> 결과가 에이전트에 돌아오면 모델은 조회한 구성을 사용해 답변을 구성합니다. 운영자는 반환된 ENI 식별자와 설정을 콘솔의 같은 대상과 대조하고 다음 점검을 정합니다.</li>
 </ol>
 <p>이 흐름에서 바뀐 것은 사람이 여러 화면에서 읽어 모델에 붙여 넣던 자료를, 에이전트가 등록된 조회 도구를 통해 요청할 수 있게 했다는 점입니다. 개발자는 조회 로직과 권한, 입력·출력 정의를 검토하고, 운영자는 답변이 어떤 리소스의 근거를 사용했는지 확인할 수 있습니다.</p>
@@ -244,7 +245,7 @@ if __name__ == &quot;__main__&quot;:
 | stats count(*) as matching_events by bin(5m)
 | sort matching_events desc
 </code></pre>
-<p>조회 기간은 알람 상태 변경 시각 앞뒤 30분으로 지정합니다. 이 쿼리는 일치하는 로그 이벤트를 5분 단위로 집계하고 건수가 많은 구간부터 정렬합니다. 한 요청에서 여러 이벤트가 나올 수 있으므로 사용자 영향은 요청 수와 성공·실패 지표를 함께 확인합니다. 도구가 반환한 쿼리 ID로 실행 상태와 결과를 조회한 다음 해석을 시작합니다.</p>
+<p>현재 MCP 도구는 현재 시각을 끝으로 최근 <code>minutes</code>분을 조회합니다. 알람 시각이 포함되도록 조회 기간을 정합니다. 알람 시각 앞뒤 30분처럼 시작·종료 시각을 고정한 구간은 이 도구로 지정할 수 없으므로 CloudWatch 콘솔이나 절대 시각을 받는 <code>StartQuery</code> API에서 별도로 조회합니다. 이 쿼리는 일치하는 로그 이벤트를 5분 단위로 집계하고 건수가 많은 구간부터 정렬합니다. 한 요청에서 여러 이벤트가 나올 수 있으므로 사용자 영향은 요청 수와 성공·실패 지표를 함께 확인합니다. 도구가 반환한 쿼리 ID로 실행 상태와 결과를 조회한 다음 해석을 시작합니다.</p>
 <p>현재 알람 상태와 사건의 시작 시점은 따로 봅니다. 알람이 정상으로 돌아왔어도 상태 변경 이력과 해당 구간의 로그에서 반복된 문제를 찾을 수 있습니다. 반대로 조회 결과가 적다면 로그 그룹·시간 범위·반환 행 제한을 먼저 확인합니다. 다음 질문에는 확인한 조건을 함께 남겨 다른 기간이나 범위의 결과가 섞이지 않도록 합니다.</p>
 <p>근거에 따라 다음 조사 방향도 달라집니다.</p>
 <ul>
@@ -320,12 +321,12 @@ if __name__ == &quot;__main__&quot;:
 <tr>
 <td><strong>운영 우수성</strong> (Operational Excellence)</td>
 <td>무엇이 바뀌었고 추적 자료가 있는가?</td>
-<td>최근 CloudTrail 변경, 모니터링 자료와 인벤토리</td>
+<td>단일 리전 최근 24시간·최대 50건 CloudTrail 변경 표본, 모니터링 자료와 인벤토리</td>
 </tr>
 <tr>
 <td><strong>보안</strong> (Security)</td>
 <td>공개 노출·권한·암호화의 위험은 무엇인가?</td>
-<td>AWS Security Hub 심각도 통계, IAM·네트워크·데이터 보호 구성</td>
+<td>Security Hub 단일 리전·최대 100건 표본의 심각도 통계, IAM·네트워크·데이터 보호 구성</td>
 </tr>
 <tr>
 <td><strong>신뢰성</strong> (Reliability)</td>
@@ -352,7 +353,7 @@ if __name__ == &quot;__main__&quot;:
 <p>보고서는 수집 자료를 기둥별 섹션에 전달하고 발견 사항에 근거·심각도·우선순위·권고안을 포함하도록 구성했습니다. 운영자는 먼저 어떤 자료로 어떤 위험을 설명했는지 확인한 뒤, 서비스의 업무 중요도와 변경 영향을 더해 검토 순서를 정합니다. 보안 노출 후보와 용량 축소 후보가 함께 있어도 같은 기준으로 바로 조치하기보다는 각각의 근거와 영향 범위를 살펴봐야 합니다.</p>
 <p>운영 절차·복구 훈련·업무 요구처럼 API 밖의 항목은 담당자가 보완합니다. 예를 들어 복구에 필요한 설정을 조회할 수 있더라도 실제 복구 목표를 만족하는지는 시험과 운영 기록으로 확인해야 합니다. 지속 가능성에서도 자원 효율은 검토 관점으로 사용하고, 탄소 원천 데이터가 없는 영역은 데이터 부족으로 남깁니다. 이렇게 자동으로 정리할 수 있는 자료와 관계자가 확인할 질문을 함께 제시합니다.</p>
 <h3 id="_13">예약에서 보고서까지</h3>
-<p>예약 진단은 기본적으로 비활성 상태이며, 관리자가 워커 기반과 진단 스케줄을 각각 켠 뒤 사용자가 주기를 활성화해야 실행됩니다. 사용자는 주간·격주·월간 주기와 진단 깊이를 설정합니다. 예약 처리기는 매시간 예약 확인을 수행해 실행 시점이 지난 작업을 큐에 넣습니다. 알림은 별도로 활성화하며, 15분 주기 digest가 대상 보고서를 묶어 전달합니다.</p>
+<p>예약 진단은 기본적으로 비활성 상태이며, 관리자가 워커 기반과 진단 스케줄을 각각 켠 뒤 사용자가 주기를 활성화해야 실행됩니다. 사용자는 주간·격주·월간 주기와 진단 깊이를 설정합니다. 예약 처리기는 매시간 예약 확인을 수행해 실행 시점이 지난 작업을 큐에 넣습니다. 실행 주기가 조회 기간을 늘리지는 않습니다. CloudTrail 자료는 단일 리전의 최근 24시간, 최대 50건이므로 주간·월간 보고서 사이의 모든 변경을 포함하지 않습니다. 알림은 별도로 활성화하며, 15분 주기 digest가 대상 보고서를 묶어 전달합니다.</p>
 <p>작업 상태를 한 곳에 기록하는 공통 작업 기록(원장)을 기준으로 다음 다섯 단계를 진행합니다.</p>
 <ol>
 <li><strong>예약 확인과 작업 기록:</strong> 실행할 스케줄의 실행을 확보하고 보고서와 작업 원장에 실행 대상을 기록합니다.</li>
@@ -371,9 +372,9 @@ if __name__ == &quot;__main__&quot;:
 <p>알림은 보고서 생성과 별도의 흐름입니다. 요약 작업이 15분 주기로 대상 보고서를 모아 Amazon SNS에 발행하며, 수동·예약 보고서 가운데 성공 또는 부분 완료된 결과가 대상이 될 수 있습니다. 관리자 관리와 수신 확인을 마친 구독자가 준비되어야 하고, 발행과 일시 중지 상태도 확인해야 합니다. 보고서 완료와 요약 발행을 구분하면 사용자가 언제 어떤 결과를 전달받는지 설명할 수 있습니다.</p>
 <p>이 구조에서는 개별 보고서가 끝나는 즉시 이메일이 도착하는 것을 전제로 삼지 않습니다. 웹에서 확인하는 보고서 상태와 묶음 알림의 처리 상태를 각각 살펴봅니다. 정기 수집·분석·보고서 생성은 자동으로 반복하고, 운영팀은 같은 기준의 결과에서 이번에 확인한 위험과 추가 점검할 영역을 검토하는 방식입니다.</p>
 <h3 id="ai">보안 규칙과 AI 해석</h3>
-<p>보안 검토에서는 관측한 구성 사실, 적용한 규칙, AI의 해석을 구분합니다. Security Hub 통계는 우선 살펴볼 영역을 정하는 자료이고, 인벤토리의 IAM·보안 그룹·암호화 구성은 개별 조건을 확인하는 자료입니다.</p>
+<p>보안 검토에서는 관측한 구성 사실, 적용한 규칙, AI의 해석을 구분합니다. Security Hub 통계는 단일 리전의 <code>ACTIVE</code>·<code>NEW</code> 발견 사항 중 정렬과 페이지 순회 없는 최대 100건 표본입니다. 전체 환경의 심각도 분포나 모든 발견 사항을 대표하지 않으므로 표본 밖의 위험을 별도로 확인해야 합니다. 이 표본은 추가 조사 후보를 정하는 자료이고, 인벤토리의 IAM·보안 그룹·암호화 구성은 개별 조건을 확인하는 자료입니다.</p>
 <p>규칙 점검은 Steampipe와 함께 쓰는 오픈소스 벤치마크 실행 도구 Powerpipe로 CIS(Center for Internet Security) 벤치마크를 평가합니다. 별도 컴플라이언스 워커에서 허용된 벤치마크를 실행하며, 점검 대상 계정의 조회 권한과 실행 환경을 준비해야 합니다.</p>
-<p>결과에는 점검 항목, 대상 리소스, 판정 상태와 이유를 기록합니다. <code>ok</code>, <code>alarm</code>, <code>skip</code>, <code>error</code>를 구분하고 건너뛰었거나 읽지 못한 항목은 후속 점검으로 남깁니다. 노출 후보를 찾았다면 현재 구성과 필요 통신, 영향받는 리소스 관계를 대조해 제한된 변경안과 검증 방법을 마련합니다.</p>
+<p>결과에는 점검 항목, 대상 리소스, 판정 상태와 이유를 기록합니다. <code>ok</code>, <code>alarm</code>, <code>info</code>, <code>skip</code>, <code>error</code>를 구분하고 건너뛰었거나 읽지 못한 항목은 후속 점검으로 남깁니다. 노출 후보를 찾았다면 현재 구성과 필요 통신, 영향받는 리소스 관계를 대조해 제한된 변경안과 검증 방법을 마련합니다.</p>
 <p>규칙 결과와 AI 해석을 나누면 검토자가 원래 판정으로 돌아가 확인할 수 있습니다. 어떤 리소스가 어느 규칙에 해당했는지와 모델이 권고한 우선순위를 함께 읽고, 정책의 적용 범위나 업무상 예외는 담당자가 판단합니다. 같은 보고서 안에서도 API로 확인한 사실과 해석에 필요한 운영 맥락의 역할이 다르다는 점을 유지합니다.</p>
 <h3 id="_15">점수와 변화 비교의 해석</h3>
 <p>요약 점수는 제품 내부의 진단 보조 지표이며 AWS Well-Architected Tool의 공식 리뷰 결과가 아닙니다. 실제 Well-Architected 리뷰에는 워크로드의 요구 사항과 운영 방식, 적용 가능한 모범 사례를 관계자와 확인하는 과정이 필요합니다. AWSops의 보고서는 그 검토에 사용할 수집 자료와 발견 사항을 정리하는 데 사용합니다.</p>
@@ -445,7 +446,7 @@ if __name__ == &quot;__main__&quot;:
 <h3 id="_23">테스트 환경과 샘플 준비</h3>
 <p>샘플을 배포할 AWS 계정, 도메인과 Route 53 호스팅 영역, Terraform 상태를 저장할 S3 버킷을 준비합니다. 첫 ENI 실습은 네트워크 도구의 기본 조회 리전인 <strong>서울(ap-northeast-2)</strong>을 기준으로 합니다. 배포 주체에는 샘플 인프라를 생성할 권한이, 에이전트 실행 역할에는 사용할 모델과 AWS 조회에 필요한 권한이 있어야 합니다. 아래 흐름은 실제 AWS 리소스를 생성하므로 테스트 계정의 적용 범위와 비용을 먼저 확인합니다.</p>
 <p>로컬 도구는 샘플 README의 Terraform·Node.js·Docker buildx 요구사항을 확인합니다. 호스트에서 프로비저너를 실행할 Python과 boto3도 필요합니다.</p>
-<p>배포 명령을 실행할 작업 환경에는 <strong>Aurora 엔드포인트의 TCP 5432로 연결할 수 있는 네트워크 경로와 접근 허용</strong>도 필요합니다. 샘플의 마이그레이션 도구는 데이터베이스에 직접 연결하며 <code>make deploy</code>에도 이 단계가 포함됩니다. VPC 내부 또는 승인된 접속 경로를 갖춘 작업 환경에서 데이터베이스 연결을 준비합니다.</p>
+<p>배포 명령을 실행할 작업 환경에는 <strong>Aurora 엔드포인트의 TCP 5432로 연결할 수 있는 네트워크 경로와 접근 허용</strong>도 필요합니다. 샘플의 마이그레이션 도구는 데이터베이스에 직접 연결하며 <code>make deploy</code>에도 이 단계가 포함됩니다. VPC 내부 또는 승인된 VPN·SSM 접속 경로를 갖춘 작업 환경에서 데이터베이스 연결을 준비합니다. Aurora는 비공개로 유지하며 접속을 위해 보안 그룹을 인터넷 전체에 개방하지 않습니다.</p>
 <p>다음 명령으로 저장소를 복제하고 구성 마법사를 시작합니다.</p>
 <pre><code class="language-bash">git clone https://github.com/aws-samples/sample-awsops.git
 cd sample-awsops
@@ -460,11 +461,11 @@ terraform -chdir=terraform/foundation plan -out tfplan
 </code></pre>
 <p>계획을 확인한 뒤 저장된 계획을 적용하고 웹과 에이전트를 구성합니다.</p>
 <pre><code class="language-bash">terraform -chdir=terraform/foundation apply tfplan
+INITIALIZE_EMPTY_DB=1 make migrate
 make deploy
-make migrate
 make agentcore SMOKE=1
 </code></pre>
-<p><code>make deploy</code>는 웹 이미지 배포 흐름이고, <code>make agentcore</code>는 에이전트 이미지를 빌드·배포한 뒤 Runtime·Gateway·타깃을 구성하는 흐름입니다. <code>make deploy</code>에도 마이그레이션이 포함되지만, AgentCore 구성 전에 데이터베이스 역할과 비밀번호 동기화가 준비되어 있어야 한다는 선행 조건을 명시하기 위해 <code>make migrate</code>를 적었습니다. 관련 조건은 <a href="https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/agent-sql-reader.md">에이전트 SQL 읽기 역할 런북</a>에서 확인할 수 있습니다.</p>
+<p><code>make deploy</code>는 웹 이미지 배포 흐름이고, <code>make agentcore</code>는 에이전트 이미지를 빌드·배포한 뒤 Runtime·Gateway·타깃을 구성하는 흐름입니다. 빈 데이터베이스의 최초 초기화는 <code>INITIALIZE_EMPTY_DB=1 make migrate</code>로 먼저 수행합니다. 기존 환경에서는 해당 변수 없이 <code>make migrate</code>를 사용합니다. <code>make deploy</code>도 마이그레이션을 선행 실행하며, AgentCore 구성 전에는 데이터베이스 역할과 비밀번호 동기화가 준비되어 있어야 합니다. 관련 조건은 <a href="https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/agent-sql-reader.md">에이전트 SQL 읽기 역할 런북</a>에서 확인할 수 있습니다.</p>
 <p>프로비저너 출력의 오류와 Runtime·네트워크 Gateway 타깃의 준비 상태를 확인합니다. <code>SMOKE=1</code>은 보안 Gateway에 IAM 역할 목록 질문을 보내는 연결 점검입니다. 네트워크 ENI 조회의 성공 여부는 다음 단계에서 별도로 확인합니다.</p>
 <h3 id="_24">질문과 성공 기준</h3>
 <p>Amazon Cognito 사용자 풀에서 관리자가 테스트 사용자를 준비한 뒤 대시보드에서 호스트 계정의 네트워크 질문을 보냅니다. 예를 들어 <code>ENI &lt;ENI_ID&gt;의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회하고 추가 확인이 필요한 항목을 정리해 주세요.</code>라고 요청합니다. <code>&lt;ENI_ID&gt;</code>에는 테스트할 계정·리전에서 확인한 실제 식별자를 넣습니다.</p>

@@ -1,3 +1,5 @@
+> **Historical record (2026-09-13), not current validation.** The original observations, hashes and verdict below are retained for provenance. Later review corrected the empty-database setup order, ENI partial-evidence interpretation, CIS status list, unsupported absolute Logs Insights window, appendix-B font rendering, diagnosis sampling bounds, and SDK/degraded inventory disclosure. Use the [current validation scope](../VALIDATION-2026-09-17.md); older captures and passing flags do not validate the revised draft.
+
 > Historical review of the 3,877-word condensed version. Superseded by the user’s no-length-limit instruction; use EDITORIAL-SCOPE.md and the current review report.
 
 # Content Review Report
