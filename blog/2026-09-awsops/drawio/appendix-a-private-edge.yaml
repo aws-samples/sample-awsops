@@ -1,0 +1,22 @@
+title: "프라이빗 엣지 경로 — CloudFront에서 ALB까지 TLS"
+external:
+  - {id: browser, icon: users, label: "브라우저"}
+edge:
+  - {id: cf, icon: cloudfront, label: "Amazon CloudFront"}
+region:
+  label: "VPC (프라이빗 서브넷) — 퍼블릭 로드 밸런서 없음"
+  stages:
+    - name: "VPC 오리진"
+      services:
+        - {id: vpco, icon: "arch:Amazon-Virtual-Private-Cloud", label: "VPC 오리진 ENI"}
+    - name: "내부 ALB"
+      services:
+        - {id: alb, icon: alb, label: "HTTPS:443 · 리전 ACM"}
+    - name: "웹 컨테이너"
+      services:
+        - {id: web, icon: fargate, label: "AWS Fargate Web :3000"}
+flows:
+  - {from: browser, to: cf, label: "TLS", kind: highlight}
+  - {from: cf, to: vpco, label: "TLS (https-only)", kind: highlight}
+  - {from: vpco, to: alb, label: "443 · 관리형 SG만", kind: highlight}
+  - {from: alb, to: web, label: "HTTP"}

@@ -1,0 +1,21 @@
+# Topology reference. The matching .drawio is the final source for routed geometry.
+title: "로그인과 보호 경로 — 엣지 검증 + BFF 접근 제어"
+external:
+  - {id: browser, icon: users, label: "브라우저"}
+edge:
+  - {id: cf, icon: cloudfront, label: "CloudFront + Lambda@Edge"}
+region:
+  label: "AWS Region"
+  stages:
+    - name: "Web BFF · Identity"
+      services:
+        - {id: web, icon: fargate, label: "BFF · 세션 / 소유권 검사"}
+        - {id: cognito, icon: "arch:Amazon-Cognito", label: "Cognito 사용자 풀 · JWKS"}
+flows:
+  - {from: browser, to: cf, label: "① 로그인 요청 / ④ 쿠키 요청", kind: highlight}
+  - {from: cf, to: browser, label: "미인증 시 302 / ③ Set-Cookie"}
+  - {from: cf, to: web, label: "① 로그인 / ④ JWT 검증 후", kind: highlight}
+  - {from: web, to: cf, label: "③ 로그인 응답"}
+  - {from: web, to: cognito, label: "② InitiateAuth"}
+  - {from: cognito, to: web, label: "② ID 토큰"}
+  - {from: cf, to: cognito, label: "JWKS 공개키 가져오기", kind: async}
