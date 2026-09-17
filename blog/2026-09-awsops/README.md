@@ -41,6 +41,8 @@ python3 -m venv /tmp/awsops-blog-preview-venv
 
 ## 출력 도구 회귀 검사
 
+이 검사는 수동 실행용이며 기본 Merge Verify의 테스트 검색 경로에는 포함되지 않습니다.
+
 ```bash
 python3 -m unittest discover -s blog/2026-09-awsops/drawio -p test_build.py
 ```

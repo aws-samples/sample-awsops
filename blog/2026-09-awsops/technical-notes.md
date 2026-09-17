@@ -58,7 +58,9 @@
 | 지속 가능성 | 같은 파일의 pillar map·요약 프롬프트, `test_sections_wadd.py` | 탄소 원천 데이터 없음. 자원 효율·구성의 참고 지표와 데이터 부족을 구분. 배출량·감축량을 산출했다고 쓰지 않음 |
 | 수집과 섹션별 분석 | `scripts/v2/workers/diagnosis/report.py`, `sources.py` | 워커가 자료를 수집하고 Bedrock을 직접 호출. AgentCore Runtime을 경유하는 채팅 경로와 구분 |
 | 예약 진단 | `web/lib/diagnosis-schedule.ts`, `scripts/v2/workers/schedule_dispatcher.py`, `terraform/foundation/workers.tf` | workers + diagnosis_schedule 게이트와 사용자 활성화 필요. 주간·격주·월간 예약, 매시간 확인. 현재 UI는 기본 호스트 진단 |
-| 보안 자료 | `diagnosis/sources.py`의 `collect_posture`, `collect_inventory` | Security Hub의 단일 리전 NEW 상태 발견 사항 중 정렬·페이지 순회 없는 최대 100건 표본의 심각도 통계. 전체 분포나 모든 발견 사항·통제 항목의 완전 수집으로 주장하지 않음 |
+| 인벤토리 수집 경로 | `scripts/v2/steampipe/sync_lambda.py`의 `QUERIES`, `SDK_SYNCS` | Steampipe SQL과 직접 boto3 호출을 구분. S3·공개 접근 등 다섯 SDK 유형은 Steampipe를 거치지 않음 |
+| 인벤토리 속성 미확인 | 같은 파일의 `_run_steampipe_query`, `unknown_attribute_count`와 신선도 계약 | 최신 시각·succeeded만으로 완전성을 판단하지 않음. unknown 속성과 degraded 신선도를 확인하며 누락을 안전·부재로 해석하지 않음 |
+| 보안 자료 | `diagnosis/sources.py`의 `collect_posture`, `collect_inventory` | Security Hub의 단일 리전 ACTIVE·NEW 상태 발견 사항 중 정렬·페이지 순회 없는 최대 100건 표본의 심각도 통계. 전체 분포나 모든 발견 사항·통제 항목의 완전 수집으로 주장하지 않음 |
 | CIS 규칙 점검 | `scripts/v2/workers/compliance.py`, `handlers.py`의 `_compliance` | Powerpipe가 별도 워커에서 Steampipe를 조회. 규칙 결과와 LLM의 해석을 구분 |
 | 변경 이벤트 표본 | `diagnosis/sources.py`의 `collect_what_changed` | 단일 리전의 최근 24시간, 최대 50건. 주간·월간 예약 간격 전체의 변경 이력이 아님 |
 | 변화 비교 | `diagnosis/report.py`의 `_diff_summary`, 활성 불변 조건 평가 | 준비된 기준과 이전 보고서의 비교. 모든 AI 발견 사항의 의미적 차이·전체 환경 drift를 자동 검증하는 기능이 아님 |

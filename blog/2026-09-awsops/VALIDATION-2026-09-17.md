@@ -19,6 +19,10 @@ ENI 설명에 `partial`, `unknown`, `routeSelection` 해석을 추가하고,
 `scripts/v2/migrate.mjs`, `agent/lambda/network_mcp.py`,
 `scripts/v2/workers/compliance.py`와 대조했습니다.
 
+정기 진단의 CloudTrail·Security Hub 기간/표본 제한과 인벤토리의 SDK 수집·
+속성 미확인/degraded 상태를 본문에도 명시했습니다. 그림 2b에 직접 SDK 경로와
+기본 비활성인 그래프 재구축을 표시하고 다시 출력·확인했습니다.
+
 인증 보조 그림은 NFC 텍스트와 Noto Sans CJK KR 글꼴로 다시 출력했습니다.
 새 PNG를 직접 확인해 하단 한글 문장의 자모 분리가 해소됐음을 확인했습니다.
 SVG는 같은 원본에서 새로 생성하고 XML을 검증했습니다.

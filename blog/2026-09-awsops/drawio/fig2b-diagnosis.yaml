@@ -6,7 +6,7 @@ components:
 - id: steampipe
   label: Steampipe / AWS Fargate
 - id: sync
-  label: 동기화 Lambda / 15분 주기
+  label: 동기화 Lambda / SQL·SDK / 15분
 - id: aurora
   label: Amazon Aurora / 인벤토리
 - id: graph
@@ -18,7 +18,7 @@ components:
 - id: sfn
   label: AWS Step / Functions
 - id: worker
-  label: AWS Fargate 워커 / 호스트 API 조회·분석
+  label: AWS Fargate 워커 / 허용 범위 분석
 - id: report_bedrock
   label: Amazon Bedrock
 - id: artifacts
@@ -27,7 +27,13 @@ components:
   label: 완료 리포트 집계 / Lambda · 15분 주기
 - id: sns
   label: Amazon SNS / 선택적 이메일
+- id: sdk_apis
+  label: AWS APIs (SDK) / 일부 유형 직접 조회
 flows:
+- id: sdk_read
+  from: sdk_apis
+  to: sync
+  label: 직접 SDK 수집
 - id: inventory_0
   from: steampipe
   to: sync
@@ -39,7 +45,7 @@ flows:
 - id: inventory_2
   from: aurora
   to: graph
-  label: 관계 재구축
+  label: 관계 재구축 / 기본 OFF
 - id: report_0
   from: schedule
   to: sqs
