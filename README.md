@@ -4,7 +4,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Atom-oh/awsops?style=flat&logo=github)](https://github.com/Atom-oh/awsops/network/members)
 [![GitHub issues](https://img.shields.io/github/issues/Atom-oh/awsops)](https://github.com/Atom-oh/awsops/issues)
 [![License](https://img.shields.io/github/license/Atom-oh/awsops)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.9.0-green.svg)](https://github.com/Atom-oh/awsops/releases)
+[![Version](https://img.shields.io/badge/version-v0.10.0-green.svg)](https://github.com/aws-samples/sample-awsops/releases/tag/v0.10.0)
 [![Last commit](https://img.shields.io/github/last-commit/Atom-oh/awsops)](https://github.com/Atom-oh/awsops/commits/main)
 [![PR Review](https://github.com/Atom-oh/awsops/actions/workflows/pr-review.yml/badge.svg)](https://github.com/Atom-oh/awsops/actions/workflows/pr-review.yml)
 

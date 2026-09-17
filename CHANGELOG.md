@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-17
+
 ### Added
 
 - VPC connectivity: `/inventory/vpc` adds an on-demand, account/region-scoped peering and TGW attachment viewer with localized guidance, a section shortcut available during inventory loading or failure, and resource-graph navigation. A ReactFlow graph above the record lists draws active source–PCX–peer and source–TGW–peer paths with scoped identities, distinct unknown peers, clickable node/edge details and whole-path limits of 300 nodes/500 edges with visible omission counts. The `/topology/infra?view=vpc` tab loads inventory choices only until Fetch connections; qualified selection links and placement-node raw IDs query only after a unique match in the current inventory scope. The default placement view and its empty-state VPC-graph shortcut remain separate from live connection results, which are not persisted as graph edges. Retains pending and historical records with unknown peer details; labels active peerings and available attachments separately from records whose current connection is unconfirmed, and shows list arrows only for active peerings. TGW lists describe attachment records; only available attachments with associated route tables receive the associated-table label. Shows the VPC owner or unknown and separates shared-VPC/TGW visibility limits from failed or incomplete reads; either prevents a definitive no-connections claim. Operationally complete reads cache for four minutes even with visibility limits; incomplete reads are retried against AWS, with timestamps reflecting read completion. Picker and API share supported regions, disclose excluded choices and the 500-row cap, preserve selection across refreshes, and avoid empty-list claims after failed refreshes. Configuration does not prove reachability. Requires a reviewed saved-plan apply for the region-conditioned `ec2:DescribeVpcPeeringConnections` grant; reuses the existing TGW read permission.
@@ -634,7 +636,8 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 - AI routing: Code Interpreter, AgentCore, Steampipe+Bedrock, Bedrock Direct
 - Bedrock Claude Sonnet/Opus 4.6 integration
 
-[Unreleased]: https://github.com/whchoi98/awsops/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/aws-samples/sample-awsops/compare/v0.10.0...dev
+[0.10.0]: https://github.com/aws-samples/sample-awsops/releases/tag/v0.10.0
 [0.9.0]: https://github.com/whchoi98/awsops/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/whchoi98/awsops/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/whchoi98/awsops/compare/v0.6.0...v0.7.0
@@ -665,6 +668,8 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 **작성 규칙:** 기능별로 실제 사용자에게 보이는 최종 동작을 서술하며, 카테고리별로 기능당 1개 항목만 둔다(공유 마이그레이션 목록처럼 여러 기능에 걸치는 인프라/스키마 항목은 별도의 한 줄로 두어도 된다). PR 번호·CI 리뷰 라운드 번호·시도 횟수는 적지 않는다 — 그런 정보는 git 히스토리와 PR 스레드에 남는다. 같은 기능에 대한 이후 수정이 이전 항목을 대체하면 새 항목을 추가하지 말고 기존 항목을 고쳐 쓴다.
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-09-17
 
 ### Added
 
@@ -1273,7 +1278,8 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 - AI 라우팅: Code Interpreter, AgentCore, Steampipe+Bedrock, Bedrock Direct
 - Bedrock Claude Sonnet/Opus 4.6 통합
 
-[Unreleased]: https://github.com/whchoi98/awsops/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/aws-samples/sample-awsops/compare/v0.10.0...dev
+[0.10.0]: https://github.com/aws-samples/sample-awsops/releases/tag/v0.10.0
 [0.9.0]: https://github.com/whchoi98/awsops/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/whchoi98/awsops/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/whchoi98/awsops/compare/v0.6.0...v0.7.0
