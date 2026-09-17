@@ -572,6 +572,19 @@ test('reserved dispatcher names cannot enter the synchronous catalog', () => {
       /invalid_collection_catalog/);
 });
 
+test('unprobed reachability remains null and a partial collector never reaches runtime proof', async () => {
+  for (const unreachable_account_count of [null, undefined]) await withFixture(async f => {
+    await assert.rejects(f.release(), error => {
+      assert.equal(error.message, 'collection_partial');
+      assert.equal(error.collection_attempts.types.s3.unreachable_account_count, null);
+      assert.equal(error.collection_attempts.types.s3.status, 'partial');
+      return true;
+    });
+    assert.equal(f.authenticated.length, 0);
+  }, { probes: { s3: { type: 's3', status: 'partial', row_count: 0,
+    unknown_attribute_count: 0, unreachable_account_count } } });
+});
+
 test('owned probes must disclose known counts and zero unknown attributes before authentication', async () => {
   for (const change of [{ unknown_attribute_count: 1 }, { unknown_attribute_count: null },
     { unknown_attribute_count: undefined }, { row_count: null }]) await withFixture(async f => {
