@@ -1,5 +1,7 @@
 # AWSops 블로그 원고 편집 리뷰 — Codex 작업 브리프
 
+> **과거 기록 — 적용하지 않음.** 아래 판정·명령·줄 번호·그림 이름은 이전 원고를 대상으로 한 기록입니다. 현재 지침은 [편집 기준](EDITORIAL-SCOPE.md), 현재 검증 범위는 [복구 검증 기록](VALIDATION-2026-09-17.md)을 따릅니다. 분량 감축 지시는 철회되었습니다.
+
 - 대상 원고: `blog/2026-09-awsops/draft-awsops-architecture.md` (431줄, 커밋 `3b11e396`, 브랜치 `codex/awsops-sre-blog-20260911`)
 - 보조 자료: `blog/2026-09-awsops/technical-notes.md`, `README.md`, `drawio/*.drawio`, `images/*.png|svg`, `render_preview.py`
 - 리뷰 기준: aws.amazon.com/ko/blogs/tech 편집 기준. 현 판정 **45/100, 게시 반려**.

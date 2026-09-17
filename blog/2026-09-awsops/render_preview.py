@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def make_preview():
-    text = (ROOT / "draft-awsops-architecture.md").read_text()
+    text = (ROOT / "draft-awsops-architecture.md").read_text(encoding="utf-8")
     parser = markdown.Markdown(extensions=["tables", "fenced_code", "toc"])
     content = parser.convert(text)
 

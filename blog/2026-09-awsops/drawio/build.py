@@ -18,6 +18,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 IMAGES = HERE.parent / "images"
@@ -80,18 +82,31 @@ def main() -> None:
             raise SystemExit("Cannot export: DISPLAY and xvfb-run are unavailable.")
         prefix = [xvfb, "-a"]
     for name in selected:
-        for format_name in ("png", "svg"):
-            target = IMAGES / f"{name}.{format_name}"
-            command = [
-                *prefix, drawio, "--disable-gpu", "-x", "-f", format_name,
-                "-b", "20", "-o", str(target), str(HERE / f"{name}.drawio"),
-            ]
-            if format_name == "png":
-                command.extend(["-s", "2"])
-            subprocess.run(command, check=True, timeout=60)
-            if not target.exists() or target.stat().st_size < 10_000:
-                raise SystemExit(f"Export missing or suspiciously small: {target}")
-            print(f"Exported {target.name}: {target.stat().st_size:,} bytes", flush=True)
+        # Validate fresh files before replacing either committed export. A CLI
+        # that exits successfully without writing cannot reuse stale artifacts.
+        with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=IMAGES) as staging:
+            exports = []
+            for format_name in ("png", "svg"):
+                target = Path(staging) / f"{name}.{format_name}"
+                command = [
+                    *prefix, drawio, "--disable-gpu", "-x", "-f", format_name,
+                    "-b", "20", "-o", str(target), str(HERE / f"{name}.drawio"),
+                ]
+                if format_name == "png":
+                    command.extend(["-s", "2"])
+                subprocess.run(command, check=True, timeout=60)
+                if not target.is_file() or target.stat().st_size < 10_000:
+                    raise SystemExit(f"Export missing or suspiciously small: {target.name}")
+                if format_name == "png":
+                    if target.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                        raise SystemExit(f"Invalid PNG export: {target.name}")
+                elif ET.parse(target).getroot().tag != "{http://www.w3.org/2000/svg}svg":
+                    raise SystemExit(f"Invalid SVG export: {target.name}")
+                exports.append(target)
+            for target in exports:
+                destination = IMAGES / target.name
+                target.replace(destination)
+                print(f"Exported {destination.name}: {destination.stat().st_size:,} bytes", flush=True)
 
 
 if __name__ == "__main__":

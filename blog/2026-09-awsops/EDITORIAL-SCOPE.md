@@ -29,4 +29,4 @@
 - 샘플의 v2 문서·명령과 실제 준비 조건을 사용합니다. 관련 구현·온보딩 문서에 대한 목적 있는 GitHub 딥링크는 허용합니다.
 - 실행 뒤의 성공 기준에는 실제 도구 호출과 반환된 리소스 근거의 대조를 포함합니다. 자연어 응답이나 간이 smoke 결과만으로 전체 조회가 검증되었다고 하지 않습니다.
 
-`results/CONTENT-REVIEW-2026-09-13-condensed.md`와 `results/CONTENT-REVIEW-2026-09-13-expanded.md`는 이전 원고의 이력입니다. 현재 원고의 판정은 `results/CONTENT-REVIEW-2026-09-13.md`, 검증 기록은 `results/verification.json`을 사용합니다.
+`results/CONTENT-REVIEW-2026-09-13-condensed.md`와 `results/CONTENT-REVIEW-2026-09-13-expanded.md`는 이전 원고의 이력입니다. 이들 `results/` 기록은 별도 이력 복구 PR에서 보존하며 아직 이 소스 패키지의 검증 근거로 사용하지 않습니다. 현재 검증 범위와 보류 항목은 [복구 검증 기록](VALIDATION-2026-09-17.md)을 사용합니다.

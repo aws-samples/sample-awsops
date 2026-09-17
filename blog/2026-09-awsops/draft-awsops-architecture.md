@@ -174,7 +174,7 @@ if __name__ == "__main__":
 1. **질문을 Runtime에 전달합니다.** 웹 계층이 선택한 도메인과 사용자 질문을 전달하면 Runtime의 에이전트가 해당 Gateway에 연결합니다.
 2. **사용할 도구를 준비합니다.** 에이전트는 Gateway에서 도구 정의를 읽고 적용되는 허용목록을 반영한 뒤 Strands `Agent`에 전달합니다.
 3. **모델이 필요한 조회를 선택합니다.** 이 질문에서는 `get_eni_details`와 `eni_id` 인자가 도구 호출의 대상이 됩니다. Gateway는 등록된 네트워크 Lambda로 호출을 전달합니다.
-4. **Lambda가 AWS 구성을 읽습니다.** 구현은 ENI를 조회하고 연결된 보안 그룹, 서브넷의 네트워크 ACL, 라우팅 정보를 수집합니다. 결과에는 `eniId`, `privateIp`, `vpcId`, `subnetId`, `securityGroups`, `nacl`, `routes` 같은 필드가 담깁니다.
+4. **Lambda가 AWS 구성을 읽습니다.** 구현은 ENI를 조회하고 연결된 보안 그룹, 서브넷의 네트워크 ACL, 라우팅 정보를 수집합니다. 결과에는 `eniId`, `privateIp`, `vpcId`, `subnetId`, `securityGroups`, `nacl`, `routes`와 함께 `routeSelection`, `partial`, `unknown` 필드가 담깁니다. `partial=true`이거나 `unknown`에 항목이 있으면 해당 근거는 미평가 상태입니다. `routeSelection.status`도 확인하며, 빈 목록을 규칙이나 경로가 없다는 뜻으로 해석하지 않습니다.
 5. **도구 결과를 설명으로 바꿉니다.** 결과가 에이전트에 돌아오면 모델은 조회한 구성을 사용해 답변을 구성합니다. 운영자는 반환된 ENI 식별자와 설정을 콘솔의 같은 대상과 대조하고 다음 점검을 정합니다.
 
 이 흐름에서 바뀐 것은 사람이 여러 화면에서 읽어 모델에 붙여 넣던 자료를, 에이전트가 등록된 조회 도구를 통해 요청할 수 있게 했다는 점입니다. 개발자는 조회 로직과 권한, 입력·출력 정의를 검토하고, 운영자는 답변이 어떤 리소스의 근거를 사용했는지 확인할 수 있습니다.
@@ -373,7 +373,7 @@ Amazon VPC Reachability Analyzer는 출발지와 목적지 사이의 네트워�
 
 규칙 점검은 Steampipe와 함께 쓰는 오픈소스 벤치마크 실행 도구 Powerpipe로 CIS(Center for Internet Security) 벤치마크를 평가합니다. 별도 컴플라이언스 워커에서 허용된 벤치마크를 실행하며, 점검 대상 계정의 조회 권한과 실행 환경을 준비해야 합니다.
 
-결과에는 점검 항목, 대상 리소스, 판정 상태와 이유를 기록합니다. `ok`, `alarm`, `skip`, `error`를 구분하고 건너뛰었거나 읽지 못한 항목은 후속 점검으로 남깁니다. 노출 후보를 찾았다면 현재 구성과 필요 통신, 영향받는 리소스 관계를 대조해 제한된 변경안과 검증 방법을 마련합니다.
+결과에는 점검 항목, 대상 리소스, 판정 상태와 이유를 기록합니다. `ok`, `alarm`, `info`, `skip`, `error`를 구분하고 건너뛰었거나 읽지 못한 항목은 후속 점검으로 남깁니다. 노출 후보를 찾았다면 현재 구성과 필요 통신, 영향받는 리소스 관계를 대조해 제한된 변경안과 검증 방법을 마련합니다.
 
 규칙 결과와 AI 해석을 나누면 검토자가 원래 판정으로 돌아가 확인할 수 있습니다. 어떤 리소스가 어느 규칙에 해당했는지와 모델이 권고한 우선순위를 함께 읽고, 정책의 적용 범위나 업무상 예외는 담당자가 판단합니다. 같은 보고서 안에서도 API로 확인한 사실과 해석에 필요한 운영 맥락의 역할이 다르다는 점을 유지합니다.
 
@@ -471,7 +471,7 @@ AI 사용 비용도 파일럿의 평가 범위에 포함합니다. 모델 추론
 
 로컬 도구는 샘플 README의 Terraform·Node.js·Docker buildx 요구사항을 확인합니다. 호스트에서 프로비저너를 실행할 Python과 boto3도 필요합니다.
 
-배포 명령을 실행할 작업 환경에는 **Aurora 엔드포인트의 TCP 5432로 연결할 수 있는 네트워크 경로와 접근 허용**도 필요합니다. 샘플의 마이그레이션 도구는 데이터베이스에 직접 연결하며 `make deploy`에도 이 단계가 포함됩니다. VPC 내부 또는 승인된 접속 경로를 갖춘 작업 환경에서 데이터베이스 연결을 준비합니다.
+배포 명령을 실행할 작업 환경에는 **Aurora 엔드포인트의 TCP 5432로 연결할 수 있는 네트워크 경로와 접근 허용**도 필요합니다. 샘플의 마이그레이션 도구는 데이터베이스에 직접 연결하며 `make deploy`에도 이 단계가 포함됩니다. VPC 내부 또는 승인된 VPN·SSM 접속 경로를 갖춘 작업 환경에서 데이터베이스 연결을 준비합니다. Aurora는 비공개로 유지하며 접속을 위해 보안 그룹을 인터넷 전체에 개방하지 않습니다.
 
 다음 명령으로 저장소를 복제하고 구성 마법사를 시작합니다.
 
@@ -497,12 +497,12 @@ terraform -chdir=terraform/foundation plan -out tfplan
 
 ```bash
 terraform -chdir=terraform/foundation apply tfplan
+INITIALIZE_EMPTY_DB=1 make migrate
 make deploy
-make migrate
 make agentcore SMOKE=1
 ```
 
-`make deploy`는 웹 이미지 배포 흐름이고, `make agentcore`는 에이전트 이미지를 빌드·배포한 뒤 Runtime·Gateway·타깃을 구성하는 흐름입니다. `make deploy`에도 마이그레이션이 포함되지만, AgentCore 구성 전에 데이터베이스 역할과 비밀번호 동기화가 준비되어 있어야 한다는 선행 조건을 명시하기 위해 `make migrate`를 적었습니다. 관련 조건은 [에이전트 SQL 읽기 역할 런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/agent-sql-reader.md)에서 확인할 수 있습니다.
+`make deploy`는 웹 이미지 배포 흐름이고, `make agentcore`는 에이전트 이미지를 빌드·배포한 뒤 Runtime·Gateway·타깃을 구성하는 흐름입니다. 빈 데이터베이스의 최초 초기화는 `INITIALIZE_EMPTY_DB=1 make migrate`로 먼저 수행합니다. 기존 환경에서는 해당 변수 없이 `make migrate`를 사용합니다. `make deploy`도 마이그레이션을 선행 실행하며, AgentCore 구성 전에는 데이터베이스 역할과 비밀번호 동기화가 준비되어 있어야 합니다. 관련 조건은 [에이전트 SQL 읽기 역할 런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/agent-sql-reader.md)에서 확인할 수 있습니다.
 
 프로비저너 출력의 오류와 Runtime·네트워크 Gateway 타깃의 준비 상태를 확인합니다. `SMOKE=1`은 보안 Gateway에 IAM 역할 목록 질문을 보내는 연결 점검입니다. 네트워크 ENI 조회의 성공 여부는 다음 단계에서 별도로 확인합니다.
 
