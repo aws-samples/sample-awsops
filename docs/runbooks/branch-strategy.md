@@ -74,6 +74,10 @@ are immutable and must not be retagged for a release bump. New migrations should
 declare the intended next application release before their first merge. Historical
 ledger labels are not an ordered application-release history: disclose mismatched
 labels in CHANGELOG rather than changing already-merged SQL or ledger checksums.
+This includes legacy 2.x-line labels and header-less files: the latter use the
+apply-time APP_VERSION override or package fallback, while existing rows remain
+unchanged. The release tag/commit and SQL checksums identify the release contents;
+an app_version equality filter does not.
 
 Choose the next application version from this release line; imported legacy v1
 history and the separate `scripts/v2` tooling package are not its version source.
