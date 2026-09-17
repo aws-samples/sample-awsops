@@ -1,0 +1,35 @@
+{
+  "status": "historical_superseded",
+  "revision": "condensed_0a08bd77",
+  "notice": "The user withdrew the length requirement. Do not use this historical word_range result as a current gate.",
+  "date": "2026-09-13",
+  "words_before": 6525,
+  "words_after": 3877,
+  "hedge_endings": 2,
+  "checks": {
+    "word_range": true,
+    "prompt_preservation": true,
+    "caption_preservation": true,
+    "no_internal_identifiers": true,
+    "consistent_terms": true,
+    "hedge_limit": true,
+    "five_schedule_steps": true,
+    "schedule_timings": true,
+    "author_placeholder": true,
+    "acronyms_defined": true,
+    "preserved_drawio_fig-sre-workflow.drawio": true,
+    "preserved_images_fig-sre-workflow.png": true,
+    "preserved_images_fig-sre-workflow.svg": true
+  },
+  "code_examples": {
+    "gateway": "syntax and botocore request shape validated; exact catalog tool schema; mocked call only",
+    "network": "response fields, checked layers and ingress reason matched real function under mocked EC2 configuration"
+  },
+  "external_links": {
+    "count": 13,
+    "http_200": 13
+  },
+  "visual_evidence": "visual/results.json",
+  "diagram_evidence": "../drawio/qa/validation.json",
+  "live_aws_validation": false
+}

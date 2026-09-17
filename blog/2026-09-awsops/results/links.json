@@ -1,0 +1,67 @@
+[
+  {
+    "url": "https://github.com/Atom-oh/awsops",
+    "status": 200,
+    "final": "https://github.com/Atom-oh/awsops"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/config/latest/developerguide/WhatIsConfig.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/config/latest/developerguide/WhatIsConfig.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/resource-explorer/latest/userguide/welcome.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/resource-explorer/latest/userguide/welcome.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/vpc/latest/reachability/what-is-reachability-analyzer.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/vpc/latest/reachability/what-is-reachability-analyzer.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html"
+  },
+  {
+    "url": "https://strandsagents.com/docs/",
+    "status": 200,
+    "final": "https://strandsagents.com/docs/"
+  },
+  {
+    "url": "https://modelcontextprotocol.io/specification/latest",
+    "status": 200,
+    "final": "https://modelcontextprotocol.io/specification/2026-07-28"
+  },
+  {
+    "url": "https://steampipe.io/docs",
+    "status": 200,
+    "final": "https://steampipe.io/docs"
+  },
+  {
+    "url": "https://powerpipe.io/docs",
+    "status": 200,
+    "final": "https://powerpipe.io/docs"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Stats.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Stats.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-what-is.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-what-is.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/compute-optimizer/latest/ug/what-is-compute-optimizer.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/compute-optimizer/latest/ug/what-is-compute-optimizer.html"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/the-pillars-of-the-framework.html",
+    "status": 200,
+    "final": "https://docs.aws.amazon.com/wellarchitected/latest/framework/the-pillars-of-the-framework.html"
+  }
+]

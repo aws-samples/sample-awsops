@@ -1,0 +1,221 @@
+[
+  {
+    "width": 1280,
+    "documentWidth": 1280,
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true
+      }
+    ],
+    "tocTargets": [
+      {
+        "text": "운영 질문과 설계 요구",
+        "resolves": true
+      },
+      {
+        "text": "전제 조건",
+        "resolves": true
+      },
+      {
+        "text": "데이터 수집·관계·조회 경로",
+        "resolves": true
+      },
+      {
+        "text": "알람에서 원인 후보와 비용 검토까지",
+        "resolves": true
+      },
+      {
+        "text": "여섯 가지 기둥을 활용한 정기 진단",
+        "resolves": true
+      },
+      {
+        "text": "접근 통제와 실행 분리",
+        "resolves": true
+      },
+      {
+        "text": "검증 결과와 운영팀의 활용",
+        "resolves": true
+      },
+      {
+        "text": "결론",
+        "resolves": true
+      }
+    ],
+    "originalControls": [
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625
+    ],
+    "newSectionNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  },
+  {
+    "width": 768,
+    "documentWidth": 768,
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true
+      }
+    ],
+    "tocTargets": [
+      {
+        "text": "운영 질문과 설계 요구",
+        "resolves": true
+      },
+      {
+        "text": "전제 조건",
+        "resolves": true
+      },
+      {
+        "text": "데이터 수집·관계·조회 경로",
+        "resolves": true
+      },
+      {
+        "text": "알람에서 원인 후보와 비용 검토까지",
+        "resolves": true
+      },
+      {
+        "text": "여섯 가지 기둥을 활용한 정기 진단",
+        "resolves": true
+      },
+      {
+        "text": "접근 통제와 실행 분리",
+        "resolves": true
+      },
+      {
+        "text": "검증 결과와 운영팀의 활용",
+        "resolves": true
+      },
+      {
+        "text": "결론",
+        "resolves": true
+      }
+    ],
+    "originalControls": [
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625
+    ],
+    "newSectionNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  },
+  {
+    "width": 375,
+    "documentWidth": 375,
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true
+      }
+    ],
+    "tocTargets": [
+      {
+        "text": "운영 질문과 설계 요구",
+        "resolves": true
+      },
+      {
+        "text": "전제 조건",
+        "resolves": true
+      },
+      {
+        "text": "데이터 수집·관계·조회 경로",
+        "resolves": true
+      },
+      {
+        "text": "알람에서 원인 후보와 비용 검토까지",
+        "resolves": true
+      },
+      {
+        "text": "여섯 가지 기둥을 활용한 정기 진단",
+        "resolves": true
+      },
+      {
+        "text": "접근 통제와 실행 분리",
+        "resolves": true
+      },
+      {
+        "text": "검증 결과와 운영팀의 활용",
+        "resolves": true
+      },
+      {
+        "text": "결론",
+        "resolves": true
+      }
+    ],
+    "originalControls": [
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625,
+      46.390625
+    ],
+    "newSectionNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  }
+]

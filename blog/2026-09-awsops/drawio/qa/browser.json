@@ -1,0 +1,88 @@
+{
+  "browser": "151.0.7922.34",
+  "viewportWidth": 820,
+  "imageWidth": 760,
+  "errors": [],
+  "dimensions": [
+    {
+      "alt": "fig2a-interactive",
+      "complete": true,
+      "naturalWidth": 2142,
+      "naturalHeight": 1964,
+      "width": 760,
+      "height": 696.84375
+    },
+    {
+      "alt": "fig2b-diagnosis",
+      "complete": true,
+      "naturalWidth": 2200,
+      "naturalHeight": 2218,
+      "width": 760,
+      "height": 766.203125
+    },
+    {
+      "alt": "fig3-agentcore",
+      "complete": true,
+      "naturalWidth": 2266,
+      "naturalHeight": 1864,
+      "width": 760,
+      "height": 625.171875
+    },
+    {
+      "alt": "fig4-workers",
+      "complete": true,
+      "naturalWidth": 2360,
+      "naturalHeight": 1858,
+      "width": 760,
+      "height": 598.328125
+    },
+    {
+      "alt": "appendix-a-private-edge",
+      "complete": true,
+      "naturalWidth": 1803,
+      "naturalHeight": 583,
+      "width": 760,
+      "height": 245.734375
+    },
+    {
+      "alt": "appendix-b-edge-auth",
+      "complete": true,
+      "naturalWidth": 1922,
+      "naturalHeight": 1422,
+      "width": 760,
+      "height": 562.28125
+    },
+    {
+      "alt": "fig2a-interactive SVG",
+      "complete": true,
+      "naturalWidth": 1101,
+      "naturalHeight": 1012,
+      "width": 760,
+      "height": 698.5625
+    },
+    {
+      "alt": "fig2b-diagnosis SVG",
+      "complete": true,
+      "naturalWidth": 1130,
+      "naturalHeight": 1139,
+      "width": 760,
+      "height": 766.046875
+    },
+    {
+      "alt": "fig3-agentcore SVG",
+      "complete": true,
+      "naturalWidth": 1163,
+      "naturalHeight": 962,
+      "width": 760,
+      "height": 628.640625
+    },
+    {
+      "alt": "fig4-workers SVG",
+      "complete": true,
+      "naturalWidth": 1210,
+      "naturalHeight": 959,
+      "width": 760,
+      "height": 602.34375
+    }
+  ]
+}
