@@ -1,0 +1,41 @@
+{
+  "date": "2026-09-13",
+  "revision": "agentcore_reader_walkthrough",
+  "sample_repository": {
+    "default_branch": "dev",
+    "full_name": "aws-samples/sample-awsops",
+    "private": true
+  },
+  "sample_tree_sha": "6c17791a6bff89a2c9fe710c9eac7d7fd89ec070",
+  "publication_ready": false,
+  "publication_hold": [
+    "The user selected a planned repository that is still private; anonymous clone and dev code/document links require verification after publication."
+  ],
+  "checks": {
+    "five_prompts_preserved": true,
+    "five_schedule_steps_preserved": true,
+    "old_code_examples_preserved": true,
+    "figure_captions_preserved": true,
+    "no_internal_identifiers": true,
+    "consistent_terms": true,
+    "sample_and_walkthrough": true,
+    "new_shell_syntax": true,
+    "commands_and_fields_match_sample": true,
+    "diagrams_unchanged": true,
+    "local_references": true,
+    "aurora_network_prerequisite_explicit": true
+  },
+  "length_policy": {
+    "words_min": null,
+    "words_max": null,
+    "characters_min": null,
+    "characters_max": null,
+    "counts_are_informational_only": true
+  },
+  "metrics": {
+    "words": 7030,
+    "characters_with_spaces": 34664
+  },
+  "live_aws_deployment_or_invocation_tested": false,
+  "visual_evidence": "visual-reader-path/results.json"
+}

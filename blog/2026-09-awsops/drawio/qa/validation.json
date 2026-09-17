@@ -1,0 +1,264 @@
+{
+  "date": "2026-09-13",
+  "canonical_source": ".drawio",
+  "exporter": "drawio CLI; PNG scale 2; SVG; border 20",
+  "layout_threshold": 80,
+  "figures": [
+    {
+      "name": "appendix-a-private-edge",
+      "cells": 16,
+      "vertices": 10,
+      "edges": 4,
+      "service_icons": 4,
+      "checks": [
+        "✅ appendix-a-private-edge.drawio: XML valid, no silent-killer patterns.\n   cells=16  vertices=10  edges=4  aws4-icons=3  group-containers=1\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ appendix-a-private-edge.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=3 edges=4 vertices=10"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/appendix-a-private-edge.drawio",
+          "bytes": 10967,
+          "sha256": "8c0e6037e295f6e8ed854b284fdebde953e046aaab425162f0fc16edd9fbaab3"
+        },
+        {
+          "path": "images/appendix-a-private-edge.png",
+          "bytes": 127069,
+          "sha256": "6854ade015840c0a91d96ffc879d76b9d3c03bd07b4bceb0e4accfa9776e11b7",
+          "dimensions": [
+            1803,
+            583
+          ]
+        },
+        {
+          "path": "images/appendix-a-private-edge.svg",
+          "bytes": 186496,
+          "sha256": "e63c9f4f9e89b29768271a6ec8e6b2c9011752de2c4da8228c717d545f1d66b8"
+        }
+      ]
+    },
+    {
+      "name": "appendix-b-edge-auth",
+      "cells": 16,
+      "vertices": 7,
+      "edges": 7,
+      "service_icons": 3,
+      "checks": [
+        "✅ appendix-b-edge-auth.drawio: XML valid, no silent-killer patterns.\n   cells=16  vertices=7  edges=7  aws4-icons=2  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ appendix-b-edge-auth.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=2 edges=7 vertices=7"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/appendix-b-edge-auth.drawio",
+          "bytes": 13770,
+          "sha256": "878c8e9274eef3049bb8164368c4d6d9ec104bced2bc6f9f798974484ac75e4b"
+        },
+        {
+          "path": "images/appendix-b-edge-auth.png",
+          "bytes": 138462,
+          "sha256": "6eef034c1decdf49260b36027e9daaca2c7d28bcc9ee0331877c96dfe9e226a1",
+          "dimensions": [
+            1922,
+            1422
+          ]
+        },
+        {
+          "path": "images/appendix-b-edge-auth.svg",
+          "bytes": 312068,
+          "sha256": "9c948e37b16e461ce1ab9e683fb7d735c0964c2ab0c6877cf4e104e0a6321b1a"
+        }
+      ]
+    },
+    {
+      "name": "fig1-sre-workflow",
+      "cells": 23,
+      "vertices": 18,
+      "edges": 3,
+      "service_icons": 0,
+      "checks": [
+        "✅ fig1-sre-workflow.drawio: XML valid, no silent-killer patterns.\n   cells=23  vertices=18  edges=3  aws4-icons=0  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ fig1-sre-workflow.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=0 edges=3 vertices=18"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/fig1-sre-workflow.drawio",
+          "bytes": 6706,
+          "sha256": "99ad30c09a10840ef710123d48474c7eeb91c375c2839193388e915034b0400f"
+        },
+        {
+          "path": "images/fig1-sre-workflow.png",
+          "bytes": 126613,
+          "sha256": "6683521d6d1e22022c4ebc5936dd52592461b52193e6883f42a711c3e1bd14b7",
+          "dimensions": [
+            1520,
+            1820
+          ]
+        },
+        {
+          "path": "images/fig1-sre-workflow.svg",
+          "bytes": 2996,
+          "sha256": "cc7f98599eac5cfe807793df13310774ad28c0ea7af90285518c1c221453d9cd"
+        }
+      ]
+    },
+    {
+      "name": "fig2a-interactive",
+      "cells": 31,
+      "vertices": 21,
+      "edges": 8,
+      "service_icons": 9,
+      "checks": [
+        "✅ fig2a-interactive.drawio: XML valid, no silent-killer patterns.\n   cells=31  vertices=21  edges=8  aws4-icons=5  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ fig2a-interactive.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=5 edges=8 vertices=21"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/fig2a-interactive.drawio",
+          "bytes": 92161,
+          "sha256": "4e6e684512ec87722a6a2cb0bc516f4425fee0043362caef15a4523b17cec57a"
+        },
+        {
+          "path": "images/fig2a-interactive.png",
+          "bytes": 322923,
+          "sha256": "391cf0fa7cb14fe7e8e8ee7869ac65a250b6e9b97428a9287d5608b270e5c8c6",
+          "dimensions": [
+            2142,
+            1964
+          ]
+        },
+        {
+          "path": "images/fig2a-interactive.svg",
+          "bytes": 693683,
+          "sha256": "5d88d099cd0f0d3351f76b273386d8791c03e8ec7b277e8bb8eb0b7e21b346dd"
+        }
+      ]
+    },
+    {
+      "name": "fig2b-diagnosis",
+      "cells": 37,
+      "vertices": 25,
+      "edges": 10,
+      "service_icons": 11,
+      "checks": [
+        "✅ fig2b-diagnosis.drawio: XML valid, no silent-killer patterns.\n   cells=37  vertices=25  edges=10  aws4-icons=9  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ fig2b-diagnosis.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=9 edges=10 vertices=25"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/fig2b-diagnosis.drawio",
+          "bytes": 25417,
+          "sha256": "4ae3614d5474b54ee96aea9de2bf794ac4b1cd7b04ff0a7f2ec2222e77fe3aea"
+        },
+        {
+          "path": "images/fig2b-diagnosis.png",
+          "bytes": 375734,
+          "sha256": "0d0ee348e0e7e48c4fe2d3e3dae7f98f436eeddfcca43ce501d2854ff07bff93",
+          "dimensions": [
+            2200,
+            2218
+          ]
+        },
+        {
+          "path": "images/fig2b-diagnosis.svg",
+          "bytes": 750017,
+          "sha256": "c81567d23545a879dd7d60f98daabda660be2facdff7a2869df24a22d93376a8"
+        }
+      ]
+    },
+    {
+      "name": "fig3-agentcore",
+      "cells": 30,
+      "vertices": 20,
+      "edges": 8,
+      "service_icons": 7,
+      "checks": [
+        "✅ fig3-agentcore.drawio: XML valid, no silent-killer patterns.\n   cells=30  vertices=20  edges=8  aws4-icons=4  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ fig3-agentcore.drawio: layout score 99/100 (gate 80) [geometry 99 · design 100] — icons=4 edges=8 vertices=20\n   • [geometry] 1 element(s) off the 5px grid (sub-pixel drift) e.g. id=e4_label at (635,388)"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/fig3-agentcore.drawio",
+          "bytes": 68799,
+          "sha256": "bd29c11e53887679870315bf23aac6c6301f0486b947b05817415bc1cfb02fd1"
+        },
+        {
+          "path": "images/fig3-agentcore.png",
+          "bytes": 312536,
+          "sha256": "281f962737571626eef4f4fe5e21617a565de2f84b66423f5bdfd64ffce1306c",
+          "dimensions": [
+            2266,
+            1864
+          ]
+        },
+        {
+          "path": "images/fig3-agentcore.svg",
+          "bytes": 666737,
+          "sha256": "95e08019a7ad923198c352eee0a2ea33084b14603150012586df9b7e7f2605e6"
+        }
+      ]
+    },
+    {
+      "name": "fig4-workers",
+      "cells": 37,
+      "vertices": 23,
+      "edges": 12,
+      "service_icons": 10,
+      "checks": [
+        "✅ fig4-workers.drawio: XML valid, no silent-killer patterns.\n   cells=37  vertices=23  edges=12  aws4-icons=9  group-containers=0\n   → Compare these counts to what you intended. A low count after export = truncation.",
+        "✅ fig4-workers.drawio: layout score 100/100 (gate 80) [geometry 100 · design 100] — icons=9 edges=12 vertices=23"
+      ],
+      "artifacts": [
+        {
+          "path": "drawio/fig4-workers.drawio",
+          "bytes": 19795,
+          "sha256": "189f0c5fd7e191ef792da0a3f5f32f3dc2f86f6841785ff0c4818d7d74a082cb"
+        },
+        {
+          "path": "images/fig4-workers.png",
+          "bytes": 330667,
+          "sha256": "1e67b222dd13185e28d90f2ca429164555f08da7a39e0fb79b4ab32afd3d6796",
+          "dimensions": [
+            2360,
+            1858
+          ]
+        },
+        {
+          "path": "images/fig4-workers.svg",
+          "bytes": 661722,
+          "sha256": "ffe63482b685f33e6e495da7849ec1496a55483ca71c67055b5a99186e25ce74"
+        }
+      ]
+    }
+  ],
+  "preserved": [
+    {
+      "path": "drawio/fig1-sre-workflow.drawio",
+      "byte_identical": true,
+      "sha256": "99ad30c09a10840ef710123d48474c7eeb91c375c2839193388e915034b0400f"
+    },
+    {
+      "path": "images/fig1-sre-workflow.png",
+      "byte_identical": true,
+      "sha256": "6683521d6d1e22022c4ebc5936dd52592461b52193e6883f42a711c3e1bd14b7"
+    },
+    {
+      "path": "images/fig1-sre-workflow.svg",
+      "byte_identical": true,
+      "sha256": "cc7f98599eac5cfe807793df13310774ad28c0ea7af90285518c1c221453d9cd"
+    },
+    {
+      "path": "drawio/appendix-b-edge-auth.drawio",
+      "byte_identical": true,
+      "sha256": "878c8e9274eef3049bb8164368c4d6d9ec104bced2bc6f9f798974484ac75e4b"
+    },
+    {
+      "path": "images/appendix-b-edge-auth.png",
+      "byte_identical": true,
+      "sha256": "6eef034c1decdf49260b36027e9daaca2c7d28bcc9ee0331877c96dfe9e226a1"
+    },
+    {
+      "path": "images/appendix-b-edge-auth.svg",
+      "byte_identical": true,
+      "sha256": "9c948e37b16e461ce1ab9e683fb7d735c0964c2ab0c6877cf4e104e0a6321b1a"
+    }
+  ]
+}

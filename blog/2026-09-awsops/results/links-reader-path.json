@@ -1,0 +1,134 @@
+[
+  {
+    "url": "https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Stats.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Stats.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/compute-optimizer/latest/ug/what-is-compute-optimizer.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/compute-optimizer/latest/ug/what-is-compute-optimizer.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/config/latest/developerguide/WhatIsConfig.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/config/latest/developerguide/WhatIsConfig.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-what-is.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-what-is.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/resource-explorer/latest/userguide/welcome.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/resource-explorer/latest/userguide/welcome.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/vpc/latest/reachability/what-is-reachability-analyzer.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/vpc/latest/reachability/what-is-reachability-analyzer.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/the-pillars-of-the-framework.html",
+    "anonymous_status": 200,
+    "final_url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/the-pillars-of-the-framework.html",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_repository_verified": true
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/agent/agent.py",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "agent/agent.py",
+    "blob_sha": "237e1eb5deb78f7942d6ab1512fb7610a9b7f8c7"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/agent/lambda/network_mcp.py",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "agent/lambda/network_mcp.py",
+    "blob_sha": "942ac4fac0f264b187b84f64e3b7bb50d6bae8e8"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/docs/onboarding.md",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "docs/onboarding.md",
+    "blob_sha": "57ad0c191e00a230bb8c6960306549141dd8b22a"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/agent-sql-reader.md",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "docs/runbooks/agent-sql-reader.md",
+    "blob_sha": "676e452bd4101ea4fd5832fad059cb2f478a2170"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/scripts/v2/agentcore/catalog.py",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "scripts/v2/agentcore/catalog.py",
+    "blob_sha": "b0fc3a70b58680a7dfa05859b3e171273662dd0f"
+  },
+  {
+    "url": "https://github.com/aws-samples/sample-awsops/blob/dev/scripts/v2/agentcore/provision.py",
+    "anonymous_status": 404,
+    "classification": "planned_private_sample",
+    "authenticated_path_verified": true,
+    "path": "scripts/v2/agentcore/provision.py",
+    "blob_sha": "5c70e9be29fd6f33a1bb43d9d06a9b841fc5c0ed"
+  },
+  {
+    "url": "https://github.com/awslabs/agentcore-samples/tree/main/00-getting-started",
+    "anonymous_status": 200,
+    "final_url": "https://github.com/awslabs/agentcore-samples/tree/main/00-getting-started",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://modelcontextprotocol.io/specification/latest",
+    "anonymous_status": 200,
+    "final_url": "https://modelcontextprotocol.io/specification/2026-07-28",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://powerpipe.io/docs",
+    "anonymous_status": 200,
+    "final_url": "https://powerpipe.io/docs",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://steampipe.io/docs",
+    "anonymous_status": 200,
+    "final_url": "https://steampipe.io/docs",
+    "classification": "public_reference"
+  },
+  {
+    "url": "https://strandsagents.com/docs/",
+    "anonymous_status": 200,
+    "final_url": "https://strandsagents.com/docs/",
+    "classification": "public_reference"
+  }
+]
