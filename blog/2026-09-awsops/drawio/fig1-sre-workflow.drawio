@@ -1,0 +1,74 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net">
+  <diagram id="sre-workflow" name="SRE 조사 흐름">
+    <mxGraphModel grid="1" gridSize="10" pageWidth="760" pageHeight="910" page="1">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="운영 신호를 개선 행동으로 연결하기" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="680" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="card0" value="" style="rounded=1;arcSize=12;html=0;fillColor=#EDF6FC;strokeColor=#147EBA;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="680" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="number0" value="1" style="ellipse;html=0;fillColor=#147EBA;strokeColor=none;fontFamily=Helvetica;fontSize=28;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="160" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="label0" value="질문 정하기" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="150" y="140" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="detail0" value="알람 · 연결 문제 · 비용 증가" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=28;fontColor=#37475A;" vertex="1" parent="1">
+          <mxGeometry x="150" y="190" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="edge0" value="" edge="1" parent="1" source="card0" target="card1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=block;strokeColor=#718096;strokeWidth=2;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="card1" value="" style="rounded=1;arcSize=12;html=0;fillColor=#EDF6FC;strokeColor=#147EBA;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="680" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="number1" value="2" style="ellipse;html=0;fillColor=#147EBA;strokeColor=none;fontFamily=Helvetica;fontSize=28;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="340" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="label1" value="근거 모으기" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="150" y="320" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="detail1" value="지표 · 로그 · 변경 이력 · 비용" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=28;fontColor=#37475A;" vertex="1" parent="1">
+          <mxGeometry x="150" y="370" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="edge1" value="" edge="1" parent="1" source="card1" target="card2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=block;strokeColor=#718096;strokeWidth=2;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="card2" value="" style="rounded=1;arcSize=12;html=0;fillColor=#F6F0FF;strokeColor=#7C3AED;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="480" width="680" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="number2" value="3" style="ellipse;html=0;fillColor=#7C3AED;strokeColor=none;fontFamily=Helvetica;fontSize=28;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="520" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="label2" value="AI와 분석하기" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="150" y="500" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="detail2" value="사실 · 원인 후보 · 추가 확인" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=28;fontColor=#37475A;" vertex="1" parent="1">
+          <mxGeometry x="150" y="550" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="edge2" value="" edge="1" parent="1" source="card2" target="card3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=block;strokeColor=#718096;strokeWidth=2;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="card3" value="" style="rounded=1;arcSize=12;html=0;fillColor=#EDF8F4;strokeColor=#147D68;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="660" width="680" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="number3" value="4" style="ellipse;html=0;fillColor=#147D68;strokeColor=none;fontFamily=Helvetica;fontSize=28;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="700" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="label3" value="SRE가 판단하기" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="150" y="680" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="detail3" value="우선순위 결정 · 변경 전후 검증" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=28;fontColor=#37475A;" vertex="1" parent="1">
+          <mxGeometry x="150" y="730" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="footer" value="AI는 조회와 제안 · 변경은 운영 절차로 실행" style="text;html=0;strokeColor=none;fillColor=none;fontFamily=Helvetica;align=left;verticalAlign=middle;fontSize=26;fontColor=#37475A;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="840" width="680" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

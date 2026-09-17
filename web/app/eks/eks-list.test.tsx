@@ -86,11 +86,12 @@ describe('EKS list page (ADR buildout)', () => {
   it('renders the fleet summary stats row', async () => {
     mockFetch({ ...FLEET, 'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }) });
     render(<EksPage />);
-    await waitFor(() => expect(screen.getByText('Pods')).toBeTruthy());
-    // Pods value (10) lives in the StatCard adjacent to the 'Pods' eyebrow.
-    const podsCard = screen.getByText('Pods').closest('div')!.parentElement!;
-    expect(podsCard.textContent).toContain('10');
-    expect(podsCard.textContent).toContain('9 running');
+    // The label is present before the asynchronous fleet response arrives.
+    await waitFor(() => {
+      const podsCard = screen.getByText('Pods').closest('div')!.parentElement!;
+      expect(podsCard.textContent).toContain('10');
+      expect(podsCard.textContent).toContain('9 running');
+    });
   });
 
   it('renders cluster cards with meta and live mini-counts', async () => {

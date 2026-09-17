@@ -459,9 +459,12 @@ describe('read-only account connection diagnostics', () => {
     mockCheck();
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await screen.findByText('12자리 Account ID를 입력하면 계정에 맞는 AWS CLI 명령어가 표시됩니다.');
-    const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
-    expect(document.getElementById(register.getAttribute('aria-describedby')!)?.textContent)
-      .toContain('Account ID는 12자리 숫자여야 합니다.');
+    // The form is visible before onboarding configuration has loaded.
+    await waitFor(() => {
+      const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
+      expect(document.getElementById(register.getAttribute('aria-describedby')!)?.textContent)
+        .toContain('Account ID는 12자리 숫자여야 합니다.');
+    });
     await fillAccount();
     fireEvent.click(screen.getByRole('button', { name: '연결 확인' }));
     await screen.findByText(diagnostic.checkId);
