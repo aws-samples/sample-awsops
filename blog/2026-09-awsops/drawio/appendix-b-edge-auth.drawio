@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net">
+  <diagram id="fig3-edge-auth" name="로그인과 보호 경로 — 엣지 검증 + BFF 접근 제어">
+    <mxGraphModel grid="1" gridSize="10" page="1" pageWidth="1040" pageHeight="770">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="로그인과 보호 경로 — 엣지 검증 + BFF 접근 제어" style="text;html=1;strokeColor=none;fillColor=none;fontFamily=Amazon Ember;fontColor=#232F3E;fontSize=22;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="960" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="browser" value="브라우저" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3E;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontFamily=Amazon Ember;shape=mxgraph.aws4.users;" vertex="1" parent="1">
+          <mxGeometry x="60" y="290" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="cf" value="CloudFront + Lambda@Edge" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontFamily=Amazon Ember;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;" vertex="1" parent="1">
+          <mxGeometry x="400" y="290" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="web" value="BFF · 세션 / 소유권 검사" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontFamily=Amazon Ember;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" vertex="1" parent="1">
+          <mxGeometry x="780" y="160" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="cognito" value="Cognito 사용자 풀 · JWKS" style="sketch=0;outlineConnect=0;fontColor=#232F3E;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontFamily=Amazon Ember;shape=image;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB3aWR0aD0iNjRweCIgaGVpZ2h0PSI2NHB4IiB2aWV3Qm94PSIwIDAgNjQgNjQiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayI+CiAgICA8dGl0bGU+SWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BbWF6b24tQ29nbml0b180ODwvdGl0bGU+CiAgICA8ZyBpZD0iSWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BbWF6b24tQ29nbml0b180OCIgc3Ryb2tlPSJub25lIiBzdHJva2Utd2lkdGg9IjEiIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCI+CiAgICAgICAgPGcgaWQ9Ikljb24tQXJjaGl0ZWN0dXJlLUJHLzQ4L1NlY3VyaXR5LUlkZW50aXR5LUNvbXBsaWFuY2UiIGZpbGw9IiNERDM0NEMiPgogICAgICAgICAgICA8cmVjdCBpZD0iUmVjdGFuZ2xlIiB4PSIwIiB5PSIwIiB3aWR0aD0iNjQiIGhlaWdodD0iNjQiPjwvcmVjdD4KICAgICAgICA8L2c+CiAgICAgICAgPHBhdGggZD0iTTQ4LjM4NTEzNTcsMjEuMDA2MzcwNCBMNDguMzg1MTM1NywxNS43MDI2MTg5IEM0OC4zODUxMzU3LDE0Ljc4MDk2NyA0Ny43NjY5MzMsMTQuMDAxNDE1NiA0Ny4wMzQ1ODUsMTQuMDAxNDE1NiBMMTMuMzcwODIxLDE0LjAwMTQxNTYgQzEyLjYzODQ3MywxNC4wMDE0MTU2IDEyLjAyMDI3MDMsMTQuNzgwOTY3IDEyLjAyMDI3MDMsMTUuNzAyNjE4OSBMMTIuMDIwMjcwMywyMS4wMDYzNzA0IEwyNy4xNzIyOTc1LDIxLjAwNjM3MDQgTDI3LjE3MjI5NzUsMTcuMDAzNTM5MSBDMjcuMTcyMjk3NSwxNi40NTExNDg0IDI3LjYyMzgyOCwxNi4wMDI4MzEzIDI4LjE4MjQzMjcsMTYuMDAyODMxMyBMNDUuMzU0NzMwMiwxNi4wMDI4MzEzIEM0NS45MTMzMzUsMTYuMDAyODMxMyA0Ni4zNjQ4NjU0LDE2LjQ1MTE0ODQgNDYuMzY0ODY1NCwxNy4wMDM1MzkxIEw0Ni4zNjQ4NjU0LDIxLjAwNjM3MDQgTDQ4LjM4NTEzNTcsMjEuMDA2MzcwNCBaIE00NC4zNDQ1OTUxLDE4LjAwNDI0NjkgTDI5LjE5MjU2NzgsMTguMDA0MjQ2OSBMMjkuMTkyNTY3OCwzMC4zODgwMDYyIEMzMC4xNTMyMDY0LDI4LjU4NzczMjggMzEuNzQ3MTk5NiwyNy4xNTg3MjIgMzMuNzI2MDU0NCwyNi40MDMxODc2IEMzMy4xMTg5NjMyLDI1LjYzMTY0MTkgMzIuNzcyNDg2OCwyNC42NzM5NjQ1IDMyLjc3MjQ4NjgsMjMuNjY2MjUxNyBDMzIuNzcyNDg2OCwyMS4xOTg1MDYzIDM0LjgxMDkzOTUsMTkuMTkyMDg3MSAzNy4zMTgwOTUsMTkuMTkyMDg3MSBDMzkuODI0MjQwMywxOS4xOTIwODcxIDQxLjg2MzcwMzIsMjEuMTk4NTA2MyA0MS44NjM3MDMyLDIzLjY2NjI1MTcgQzQxLjg2MzcwMzIsMjQuNzQwMDExMiA0MS40NjU3MDk5LDI1Ljc1MTcyNjggNDAuNzgzODY4NywyNi41NDUyODgxIEM0Mi4xOTcwNDc4LDI3LjE2MDcyMzQgNDMuNDM2NDgzNiwyOC4xNDU0MTk5IDQ0LjM0NDU5NTEsMjkuMzkxMzAxMiBMNDQuMzQ0NTk1MSwxOC4wMDQyNDY5IFogTTM5Ljg0MzQzMjksMjMuNjY2MjUxNyBDMzkuODQzNDMyOSwyMi4zMDIyODcgMzguNzExMDcxNCwyMS4xOTM1MDI3IDM3LjMxODA5NSwyMS4xOTM1MDI3IEMzNS45MjUxMTg2LDIxLjE5MzUwMjcgMzQuNzkyNzU3MSwyMi4zMDIyODcgMzQuNzkyNzU3MSwyMy42NjYyNTE3IEMzNC43OTI3NTcxLDI0LjU2Mjg4NTkgMzUuMjkwNzUzNywyNS4zODk0NzA2IDM2LjA5MzgxMTIsMjUuODIzNzc3OCBDMzYuODQ1MzUxNywyNi4yMjkwNjQ1IDM3Ljc3MjY1NTgsMjYuMjM2MDY5NCAzOC41MzgzMzgzLDI1LjgyMjc3NzEgQzM5LjM0MzQxNiwyNS4zODk0NzA2IDM5Ljg0MzQzMjksMjQuNTYyODg1OSAzOS44NDM0MzI5LDIzLjY2NjI1MTcgTDM5Ljg0MzQzMjksMjMuNjY2MjUxNyBaIE00OC4zODYxNDU4LDMzLjAxNDg2NDIgTDQ4LjM4NTEzNTcsMjMuMDA3Nzg2IEw0Ni4zNjQ4NjU0LDIzLjAwNzc4NiBMNDYuMzY0ODY1NCwzMC4wMTI3NDA3IEw0NC42NTE2NzYyLDMwLjAxMjc0MDcgTDQzLjAwNjE2NiwzMC45OTg0Mzc5IEM0Mi4xNTk2NzI4LDI5LjYxMzQ1ODMgNDAuODA1MDgxNSwyOC41NzM3MjI5IDM5LjI1MTQ5MzcsMjguMTA0MzkwOSBDMzcuODc2Njk5NywyOC43MTA4MTk4IDM2LjI3MTU5NSwyOC43MDQ4MTU2IDM0LjkxNDk4MzUsMjguMTA0MzkwOSBDMzIuMjUzMjc3NCwyOC45MDU5NTc5IDMwLjQwNDczLDMxLjI2MzYyNTUgMzAuMjM1MDI3MywzNC4wMTU1NzIgTDM2LjI2MzUxMzksMzQuMDE1NTcyIEwzNi4yNjM1MTM5LDM2LjAxNjk4NzYgTDI4LjE4MjQzMjcsMzYuMDE2OTg3NiBDMjcuNjIzODI4LDM2LjAxNjk4NzYgMjcuMTcyMjk3NSwzNS41Njg2NzA1IDI3LjE3MjI5NzUsMzUuMDE2Mjc5OCBMMjcuMTcyMjk3NSwyMy4wMDc3ODYgTDEyLjAyMDI3MDMsMjMuMDA3Nzg2IEwxMi4wMjAyNzAzLDM3LjMxNzkwNzggQzEyLjAyMDI3MDMsMzguMjM5NTU5NyAxMi42Mzg0NzMsMzkuMDE5MTExMSAxMy4zNzA4MjEsMzkuMDE5MTExMSBMMzMuMjMzMTA4NCwzOS4wMTkxMTExIEwzMy4yMzMxMDg0LDQxLjAyMDUyNjcgTDEzLjM3MDgyMSw0MS4wMjA1MjY3IEMxMS41MTIxNzIzLDQxLjAyMDUyNjcgMTAsMzkuMzU5MzUxNyAxMCwzNy4zMTc5MDc4IEwxMCwxNS43MDI2MTg5IEMxMCwxMy42NjExNzUgMTEuNTEyMTcyMywxMiAxMy4zNzA4MjEsMTIgTDQ3LjAzNDU4NSwxMiBDNDguODkzMjMzNywxMiA1MC40MDU0MDYsMTMuNjYxMTc1IDUwLjQwNTQwNiwxNS43MDI2MTg5IEw1MC40MDU0MDYsMzMuMDE0ODY0MiBMNDguMzg2MTQ1OCwzMy4wMTQ4NjQyIFogTTQzLjMwNTE2Niw0Ni45OTM3NTE3IEw0OC45MzE2MTg4LDQxLjQxOTgwOTEgTDQ3LjUwMzI4NzcsNDAuMDA0ODA4MyBMNDIuNTkxMDAwNSw0NC44NzEyNTA0IEw0MC40NzU3Nzc1LDQyLjc3NTc2ODIgTDM5LjA0NzQ0NjQsNDQuMTkwNzY5MSBMNDEuODc2ODM0OSw0Ni45OTM3NTE3IEM0Mi4wNjU3MzAyLDQ3LjE4MTg4NDcgNDIuMzIyMzA0NSw0Ny4yODY5NTkxIDQyLjU5MTAwMDUsNDcuMjg2OTU5MSBDNDIuODU4Njg2Myw0Ny4yODY5NTkxIDQzLjExNTI2MDYsNDcuMTgxODg0NyA0My4zMDUxNjYsNDYuOTkzNzUxNyBMNDMuMzA1MTY2LDQ2Ljk5Mzc1MTcgWiBNNDUuMzE3MzU1MiwzNS45NjI5NDk0IEw0NS4zMTczNTUyLDM1Ljk2Mjk0OTQgQzQ3LjgxNzQzOTcsMzYuMjY2MTYzOSA0OS45OTgzMjE1LDM3Ljc4MjIzNjIgNTEuMTQ5ODc1Niw0MC4wMTk4MTg5IEM1MS44Mzk3OTc5LDQxLjM1OTc2NjcgNTIuMTA3NDgzNyw0Mi44NjI4Mjk4IDUxLjkyMjYyOSw0NC4zNjM4OTE1IEM1MS43NDE4MTQ4LDQ1Ljg0ODk0MTkgNTEuMTMxNjkzMiw0Ny4yMzE5MjAxIDUwLjE1NzkyMjksNDguMzYwNzE4NiBDNDkuNDY1OTgwMyw0OS4xNjQyODY5IDQ4LjU5MjIxMzQsNDkuODI3NzU2MiA0Ny42MzE1NzQ5LDUwLjI3OTA3NTQgQzQ2LjM0NTY3MjgsNTAuODg1NTA0NCA0NC45MTQzMTEzLDUxLjExNjY2NzkgNDMuNDg5MDEwNiw1MC45NDM1NDU0IEM0Mi4xMDUxMjU1LDUwLjc3NjQyNzIgNDAuNzk4MDEwNiw1MC4yMzQwNDM2IDM5LjcwOTA4NDksNDkuMzc3NDM3NyBDMzcuNjE4MTA1MSw0Ny43MzAyNzI2IDM2LjU2MTUwMzgsNDUuMTc0NDY0OSAzNi44ODM3MzY5LDQyLjU0MjYwMzMgQzM3LjE4Nzc4NzYsNDAuMDU0ODQzNyAzOC43MDcwMzA4LDM3Ljg4NTMwOTEgNDAuOTQ3NTEwNiwzNi43Mzc0OTczIEM0Mi4wMTkyNjQsMzYuMTg5MTA5NCA0My4xOTUwNjEzLDM1LjkwNzkxMDUgNDQuMzkzMDgxNiwzNS45MDc5MTA1IEM0NC43MDAxNjI3LDM1LjkwNzkxMDUgNDUuMDA4MjUzOSwzNS45MjU5MjMyIDQ1LjMxNzM1NTIsMzUuOTYyOTQ5NCBMNDUuMzE3MzU1MiwzNS45NjI5NDk0IFogTTQ4LjQ5ODI3MDgsNTIuMDg3MzU0NSBDNDkuNzEzNDYzNCw1MS41MTU5NTAzIDUwLjgxOTU2MTQsNTAuNjc2MzU2NCA1MS42OTQzMzg0LDQ5LjY2MDYzOCBDNTIuOTI2NzAzMyw0OC4yMzA2MjY1IDUzLjY5OTQ1NjcsNDYuNDgyMzkgNTMuOTI4NzU3NCw0NC42MDUwNjIxIEM1NC4xNjEwODg1LDQyLjcwNzcyMDEgNTMuODIyNjkzMiw0MC44MDczNzU5IDUyLjk0OTkzNjQsMzkuMTEwMTc1NSBDNTEuNDkyMzExNCwzNi4yNzkxNzMxIDQ4LjczMDYwMTksMzQuMzU5ODE1NSA0NS41NjE4MDc5LDMzLjk3NjU0NDQgQzQzLjY0OTYyMjEsMzMuNzQyMzc4OCA0MS43MjkzNTUyLDM0LjA4NDYyMDggNDAuMDIwMjA2NSwzNC45NjAyNDAyIEMzNy4xODQ3NTcyLDM2LjQxMTI2NjUgMzUuMjYyNDcsMzkuMTU2MjA4IDM0Ljg3NzYwODUsNDIuMzAxNDMyNyBDMzQuNDcxNTM0MSw0NS42Mjk3ODY5IDM1LjgwNzk0MjksNDguODYwMDcxOCAzOC40NTI0NzY4LDUwLjk0MzU0NTQgQzM5LjgzMjMyMTQsNTIuMDMwMzE0MSA0MS40ODk5NTMyLDUyLjcxNzgwMDQgNDMuMjQ0NTU3OSw1Mi45Mjk5NTA1IEM0My42MzM0NTk5LDUyLjk3Njk4MzcgNDQuMDIzMzcyMSw1MyA0NC40MTAyNTM5LDUzIEM0NS44MjM0MzMsNTMgNDcuMjE3NDE5NSw1Mi42OTA3ODEzIDQ4LjQ5ODI3MDgsNTIuMDg3MzU0NSBMNDguNDk4MjcwOCw1Mi4wODczNTQ1IFogTTIxLjExMTQ4NjYsMzMuMDE0ODY0MiBMMjQuMTQxODkyMSwzMy4wMTQ4NjQyIEwyNC4xNDE4OTIxLDMxLjAxMzQ0ODUgTDIxLjExMTQ4NjYsMzEuMDEzNDQ4NSBMMjEuMTExNDg2NiwzMy4wMTQ4NjQyIFogTTE0LjA0MDU0MDYsMzMuMDE0ODY0MiBMMjAuMTAxMzUxNSwzMy4wMTQ4NjQyIEwyMC4xMDEzNTE1LDMxLjAxMzQ0ODUgTDE0LjA0MDU0MDYsMzEuMDEzNDQ4NSBMMTQuMDQwNTQwNiwzMy4wMTQ4NjQyIFogTTE0LjA0MDU0MDYsMjguMDExMzI1MSBMMjMuMTMxNzU2OSwyOC4wMTEzMjUxIEwyMy4xMzE3NTY5LDI2LjAwOTkwOTQgTDE0LjA0MDU0MDYsMjYuMDA5OTA5NCBMMTQuMDQwNTQwNiwyOC4wMTEzMjUxIFoiIGlkPSJBbWF6b24tQ29nbml0b19JY29uXzQ4X1NxdWlkIiBmaWxsPSIjRkZGRkZGIj48L3BhdGg+CiAgICA8L2c+Cjwvc3ZnPg==;" vertex="1" parent="1">
+          <mxGeometry x="780" y="520" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="e0" source="browser" target="cf" value="① 로그인 / ④ 쿠키 요청" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;entryX=0;entryY=0.25;strokeColor=#FF9900;strokeWidth=2.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0" y="-16" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e1" source="cf" target="browser" value="③ 쿠키 발급 / 미인증 시 302" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;entryX=1;entryY=0.75;strokeColor=#545B64;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0" y="18" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e2" source="cf" target="web" value="① 로그인 / ④ JWT 검증 후" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;entryX=0;entryY=0.25;strokeColor=#FF9900;strokeWidth=2.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="310" />
+              <mxPoint x="600" y="180" />
+            </Array>
+            <mxPoint x="-5" y="-30" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" source="web" target="cf" value="③ Set-Cookie 응답" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;entryX=1;entryY=0.75;strokeColor=#545B64;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="670" y="220" />
+              <mxPoint x="670" y="350" />
+            </Array>
+            <mxPoint x="0" y="25" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4" source="web" target="cognito" value="② InitiateAuth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=0.25;exitY=1;entryX=0.25;entryY=0;strokeColor=#545B64;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-95" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" source="cognito" target="web" value="② ID 토큰" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=0.75;exitY=0;entryX=0.75;entryY=1;strokeColor=#545B64;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="65" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" source="cf" target="cognito" value="JWKS 공개키 가져오기" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=12;fontFamily=Amazon Ember;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.9;entryX=0;entryY=0.5;strokeColor=#545B64;strokeWidth=1.5;dashed=1;dashPattern=8 8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="580" y="360" />
+              <mxPoint x="580" y="560" />
+            </Array>
+            <mxPoint x="-100" y="15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend" value="① 로그인 요청 → ② Cognito 인증 → ③ 토큰 쿠키 발급 → ④ 보호 경로 요청" style="text;html=1;strokeColor=none;fillColor=none;fontFamily=Amazon Ember;fontColor=#232F3E;fontSize=13;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="650" width="920" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="JWT 서명은 엣지에서 검증합니다. 보호 데이터 API의 세션 폐기·소유권은 BFF가 확인합니다." style="text;html=1;strokeColor=none;fillColor=none;fontFamily=Amazon Ember;fontColor=#232F3E;fontSize=13;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="690" width="920" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

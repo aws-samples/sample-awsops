@@ -1,0 +1,70 @@
+# Topology reference only. Edit the .drawio source; build.py validates and exports it.
+canonical_source: fig2b-diagnosis.drawio
+title: 인벤토리와 예약 진단
+grouping: functional flow; no network boundaries
+components:
+- id: steampipe
+  label: Steampipe / AWS Fargate
+- id: sync
+  label: 동기화 Lambda / 15분 주기
+- id: aurora
+  label: Amazon Aurora / 인벤토리
+- id: graph
+  label: Resource Graph
+- id: schedule
+  label: Amazon EventBridge / 매시간 예약 확인
+- id: sqs
+  label: Amazon SQS
+- id: sfn
+  label: AWS Step / Functions
+- id: worker
+  label: AWS Fargate 워커 / 호스트 API 조회·분석
+- id: report_bedrock
+  label: Amazon Bedrock
+- id: artifacts
+  label: Amazon S3 / 진단 리포트
+- id: digest
+  label: 완료 리포트 집계 / Lambda · 15분 주기
+- id: sns
+  label: Amazon SNS / 선택적 이메일
+flows:
+- id: inventory_0
+  from: steampipe
+  to: sync
+  label: 구성 수집
+- id: inventory_1
+  from: sync
+  to: aurora
+  label: 저장
+- id: inventory_2
+  from: aurora
+  to: graph
+  label: 관계 재구축
+- id: report_0
+  from: schedule
+  to: sqs
+  label: 예약 Lambda
+- id: report_1
+  from: sqs
+  to: sfn
+  label: 디스패처 / Lambda
+- id: report_2
+  from: sfn
+  to: worker
+  label: 진단 실행
+- id: report_3
+  from: worker
+  to: aurora
+  label: 인벤토리 조회
+- id: report_4
+  from: worker
+  to: report_bedrock
+  label: 직접 추론
+- id: report_5
+  from: worker
+  to: artifacts
+  label: 저장
+- id: notify
+  from: digest
+  to: sns
+  label: 수신 확인된 구독자에게 알림
