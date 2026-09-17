@@ -58,8 +58,9 @@
 | 지속 가능성 | 같은 파일의 pillar map·요약 프롬프트, `test_sections_wadd.py` | 탄소 원천 데이터 없음. 자원 효율·구성의 참고 지표와 데이터 부족을 구분. 배출량·감축량을 산출했다고 쓰지 않음 |
 | 수집과 섹션별 분석 | `scripts/v2/workers/diagnosis/report.py`, `sources.py` | 워커가 자료를 수집하고 Bedrock을 직접 호출. AgentCore Runtime을 경유하는 채팅 경로와 구분 |
 | 예약 진단 | `web/lib/diagnosis-schedule.ts`, `scripts/v2/workers/schedule_dispatcher.py`, `terraform/foundation/workers.tf` | workers + diagnosis_schedule 게이트와 사용자 활성화 필요. 주간·격주·월간 예약, 매시간 확인. 현재 UI는 기본 호스트 진단 |
-| 보안 자료 | `diagnosis/sources.py`의 `collect_posture`, `collect_inventory` | Security Hub는 심각도별 통계. 모든 개별 발견 사항·통제 항목의 완전 수집으로 주장하지 않음 |
+| 보안 자료 | `diagnosis/sources.py`의 `collect_posture`, `collect_inventory` | Security Hub의 단일 리전 NEW 상태 발견 사항 중 정렬·페이지 순회 없는 최대 100건 표본의 심각도 통계. 전체 분포나 모든 발견 사항·통제 항목의 완전 수집으로 주장하지 않음 |
 | CIS 규칙 점검 | `scripts/v2/workers/compliance.py`, `handlers.py`의 `_compliance` | Powerpipe가 별도 워커에서 Steampipe를 조회. 규칙 결과와 LLM의 해석을 구분 |
+| 변경 이벤트 표본 | `diagnosis/sources.py`의 `collect_what_changed` | 단일 리전의 최근 24시간, 최대 50건. 주간·월간 예약 간격 전체의 변경 이력이 아님 |
 | 변화 비교 | `diagnosis/report.py`의 `_diff_summary`, 활성 불변 조건 평가 | 준비된 기준과 이전 보고서의 비교. 모든 AI 발견 사항의 의미적 차이·전체 환경 drift를 자동 검증하는 기능이 아님 |
 | 알림 | `diagnosis_digest.py`, `notify.tf` | workers + diagnosis_notify 게이트와 관리자 관리·SNS 확인 수신자가 필요. 수동·예약의 성공/부분 완료 보고서를 15분 주기로 묶음 처리. 전달 보장·자동 조치로 표현하지 않음 |
 | 진단 점수 | `diagnosis/sections.py`의 요약 프롬프트 | 제품 내부의 모델 기반 요약 지표. 데이터 부족 기둥과 조정된 가중치를 함께 해석. AWS 공식 리뷰·인증 점수로 쓰지 않음 |
@@ -75,7 +76,7 @@ light·mid는 기본 섹션과 불변 조건 평가, deep은 추가 분석 섹�
 | 알람·지표·로그 조사 | `agent/lambda/aws_cloudwatch_mcp.py`, `scripts/v2/agentcore/catalog.py` | 등록된 도구 스키마로 전달 가능한 인자와 실제 반환 범위에 한정 |
 | 변경 이력 확인 | `agent/lambda/aws_cloudtrail_mcp.py` | 변경 시점과 증상의 상관관계가 곧 원인 확정은 아님 |
 | 연결 문제 점검 | `agent/lambda/reachability_read_mcp.py` | 설정 기반 근사 분석. 실제 패킷 전달, 모든 TGW·반환 경로·DNS·호스트 방화벽을 검증하는 기능이 아님 |
-| 서비스별 비용·추이 조회 | `agent/lambda/aws_cost_mcp.py` | 월별 비교는 현재 월 누적 대 전월 전체이므로 반환된 기간을 확인. 도구 결과는 금액 상위 30행으로 제한되므로 동일 기간의 전체 비교는 Cost Explorer 콘솔에서 기간·집계 조건을 맞춰 별도로 확인 |
+| 서비스별 비용·추이 조회 | `agent/lambda/aws_cost_mcp.py` | 월별 비교는 현재 월 누적 대 전월 전체이므로 반환된 기간을 확인. `get_cost_and_usage`는 금액 상위 30행, `get_cost_and_usage_comparisons`는 차이 절댓값 상위 20행, `get_cost_comparison_drivers`는 영향 절댓값 상위 10행으로 제한되므로 동일 기간의 전체 비교는 Cost Explorer 콘솔에서 기간·집계 조건을 맞춰 별도로 확인 |
 | 리소스 최적화 권고안 조회 | `agent/lambda/aws_finops_mcp.py` | 본문 사례는 EC2 권고안의 현재 유형·권장 유형·판정·성능 위험에 한정. Compute Optimizer 활성화·지표 축적·권한이 선행되어야 함 |
 | 도구 연결 | `scripts/v2/agentcore/catalog.py`, `scripts/v2/agentcore/provision.py`, `agent/agent.py` | 기본 단일 도메인 경로와 조건부 다중 도메인 합성을 구분 |
 | BFF 접근 제어 | `web/lib/auth.ts`, `web/app/api/diagnosis/route.ts` | 엣지 JWT 검사에 더해 BFF의 세션 폐기·소유권·관리자 권한 확인이 필요 |
@@ -101,7 +102,7 @@ light·mid는 기본 섹션과 불변 조건 평가, deep은 추가 분석 섹�
 
 ## 사례 보강 시 확인한 사항
 
-- 로그 예제는 `filter @message like /(?i)(timeout|connection refused)/`, `stats count(*) as matching_events by bin(5m)`, `sort matching_events desc`를 사용합니다. 알람 상태 변경 시각 앞뒤 30분은 예시의 조회 조건이며, 구현의 자동 시간 설정이나 실측 조건으로 주장하지 않습니다. 로그 이벤트 수를 요청 오류율이나 고유 요청 수로 설명하지 않습니다.
+- 로그 예제는 `filter @message like /(?i)(timeout|connection refused)/`, `stats count(*) as matching_events by bin(5m)`, `sort matching_events desc`를 사용합니다. 현재 MCP 도구의 `minutes`는 현재 시각으로 끝나는 상대 조회 기간입니다. 알람 시각 앞뒤 30분 같은 절대 구간은 도구 인자로 표현할 수 없으며 콘솔 또는 시작·종료 시각을 지정하는 `StartQuery` API가 필요합니다. 로그 이벤트 수를 요청 오류율이나 고유 요청 수로 설명하지 않습니다.
 - 실제 CloudWatch 도구는 `execute_log_insights_query`로 쿼리를 시작하고 `get_logs_insight_query_results`로 실행 상태와 결과를 확인합니다. 쿼리 접수를 분석 완료로 간주하지 않으며, 조회 범위·행 제한을 고려합니다.
 - 네트워크 JSON은 `reachability_read_mcp.py:check_reachability`가 반환하는 본문의 발췌입니다. `reachable`, `checked`, `blocking_component`(`layer`, `resource`, `reason`), `disclaimer`를 사용하며, Lambda의 `statusCode`·문자열 `body` 외피와 `source`·`destination`은 생략합니다. 설명용 자리표시자와 줄인 `disclaimer`를 명시했으며 실제 장애 응답으로 제시하지 않습니다.
 - `disclaimer`의 원문에는 Reachability Analyzer를 “definitive packet-level verdict”로 부르는 문장이 있지만, 공식 문서에 따른 구성 분석 범위를 넘는 표현이므로 본문에 복제하지 않았습니다. 이 편집에서는 애플리케이션 코드를 변경하지 않습니다.

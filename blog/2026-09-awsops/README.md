@@ -11,6 +11,10 @@ SRE의 온콜 대응과 반복 점검에서 출발해, 데이터 수집·Resourc
 | 파일 | 용도 |
 |---|---|
 | [draft-awsops-architecture.md](draft-awsops-architecture.md) | 게시용 본문 |
+| [blog-human.md](blog-human.md) | 초기 착상 메모, 미완성 표현을 포함하며 게시·검증 대상 아님 |
+| [이전 편집 브리프](REVIEW-2026-09-13-codex-brief.md) | 철회된 지시·판정·경로를 포함한 과거 기록 |
+| [렌더러](render_preview.py), [의존성](requirements-preview.txt) | 로컬 미리보기 생성 |
+| [그림 출력 도구](drawio/build.py), [회귀 검사](drawio/test_build.py) | 원본 검증·출력과 실패 시 기존 파일 보존 검사 |
 | `preview.html` (아래 명령으로 생성) | 로컬 브라우저에서 확인하는 가독성 미리보기 |
 | [technical-notes.md](technical-notes.md) | 구현 근거, 지원 범위, 편집·검토 참고 자료 |
 | [EDITORIAL-SCOPE.md](EDITORIAL-SCOPE.md) | 사용자 후속 지시를 반영한 현재 편집 기준 |
@@ -34,6 +38,12 @@ python3 -m venv /tmp/awsops-blog-preview-venv
 ```
 
 생성된 `preview.html`을 로컬 브라우저로 엽니다. 이미지와 스타일은 로컬 파일을 사용하며, 이미지 선택 시 원본 크기로 확인할 수 있습니다. 렌더러는 원고 옆의 `preview.html`만 갱신하고 AWS 호출이나 이미지 생성을 수행하지 않습니다.
+
+## 출력 도구 회귀 검사
+
+```bash
+python3 -m unittest discover -s blog/2026-09-awsops/drawio -p test_build.py
+```
 
 ## 이미지 수정
 

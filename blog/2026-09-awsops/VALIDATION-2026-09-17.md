@@ -1,6 +1,7 @@
 # 소스 복구 검증 — 2026-09-17
 
 이 패키지는 미커밋 원고를 복구한 편집 초안이며 게시 승인이 아닙니다.
+`blog-human.md`는 미완성 초기 착상 메모로 보존하며 검증·게시 대상이 아닙니다.
 현재 편집 기준은 [EDITORIAL-SCOPE.md](EDITORIAL-SCOPE.md)입니다.
 이전 리뷰·브라우저 캡처는 별도 이력 복구 대상이며 현재 검증의 근거로 삼지 않습니다.
 미리보기는 `python3 blog/2026-09-awsops/render_preview.py`로 생성합니다.
@@ -13,7 +14,8 @@
 초기 DB 구성은 `INITIALIZE_EMPTY_DB=1 make migrate`를 웹 배포보다 먼저
 수행하도록 수정했습니다. 기존 환경의 일반 마이그레이션과 구분합니다.
 ENI 설명에 `partial`, `unknown`, `routeSelection` 해석을 추가하고,
-컴플라이언스 상태에 `info`를 포함했습니다. 해당 계약은 저장소의
+컴플라이언스 상태에 `info`를 포함했습니다. Logs Insights 도구는 현재 시각으로
+끝나는 상대 구간만 지원하므로 절대 구간 안내를 콘솔/API 절차와 구분했습니다. 해당 계약은 저장소의
 `scripts/v2/migrate.mjs`, `agent/lambda/network_mcp.py`,
 `scripts/v2/workers/compliance.py`와 대조했습니다.
 

@@ -73,7 +73,7 @@ ul{padding-left:24px;font-size:16px}li{margin:10px 0}
 @media(max-width:600px){body{font-size:17px;line-height:1.9}header{padding:14px 20px}main{padding:30px 20px 60px}h1{font-size:29px;letter-spacing:-.5px}h2{font-size:24px;margin-top:42px}h3{font-size:21px}blockquote{padding:16px}table{font-size:14px}th,td{padding:10px}th:first-child,td:first-child{width:31%}}
 @media print{header,.article-toc{display:none}main{max-width:none;padding:0}h2,h3{break-after:avoid}img,table,blockquote,pre{break-inside:avoid}body{font-size:11pt}h1{font-size:23pt}h2{font-size:17pt}h3{font-size:14pt}}
 </style></head><body>
-<header>AWS Blog 원고 미리보기 · 2026-09-13</header><main>""" + content + "</main></body></html>\n"
+<header>AWS Blog 원고 미리보기 · 최초 초안 2026-09-13 · 소스 복구 검증 2026-09-17</header><main>""" + content + "</main></body></html>\n"
     (ROOT / "preview.html").write_text(page, encoding="utf-8")
     print(f"Preview written: {ROOT / 'preview.html'}")
 
