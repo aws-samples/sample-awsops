@@ -61,6 +61,17 @@ describe('GET /api/accounts', () => {
 });
 
 describe('POST /api/accounts', () => {
+  it('uses deployment STS endpoints independently of the selected collection region', async () => {
+    vi.stubEnv('AWS_REGION', 'eu-west-1');
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'false');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    readJsonBounded.mockResolvedValue({ ...validBody, region: 'ap-east-1' });
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    vi.mocked(STSClient).mockClear();
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(200);
+    expect(vi.mocked(STSClient).mock.calls.map(([config]) => config?.region)).toEqual(['eu-west-1', 'eu-west-1']);
+  });
   it('rejects an account outside the explicitly configured deployment scope before AWS or writes', async () => {
     vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
     vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["333333333333"]');
