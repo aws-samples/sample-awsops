@@ -19,6 +19,39 @@ vi.mock('@aws-sdk/client-pricing', () => ({
 
 beforeEach(() => { cwSend.mockReset(); priceSend.mockReset(); });
 
+describe('fleet metric response boundaries', () => {
+  it('treats prototype-shaped entity IDs as data and accepts only requested metric keys', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'cpu_i0', Values: [12] },
+      { Id: '__proto___i0', Values: [99] },
+      { Id: 'constructor_i0', Values: [99] },
+      { Id: 'unrequested_i0', Values: [99] },
+      { Id: 'cpu_i100', Values: [99] },
+    ] });
+    const { elasticacheFleetLive } = await import('./metrics');
+    const result = await elasticacheFleetLive(['__proto__']);
+    expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    const values = Object.getOwnPropertyDescriptor(result, '__proto__')!.value;
+    expect(values.cpu).toBe(12);
+    expect(Object.getPrototypeOf(values)).toBe(Object.prototype);
+    for (const key of ['__proto__', 'constructor', 'unrequested']) {
+      expect(Object.prototype.hasOwnProperty.call(values, key)).toBe(false);
+    }
+  });
+
+  it('leaves missing or non-finite metrics unknown', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'cpu_i0', Values: [Number.NaN] },
+      { Id: 'ecpu_i0', Values: [Number.POSITIVE_INFINITY] },
+      { Id: 'mem_i0', Values: [] },
+    ] });
+    const { elasticacheFleetLive } = await import('./metrics');
+    const result = await elasticacheFleetLive(['cache-a']);
+    expect(result['cache-a']).toMatchObject({ cpu: null, ecpu: null, mem: null });
+  });
+});
+
 // A realistic Pricing API PriceList entry (stringified JSON) → on-demand $/hr.
 const priceList = (usd: string) => JSON.stringify({
   product: { attributes: { instanceType: 't3.micro' } },

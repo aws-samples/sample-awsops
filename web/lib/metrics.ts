@@ -712,9 +712,9 @@ async function fleetLatest(
   completeBucketsOnly = false,
   accountId?: string,
 ): Promise<Record<string, Record<string, number | null>>> {
-  const out: Record<string, Record<string, number | null>> = {};
-  if (!entities.length) return out;
-  for (const id of entities) out[id] = Object.fromEntries(metrics.map((m) => [m.key, null]));
+  const out = new Map<string, Map<string, number | null>>();
+  if (!entities.length) return {};
+  for (const id of entities) out.set(id, new Map<string, number | null>(metrics.map(m => [m.key, null])));
   try {
     // CloudWatch metrics live in the resource's region — an off-region cluster (e.g. a DR MSK
     // in us-west-2) needs its own regional client; default stays the deployment region.
@@ -735,11 +735,13 @@ async function fleetLatest(
       for (const res of r.MetricDataResults ?? []) {
         const mm = (res.Id ?? '').match(/^(\w+?)_i(\d+)$/);
         if (!mm) continue;
+        const metric = metrics.find(m => m.key === mm[1]);
+        if (!metric) continue;
         const id = chunk[Number(mm[2])];
         let v = res.Values?.[0];
         if (completeBucketsOnly) {
           v = undefined;
-          const periodMs = (metrics.find((m) => m.key === mm[1])?.period ?? periodSec) * 1000;
+          const periodMs = (metric.period ?? periodSec) * 1000;
           const ts = res.Timestamps ?? [];
           const vals = res.Values ?? [];
           for (let k = 0; k < ts.length; k++) {
@@ -747,11 +749,11 @@ async function fleetLatest(
             if (t.getTime() + periodMs <= Date.now()) { v = vals[k]; break; }
           }
         }
-        if (id && typeof v === 'number') out[id][mm[1]] = v;
+        if (id && typeof v === 'number' && Number.isFinite(v)) out.get(id)?.set(metric.key, v);
       }
     }
   } catch { /* nulls */ }
-  return out;
+  return Object.fromEntries([...out].map(([id, values]) => [id, Object.fromEntries(values)]));
 }
 
 const EC_FLEET_METRICS = [
