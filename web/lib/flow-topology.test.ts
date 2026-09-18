@@ -375,7 +375,7 @@ describe('buildFlowGraph — CloudFront VPC origins (CF→internal ALB/NLB)', ()
     const vo = [{ resource_id: 'vo_6O65', region: 'global', status: 'Deployed', arn: ALB_ARN, origin_refs: [{ distribution_id: 'E2', domain: 'awsops-v2.example.com' }] }];
     const g = buildFlowGraph({ cloudfront: [cf], alb: [alb], cloudfront_vpc_origin: vo });
     expect(g.edges.find((e) => e.source === 'cf:E2' && e.target === ALB_ID)).toBeTruthy();           // VPC origin linked
-    expect(g.nodes.find((n) => n.kind === 'origin' && String(n.label).includes('cdn.partner.com'))).toBeTruthy(); // external = unresolved node, no false edge
+    expect(g.nodes.find((n) => n.kind === 'origin' && n.id === `origin:${cf.resource_id}:cdn.partner.com`)).toBeTruthy(); // external = unresolved node, no false edge
   });
 
   it('a Failed VPC origin is NOT resolved — falls through to the honest unresolved origin node', () => {
@@ -452,7 +452,7 @@ describe('buildFlowGraph — custom-domain origin resolved via Route53 alias', (
     const g = buildFlowGraph({ cloudfront: [cf], alb: [alb], route53: r53 });
     expect(g.edges.some((e) => e.source === 'cf:D1' && e.target === `alb:${alb.arn}`)).toBe(true);
     // resolved to a real LB → no leftover unresolved origin node for svc.example.com
-    expect(g.nodes.find((n) => n.kind === 'origin' && String(n.label).includes('svc.example.com'))).toBeFalsy();
+    expect(g.nodes.find((n) => n.kind === 'origin' && n.id === `origin:${cf.resource_id}:svc.example.com`)).toBeFalsy();
   });
 
   // PUBLIC-only: a record that exists ONLY in a PRIVATE hosted zone must NOT back a CF→LB edge
@@ -528,7 +528,7 @@ describe('buildFlowGraph — custom-domain origin resolved via Route53 alias', (
     const r53 = [{ resource_id: 'svc.example.com A', name: 'svc.example.com.', type: 'A', private_zone: false, alias_target: { DNSName: 'internal-x.ap-northeast-2.elb.amazonaws.com.' } }];
     const g = buildFlowGraph({ cloudfront: [cf], alb: [alb], route53: r53 });
     expect(g.edges.some((e) => e.source === 'cf:D1' && e.target === `alb:${alb.arn}`)).toBe(false);
-    const o = g.nodes.find((n) => n.kind === 'origin' && String(n.label).includes('svc.example.com'));
+    const o = g.nodes.find((n) => n.kind === 'origin' && n.id === `origin:${cf.resource_id}:svc.example.com`);
     expect(o?.meta?.resolvedTarget).toBe('internal-x.ap-northeast-2.elb.amazonaws.com');
   });
 
@@ -570,7 +570,7 @@ describe('buildFlowGraph — custom-domain origin resolved via Route53 alias', (
     const cf = { resource_id: 'D2', region: 'ap-northeast-2', origins: [{ Id: 'o1', DomainName: 'grafana-internal.example.com' }] };
     const r53 = [{ resource_id: 'grafana-internal.example.com A', name: 'grafana-internal.example.com.', type: 'A', private_zone: false, alias_target: { DNSName: 'k8s-monitori-grafanan-xyz.elb.us-east-1.amazonaws.com.' } }];
     const g = buildFlowGraph({ cloudfront: [cf], route53: r53 }); // the target LB is NOT synced
-    const o = g.nodes.find((n) => n.kind === 'origin' && String(n.label).includes('grafana-internal.example.com'));
+    const o = g.nodes.find((n) => n.kind === 'origin' && n.id === `origin:${cf.resource_id}:grafana-internal.example.com`);
     expect(o).toBeTruthy();
     expect(o!.meta?.unresolved).toBe(true);
     expect(o!.meta?.resolvedTarget).toBe('k8s-monitori-grafanan-xyz.elb.us-east-1.amazonaws.com');
@@ -581,7 +581,7 @@ describe('buildFlowGraph — custom-domain origin resolved via Route53 alias', (
   it('leaves a custom origin with no Route53 record as a plain unresolved node', () => {
     const cf = { resource_id: 'D3', region: 'ap-northeast-2', origins: [{ Id: 'o1', DomainName: 'cdn.partner.com' }] };
     const g = buildFlowGraph({ cloudfront: [cf], route53: [] });
-    const o = g.nodes.find((n) => n.kind === 'origin' && String(n.label).includes('cdn.partner.com'));
+    const o = g.nodes.find((n) => n.kind === 'origin' && n.id === `origin:${cf.resource_id}:cdn.partner.com`);
     expect(o?.meta?.unresolved).toBe(true);
     expect(o?.meta?.resolvedTarget).toBeUndefined();
   });

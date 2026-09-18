@@ -43,7 +43,10 @@ describe('GET /api/inventory/summary', () => {
         scope: 'aggregate', readOk: true,
         runs: [{ type: 'ec2', accountId: 'self', status: 'partial', unknown_attributes: null }],
       });
-      if (account === '123456789012') expect(query.mock.calls[0][0]).toContain("'123456789012'");
+      if (account === '123456789012') {
+        expect(query.mock.calls[0][1][0]).toEqual(['123456789012']);
+        expect(query.mock.calls[0][0]).not.toContain('123456789012');
+      }
       const ledgerCall = query.mock.calls.find(([sql]) => sql.includes('unknown_attribute_count'));
       expect(ledgerCall?.[1]).toEqual(['self']);
     });
@@ -170,26 +173,26 @@ describe('GET /api/inventory/summary — region scope (gap L110)', () => {
     const { GET } = await import('./route');
     await GET(req('?regions=ap-northeast-2,us-east-1&includeGlobal=0'));
     const sql = String(query.mock.calls[0][0]);
-    expect(sql).toContain("region IN ('ap-northeast-2','us-east-1')");
-    expect(sql).not.toContain("'global'");
+    expect(sql).toContain('region = ANY($2::text[])');
+    expect(query.mock.calls[0][1]).toEqual([['self'], ['ap-northeast-2', 'us-east-1'], false]);
   });
   it('includeGlobal folds global into the allowed set; absent regions stays unfiltered', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     query.mockResolvedValue({ rows: [] });
     const { GET } = await import('./route');
     await GET(req('?regions=ap-northeast-2'));
-    expect(String(query.mock.calls[0][0])).toContain("region IN ('ap-northeast-2','global')");
+    expect(query.mock.calls[0][1]).toEqual([['self'], ['ap-northeast-2', 'global'], true]);
     query.mockClear();
     query.mockResolvedValue({ rows: [] });
     await GET(req());
-    expect(String(query.mock.calls[0][0])).toContain('(TRUE)');
+    expect(query.mock.calls[0][1]).toEqual([['self'], null, true]);
   });
   it('an explicitly empty region selection yields an empty result, never an unfiltered count', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     query.mockResolvedValue({ rows: [] });
     const { GET } = await import('./route');
     await GET(req('?regions=&includeGlobal=0'));
-    expect(String(query.mock.calls[0][0])).toContain('(FALSE)');
+    expect(query.mock.calls[0][1]).toEqual([['self'], [], false]);
   });
   it('rejects a malformed region token instead of inlining it (strict charset)', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
@@ -197,8 +200,28 @@ describe('GET /api/inventory/summary — region scope (gap L110)', () => {
     const { GET } = await import('./route');
     await GET(req("?regions=ap-northeast-2,bad'--&includeGlobal=0"));
     const sql = String(query.mock.calls[0][0]);
-    expect(sql).toContain("region IN ('ap-northeast-2')");
+    expect(query.mock.calls[0][1]).toEqual([['self'], ['ap-northeast-2'], false]);
     expect(sql).not.toContain('bad');
+  });
+  it.each([
+    ['?accounts=__all__&regions=__all__&includeGlobal=0', [null, null, false]],
+    ['?accounts=invalid&regions=&includeGlobal=0', [['self'], [], false]],
+    ['?accounts=123456789012,self&regions=us-east-1', [['123456789012', 'self'], ['us-east-1', 'global'], true]],
+  ])('binds identical scope to every fleet aggregation: %s', async (selection, expected) => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockResolvedValue({ rows: [] });
+    const { GET } = await import('./route');
+    expect((await GET(req(selection))).status).toBe(200);
+    const aggregates = query.mock.calls.filter(([sql]) => sql.includes('FROM inventory_resources'));
+    expect(aggregates).toHaveLength(3);
+    for (const [sql, values] of aggregates) {
+      expect(values).toEqual(expected);
+      expect(sql).toContain('account_id = ANY($1::text[])');
+      expect(sql).toContain('region = ANY($2::text[])');
+      expect(sql).toContain("$3::boolean OR region <> 'global'");
+      expect(sql).not.toContain('123456789012');
+      expect(sql).not.toContain('us-east-1');
+    }
   });
 });
 
