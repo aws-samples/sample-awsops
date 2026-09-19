@@ -456,9 +456,11 @@ jobs:
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=Review input incomplete: ${REVIEW_INPUT_REASON:-admission failed}" >> "$GITHUB_OUTPUT"
           elif [ "$PANEL_OUTCOME" = "success" ] && [ "${PANEL_READY:-false}" != "true" ]; then
-            bash scripts/pr-review/report-panel-failure.sh /tmp/pr-review /tmp/review.md
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=Panel coverage incomplete" >> "$GITHUB_OUTPUT"
+            if ! bash "${GITHUB_WORKSPACE:-$PWD}/scripts/pr-review/report-panel-failure.sh" /tmp/pr-review /tmp/review.md; then
+              printf '%s\n' "Panel failure diagnostics unavailable. Review remains incomplete." "VERDICT: FAIL" > /tmp/review.md
+            fi
           elif [ "$PANEL_OUTCOME" != "success" ] || [ "$CHAIR_OUTCOME" != "success" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             if [ "${image_coverage_failed:-0}" = "1" ]; then

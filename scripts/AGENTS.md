@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2cc37f26449e · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: dd387465c439 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -29,7 +29,8 @@ and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
 Two independent Codex/Claude reports each cover all four checklists and must declare
-plain `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
+substantive sections for L2–L5, including security L3, plus plain
+`LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
 Report truncation cannot approve unseen findings. Oversized promotion diffs still
 need a separately reviewed complete-batching/reuse design.
 Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both

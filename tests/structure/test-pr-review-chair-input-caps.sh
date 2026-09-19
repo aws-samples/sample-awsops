@@ -36,6 +36,7 @@ while [ "$i" -lt 2 ]; do
     printf '\033]0;osc-bel\007OSC-BEL\n'
     printf '\033]0;osc-st\033\\OSC-ST\n'
     printf '\033(BCHARSET\rSPINNER\n'
+    for lens in L2 L3 L4 L5; do printf '## %s\nChecked this checklist against the supplied diff and found no blocking issue.\n' "$lens"; done
     printf 'LENS_COVERAGE: L2,L3,L4,L5\n'
     head -c 50000 /dev/zero | tr '\0' 'x'
   } \
@@ -131,7 +132,7 @@ i=0
 while [ "$i" -lt 12 ]; do
   : > "$WORK2/slot/model$i-L2.md"
   if [ "$i" -lt 4 ]; then
-    { printf 'LENS_COVERAGE: L2,L3,L4,L5\n'; head -c 25000 /dev/zero | tr '\0' 'y'; } > "$WORK2/slot/model$i-L2.md"
+    { for lens in L2 L3 L4 L5; do printf '## %s\nChecked this checklist against the supplied diff and found no blocking issue.\n' "$lens"; done; printf 'LENS_COVERAGE: L2,L3,L4,L5\n'; head -c 25000 /dev/zero | tr '\0' 'y'; } > "$WORK2/slot/model$i-L2.md"
     echo "model$i/L2" >> "$WORK2/responded.txt"
   fi
   i=$((i + 1))

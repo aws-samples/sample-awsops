@@ -57,7 +57,7 @@ try_panel() {
 # Validate every checklist before combining them. Never manufacture four responses
 # from a single result: each vendor produces one ALL report with explicit coverage.
 COMBINED_PROMPT="$(cat "$LENSES_DIR/COMMON.txt"; printf '\n\n'; cat "${LENS_FILES[@]}")"
-COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope. Emit the marker once only at column zero, with no bullets, decoration or indentation; put examples inside quotes or code fences. Spaces and lens ordering may vary, but every lens must appear exactly once.'
+COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Use exactly one section headed ## L2, ## L3, ## L4 and ## L5, each with a substantive paragraph (at least 40 non-whitespace characters and six words) describing checks, findings or rationale for no findings. Security L3 is mandatory. Keep the complete report concise within 60,000 bytes; do not replace sections with a coverage marker.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope. Emit the marker once only at column zero, with no bullets, decoration or indentation; put examples inside quotes or code fences. Spaces and lens ordering may vary, but every lens must appear exactly once.'
 LENS_FILES=("ALL.txt")
 for lens_file in "${LENS_FILES[@]}"; do
   lens="ALL"

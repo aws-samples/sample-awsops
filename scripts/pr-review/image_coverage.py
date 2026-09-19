@@ -95,6 +95,28 @@ def report_lines(text):
         yield line
 
 
+def complete_lens_sections(text):
+    """Require one substantive, unquoted report section for every checklist."""
+    sections, current, depth = {}, None, 0
+    for line in report_lines(text):
+        heading = re.fullmatch(r"#{1,6}[ \t]+(?:\*\*)?(L[2-5])(?:\*\*)?(?:[ \t]+.*|[ \t]*[-—:].*)?[ \t]*", line)
+        if heading:
+            current = heading[1]
+            if current in sections:
+                return False
+            sections[current] = []
+            depth = len(line) - len(line.lstrip("#"))
+        elif current and re.match(r"#{1,6}[ \t]+", line):
+            if len(line) - len(line.lstrip("#")) <= depth:
+                current = None
+        elif current and not re.match(r"^(?: {4}|\t| {0,3}>|#|LENS_COVERAGE:|IMAGE_COVERAGE:)", line):
+            sections[current].append(line)
+    bodies = [" ".join(lines) for lines in sections.values()]
+    return (set(sections) == {"L2", "L3", "L4", "L5"}
+            and all(len(re.sub(r"\s", "", body)) >= 40
+                    and len(re.findall(r"[^\W\d_]+", body)) >= 6 for body in bodies))
+
+
 def validate_report(text, required, lens=False):
     prefix = "LENS_COVERAGE:" if lens else "IMAGE_COVERAGE:"
     complete = "L2,L3,L4,L5" if lens else "COMPLETE"
@@ -118,7 +140,7 @@ def validate_report(text, required, lens=False):
     # Duplicate/contradictory declarations cannot override an earlier failure.
     if len(signals) > 1 or "FAILED" in signals:
         return False
-    return signals == [complete] if required else True
+    return (signals == [complete] and (not lens or complete_lens_sections(text))) if required else True
 
 
 def main():

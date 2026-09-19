@@ -21,28 +21,42 @@ if (any(type(value) is not int or value <= 0 for value in LIMITS.values())
 
 def admission(diff, context, omitted_source=""):
     # Read one byte beyond the bound to distinguish exact-size from excess input.
-    with Path(diff).open("rb") as stream:
-        data = stream.read(MAX_BYTES + 1)
+    try:
+        with Path(diff).open("rb") as stream:
+            data = stream.read(MAX_BYTES + 1)
+    except OSError:
+        return False, "diff file unavailable; inspect input preparation"
     if len(data) > MAX_BYTES:
         return False, "diff exceeds 128 KiB; split the change or implement complete bounded review batches"
-    data.decode("utf-8", errors="strict")
-    if len(data.splitlines()) > MAX_LINES:
+    # Preserve original bytes for the reviewer CLIs; do not silently replace them.
+    if data.count(b"\n") > MAX_LINES:
         return False, "diff exceeds 6000 lines; split the change or implement complete bounded review batches"
     # Reserve from the actual scrubbed bytes too: redaction may expand short values.
-    scrubbed = subprocess.run(
-        ["bash", "-c", 'source "$1"; strip_controls | scrub_secrets', "review-scrub",
-         str(Path(__file__).with_name("lib.sh"))], input=data, capture_output=True,
-        timeout=10, check=True, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"},
-    ).stdout
+    try:
+        scrubbed = subprocess.run(
+            ["bash", "-c", 'source "$1"; strip_controls | scrub_secrets', "review-scrub",
+             str(Path(__file__).with_name("lib.sh"))], input=data, capture_output=True,
+            timeout=10, check=True, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"},
+        ).stdout
+    except subprocess.TimeoutExpired:
+        return False, "review sanitizer timed out; inspect runner tooling"
+    except (OSError, subprocess.CalledProcessError):
+        return False, "review sanitizer unavailable or failed; inspect runner tooling"
     if len(scrubbed) > MAX_BYTES:
         return False, "sanitized diff exceeds chair allocation; split the change"
     if omitted_source:
         return False, "source lines were omitted; reformat them into reviewable lines"
-    manifest = load_manifest(context)
+    try:
+        manifest = load_manifest(context)
+    except (OSError, ValueError, UnicodeError):
+        return False, "HEAD image manifest unavailable or invalid; inspect staging"
     if manifest["status"] != "complete":
         return False, "HEAD image evidence incomplete; inspect staging diagnostics"
     # Recheck immutable attachments, not just the manifest's status string.
-    attachment_paths(context)
+    try:
+        attachment_paths(context)
+    except (OSError, ValueError, UnicodeError):
+        return False, "HEAD image attachment unavailable or invalid; inspect staging"
     return True, "complete input admitted"
 
 

@@ -47,7 +47,12 @@ each emit exactly one plain, unquoted line at column zero:
 Only a manifest without images, unavailable entries or `omitted_entries` permits
 `IMAGE_COVERAGE: NOT_REQUIRED` or no marker. Any unavailable/omitted entry forces FAIL
 even if models incorrectly declare COMPLETE; successfully staged files are retained.
-Each panel also declares `LENS_COVERAGE: L2,L3,L4,L5` on one plain line.
+Each panel also declares `LENS_COVERAGE: L2,L3,L4,L5` on one plain line and
+provides exactly one section headed `## L2`, `## L3`, `## L4`, and `## L5`.
+Each section needs at least 40 non-whitespace characters and six words of substantive, unquoted
+prose describing checks/findings or the rationale for no findings. Fenced examples,
+coverage declarations and headings do not satisfy that body requirement. Missing
+security L3, empty placeholders or a marker-only response cannot pass.
 The validator reads each full report before chair-input truncation; missing required,
 duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
 The chair rechecks both panel reports independently of the responded-cell list.
@@ -170,13 +175,26 @@ runner loss can prevent that cleanup. It does not upload image artifacts.
 
 Two independent reviewers (the existing Codex and Claude models) each cover all four
 checklists: correctness, security, data integration and documentation consistency.
+Design decision (2026-09-19), implementing the owner's request to reduce duplicate
+panels: retain two independent vendors and all four mandatory report sections,
+including security L3, plus chair adjudication. Both the section structure and the
+coverage declaration are checked by the harness. This accepts a residual limitation:
+report structure cannot prove the model's reasoning; neither could a nonempty output
+from a separate lens process. Missing L3 is mechanically blocked for either vendor,
+and the chair still verifies security-policy findings against the code.
+
 The existing chair/fallback adjudicates their findings. A single report is never
 copied into four purportedly independent votes. The lens completion declaration is
 an attestation, not proof that every line was understood.
 
 Before issuing model credentials, `input_scope.py` requires the entire filtered diff
 to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
-32-image extraction bound remains. Oversized source lines already omitted by the
+32-image extraction bound remains. Diff admission is byte-based and counts LF
+boundaries like `wc -l`; raw bytes are passed unchanged to reviewer CLIs without
+lossy replacement or a new UTF-8 admission restriction. Admission does not certify
+that a CLI understood an encoding: unreadable or incomplete model responses still
+fail the mandatory report checks. Sanitizer and image-evidence faults have separate
+fixed diagnostics. Oversized source lines already omitted by the
 filter also block admission. There is no first-N-lines review, misleading unseen-file
 index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes

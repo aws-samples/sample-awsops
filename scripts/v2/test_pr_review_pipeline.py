@@ -74,6 +74,10 @@ if os.environ.get('FAIL_ONCE') == cell and count == 1:
     print('Transient API failure')
     sys.exit(1)
 print('Review ' + cell + ': no blocking findings.')
+for key in ('L2','L3','L4','L5'):
+    if key != os.environ.get('PANEL_OMIT_LENS'):
+        print(os.environ.get('PANEL_HEADING', '## {lens}').format(lens=key))
+        print(os.environ.get('PANEL_SECTION_TEXT', 'Checked this checklist against the supplied diff and found no blocking issue.'))
 print(os.environ.get('PANEL_LENS_REPORT', 'LENS_COVERAGE: L2,L3,L4,L5'))
 print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.environ.get('PANEL_IMAGE_REPORT', '')))
 if os.environ.get('OVERSIZE_CELL') == cell:
@@ -179,6 +183,18 @@ class PanelTests(unittest.TestCase):
         self.assertFalse((out / "coverage-severe.flag").exists())
         out, _ = self.run_panel(PANEL_LENS_REPORT="LENS_COVERAGE: L2,L2,L3,L4")
         self.assertTrue((out / "lens-coverage-failed.flag").exists())
+
+    def test_attestation_without_substantive_sections_cannot_pass(self):
+        valid, _ = self.run_panel(PANEL_HEADING="### **{lens}**: checklist")
+        self.assertFalse((valid / "coverage-severe.flag").exists())
+        for lens in ("L2", "L3", "L4", "L5"):
+            work, _ = self.run_panel(PANEL_OMIT_LENS=lens)
+            self.assertTrue((work / "lens-coverage-failed.flag").exists())
+            self.assertTrue((work / "coverage-severe.flag").exists())
+        for body in ("N/A", " " * 100, "." * 100, "x" * 100,
+                     "## Summary\n" + "Unrelated summary text " * 10, "```\n" + "quoted evidence " * 10 + "\n```"):
+            work, _ = self.run_panel(PANEL_SECTION_TEXT=body)
+            self.assertTrue((work / "lens-coverage-failed.flag").exists())
 
     def test_incomplete_panel_diagnostic_publishes_no_model_text(self):
         work, _ = self.run_panel(FAIL_CELL="claude/ALL")
@@ -398,7 +414,7 @@ class ChairTests(unittest.TestCase):
         panel_report = overrides.pop("PANEL_FIXTURE_IMAGE_REPORT", "")
         for cell in cells:
             (slots / (cell.replace("/", "-") + ".md")).write_text(
-                "No blocking findings.\nLENS_COVERAGE: L2,L3,L4,L5\n" + panel_report + "\n")
+                "".join(f"## {lens}\nChecked the supplied diff for this checklist and found no blocking issue.\n" for lens in ("L2", "L3", "L4", "L5")) + "LENS_COVERAGE: L2,L3,L4,L5\n" + panel_report + "\n")
         if panel_work is not None:
             shutil.copytree(panel_work, work, dirs_exist_ok=True)
         diff = root / "diff"
@@ -886,14 +902,18 @@ class InputAdmissionTests(unittest.TestCase):
         self.assertEqual(self.admission(b"x\n" * 6000)["ready"], "true")
         self.assertEqual(self.admission(b"x" * (128 * 1024 - 1) + b"\n")["ready"], "true")
 
-    def test_size_line_encoding_source_and_image_gaps_all_block(self):
+    def test_size_source_and_image_gaps_all_block(self):
         for data, options in (
             (b"x\n" * 6001, {}), (b"x" * (128 * 1024 + 1), {}),
-            (b"\xff", {}), (b"diff\n", {"incomplete": True}),
+            (b"diff\n", {"incomplete": True}),
             (b"diff\n", {"tamper": True}), (b"diff\n", {"omitted": "web/unseen.ts"}),
         ):
             with self.subTest(options=options, size=len(data)):
                 self.assertEqual(self.admission(data, **options)["ready"], "false")
+
+    def test_non_utf8_diff_is_preserved_without_an_admission_encoding_gate(self):
+        self.assertEqual(self.admission(b"+legacy \xff fixture\n")["ready"], "true")
+        self.assertEqual(self.admission(b"+CR\rinside a diff line\n")["ready"], "true")
 
     def test_redaction_expansion_is_reserved_before_models_run(self):
         # Nonfunctional eight-character fixture: redaction increases its length.
