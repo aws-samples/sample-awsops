@@ -185,12 +185,18 @@ class PanelTests(unittest.TestCase):
         # Fixed, nonfunctional sentinel used only to verify output redaction.
         sentinel = "AKIA" + "1234567890ABCDEF"
         (work / "slot/codex-ALL.md").write_text(
-            "MAJOR: surviving finding\n" + sentinel + "\nVERDICT: PASS\n")
+            "\x1b[31mMAJOR: surviving finding\x1b[0m\n"
+            "\x1b]0;title\x07CRITICAL: actual marker\n"
+            "```\nCRITICAL: fenced example\n```\n"
+            "> MAJOR: quoted example\n    CRITICAL: indented example\n"
+            "# **Minor**: actual marker\n" + sentinel + "\nVERDICT: PASS\n")
         output = work / "diagnostic.md"
         subprocess.run(["bash", str(ROOT / "scripts/pr-review/report-panel-failure.sh"),
                         str(work), str(output)], check=True)
         text = output.read_text()
         self.assertIn("Unadjudicated MAJOR markers (capped at 99): 1", text)
+        self.assertIn("Unadjudicated CRITICAL markers (capped at 99): 1", text)
+        self.assertIn("Unadjudicated MINOR markers (capped at 99): 1", text)
         self.assertNotIn("surviving finding", text)
         self.assertNotIn(sentinel, text)
         self.assertNotIn("[REDACTED-AWS-KEY]", text)

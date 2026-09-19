@@ -180,7 +180,7 @@ to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 filter also block admission. There is no first-N-lines review, misleading unseen-file
 index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
-fixed diagnostics and bounded unadjudicated severity-marker counts as unadjudicated data; it never asserts
+fixed diagnostics and bounded unadjudicated severity-marker counts; it never asserts
 that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000
 bytes. Actual sanitized chair stdin (diff, reports and headers) is capped at 256 KiB
 before invocation. These are resource bounds, not a guarantee of model latency.
@@ -196,6 +196,23 @@ reviewed, exact-commit coverage-reuse design. Neither is implemented here; split
 feature PRs alone does not reduce an existing dev-to-main cumulative diff. Do not
 rerun unchanged oversized input expecting success, raise limits without a resource
 review, reuse historical comments as latest-HEAD proof, or bypass required checks.
+
+
+Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
+checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
+before marking the panel ready. Limits may be reduced for tests but not raised by
+chair environment overrides. `input_scope.py` performs admission;
+`report-panel-failure.sh` publishes fixed diagnostics and bounded severity counts with named
+missing reviewers and separate checklist, image and report-size diagnoses.
+
+On an incomplete panel, public comments expose only fixed response/failure labels
+and capped counts of severity markers after shared control stripping and fence
+exclusion; quoted and indented examples are excluded too. These untrusted marker counts are neither
+verified findings nor a clean-code signal. Raw model text, paths extracted from
+reports, links/images and snippets are not published, because shape-based secret
+scrubbing cannot prove such text safe. Complete reviews still use chair adjudication.
+
+
 
 ## Action
 
@@ -240,21 +257,6 @@ Read and answer matched, the CLI exited zero, and owned scratch cleanup complete
 This establishes that run's capability with the existing role and tools. It does not
 certify every panel model or image, and never replaces required latest-HEAD coverage.
 See [the diagnostic contract](review-image-capability.md) for its fixed proof fields.
-
-
-Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
-checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
-before marking the panel ready. Limits may be reduced for tests but not raised by
-chair environment overrides. `input_scope.py` performs admission;
-`report-panel-failure.sh` publishes fixed diagnostics and bounded severity counts with named
-missing reviewers and separate checklist, image and report-size diagnoses.
-
-On an incomplete panel, public comments expose only fixed response/failure labels
-and capped counts of severity markers. These untrusted marker counts are neither
-verified findings nor a clean-code signal. Raw model text, paths extracted from
-reports, links/images and snippets are not published, because shape-based secret
-scrubbing cannot prove such text safe. Complete reviews still use chair adjudication.
-
 
 ## Related files and policy
 

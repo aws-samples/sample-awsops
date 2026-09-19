@@ -28,15 +28,18 @@ umask 077
     python3 - "$report" "$DIR" <<'PY'
 import re, sys
 sys.path.insert(0, sys.argv[2])
-from image_coverage import read_data, REPORT_LIMIT
+from image_coverage import read_data, report_lines, REPORT_LIMIT
 try:
     text = read_data(sys.argv[1], REPORT_LIMIT)
 except (OSError, ValueError, UnicodeError):
     print("Severity markers unavailable: report unreadable or over limit.")
 else:
     # These are untrusted label counts, not verified findings or a clean-code claim.
+    lines = [line for line in report_lines(text)
+             if not re.match(r"^(?: {4}|\t| {0,3}>)", line)]
     for severity in ("CRITICAL", "MAJOR", "MINOR"):
-        count = min(99, len(re.findall(r"(?m)^[ #*\t-]*" + severity + r"\b", text)))
+        count = min(99, sum(bool(re.match(r"^[ #*\t-]*" + severity + r"\b", line,
+                                         re.IGNORECASE)) for line in lines))
         print(f"Unadjudicated {severity} markers (capped at 99): {count}")
 print("Report text is withheld from public diagnostics; marker counts do not establish correctness.")
 PY

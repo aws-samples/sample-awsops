@@ -77,13 +77,12 @@ def attachment_paths(context):
     return paths
 
 
-def validate_report(text, required, lens=False):
-    prefix = "LENS_COVERAGE:" if lens else "IMAGE_COVERAGE:"
-    complete = "L2,L3,L4,L5" if lens else "COMPLETE"
+def report_lines(text):
+    """Shared normalized report lines, excluding fenced examples."""
     # Same terminal controls stripped before public synthesis; only LF creates lines.
     text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Z]", "", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
-    signals, fence = [], None
+    fence = None
     for line in text.split("\n"):
         if fence:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
@@ -93,6 +92,14 @@ def validate_report(text, required, lens=False):
         if opening:
             fence = (opening[1][0], len(opening[1]))
             continue
+        yield line
+
+
+def validate_report(text, required, lens=False):
+    prefix = "LENS_COVERAGE:" if lens else "IMAGE_COVERAGE:"
+    complete = "L2,L3,L4,L5" if lens else "COMPLETE"
+    signals = []
+    for line in report_lines(text):
         # Reserved prefixes declare outcomes. Decoration cannot turn failure into prose.
         candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=(?:IMAGE[_ ]|LENS_))", "", line)
         if not lens and candidate.startswith("IMAGE COVERAGE FAILURE"):
