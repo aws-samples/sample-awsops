@@ -73,6 +73,7 @@ if os.environ.get('FAIL_CELL') in (cell, name + '/*'):
 if os.environ.get('FAIL_ONCE') == cell and count == 1:
     print('Transient API failure')
     sys.exit(1)
+print(os.environ.get('PANEL_REPORT_PREFIX', ''))
 print('Review ' + cell + ': no blocking findings.')
 for key in ('L2','L3','L4','L5'):
     if key != os.environ.get('PANEL_OMIT_LENS'):
@@ -81,6 +82,7 @@ for key in ('L2','L3','L4','L5'):
 print(os.environ.get('PANEL_EXTRA_REPORT', ''))
 print(os.environ.get('PANEL_LENS_REPORT', 'LENS_COVERAGE: L2,L3,L4,L5'))
 print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.environ.get('PANEL_IMAGE_REPORT', '')))
+print(os.environ.get('PANEL_REPORT_SUFFIX', ''))
 if os.environ.get('OVERSIZE_CELL') == cell:
     print('x' * (1024 * 1024))
 if os.environ.get('LATE_IMAGE_FAILURE_CELL') == cell:
@@ -199,10 +201,17 @@ class PanelTests(unittest.TestCase):
             work, _ = self.run_panel(PANEL_OMIT_LENS=lens)
             self.assertTrue((work / "lens-coverage-failed.flag").exists())
             self.assertTrue((work / "coverage-severe.flag").exists())
-        for body in ("N/A", " " * 100, "." * 100, "x" * 100,
+        for body in ("N/A", "- N/A\n" * 10, "- None\n- Not applicable\n- No issues found\n- TODO\n- TBD\n", " " * 100, "." * 100, "x" * 100,
                      "## Summary\n" + "Unrelated summary text " * 10, "```\n" + "quoted evidence " * 10 + "\n```"):
             work, _ = self.run_panel(PANEL_SECTION_TEXT=body)
             self.assertTrue((work / "lens-coverage-failed.flag").exists())
+
+    def test_html_comments_cannot_supply_sections_or_attestation(self):
+        work, _ = self.run_panel(PANEL_REPORT_PREFIX="<!--", PANEL_REPORT_SUFFIX="-->")
+        self.assertTrue((work / "lens-coverage-failed.flag").exists())
+        prose = "Checked the supplied code and verified that no blocking issue was introduced."
+        valid, _ = self.run_panel(PANEL_SECTION_TEXT=prose + "\n```\n<!--\n```\nLiteral `<!--` example.\nEscaped \\<!-- example.")
+        self.assertFalse((valid / "coverage-severe.flag").exists())
 
     def test_repeated_sections_merge_but_incidental_references_do_not_supply_security(self):
         prose = "Checked the additional scope and found no new blocking issue in the supplied code."

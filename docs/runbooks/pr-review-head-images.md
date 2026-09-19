@@ -52,10 +52,12 @@ provides sections headed `## L2`, `## L3`, `## L4`, and `## L5`.
 Heading levels 1–6, up to three leading spaces, bold IDs and ordinary title
 punctuation (including space-separated descriptions, colons and dashes) are accepted. Repeated sections are combined by checklist rather than rejecting
 completed reports. Incidental `L3-related` or combined `L2 & L3` reference titles
-do not substitute for a checklist section. Each checklist needs, in aggregate, at least 40 non-whitespace characters and six words of substantive, unquoted
+do not substitute for a checklist section. Each checklist needs, in aggregate, at least 40 non-whitespace characters and six distinct alphabetic words (at least two letters each) of unquoted
 content describing checks/findings or the rationale for no findings. Indented list
 items and continuation lines count toward the body. Fenced examples,
-coverage declarations and headings do not satisfy that body requirement. Missing
+HTML comments, coverage declarations, headings and standalone placeholders such
+as `N/A` or `No findings` do not satisfy that body requirement. This is a minimum
+content-shape check, not proof of the meaning or correctness of model prose. Missing
 security L3, empty placeholders or a marker-only response cannot pass.
 The validator reads each full report before chair-input truncation; missing required,
 duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
@@ -191,9 +193,13 @@ The existing chair/fallback adjudicates their findings. A single report is never
 copied into four purportedly independent votes. The lens completion declaration is
 an attestation, not proof that every line was understood.
 
-Review-phase Python helpers use `-I`: application BASE/CWD and PYTHONPATH are not
-import roots. Only the trusted helper directory is explicitly added when local
-helper imports are needed. A module-shadowing fixture checks this boundary.
+Python invocations in `lib.sh` (used from the application BASE during credentialed
+panel/chair phases) and `report-panel-failure.sh` use `-I`: application CWD and
+PYTHONPATH are not import roots. Only the trusted helper directory is explicitly
+added for local imports. A planted-module fixture checks those invocations.
+Pre-credential workflow preparation, including `input_scope.py`, runs as ordinary
+Python scripts from the trusted default-workflow checkout; this is not a claim
+that every Python invocation in the repository uses isolated mode.
 
 Before issuing model credentials, `input_scope.py` requires the entire filtered diff
 to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The

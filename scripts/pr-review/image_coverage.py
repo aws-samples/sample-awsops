@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate bounded reviewer image-coverage declarations, independently of verdicts."""
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 import os
@@ -78,16 +79,50 @@ def attachment_paths(context):
 
 
 def report_lines(text):
-    """Shared normalized report lines, excluding fenced examples."""
+    """Shared normalized visible lines, excluding fences and HTML comments."""
     # Same terminal controls stripped before public synthesis; only LF creates lines.
     text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Z]", "", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
-    fence = None
+    fence, comment = None, False
     for line in text.split("\n"):
         if fence:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
                 fence = None
             continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})", line) if not comment else None
+        if opening:
+            fence = (opening[1][0], len(opening[1]))
+            continue
+        tick_positions = {}
+        for run in re.finditer(r"`+", line):
+            tick_positions.setdefault(run.end() - run.start(), []).append(run.start())
+        visible, index, slashes = [], 0, 0
+        while index < len(line):
+            if comment:
+                end = line.find("-->", index)
+                if end < 0:
+                    break
+                comment, index, slashes = False, end + 3, 0
+                continue
+            escaped = slashes % 2 == 1
+            if not escaped and line.startswith("<!--", index):
+                comment, index, slashes = True, index + 4, 0
+                continue
+            if not escaped and line[index] == "`":
+                end = index + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                width = end - index
+                positions = tick_positions.get(width, [])
+                closing = bisect_right(positions, index)
+                stop = positions[closing] + width if closing < len(positions) else end
+                visible.append(line[index:stop])
+                index, slashes = stop, 0
+                continue
+            visible.append(line[index])
+            slashes = slashes + 1 if line[index] == "\\" else 0
+            index += 1
+        line = "".join(visible)
         opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if opening:
             fence = (opening[1][0], len(opening[1]))
@@ -116,11 +151,13 @@ def complete_lens_sections(text):
                 if len(other_heading[1]) <= depth:
                     current = None
             elif current and not re.match(r"^[ \t]*(?:>|LENS_COVERAGE:|IMAGE_COVERAGE:)", line):
-                sections[current].append(line)
+                plain = re.sub(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?", "", line).strip(" *`._:")
+                if not re.fullmatch(r"n/?a|none|not applicable|todo|tbd|no (?:blocking )?(?:issues?|findings?|changes?)(?: found)?", plain, re.IGNORECASE):
+                    sections[current].append(line)
     bodies = [" ".join(lines) for lines in sections.values()]
     return (set(sections) == {"L2", "L3", "L4", "L5"}
             and all(len(re.sub(r"\s", "", body)) >= 40
-                    and len(re.findall(r"[^\W\d_]+", body)) >= 6 for body in bodies))
+                    and len(set(word.casefold() for word in re.findall(r"[^\W\d_]{2,}", body))) >= 6 for body in bodies))
 
 
 def validate_report(text, required, lens=False):
