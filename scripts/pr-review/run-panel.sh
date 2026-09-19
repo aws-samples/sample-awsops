@@ -25,6 +25,7 @@ CLAUDE_MODEL="${CLAUDE_PANEL_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-
 PANEL_MODELS=(codex claude)
 TOTAL_MODELS=${#PANEL_MODELS[@]}
 
+[ -s "$LENSES_DIR/COMMON.txt" ] || { echo "Required common prompt missing" >&2; exit 1; }
 LENS_FILES=()
 for lens in L2 L3 L4 L5; do
   if [ ! -s "$LENSES_DIR/$lens.txt" ]; then
@@ -55,8 +56,8 @@ try_panel() {
 
 # Validate every checklist before combining them. Never manufacture four responses
 # from a single result: each vendor produces one ALL report with explicit coverage.
-COMBINED_PROMPT="$(cat "${LENS_FILES[@]}")"
-COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope. Emit the marker once only; put examples inside quotes or code fences. Spaces and lens ordering may vary, but every lens must appear exactly once.'
+COMBINED_PROMPT="$(cat "$LENSES_DIR/COMMON.txt"; printf '\n\n'; cat "${LENS_FILES[@]}")"
+COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope. Emit the marker once only at column zero, with no bullets, decoration or indentation; put examples inside quotes or code fences. Spaces and lens ordering may vary, but every lens must appear exactly once.'
 LENS_FILES=("ALL.txt")
 for lens_file in "${LENS_FILES[@]}"; do
   lens="ALL"

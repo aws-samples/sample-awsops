@@ -35,20 +35,12 @@ else
   fail "shared COMMON prompt carries a prompt-injection / data-only guard"
 fi
 
-# Every lens prompt file the workflow writes must include $COMMON (else that lens's
-# panelists run unguarded).
-LENS_HEREDOCS=$(grep -c "cat <<PROMPT_EOF > /tmp/pr-review/lenses/" "$WORKFLOW")
-# Flag resets at each heredoc terminator, so a lens missing $COMMON cannot borrow
-# credit from the next heredoc's $COMMON line.
-LENS_WITH_COMMON=$(awk '
-  /cat <<PROMPT_EOF > \/tmp\/pr-review\/lenses\//{f=1; next}
-  /^[[:space:]]*PROMPT_EOF[[:space:]]*$/{f=0}
-  f && /\$COMMON/{c++; f=0}
-  END{print c+0}' "$WORKFLOW")
-if [ "$LENS_HEREDOCS" -ge 1 ] && [ "$LENS_HEREDOCS" -eq "$LENS_WITH_COMMON" ]; then
-  pass "every lens prompt heredoc ($LENS_HEREDOCS) embeds \$COMMON"
+# The common prompt is staged once and combined with all four checklists by the
+# runner. Executable fixtures below prove both real CLI command shapes receive it.
+if grep -Fq '"$COMMON" > /tmp/pr-review/lenses/COMMON.txt' "$WORKFLOW"; then
+  pass "common safety prompt is staged once for both comprehensive reviewers"
 else
-  fail "every lens prompt heredoc embeds \$COMMON ($LENS_WITH_COMMON of $LENS_HEREDOCS do)"
+  fail "common safety prompt must be staged for both comprehensive reviewers"
 fi
 
 # Exercise the actual panel script with fake external CLIs: this checks what each

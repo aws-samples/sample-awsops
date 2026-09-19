@@ -328,7 +328,7 @@ attest all four checklists. Input admission precedes model credentials: complete
 filtered diff up to 6,000 lines/128 KiB and complete hash-valid image evidence.
 Comprehensive reports allow 60,000 bytes each, 120,000 bytes combined, with a
 256 KiB bound on actual chair stdin. Incomplete panel coverage skips chair calls
-and publishes bounded scrubbed surviving observations without a code verdict.
+and publishes fixed diagnostics and bounded unadjudicated severity-marker counts without a code verdict.
 See [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size)
 and the [promotion constraint](branch-strategy.md#oversized-promotion-review).
 The panel and chair have a 10-second hard-kill grace. The job ceiling is 90 minutes.

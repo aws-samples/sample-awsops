@@ -8,8 +8,10 @@ review_limit() {
 import json, sys
 from pathlib import Path
 values = json.loads(Path(sys.argv[1]).read_text())
-assert values["diff_bytes"] + values["panel_bytes"] + values["envelope_bytes"] <= values["chair_bytes"]
-assert 2 * values["report_bytes"] <= values["panel_bytes"]
+if (any(type(value) is not int or value <= 0 for value in values.values())
+        or values["diff_bytes"] + values["panel_bytes"] + values["envelope_bytes"] > values["chair_bytes"]
+        or 2 * values["report_bytes"] > values["panel_bytes"]):
+    raise ValueError("Invalid review budget configuration")
 print(values[sys.argv[2]])
 PYLIMIT
 }
@@ -68,13 +70,19 @@ check_review_report() {
     echo "[review incomplete] required lens coverage missing" >&2
   fi
   if [ "${3:-}" = panel ]; then
-    strip_controls < "$1" | scrub_secrets > "$WORK/report-size-check.tmp"
-    if [ "$(wc -c < "$WORK/report-size-check.tmp")" -gt "$(review_limit report_bytes)" ]; then
+    local panel_cap size_file="$WORK/$(basename "$1").size.tmp"
+    if ! panel_cap="$(review_limit report_bytes)" || [[ ! "$panel_cap" =~ ^[1-9][0-9]*$ ]]; then
+      : > "$WORK/report-invalid.flag"; : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] invalid report budget configuration" >&2
+      return 1
+    fi
+    strip_controls < "$1" | scrub_secrets > "$size_file"
+    if [ "$(wc -c < "$size_file")" -gt "$panel_cap" ]; then
       : > "$WORK/report-invalid.flag"
       : > "$WORK/coverage-severe.flag"
       echo "[review incomplete] comprehensive report exceeds its byte allocation" >&2
     fi
-    rm -f "$WORK/report-size-check.tmp"
+    rm -f "$size_file"
   fi
   return 0
 }

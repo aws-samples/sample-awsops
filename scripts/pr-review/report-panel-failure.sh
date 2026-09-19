@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Publish bounded surviving observations without spending another model call or
-# suggesting incomplete review proves the code is safe.
+# Public failure diagnostics contain only fixed labels and bounded numeric metadata.
+# Raw model text, filenames from reports, links and excerpts never leave this path.
 set -euo pipefail
 WORK="$1"; OUT="$2"
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
@@ -24,31 +24,22 @@ umask 077
   for model in codex claude; do
     report="$WORK/slot/$model-ALL.md"
     [ -s "$report" ] || continue
-    printf '\nUnadjudicated %s observations (diagnostic excerpt, not approval):\n\n' "$model"
-    if python3 "$DIR/image_coverage.py" report "$report" 0 >/dev/null 2>&1; then
-      :
-    else
-      rc=$?
-      if [ "$rc" -ne 1 ]; then
-        echo "Report unreadable or over the validation bound."
-        continue
-      fi
-    fi
-    # Scrub the entire bounded report before clipping. Quote every line so model
-    # headings/verdicts remain data in the diagnostic, never the gate's verdict.
-    strip_controls < "$report" | scrub_secrets > "$WORK/panel-diagnostic.tmp"
-    python3 - "$WORK/panel-diagnostic.tmp" <<'PY'
-import sys
-from pathlib import Path
-data = Path(sys.argv[1]).read_bytes()
-text = data[:24000].decode("utf-8", errors="ignore")
-lines = text.splitlines()
-for line in lines[:1000]:
-    print("> " + line)
-if len(data) > 24000 or len(lines) > 1000:
-    print("\nDiagnostic excerpt truncated; remaining observations are unreviewed.")
+    printf '\n%s: response received; observations remain unadjudicated.\n' "$model"
+    python3 - "$report" "$DIR" <<'PY'
+import re, sys
+sys.path.insert(0, sys.argv[2])
+from image_coverage import read_data, REPORT_LIMIT
+try:
+    text = read_data(sys.argv[1], REPORT_LIMIT)
+except (OSError, ValueError, UnicodeError):
+    print("Severity markers unavailable: report unreadable or over limit.")
+else:
+    # These are untrusted label counts, not verified findings or a clean-code claim.
+    for severity in ("CRITICAL", "MAJOR", "MINOR"):
+        count = min(99, len(re.findall(r"(?m)^[ #*\t-]*" + severity + r"\b", text)))
+        print(f"Unadjudicated {severity} markers (capped at 99): {count}")
+print("Report text is withheld from public diagnostics; marker counts do not establish correctness.")
 PY
-    rm -f "$WORK/panel-diagnostic.tmp"
   done
   printf '\nVERDICT: FAIL\n'
 } > "$OUT"

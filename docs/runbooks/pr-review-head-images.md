@@ -106,6 +106,7 @@ limits, prompt propagation and missing-evidence failures.
 | Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
+| Public failure diagnostic | Fixed labels and severity-marker counts (0–99); no model text |
 | Actual sanitized chair stdin | 256 KiB; refused before invocation |
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
@@ -179,7 +180,7 @@ to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 filter also block admission. There is no first-N-lines review, misleading unseen-file
 index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
-bounded, scrubbed surviving observations as unadjudicated data; it never asserts
+fixed diagnostics and bounded unadjudicated severity-marker counts as unadjudicated data; it never asserts
 that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000
 bytes. Actual sanitized chair stdin (diff, reports and headers) is capped at 256 KiB
 before invocation. These are resource bounds, not a guarantee of model latency.
@@ -227,7 +228,7 @@ the affected PR and trigger a fresh review for the resulting HEAD. Rerunning an 
 job may still use its old workflow revision. The existing protected, SHA-pinned
 recovery path is unchanged; this helper adds no manual event or approval bypass.
 Require completed review of the latest HEAD and existing CI/branch protection.
-The full raw-diff guard, all required cells, chair and Critical/Major gates remain.
+The full raw-diff guard, both required reviewers, chair adjudication and Critical/Major gates remain.
 
 ## Authenticated runner evidence
 
@@ -240,9 +241,27 @@ This establishes that run's capability with the existing role and tools. It does
 certify every panel model or image, and never replaces required latest-HEAD coverage.
 See [the diagnostic contract](review-image-capability.md) for its fixed proof fields.
 
+
+Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
+checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
+before marking the panel ready. Limits may be reduced for tests but not raised by
+chair environment overrides. `input_scope.py` performs admission;
+`report-panel-failure.sh` publishes fixed diagnostics and bounded severity counts with named
+missing reviewers and separate checklist, image and report-size diagnoses.
+
+On an incomplete panel, public comments expose only fixed response/failure labels
+and capped counts of severity markers. These untrusted marker counts are neither
+verified findings nor a clean-code signal. Raw model text, paths extracted from
+reports, links/images and snippets are not published, because shape-based secret
+scrubbing cannot prove such text safe. Complete reviews still use chair adjudication.
+
+
 ## Related files and policy
 
 - [Workflow](../../.github/workflows/pr-review.yml)
+- [Shared review limits](../../scripts/pr-review/review-limits.json)
+- [Input admission](../../scripts/pr-review/input_scope.py)
+- [Fixed failure diagnostics](../../scripts/pr-review/report-panel-failure.sh)
 - [Git blob stager](../../scripts/pr-review/stage_head_pngs.py)
 - [Bounded decoder](../../scripts/pr-review/render_head_image.py) and [binary codec lock](../../scripts/pr-review/image-requirements.txt)
 - [Coverage declaration validator](../../scripts/pr-review/image_coverage.py)
@@ -250,10 +269,3 @@ See [the diagnostic contract](review-image-capability.md) for its fixed proof fi
 - [Protected review recovery](dev-repo-setup.md)
 
 ADR-005 product posture is unchanged; this CI evidence path enables no AWS mutation.
-
-Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
-checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
-before marking the panel ready. Limits may be reduced for tests but not raised by
-chair environment overrides. `input_scope.py` performs admission;
-`report-panel-failure.sh` publishes bounded unadjudicated observations with named
-missing reviewers and separate checklist, image and report-size diagnoses.

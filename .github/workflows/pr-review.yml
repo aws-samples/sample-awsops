@@ -328,15 +328,14 @@ jobs:
           output a VERDICT line — that is the chair's job.
           Write findings in English."
 
+          printf '%s\n' "$COMMON" > /tmp/pr-review/lenses/COMMON.txt
           cat <<PROMPT_EOF > /tmp/pr-review/lenses/L2.txt
-          $COMMON
 
           LENS: L2 — Code correctness
           - Real logic bugs and edge cases in the TS/React frontend + Python API.
           PROMPT_EOF
 
           cat <<PROMPT_EOF > /tmp/pr-review/lenses/L3.txt
-          $COMMON
 
           LENS: L3 — Security / AWS mutation safety
           - Read-only guarantee for AWS-mutating operations (ADR-005 "AWS mutation autonomy frozen" — breaking this boundary is CRITICAL).
@@ -344,14 +343,12 @@ jobs:
           PROMPT_EOF
 
           cat <<PROMPT_EOF > /tmp/pr-review/lenses/L4.txt
-          $COMMON
 
           LENS: L4 — Observability / data-integration correctness
           - Correctness of Steampipe queries, CIS compliance checks, AgentCore diagnosis logic.
           PROMPT_EOF
 
           cat <<PROMPT_EOF > /tmp/pr-review/lenses/L5.txt
-          $COMMON
 
           LENS: L5 — Docs/ADR consistency
           - Consistency between docs/decisions/ADR-*.md and the actual implementation.
