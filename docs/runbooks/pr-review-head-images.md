@@ -41,15 +41,16 @@ staged, not that a reviewer inspected or successfully decoded them.
 Pixels remain a prompt-injection and potential secret-disclosure surface. Text-path
 sanitization cannot sanitize pixels, and output scrubbing cannot recognize every secret.
 
-When the manifest contains HEAD images, all eight panel cells and the chair must
+When the manifest contains HEAD images, both comprehensive panel reports and the chair must
 each emit exactly one plain, unquoted line at column zero:
 `IMAGE_COVERAGE: COMPLETE`. Use `IMAGE_COVERAGE: FAILED` when inspection is unavailable.
 Only a manifest without images, unavailable entries or `omitted_entries` permits
 `IMAGE_COVERAGE: NOT_REQUIRED` or no marker. Any unavailable/omitted entry forces FAIL
 even if models incorrectly declare COMPLETE; successfully staged files are retained.
+Each panel also declares `LENS_COVERAGE: L2,L3,L4,L5` on one plain line.
 The validator reads each full report before chair-input truncation; missing required,
 duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
-The chair rechecks all eight reports independently of the responded-cell list.
+The chair rechecks both panel reports independently of the responded-cell list.
 This is a declared review outcome, not automated proof of the model's visual perception.
 
 Generated instruction examples are indented so echoing them is not a declaration.
@@ -61,7 +62,8 @@ Terminal controls are stripped before validation, and only LF separates protocol
 
 Response presence is separate from coverage. A nonempty successful CLI response remains
 counted even when its image declaration fails. Empty/failed CLI results retain the
-vendor/lens failure diagnosis. Unreadable, invalid-UTF-8 or oversized reports fail as
+vendor failure diagnosis. A report exceeding the chair input cap also blocks;
+its unseen findings cannot be waived by a successful chair verdict. Unreadable, invalid-UTF-8 or oversized reports fail as
 unusable review output, not as absent responses or image findings. Current reports and
 manifest are rechecked for each synthesis; stale image flags do not poison a new run.
 Neither a later PASS nor a retry can erase an explicit failure or malformed reserved
@@ -158,6 +160,30 @@ No credentials, AWS actions or model tool permissions are added.
 Each decode removes its owned container; the workflow removes its run-labeled containers,
 owned image tag and generated scratch root in an always-run cleanup step;
 runner loss can prevent that cleanup. It does not upload image artifacts.
+
+## Review input admission and panel size
+
+Two independent reviewers (the existing Codex and Claude models) each cover all four
+checklists: correctness, security, data integration and documentation consistency.
+The existing chair/fallback adjudicates their findings. A single report is never
+copied into four purportedly independent votes. The lens completion declaration is
+an attestation, not proof that every line was understood.
+
+Before issuing model credentials, `input_scope.py` requires the entire filtered diff
+to fit 6,000 lines and 256 KiB, plus complete and hash-valid image evidence. The
+32-image extraction bound remains. Oversized source lines already omitted by the
+filter also block admission. There is no first-N-lines review, misleading unseen-file
+index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
+no panel or chair is called. Failed panel coverage also skips the chair.
+
+These changes reduce normal review calls from eight panel calls plus a chair to two
+panel calls plus a chair; existing retry/model/timeout choices remain. They do not
+promise a wall-clock speedup or make an oversized promotion review complete. A large
+promotion exceeding these bounds needs complete bounded batches or an independently
+reviewed, exact-commit coverage-reuse design. Neither is implemented here; splitting
+feature PRs alone does not reduce an existing dev-to-main cumulative diff. Do not
+rerun unchanged oversized input expecting success, raise limits without a resource
+review, reuse historical comments as latest-HEAD proof, or bypass required checks.
 
 ## Action
 

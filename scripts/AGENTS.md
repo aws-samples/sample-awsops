@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8f9b9fab6f54 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 098a44c50387 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -23,8 +23,14 @@ All panel lenses and chair share safe labels and read-only generated paths; exac
 names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
 BASE pixels are historical. Required unavailable images fail coverage, never suppress
 findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
-Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from all
-eight cells and chair for staged images. Explicit failure overrides PASS even without
+Input admission requires complete filtered diffs within 6,000 lines/256 KiB and
+complete hash-valid image evidence before model credentials. No truncated reviews.
+Two independent Codex/Claude reports each cover all four checklists and must declare
+plain `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
+Report truncation cannot approve unseen findings. Oversized promotion diffs still
+need a separately reviewed complete-batching/reuse design.
+Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both
+comprehensive vendor reports and chair for staged images. Explicit failure overrides PASS even without
 images; examples inside quotes/fences/prose do not count as declarations.
 Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
 Preparation faults publish fixed failures after context/diff validation. Both image

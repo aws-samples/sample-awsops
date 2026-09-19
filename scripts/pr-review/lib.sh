@@ -41,6 +41,14 @@ mark_image_coverage_failure() {
 
 check_review_report() {
   local rc=0
+  # Comprehensive panel reports must independently attest all four checklists.
+  # Chair reports use their own terminal verdict contract.
+  if [[ "$1" == *-ALL.md ]] && ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
+    : > "$WORK/report-invalid.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review incomplete] required lens coverage missing" >&2
+    return 1
+  fi
   image_coverage_valid "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}" || rc=$?
   if [ "$rc" = 1 ]; then
     mark_image_coverage_failure "$(basename "$1")"
@@ -65,14 +73,14 @@ refresh_panel_presence() {
   rm -f "$WORK/coverage-severe.flag"
   for model in codex claude; do
     count=0
-    for lens in L2 L3 L4 L5; do
+    for lens in ALL; do
       if [ -s "$WORK/slot/$model-$lens.md" ]; then
         echo "$model/$lens" >> "$WORK/responded.txt"; count=$((count+1))
       fi
     done
     [ "$count" -gt 0 ] || echo "$model" >> "$WORK/degraded-models.txt"
   done
-  for lens in L2 L3 L4 L5; do
+  for lens in ALL; do
     if [ ! -s "$WORK/slot/codex-$lens.md" ] || [ ! -s "$WORK/slot/claude-$lens.md" ]; then
       echo "$lens" >> "$WORK/degraded-lenses.txt"; : > "$WORK/coverage-severe.flag"
     fi

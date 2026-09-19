@@ -77,7 +77,9 @@ def attachment_paths(context):
     return paths
 
 
-def validate_report(text, required):
+def validate_report(text, required, lens=False):
+    prefix = "LENS_COVERAGE:" if lens else "IMAGE_COVERAGE:"
+    complete = "L2,L3,L4,L5" if lens else "COMPLETE"
     # Same terminal controls stripped before public synthesis; only LF creates lines.
     text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Z]", "", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
@@ -92,23 +94,23 @@ def validate_report(text, required):
             fence = (opening[1][0], len(opening[1]))
             continue
         # Reserved prefixes declare outcomes. Decoration cannot turn failure into prose.
-        candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=IMAGE[_ ])", "", line)
-        if candidate.startswith("IMAGE COVERAGE FAILURE"):
+        candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=(?:IMAGE[_ ]|LENS_))", "", line)
+        if not lens and candidate.startswith("IMAGE COVERAGE FAILURE"):
             return False
-        if candidate.startswith("IMAGE_COVERAGE:"):
-            match = re.fullmatch(r"IMAGE_COVERAGE:[ \t]*(COMPLETE|FAILED|NOT_REQUIRED)[ \t]*", line)
+        if candidate.startswith(prefix):
+            match = re.fullmatch(re.escape(prefix) + r"[ \t]*(" + re.escape(complete) + r"|FAILED|NOT_REQUIRED)[ \t]*", line)
             if not match:
                 return False
             signals.append(match[1])
     # Duplicate/contradictory declarations cannot override an earlier failure.
     if len(signals) > 1 or "FAILED" in signals:
         return False
-    return signals == ["COMPLETE"] if required else True
+    return signals == [complete] if required else True
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("required", "unavailable", "attachments", "report"))
+    parser.add_argument("mode", choices=("required", "unavailable", "attachments", "report", "lenses"))
     parser.add_argument("path")
     parser.add_argument("required", nargs="?", choices=("0", "1"), default="0")
     args = parser.parse_args()
@@ -123,13 +125,13 @@ def main():
             paths = attachment_paths(args.path)
             sys.stdout.buffer.write(b"".join(os.fsencode(path) + b"\0" for path in paths))
             return 0
-        if validate_report(read_data(args.path, REPORT_LIMIT), args.required == "1"):
+        if validate_report(read_data(args.path, REPORT_LIMIT), args.required == "1" or args.mode == "lenses", lens=args.mode == "lenses"):
             return 0
     except (OSError, ValueError, UnicodeError):
-        if args.mode == "report":
+        if args.mode in ("report", "lenses"):
             print("Review output unavailable: invalid encoding, type, size or read.", file=sys.stderr)
             return 2
-    print("Image coverage unavailable: missing, invalid, failed or unreadable declaration/evidence.", file=sys.stderr)
+    print("Review coverage unavailable: missing, invalid, failed or unreadable declaration/evidence.", file=sys.stderr)
     return 1
 
 

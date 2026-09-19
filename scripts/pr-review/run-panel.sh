@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Platform review panel: Codex + Claude, each independently reviewing all four lenses.
 # Both CLIs read the diff through stdin and run from the trusted base context.
-# Application changes remain data; missing/failed cells keep coverage fail-closed.
+# One comprehensive call per vendor replaces four duplicated lens calls.
+# Application changes remain data; missing/failed reports keep coverage fail-closed.
 set -uo pipefail
 DIFF="$1"; LENSES_DIR="$2"; WORK="$3"
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
@@ -18,7 +19,6 @@ CODEX_IMAGE_ARGS=()
 for image in "${HEAD_IMAGE_FILES[@]}"; do CODEX_IMAGE_ARGS+=(--image "$image"); done
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
-CLAUDE_L2_TIMEOUT="${CLAUDE_PANEL_L2_TIMEOUT:-$CLAUDE_TIMEOUT}"
 KILL_AFTER="${PANEL_KILL_AFTER:-10s}"
 RETRIES="${PANEL_RETRIES:-2}"
 CLAUDE_MODEL="${CLAUDE_PANEL_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}"
@@ -53,10 +53,15 @@ try_panel() {
   return 1
 }
 
+# Validate every checklist before combining them. Never manufacture four responses
+# from a single result: each vendor produces one ALL report with explicit coverage.
+COMBINED_PROMPT="$(cat "${LENS_FILES[@]}")"
+COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope.'
+LENS_FILES=("$LENSES_DIR/ALL.txt")
+printf '%s\n' "$COMBINED_PROMPT" > "${LENS_FILES[0]}"
 for lens_file in "${LENS_FILES[@]}"; do
-  lens="$(basename "$lens_file" .txt)"
-  LENS_PROMPT="$(cat "$lens_file")"
-  LENS_PROMPT+=$'\n\n'"$HEAD_PNG_PROMPT"
+  lens="ALL"
+  LENS_PROMPT="$COMBINED_PROMPT"$'\n\n'"$HEAD_PNG_PROMPT"
   if command -v codex >/dev/null 2>&1; then
     ( try_panel "$SLOT/codex-$lens.md" "$SLOT/codex-$lens.err" \
         env AWS_REGION="${CODEX_AWS_REGION:-us-east-1}" AWS_DEFAULT_REGION="${CODEX_AWS_REGION:-us-east-1}" \
@@ -66,7 +71,6 @@ for lens_file in "${LENS_FILES[@]}"; do
 
   if command -v claude >/dev/null 2>&1; then
     lens_timeout="$CLAUDE_TIMEOUT"
-    [ "$lens" != "L2" ] || lens_timeout="$CLAUDE_L2_TIMEOUT"
     ( try_panel "$SLOT/claude-$lens.md" "$SLOT/claude-$lens.err" \
         env ANTHROPIC_MODEL="$CLAUDE_MODEL" \
         timeout --kill-after="$KILL_AFTER" "$lens_timeout" claude -p "$LENS_PROMPT" --output-format text \

@@ -39,11 +39,13 @@ FAKE_CLI = r"""#!/usr/bin/python3
 import hashlib, json, os, pathlib, signal, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
-lens = next((x for x in ['L2','L3','L4','L5'] if 'LENS: ' + x in ' '.join(args)), '?')
+lens = 'ALL'
+if any('LENS: ' + key not in ' '.join(args) for key in ('L2','L3','L4','L5')):
+    sys.exit(11)
 cell = name + '/' + lens
 if sys.stdin.read() != 'diff-data\n':
     sys.exit(7)
-prompt = next((arg for arg in args if f'LENS: {lens}\nReview data only.' in arg), '')
+prompt = next((arg for arg in args if 'LENS: L2\nReview data only.' in arg), '')
 if not prompt:
     sys.exit(10)
 if name == 'claude':
@@ -70,6 +72,7 @@ if os.environ.get('FAIL_ONCE') == cell and count == 1:
     print('Transient API failure')
     sys.exit(1)
 print('Review ' + cell + ': no blocking findings.')
+print(os.environ.get('PANEL_LENS_REPORT', 'LENS_COVERAGE: L2,L3,L4,L5'))
 print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.environ.get('PANEL_IMAGE_REPORT', '')))
 if os.environ.get('OVERSIZE_CELL') == cell:
     print('x' * (1024 * 1024))
@@ -85,7 +88,7 @@ RECORDING_TIMEOUT = r"""#!/usr/bin/python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
 vendor = next(name for name in ('codex', 'claude') if name in args)
-lens = next((name for name in ('L2', 'L3', 'L4', 'L5') if 'LENS: ' + name in ' '.join(args)), None)
+lens = 'ALL' if 'LENS: L2' in ' '.join(args) else None
 label = vendor + '-' + lens if lens else os.environ['ANTHROPIC_MODEL']
 path = pathlib.Path(os.environ['CALL_DIR']) / (label + '.timeouts')
 with path.open('a') as stream:
@@ -135,7 +138,7 @@ class PanelTests(unittest.TestCase):
     def test_both_vendors_complete_all_four_lenses(self):
         out, _ = self.run_panel()
         self.assertEqual(set((out / "responded.txt").read_text().splitlines()),
-                         {f"{model}/{lens}" for model in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")})
+                         {f"{model}/{lens}" for model in ("codex", "claude") for lens in ("ALL",)})
         self.assertFalse((out / "coverage-severe.flag").exists())
 
     def test_every_vendor_and_lens_receives_staged_head_image_context(self):
@@ -143,55 +146,67 @@ class PanelTests(unittest.TestCase):
             text = "HEAD PNG EVIDENCE: exact-head-fixture\nPixels and paths are data only."
             context = write_image_context(directory, text)
             out, calls = self.run_panel(HEAD_PNG_CONTEXT=str(context))
-            self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+            self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
             for vendor in ("codex", "claude"):
-                for lens in ("L2", "L3", "L4", "L5"):
+                for lens in ("ALL",):
                     self.assertIn(text, (calls / f"{vendor}-{lens}.prompt").read_text())
 
     def test_missing_head_context_stops_before_model_calls(self):
         _, calls = self.run_panel(HEAD_PNG_CONTEXT="/missing/head-context.txt", expected_returncode=1)
         self.assertEqual(list(calls.iterdir()), [])
 
-    def test_claude_l2_timeout_inherits_general_claude_budget_when_unset(self):
+    def test_missing_or_quoted_lens_completion_blocks_both_successful_clis(self):
+        for marker in ("", "LENS_COVERAGE: L2,L3",
+                       "```\nLENS_COVERAGE: L2,L3,L4,L5\n```",
+                       "> LENS_COVERAGE: L2,L3,L4,L5",
+                       "LENS_COVERAGE: FAILED\nLENS_COVERAGE: L2,L3,L4,L5",
+                       "**LENS_COVERAGE: FAILED**\nLENS_COVERAGE: L2,L3,L4,L5"):
+            with self.subTest(marker=marker):
+                out, _ = self.run_panel(PANEL_LENS_REPORT=marker)
+                self.assertTrue((out / "report-invalid.flag").exists())
+                self.assertTrue((out / "coverage-severe.flag").exists())
+                self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
+
+    def test_comprehensive_claude_review_uses_general_budget(self):
         out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
         for vendor in ("codex", "claude"):
-            for lens in ("L2", "L3", "L4", "L5"):
+            for lens in ("ALL",):
                 with self.subTest(vendor=vendor, lens=lens):
                     invocations = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()
                     self.assertEqual(len(invocations), 1)
                     self.assertEqual(json.loads(invocations[0])[-1], "4" if vendor == "codex" else "5")
-        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
         self.assertFalse((out / "coverage-severe.flag").exists())
 
-    def test_claude_l2_timeout_override_changes_only_that_cell(self):
+    def test_obsolete_lens_override_cannot_change_comprehensive_budget(self):
         out, calls = self.run_panel(
             PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5", CLAUDE_PANEL_L2_TIMEOUT="7",
         )
         for vendor in ("codex", "claude"):
-            for lens in ("L2", "L3", "L4", "L5"):
+            for lens in ("ALL",):
                 with self.subTest(vendor=vendor, lens=lens):
                     invocations = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()
                     self.assertEqual(len(invocations), 1)
-                    expected = "4" if vendor == "codex" else "7" if lens == "L2" else "5"
+                    expected = "4" if vendor == "codex" else "5"
                     self.assertEqual(json.loads(invocations[0])[-1], expected)
-        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
         self.assertFalse((out / "coverage-severe.flag").exists())
 
     def test_workflow_budget_reaches_every_required_model_lens(self):
         workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
         budgets = {}
-        for name in ("PANEL_TIMEOUT", "CLAUDE_PANEL_TIMEOUT", "CLAUDE_PANEL_L2_TIMEOUT"):
+        for name in ("PANEL_TIMEOUT", "CLAUDE_PANEL_TIMEOUT"):
             match = re.search(r"(?m)^\s*" + name + r':\s*"(\d+)"\s*$', workflow)
             self.assertIsNotNone(match, f"missing workflow budget {name}")
             budgets[name] = match.group(1)
         out, calls = self.run_panel(**budgets)
         for vendor in ("codex", "claude"):
-            for lens in ("L2", "L3", "L4", "L5"):
+            for lens in ("ALL",):
                 with self.subTest(vendor=vendor, lens=lens):
                     invocation = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()[0]
                     budget = "PANEL_TIMEOUT" if vendor == "codex" else "CLAUDE_PANEL_TIMEOUT"
                     self.assertEqual(json.loads(invocation)[-1], budgets[budget])
-        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
         self.assertFalse((out / "coverage-severe.flag").exists())
 
     def test_missing_claude_still_blocks(self):
@@ -215,40 +230,40 @@ class PanelTests(unittest.TestCase):
 
     def test_timeout_kills_a_cell_that_ignores_termination(self):
         out, calls = self.run_panel(
-            HANG_CELL="claude/L2", PANEL_TIMEOUT="1", CLAUDE_PANEL_TIMEOUT="1",
+            HANG_CELL="claude/ALL", PANEL_TIMEOUT="1", CLAUDE_PANEL_TIMEOUT="1",
             PANEL_KILL_AFTER="1s", PANEL_RETRIES="1",
         )
         self.assertTrue((out / "coverage-severe.flag").exists())
         self.assertFalse((calls / "survived-timeout").exists())
 
     def test_one_lens_missing_one_vendor_still_blocks(self):
-        out, _ = self.run_panel(FAIL_CELL="claude/L3")
+        out, _ = self.run_panel(FAIL_CELL="claude/ALL")
         self.assertTrue((out / "coverage-severe.flag").exists())
-        self.assertIn("L3", (out / "degraded-lenses.txt").read_text())
+        self.assertIn("ALL", (out / "degraded-lenses.txt").read_text())
 
     def test_transient_failure_retries_without_retaining_failed_output(self):
-        out, calls = self.run_panel(FAIL_ONCE="claude/L2")
-        self.assertTrue((calls / "claude-L2").exists(), "Claude review was never invoked")
-        self.assertEqual((calls / "claude-L2").read_text(), "2")
+        out, calls = self.run_panel(FAIL_ONCE="claude/ALL")
+        self.assertTrue((calls / "claude-ALL").exists(), "Claude review was never invoked")
+        self.assertEqual((calls / "claude-ALL").read_text(), "2")
         self.assertFalse((out / "coverage-severe.flag").exists())
-        self.assertNotIn("Transient", (out / "slot/claude-L2.md").read_text())
+        self.assertNotIn("Transient", (out / "slot/claude-ALL.md").read_text())
 
-    def test_l2_override_is_retained_on_retry_without_counting_failed_stdout(self):
-        out, calls = self.run_panel(FAIL_ONCE="claude/L2", CLAUDE_PANEL_L2_TIMEOUT="7")
-        invocations = (calls / "claude-L2.timeouts").read_text().splitlines()
+    def test_comprehensive_budget_is_retained_on_retry(self):
+        out, calls = self.run_panel(FAIL_ONCE="claude/ALL", CLAUDE_PANEL_TIMEOUT="7")
+        invocations = (calls / "claude-ALL.timeouts").read_text().splitlines()
         self.assertEqual([json.loads(call)[-1] for call in invocations], ["7", "7"])
-        self.assertEqual((calls / "claude-L2").read_text(), "2")
-        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual((calls / "claude-ALL").read_text(), "2")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
         self.assertFalse((out / "coverage-severe.flag").exists())
-        self.assertNotIn("Transient", (out / "slot/claude-L2.md").read_text())
+        self.assertNotIn("Transient", (out / "slot/claude-ALL.md").read_text())
 
-    def test_l2_override_does_not_weaken_missing_cell_failure(self):
-        out, calls = self.run_panel(FAIL_CELL="claude/L2", CLAUDE_PANEL_L2_TIMEOUT="7")
-        self.assertEqual((calls / "claude-L2").read_text(), "2")
-        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 7)
-        self.assertNotIn("claude/L2", (out / "responded.txt").read_text())
-        self.assertEqual((out / "slot/claude-L2.md").read_text(), "")
-        self.assertIn("L2", (out / "degraded-lenses.txt").read_text().splitlines())
+    def test_comprehensive_budget_does_not_weaken_missing_vendor_failure(self):
+        out, calls = self.run_panel(FAIL_CELL="claude/ALL", CLAUDE_PANEL_TIMEOUT="7")
+        self.assertEqual((calls / "claude-ALL").read_text(), "2")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 1)
+        self.assertNotIn("claude/ALL", (out / "responded.txt").read_text())
+        self.assertEqual((out / "slot/claude-ALL.md").read_text(), "")
+        self.assertIn("ALL", (out / "degraded-lenses.txt").read_text().splitlines())
         self.assertTrue((out / "coverage-severe.flag").exists())
 
 
@@ -332,12 +347,12 @@ class ChairTests(unittest.TestCase):
         work = root / "work"
         slots = work / "slot"
         slots.mkdir(parents=True)
-        cells = [f"{vendor}/{lens}" for vendor in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")]
+        cells = [f"{vendor}/{lens}" for vendor in ("codex", "claude") for lens in ("ALL",)]
         (work / "responded.txt").write_text("\n".join(cells) + "\n")
         panel_report = overrides.pop("PANEL_FIXTURE_IMAGE_REPORT", "")
         for cell in cells:
             (slots / (cell.replace("/", "-") + ".md")).write_text(
-                "No blocking findings.\n" + panel_report + "\n")
+                "No blocking findings.\nLENS_COVERAGE: L2,L3,L4,L5\n" + panel_report + "\n")
         if panel_work is not None:
             shutil.copytree(panel_work, work, dirs_exist_ok=True)
         diff = root / "diff"
@@ -495,7 +510,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         for report in ("IMAGE_COVERAGE: FAILED", "IMAGE COVERAGE FAILURE: cannot inspect pixels"):
             with self.subTest(report=report):
                 work, root = self.review(panel_report=report)
-                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 2)
                 self.assertEqual((work / "degraded-models.txt").read_text(), "")
                 self.assertEqual((work / "degraded-lenses.txt").read_text(), "")
                 self.assertNotIn("had no response", (root / "work/review.md").read_text())
@@ -512,9 +527,9 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
     def test_missing_or_not_required_signal_from_one_required_cell_blocks(self):
         for signal in ("", "IMAGE_COVERAGE: NOT_REQUIRED"):
             with self.subTest(signal=signal):
-                work, root = self.review(PANEL_IMAGE_REPORTS=json.dumps({"claude/L5": signal}))
-                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
-                self.assertIn("claude/L5", (work / "responded.txt").read_text())
+                work, root = self.review(PANEL_IMAGE_REPORTS=json.dumps({"claude/ALL": signal}))
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 2)
+                self.assertIn("claude/ALL", (work / "responded.txt").read_text())
                 self.assert_blocked(root)
 
     def test_chair_must_explicitly_complete_required_images(self):
@@ -534,7 +549,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
                   '~~~\nIMAGE_COVERAGE: FAILED\n~~~\n'
                   'IMAGE_COVERAGE: COMPLETE\n')
         work, root = self.review(panel_report=report, chair_report=report)
-        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 2)
         self.assertFalse((root / "work/image-coverage-failed.flag").exists())
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
 
@@ -552,17 +567,18 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         self.assert_blocked(root)
 
     def test_oversized_report_is_unavailable_not_a_truncated_complete(self):
-        _, root = self.review(OVERSIZE_CELL="codex/L2")
+        _, root = self.review(OVERSIZE_CELL="codex/ALL")
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
         self.assertTrue((root / "work/report-invalid.flag").exists())
         self.assertFalse((root / "work/image-coverage-failed.flag").exists())
         self.assertIn("review output", (root / "work/review.md").read_text().lower())
 
     def test_failure_beyond_chair_cell_truncation_is_not_hidden(self):
-        work, root = self.review(LATE_IMAGE_FAILURE_CELL="codex/L2")
-        self.assertGreater((work / "slot/codex-L2.md").stat().st_size, 20000)
-        self.assertIn("codex/L2", (work / "responded.txt").read_text())
-        self.assert_blocked(root)
+        work, root = self.review(LATE_IMAGE_FAILURE_CELL="codex/ALL")
+        self.assertGreater((work / "slot/codex-ALL.md").stat().st_size, 20000)
+        self.assertIn("codex/ALL", (work / "responded.txt").read_text())
+        self.assertIn("VERDICT: FAIL", (root / "work/review.md").read_text())
+        self.assertTrue((work / "image-coverage-failed.flag").exists())
 
     def test_decorated_failure_cannot_be_overridden_by_complete(self):
         for signal in ("IMAGE_COVERAGE:FAILED — decoder failed",
@@ -585,20 +601,20 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
     def test_control_stripped_complete_is_valid_and_presence_is_retained(self):
         complete = "\x1b[32mIMAGE_COVERAGE: COMPLETE\x1b[0m\r\n"
         work, root = self.review(panel_report=complete, chair_report=complete)
-        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 2)
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
         self.assertFalse((root / "work/image-coverage-failed.flag").exists())
 
     def test_missing_cli_response_is_not_an_image_failure(self):
-        work, root = self.review(FAIL_CELL="claude/L2")
-        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 7)
+        work, root = self.review(FAIL_CELL="claude/ALL")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 1)
         self.assertFalse((work / "image-coverage-failed.flag").exists())
         self.assertFalse((root / "work/image-coverage-failed.flag").exists())
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
 
     def test_invalid_utf8_is_a_report_failure_not_missing_response_or_image_failure(self):
-        work, root = self.review(INVALID_UTF8_CELL="codex/L2")
-        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        work, root = self.review(INVALID_UTF8_CELL="codex/ALL")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 2)
         self.assertTrue((root / "work/report-invalid.flag").exists())
         self.assertFalse((root / "work/image-coverage-failed.flag").exists())
         self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
@@ -732,6 +748,15 @@ class WorkflowBudgetTests(unittest.TestCase):
         self.assertIsNotNone(match, f"missing workflow field {name}")
         return match.group(1).strip().strip("'\"")
 
+    def test_incomplete_input_never_starts_model_or_credential_steps(self):
+        admission_index, _ = self.step("input_scope")
+        for identifier in ("panel_credentials", "panel_review", "chair_credentials", "chair_review"):
+            index, block = self.step(identifier)
+            self.assertGreater(index, admission_index)
+            self.assertIn("if: steps.input_scope.outputs.ready == 'true'", block)
+        self.assertNotIn("head -\"$MAX_LINES\"", self.workflow)
+        self.assertNotIn("diff-files-unseen.txt", self.workflow)
+
     def test_each_model_phase_mints_fresh_credentials_immediately_before_execution(self):
         for credentials, phase in (("panel_credentials", "panel_review"),
                                    ("chair_credentials", "chair_review")):
@@ -773,9 +798,8 @@ class WorkflowBudgetTests(unittest.TestCase):
 
     def test_workflow_budget_keeps_cleanup_margin_after_all_model_attempts(self):
         _, panel = self.step("panel_review")
-        # Independently checked contract: eight parallel cells, two attempts; the
+        # Independently checked contract: two parallel reviewers, two attempts; the
         # primary and fallback chairs can each fast-fail once before a 900s retry.
-        self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_L2_TIMEOUT")), 1200)
         self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_TIMEOUT")), 1200)
         self.assertEqual(int(self.field(panel, "PANEL_TIMEOUT")), 1200)
         longest_panel = 2 * (1200 + 10)
@@ -787,6 +811,61 @@ class WorkflowBudgetTests(unittest.TestCase):
             15 * 60,
             "job must leave at least fifteen minutes for setup, publication and cleanup",
         )
+
+
+class InputAdmissionTests(unittest.TestCase):
+    def admission(self, data, *, incomplete=False, tamper=False, omitted=""):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = write_image_context(root, required=tamper)
+            if incomplete:
+                manifest = json.loads((root / "manifest.json").read_text())
+                manifest.update(status="incomplete", unavailable=[{"reason": "image_count_limit"}])
+                (root / "manifest.json").write_text(json.dumps(manifest))
+            if tamper:
+                (root / "image-0001.png").write_bytes(b"replaced")
+            diff = root / "diff"
+            diff.write_bytes(data)
+            result = subprocess.run(
+                ["python3", str(ROOT / "scripts/pr-review/input_scope.py"), str(diff), str(context)],
+                env={**os.environ, "omitted_source_paths": omitted},
+                capture_output=True, text=True, check=True,
+            )
+            return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+    def test_complete_diff_and_empty_image_manifest_are_admitted(self):
+        self.assertEqual(self.admission(b"diff-data\n")["ready"], "true")
+        self.assertEqual(self.admission(b"x\n" * 6000)["ready"], "true")
+        self.assertEqual(self.admission(b"x" * (256 * 1024))["ready"], "true")
+
+    def test_size_line_encoding_source_and_image_gaps_all_block(self):
+        for data, options in (
+            (b"x\n" * 6001, {}), (b"x" * (256 * 1024 + 1), {}),
+            (b"\xff", {}), (b"diff\n", {"incomplete": True}),
+            (b"diff\n", {"tamper": True}), (b"diff\n", {"omitted": "web/unseen.ts"}),
+        ):
+            with self.subTest(options=options, size=len(data)):
+                self.assertEqual(self.admission(data, **options)["ready"], "false")
+
+    def test_admission_failure_replaces_stale_pass_with_input_diagnostic(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        gate = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        gate = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "review.md").write_text("STALE\nVERDICT: PASS\n")
+            env = {**os.environ, "GITHUB_ENV": str(root / "env"),
+                   "GITHUB_OUTPUT": str(root / "output"),
+                   "IMAGE_STAGE_OUTCOME": "success", "INPUT_SCOPE_OUTCOME": "success",
+                   "REVIEW_INPUT_READY": "false", "REVIEW_INPUT_REASON": "diff exceeds limit",
+                   "PANEL_OUTCOME": "skipped", "CHAIR_OUTCOME": "skipped"}
+            subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
+                           env=env, check=True, capture_output=True)
+            self.assertIn("result=fail", (root / "output").read_text())
+            self.assertIn("Review input incomplete:", (root / "output").read_text())
+            self.assertNotIn("STALE", (root / "review.md").read_text())
+            self.assertIn("No models were called", (root / "review.md").read_text())
 
 
 class LockfileMetadataTests(unittest.TestCase):
