@@ -99,16 +99,24 @@ def complete_lens_sections(text):
     """Require substantive unquoted content for every checklist; merge continuations."""
     sections, current, depth = {}, None, 0
     for line in report_lines(text):
-        heading = re.fullmatch(r"#{1,6}[ \t]+(?:\*\*)?(L[2-5])(?:\*\*)?(?:[ \t]*:[ \t]+[^\n]*|[ \t]+[-—][ \t]+[^\n]*)?[ \t]*", line)
+        heading = re.fullmatch(r" {0,3}(#{1,6})[ \t]+(?:\*\*)?(L[2-5])\b(.*)", line, re.IGNORECASE)
         if heading:
-            current = heading[1]
+            suffix = heading[3].replace("**", "")
+            # Topic references are not replacement sections for a missing checklist.
+            if (re.match(r"[-–—]related\b", suffix, re.IGNORECASE)
+                    or re.match(r"[ \t]*(?:&|/|,|and)[ \t]*L[2-5]\b", suffix, re.IGNORECASE)):
+                heading = None
+        if heading:
+            current = heading[2].upper()
             sections.setdefault(current, [])
-            depth = len(line) - len(line.lstrip("#"))
-        elif current and re.match(r"#{1,6}[ \t]+", line):
-            if len(line) - len(line.lstrip("#")) <= depth:
-                current = None
-        elif current and not re.match(r"^(?: {4}|\t| {0,3}>|#|LENS_COVERAGE:|IMAGE_COVERAGE:)", line):
-            sections[current].append(line)
+            depth = len(heading[1])
+        else:
+            other_heading = re.match(r" {0,3}(#{1,6})[ \t]+", line)
+            if current and other_heading:
+                if len(other_heading[1]) <= depth:
+                    current = None
+            elif current and not re.match(r"^[ \t]*(?:>|LENS_COVERAGE:|IMAGE_COVERAGE:)", line):
+                sections[current].append(line)
     bodies = [" ".join(lines) for lines in sections.values()]
     return (set(sections) == {"L2", "L3", "L4", "L5"}
             and all(len(re.sub(r"\s", "", body)) >= 40

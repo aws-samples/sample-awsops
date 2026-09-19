@@ -49,11 +49,12 @@ Only a manifest without images, unavailable entries or `omitted_entries` permits
 even if models incorrectly declare COMPLETE; successfully staged files are retained.
 Each panel also declares `LENS_COVERAGE: L2,L3,L4,L5` on one plain line and
 provides sections headed `## L2`, `## L3`, `## L4`, and `## L5`.
-Heading levels 1–6, bold IDs, and descriptions following a colon or spaced dash
-are accepted. Repeated sections are combined by checklist rather than rejecting
+Heading levels 1–6, up to three leading spaces, bold IDs and ordinary title
+punctuation (including space-separated descriptions, colons and dashes) are accepted. Repeated sections are combined by checklist rather than rejecting
 completed reports. Incidental `L3-related` or combined `L2 & L3` reference titles
 do not substitute for a checklist section. Each checklist needs, in aggregate, at least 40 non-whitespace characters and six words of substantive, unquoted
-prose describing checks/findings or the rationale for no findings. Fenced examples,
+content describing checks/findings or the rationale for no findings. Indented list
+items and continuation lines count toward the body. Fenced examples,
 coverage declarations and headings do not satisfy that body requirement. Missing
 security L3, empty placeholders or a marker-only response cannot pass.
 The validator reads each full report before chair-input truncation; missing required,
@@ -218,6 +219,14 @@ feature PRs alone does not reduce an existing dev-to-main cumulative diff. Do no
 rerun unchanged oversized input expecting success, raise limits without a resource
 review, reuse historical comments as latest-HEAD proof, or bypass required checks.
 
+
+The `chair_stdin_bytes` and `stdin_envelope_bytes` limits apply only to
+`synth-stdin.txt`: scrubbed diff, bounded reports and their short fixed headers.
+The separate `synth-prompt.txt`, including the up-to-32 KiB image context, is passed
+through the CLI prompt argument; it is not copied into `synth-stdin.txt`. A runnable
+boundary fixture sends a 128 KiB diff, two 60,000-byte reports and a full 32 KiB
+image context to the fake chair, proving the argument/file separation and successful
+stdin admission at the maxima. This is an IO-boundary test, not a latency benchmark.
 
 Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
 checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports

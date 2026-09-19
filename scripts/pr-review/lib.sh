@@ -9,7 +9,7 @@ import json, sys
 from pathlib import Path
 values = json.loads(Path(sys.argv[1]).read_text())
 if (any(type(value) is not int or value <= 0 for value in values.values())
-        or values["diff_bytes"] + values["panel_bytes"] + values["envelope_bytes"] > values["chair_bytes"]
+        or values["diff_bytes"] + values["panel_bytes"] + values["stdin_envelope_bytes"] > values["chair_stdin_bytes"]
         or 2 * values["report_bytes"] > values["panel_bytes"]):
     raise ValueError("Invalid review budget configuration")
 print(values[sys.argv[2]])

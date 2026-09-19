@@ -14,7 +14,7 @@ LIMITS = json.loads(Path(__file__).with_name("review-limits.json").read_text())
 MAX_LINES = LIMITS["diff_lines"]
 MAX_BYTES = LIMITS["diff_bytes"]
 if (any(type(value) is not int or value <= 0 for value in LIMITS.values())
-        or MAX_BYTES + LIMITS["panel_bytes"] + LIMITS["envelope_bytes"] > LIMITS["chair_bytes"]
+        or MAX_BYTES + LIMITS["panel_bytes"] + LIMITS["stdin_envelope_bytes"] > LIMITS["chair_stdin_bytes"]
         or 2 * LIMITS["report_bytes"] > LIMITS["panel_bytes"]):
     raise ValueError("Invalid review budget configuration")
 

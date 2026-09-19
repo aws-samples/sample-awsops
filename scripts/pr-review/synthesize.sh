@@ -188,7 +188,9 @@ FAIL if any CRITICAL/MAJOR exists or image coverage is unavailable, otherwise PA
 An image coverage failure is an incomplete review, not an application code finding.
 PROMPT_EOF
 
-# stdin payload: diff + panel reviews.
+# stdin payload ONLY: diff + panel reviews + their short headers.
+# synth-prompt.txt (including HEAD_PNG_PROMPT) is passed separately through argv
+# by run_chair. Do not add its bytes to the synth-stdin.txt envelope allocation.
 # The diff is scrubbed too — scrubbing only the panel cells while feeding the diff raw was the
 # biggest hole: this pipeline's own input can be a PR that accidentally committed a credential,
 # and a security-lens review would naturally quote the value while saying "this line hardcodes
@@ -364,10 +366,12 @@ chair_valid() {
 # impossible — see AWS-Demo-Platform PR#195).
 DIFF_BYTES="$(wc -c < "$DIFF")"
 PANEL_BYTES="$(printf '%s\n' "$PANEL" | wc -c)"
-TOTAL_BYTES="$(wc -c < "$WORK/synth-stdin.txt")"
-echo "chair input: diff=${DIFF_BYTES}B, panel=${PANEL_BYTES}B, total=${TOTAL_BYTES}B (cells: $CELL_COUNT, cell cap: ${PANEL_CELL_CAP}B)"
+CHAIR_STDIN_BYTES="$(wc -c < "$WORK/synth-stdin.txt")"
+echo "chair input: diff=${DIFF_BYTES}B, panel=${PANEL_BYTES}B, total=${CHAIR_STDIN_BYTES}B (cells: $CELL_COUNT, cell cap: ${PANEL_CELL_CAP}B)"
 # Bound the actual sanitized payload, including headers, rather than estimating it.
-if [ "$TOTAL_BYTES" -gt "$(review_limit chair_bytes)" ]; then
+CHAIR_STDIN_LIMIT="$(review_limit chair_stdin_bytes)" || { echo "Invalid chair stdin budget" >&2; exit 1; }
+[[ "$CHAIR_STDIN_LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid chair stdin budget" >&2; exit 1; }
+if [ "$CHAIR_STDIN_BYTES" -gt "$CHAIR_STDIN_LIMIT" ]; then
   printf '%s\n' "Chair input exceeds 256 KiB; review incomplete. No chair was called." "VERDICT: FAIL" > "$OUT"
   if [ -n "${GITHUB_ENV:-}" ]; then
     printf '%s\n' "report_invalid=1" "chair_input_failed=1" "chair_failed=0" >> "$GITHUB_ENV"

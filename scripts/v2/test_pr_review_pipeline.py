@@ -188,6 +188,13 @@ class PanelTests(unittest.TestCase):
     def test_attestation_without_substantive_sections_cannot_pass(self):
         valid, _ = self.run_panel(PANEL_HEADING="### **{lens}**: checklist")
         self.assertFalse((valid / "coverage-severe.flag").exists())
+        for heading in ("## {lens} Code correctness", "## **{lens}:** title",
+                        "## {lens} – scope", "## {lens}:", "   ## {lens}"):
+            valid, _ = self.run_panel(PANEL_HEADING=heading)
+            self.assertFalse((valid / "coverage-severe.flag").exists())
+        valid, _ = self.run_panel(
+            PANEL_SECTION_TEXT="    - Checked the complete supplied scope for this checklist and found no blocking issue.")
+        self.assertFalse((valid / "coverage-severe.flag").exists())
         for lens in ("L2", "L3", "L4", "L5"):
             work, _ = self.run_panel(PANEL_OMIT_LENS=lens)
             self.assertTrue((work / "lens-coverage-failed.flag").exists())
@@ -395,6 +402,23 @@ print(tick * int(os.environ['CHAIR_CLOCK_STEP']))
 
 
 class ChairTests(unittest.TestCase):
+    def test_maximum_admitted_stdin_with_full_image_prompt_still_reaches_chair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = "ARGV_ONLY_IMAGE_CONTEXT"
+            context = write_image_context(directory, marker + "x" * (32768 - len(marker)))
+            root, process = self.start_chair(
+                ("valid",), CHAIR_DIFF="x" * (131072 - 1) + "\n",
+                PANEL_FIXTURE_BYTES=60000, HEAD_PNG_CONTEXT=str(context))
+            self.finish_chair(process)
+            stdin = (root / "work/synth-stdin.txt").read_bytes()
+            prompt = (root / "calls/primary-fixture.prompt").read_text()
+            self.assertGreater(len(stdin), 251000)
+            self.assertLessEqual(len(stdin), 262144)
+            self.assertNotIn(marker.encode(), stdin)
+            self.assertIn(marker, prompt)
+            self.assertGreater(len(prompt), 32768)
+            self.assertTrue((root / "work/review.md").read_text().endswith("VERDICT: PASS\n"))
+
     def test_actual_combined_input_bound_prevents_any_chair_call(self):
         root, process = self.start_chair(("valid",), CHAIR_DIFF="x" * 262144)
         self.finish_chair(process)
@@ -423,9 +447,12 @@ class ChairTests(unittest.TestCase):
         cells = [f"{vendor}/{lens}" for vendor in ("codex", "claude") for lens in ("ALL",)]
         (work / "responded.txt").write_text("\n".join(cells) + "\n")
         panel_report = overrides.pop("PANEL_FIXTURE_IMAGE_REPORT", "")
+        panel_bytes = overrides.pop("PANEL_FIXTURE_BYTES", None)
         for cell in cells:
-            (slots / (cell.replace("/", "-") + ".md")).write_text(
-                "".join(f"## {lens}\nChecked the supplied diff for this checklist and found no blocking issue.\n" for lens in ("L2", "L3", "L4", "L5")) + "LENS_COVERAGE: L2,L3,L4,L5\n" + panel_report + "\n")
+            report = "".join(f"## {lens}\nChecked the supplied diff for this checklist and found no blocking issue.\n" for lens in ("L2", "L3", "L4", "L5")) + "LENS_COVERAGE: L2,L3,L4,L5\n" + panel_report + "\n"
+            if panel_bytes:
+                report += "x" * (panel_bytes - len(report) - 1) + "\n"
+            (slots / (cell.replace("/", "-") + ".md")).write_text(report)
         if panel_work is not None:
             shutil.copytree(panel_work, work, dirs_exist_ok=True)
         diff = root / "diff"

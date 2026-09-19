@@ -3,6 +3,6 @@
   "diff_bytes": 131072,
   "report_bytes": 60000,
   "panel_bytes": 120000,
-  "envelope_bytes": 1024,
-  "chair_bytes": 262144
+  "stdin_envelope_bytes": 1024,
+  "chair_stdin_bytes": 262144
 }
