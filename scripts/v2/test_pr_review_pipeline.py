@@ -78,6 +78,7 @@ for key in ('L2','L3','L4','L5'):
     if key != os.environ.get('PANEL_OMIT_LENS'):
         print(os.environ.get('PANEL_HEADING', '## {lens}').format(lens=key))
         print(os.environ.get('PANEL_SECTION_TEXT', 'Checked this checklist against the supplied diff and found no blocking issue.'))
+print(os.environ.get('PANEL_EXTRA_REPORT', ''))
 print(os.environ.get('PANEL_LENS_REPORT', 'LENS_COVERAGE: L2,L3,L4,L5'))
 print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.environ.get('PANEL_IMAGE_REPORT', '')))
 if os.environ.get('OVERSIZE_CELL') == cell:
@@ -195,6 +196,16 @@ class PanelTests(unittest.TestCase):
                      "## Summary\n" + "Unrelated summary text " * 10, "```\n" + "quoted evidence " * 10 + "\n```"):
             work, _ = self.run_panel(PANEL_SECTION_TEXT=body)
             self.assertTrue((work / "lens-coverage-failed.flag").exists())
+
+    def test_repeated_sections_merge_but_incidental_references_do_not_supply_security(self):
+        prose = "Checked the additional scope and found no new blocking issue in the supplied code."
+        valid, _ = self.run_panel(PANEL_EXTRA_REPORT="## L3: continuation\n" + prose)
+        self.assertFalse((valid / "coverage-severe.flag").exists())
+        for heading in ("### L3-related note", "## L2 & L3 shared observations"):
+            valid, _ = self.run_panel(PANEL_EXTRA_REPORT=heading + "\n" + prose)
+            self.assertFalse((valid / "coverage-severe.flag").exists())
+            missing, _ = self.run_panel(PANEL_OMIT_LENS="L3", PANEL_EXTRA_REPORT=heading + "\n" + prose)
+            self.assertTrue((missing / "lens-coverage-failed.flag").exists())
 
     def test_incomplete_panel_diagnostic_publishes_no_model_text(self):
         work, _ = self.run_panel(FAIL_CELL="claude/ALL")

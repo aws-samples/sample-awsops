@@ -96,15 +96,13 @@ def report_lines(text):
 
 
 def complete_lens_sections(text):
-    """Require one substantive, unquoted report section for every checklist."""
+    """Require substantive unquoted content for every checklist; merge continuations."""
     sections, current, depth = {}, None, 0
     for line in report_lines(text):
-        heading = re.fullmatch(r"#{1,6}[ \t]+(?:\*\*)?(L[2-5])(?:\*\*)?(?:[ \t]+.*|[ \t]*[-—:].*)?[ \t]*", line)
+        heading = re.fullmatch(r"#{1,6}[ \t]+(?:\*\*)?(L[2-5])(?:\*\*)?(?:[ \t]*:[ \t]+[^\n]*|[ \t]+[-—][ \t]+[^\n]*)?[ \t]*", line)
         if heading:
             current = heading[1]
-            if current in sections:
-                return False
-            sections[current] = []
+            sections.setdefault(current, [])
             depth = len(line) - len(line.lstrip("#"))
         elif current and re.match(r"#{1,6}[ \t]+", line):
             if len(line) - len(line.lstrip("#")) <= depth:

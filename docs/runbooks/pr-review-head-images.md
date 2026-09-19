@@ -48,8 +48,11 @@ Only a manifest without images, unavailable entries or `omitted_entries` permits
 `IMAGE_COVERAGE: NOT_REQUIRED` or no marker. Any unavailable/omitted entry forces FAIL
 even if models incorrectly declare COMPLETE; successfully staged files are retained.
 Each panel also declares `LENS_COVERAGE: L2,L3,L4,L5` on one plain line and
-provides exactly one section headed `## L2`, `## L3`, `## L4`, and `## L5`.
-Each section needs at least 40 non-whitespace characters and six words of substantive, unquoted
+provides sections headed `## L2`, `## L3`, `## L4`, and `## L5`.
+Heading levels 1–6, bold IDs, and descriptions following a colon or spaced dash
+are accepted. Repeated sections are combined by checklist rather than rejecting
+completed reports. Incidental `L3-related` or combined `L2 & L3` reference titles
+do not substitute for a checklist section. Each checklist needs, in aggregate, at least 40 non-whitespace characters and six words of substantive, unquoted
 prose describing checks/findings or the rationale for no findings. Fenced examples,
 coverage declarations and headings do not satisfy that body requirement. Missing
 security L3, empty placeholders or a marker-only response cannot pass.
