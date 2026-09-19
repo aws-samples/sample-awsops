@@ -111,7 +111,7 @@ class HeadImageTests(unittest.TestCase):
         renamed = next(e for e in result["images"] if e["path"].endswith("renamed image.png"))
         self.assertEqual(renamed["old_path"], "docs/image.png")
 
-    def test_git_staged_manifest_reaches_all_eight_cells_and_chair(self):
+    def test_git_staged_manifest_reaches_both_reviewers_and_chair(self):
         self.write("docs/image.png", png())
         head = self.head()
         result = self.stage(head)
@@ -127,7 +127,7 @@ class HeadImageTests(unittest.TestCase):
         chair.finish_chair(process)
         prompts = [p.read_text() for p in calls.glob("*.prompt")]
         prompts.append((root / "calls/primary-fixture.prompt").read_text())
-        self.assertEqual(len(prompts), 9)
+        self.assertEqual(len(prompts), 3)
         for prompt in prompts:
             self.assertIn(head, prompt)
             self.assertIn(result["images"][0]["sha256"], prompt)
@@ -135,7 +135,7 @@ class HeadImageTests(unittest.TestCase):
             self.assertIn("untrusted DATA", prompt)
             self.assertIn("IMAGE COVERAGE FAILURE", prompt)
         for vendor in ("codex", "claude"):
-            for lens in ("L2", "L3", "L4", "L5"):
+            for lens in ("ALL",):
                 images = json.loads((calls / f"{vendor}-{lens}.images.json").read_text())
                 self.assertEqual(images, [{"path": str(self.out / result["images"][0]["file"]),
                                            "sha256": result["images"][0]["sha256"]}] if vendor == "codex" else [])
@@ -255,8 +255,8 @@ class HeadImageTests(unittest.TestCase):
         self.assertLess(workflow.index("name: Stage changed HEAD PNG evidence"),
                         workflow.index("name: Configure fresh AWS credentials before panel review"))
         self.assertIn('"$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py"', workflow)
-        self.assertEqual(workflow.count("HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}"), 2)
-        self.assertIn("MAX_LINES=3000", workflow)
+        self.assertEqual(workflow.count("HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}"), 3)
+        self.assertIn('scripts/pr-review/input_scope.py /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT"', workflow)
         self.assertIn('git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"', workflow)
         self.assertIn("name: Remove current-run HEAD image evidence", workflow)
 

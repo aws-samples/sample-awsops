@@ -282,10 +282,24 @@ secrets-manager) — installed by `make deps`.
   dependencies for the disposable fixture. Merge Verify runs it alongside all migration cases.
 - `v2/upgrade.sh` — `make upgrade`: RDS snapshot → migrate → deploy. Previews unless
   `CONFIRM=go`.
-- `pr-review/` — lens×model review panel: `run-panel.sh` (parallel fan-out, one `*.txt` prompt
-  per lens), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
+- `pr-review/` — two-vendor review panel: `run-panel.sh` (two parallel comprehensive reports,
+  each combining all four checklist prompts), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
   `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
   its source contract and offline test entry are listed above.
+  Python review helpers use isolated mode (`-I`), excluding application-CWD and
+  PYTHONPATH module shadowing while model-phase credentials are active.
+  `review-limits.json` binds raw/scrubbed diff, report and chair-stdin budgets.
+  `chair_stdin_bytes` measures only synth-stdin.txt (diff + reports + short headers);
+  synth-prompt.txt/image-context text is a separate CLI argument. The max-budget
+  fixture verifies that distinction; do not add argument bytes to a stdin-only limit.
+  `report-panel-failure.sh` publishes fixed diagnostics and unadjudicated severity-keyword presence booleans with
+  named missing vendors and separate lens/image/report diagnostics, never approval.
+  `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
+  complete hash-valid image evidence before model credentials; no partial review.
+  Both panel reports require substantive sections for every L2–L5 checklist, including
+  security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
+  skips chair calls; report truncation cannot approve unseen findings. Oversized
+  promotion diffs still need a separately reviewed complete-batching/reuse design.
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `image-formats.json` selects detected extensions and the approved codec for both staging
   and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.
@@ -297,7 +311,7 @@ secrets-manager) — installed by `make deps`.
   Codex receives hash-checked `--image` attachments; Claude Read uses the same generated files.
   BASE pixels are historical, never replacement evidence for changed HEAD images.
   `image_coverage.py` validates bounded full reports before truncation/verdict: each of
-  eight cells plus chair must declare plain `IMAGE_COVERAGE: COMPLETE` when images
+  both vendor reports plus chair must declare plain `IMAGE_COVERAGE: COMPLETE` when images
   are staged. Explicit failure always blocks; quoted/fenced/prose examples do not count.
   Missing/unsupported required image evidence fails coverage; no finding suppression,
   HEAD execution or added permissions. See `docs/runbooks/pr-review-head-images.md`.

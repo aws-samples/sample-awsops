@@ -58,6 +58,31 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    assumes the deployer role under an S3/KMS-only session policy. Main publication
    waits for production approval; the separate automatic plan job remains read-only.
 
+## Oversized promotion review
+
+The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
+and up to 32 supported HEAD images under the existing byte/codec bounds. An
+accumulated dev-to-main promotion can exceed these bounds even if each feature PR
+was independently reviewed. It stays blocked; rerunning unchanged input cannot
+restore missing scope, and historical feature-review comments are not proof of
+complete review of the current promotion HEAD.
+
+For the `samples` repository, **dev is the default branch**. Verify the live setting
+with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before rollout.
+An ordinary reviewed PR merged into dev therefore updates the trusted workflow for
+subsequent reviews, including main-targeted promotions; the workflow need not reach
+main first. Do not assume this activation path for another repository whose default
+branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
+must authorize the workflow change under the existing protections.
+
+Before continuing such a promotion, implement and review complete bounded batching
+or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
+exists yet. The same protected workflow must then review the full promotion scope
+and integration changes on its current HEAD. Do not bypass required checks, alter
+main to hide changes, or publish the release tag while this prerequisite is pending.
+Smaller promotion intervals can prevent future accumulation, but cannot repair the
+already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).
+
 ## Version and tag on main promotion
 
 Here `samples` means the Git remote for `aws-samples/sample-awsops`; verify its URL

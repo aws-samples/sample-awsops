@@ -2,6 +2,20 @@
 # 공용 헬퍼: 슬롯 디렉터리, 스킵 로깅, 크리덴셜 스크럽.
 set -uo pipefail
 
+# One trusted budget file serves admission, panel and chair checks.
+review_limit() {
+  python3 -I - "$(dirname -- "${BASH_SOURCE[0]}")/review-limits.json" "$1" <<'PYLIMIT'
+import json, sys
+from pathlib import Path
+values = json.loads(Path(sys.argv[1]).read_text())
+if (any(type(value) is not int or value <= 0 for value in values.values())
+        or values["diff_bytes"] + values["panel_bytes"] + values["stdin_envelope_bytes"] > values["chair_stdin_bytes"]
+        or 2 * values["report_bytes"] > values["panel_bytes"]):
+    raise ValueError("Invalid review budget configuration")
+print(values[sys.argv[2]])
+PYLIMIT
+}
+
 # Read bounded trusted-stager context, never a script or a HEAD-selected file path.
 head_png_context() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then
@@ -10,26 +24,26 @@ head_png_context() {
     echo "Do not quote or fence your outcome. With no required images, the marker is optional."
     return 0
   fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
 }
 
 head_png_required() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
 }
 
 head_png_unavailable() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
 }
 
 head_png_attachments() {
   [ -n "${HEAD_PNG_CONTEXT:-}" ] || return 0
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
 }
 
 image_coverage_valid() {
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
 }
 
 mark_image_coverage_failure() {
@@ -50,6 +64,26 @@ check_review_report() {
     echo "[review output unavailable] $(basename "$1")" >&2
     return 1
   fi
+  if [ "${3:-}" = panel ] && ! python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
+    : > "$WORK/lens-coverage-failed.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review incomplete] required lens coverage missing" >&2
+  fi
+  if [ "${3:-}" = panel ]; then
+    local panel_cap size_file="$WORK/$(basename "$1").size.tmp"
+    if ! panel_cap="$(review_limit report_bytes)" || [[ ! "$panel_cap" =~ ^[1-9][0-9]*$ ]]; then
+      : > "$WORK/report-invalid.flag"; : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] invalid report budget configuration" >&2
+      return 1
+    fi
+    strip_controls < "$1" | scrub_secrets > "$size_file"
+    if [ "$(wc -c < "$size_file")" -gt "$panel_cap" ]; then
+      : > "$WORK/report-invalid.flag"
+      : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] comprehensive report exceeds its byte allocation" >&2
+    fi
+    rm -f "$size_file"
+  fi
   return 0
 }
 
@@ -65,14 +99,14 @@ refresh_panel_presence() {
   rm -f "$WORK/coverage-severe.flag"
   for model in codex claude; do
     count=0
-    for lens in L2 L3 L4 L5; do
+    for lens in ALL; do
       if [ -s "$WORK/slot/$model-$lens.md" ]; then
         echo "$model/$lens" >> "$WORK/responded.txt"; count=$((count+1))
       fi
     done
     [ "$count" -gt 0 ] || echo "$model" >> "$WORK/degraded-models.txt"
   done
-  for lens in L2 L3 L4 L5; do
+  for lens in ALL; do
     if [ ! -s "$WORK/slot/codex-$lens.md" ] || [ ! -s "$WORK/slot/claude-$lens.md" ]; then
       echo "$lens" >> "$WORK/degraded-lenses.txt"; : > "$WORK/coverage-severe.flag"
     fi
@@ -100,7 +134,7 @@ record_result() {
   if [ -s "$slot" ]; then
     echo "$label" >> "$responded"
     [ "${HEAD_PNG_UNAVAILABLE:-0}" = "0" ] || mark_image_coverage_failure "$label"
-    if check_review_report "$slot"; then
+    if check_review_report "$slot" "${HEAD_PNG_REQUIRED:-0}" panel; then
       echo "[preview] $label: $(strip_controls < "$slot" | scrub_secrets | head -c 200 | tr '\n' ' ')" >&2
     fi
   else

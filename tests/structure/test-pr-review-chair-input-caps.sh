@@ -1,5 +1,5 @@
 #!/bin/bash
-# Guard: chair input must stay bounded even as the lens×model matrix grows, and a chair
+# Guard: two comprehensive reviews must fit the shared input budgets, and a chair
 # failure (primary+fallback both timeout/error) must leave a diagnosable trail instead of a
 # silent 151-byte "review generation failed" (found via failed-run audit of
 # Atom-oh/awsops#199 sibling runs — chair Fable 5 hit its 600s cap on a normal-size PR because
@@ -29,14 +29,16 @@ mkdir -p "$WORK/slot"
 echo "diff --git a/foo b/foo" > "$DIFF"
 : > "$WORK/responded.txt"
 i=0
-while [ "$i" -lt 12 ]; do
+while [ "$i" -lt 2 ]; do
   {
     printf '\033[38;5;141m> \033[0mfindings\033[0m\n'
     printf 'split credential: %s\033[31m%s\n' "$AWS_KEY_LEFT" "$AWS_KEY_RIGHT"
     printf '\033]0;osc-bel\007OSC-BEL\n'
     printf '\033]0;osc-st\033\\OSC-ST\n'
     printf '\033(BCHARSET\rSPINNER\n'
-    head -c 25000 /dev/zero | tr '\0' 'x'
+    for lens in L2 L3 L4 L5; do printf '## %s\nChecked this checklist against the supplied diff and found no blocking issue.\n' "$lens"; done
+    printf 'LENS_COVERAGE: L2,L3,L4,L5\n'
+    head -c 50000 /dev/zero | tr '\0' 'x'
   } \
     > "$WORK/slot/model$i-L2.md"
   echo "model$i/L2" >> "$WORK/responded.txt"
@@ -63,20 +65,20 @@ PATH="$BIN:$PATH" STDIN_SIZE_FILE="$STDIN_SIZE_FILE" \
   > "$WORK/synth.log" 2>&1
 
 if grep -q "Argument list too long" "$WORK/synth.log"; then
-  fail "12-cell x 25KB panel does not overflow argv (chair reads via stdin)"
+  fail "two-reviewer x 50KB panel does not overflow argv (chair reads via stdin)"
 else
-  pass "12-cell x 25KB panel does not overflow argv (chair reads via stdin)"
+  pass "two-reviewer x 50KB panel does not overflow argv (chair reads via stdin)"
 fi
 
 if [ -s "$WORK/stdin-size.txt" ]; then
   STDIN_BYTES="$(cat "$WORK/stdin-size.txt")"
-  if [ "$STDIN_BYTES" -gt 0 ] && [ "$STDIN_BYTES" -lt 210000 ]; then
-    pass "panel bundle respects total cap (~200KB, was 400KB uncapped)"
+  if [ "$STDIN_BYTES" -gt 0 ] && [ "$STDIN_BYTES" -lt 125000 ]; then
+    pass "panel bundle respects total cap (120KB maximum)"
   else
-    fail "panel bundle respects total cap (~200KB, was 400KB uncapped): stdin was ${STDIN_BYTES}B"
+    fail "panel bundle respects total cap (120KB maximum): stdin was ${STDIN_BYTES}B"
   fi
 else
-  fail "panel bundle respects total cap (~200KB, was 400KB uncapped): stdin size file missing"
+  fail "panel bundle respects total cap (120KB maximum): stdin size file missing"
 fi
 
 if [ -s "$WORK/synth-stdin.txt" ] && LC_ALL=C grep -q "$(printf '\033')\[" "$WORK/synth-stdin.txt"; then
@@ -130,7 +132,7 @@ i=0
 while [ "$i" -lt 12 ]; do
   : > "$WORK2/slot/model$i-L2.md"
   if [ "$i" -lt 4 ]; then
-    head -c 25000 /dev/zero | tr '\0' 'y' > "$WORK2/slot/model$i-L2.md"
+    { for lens in L2 L3 L4 L5; do printf '## %s\nChecked this checklist against the supplied diff and found no blocking issue.\n' "$lens"; done; printf 'LENS_COVERAGE: L2,L3,L4,L5\n'; head -c 25000 /dev/zero | tr '\0' 'y'; } > "$WORK2/slot/model$i-L2.md"
     echo "model$i/L2" >> "$WORK2/responded.txt"
   fi
   i=$((i + 1))
@@ -142,14 +144,18 @@ PATH="$BIN:$PATH" STDIN_SIZE_FILE="$STDIN_SIZE_FILE" \
   bash "$SCRIPT" "$DIFF" "$WORK2" 1 "degraded panel" "$WORK2/review.md" \
   > "$WORK2/synth.log" 2>&1
 
-if [ -s "$STDIN_SIZE_FILE" ] \
-  && [ "$(cat "$STDIN_SIZE_FILE")" -gt 75000 ] \
-  && [ "$(cat "$STDIN_SIZE_FILE")" -lt 90000 ] \
+if [ -s "$WORK2/synth-stdin.txt" ] \
+  && [ "$(wc -c < "$WORK2/synth-stdin.txt")" -gt 75000 ] \
+  && [ "$(wc -c < "$WORK2/synth-stdin.txt")" -lt 90000 ] \
   && grep -q "cells: 4" "$WORK2/synth.log"; then
   pass "fair cap denominator counts only non-empty panel cells"
 else
   fail "fair cap denominator counts only non-empty panel cells"
 fi
+
+grep -q "VERDICT: FAIL" "$WORK2/review.md" \
+  && pass "truncated surviving reports cannot produce PASS" \
+  || fail "truncated surviving reports cannot produce PASS"
 
 # Third scenario: primary + fallback both fail — must be diagnosable without leaking stderr.
 WORK3=$(mktemp -d); mkdir -p "$WORK3/slot"; : > "$WORK3/responded.txt"

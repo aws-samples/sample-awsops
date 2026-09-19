@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate bounded reviewer image-coverage declarations, independently of verdicts."""
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 import os
@@ -77,38 +78,117 @@ def attachment_paths(context):
     return paths
 
 
-def validate_report(text, required):
+def report_lines(text):
+    """Shared normalized visible lines, excluding fences and HTML comments."""
     # Same terminal controls stripped before public synthesis; only LF creates lines.
     text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Z]", "", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
-    signals, fence = [], None
+    fence, comment = None, False
     for line in text.split("\n"):
         if fence:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
                 fence = None
             continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})", line) if not comment else None
+        if opening:
+            fence = (opening[1][0], len(opening[1]))
+            continue
+        tick_positions = {}
+        for run in re.finditer(r"`+", line):
+            tick_positions.setdefault(run.end() - run.start(), []).append(run.start())
+        visible, index, slashes = [], 0, 0
+        while index < len(line):
+            if comment:
+                end = line.find("-->", index)
+                if end < 0:
+                    break
+                comment, index, slashes = False, end + 3, 0
+                continue
+            escaped = slashes % 2 == 1
+            if not escaped and line.startswith("<!--", index):
+                comment, index, slashes = True, index + 4, 0
+                continue
+            if not escaped and line[index] == "`":
+                end = index + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                width = end - index
+                positions = tick_positions.get(width, [])
+                closing = bisect_right(positions, index)
+                stop = positions[closing] + width if closing < len(positions) else end
+                visible.append(line[index:stop])
+                index, slashes = stop, 0
+                continue
+            visible.append(line[index])
+            slashes = slashes + 1 if line[index] == "\\" else 0
+            index += 1
+        line = "".join(visible)
         opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if opening:
             fence = (opening[1][0], len(opening[1]))
             continue
+        yield line
+
+
+def complete_lens_sections(text):
+    """Require substantive unquoted content for every checklist; merge continuations."""
+    sections, current, depth = {}, None, 0
+    for line in report_lines(text):
+        heading = re.fullmatch(r" {0,3}(#{1,6})[ \t]+(?:\*\*)?(L[2-5])\b(.*)", line, re.IGNORECASE)
+        if heading:
+            suffix = heading[3].replace("**", "")
+            # Topic references are not replacement sections for a missing checklist.
+            if (re.match(r"[-–—]related\b", suffix, re.IGNORECASE)
+                    or re.match(r"[ \t]*(?:&|/|,|and)[ \t]*L[2-5]\b", suffix, re.IGNORECASE)):
+                heading = None
+        if heading:
+            current = heading[2].upper()
+            sections.setdefault(current, [])
+            depth = len(heading[1])
+        else:
+            other_heading = re.match(r" {0,3}(#{1,6})[ \t]+", line)
+            if current and other_heading:
+                if len(other_heading[1]) <= depth:
+                    current = None
+            elif current and not re.match(r"^[ \t]*(?:>|LENS_COVERAGE:|IMAGE_COVERAGE:)", line):
+                plain = re.sub(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?", "", line).strip(" *`._:")
+                if not re.fullmatch(r"n/?a|none|not applicable|todo|tbd|no (?:blocking )?(?:issues?|findings?|changes?)(?: found)?", plain, re.IGNORECASE):
+                    sections[current].append(line)
+    bodies = [" ".join(lines) for lines in sections.values()]
+    return (set(sections) == {"L2", "L3", "L4", "L5"}
+            and all(len(re.sub(r"\s", "", body)) >= 40
+                    and len(set(word.casefold() for word in re.findall(r"[^\W\d_]{2,}", body))) >= 6 for body in bodies))
+
+
+def validate_report(text, required, lens=False):
+    prefix = "LENS_COVERAGE:" if lens else "IMAGE_COVERAGE:"
+    complete = "L2,L3,L4,L5" if lens else "COMPLETE"
+    signals = []
+    for line in report_lines(text):
         # Reserved prefixes declare outcomes. Decoration cannot turn failure into prose.
-        candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=IMAGE[_ ])", "", line)
-        if candidate.startswith("IMAGE COVERAGE FAILURE"):
+        candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=(?:IMAGE[_ ]|LENS_))", "", line)
+        if not lens and candidate.startswith("IMAGE COVERAGE FAILURE"):
             return False
-        if candidate.startswith("IMAGE_COVERAGE:"):
-            match = re.fullmatch(r"IMAGE_COVERAGE:[ \t]*(COMPLETE|FAILED|NOT_REQUIRED)[ \t]*", line)
-            if not match:
-                return False
-            signals.append(match[1])
+        if candidate.startswith(prefix):
+            if lens:
+                match = re.fullmatch(r"LENS_COVERAGE:[ \t]*(L[2-5](?:[ \t]*,[ \t]*L[2-5]){3})[ \t]*", line)
+                if not match or set(re.split(r"[ \t]*,[ \t]*", match[1])) != {"L2", "L3", "L4", "L5"}:
+                    return False
+                signals.append(complete)
+            else:
+                match = re.fullmatch(re.escape(prefix) + r"[ \t]*(COMPLETE|FAILED|NOT_REQUIRED)[ \t]*", line)
+                if not match:
+                    return False
+                signals.append(match[1])
     # Duplicate/contradictory declarations cannot override an earlier failure.
     if len(signals) > 1 or "FAILED" in signals:
         return False
-    return signals == ["COMPLETE"] if required else True
+    return (signals == [complete] and (not lens or complete_lens_sections(text))) if required else True
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("required", "unavailable", "attachments", "report"))
+    parser.add_argument("mode", choices=("required", "unavailable", "attachments", "report", "lenses"))
     parser.add_argument("path")
     parser.add_argument("required", nargs="?", choices=("0", "1"), default="0")
     args = parser.parse_args()
@@ -123,13 +203,13 @@ def main():
             paths = attachment_paths(args.path)
             sys.stdout.buffer.write(b"".join(os.fsencode(path) + b"\0" for path in paths))
             return 0
-        if validate_report(read_data(args.path, REPORT_LIMIT), args.required == "1"):
+        if validate_report(read_data(args.path, REPORT_LIMIT), args.required == "1" or args.mode == "lenses", lens=args.mode == "lenses"):
             return 0
     except (OSError, ValueError, UnicodeError):
-        if args.mode == "report":
+        if args.mode in ("report", "lenses"):
             print("Review output unavailable: invalid encoding, type, size or read.", file=sys.stderr)
             return 2
-    print("Image coverage unavailable: missing, invalid, failed or unreadable declaration/evidence.", file=sys.stderr)
+    print("Review coverage unavailable: missing, invalid, failed or unreadable declaration/evidence.", file=sys.stderr)
     return 1
 
 
