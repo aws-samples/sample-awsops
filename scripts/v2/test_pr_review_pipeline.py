@@ -175,15 +175,16 @@ class PanelTests(unittest.TestCase):
 
     def test_incomplete_panel_diagnostic_retains_surviving_findings_and_scrubs(self):
         work, _ = self.run_panel(FAIL_CELL="claude/ALL")
-        secret = "AKIA" + "1234567890ABCDEF"
+        # Fixed, nonfunctional sentinel used only to verify output redaction.
+        sentinel = "AKIA" + "1234567890ABCDEF"
         (work / "slot/codex-ALL.md").write_text(
-            "MAJOR: surviving finding\n" + secret + "\nVERDICT: PASS\n")
+            "MAJOR: surviving finding\n" + sentinel + "\nVERDICT: PASS\n")
         output = work / "diagnostic.md"
         subprocess.run(["bash", str(ROOT / "scripts/pr-review/report-panel-failure.sh"),
                         str(work), str(output)], check=True)
         text = output.read_text()
         self.assertIn("> MAJOR: surviving finding", text)
-        self.assertNotIn(secret, text)
+        self.assertNotIn(sentinel, text)
         self.assertIn("[REDACTED-AWS-KEY]", text)
         self.assertIn("> VERDICT: PASS", text)
         self.assertTrue(text.endswith("VERDICT: FAIL\n"))
