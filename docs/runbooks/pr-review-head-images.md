@@ -103,6 +103,10 @@ limits, prompt propagation and missing-evidence failures.
 | Decode attempts / staged files | 32; deletions do not consume slots |
 | One source or rendered file | 8 MiB |
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
+| Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB |
+| Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
+| Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
+| Actual sanitized chair stdin | 256 KiB; refused before invocation |
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
 | One Git subprocess / prompt context | 30 seconds / 32 KiB |
@@ -246,3 +250,10 @@ See [the diagnostic contract](review-image-capability.md) for its fixed proof fi
 - [Protected review recovery](dev-repo-setup.md)
 
 ADR-005 product posture is unchanged; this CI evidence path enables no AWS mutation.
+
+Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
+checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
+before marking the panel ready. Limits may be reduced for tests but not raised by
+chair environment overrides. `input_scope.py` performs admission;
+`report-panel-failure.sh` publishes bounded unadjudicated observations with named
+missing reviewers and separate checklist, image and report-size diagnoses.

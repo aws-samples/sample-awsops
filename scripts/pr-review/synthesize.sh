@@ -31,13 +31,16 @@ RESP="$(tr '\n' ',' < "$WORK/responded.txt" 2>/dev/null | sed 's/,$//')" || true
 # using that tag.
 # Per-cell byte cap (belt-and-braces) — keeps chair input bounded even after the matrix grew
 # from 4 to 16 outputs (so one runaway cell doesn't dominate chair context/processing time).
-PANEL_CELL_CAP="${PANEL_CELL_CAP:-60000}"
+PANEL_CELL_CAP="${PANEL_CELL_CAP:-$(review_limit report_bytes)}"
 # Total cap — a per-cell cap alone lets the total grow in lockstep with cell count (4->16...),
 # so chair input could grow unbounded (actually reproduced on AWS-Demo-Platform PR#195: 16
 # healthy cells + a normal-sized diff, yet the chair still hit the 600s timeout — root cause
 # was input size). Divide by cell count so the effective cap stays min'd against the total
 # ceiling (default 120KB) as well as the per-cell cap.
-CHAIR_PANEL_TOTAL_CAP="${CHAIR_PANEL_TOTAL_CAP:-120000}"
+CHAIR_PANEL_TOTAL_CAP="${CHAIR_PANEL_TOTAL_CAP:-$(review_limit panel_bytes)}"
+[[ "$PANEL_CELL_CAP" =~ ^[1-9][0-9]*$ && "$CHAIR_PANEL_TOTAL_CAP" =~ ^[1-9][0-9]*$ ]] || exit 1
+[ "$PANEL_CELL_CAP" -le "$(review_limit report_bytes)" ] || exit 1
+[ "$CHAIR_PANEL_TOTAL_CAP" -le "$(review_limit panel_bytes)" ] || exit 1
 CELL_COUNT=0
 for f in "$SLOT"/*.md; do
   [ -s "$f" ] || continue
@@ -166,8 +169,10 @@ reconcile it with additions/removals in the complete patch, and cite a concrete
 failure trigger in the resulting code. BASE alone cannot disprove a new definition.
 The live DB schema = the frozen data/schema.sql baseline PLUS migrations/*.sql
 (applied via make migrate). A column absent from schema.sql is NOT a defect if migrations/ adds
-it. Exclude any "missing" claim you cannot reproduce against base from the gate, and record it
-only as "unverified against base."
+it. Judge missing-definition claims against the resulting code (BASE plus the complete patch),
+never BASE alone. Record a claim as unverified only when that resulting-code claim cannot be substantiated.
+Policy violations such as frozen mutation, missing IAM scoping or leaked secrets remain blocking
+based on the violated rule, without requiring a runtime failure trigger.
 Project rules (awsops — AWS+Kubernetes ops dashboard, Next.js/TS + Python + Terraform/CDK, per-lens checklist):
 - L2 (code correctness): real logic bugs / edge cases in the TS/React frontend + Python API.
 - L3 (security/AWS mutation safety): read-only guarantee for AWS-mutating operations (see ADR-005 "AWS mutation autonomy frozen" — breaking this boundary is CRITICAL), IAM least privilege, no hardcoded secrets.
@@ -362,10 +367,23 @@ PANEL_BYTES="$(printf '%s\n' "$PANEL" | wc -c)"
 TOTAL_BYTES="$(wc -c < "$WORK/synth-stdin.txt")"
 echo "chair input: diff=${DIFF_BYTES}B, panel=${PANEL_BYTES}B, total=${TOTAL_BYTES}B (cells: $CELL_COUNT, cell cap: ${PANEL_CELL_CAP}B)"
 # Bound the actual sanitized payload, including headers, rather than estimating it.
-if [ "$TOTAL_BYTES" -gt 262144 ]; then
+if [ "$TOTAL_BYTES" -gt "$(review_limit chair_bytes)" ]; then
   printf '%s\n' "Chair input exceeds 256 KiB; review incomplete. No chair was called." "VERDICT: FAIL" > "$OUT"
   if [ -n "${GITHUB_ENV:-}" ]; then
     printf '%s\n' "report_invalid=1" "chair_input_failed=1" "chair_failed=0" >> "$GITHUB_ENV"
+  fi
+  exit 0
+fi
+
+# Unusable/oversized reports prevent paid synthesis, including reduced caps.
+# Workflow callers already skip this script for any other panel coverage failure.
+if [ -f "$WORK/report-invalid.flag" ]; then
+  bash "$DIR/report-panel-failure.sh" "$WORK" "$OUT"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "panel_incomplete=1" >> "$GITHUB_ENV"
+    [ ! -f "$WORK/image-coverage-failed.flag" ] || echo "image_coverage_failed=1" >> "$GITHUB_ENV"
+    [ ! -f "$WORK/report-invalid.flag" ] || echo "report_invalid=1" >> "$GITHUB_ENV"
+    echo "chair_failed=0" >> "$GITHUB_ENV"
   fi
   exit 0
 fi

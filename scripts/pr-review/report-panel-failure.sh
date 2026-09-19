@@ -7,11 +7,20 @@ DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 umask 077
 {
   echo "Panel review incomplete; no code verdict is available. Chair was not called."
-  for flag in degraded-models.txt lens-coverage-failed.flag image-coverage-failed.flag report-invalid.flag; do
-    if [ -e "$WORK/$flag" ] && { [[ "$flag" == *.flag ]] || [ -s "$WORK/$flag" ]; }; then
-      printf '\nMissing or invalid evidence: `%s`.\n' "$flag"
+  for model in codex claude; do
+    if [ ! -s "$WORK/slot/$model-ALL.md" ]; then
+      printf '\n%s: no completed reviewer response.\n' "$model"
     fi
   done
+  if [ -f "$WORK/lens-coverage-failed.flag" ]; then
+    echo "Required checklist coverage is missing or invalid."
+  fi
+  if [ -f "$WORK/image-coverage-failed.flag" ]; then
+    echo "Required image coverage is incomplete or unavailable."
+  fi
+  if [ -f "$WORK/report-invalid.flag" ]; then
+    echo "Review output is unreadable or exceeds its byte allocation."
+  fi
   for model in codex claude; do
     report="$WORK/slot/$model-ALL.md"
     [ -s "$report" ] || continue

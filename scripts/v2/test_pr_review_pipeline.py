@@ -77,7 +77,7 @@ print(json.loads(os.environ.get('PANEL_IMAGE_REPORTS', '{}')).get(cell, os.envir
 if os.environ.get('OVERSIZE_CELL') == cell:
     print('x' * (1024 * 1024))
 if os.environ.get('LATE_IMAGE_FAILURE_CELL') == cell:
-    print('Review context.\\n' * 2000)
+    print('Review context.\\n' * 5000)
     print('IMAGE_COVERAGE: FAILED')
 if os.environ.get('INVALID_UTF8_CELL') == cell:
     sys.stdout.flush()
@@ -606,9 +606,10 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
 
     def test_failure_beyond_chair_cell_truncation_is_not_hidden(self):
         work, root = self.review(LATE_IMAGE_FAILURE_CELL="codex/ALL")
-        self.assertGreater((work / "slot/codex-ALL.md").stat().st_size, 20000)
+        self.assertGreater((work / "slot/codex-ALL.md").stat().st_size, 60000)
         self.assertIn("codex/ALL", (work / "responded.txt").read_text())
-        self.assertIn("VERDICT: FAIL", (root / "work/review.md").read_text())
+        self.assert_blocked(root)
+        self.assertFalse((root / "calls/primary-fixture.prompt").exists())
         self.assertTrue((work / "image-coverage-failed.flag").exists())
 
     def test_decorated_failure_cannot_be_overridden_by_complete(self):
@@ -868,7 +869,7 @@ class InputAdmissionTests(unittest.TestCase):
     def test_complete_diff_and_empty_image_manifest_are_admitted(self):
         self.assertEqual(self.admission(b"diff-data\n")["ready"], "true")
         self.assertEqual(self.admission(b"x\n" * 6000)["ready"], "true")
-        self.assertEqual(self.admission(b"x" * (128 * 1024))["ready"], "true")
+        self.assertEqual(self.admission(b"x" * (128 * 1024 - 1) + b"\n")["ready"], "true")
 
     def test_size_line_encoding_source_and_image_gaps_all_block(self):
         for data, options in (
@@ -878,6 +879,14 @@ class InputAdmissionTests(unittest.TestCase):
         ):
             with self.subTest(options=options, size=len(data)):
                 self.assertEqual(self.admission(data, **options)["ready"], "false")
+
+    def test_redaction_expansion_is_reserved_before_models_run(self):
+        # Nonfunctional eight-character fixture: redaction increases its length.
+        data = b'password="abcdefgh";' * 6000
+        self.assertLess(len(data), 131072)
+        result = self.admission(data)
+        self.assertEqual(result["ready"], "false")
+        self.assertIn("sanitized diff", result["reason"])
 
     def test_admission_failure_replaces_stale_pass_with_input_diagnostic(self):
         workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()

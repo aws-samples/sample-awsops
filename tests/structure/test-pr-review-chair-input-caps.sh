@@ -1,5 +1,5 @@
 #!/bin/bash
-# Guard: chair input must stay bounded even as the lens×model matrix grows, and a chair
+# Guard: two comprehensive reviews must fit the shared input budgets, and a chair
 # failure (primary+fallback both timeout/error) must leave a diagnosable trail instead of a
 # silent 151-byte "review generation failed" (found via failed-run audit of
 # Atom-oh/awsops#199 sibling runs — chair Fable 5 hit its 600s cap on a normal-size PR because
@@ -143,9 +143,9 @@ PATH="$BIN:$PATH" STDIN_SIZE_FILE="$STDIN_SIZE_FILE" \
   bash "$SCRIPT" "$DIFF" "$WORK2" 1 "degraded panel" "$WORK2/review.md" \
   > "$WORK2/synth.log" 2>&1
 
-if [ -s "$STDIN_SIZE_FILE" ] \
-  && [ "$(cat "$STDIN_SIZE_FILE")" -gt 75000 ] \
-  && [ "$(cat "$STDIN_SIZE_FILE")" -lt 90000 ] \
+if [ -s "$WORK2/synth-stdin.txt" ] \
+  && [ "$(wc -c < "$WORK2/synth-stdin.txt")" -gt 75000 ] \
+  && [ "$(wc -c < "$WORK2/synth-stdin.txt")" -lt 90000 ] \
   && grep -q "cells: 4" "$WORK2/synth.log"; then
   pass "fair cap denominator counts only non-empty panel cells"
 else

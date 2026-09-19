@@ -67,6 +67,14 @@ was independently reviewed. It stays blocked; rerunning unchanged input cannot
 restore missing scope, and historical feature-review comments are not proof of
 complete review of the current promotion HEAD.
 
+For the `samples` repository, **dev is the default branch**. Verify the live setting
+with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before rollout.
+An ordinary reviewed PR merged into dev therefore updates the trusted workflow for
+subsequent reviews, including main-targeted promotions; the workflow need not reach
+main first. Do not assume this activation path for another repository whose default
+branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
+must authorize the workflow change under the existing protections.
+
 Before continuing such a promotion, implement and review complete bounded batching
 or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
 exists yet. The same protected workflow must then review the full promotion scope

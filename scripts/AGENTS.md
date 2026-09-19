@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 30a31cba5d5f · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9e6c68436618 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -23,6 +23,9 @@ All panel lenses and chair share safe labels and read-only generated paths; exac
 names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
 BASE pixels are historical. Required unavailable images fail coverage, never suppress
 findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
+`review-limits.json` ties the raw/scrubbed diff, report and chair allocations.
+`report-panel-failure.sh` retains bounded scrubbed observations, names missing vendors
+and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
 Two independent Codex/Claude reports each cover all four checklists and must declare

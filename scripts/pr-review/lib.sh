@@ -2,6 +2,18 @@
 # 공용 헬퍼: 슬롯 디렉터리, 스킵 로깅, 크리덴셜 스크럽.
 set -uo pipefail
 
+# One trusted budget file serves admission, panel and chair checks.
+review_limit() {
+  python3 - "$(dirname -- "${BASH_SOURCE[0]}")/review-limits.json" "$1" <<'PYLIMIT'
+import json, sys
+from pathlib import Path
+values = json.loads(Path(sys.argv[1]).read_text())
+assert values["diff_bytes"] + values["panel_bytes"] + values["envelope_bytes"] <= values["chair_bytes"]
+assert 2 * values["report_bytes"] <= values["panel_bytes"]
+print(values[sys.argv[2]])
+PYLIMIT
+}
+
 # Read bounded trusted-stager context, never a script or a HEAD-selected file path.
 head_png_context() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then
@@ -54,6 +66,15 @@ check_review_report() {
     : > "$WORK/lens-coverage-failed.flag"
     : > "$WORK/coverage-severe.flag"
     echo "[review incomplete] required lens coverage missing" >&2
+  fi
+  if [ "${3:-}" = panel ]; then
+    strip_controls < "$1" | scrub_secrets > "$WORK/report-size-check.tmp"
+    if [ "$(wc -c < "$WORK/report-size-check.tmp")" -gt "$(review_limit report_bytes)" ]; then
+      : > "$WORK/report-invalid.flag"
+      : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] comprehensive report exceeds its byte allocation" >&2
+    fi
+    rm -f "$WORK/report-size-check.tmp"
   fi
   return 0
 }

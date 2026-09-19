@@ -475,6 +475,12 @@ jobs:
           elif [ -n "${omitted_source_paths:-}" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=oversized line(s) omitted from reviewable source/IaC file(s): ${omitted_source_paths} — no lens saw them, fail-closed" >> "$GITHUB_OUTPUT"
+          elif [ "${chair_input_failed:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Chair input exceeds allocation" >> "$GITHUB_OUTPUT"
+          elif [ "${panel_incomplete:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Panel coverage incomplete" >> "$GITHUB_OUTPUT"
           elif [ "${report_invalid:-0}" = "1" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=Review output unavailable" >> "$GITHUB_OUTPUT"
@@ -510,6 +516,8 @@ jobs:
           MARKER="<!-- multi-ai-pr-review -->"
           if [[ "$GATE_REASON" == "Review input incomplete:"* ]]; then
             STATUS_BADGE="**Status: BLOCKED** — input coverage incomplete; models were not called"
+          elif [ "$GATE_REASON" = "Chair input exceeds allocation" ]; then
+            STATUS_BADGE="**Status: BLOCKED** — chair input exceeds allocation; chair was not called"
           elif [ "$GATE_REASON" = "Panel coverage incomplete" ]; then
             STATUS_BADGE="**Status: BLOCKED** — panel coverage incomplete; observations below are unadjudicated"
           elif [[ "$GATE_REASON" == "oversized line(s) omitted"* ]]; then
@@ -532,7 +540,7 @@ jobs:
           sed '$ { /^VERDICT:/d }' /tmp/review.md > /tmp/review-clean.md
           {
             echo "$MARKER"
-            echo "## 🤖 AI Code Review (${chair_used:-Claude Fable 5} chair · two independent reviewers)"
+            echo "## 🤖 AI Code Review (two independent reviewers)"
             echo ""
             echo "_Reviewer responses: ${panel_responded:-none}_"
             [ -n "${omitted_paths:-}" ] && echo "_⚠️ oversized lines (>50k chars) omitted from the reviewed diff in: ${omitted_paths} — no lens saw those lines; verify them manually._"

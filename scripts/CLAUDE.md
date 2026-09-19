@@ -286,6 +286,9 @@ secrets-manager) — installed by `make deps`.
   each combining all four checklist prompts), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
   `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
   its source contract and offline test entry are listed above.
+  `review-limits.json` binds raw/scrubbed diff, report and total chair budgets;
+  `report-panel-failure.sh` publishes bounded scrubbed surviving observations with
+  named missing vendors and separate lens/image/report diagnostics, never approval.
   `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
   complete hash-valid image evidence before model credentials; no partial review.
   Both panel reports require plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
