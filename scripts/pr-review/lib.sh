@@ -4,7 +4,7 @@ set -uo pipefail
 
 # One trusted budget file serves admission, panel and chair checks.
 review_limit() {
-  python3 - "$(dirname -- "${BASH_SOURCE[0]}")/review-limits.json" "$1" <<'PYLIMIT'
+  python3 -I - "$(dirname -- "${BASH_SOURCE[0]}")/review-limits.json" "$1" <<'PYLIMIT'
 import json, sys
 from pathlib import Path
 values = json.loads(Path(sys.argv[1]).read_text())
@@ -24,26 +24,26 @@ head_png_context() {
     echo "Do not quote or fence your outcome. With no required images, the marker is optional."
     return 0
   fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
 }
 
 head_png_required() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
 }
 
 head_png_unavailable() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
 }
 
 head_png_attachments() {
   [ -n "${HEAD_PNG_CONTEXT:-}" ] || return 0
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
 }
 
 image_coverage_valid() {
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
 }
 
 mark_image_coverage_failure() {
@@ -64,7 +64,7 @@ check_review_report() {
     echo "[review output unavailable] $(basename "$1")" >&2
     return 1
   fi
-  if [ "${3:-}" = panel ] && ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
+  if [ "${3:-}" = panel ] && ! python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
     : > "$WORK/lens-coverage-failed.flag"
     : > "$WORK/coverage-severe.flag"
     echo "[review incomplete] required lens coverage missing" >&2

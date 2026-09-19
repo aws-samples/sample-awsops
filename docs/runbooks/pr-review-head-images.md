@@ -115,7 +115,7 @@ limits, prompt propagation and missing-evidence failures.
 | Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
-| Public failure diagnostic | Fixed labels and severity-marker counts (0–99); no model text |
+| Public failure diagnostic | Fixed labels and severity-keyword presence (true/false); no model text |
 | Actual sanitized chair stdin | 256 KiB; refused before invocation |
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
@@ -191,6 +191,10 @@ The existing chair/fallback adjudicates their findings. A single report is never
 copied into four purportedly independent votes. The lens completion declaration is
 an attestation, not proof that every line was understood.
 
+Review-phase Python helpers use `-I`: application BASE/CWD and PYTHONPATH are not
+import roots. Only the trusted helper directory is explicitly added when local
+helper imports are needed. A module-shadowing fixture checks this boundary.
+
 Before issuing model credentials, `input_scope.py` requires the entire filtered diff
 to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 32-image extraction bound remains. Diff admission is byte-based and counts LF
@@ -202,7 +206,7 @@ fixed diagnostics. Oversized source lines already omitted by the
 filter also block admission. There is no first-N-lines review, misleading unseen-file
 index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
-fixed diagnostics and bounded unadjudicated severity-marker counts; it never asserts
+fixed diagnostics and unadjudicated severity-keyword presence booleans; it never asserts
 that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000
 bytes. Actual sanitized chair stdin (diff, reports and headers) is capped at 256 KiB
 before invocation. These are resource bounds, not a guarantee of model latency.
@@ -232,13 +236,14 @@ Budget constants are shared in `scripts/pr-review/review-limits.json`; admission
 checks both raw and scrubbed diff bytes, and panel checks measure scrubbed reports
 before marking the panel ready. Limits may be reduced for tests but not raised by
 chair environment overrides. `input_scope.py` performs admission;
-`report-panel-failure.sh` publishes fixed diagnostics and bounded severity counts with named
+`report-panel-failure.sh` publishes fixed diagnostics and severity-keyword presence booleans with named
 missing reviewers and separate checklist, image and report-size diagnoses.
 
 On an incomplete panel, public comments expose only fixed response/failure labels
-and capped counts of severity markers after shared control stripping and fence
-exclusion; quoted and indented examples are excluded too. These untrusted marker counts are neither
-verified findings nor a clean-code signal. Raw model text, paths extracted from
+and booleans for literal severity-keyword presence after shared control stripping.
+Fenced/quoted examples and indented code are excluded; numbered and indented list
+items are included. Presence is a lexical observation, not a finding or issue count
+(even "CRITICAL: none" contains that keyword), and never establishes code safety. Raw model text, paths extracted from
 reports, links/images and snippets are not published, because shape-based secret
 scrubbing cannot prove such text safe. Complete reviews still use chair adjudication.
 

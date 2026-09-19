@@ -219,24 +219,56 @@ class PanelTests(unittest.TestCase):
         # Fixed, nonfunctional sentinel used only to verify output redaction.
         sentinel = "AKIA" + "1234567890ABCDEF"
         (work / "slot/codex-ALL.md").write_text(
-            "\x1b[31mMAJOR: surviving finding\x1b[0m\n"
-            "\x1b]0;title\x07CRITICAL: actual marker\n"
+            "    - \x1b[31mMAJOR: surviving finding\x1b[0m\n"
+            "1. \x1b]0;title\x07**CRITICAL**: actual marker\n"
             "```\nCRITICAL: fenced example\n```\n"
             "> MAJOR: quoted example\n    CRITICAL: indented example\n"
-            "# **Minor**: actual marker\n" + sentinel + "\nVERDICT: PASS\n")
+            "| Minor | actual marker |\n" + sentinel + "\nVERDICT: PASS\n")
         output = work / "diagnostic.md"
         subprocess.run(["bash", str(ROOT / "scripts/pr-review/report-panel-failure.sh"),
                         str(work), str(output)], check=True)
         text = output.read_text()
-        self.assertIn("Unadjudicated MAJOR markers (capped at 99): 1", text)
-        self.assertIn("Unadjudicated CRITICAL markers (capped at 99): 1", text)
-        self.assertIn("Unadjudicated MINOR markers (capped at 99): 1", text)
+        self.assertIn("Unadjudicated MAJOR keyword present: true", text)
+        self.assertIn("Unadjudicated CRITICAL keyword present: true", text)
+        self.assertIn("Unadjudicated MINOR keyword present: true", text)
         self.assertNotIn("surviving finding", text)
         self.assertNotIn(sentinel, text)
         self.assertNotIn("[REDACTED-AWS-KEY]", text)
         self.assertNotIn("VERDICT: PASS", text)
         self.assertTrue(text.endswith("VERDICT: FAIL\n"))
         self.assertNotIn("not a code problem", text)
+        (work / "slot/codex-ALL.md").write_text(
+            "```\nCRITICAL: fenced example\n```\n> MAJOR: quoted example\n    MINOR: code example\n")
+        subprocess.run(["bash", str(ROOT / "scripts/pr-review/report-panel-failure.sh"),
+                        str(work), str(output)], check=True)
+        for severity in ("CRITICAL", "MAJOR", "MINOR"):
+            self.assertIn(f"Unadjudicated {severity} keyword present: false", output.read_text())
+
+    def test_review_helpers_do_not_execute_base_worktree_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "application-code-executed"
+            payload = (
+                f"open({str(marker)!r}, 'w').write('unexpected import')\n"
+                "raise RuntimeError('application module must not execute')\n"
+            )
+            for name in ("json.py", "pathlib.py"):
+                (root / name).write_text(payload)
+            env = {**os.environ, "PYTHONPATH": str(root)}
+            # Verify the fixture exposes normal stdin/working-directory import behavior.
+            control = subprocess.run(["python3", "-c", "import json"], cwd=root,
+                                     env=env, capture_output=True)
+            self.assertNotEqual(control.returncode, 0)
+            self.assertTrue(marker.exists())
+            marker.unlink()
+            context = write_image_context(root)
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; HEAD_PNG_CONTEXT="$2"; review_limit report_bytes; head_png_required; head_png_context >/dev/null', "review-test",
+                 str(ROOT / "scripts/pr-review/lib.sh"), str(context)],
+                cwd=root, env=env, capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(result.stdout.strip().splitlines(), ["60000", "0"])
+            self.assertFalse(marker.exists())
 
     def test_comprehensive_claude_review_uses_general_budget(self):
         out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
@@ -999,7 +1031,7 @@ class InputAdmissionTests(unittest.TestCase):
             subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
                            cwd=ROOT, env=env, check=True, capture_output=True)
             self.assertIn("reason=Panel coverage incomplete", (root / "output").read_text())
-            self.assertIn("Unadjudicated MAJOR markers (capped at 99): 1", (root / "review.md").read_text())
+            self.assertIn("Unadjudicated MAJOR keyword present: true", (root / "review.md").read_text())
             self.assertNotIn("retained finding", (root / "review.md").read_text())
             self.assertFalse((root / "env").exists(), "must not set chair_failed")
 

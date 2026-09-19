@@ -286,11 +286,13 @@ secrets-manager) — installed by `make deps`.
   each combining all four checklist prompts), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
   `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
   its source contract and offline test entry are listed above.
+  Python review helpers use isolated mode (`-I`), excluding application-CWD and
+  PYTHONPATH module shadowing while model-phase credentials are active.
   `review-limits.json` binds raw/scrubbed diff, report and chair-stdin budgets.
   `chair_stdin_bytes` measures only synth-stdin.txt (diff + reports + short headers);
   synth-prompt.txt/image-context text is a separate CLI argument. The max-budget
   fixture verifies that distinction; do not add argument bytes to a stdin-only limit.
-  `report-panel-failure.sh` publishes fixed diagnostics and bounded unadjudicated severity-marker counts with
+  `report-panel-failure.sh` publishes fixed diagnostics and unadjudicated severity-keyword presence booleans with
   named missing vendors and separate lens/image/report diagnostics, never approval.
   `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
   complete hash-valid image evidence before model credentials; no partial review.

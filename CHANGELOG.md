@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- PR review: two independent Codex/Claude reviewers each cover correctness, security, data integration and documentation, followed by the existing chair. Shared limits admit complete raw/scrubbed diffs up to 6,000 lines/128 KiB, each scrubbed report up to 60,000 bytes, the report bundle up to 120,000 bytes and actual chair stdin up to 256 KiB. Missing evidence or oversized reports block before unnecessary model calls. Failure comments publish fixed diagnostics and bounded unadjudicated severity-marker counts only, never raw model text or a code-safety claim. The common prompt is supplied once, completion declarations tolerate list spacing/order but require all four unique checklists and substantive per-checklist sections (including security), and policy violations remain blocking without a runtime-failure prerequisite. Models, permissions, image codec bounds and required checks remain; oversized accumulated promotions still require complete batching or authenticated coverage reuse before release.
+- PR review: two independent Codex/Claude reviewers each cover correctness, security, data integration and documentation, followed by the existing chair. Shared limits admit complete raw/scrubbed diffs up to 6,000 lines/128 KiB, each scrubbed report up to 60,000 bytes, the report bundle up to 120,000 bytes and actual chair stdin up to 256 KiB. Missing evidence or oversized reports block before unnecessary model calls. Failure comments publish fixed diagnostics and unadjudicated severity-keyword presence booleans only, never raw model text or a code-safety claim. The common prompt is supplied once, completion declarations tolerate list spacing/order but require all four unique checklists and substantive per-checklist sections (including security), and policy violations remain blocking without a runtime-failure prerequisite. Models, permissions, image codec bounds and required checks remain; oversized accumulated promotions still require complete batching or authenticated coverage reuse before release.
 
 ## [0.10.0] - 2026-09-17
 
@@ -677,7 +677,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Changed
 
-- PR 리뷰: Codex와 Claude가 각각 정확성·보안·데이터 통합·문서 전체를 검토하고 기존 chair가 종합한다. 공통 한도로 원본·마스킹 diff 6,000줄/128 KiB, 마스킹 보고서별 60,000바이트, 보고서 묶음 120,000바이트, 실제 chair 입력 256 KiB를 검사한다. 증거 누락과 보고서 초과는 불필요한 모델 호출 전에 차단한다. 실패 댓글은 고정된 진단과 상한이 있는 미판정 심각도 표기 건수만 공개하며 모델 원문이나 코드 안전성 주장은 내보내지 않는다. 공통 프롬프트는 한 번만 전달하고 완료 선언의 항목 공백·순서 차이는 허용하되 네 항목이 중복 없이 모두 있고 보안을 포함한 항목별 실질적인 검토 내용이 있어야 한다. 정책 위반은 실행 오류 재현 없이도 차단한다. 모델·권한·이미지 디코더 한도·필수 검사는 유지하며 누적 대규모 승격에는 전체 분할 검토 또는 인증된 검토 재사용 구현이 여전히 필요하다.
+- PR 리뷰: Codex와 Claude가 각각 정확성·보안·데이터 통합·문서 전체를 검토하고 기존 chair가 종합한다. 공통 한도로 원본·마스킹 diff 6,000줄/128 KiB, 마스킹 보고서별 60,000바이트, 보고서 묶음 120,000바이트, 실제 chair 입력 256 KiB를 검사한다. 증거 누락과 보고서 초과는 불필요한 모델 호출 전에 차단한다. 실패 댓글은 고정된 진단과 미판정 심각도 키워드 존재 여부만 공개하며 모델 원문이나 코드 안전성 주장은 내보내지 않는다. 공통 프롬프트는 한 번만 전달하고 완료 선언의 항목 공백·순서 차이는 허용하되 네 항목이 중복 없이 모두 있고 보안을 포함한 항목별 실질적인 검토 내용이 있어야 한다. 정책 위반은 실행 오류 재현 없이도 차단한다. 모델·권한·이미지 디코더 한도·필수 검사는 유지하며 누적 대규모 승격에는 전체 분할 검토 또는 인증된 검토 재사용 구현이 여전히 필요하다.
 
 ## [0.10.0] - 2026-09-17
 

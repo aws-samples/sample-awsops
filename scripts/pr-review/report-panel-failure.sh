@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Public failure diagnostics contain only fixed labels and bounded numeric metadata.
+# Public failure diagnostics contain only fixed labels and keyword-presence booleans.
 # Raw model text, filenames from reports, links and excerpts never leave this path.
 set -euo pipefail
 WORK="$1"; OUT="$2"
-DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 umask 077
 {
   echo "Panel review incomplete; no code verdict is available. Chair was not called."
@@ -25,7 +25,7 @@ umask 077
     report="$WORK/slot/$model-ALL.md"
     [ -s "$report" ] || continue
     printf '\n%s: response received; observations remain unadjudicated.\n' "$model"
-    python3 - "$report" "$DIR" <<'PY'
+    python3 -I - "$report" "$DIR" <<'PY'
 import re, sys
 sys.path.insert(0, sys.argv[2])
 from image_coverage import read_data, report_lines, REPORT_LIMIT
@@ -34,14 +34,18 @@ try:
 except (OSError, ValueError, UnicodeError):
     print("Severity markers unavailable: report unreadable or over limit.")
 else:
-    # These are untrusted label counts, not verified findings or a clean-code claim.
-    lines = [line for line in report_lines(text)
-             if not re.match(r"^(?: {4}|\t| {0,3}>)", line)]
+    # Literal keyword presence is not an issue count or an adjudicated finding.
+    lines = []
+    for line in report_lines(text):
+        if re.match(r"^[ \t]*>", line):
+            continue
+        if re.match(r"^(?: {4}|\t)", line) and not re.match(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", line):
+            continue
+        lines.append(line)
     for severity in ("CRITICAL", "MAJOR", "MINOR"):
-        count = min(99, sum(bool(re.match(r"^[ #*\t-]*" + severity + r"\b", line,
-                                         re.IGNORECASE)) for line in lines))
-        print(f"Unadjudicated {severity} markers (capped at 99): {count}")
-print("Report text is withheld from public diagnostics; marker counts do not establish correctness.")
+        present = any(re.search(r"\b" + severity + r"\b", line, re.IGNORECASE) for line in lines)
+        print(f"Unadjudicated {severity} keyword present: {str(present).lower()}")
+print("Report text is withheld; keyword presence is neither an issue count nor a correctness verdict.")
 PY
   done
   printf '\nVERDICT: FAIL\n'

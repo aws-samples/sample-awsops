@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c1130faa181 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f3cd690374b3 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -23,11 +23,13 @@ All panel lenses and chair share safe labels and read-only generated paths; exac
 names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
 BASE pixels are historical. Required unavailable images fail coverage, never suppress
 findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
+Python helpers use isolated mode so application-base modules and PYTHONPATH cannot
+execute through standard-library imports under review credentials.
 `review-limits.json` ties raw/scrubbed diff, report and chair-stdin allocations.
 The stdin bound measures diff, reports and short headers only; synthesis instructions
 and image-context text are a separate CLI argument. The max-budget fixture proves
 that IO distinction, not model latency.
-`report-panel-failure.sh` retains fixed diagnostics and bounded severity-marker counts, names missing vendors
+`report-panel-failure.sh` retains fixed diagnostics and severity-keyword presence booleans, names missing vendors
 and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
