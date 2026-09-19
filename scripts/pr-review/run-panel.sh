@@ -8,7 +8,7 @@ DIFF="$1"; LENSES_DIR="$2"; WORK="$3"
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 ensure_slots "$WORK"
 SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
-rm -f "$WORK/coverage-severe.flag" "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag"
+rm -f "$WORK/coverage-severe.flag" "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag" "$WORK/lens-coverage-failed.flag"
 HEAD_PNG_PROMPT="$(head_png_context)" || { : > "$WORK/coverage-severe.flag"; exit 1; }
 HEAD_PNG_REQUIRED="$(head_png_required)" || { mark_image_coverage_failure "manifest"; exit 1; }
 HEAD_PNG_UNAVAILABLE="$(head_png_unavailable)" || { mark_image_coverage_failure "manifest"; exit 1; }
@@ -56,9 +56,8 @@ try_panel() {
 # Validate every checklist before combining them. Never manufacture four responses
 # from a single result: each vendor produces one ALL report with explicit coverage.
 COMBINED_PROMPT="$(cat "${LENS_FILES[@]}")"
-COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope.'
-LENS_FILES=("$LENSES_DIR/ALL.txt")
-printf '%s\n' "$COMBINED_PROMPT" > "${LENS_FILES[0]}"
+COMBINED_PROMPT+=$'\n\nReview ALL four lenses (L2, L3, L4, L5) in this single report. Group findings by lens.\nOnly after completing every lens emit this exact unquoted line: LENS_COVERAGE: L2,L3,L4,L5\nIf any lens is incomplete, omit that marker and explain the missing scope. Emit the marker once only; put examples inside quotes or code fences. Spaces and lens ordering may vary, but every lens must appear exactly once.'
+LENS_FILES=("ALL.txt")
 for lens_file in "${LENS_FILES[@]}"; do
   lens="ALL"
   LENS_PROMPT="$COMBINED_PROMPT"$'\n\n'"$HEAD_PNG_PROMPT"
@@ -102,7 +101,7 @@ if [ "$DEGRADED_COUNT" -ge "$((TOTAL_MODELS - 1))" ]; then
   : > "$WORK/coverage-severe.flag"
 fi
 
-# Every lens needs both vendors, even when a model succeeds on other lenses.
+# The comprehensive report requires both independent vendors.
 : > "$WORK/degraded-lenses.txt"
 for lens_file in "${LENS_FILES[@]}"; do
   lens="$(basename "$lens_file" .txt)"

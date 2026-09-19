@@ -315,7 +315,9 @@ jobs:
           Before reporting that ANY symbol / import / function / DB column / IAM permission / migration
           is missing or undefined, reconcile the complete patch with the relevant base files.
           A new definition in this patch is not missing merely because BASE predates it.
-          Cite the final affected code and a concrete failure trigger for each blocking issue.
+          For missing-definition findings, cite the final affected code and a failure trigger.
+          Policy violations such as frozen mutation, overbroad IAM or leaked secrets remain blocking
+          based on the violated rule, without requiring a runtime failure.
           DB SCHEMA: the live schema = the frozen baseline \`terraform/foundation/data/schema.sql\`
           PLUS every \`terraform/foundation/migrations/*.sql\` (applied by \`make migrate\` before
           deploy). A column / CHECK / table absent from schema.sql is NOT missing if a migration under
@@ -440,6 +442,7 @@ jobs:
           REVIEW_INPUT_READY: ${{ steps.input_scope.outputs.ready }}
           REVIEW_INPUT_REASON: ${{ steps.input_scope.outputs.reason }}
           IMAGE_STAGE_OUTCOME: ${{ steps.head_images.outcome }}
+          PANEL_READY: ${{ steps.panel_review.outputs.ready }}
           PANEL_OUTCOME: ${{ steps.panel_review.outcome }}
           CHAIR_OUTCOME: ${{ steps.chair_review.outcome }}
         run: |
@@ -451,10 +454,14 @@ jobs:
             echo "image_coverage_failed=1" >> "$GITHUB_ENV"
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
-          elif [ "${INPUT_SCOPE_OUTCOME:-success}" != "success" ] || [ "${REVIEW_INPUT_READY:-true}" != "true" ]; then
+          elif [ "${INPUT_SCOPE_OUTCOME:-missing}" != "success" ] || [ "${REVIEW_INPUT_READY:-false}" != "true" ]; then
             printf '%s\n' "Review input incomplete: ${REVIEW_INPUT_REASON:-admission failed}. No models were called; no code verdict is available." "VERDICT: FAIL" > /tmp/review.md
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=Review input incomplete: ${REVIEW_INPUT_REASON:-admission failed}" >> "$GITHUB_OUTPUT"
+          elif [ "$PANEL_OUTCOME" = "success" ] && [ "${PANEL_READY:-false}" != "true" ]; then
+            bash scripts/pr-review/report-panel-failure.sh /tmp/pr-review /tmp/review.md
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Panel coverage incomplete" >> "$GITHUB_OUTPUT"
           elif [ "$PANEL_OUTCOME" != "success" ] || [ "$CHAIR_OUTCOME" != "success" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             if [ "${image_coverage_failed:-0}" = "1" ]; then
@@ -503,6 +510,8 @@ jobs:
           MARKER="<!-- multi-ai-pr-review -->"
           if [[ "$GATE_REASON" == "Review input incomplete:"* ]]; then
             STATUS_BADGE="**Status: BLOCKED** — input coverage incomplete; models were not called"
+          elif [ "$GATE_REASON" = "Panel coverage incomplete" ]; then
+            STATUS_BADGE="**Status: BLOCKED** — panel coverage incomplete; observations below are unadjudicated"
           elif [[ "$GATE_REASON" == "oversized line(s) omitted"* ]]; then
             STATUS_BADGE="**Status: BLOCKED** — reviewable source input was omitted; review incomplete"
           elif [ "$GATE_REASON" = "Review output unavailable" ]; then
@@ -525,7 +534,7 @@ jobs:
             echo "$MARKER"
             echo "## 🤖 AI Code Review (${chair_used:-Claude Fable 5} chair · two independent reviewers)"
             echo ""
-            echo "_Cells (model/lens): ${panel_responded:-solo}_"
+            echo "_Reviewer responses: ${panel_responded:-none}_"
             [ -n "${omitted_paths:-}" ] && echo "_⚠️ oversized lines (>50k chars) omitted from the reviewed diff in: ${omitted_paths} — no lens saw those lines; verify them manually._"
             [ -n "${omitted_source_paths:-}" ] && echo "_🛑 omitted lines include reviewable source/IaC files (${omitted_source_paths}) — gate forced to BLOCKED (fail-closed); split/reformat those files so the change is reviewable._"
             echo ""

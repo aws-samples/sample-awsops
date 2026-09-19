@@ -163,9 +163,31 @@ class PanelTests(unittest.TestCase):
                        "**LENS_COVERAGE: FAILED**\nLENS_COVERAGE: L2,L3,L4,L5"):
             with self.subTest(marker=marker):
                 out, _ = self.run_panel(PANEL_LENS_REPORT=marker)
-                self.assertTrue((out / "report-invalid.flag").exists())
+                self.assertTrue((out / "lens-coverage-failed.flag").exists())
                 self.assertTrue((out / "coverage-severe.flag").exists())
                 self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 2)
+
+    def test_lens_completion_accepts_spacing_and_order_but_not_duplicates(self):
+        out, _ = self.run_panel(PANEL_LENS_REPORT="LENS_COVERAGE: L5, L3 , L2, L4")
+        self.assertFalse((out / "coverage-severe.flag").exists())
+        out, _ = self.run_panel(PANEL_LENS_REPORT="LENS_COVERAGE: L2,L2,L3,L4")
+        self.assertTrue((out / "lens-coverage-failed.flag").exists())
+
+    def test_incomplete_panel_diagnostic_retains_surviving_findings_and_scrubs(self):
+        work, _ = self.run_panel(FAIL_CELL="claude/ALL")
+        secret = "AKIA" + "1234567890ABCDEF"
+        (work / "slot/codex-ALL.md").write_text(
+            "MAJOR: surviving finding\n" + secret + "\nVERDICT: PASS\n")
+        output = work / "diagnostic.md"
+        subprocess.run(["bash", str(ROOT / "scripts/pr-review/report-panel-failure.sh"),
+                        str(work), str(output)], check=True)
+        text = output.read_text()
+        self.assertIn("> MAJOR: surviving finding", text)
+        self.assertNotIn(secret, text)
+        self.assertIn("[REDACTED-AWS-KEY]", text)
+        self.assertIn("> VERDICT: PASS", text)
+        self.assertTrue(text.endswith("VERDICT: FAIL\n"))
+        self.assertNotIn("not a code problem", text)
 
     def test_comprehensive_claude_review_uses_general_budget(self):
         out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
@@ -330,6 +352,14 @@ print(tick * int(os.environ['CHAIR_CLOCK_STEP']))
 
 
 class ChairTests(unittest.TestCase):
+    def test_actual_combined_input_bound_prevents_any_chair_call(self):
+        root, process = self.start_chair(("valid",), CHAIR_DIFF="x" * 262144)
+        self.finish_chair(process)
+        self.assertIn("Chair input exceeds", (root / "work/review.md").read_text())
+        self.assertIn("VERDICT: FAIL", (root / "work/review.md").read_text())
+        self.assertFalse((root / "calls/primary-fixture.prompt").exists())
+        self.assertIn("chair_input_failed=1", (root / "github-env").read_text())
+
     def start_chair(self, primary, fallback=("valid",), clock_step=1, panel_work=None, **overrides):
         directory = tempfile.TemporaryDirectory(prefix="chair-recovery-")
         self.addCleanup(directory.cleanup)
@@ -356,7 +386,7 @@ class ChairTests(unittest.TestCase):
         if panel_work is not None:
             shutil.copytree(panel_work, work, dirs_exist_ok=True)
         diff = root / "diff"
-        diff.write_text("diff --git a/example.ts b/example.ts\n+readOnly()\n")
+        diff.write_text(overrides.pop("CHAIR_DIFF", "diff --git a/example.ts b/example.ts\n+readOnly()\n"))
         env = {
             **os.environ, "PATH": f"{binaries}:/usr/bin:/bin", "CALL_DIR": str(calls),
             "CHAIR_PRIMARY_MODEL": "primary-fixture", "CHAIR_FALLBACK_MODEL": "fallback-fixture",
@@ -693,6 +723,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
                 output.write_text("")
                 result = subprocess.run(["bash", "-eu", "-c", script], env={
                     **os.environ, "image_coverage_failed": failed, "omitted_source_paths": "",
+                    "INPUT_SCOPE_OUTCOME": "success", "REVIEW_INPUT_READY": "true", "PANEL_READY": "true",
                     "IMAGE_STAGE_OUTCOME": "success", "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "success",
                     "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -836,11 +867,11 @@ class InputAdmissionTests(unittest.TestCase):
     def test_complete_diff_and_empty_image_manifest_are_admitted(self):
         self.assertEqual(self.admission(b"diff-data\n")["ready"], "true")
         self.assertEqual(self.admission(b"x\n" * 6000)["ready"], "true")
-        self.assertEqual(self.admission(b"x" * (256 * 1024))["ready"], "true")
+        self.assertEqual(self.admission(b"x" * (128 * 1024))["ready"], "true")
 
     def test_size_line_encoding_source_and_image_gaps_all_block(self):
         for data, options in (
-            (b"x\n" * 6001, {}), (b"x" * (256 * 1024 + 1), {}),
+            (b"x\n" * 6001, {}), (b"x" * (128 * 1024 + 1), {}),
             (b"\xff", {}), (b"diff\n", {"incomplete": True}),
             (b"diff\n", {"tamper": True}), (b"diff\n", {"omitted": "web/unseen.ts"}),
         ):
@@ -866,6 +897,27 @@ class InputAdmissionTests(unittest.TestCase):
             self.assertIn("Review input incomplete:", (root / "output").read_text())
             self.assertNotIn("STALE", (root / "review.md").read_text())
             self.assertIn("No models were called", (root / "review.md").read_text())
+
+    def test_gate_distinguishes_incomplete_panel_from_failed_chair(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        gate = workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
+            "      - name: Post review comment", 1)[0]
+        gate = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            slots = root / "pr-review/slot"
+            slots.mkdir(parents=True)
+            (slots / "codex-ALL.md").write_text("MAJOR: retained finding\n")
+            env = {**os.environ, "GITHUB_ENV": str(root / "env"),
+                   "GITHUB_OUTPUT": str(root / "output"),
+                   "IMAGE_STAGE_OUTCOME": "success", "INPUT_SCOPE_OUTCOME": "success",
+                   "REVIEW_INPUT_READY": "true", "PANEL_READY": "false",
+                   "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "skipped"}
+            subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
+                           cwd=ROOT, env=env, check=True, capture_output=True)
+            self.assertIn("reason=Panel coverage incomplete", (root / "output").read_text())
+            self.assertIn("> MAJOR: retained finding", (root / "review.md").read_text())
+            self.assertFalse((root / "env").exists(), "must not set chair_failed")
 
 
 class LockfileMetadataTests(unittest.TestCase):
@@ -902,6 +954,7 @@ class LockfileMetadataTests(unittest.TestCase):
                 (root / "review.md").write_text("VERDICT: PASS\n")
                 result = subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
                                         env={**env, **values, "IMAGE_STAGE_OUTCOME": "success",
+                                             "INPUT_SCOPE_OUTCOME": "success", "REVIEW_INPUT_READY": "true", "PANEL_READY": "true",
                                              "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "success"},
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

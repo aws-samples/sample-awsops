@@ -9,7 +9,7 @@ from image_coverage import attachment_paths, load_manifest
 
 
 MAX_LINES = 6000
-MAX_BYTES = 256 * 1024
+MAX_BYTES = 128 * 1024
 
 
 def admission(diff, context, omitted_source=""):
@@ -17,7 +17,7 @@ def admission(diff, context, omitted_source=""):
     with Path(diff).open("rb") as stream:
         data = stream.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
-        return False, "diff exceeds 256 KiB; split the change or implement complete bounded review batches"
+        return False, "diff exceeds 128 KiB; split the change or implement complete bounded review batches"
     data.decode("utf-8", errors="strict")
     if len(data.splitlines()) > MAX_LINES:
         return False, "diff exceeds 6000 lines; split the change or implement complete bounded review batches"

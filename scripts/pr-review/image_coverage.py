@@ -98,10 +98,16 @@ def validate_report(text, required, lens=False):
         if not lens and candidate.startswith("IMAGE COVERAGE FAILURE"):
             return False
         if candidate.startswith(prefix):
-            match = re.fullmatch(re.escape(prefix) + r"[ \t]*(" + re.escape(complete) + r"|FAILED|NOT_REQUIRED)[ \t]*", line)
-            if not match:
-                return False
-            signals.append(match[1])
+            if lens:
+                match = re.fullmatch(r"LENS_COVERAGE:[ \t]*(L[2-5](?:[ \t]*,[ \t]*L[2-5]){3})[ \t]*", line)
+                if not match or set(re.split(r"[ \t]*,[ \t]*", match[1])) != {"L2", "L3", "L4", "L5"}:
+                    return False
+                signals.append(complete)
+            else:
+                match = re.fullmatch(re.escape(prefix) + r"[ \t]*(COMPLETE|FAILED|NOT_REQUIRED)[ \t]*", line)
+                if not match:
+                    return False
+                signals.append(match[1])
     # Duplicate/contradictory declarations cannot override an earlier failure.
     if len(signals) > 1 or "FAILED" in signals:
         return False

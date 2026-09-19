@@ -10,7 +10,7 @@ elif { [ -f "$WORK/image-coverage-failed.flag" ] || [ -f "$WORK/report-invalid.f
      [ ! -s "$WORK/degraded-models.txt" ] && [ ! -s "$WORK/degraded-lenses.txt" ]; then
   rm -f "$WORK/coverage-severe.flag"
 fi
-rm -f "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag"
+rm -f "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag" "$WORK/lens-coverage-failed.flag"
 HEAD_PNG_PROMPT="$(head_png_context)" || { mark_image_coverage_failure "context"; exit 1; }
 HEAD_PNG_REQUIRED="$(head_png_required)" || { mark_image_coverage_failure "manifest"; exit 1; }
 HEAD_PNG_UNAVAILABLE="$(head_png_unavailable)" || { mark_image_coverage_failure "manifest"; exit 1; }
@@ -31,13 +31,13 @@ RESP="$(tr '\n' ',' < "$WORK/responded.txt" 2>/dev/null | sed 's/,$//')" || true
 # using that tag.
 # Per-cell byte cap (belt-and-braces) — keeps chair input bounded even after the matrix grew
 # from 4 to 16 outputs (so one runaway cell doesn't dominate chair context/processing time).
-PANEL_CELL_CAP="${PANEL_CELL_CAP:-20000}"
+PANEL_CELL_CAP="${PANEL_CELL_CAP:-60000}"
 # Total cap — a per-cell cap alone lets the total grow in lockstep with cell count (4->16...),
 # so chair input could grow unbounded (actually reproduced on AWS-Demo-Platform PR#195: 16
 # healthy cells + a normal-sized diff, yet the chair still hit the 600s timeout — root cause
 # was input size). Divide by cell count so the effective cap stays min'd against the total
-# ceiling (default 200KB) as well as the per-cell cap.
-CHAIR_PANEL_TOTAL_CAP="${CHAIR_PANEL_TOTAL_CAP:-200000}"
+# ceiling (default 120KB) as well as the per-cell cap.
+CHAIR_PANEL_TOTAL_CAP="${CHAIR_PANEL_TOTAL_CAP:-120000}"
 CELL_COUNT=0
 for f in "$SLOT"/*.md; do
   [ -s "$f" ] || continue
@@ -107,7 +107,7 @@ trap 'on_chair_signal 15' TERM
 while IFS= read -r f; do
   [ -s "$f" ] || continue
   # Presence is already counted. Unusable bytes are a report failure, not image failure.
-  if ! check_review_report "$f"; then
+  if ! check_review_report "$f" "${HEAD_PNG_REQUIRED:-0}" panel; then
     PANEL+=$'\n\n=== PANEL: '"$(basename "$f" .md)"$' ===\nReview output unavailable (encoding/read/size).'
     continue
   fi
@@ -361,6 +361,14 @@ DIFF_BYTES="$(wc -c < "$DIFF")"
 PANEL_BYTES="$(printf '%s\n' "$PANEL" | wc -c)"
 TOTAL_BYTES="$(wc -c < "$WORK/synth-stdin.txt")"
 echo "chair input: diff=${DIFF_BYTES}B, panel=${PANEL_BYTES}B, total=${TOTAL_BYTES}B (cells: $CELL_COUNT, cell cap: ${PANEL_CELL_CAP}B)"
+# Bound the actual sanitized payload, including headers, rather than estimating it.
+if [ "$TOTAL_BYTES" -gt 262144 ]; then
+  printf '%s\n' "Chair input exceeds 256 KiB; review incomplete. No chair was called." "VERDICT: FAIL" > "$OUT"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    printf '%s\n' "report_invalid=1" "chair_input_failed=1" "chair_failed=0" >> "$GITHUB_ENV"
+  fi
+  exit 0
+fi
 
 # If primary/fallback shared the same chair.err, fallback would overwrite primary's stderr,
 # making the failure cause invisible afterward — kept separate per attempt.
@@ -455,6 +463,8 @@ if [ -f "$WORK/coverage-severe.flag" ]; then
   # diagnostic describes the actual coverage failure without inventing a code finding.
   if [ -f "$WORK/report-invalid.flag" ]; then
     SEVERE_REASON="review output is unreadable or exceeds the input bound; this is not an application or image finding"
+  elif [ -f "$WORK/lens-coverage-failed.flag" ]; then
+    SEVERE_REASON="a required reviewer did not attest all four checklists; review incomplete"
   elif [ -f "$WORK/image-coverage-failed.flag" ]; then
     SEVERE_REASON="image coverage is unavailable or not explicitly complete in every required report; this is an incomplete review, not an application code finding"
   elif [ -s "$WORK/degraded-lenses.txt" ]; then

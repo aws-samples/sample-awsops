@@ -41,14 +41,6 @@ mark_image_coverage_failure() {
 
 check_review_report() {
   local rc=0
-  # Comprehensive panel reports must independently attest all four checklists.
-  # Chair reports use their own terminal verdict contract.
-  if [[ "$1" == *-ALL.md ]] && ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
-    : > "$WORK/report-invalid.flag"
-    : > "$WORK/coverage-severe.flag"
-    echo "[review incomplete] required lens coverage missing" >&2
-    return 1
-  fi
   image_coverage_valid "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}" || rc=$?
   if [ "$rc" = 1 ]; then
     mark_image_coverage_failure "$(basename "$1")"
@@ -57,6 +49,11 @@ check_review_report() {
     : > "$WORK/coverage-severe.flag"
     echo "[review output unavailable] $(basename "$1")" >&2
     return 1
+  fi
+  if [ "${3:-}" = panel ] && ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
+    : > "$WORK/lens-coverage-failed.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review incomplete] required lens coverage missing" >&2
   fi
   return 0
 }
@@ -108,7 +105,7 @@ record_result() {
   if [ -s "$slot" ]; then
     echo "$label" >> "$responded"
     [ "${HEAD_PNG_UNAVAILABLE:-0}" = "0" ] || mark_image_coverage_failure "$label"
-    if check_review_report "$slot"; then
+    if check_review_report "$slot" "${HEAD_PNG_REQUIRED:-0}" panel; then
       echo "[preview] $label: $(strip_controls < "$slot" | scrub_secrets | head -c 200 | tr '\n' ' ')" >&2
     fi
   else

@@ -170,11 +170,18 @@ copied into four purportedly independent votes. The lens completion declaration 
 an attestation, not proof that every line was understood.
 
 Before issuing model credentials, `input_scope.py` requires the entire filtered diff
-to fit 6,000 lines and 256 KiB, plus complete and hash-valid image evidence. The
+to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 32-image extraction bound remains. Oversized source lines already omitted by the
 filter also block admission. There is no first-N-lines review, misleading unseen-file
 index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
-no panel or chair is called. Failed panel coverage also skips the chair.
+no panel or chair is called. Failed panel coverage skips the chair but publishes
+bounded, scrubbed surviving observations as unadjudicated data; it never asserts
+that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000
+bytes. Actual sanitized chair stdin (diff, reports and headers) is capped at 256 KiB
+before invocation. These are resource bounds, not a guarantee of model latency.
+Lens declarations allow whitespace and ordering differences, but require all four
+unique lens IDs in one unquoted declaration; missing, duplicate or conflicting
+attestations remain incomplete coverage, separately from unreadable report bytes.
 
 These changes reduce normal review calls from eight panel calls plus a chair to two
 panel calls plus a chair; existing retry/model/timeout choices remain. They do not

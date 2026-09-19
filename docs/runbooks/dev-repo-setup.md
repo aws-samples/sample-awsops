@@ -322,13 +322,21 @@ uses the default branch for its workflow, `GITHUB_REF`, and `GITHUB_SHA` regardl
 target. See [GitHub's platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/),
 [environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
 [immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
-The workflow gives every Codex and Claude panel lens (L2–L5) two 1200-second attempts.
+The workflow gives Codex and Claude one independent comprehensive review each,
+covering L2–L5, with at most two 1200-second attempts per vendor. Each report must
+attest all four checklists. Input admission precedes model credentials: complete
+filtered diff up to 6,000 lines/128 KiB and complete hash-valid image evidence.
+Comprehensive reports allow 60,000 bytes each, 120,000 bytes combined, with a
+256 KiB bound on actual chair stdin. Incomplete panel coverage skips chair calls
+and publishes bounded scrubbed surviving observations without a code verdict.
+See [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size)
+and the [promotion constraint](branch-strategy.md#oversized-promotion-review).
 The panel and chair have a 10-second hard-kill grace. The job ceiling is 90 minutes.
 After Git/CLI/prompt preparation,
 immediately before the panel and again immediately before chair synthesis, the same OIDC
 role obtains a fresh one-hour session; its permissions and maximum session duration
 are unchanged. Failed or timed-out chair output cannot supply a successful verdict.
-Missing/failed model cells remain blocking; all four lenses need both vendors.
+Missing/failed vendor reports remain blocking; both vendors must cover all four checklists.
 
 <a id="3-per-stack-terraform-secrets--스택별-tf-시크릿"></a>
 

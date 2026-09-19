@@ -32,7 +32,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [pr-review-head-images.md](pr-review-head-images.md) | Trusted HEAD PNG staging, BASE context distinction, bounds and unavailable-image coverage failures |
+| [pr-review-head-images.md](pr-review-head-images.md) | Two-reviewer input admission, HEAD image staging, BASE distinction and incomplete-review diagnostics |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
 | [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
@@ -49,7 +49,9 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 ## Deployment invariants
 
 - HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
-  deterministic declaration gate. Response presence, image failure and unusable report
+  deterministic declaration gate. Two comprehensive vendor reports each attest L2–L5;
+  full filtered diff admission is 6,000 lines/128 KiB and chair stdin is at most 256 KiB.
+  Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
   output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
