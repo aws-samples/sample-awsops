@@ -7,7 +7,7 @@ vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/k8sgpt', () => ({ getDiagnosis: (...a: unknown[]) => getDiagnosis(...a) }));
 
 const req = (url: string, cookie = 'awsops_token=t') => new Request(url, { headers: { cookie } });
-const ctx = (cluster = 'fsi-demo-cluster') => ({ params: { cluster } });
+const ctx = (cluster = 'fsi-demo-cluster') => ({ params: Promise.resolve({ cluster }) });
 
 beforeEach(() => {
   verifyUser.mockReset();
@@ -87,6 +87,6 @@ describe('GET /api/eks/[cluster]/k8sgpt', () => {
     const { GET } = await import('./route');
     const res = await GET(req('http://x/api/eks/fsi-demo-cluster/k8sgpt'), ctx());
     expect(res.status).toBe(502);
-    expect((await res.json()).message).toBe('result fetch failed');
+    expect((await res.json()).message).toBe('K8sGPT diagnosis is unavailable.');
   });
 });

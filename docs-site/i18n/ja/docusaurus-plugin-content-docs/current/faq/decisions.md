@@ -74,7 +74,7 @@ AWSops は**アプリ内ログインフォーム**(`/login`)を使用します (
 AWSops は v1 の**単一 EC2 モノリシック**を **Terraform ベースの MSA** に再構築しました (ADR-037、ADR-030)。
 
 - **IaC**: Terraform(部分 S3 backend)。CDK は廃止されました (ADR-024 → ADR-037 が承継)。
-- **コンピュート**: ECS Fargate(arm64)。web は Next.js 14 thin-BFF としてルートパスで配信されます。
+- **コンピュート**: ECS Fargate(arm64)。web は Next.js 15 thin-BFF としてルートパスで配信されます。
 - **非同期ワーカー**: 重い・長い/OOM リスクのある作業は web が直接処理せず、SQS → ESM(キルスイッチ) → dispatcher Lambda(冪等) → Step Functions → Lambda または `ecs:runTask.sync` Fargate に送ります。
 
 ADR-037 は ADR-024 を全面承継し、ADR-030 のメカニズムを洗練しました(ライブ Steampipe なし、flag-gated インベントリ sync のみ確定)。
@@ -138,7 +138,7 @@ ADR-039 マルチエージェントプラットフォームはフロンティア
 
 **read-only 診断のみ提供します** (ADR-035、DOWNGRADED 2026-06-11)。
 
-K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 4.5)は **read-only の Result-CRD 統合(GET-only)のみ維持**され、自動対処につながる配線(H3a → 032/034/029 提案)は廃止されました。EKS クエリは task-role Access Entry + View policy ベースで、すべて読み取り専用です。
+K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 4.5)は **read-only の Result-CRD 統合(GET-only)のみ維持**され、自動対処につながる配線(H3a → 032/034/029 提案)は廃止されました。EKS クエリはすべて読み取り専用です。既定の認証主体は、ホストクラスターでは web タスクロール、メンバークラスターでは登録済みメンバー読み取りロール（通常 `AWSopsReadOnlyRole`）で、それぞれ対象クラスターの Access Entry と読み取りポリシーが必要です。メンバーのメタデータ取得と既定の Kubernetes トークン署名はともにメンバーロールの認証情報を使い、以前のホストロールの Entry だけでは許可されません。保存された SA トークンまたは明示的な AssumeRole 認証は別途許可された Kubernetes ID を使用し、メンバークラスターの AssumeRole は同じメンバーアカウントのロールに限られます。SA 認証に IAM Access Entry は不要ですが、メタデータ取得権限は必要です。どの方式も自動修復を有効にしません。
 
 ## 運用 / Operations
 

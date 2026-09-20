@@ -25,9 +25,12 @@ steampipe query "SELECT column_name FROM information_schema.columns WHERE table_
 
 | 차단된 API | 영향 | 해결 |
 |-----------|------|------|
-| `iam:ListMFADevices` | mfa_enabled 컬럼 조회 실패 → 전체 쿼리 실패 | mfa_enabled 참조 제거 |
+| `iam:ListMFADevices` | mfa_enabled 컬럼 조회 실패 → 전체 쿼리 실패 | v2 sync는 폴백 없이 유지 중(ADR-010 개정 前 선례) — 차단 시 iam_user run 전체 failed·last-good 동결, 필요하면 컬럼 제거 |
 | `lambda:GetFunction` | tags 컬럼 hydrate 실패 → 전체 쿼리 실패 | tags 참조 제거 (list 쿼리) |
-| `iam:ListAttachedUserPolicies` | attached_policy_arns 조회 실패 | attached_policy_arns 제거 |
+| `iam:ListAttachedUserPolicies` | iam_user attached_policy_arns 조회 실패 | 컬럼 제거 (기본 규칙) |
+| `iam:ListAttachedRolePolicies` | Optional role-policy lookup fails | ADR-010 (2026-09-02): retry once without `attached_policy_arns`; `GetRole` and instance-profile lookups remain and may fail. Only successful fallback refreshes base rows, with unknown policy attributes. If both queries fail, preserve last-good rows. Use the typed `inventory_sync_hydrate_fallback.remedy`; capacity and IAM/SCP denial need different responses. |
+
+Manual exploratory queries may select fewer fields, but inventory/release acceptance still requires all catalog types and zero unknown attributes. Do not remove required fields to make that gate pass.
 
 **aws.spc 설정으로 에러 무시:**
 ```hcl
@@ -37,7 +40,7 @@ connection "aws" {
 }
 ```
 
-> ⚠️ `ignore_error_codes`는 **테이블 레벨** 에러만 무시. **컬럼 hydrate 에러**는 해당 컬럼을 쿼리에서 제거해야 함.
+> `ignore_error_codes` applies only to table-level errors. The ADR-010 role-policy fallback omits only the optional policy-list column; it is not hydrate-free and can fail. Successful fallback remains incomplete evidence; both query failures preserve last-good rows. Do not bypass full-collection validation or infer a permission problem from an unclassified connection error.
 
 ---
 

@@ -12,6 +12,11 @@ A page for exploring Kubernetes resources with a K9s-style terminal UI.
 
 <Screenshot src="/screenshots/compute/eks-explorer.png" alt="EKS Explorer" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Top Bar
@@ -96,7 +101,7 @@ You can analyze with the AI Assistant using queries like "kube-system namespace 
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Pod detailed dashboard
 - [EKS Deployments](../compute/eks-deployments) - Deployment details
 - [EKS Services](../compute/eks-services) - Service details

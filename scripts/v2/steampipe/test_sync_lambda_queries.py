@@ -1,7 +1,10 @@
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
+import pytest
+from botocore.exceptions import ClientError
 
 
 def load_sync_lambda():
@@ -93,7 +96,7 @@ def test_enabled_target_accounts_excludes_host_and_self():
 
 def test_account_reachable_true_when_its_own_steampipe_connection_answers(monkeypatch):
     """M2 (round 5): _account_reachable must query the account's OWN Steampipe connection
-    (aws_<account_id>.aws_caller_identity) — the SAME data path the aggregator uses — not an
+    (aws_<account_id>.aws_sts_caller_identity) — the SAME data path the aggregator uses — not an
     independent sts:AssumeRole (which only proves the IAM trust policy, not that Steampipe
     actually queried the account this run; see the round-5 rewrite comment on _account_reachable
     for the exact data-loss scenario that motivated this)."""
@@ -108,9 +111,9 @@ def test_account_reachable_true_when_its_own_steampipe_connection_answers(monkey
         def close(self):
             pass
 
-    monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
+    monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable("210987654321") is True
-    assert "aws_210987654321.aws_caller_identity" in queries[0]
+    assert "aws_210987654321.aws_sts_caller_identity" in queries[0]
 
 
 def test_account_reachable_false_when_connection_query_fails(monkeypatch):
@@ -125,20 +128,21 @@ def test_account_reachable_false_when_connection_query_fails(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
+    monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable("999999999999") is False
 
 
-def test_account_reachable_rejects_non_account_id_without_connecting(monkeypatch):
+@pytest.mark.parametrize("account_id", ["'; DROP TABLE x--", "111111111111\n", "１" * 12, "self"])
+def test_account_reachable_rejects_non_account_id_without_connecting(monkeypatch, account_id):
     """Defense in depth (mirrors _inject_account's validation): a non-12-digit value must never
     reach SQL string interpolation — reject before ever calling _steampipe()."""
     mod = load_sync_lambda()
 
-    def _boom():
+    def _boom(*_a):
         raise AssertionError("must not connect for an invalid account id")
 
     monkeypatch.setattr(mod, "_steampipe", _boom)
-    assert mod._account_reachable("'; DROP TABLE x--") is False
+    assert mod._account_reachable(account_id) is False
 
 
 def test_account_reachable_closes_connection_even_on_failure(monkeypatch):
@@ -153,7 +157,7 @@ def test_account_reachable_closes_connection_even_on_failure(monkeypatch):
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
+    monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     mod._account_reachable("210987654321")
     assert closed == [True]
 
@@ -170,3 +174,1685 @@ def test_opensearch_query_carries_the_l153_detail_columns():
     ):
         assert col in sql, col
     assert "off_peak_window_options" not in sql
+
+
+def test_log_is_structured_json(capsys):
+    """Missing field-safe JSON formatting would make downstream log parsing unreliable."""
+    mod = load_sync_lambda()
+
+    mod._log("inventory_sync_complete", resource_type="ec2", row_count=3, elapsed_ms=12)
+
+    record = json.loads(capsys.readouterr().out)
+    assert record == {
+        "event": "inventory_sync_complete",
+        "resource_type": "ec2",
+        "row_count": 3,
+        "elapsed_ms": 12,
+    }
+
+
+def test_all_dispatch_reports_every_type_queued(capsys):
+    """A fully queued fan-out must report dispatched with exact per-type outcomes."""
+    mod = load_sync_lambda()
+    mod.QUERIES = {"ec2": ("SELECT 1", "id", "region")}
+    mod.SDK_SYNCS = {"s3": lambda: ([], "id", "region")}
+
+    class FakeLambda:
+        def invoke(self, **kwargs):
+            return {"StatusCode": 202}
+
+    class FakeContext:
+        invoked_function_arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:sync"
+
+    mod._lambda = FakeLambda()
+    result = mod.lambda_handler({"type": "all"}, FakeContext())
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert result == {
+        "status": "dispatched",
+        "queued_count": 2,
+        "failed_count": 0,
+        "queued_types": ["ec2", "s3"],
+        "failed_types": [],
+    }
+    assert records == [{
+        "event": "inventory_sync_dispatch",
+        "status": "dispatched",
+        "type_count": 2,
+        "queued_count": 2,
+        "failed_count": 0,
+        "queued_types": ["ec2", "s3"],
+        "failed_types": [],
+    }]
+
+
+def test_all_dispatch_continues_after_one_failure_and_reports_partial_without_error_text(capsys):
+    """One failed self-invoke must not block later types or expose the raw exception."""
+    mod = load_sync_lambda()
+    mod.QUERIES = {
+        "ec2": ("SELECT 1", "id", "region"),
+        "alb": ("SELECT 1", "id", "region"),
+    }
+    mod.SDK_SYNCS = {"s3": lambda: ([], "id", "region")}
+    invoked = []
+
+    class FakeLambda:
+        def invoke(self, **kwargs):
+            resource_type = json.loads(kwargs["Payload"].decode())["type"]
+            invoked.append(resource_type)
+            if resource_type == "alb":
+                raise RuntimeError("credential=supersecret account=123456789012")
+            return {"StatusCode": 202}
+
+    class FakeContext:
+        invoked_function_arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:sync"
+
+    mod._lambda = FakeLambda()
+    result = mod.lambda_handler({"type": "all"}, FakeContext())
+
+    output = capsys.readouterr().out
+    records = [json.loads(line) for line in output.splitlines()]
+    assert invoked == ["ec2", "alb", "s3"]
+    assert result == {
+        "status": "partial",
+        "queued_count": 2,
+        "failed_count": 1,
+        "queued_types": ["ec2", "s3"],
+        "failed_types": ["alb"],
+    }
+    assert records[0]["status"] == "partial"
+    assert records[0]["queued_types"] == ["ec2", "s3"]
+    assert records[0]["failed_types"] == ["alb"]
+    assert "supersecret" not in output
+    assert "123456789012" not in output
+    assert "supersecret" not in json.dumps(result)
+
+
+def test_all_dispatch_reports_failed_when_no_type_was_queued(capsys):
+    """A fan-out with zero accepted async invokes must not claim dispatch success."""
+    mod = load_sync_lambda()
+    mod.QUERIES = {"ec2": ("SELECT 1", "id", "region")}
+    mod.SDK_SYNCS = {"s3": lambda: ([], "id", "region")}
+
+    class FakeLambda:
+        def invoke(self, **kwargs):
+            return {"StatusCode": 500}
+
+    class FakeContext:
+        invoked_function_arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:sync"
+
+    mod._lambda = FakeLambda()
+    result = mod.lambda_handler({"type": "all"}, FakeContext())
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert result == {
+        "status": "failed",
+        "queued_count": 0,
+        "failed_count": 2,
+        "queued_types": [],
+        "failed_types": ["ec2", "s3"],
+    }
+    assert records[0]["status"] == "failed"
+    assert records[0]["queued_count"] == 0
+    assert records[0]["failed_count"] == 2
+
+
+def test_new_run_token_is_opaque_uuid_hex():
+    """A predictable or reused ownership token would not isolate stale finalizers."""
+    mod = load_sync_lambda()
+
+    first = mod._new_run_token()
+    second = mod._new_run_token()
+
+    assert first != second
+    assert len(first) == 32
+    assert len(second) == 32
+    int(first, 16)
+    int(second, 16)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "partial", "failed"])
+def test_every_terminal_finalizer_uses_run_token_compare_and_set(
+    monkeypatch, status
+):
+    """Removing the token predicate or RETURNING lets a stale invocation overwrite a newer run."""
+    mod = load_sync_lambda()
+    calls = []
+    closed = []
+    run_token = "a" * 32
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(mod, "_aurora", FinalizerAurora)
+
+    updated = mod._finalize_sync_ledger(
+        resource_type="ec2",
+        run_token=run_token,
+        status=status,
+        row_count=3,
+        error="safe failure",
+    )
+
+    assert updated is True
+    assert closed == [True]
+    assert len(calls) == 1
+    sql, params = calls[0]
+    normalized = " ".join(sql.split())
+    assert (
+        "WHERE resource_type=:t AND account_id='self' "
+        "AND run_token=:run_token"
+    ) in normalized
+    assert normalized.endswith("RETURNING 1")
+    assert params["run_token"] == run_token
+
+
+@pytest.mark.parametrize("mode", ["steampipe", "steampipe_hydrate", "sdk", "sdk_partial"])
+def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, monkeypatch):
+    mod = load_sync_lambda()
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    rows = [
+        {"id": "i-one", "account_id": "111111111111", "region": "r-one", "value": "old"},
+        {"id": "i-one", "account_id": "111111111111", "region": "r-one", "value": "last"},
+        {"id": "i-one", "account_id": "111111111111", "region": "r-two", "value": "region"},
+        {"id": "i-one", "account_id": "222222222222", "region": "r-one", "value": "member"},
+    ]
+    persisted, finalized, snapshots = {}, [], []
+
+    class Aurora:
+        def run(self, sql, **params):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if sql.startswith("INSERT INTO inventory_resources"):
+                assert "ON CONFLICT (resource_type, account_id, region, resource_id)" in sql
+                persisted[(params["acct"], params["rg"], params["id"])] = json.loads(params["d"])
+            if "SELECT account_id, region, resource_id" in sql:
+                return list(persisted)
+            if "RETURNING 1" in sql:
+                finalized.append(params)
+                return [(1,)]
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", Aurora)
+    monkeypatch.setattr(mod, "_enabled_target_accounts", lambda _db: [])
+    monkeypatch.setattr(mod, "_write_snapshot_row", lambda _db, account, typ, count: snapshots.append((account, count)))
+    mod._ALLOWED.add("duplicate_test")
+    if mode.startswith("steampipe"):
+        mod.QUERIES["duplicate_test"] = ("SELECT fixture", "id", "region")
+        columns = list(rows[0])
+        monkeypatch.setattr(mod, "_run_steampipe_query", lambda *_args: (
+            [[row[key] for key in columns] for row in rows], columns, mode == "steampipe_hydrate"))
+    else:
+        mod.SDK_SYNCS["duplicate_test"] = lambda: (rows, "id", "region", {
+            "failure_count": int(mode == "sdk_partial"),
+            "failure_types": ["ClientError:AccessDenied"] if mode == "sdk_partial" else [],
+        })
+    result = mod.sync("duplicate_test")
+    assert result["status"] == ("partial" if mode == "sdk_partial" else "succeeded")
+    expected_scope = ("unmeasured" if mode == "sdk_partial" else
+                      "host_only" if mode == "sdk" else "enabled_scan_accounts")
+    assert result["account_reachability_scope"] == expected_scope
+    assert result["unreachable_account_count"] == (0 if mode.startswith("steampipe") else None)
+    assert len(persisted) == 3
+    assert persisted[("self", "r-one", "i-one")]["value"] == "last"
+    assert result["row_count"] == finalized[-1]["n"] == len(persisted)
+    terminal = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if '"inventory_sync_complete"' in line]
+    assert terminal[-1]["row_count"] == len(persisted)
+    assert terminal[-1]["account_reachability_scope"] == expected_scope
+    assert terminal[-1]["unreachable_account_count"] == result["unreachable_account_count"]
+    if mode == "steampipe_hydrate":
+        assert terminal[-1]["unknown_attribute_count"] == finalized[-1]["u"] == len(persisted)
+    assert sorted(snapshots) == ([] if mode == "sdk_partial" else [("222222222222", 1), ("self", 2)])
+
+
+def test_sync_success_logs_one_terminal_record_with_row_count(capsys, monkeypatch):
+    """Omitting or duplicating a successful terminal log loses sync outcome observability."""
+    mod = load_sync_lambda()
+    connections = []
+
+    class FakeAurora:
+        def __init__(self):
+            self.sql_log = []
+            connections.append(self)
+
+        def run(self, sql, **kwargs):
+            self.sql_log.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SELECT account_id, region, resource_id" in sql:
+                return [("self", "ap-northeast-2", "stale-r-0")]
+            if "RETURNING 1" in sql:
+                return [(1,)]
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["log_test_success"] = lambda: (
+        [{"id": "r-1", "region": "ap-northeast-2"}],
+        "id",
+        "region",
+        {"failure_count": 0, "failure_types": []},
+    )
+    mod._ALLOWED.add("log_test_success")
+
+    result = mod.sync("log_test_success")
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    terminal = [record for record in records if record["event"].startswith("inventory_sync_") and
+                record["event"] != "inventory_sync_dispatch"]
+    assert result == {
+        "status": "succeeded",
+        "type": "log_test_success",
+        "row_count": 1,
+        "unknown_attribute_count": 0,
+        "account_reachability_scope": "host_only",
+        "unreachable_account_count": None,
+    }
+    assert len(terminal) == 1
+    assert terminal[0]["event"] == "inventory_sync_complete"
+    assert terminal[0]["resource_type"] == "log_test_success"
+    assert terminal[0]["row_count"] == 1
+    assert terminal[0]["unknown_attribute_count"] == 0
+    assert terminal[0]["account_reachability_scope"] == "host_only"
+    assert terminal[0]["unreachable_account_count"] is None
+    assert terminal[0]["degraded"] is False
+    assert terminal[0]["throttled"] is False
+    assert terminal[0]["freshness"] == "healthy"
+    assert terminal[0]["age_minutes"] == 0
+    assert isinstance(terminal[0]["elapsed_ms"], int)
+    assert len(connections) == 2
+    main_sql = [sql for sql, _ in connections[0].sql_log]
+    finalizer_sql = [sql for sql, _ in connections[1].sql_log]
+    assert mod.PHASE1_PRUNE_SQL in main_sql
+    assert any(
+        "DELETE FROM inventory_resources" in sql
+        and params.get("id") == "stale-r-0"
+        for sql, params in connections[0].sql_log
+    )
+    assert not any("SET status='succeeded'" in sql for sql in main_sql)
+    assert any(
+        "SET status='succeeded'" in sql
+        and "last_success_at=now()" in sql
+        and "last_success_row_count=:n" in sql
+        and "unknown_attribute_count=:u" in sql
+        and "run_token=:run_token" in sql
+        and "RETURNING 1" in sql
+        for sql in finalizer_sql
+    )
+    running = next(
+        (sql, params) for sql, params in connections[0].sql_log
+        if "INSERT INTO inventory_sync_runs" in sql
+    )
+    assert "run_token" in running[0]
+    # a new run must not inherit the previous run's disclosed attribute blind spots
+    assert "unknown_attribute_count=NULL" in running[0]
+    assert running[1]["run_token"] == connections[1].sql_log[-1][1]["run_token"]
+
+
+def test_sync_success_with_unknown_attrs_marks_degraded(capsys, monkeypatch):
+    """A succeeded run with attribute blind spots must degrade BOTH the freshness and the
+    'degraded' flag — a dashboard keying on either field must read the same story."""
+    mod = load_sync_lambda()
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["sdk_unknown_attrs_test"] = lambda: (
+        [{"id": "new-good", "region": "ap-northeast-2"}],
+        "id",
+        "region",
+        {"failure_count": 0, "failure_types": [], "unknown_attribute_count": 2},
+    )
+    mod._ALLOWED.add("sdk_unknown_attrs_test")
+
+    result = mod.sync("sdk_unknown_attrs_test")
+
+    assert result["status"] == "succeeded"
+    terminal = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines()
+        if json.loads(line)["event"] == "inventory_sync_complete"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["unknown_attribute_count"] == 2
+    assert terminal[0]["freshness"] == "degraded"
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["throttled"] is False
+
+
+def test_sdk_partial_upserts_good_rows_without_pruning_or_advancing_last_success(
+    capsys, monkeypatch
+):
+    """A swallowed SDK sub-call failure makes the run partial and preserves all prior rows."""
+    mod = load_sync_lambda()
+    main_calls = []
+    finalizer_calls = []
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SELECT account_id, region, resource_id" in sql:
+                return [
+                    ("self", "ap-northeast-2", "old-good"),
+                    ("self", "ap-northeast-2", "old-missing-from-partial"),
+                ]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["sdk_partial_test"] = lambda: (
+        [{"id": "new-good", "region": "ap-northeast-2"}],
+        "id",
+        "region",
+        {
+            "failure_count": 1,
+            "failure_types": ["ClientError:AccessDenied"],
+            "unknown_attribute_count": 2,
+        },
+    )
+    mod._ALLOWED.add("sdk_partial_test")
+
+    result = mod.sync("sdk_partial_test")
+
+    assert result == {
+        "status": "partial",
+        "type": "sdk_partial_test",
+        "row_count": 1,
+        "failure_count": 1,
+        "failure_types": ["ClientError:AccessDenied"],
+        "unknown_attribute_count": 2,
+        "account_reachability_scope": "unmeasured",
+        "unreachable_account_count": None,
+    }
+    assert any("INSERT INTO inventory_resources" in sql for sql, _ in main_calls)
+    assert mod.PHASE1_PRUNE_SQL not in [sql for sql, _ in main_calls]
+    assert not any("DELETE FROM inventory_resources" in sql for sql, _ in main_calls)
+    assert not any("inventory_snapshots" in sql for sql, _ in main_calls)
+    assert len(finalizer_calls) == 1
+    assert "SET status='partial'" in finalizer_calls[0][0]
+    assert "unknown_attribute_count=:u" in finalizer_calls[0][0]
+    assert finalizer_calls[0][1]["u"] == 2
+    assert "last_success_at" not in finalizer_calls[0][0]
+    assert "last_success_row_count" not in finalizer_calls[0][0]
+
+    output = capsys.readouterr().out
+    terminal = [json.loads(line) for line in output.splitlines()]
+    assert terminal == [{
+        "event": "inventory_sync_complete",
+        "resource_type": "sdk_partial_test",
+        "row_count": 1,
+        "failure_count": 1,
+        "failure_types": ["ClientError:AccessDenied"],
+        "unknown_attribute_count": 2,
+        "account_reachability_scope": "unmeasured",
+        "unreachable_account_count": None,
+        "degraded": True,
+        "throttled": False,
+        "freshness": "degraded",
+        "age_minutes": None,
+        "elapsed_ms": terminal[0]["elapsed_ms"],
+    }]
+    assert "supersecret" not in output
+    assert "old-missing-from-partial" not in output
+
+
+def test_failure_label_is_throttling_matches_structured_code_suffix():
+    """Loose substring matching on a safe label would miss the structured throttle codes."""
+    mod = load_sync_lambda()
+
+    assert mod._failure_label_is_throttling("ClientError:TooManyRequestsException") is True
+    assert mod._failure_label_is_throttling("ClientError:RequestLimitExceeded") is True
+    assert mod._failure_label_is_throttling("ClientError:SlowDown") is True
+    assert mod._failure_label_is_throttling("ClientError:AccessDenied") is False
+    assert mod._failure_label_is_throttling("UnsupportedApi") is False
+
+
+def test_sync_partial_marks_throttled_from_structured_failure_label(capsys, monkeypatch):
+    """A throttle-coded SDK sub-call failure must set the partial run's throttled telemetry."""
+    mod = load_sync_lambda()
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["sdk_partial_throttle_test"] = lambda: (
+        [{"id": "new-good", "region": "ap-northeast-2"}],
+        "id",
+        "region",
+        {
+            "failure_count": 1,
+            "failure_types": ["ClientError:TooManyRequestsException"],
+            "unknown_attribute_count": 0,
+        },
+    )
+    mod._ALLOWED.add("sdk_partial_throttle_test")
+
+    mod.sync("sdk_partial_throttle_test")
+
+    terminal = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines()
+        if json.loads(line)["event"] == "inventory_sync_complete"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["failure_types"] == ["ClientError:TooManyRequestsException"]
+    assert terminal[0]["throttled"] is True
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["freshness"] == "degraded"
+
+
+def test_sync_partial_account_omission_preserves_last_good_and_logs_only_count(
+    capsys, monkeypatch
+):
+    """An expected account that answers neither the aggregate query nor its own probe makes the
+    run partial: preserve its old rows/last-success state and disclose only an unreachable count."""
+    mod = load_sync_lambda()
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    main_calls = []
+    finalizer_calls = []
+
+    class MainAurora:
+        last_success_at = "prior-success"
+        last_success_row_count = 7
+
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "last_success_at=now()" in sql or "last_success_at=NULL" in sql:
+                self.last_success_at = "overwritten"
+            if "last_success_row_count=:n" in sql or "last_success_row_count=NULL" in sql:
+                self.last_success_row_count = "overwritten"
+            if "SELECT account_id, region, resource_id" in sql:
+                return [
+                    ("self", "ap-northeast-2", "old-host"),
+                    ("222222222222", "ap-northeast-2", "last-good-target"),
+                ]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    class FakeSteampipe:
+        columns = [
+            {"name": "id"},
+            {"name": "region"},
+            {"name": "account_id"},
+        ]
+
+        def run(self, sql):
+            return [("new-host", "ap-northeast-2", "111111111111")]
+
+        def close(self):
+            pass
+
+    adb = MainAurora()
+    connections = iter([adb, FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_steampipe", lambda timeout="240s": FakeSteampipe())
+    monkeypatch.setattr(mod, "_enabled_target_accounts", lambda adb: ["222222222222"])
+    monkeypatch.setattr(mod, "_account_reachable", lambda account_id: False)
+    mod.QUERIES["partial_account_test"] = ("SELECT id, region, account_id", "id", "region")
+    mod._ALLOWED.add("partial_account_test")
+
+    result = mod.sync("partial_account_test")
+
+    assert result == {
+        "status": "partial",
+        "type": "partial_account_test",
+        "row_count": 1,
+        "account_reachability_scope": "enabled_scan_accounts",
+        "unreachable_account_count": 1,
+        "unknown_attribute_count": 0,
+    }
+    partial_updates = [
+        (sql, params) for sql, params in finalizer_calls
+        if "UPDATE inventory_sync_runs SET status='partial'" in sql
+    ]
+    assert len(partial_updates) == 1
+    assert "last_success_at" not in partial_updates[0][0]
+    assert "last_success_row_count" not in partial_updates[0][0]
+    assert not any(
+        "SET status='partial'" in sql or "SET status='succeeded'" in sql
+        for sql, _ in main_calls
+    )
+    assert adb.last_success_at == "prior-success"
+    assert adb.last_success_row_count == 7
+    assert not any(
+        "DELETE FROM inventory_resources" in sql
+        and params.get("acct") == "222222222222"
+        for sql, params in main_calls
+    )
+
+    output = capsys.readouterr().out
+    terminal = [
+        json.loads(line) for line in output.splitlines()
+        if json.loads(line)["event"] == "inventory_sync_complete"
+    ]
+    assert terminal == [{
+        "event": "inventory_sync_complete",
+        "resource_type": "partial_account_test",
+        "row_count": 1,
+        "account_reachability_scope": "enabled_scan_accounts",
+        "unreachable_account_count": 1,
+        "unknown_attribute_count": 0,
+        "degraded": True,
+        "throttled": False,
+        "freshness": "degraded",
+        "age_minutes": None,
+        "elapsed_ms": terminal[0]["elapsed_ms"],
+    }]
+    assert "111111111111" not in output
+    assert "222222222222" not in output
+
+
+def test_zero_row_success_is_durable_across_later_failure(capsys, monkeypatch):
+    """A genuine empty successful inventory must retain its success timestamp/count after a later
+    running/failed overwrite, after every expected aggregator account proves reachable."""
+    mod = load_sync_lambda()
+
+    finalizer_calls = []
+
+    class MainAurora:
+        def __init__(self):
+            self.sql_log = []
+
+        def run(self, sql, **kwargs):
+            self.sql_log.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SELECT account_id, region, resource_id" in sql:
+                return []
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    first_main = MainAurora()
+    first_finalizer = FinalizerAurora()
+    second_main = MainAurora()
+    second_finalizer = FinalizerAurora()
+    connections = iter([first_main, first_finalizer, second_main, second_finalizer])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    monkeypatch.setattr(mod, "_enabled_target_accounts", lambda adb: ["222222222222"])
+    reachable = []
+
+    def account_reachable(account_id):
+        reachable.append(account_id)
+        return True
+
+    monkeypatch.setattr(mod, "_account_reachable", account_reachable)
+    aggregate_attempts = iter([[], RuntimeError("later collection failure")])
+
+    class FakeSteampipe:
+        columns = [
+            {"name": "id"},
+            {"name": "region"},
+            {"name": "account_id"},
+        ]
+
+        def run(self, sql):
+            value = next(aggregate_attempts)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_steampipe", lambda timeout="240s": FakeSteampipe())
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    mod.QUERIES["zero_row_history_test"] = (
+        "SELECT id, region, account_id",
+        "id",
+        "region",
+    )
+    mod._ALLOWED.add("zero_row_history_test")
+
+    first = mod.sync("zero_row_history_test")
+    second = mod.sync("zero_row_history_test")
+    capsys.readouterr()
+
+    assert first == {
+        "status": "succeeded",
+        "type": "zero_row_history_test",
+        "row_count": 0,
+        "unknown_attribute_count": 0,
+        "account_reachability_scope": "enabled_scan_accounts",
+        "unreachable_account_count": 0,
+    }
+    assert second["status"] == "failed"
+    assert reachable == ["111111111111", "222222222222"]
+    assert not any(
+        "SET status='succeeded'" in sql or "SET status='failed'" in sql
+        for sql, _ in first_main.sql_log + second_main.sql_log
+    )
+    succeeded = [
+        (sql, params) for sql, params in finalizer_calls
+        if "SET status='succeeded'" in sql
+    ]
+    assert len(succeeded) == 1
+    assert "last_success_at=now()" in succeeded[0][0]
+    assert "last_success_row_count=:n" in succeeded[0][0]
+    assert succeeded[0][1]["n"] == 0
+    failed = [
+        sql for sql, _ in finalizer_calls
+        if "SET status='failed'" in sql
+    ]
+    assert len(failed) == 1
+    assert "last_success_at" not in failed[0]
+    assert "last_success_row_count" not in failed[0]
+
+
+def test_sync_failure_logs_one_terminal_record_with_bounded_error(capsys, monkeypatch):
+    """A raw work exception in logs, the Lambda result, or the ledger error column would
+    expose sensitive query or credential text. All three sinks carry only the bounded
+    category+type label."""
+    mod = load_sync_lambda()
+
+    ledger_writes = []
+
+    class FakeAurora:
+        def run(self, sql, **kwargs):
+            if "status='failed'" in sql:
+                ledger_writes.append(kwargs)
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "RETURNING 1" in sql:
+                return [(1,)]
+            return []
+
+        def close(self):
+            pass
+
+    failure = "password=supersecret SELECT * FROM inventory_resources " + "x" * 400
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+    mod.SDK_SYNCS["log_test_failure"] = lambda: (_ for _ in ()).throw(RuntimeError(failure))
+    mod._ALLOWED.add("log_test_failure")
+
+    result = mod.sync("log_test_failure")
+
+    output = capsys.readouterr().out
+    records = [json.loads(line) for line in output.splitlines()]
+    terminal = [record for record in records if record["event"].startswith("inventory_sync_") and
+                record["event"] != "inventory_sync_dispatch"]
+    assert result == {
+        "status": "failed",
+        "type": "log_test_failure",
+        "error": "sync failed: RuntimeError",
+    }
+    assert "supersecret" not in json.dumps(result)
+    assert ledger_writes
+    assert ledger_writes[-1]["e"] == "sync failed: RuntimeError"
+    assert "supersecret" not in ledger_writes[-1]["e"]
+    assert len(terminal) == 1
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert terminal[0]["resource_type"] == "log_test_failure"
+    assert terminal[0]["error_category"] == "sync"
+    assert terminal[0]["error"] == "inventory sync failed"
+    assert terminal[0]["error_type"] == "RuntimeError"
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["throttled"] is False
+    assert isinstance(terminal[0]["elapsed_ms"], int)
+    assert "supersecret" not in output
+
+
+def test_sync_failure_marks_clienterror_throttling_without_logging_raw_error(capsys, monkeypatch):
+    """Throttling state must come from structured exception metadata, never raw exception text."""
+    mod = load_sync_lambda()
+
+    class FakeAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "RETURNING 1" in sql:
+                return [(1,)]
+            return []
+
+        def close(self):
+            pass
+
+    secret = "credential=supersecret"
+    throttled = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": secret}},
+        "DescribeInstances",
+    )
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+    mod.SDK_SYNCS["log_test_throttled"] = (
+        lambda: (_ for _ in ()).throw(throttled)
+    )
+    mod._ALLOWED.add("log_test_throttled")
+
+    mod.sync("log_test_throttled")
+
+    output = capsys.readouterr().out
+    terminal = [
+        json.loads(line) for line in output.splitlines()
+        if json.loads(line)["event"] == "inventory_sync_failed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["throttled"] is True
+    assert terminal[0]["error_type"] == "ClientError"
+    assert secret not in output
+
+
+def test_sync_busy_logs_one_terminal_record(capsys, monkeypatch):
+    """A lock-contention return without a terminal log would conceal backpressure events."""
+    mod = load_sync_lambda()
+
+    class FakeAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(False,)]
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+
+    result = mod.sync("ec2")
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert result == {"status": "busy", "type": "ec2"}
+    assert records == [{
+        "event": "inventory_sync_busy",
+        "resource_type": "ec2",
+        "degraded": True,
+        "throttled": False,
+        "elapsed_ms": records[0]["elapsed_ms"],
+    }]
+    assert isinstance(records[0]["elapsed_ms"], int)
+
+
+def _terminal_records(capsys):
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    return [
+        record for record in records
+        if record["event"] in {
+            "inventory_sync_busy",
+            "inventory_sync_complete",
+            "inventory_sync_failed",
+        }
+    ]
+
+
+def test_sync_logs_one_safe_failure_when_aurora_connection_fails(capsys, monkeypatch):
+    """Moving _aurora outside the lifecycle catch would leave connection failures unlogged."""
+    mod = load_sync_lambda()
+    secret = "postgres://operator:supersecret@example.com:5432/awsops"
+
+    def fail_connect():
+        raise RuntimeError(f"connection refused {secret}")
+
+    monkeypatch.setattr(mod, "_aurora", fail_connect)
+
+    result = mod.sync("ec2")
+
+    terminal = _terminal_records(capsys)
+    assert result == {"status": "failed", "type": "ec2", "error": "inventory sync failed"}
+    assert terminal == [{
+        "event": "inventory_sync_failed",
+        "resource_type": "ec2",
+        "error_category": "lifecycle",
+        "error": "inventory sync failed",
+        "error_type": "RuntimeError",
+        "degraded": True,
+        "throttled": False,
+        "elapsed_ms": terminal[0]["elapsed_ms"],
+    }]
+    assert isinstance(terminal[0]["elapsed_ms"], int)
+    assert secret not in json.dumps(terminal)
+
+
+def test_sync_logs_one_safe_failure_when_lock_acquisition_fails(capsys, monkeypatch):
+    """An advisory-lock exception must not bypass the single terminal lifecycle record."""
+    mod = load_sync_lambda()
+    secret = "SELECT pg_try_advisory_lock(password='supersecret')"
+
+    class FakeAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                raise ValueError(secret)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+
+    result = mod.sync("ec2")
+
+    terminal = _terminal_records(capsys)
+    assert result == {"status": "failed", "type": "ec2", "error": "inventory sync failed"}
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert terminal[0]["error_category"] == "lifecycle"
+    assert terminal[0]["error"] == "inventory sync failed"
+    assert terminal[0]["error_type"] == "ValueError"
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["throttled"] is False
+    assert len(terminal) == 1
+    assert secret not in json.dumps(terminal)
+
+
+def test_sync_logs_work_failure_when_failure_ledger_write_fails(capsys, monkeypatch):
+    """A failed ledger update must not replace or suppress the original terminal failure."""
+    mod = load_sync_lambda()
+    work_secret = "work failure SELECT * FROM credentials WHERE token='supersecret'"
+    ledger_secret = "ledger failure password=supersecret"
+
+    connections = []
+
+    class FakeAurora:
+        def __init__(self):
+            self.sql_log = []
+            connections.append(self)
+
+        def run(self, sql, **kwargs):
+            self.sql_log.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SET status='failed'" in sql:
+                raise RuntimeError(ledger_secret)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+    mod.SDK_SYNCS["log_test_ledger_failure"] = (
+        lambda: (_ for _ in ()).throw(ValueError(work_secret))
+    )
+    mod._ALLOWED.add("log_test_ledger_failure")
+
+    result = mod.sync("log_test_ledger_failure")
+
+    terminal = _terminal_records(capsys)
+    assert result == {
+        "status": "failed",
+        "type": "log_test_ledger_failure",
+        "error": "sync failed: ValueError",
+    }
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert terminal[0]["error_category"] == "sync"
+    assert terminal[0]["error"] == "inventory sync failed"
+    assert terminal[0]["error_type"] == "ValueError"
+    assert terminal[0]["degraded"] is True
+    assert terminal[0]["throttled"] is False
+    assert len(terminal) == 1
+    output = json.dumps(terminal)
+    assert work_secret not in output
+    assert ledger_secret not in output
+    assert len(connections) == 2
+    assert not any(
+        "SET status='failed'" in sql
+        for sql, _ in connections[0].sql_log
+    )
+    assert any(
+        "SET status='failed'" in sql
+        and "last_success_at" not in sql
+        and "last_success_row_count" not in sql
+        for sql, _ in connections[1].sql_log
+    )
+
+
+@pytest.mark.parametrize(
+    ("cleanup", "error_type"),
+    [("unlock", "RuntimeError"), ("close", "OSError")],
+)
+def test_sync_cleanup_failure_replaces_success_with_one_safe_terminal_failure(
+    capsys, monkeypatch, cleanup, error_type
+):
+    """Logging complete before unlock/close would report success for an incomplete lifecycle."""
+    mod = load_sync_lambda()
+    secret = f"{cleanup} failure password=supersecret SELECT * FROM inventory_sync_runs"
+
+    main_calls = []
+    finalizer_calls = []
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if cleanup == "unlock" and "pg_advisory_unlock" in sql:
+                raise RuntimeError(secret)
+            return []
+
+        def close(self):
+            if cleanup == "close":
+                raise OSError(secret)
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["log_test_cleanup_failure"] = (
+        lambda: ([{"id": "r-1", "region": "ap-northeast-2"}], "id", "region")
+    )
+    mod._ALLOWED.add("log_test_cleanup_failure")
+
+    result = mod.sync("log_test_cleanup_failure")
+
+    terminal = _terminal_records(capsys)
+    assert result == {
+        "status": "failed",
+        "type": "log_test_cleanup_failure",
+        "error": "inventory sync cleanup failed",
+    }
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert terminal[0]["error_category"] == "cleanup"
+    assert terminal[0]["error"] == "inventory sync cleanup failed"
+    assert terminal[0]["error_type"] == error_type
+    assert len(terminal) == 1
+    assert secret not in json.dumps(terminal)
+    assert not any(
+        "SET status='succeeded'" in sql or "SET status='failed'" in sql
+        for sql, _ in main_calls
+    )
+    failed_updates = [
+        sql for sql, _ in finalizer_calls
+        if "SET status='failed'" in sql
+    ]
+    assert len(failed_updates) == 1
+    assert "last_success_at" not in failed_updates[0]
+    assert "last_success_row_count" not in failed_updates[0]
+
+
+def test_main_close_failure_uses_fresh_finalizer_after_connection_becomes_unusable(
+    capsys, monkeypatch
+):
+    """A close failure can poison the work connection; success must never be issued there, and a
+    separate connection must finalize failed without advancing durable last-success fields."""
+    mod = load_sync_lambda()
+    main_calls = []
+    finalizer_calls = []
+    ledger = {
+        "status": "succeeded",
+        "last_success_at": "prior-success",
+        "last_success_row_count": 9,
+    }
+
+    class MainAurora:
+        def __init__(self):
+            self.usable = True
+            self.close_attempted = False
+
+        def run(self, sql, **kwargs):
+            if not self.usable:
+                raise RuntimeError("main connection is unusable")
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "INSERT INTO inventory_sync_runs" in sql:
+                ledger["status"] = "running"
+            if "SELECT account_id, region, resource_id" in sql:
+                return []
+            return []
+
+        def close(self):
+            self.close_attempted = True
+            self.usable = False
+            raise OSError("close failed password=supersecret")
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            if "SET status='failed'" in sql:
+                ledger["status"] = "failed"
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    main = MainAurora()
+    connection_count = 0
+
+    def aurora_factory():
+        nonlocal connection_count
+        connection_count += 1
+        if connection_count == 1:
+            return main
+        assert main.close_attempted is True
+        assert main.usable is False
+        return FinalizerAurora()
+
+    monkeypatch.setattr(mod, "_aurora", aurora_factory)
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["close_finalizer_test"] = (
+        lambda: ([{"id": "r-1", "region": "ap-northeast-2"}], "id", "region")
+    )
+    mod._ALLOWED.add("close_finalizer_test")
+
+    result = mod.sync("close_finalizer_test")
+    terminal = _terminal_records(capsys)
+
+    assert result == {
+        "status": "failed",
+        "type": "close_finalizer_test",
+        "error": "inventory sync cleanup failed",
+    }
+    assert main.usable is False
+    assert ledger == {
+        "status": "failed",
+        "last_success_at": "prior-success",
+        "last_success_row_count": 9,
+    }
+    assert not any(
+        "SET status='succeeded'" in sql or "SET status='failed'" in sql
+        for sql, _ in main_calls
+    )
+    assert len(finalizer_calls) == 1
+    assert "SET status='failed'" in finalizer_calls[0][0]
+    assert "last_success_at" not in finalizer_calls[0][0]
+    assert "last_success_row_count" not in finalizer_calls[0][0]
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert terminal[0]["error_category"] == "cleanup"
+    assert "supersecret" not in json.dumps(terminal)
+
+
+def test_finalizer_write_failure_leaves_running_without_false_success(capsys, monkeypatch):
+    """If the fresh finalizer cannot write, the main connection must have issued no terminal update,
+    so the durable row remains running with its previous last-success fields."""
+    mod = load_sync_lambda()
+    main_calls = []
+    finalizer_calls = []
+    ledger = {
+        "status": "succeeded",
+        "last_success_at": "prior-success",
+        "last_success_row_count": 4,
+    }
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "INSERT INTO inventory_sync_runs" in sql:
+                ledger["status"] = "running"
+            if "SELECT account_id, region, resource_id" in sql:
+                return []
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            raise RuntimeError("finalizer password=supersecret")
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["finalizer_write_failure_test"] = (
+        lambda: ([{"id": "r-1", "region": "ap-northeast-2"}], "id", "region")
+    )
+    mod._ALLOWED.add("finalizer_write_failure_test")
+
+    result = mod.sync("finalizer_write_failure_test")
+    terminal = _terminal_records(capsys)
+
+    assert result["status"] == "failed"
+    assert ledger == {
+        "status": "running",
+        "last_success_at": "prior-success",
+        "last_success_row_count": 4,
+    }
+    assert not any(
+        "SET status='succeeded'" in sql or "SET status='failed'" in sql
+        for sql, _ in main_calls
+    )
+    assert len(finalizer_calls) == 1
+    assert "SET status='succeeded'" in finalizer_calls[0][0]
+    assert len(terminal) == 1
+    assert terminal[0]["event"] == "inventory_sync_failed"
+    assert "supersecret" not in json.dumps(terminal)
+
+
+def test_stale_finalizer_cannot_overwrite_newer_run(capsys, monkeypatch):
+    """Run B can acquire the released lock and finalize before run A opens its fresh finalizer;
+    A's token must then lose the CAS without changing B's row or leaking ownership identifiers."""
+    mod = load_sync_lambda()
+    token_a = "a" * 32
+    token_b = "b" * 32
+    sensitive_account = "222222222222"
+    tokens = iter([token_a, token_b])
+    ledger = {
+        "status": "succeeded",
+        "run_token": "prior",
+        "row_count": 9,
+        "last_success_row_count": 9,
+    }
+    running_tokens = []
+    finalizer_calls = []
+    nested_result = {}
+    lock_held = False
+    triggered = False
+    collection_count = 0
+
+    monkeypatch.setattr(
+        mod, "_new_run_token", lambda: next(tokens), raising=False
+    )
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+
+    def fetch_inventory():
+        nonlocal collection_count
+        collection_count += 1
+        rows = [
+            {
+                "id": f"r-{collection_count}-{index}",
+                "region": "ap-northeast-2",
+                "account_id": sensitive_account,
+            }
+            for index in range(collection_count)
+        ]
+        return rows, "id", "region"
+
+    mod.SDK_SYNCS["cas_interleaving_test"] = fetch_inventory
+    mod._ALLOWED.add("cas_interleaving_test")
+
+    class MainAurora:
+        def __init__(self, trigger_b=False):
+            self.trigger_b = trigger_b
+
+        def run(self, sql, **kwargs):
+            nonlocal lock_held
+            if "pg_try_advisory_lock" in sql:
+                assert lock_held is False
+                lock_held = True
+                return [(True,)]
+            if "INSERT INTO inventory_sync_runs" in sql:
+                ledger.update(
+                    status="running",
+                    run_token=kwargs.get("run_token"),
+                    row_count=None,
+                )
+                running_tokens.append(kwargs.get("run_token"))
+            if "SELECT account_id, region, resource_id" in sql:
+                return []
+            if "pg_advisory_unlock" in sql:
+                assert lock_held is True
+                lock_held = False
+                return [(True,)]
+            return []
+
+        def close(self):
+            nonlocal triggered
+            if self.trigger_b and not triggered:
+                triggered = True
+                nested_result["value"] = mod.sync("cas_interleaving_test")
+
+    class FinalizerAurora:
+        def __init__(self, name):
+            self.name = name
+
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((self.name, sql, kwargs))
+            has_cas = (
+                "run_token=:run_token" in sql
+                and "RETURNING 1" in sql
+            )
+            if has_cas and ledger["run_token"] != kwargs.get("run_token"):
+                return []
+            if "SET status='succeeded'" in sql:
+                ledger.update(
+                    status="succeeded",
+                    row_count=kwargs["n"],
+                    last_success_row_count=kwargs["n"],
+                )
+            elif "SET status='partial'" in sql:
+                ledger.update(status="partial", row_count=kwargs["n"])
+            elif "SET status='failed'" in sql:
+                ledger.update(status="failed", row_count=kwargs["n"])
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([
+        MainAurora(trigger_b=True),
+        MainAurora(),
+        FinalizerAurora("B"),
+        FinalizerAurora("A"),
+    ])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+
+    result = mod.sync("cas_interleaving_test")
+    records = _terminal_records(capsys)
+
+    assert nested_result["value"] == {
+        "status": "succeeded",
+        "type": "cas_interleaving_test",
+        "row_count": 2,
+        "unknown_attribute_count": 0,
+        "account_reachability_scope": "host_only",
+        "unreachable_account_count": None,
+    }
+    assert result == {
+        "status": "failed",
+        "type": "cas_interleaving_test",
+        "error": "inventory sync superseded",
+    }
+    assert running_tokens == [token_a, token_b]
+    assert ledger == {
+        "status": "succeeded",
+        "run_token": token_b,
+        "row_count": 2,
+        "last_success_row_count": 2,
+    }
+    assert [name for name, _, _ in finalizer_calls] == ["B", "A"]
+    assert records[-1]["event"] == "inventory_sync_failed"
+    assert records[-1]["error_category"] == "superseded"
+    assert records[-1]["error"] == "inventory sync superseded"
+    assert records[-1]["degraded"] is True
+    assert records[-1]["throttled"] is False
+    output = json.dumps(records)
+    assert token_a not in output
+    assert token_b not in output
+    assert sensitive_account not in output
+
+
+def test_finalizer_close_failure_does_not_downgrade_committed_success(capsys, monkeypatch):
+    """Once the fresh connection commits the terminal update, its close is best-effort."""
+    mod = load_sync_lambda()
+    finalizer_calls = []
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SELECT account_id, region, resource_id" in sql:
+                return []
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            finalizer_calls.append((sql, kwargs))
+            return [(1,)]
+
+        def close(self):
+            raise OSError("best-effort close failed password=supersecret")
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    monkeypatch.setattr(mod, "_rec_account", lambda rec: "self")
+    monkeypatch.setattr(mod, "_account_counts", lambda recs: {"self": len(recs)})
+    mod.SDK_SYNCS["finalizer_close_failure_test"] = (
+        lambda: ([{"id": "r-1", "region": "ap-northeast-2"}], "id", "region")
+    )
+    mod._ALLOWED.add("finalizer_close_failure_test")
+
+    result = mod.sync("finalizer_close_failure_test")
+    terminal = _terminal_records(capsys)
+
+    assert result == {
+        "status": "succeeded",
+        "type": "finalizer_close_failure_test",
+        "row_count": 1,
+        "unknown_attribute_count": 0,
+        "account_reachability_scope": "host_only",
+        "unreachable_account_count": None,
+    }
+    assert len(finalizer_calls) == 1
+    assert "SET status='succeeded'" in finalizer_calls[0][0]
+    assert len(terminal) == 1
+    assert terminal[0]["event"] == "inventory_sync_complete"
+    assert "supersecret" not in json.dumps(terminal)
+
+
+@pytest.mark.parametrize(
+    "termination",
+    [KeyboardInterrupt("stop"), SystemExit(73)],
+)
+def test_sync_reraises_base_exception_after_best_effort_cleanup_without_terminal_log(
+    capsys, monkeypatch, termination
+):
+    """A BaseException must not be replaced by lifecycle logging or cleanup errors."""
+    mod = load_sync_lambda()
+    cleanup = []
+
+    class FakeAurora:
+        def run(self, sql, **kwargs):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "pg_advisory_unlock" in sql:
+                cleanup.append("unlock")
+            return []
+
+        def close(self):
+            cleanup.append("close")
+
+    def raise_termination():
+        raise termination
+
+    monkeypatch.setattr(mod, "_aurora", FakeAurora)
+    mod.SDK_SYNCS["log_test_base_exception"] = raise_termination
+    mod._ALLOWED.add("log_test_base_exception")
+
+    with pytest.raises(type(termination)) as caught:
+        mod.sync("log_test_base_exception")
+
+    assert caught.value is termination
+    assert cleanup == ["unlock", "close"]
+    assert capsys.readouterr().out == ""
+def test_cloudtrail_query_carries_the_l189_delivery_columns():
+    """Gap L189: CW-Logs/digest delivery + stop_logging_time detail fields (all present in the
+    pinned plugin aws@0.142.0)."""
+    mod = load_sync_lambda()
+    sql = mod.QUERIES["cloudtrail"][0]
+    for col in (
+        "cloudwatch_logs_role_arn", "latest_cloudwatch_logs_delivery_time",
+        "latest_cloudwatch_logs_delivery_error", "latest_digest_delivery_time",
+        "latest_digest_delivery_error", "stop_logging_time",
+    ):
+        assert col in sql, col
+
+
+def test_snapshot_rows_written_per_account_with_derived_series(capsys, monkeypatch):
+    """Gap L124/L129: the daily inventory_snapshots write is per account over `present`
+    (genuine 0 for a reachable-but-empty account; a DERIVED_SNAPSHOTS base type also writes
+    its derived security series from a COUNT over the just-pruned inventory_resources)."""
+    mod = load_sync_lambda()
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    main_calls = []
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if "SELECT COUNT(*) FROM inventory_resources" in sql:
+                return [(2,)]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    mod.SDK_SYNCS["snapshot_multiacct_test"] = lambda: (
+        [
+            {"id": "r-1", "region": "ap-northeast-2", "account_id": "111111111111"},
+            {"id": "r-2", "region": "ap-northeast-2", "account_id": "222222222222"},
+            {"id": "r-3", "region": "ap-northeast-2", "account_id": "222222222222"},
+        ],
+        "id",
+        "region",
+        {"failure_count": 0, "failure_types": []},
+    )
+    mod._ALLOWED.add("snapshot_multiacct_test")
+    monkeypatch.setitem(
+        mod.DERIVED_SNAPSHOTS,
+        "snapshot_multiacct_test",
+        ("derived_test_series", "(data->>'encrypted')='false'"),
+    )
+
+    result = mod.sync("snapshot_multiacct_test")
+    assert result["status"] == "succeeded"
+
+    snap_inserts = [
+        (sql, p) for sql, p in main_calls if "INSERT INTO inventory_snapshots" in sql
+    ]
+    snap_deletes = [
+        (sql, p) for sql, p in main_calls if "DELETE FROM inventory_snapshots" in sql
+    ]
+    by_series = {(p["a"], p["t"]): p["n"] for _, p in snap_inserts}
+    # base series: one row per present account, counts bucketed by _rec_account
+    assert by_series[("self", "snapshot_multiacct_test")] == 1
+    assert by_series[("222222222222", "snapshot_multiacct_test")] == 2
+    # derived series: one row per account from the lockstep COUNT (fake returns 2)
+    assert by_series[("self", "derived_test_series")] == 2
+    assert by_series[("222222222222", "derived_test_series")] == 2
+    # each insert is preceded by a PER-ACCOUNT same-day delete (never a blanket type delete)
+    assert len(snap_deletes) == len(snap_inserts) == 4
+    assert all("account_id=:a" in sql and "CURRENT_DATE" in sql for sql, _ in snap_deletes)
+    count_sqls = [
+        sql for sql, _ in main_calls if "SELECT COUNT(*) FROM inventory_resources" in sql
+    ]
+    assert all(
+        "resource_type=:t" in sql and "account_id=:a" in sql
+        and "(data->>'encrypted')='false'" in sql
+        for sql in count_sqls
+    )
+    assert len(count_sqls) == 2
+
+
+def test_derived_snapshot_predicates_lockstep_with_web_finding_sql():
+    """LOCKSTEP guard (gap L129): DERIVED_SNAPSHOTS predicates must stay verbatim copies of
+    web/lib/security-findings.ts (PUBLIC_S3_WHERE / FINDING_SQL) — the trend series must count
+    exactly what the /security page lists. Token-level: the TS source escapes backslashes
+    (double-backslash-s -> backslash-s), so the file is unescaped before comparing."""
+    mod = load_sync_lambda()
+    ts_path = Path(__file__).resolve().parents[3] / "web" / "lib" / "security-findings.ts"
+    ts_raw = ts_path.read_text(encoding="utf-8").replace("\\\\", "\\")
+    # whitespace-collapse both sides so multi-line TS template literals compare as one line
+    ts = " ".join(ts_raw.split())
+
+    def norm(s):
+        return " ".join(s.split())
+
+    # open_security_groups: the FULL predicate (column expr + anchored regex) must appear in
+    # the TS FINDING_SQL verbatim — not just a fragment, so a boolean-structure change drifts
+    # the test red.
+    assert mod.DERIVED_SNAPSHOTS["security_group"][0] == "open_security_groups"
+    assert norm(mod.DERIVED_SNAPSHOTS["security_group"][1]) in ts
+    # unencrypted_ebs: exact full predicate, pinned on the Python side and present in TS
+    assert mod.DERIVED_SNAPSHOTS["ebs_volume"] == (
+        "unencrypted_ebs", "(data->>'encrypted')='false'",
+    )
+    assert "(data->>'encrypted')='false'" in ts
+    # public_s3_buckets: PUBLIC_S3_WHERE is a JS string concatenation in the TS source, so a
+    # raw full-text containment can't work — instead the Python side is pinned EXACTLY (full
+    # boolean structure: 3 clauses OR-joined, parenthesized) and each clause must appear in TS
+    # in the same order (index-ordered), so both a clause change and a reorder drift red.
+    pub = mod.DERIVED_SNAPSHOTS["s3_public_access"]
+    assert pub[0] == "public_s3_buckets"
+    assert norm(pub[1]) == (
+        "( (data->>'bucket_policy_is_public')='true'"
+        " OR (data->>'block_public_acls')='false'"
+        " OR (data->>'block_public_policy')='false' )"
+    )
+    clauses = (
+        "(data->>'bucket_policy_is_public')='true'",
+        "(data->>'block_public_acls')='false'",
+        "(data->>'block_public_policy')='false'",
+    )
+    idxs = [ts.index(c) for c in clauses]  # raises if any clause left the TS source
+    assert idxs == sorted(idxs)
+    # disjointness: a derived series name colliding with a real synced resource_type would let
+    # _write_snapshot_row's same-day DELETE silently wipe the base series
+    derived_names = {v[0] for v in mod.DERIVED_SNAPSHOTS.values()}
+    assert not (derived_names & mod._ALLOWED)
+    # and every derived base type must itself be a real synced type
+    assert set(mod.DERIVED_SNAPSHOTS) <= mod._ALLOWED
+    # no predicate may carry statement separators/comments (the call-site guard's contract)
+    for _, where in mod.DERIVED_SNAPSHOTS.values():
+        assert ";" not in where and "--" not in where and "/*" not in where
+
+
+def test_host_only_trend_types_lockstep_with_sdk_syncs():
+    """LOCKSTEP guard (gap L124 round 4): web/lib/trend-utils.ts HOST_ONLY_TREND_TYPES must be
+    exactly SDK_SYNCS' keys (host-only collectors — their snapshot coverage is always ⊆
+    {'self'}) plus 'public_s3_buckets' (the derived series riding the s3_public_access SDK
+    sync). Drift in either direction breaks the client's coverage-completeness exemption:
+    a missing entry permanently blanks that type's KPIs under a multi-account scope; an extra
+    entry exempts a genuinely multi-account type from the honesty guard."""
+    import re
+
+    mod = load_sync_lambda()
+    ts_path = Path(__file__).resolve().parents[3] / "web" / "lib" / "trend-utils.ts"
+    ts = ts_path.read_text(encoding="utf-8")
+    m = re.search(
+        r"HOST_ONLY_TREND_TYPES[^=]*=\s*new Set\(\[(.*?)\]\)", ts, re.DOTALL
+    )
+    assert m, "HOST_ONLY_TREND_TYPES Set literal not found in trend-utils.ts"
+    ts_set = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+    assert ts_set == set(mod.SDK_SYNCS) | {"public_s3_buckets"}
+    # and the TS DERIVED_TREND_TYPES keys must be exactly the Python derived series names
+    # (comment-only lockstep until now — a drifted key would silently re-include a derived
+    # series in the chart total or mislabel it)
+    m2 = re.search(r"DERIVED_TREND_TYPES[^=]*=\s*\{(.*?)\n\};", ts, re.DOTALL)
+    assert m2, "DERIVED_TREND_TYPES literal not found in trend-utils.ts"
+    ts_derived = set(re.findall(r"^\s*([a-z0-9_]+):", m2.group(1), re.MULTILINE))
+    assert ts_derived == {v[0] for v in mod.DERIVED_SNAPSHOTS.values()}
+
+
+def test_sdk_sync_writes_zero_count_self_row_when_only_member_rows_returned(capsys, monkeypatch):
+    """A reachable account with ZERO rows gets a genuine 0 snapshot row (not key absence):
+    an SDK sync returning only member-account rows still writes self's 0 — the trend chart
+    distinguishes 'synced, none exist' from 'no successful sync that day'."""
+    mod = load_sync_lambda()
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    main_calls = []
+
+    class MainAurora:
+        def run(self, sql, **kwargs):
+            main_calls.append((sql, kwargs))
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            return []
+
+        def close(self):
+            pass
+
+    class FinalizerAurora:
+        def run(self, sql, **kwargs):
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connections = iter([MainAurora(), FinalizerAurora()])
+    monkeypatch.setattr(mod, "_aurora", lambda: next(connections))
+    mod.SDK_SYNCS["zero_self_test"] = lambda: (
+        [{"id": "r-1", "region": "ap-northeast-2", "account_id": "222233334444"}],
+        "id",
+        "region",
+        {"failure_count": 0, "failure_types": []},
+    )
+    mod._ALLOWED.add("zero_self_test")
+
+    assert mod.sync("zero_self_test")["status"] == "succeeded"
+    by_series = {
+        (p["a"], p["t"]): p["n"]
+        for sql, p in main_calls if "INSERT INTO inventory_snapshots" in sql
+    }
+    assert by_series[("self", "zero_self_test")] == 0  # genuine zero, not absence
+    assert by_series[("222233334444", "zero_self_test")] == 1
+
+
+def test_catalog_lists_all_collectors_without_scheduling_or_collecting():
+    mod = load_sync_lambda()
+    mod.QUERIES = {"ec2": ("SELECT 1", "id", "region")}
+    mod.SDK_SYNCS = {"s3": lambda: (_ for _ in ()).throw(AssertionError("must not collect"))}
+
+    class NoInvoke:
+        def invoke(self, **kwargs):
+            raise AssertionError("catalog must not dispatch")
+
+    mod._lambda = NoInvoke()
+    assert mod.lambda_handler({"type": "catalog"}, object()) == {
+        "status": "catalog", "types": ["ec2", "s3"],
+    }

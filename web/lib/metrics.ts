@@ -3,6 +3,7 @@ import { KafkaClient, GetBootstrapBrokersCommand, ListNodesCommand } from '@aws-
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
 import { getModelLabel, getModelPricing, computeCost, RANGE_CONFIGS, type ModelPricing, type CostBreakdown } from './bedrock';
 import { assumedClient } from './aws-assume';
+import type { EksDiagnosisMetrics, EksMetricSourceOutcome, EksMetricValues } from './eks-metrics-types';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 
@@ -251,6 +252,10 @@ export interface BedrockModelMetric {
   avgLatencyMs: number; clientErrors: number; serverErrors: number;
   cacheReadTokens: number; cacheWriteTokens: number;
   cost: CostBreakdown;
+  // gap L184 (v1 detail-panel parity): per-model time series over the selected range —
+  // invocations and combined input+output tokens. [] when the model reported no datapoints.
+  invSeries: { t: string; v: number }[];
+  tokenSeries: { t: string; v: number }[];
 }
 export interface BedrockMetrics {
   models: BedrockModelMetric[];
@@ -308,6 +313,9 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
 
   const acc: Record<number, { inv: number[]; in: number[]; out: number[]; lat: number[]; e4: number[]; e5: number[]; cr: number[]; cw: number[] }> = {};
   const seriesByTs = new Map<string, number>();
+  // gap L184: per-model timestamped samples (invocations / in+out tokens) for the detail charts.
+  const perModelInv: Record<number, Map<string, number>> = {};
+  const perModelTok: Record<number, Map<string, number>> = {};
   for (const res of r.MetricDataResults ?? []) {
     const m = (res.Id ?? '').match(/^(\w+?)_m(\d+)$/);
     if (!m) continue;
@@ -315,16 +323,27 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
     const mi = Number(m[2]);
     if (mi >= models.length) continue;
     (acc[mi] ??= { inv: [], in: [], out: [], lat: [], e4: [], e5: [], cr: [], cw: [] })[key] = (res.Values ?? []) as number[];
-    // combined token time series (input + output) keyed by timestamp
+    if (key === 'inv') {
+      const map = (perModelInv[mi] ??= new Map());
+      (res.Timestamps ?? []).forEach((t, i) => {
+        const iso = t instanceof Date ? t.toISOString() : String(t);
+        map.set(iso, (map.get(iso) ?? 0) + ((res.Values ?? [])[i] ?? 0));
+      });
+    }
+    // combined token time series (input + output) keyed by timestamp — total + per-model
     if (key === 'in' || key === 'out') {
       const ts = res.Timestamps ?? [];
       const vals = res.Values ?? [];
+      const map = (perModelTok[mi] ??= new Map());
       ts.forEach((t, i) => {
         const iso = t instanceof Date ? t.toISOString() : String(t);
         seriesByTs.set(iso, (seriesByTs.get(iso) ?? 0) + (vals[i] ?? 0));
+        map.set(iso, (map.get(iso) ?? 0) + (vals[i] ?? 0));
       });
     }
   }
+  const toSeries = (m?: Map<string, number>) =>
+    [...(m ?? new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b)).map(([t, v]) => ({ t, v }));
 
   const out: BedrockModelMetric[] = models.map((modelId, mi) => {
     const a = acc[mi] ?? { inv: [], in: [], out: [], lat: [], e4: [], e5: [], cr: [], cw: [] };
@@ -333,6 +352,8 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
     return {
       modelId, label: getModelLabel(modelId), pricing,
       invocations: sum(a.inv), ...usage,
+      invSeries: toSeries(perModelInv[mi]),
+      tokenSeries: toSeries(perModelTok[mi]),
       avgLatencyMs: Math.round(avg(a.lat)),
       clientErrors: sum(a.e4), serverErrors: sum(a.e5),
       cost: computeCost(usage, pricing),
@@ -344,12 +365,14 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
   return { models: out, totalCost, series };
 }
 
-// ── Generic per-resource live CloudWatch metrics (v1 parity for ElastiCache/OpenSearch/MSK) ──
+// ── Generic per-resource live CloudWatch metrics (ElastiCache/OpenSearch/MSK/EBS) ──
 // One GetMetricData call per resource; every failure degrades to [] (never blanks the panel).
 export interface LiveMetric { label: string; value: string }
 
-export type LiveFmt = 'pct' | 'ratioPct' | 'gb' | 'mb' | 'mbRaw' | 'count' | 'ms' | 'bps';
-interface LiveMetricDef { name: string; label: string; stat: 'Average' | 'Sum' | 'Maximum'; fmt: LiveFmt }
+export type LiveFmt = 'pct' | 'ratioPct' | 'gb' | 'mb' | 'mbRaw' | 'count' | 'ms' | 'bps' | 'iops' | 'dec1';
+// perSecond: the metric is a period SUM — both call sites divide by their own Period before
+// formatting (latest grid 3600s, spark trends 300s), so 'iops' renders true ops/sec.
+interface LiveMetricDef { name: string; label: string; stat: 'Average' | 'Sum' | 'Maximum'; fmt: LiveFmt; perSecond?: boolean }
 interface LiveMetricSpec { namespace: string; dims: (id: string, accountId?: string) => { Name: string; Value: string }[]; metrics: LiveMetricDef[] }
 
 const LIVE_SPECS: Record<string, LiveMetricSpec> = {
@@ -390,6 +413,17 @@ const LIVE_SPECS: Record<string, LiveMetricSpec> = {
       { name: 'ClusterStatus.red', label: 'Status Red', stat: 'Maximum', fmt: 'count' },
     ],
   },
+  // resource_id = VolumeId (gap L233 — v1's measured Read IOPS; the shared 1h-spark contract).
+  ebs_volume: {
+    namespace: 'AWS/EBS',
+    dims: (id) => [{ Name: 'VolumeId', Value: id }],
+    metrics: [
+      { name: 'VolumeReadOps', label: 'Read IOPS', stat: 'Sum', fmt: 'iops', perSecond: true },
+      { name: 'VolumeWriteOps', label: 'Write IOPS', stat: 'Sum', fmt: 'iops', perSecond: true },
+      { name: 'VolumeQueueLength', label: 'Queue Length', stat: 'Average', fmt: 'dec1' },
+      { name: 'BurstBalance', label: 'Burst Balance', stat: 'Average', fmt: 'pct' },
+    ],
+  },
   // resource_id = cluster name (sync primary key). Cluster-level dimensions only.
   msk: {
     namespace: 'AWS/Kafka',
@@ -413,6 +447,8 @@ function fmtLive(v: number, fmt: LiveFmt): string {
     case 'mbRaw': return `${v.toFixed(1)} MB`; // source metric already in megabytes (AWS/ES)
     case 'ms': return `${Math.round(v * 1000) / 1000} ms`;
     case 'bps': return `${(v / 1e6).toFixed(1)} MB/s`;
+    case 'iops': return `${(Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })} IOPS`;
+    case 'dec1': return (Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 }); // fractional averages (queue length) must not integer-round to 0
     default: return Math.round(v).toLocaleString();
   }
 }
@@ -429,14 +465,33 @@ export async function liveResourceMetrics(type: string, id: string, accountId?: 
       StartTime: new Date(Date.now() - 3 * 3600_000), EndTime: new Date(),
       MetricDataQueries: spec.metrics.map((m, i) => ({
         Id: `lm${i}`, ReturnData: true,
-        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: 3600, Stat: m.stat },
+        // perSecond metrics query at Period 300: an hourly bucket made the headline up to
+        // 1–2h stale (round-3 gate) — the newest COMPLETE 5-min bucket is both fresh and
+        // honestly convertible (÷300).
+        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: m.perSecond ? 300 : 3600, Stat: m.stat },
       })),
     }));
     const out: LiveMetric[] = [];
     for (const res of r.MetricDataResults ?? []) {
       const i = Number((res.Id ?? '').replace('lm', ''));
       const def = spec.metrics[i];
-      const v = res.Values?.[0];
+      // perSecond (÷Period) makes bucket COMPLETENESS load-bearing: the newest bucket is the
+      // still-filling current hour (default newest-first order), and dividing its partial Sum
+      // by the full period systematically understates the value — pick the newest bucket
+      // whose end (ts + Period) is already past. Averages/Maximums keep Values[0] (a partial
+      // bucket is a valid sample for them).
+      let raw: number | undefined;
+      if (def?.perSecond) {
+        const ts = res.Timestamps ?? [];
+        const vals = res.Values ?? [];
+        for (let k = 0; k < ts.length; k++) {
+          const t = ts[k] instanceof Date ? (ts[k] as Date) : new Date(String(ts[k]));
+          if (t.getTime() + 300_000 <= Date.now()) { raw = vals[k]; break; }
+        }
+      } else {
+        raw = res.Values?.[0];
+      }
+      const v = typeof raw === 'number' && def?.perSecond ? raw / 300 : raw;
       if (def) out.push({ label: def.label, value: typeof v === 'number' ? fmtLive(v, def.fmt) : '—' });
     }
     return out;
@@ -472,8 +527,12 @@ export async function liveResourceTrends(type: string, id: string, accountId?: s
       for (let k = 0; k < (res?.Timestamps?.length ?? 0); k++) {
         const ts = res!.Timestamps![k] instanceof Date ? (res!.Timestamps![k] as Date) : new Date(String(res!.Timestamps![k]));
         const v = res!.Values?.[k];
+        // perSecond: a still-filling 5-min bucket ÷300 would end every spark in a fake dip —
+        // include only buckets whose end is already past.
+        if (def.perSecond && ts.getTime() + 300_000 > Date.now()) continue;
         if (typeof v === 'number' && ts.getTime() >= Date.now() - 3600_000) {
-          samples.push({ t: ts.toISOString(), v: Math.round(v * 100) / 100 });
+          const scaled = def.perSecond ? v / 300 : v;
+          samples.push({ t: ts.toISOString(), v: Math.round(scaled * 100) / 100 });
         }
       }
       return { label: def.label, fmt: def.fmt, samples: samples.length ? samples : null };
@@ -646,14 +705,22 @@ async function fleetLatest(
   region?: string,
   windowMs = 3600_000,
   periodSec = 300,
+  // Sum metrics only: skip the still-filling newest bucket and take the newest COMPLETE one
+  // (ts + Period <= now) — dividing a partial Sum by the full period systematically
+  // understates a rate (the same trap the perSecond path above documents). Callers that opt
+  // in must widen windowMs so a complete bucket exists (2× the period).
+  completeBucketsOnly = false,
+  accountId?: string,
 ): Promise<Record<string, Record<string, number | null>>> {
-  const out: Record<string, Record<string, number | null>> = {};
-  if (!entities.length) return out;
-  for (const id of entities) out[id] = Object.fromEntries(metrics.map((m) => [m.key, null]));
+  const out = new Map<string, Map<string, number | null>>();
+  if (!entities.length) return {};
+  for (const id of entities) out.set(id, new Map<string, number | null>(metrics.map(m => [m.key, null])));
   try {
     // CloudWatch metrics live in the resource's region — an off-region cluster (e.g. a DR MSK
     // in us-west-2) needs its own regional client; default stays the deployment region.
-    const client = region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
+    const client = accountId
+      ? await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION })
+      : region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
     const CHUNK = Math.max(1, Math.floor(480 / metrics.length));
     for (let c = 0; c < entities.length; c += CHUNK) {
       const chunk = entities.slice(c, c + CHUNK);
@@ -668,13 +735,25 @@ async function fleetLatest(
       for (const res of r.MetricDataResults ?? []) {
         const mm = (res.Id ?? '').match(/^(\w+?)_i(\d+)$/);
         if (!mm) continue;
+        const metric = metrics.find(m => m.key === mm[1]);
+        if (!metric) continue;
         const id = chunk[Number(mm[2])];
-        const v = res.Values?.[0];
-        if (id && typeof v === 'number') out[id][mm[1]] = v;
+        let v = res.Values?.[0];
+        if (completeBucketsOnly) {
+          v = undefined;
+          const periodMs = (metric.period ?? periodSec) * 1000;
+          const ts = res.Timestamps ?? [];
+          const vals = res.Values ?? [];
+          for (let k = 0; k < ts.length; k++) {
+            const t = ts[k] instanceof Date ? (ts[k] as Date) : new Date(String(ts[k]));
+            if (t.getTime() + periodMs <= Date.now()) { v = vals[k]; break; }
+          }
+        }
+        if (id && typeof v === 'number' && Number.isFinite(v)) out.get(id)?.set(metric.key, v);
       }
     }
   } catch { /* nulls */ }
-  return out;
+  return Object.fromEntries([...out].map(([id, values]) => [id, Object.fromEntries(values)]));
 }
 
 const EC_FLEET_METRICS = [
@@ -1070,8 +1149,14 @@ const EC2_DIAG_METRICS = [
   { key: 'ioBalance', name: 'EBSIOBalance%', stat: 'Average' },
   { key: 'byteBalance', name: 'EBSByteBalance%', stat: 'Average' },
 ] as const;
-export function ec2DiagFleetLive(instanceIds: string[], region?: string, rangeSec = 3600) {
-  return fleetLatest('AWS/EC2', instanceIds, (id) => [{ Name: 'InstanceId', Value: id }], EC2_DIAG_METRICS, region, rangeSec * 1000, rangeSec);
+export function ec2DiagFleetLive(instanceIds: string[], region?: string, rangeSec = 3600, completeBuckets = false, accountId?: string) {
+  // completeBuckets (gap L228 rate fix): the node-ENI tiles derive per-second rates from these
+  // Sums — a partial current-hour bucket ÷ 3600 understates ~12× at :05. The 2× window makes
+  // a complete bucket always available; other consumers keep the latest (partial) bucket.
+  return fleetLatest(
+    'AWS/EC2', instanceIds, (id) => [{ Name: 'InstanceId', Value: id }], EC2_DIAG_METRICS,
+    region, rangeSec * 1000 * (completeBuckets ? 2 : 1), rangeSec, completeBuckets, accountId,
+  );
 }
 
 // Lambda per-function diagnostics (owner 가이드: 호출·에러(율)·스로틀·Duration p50/p99·동시성·
@@ -1119,8 +1204,8 @@ const EKS_CONTROL_PLANE_METRICS = [
   { key: 'schedErrors', name: 'scheduler_schedule_attempts_ERROR', stat: 'Sum' },
   { key: 'schedUnschedulable', name: 'scheduler_schedule_attempts_UNSCHEDULABLE', stat: 'Sum' },
 ] as const;
-export async function eksControlPlane(cluster: string, region?: string, rangeSec = 3600): Promise<Record<string, number | null>> {
-  const out = await fleetLatest('AWS/EKS', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CONTROL_PLANE_METRICS, region, rangeSec * 1000, rangeSec);
+export async function eksControlPlane(cluster: string, region?: string, rangeSec = 3600, accountId?: string): Promise<Record<string, number | null>> {
+  const out = await fleetLatest('AWS/EKS', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CONTROL_PLANE_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   return out[cluster] ?? {};
 }
 
@@ -1138,8 +1223,8 @@ const EKS_CLUSTER_CI_METRICS = [
   { key: 'cpuOverLimit', name: 'pod_cpu_utilization_over_pod_limit', stat: 'Average' },
   { key: 'memOverLimit', name: 'pod_memory_utilization_over_pod_limit', stat: 'Average' },
 ] as const;
-export async function eksClusterCI(cluster: string, region?: string, rangeSec = 3600): Promise<Record<string, number | null>> {
-  const out = await fleetLatest('ContainerInsights', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CLUSTER_CI_METRICS, region, rangeSec * 1000, rangeSec);
+export async function eksClusterCI(cluster: string, region?: string, rangeSec = 3600, accountId?: string): Promise<Record<string, number | null>> {
+  const out = await fleetLatest('ContainerInsights', [cluster], (id) => [{ Name: 'ClusterName', Value: id }], EKS_CLUSTER_CI_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   return out[cluster] ?? {};
 }
 
@@ -1155,9 +1240,11 @@ const EKS_NODE_CI_METRICS = [
   { key: 'rxDropped', name: 'node_interface_network_rx_dropped', stat: 'Sum' },
   { key: 'txDropped', name: 'node_interface_network_tx_dropped', stat: 'Sum' },
 ] as const;
-export async function eksNodesCI(cluster: string, region?: string, rangeSec = 3600, cap = 100): Promise<Record<string, Record<string, number | null>>> {
+export async function eksNodesCI(cluster: string, region?: string, rangeSec = 3600, cap = 100, accountId?: string): Promise<Record<string, Record<string, number | null>>> {
   try {
-    const client = region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
+    const client = accountId
+      ? await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION })
+      : region && region !== REGION ? new CloudWatchClient({ region }) : cwClient();
     const lm = await client.send(new ListMetricsCommand({
       Namespace: 'ContainerInsights', MetricName: 'node_cpu_utilization',
       Dimensions: [{ Name: 'ClusterName', Value: cluster }],
@@ -1171,10 +1258,203 @@ export async function eksNodesCI(cluster: string, region?: string, rangeSec = 36
       }
     }
     const nodes = [...dimsByNode.keys()].slice(0, cap);
-    return await fleetLatest('ContainerInsights', nodes, (id) => dimsByNode.get(id) ?? [], EKS_NODE_CI_METRICS, region, rangeSec * 1000, rangeSec);
+    return await fleetLatest('ContainerInsights', nodes, (id) => dimsByNode.get(id) ?? [], EKS_NODE_CI_METRICS, region, rangeSec * 1000, rangeSec, false, accountId);
   } catch {
     return {};
   }
+}
+
+type EksReadIssue = 'denied' | 'unavailable' | 'partial';
+type EksMetricDefinitions = readonly { key: string; name: string; stat: string }[];
+interface EksReadQuality {
+  complete: number;
+  values: number;
+  issues: Set<EksReadIssue>;
+}
+
+const EKS_READ_REASONS: Record<EksReadIssue, string> = {
+  denied: 'CloudWatch access was denied for the selected account and region.',
+  unavailable: 'CloudWatch metrics are unavailable for the selected account and region.',
+  partial: 'CloudWatch returned incomplete data; some queries failed or reached a result limit.',
+};
+const emptyEksMetrics = (defs: EksMetricDefinitions): EksMetricValues =>
+  Object.fromEntries(defs.map(metric => [metric.key, null]));
+
+/** Classify errors without returning their text (which can contain role ARNs or credentials). */
+function eksReadFailure(error: unknown): EksReadIssue {
+  const e = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } } | null;
+  const code = `${e?.name ?? ''} ${e?.Code ?? ''}`;
+  return e?.$metadata?.httpStatusCode === 401 || e?.$metadata?.httpStatusCode === 403
+    || /accessdenied|forbidden|unauthorized|expiredtoken|invalidclienttoken|unrecognizedclient|invalidsignature|signaturedoesnotmatch/i.test(code)
+    ? 'denied' : 'unavailable';
+}
+
+function eksMessageIssues(messages: readonly { Code?: string; Value?: string }[] | undefined): Set<EksReadIssue> {
+  const issues = new Set<EksReadIssue>();
+  for (const message of messages ?? []) {
+    // Message text is used only for classification. Only EKS_READ_REASONS crosses the API.
+    const code = `${message.Code ?? ''} ${message.Value ?? ''}`;
+    issues.add(/forbidden|access.?denied|unauthorized|not authorized/i.test(code) ? 'denied'
+      : /internal.?error|internal.?failure|service.?unavailable/i.test(code) ? 'unavailable' : 'partial');
+  }
+  return issues;
+}
+
+function eksSourceOutcome(quality: EksReadQuality): EksMetricSourceOutcome {
+  if (!quality.issues.size) return { status: quality.values ? 'ok' : 'no-data' };
+  const status = quality.complete > 0 || quality.values > 0 || quality.issues.has('partial')
+    ? 'partial'
+    : quality.issues.has('denied') && !quality.issues.has('unavailable') ? 'denied' : 'unavailable';
+  return { status, reason: EKS_READ_REASONS[status] };
+}
+
+/** EKS-only strict read. Legacy fleetLatest callers retain their value-only behavior.
+ * No metric-result cache is consulted or populated; a failed read cannot become no-data. */
+async function readEksMetricFleet(
+  client: CloudWatchClient,
+  namespace: string,
+  entities: string[],
+  dimensions: (entity: string) => { Name: string; Value: string }[],
+  defs: EksMetricDefinitions,
+  rangeSec: number,
+): Promise<{ values: Record<string, EksMetricValues>; outcome: EksMetricSourceOutcome }> {
+  const values = Object.fromEntries(entities.map(entity => [entity, emptyEksMetrics(defs)]));
+  const quality: EksReadQuality = { complete: 0, values: 0, issues: new Set() };
+  const chunkSize = Math.max(1, Math.floor(480 / defs.length));
+  for (let offset = 0; offset < entities.length; offset += chunkSize) {
+    const chunk = entities.slice(offset, offset + chunkSize);
+    const expected = new Map<string, { entity: string; key: string }>();
+    const queries = chunk.flatMap((entity, index) => defs.map(metric => {
+      const id = `${metric.key}_i${index}`;
+      expected.set(id, { entity, key: metric.key });
+      return {
+        Id: id, ReturnData: true,
+        MetricStat: {
+          Metric: { Namespace: namespace, MetricName: metric.name, Dimensions: dimensions(entity) },
+          Period: rangeSec, Stat: metric.stat,
+        },
+      };
+    }));
+    try {
+      const response = await client.send(new GetMetricDataCommand({
+        StartTime: new Date(Date.now() - rangeSec * 1000), EndTime: new Date(),
+        MetricDataQueries: queries, ScanBy: 'TimestampDescending',
+      }));
+      const globalIssues = eksMessageIssues(response.Messages);
+      for (const issue of globalIssues) quality.issues.add(issue);
+      if (response.NextToken) quality.issues.add('partial'); // Bounded read, not exhaustive.
+      if (!Array.isArray(response.MetricDataResults) || response.MetricDataResults.length === 0) {
+        // Every submitted query requests ReturnData. Missing result envelopes
+        // cannot prove absence; only Complete envelopes with empty Values can.
+        // Preserve a known global failure (for example denied) over a generic one.
+        if (!globalIssues.size) quality.issues.add('unavailable');
+        continue;
+      }
+      const seen = new Set<string>();
+      for (const result of response.MetricDataResults) {
+        const target = expected.get(result.Id ?? '');
+        if (!target || seen.has(result.Id!)) {
+          quality.issues.add('partial');
+          continue;
+        }
+        seen.add(result.Id!);
+        const issues = eksMessageIssues(result.Messages);
+        if (result.StatusCode === 'Forbidden') issues.add('denied');
+        else if (result.StatusCode === 'InternalError') issues.add('unavailable');
+        else if (result.StatusCode !== 'Complete') issues.add('partial'); // PartialData or unknown status.
+        for (const issue of issues) quality.issues.add(issue);
+        if (issues.has('denied') || issues.has('unavailable')) continue;
+        if (result.Values !== undefined && !Array.isArray(result.Values)) {
+          quality.issues.add('unavailable');
+          continue;
+        }
+        const value = result.Values?.[0];
+        if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+          quality.issues.add('unavailable');
+          continue;
+        }
+        if (!issues.size) quality.complete += 1;
+        if (value !== undefined) {
+          values[target.entity][target.key] = value;
+          quality.values += 1;
+        }
+      }
+      if (seen.size !== expected.size) quality.issues.add('unavailable');
+    } catch (error) {
+      quality.issues.add(eksReadFailure(error));
+      // A failing chunk does not discard successful chunks or prevent remaining reads.
+    }
+  }
+  return { values, outcome: eksSourceOutcome(quality) };
+}
+
+async function readEksNodeMetrics(client: CloudWatchClient, cluster: string, rangeSec: number) {
+  try {
+    const response = await client.send(new ListMetricsCommand({
+      Namespace: 'ContainerInsights', MetricName: 'node_cpu_utilization',
+      Dimensions: [{ Name: 'ClusterName', Value: cluster }],
+    }));
+    if (!Array.isArray(response.Metrics)) throw new Error('Missing metric discovery response');
+    const dimensions = new Map<string, { Name: string; Value: string }[]>();
+    const tuples = new Map<string, string>();
+    const ambiguous = new Set<string>();
+    for (const metric of response.Metrics) {
+      const dims = metric.Dimensions ?? [];
+      const node = dims.find(d => d.Name === 'NodeName')?.Value;
+      const instance = dims.find(d => d.Name === 'InstanceId')?.Value;
+      const owner = dims.find(d => d.Name === 'ClusterName')?.Value;
+      if (node && instance && owner === cluster && !ambiguous.has(node)) {
+        const normalized = dims.map(d => ({ Name: d.Name ?? '', Value: d.Value ?? '' }));
+        const tuple = JSON.stringify(normalized.map(d => JSON.stringify([d.Name, d.Value])).sort());
+        if (tuples.has(node) && tuples.get(node) !== tuple) {
+          // Replaced instances can publish the same NodeName. Never choose one
+          // arbitrarily or report an omitted competing tuple as complete data.
+          ambiguous.add(node);
+          dimensions.delete(node);
+        } else {
+          tuples.set(node, tuple);
+          dimensions.set(node, normalized);
+        }
+      }
+    }
+    // One ListMetrics page and at most 100 node tuples; disclose either bound as partial.
+    const nodes = [...dimensions.keys()].slice(0, 100);
+    const result = await readEksMetricFleet(
+      client, 'ContainerInsights', nodes, node => dimensions.get(node)!, EKS_NODE_CI_METRICS, rangeSec,
+    );
+    if (response.NextToken || dimensions.size > nodes.length || ambiguous.size) {
+      result.outcome = { status: 'partial', reason: EKS_READ_REASONS.partial };
+    }
+    return result;
+  } catch (error) {
+    const status = eksReadFailure(error);
+    return { values: {}, outcome: { status, reason: EKS_READ_REASONS[status] } };
+  }
+}
+
+/** Quality-aware diagnosis data, independently preserving each source and selected credentials. */
+export async function eksDiagnosisMetrics(cluster: string, region: string, rangeSec: number, accountId: string): Promise<EksDiagnosisMetrics> {
+  let client: CloudWatchClient;
+  try {
+    client = await assumedClient(accountId, CloudWatchClient, { region });
+  } catch (error) {
+    const status = eksReadFailure(error);
+    const outcome = { status, reason: EKS_READ_REASONS[status] };
+    return {
+      controlPlane: emptyEksMetrics(EKS_CONTROL_PLANE_METRICS), cluster: emptyEksMetrics(EKS_CLUSTER_CI_METRICS), nodes: {},
+      sources: { controlPlane: outcome, cluster: outcome, nodes: outcome },
+    };
+  }
+  const dims = () => [{ Name: 'ClusterName', Value: cluster }];
+  const [cp, ci, nodes] = await Promise.all([
+    readEksMetricFleet(client, 'AWS/EKS', [cluster], dims, EKS_CONTROL_PLANE_METRICS, rangeSec),
+    readEksMetricFleet(client, 'ContainerInsights', [cluster], dims, EKS_CLUSTER_CI_METRICS, rangeSec),
+    readEksNodeMetrics(client, cluster, rangeSec),
+  ]);
+  return {
+    controlPlane: cp.values[cluster], cluster: ci.values[cluster], nodes: nodes.values,
+    sources: { controlPlane: cp.outcome, cluster: ci.outcome, nodes: nodes.outcome },
+  };
 }
 
 // ── Transit Gateway 진단 메트릭 (inventory transit_gateway 하단) ─────────────

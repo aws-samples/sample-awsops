@@ -12,7 +12,7 @@ vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query(...a) }) }));
 
 const req = () => new Request('http://x/api/compliance/runs/2', { headers: { cookie: 'awsops_token=t' } });
-const ctx = (id = '2') => ({ params: { id } });
+const ctx = (id = '2') => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   verifyUser.mockReset(); isAdmin.mockReset(); query.mockReset();

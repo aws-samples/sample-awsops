@@ -12,10 +12,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 统计卡片
-- **Total Services**: 全部 Service 数量（青色）
+- **Total Services**: 所选范围内观测到的 Service 数量（青色）
 - **ClusterIP**: ClusterIP 类型服务数量（绿色）
 - **NodePort**: NodePort 类型服务数量（紫色）
 - **LoadBalancer**: LoadBalancer 类型服务数量（橙色）
@@ -23,6 +27,12 @@ import Screenshot from '@site/src/components/Screenshot';
 ### Service Type Distribution 图表
 以饼图可视化各服务类型的分布：
 - ClusterIP、NodePort、LoadBalancer、Other（ExternalName 等）
+
+### Service Resources 图表
+两个按服务的资源请求量 top-15 条形图：
+- **CPU per Service (millicores)** / **Memory per Service (MiB)** — 将每个 Service 的选择器与同一（集群, 命名空间）内的 **Running Pod** 关联，汇总其调度器有效请求量（应用容器之和与 init 容器最大值中的较大者 + overhead）
+- 数值为请求量（预留），并非实际用量（图表说明中已注明）
+- 无选择器（ExternalName/手动 Endpoints）或没有匹配 Running Pod 的服务会被**排除**而不是绘制为 0；Pod 查询失败的集群会从图表中排除，并在说明中显示其名称
 
 ### Service 表格
 | 列 | 说明 |
@@ -93,7 +103,7 @@ ClusterIP 服务无法从集群外部直接访问。如需外部访问，请使�
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Deployments](../compute/eks-deployments) - Service 关联的 Deployment
 - [VPC](../network/vpc) - 网络配置及负载均衡器
 - [EKS Explorer](../compute/eks-explorer) - 查看 Ingress 详情

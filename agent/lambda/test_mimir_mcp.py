@@ -98,7 +98,7 @@ class TestSchema(_Base):
     def test_schema_probe_metrics_decides_names_past_the_cap(self):
         # Mirrors test_prometheus_mcp: probe names are decided by LOCAL membership in the full
         # in-memory list (no per-name network calls); every valid requested name lands in `probed`.
-        many = [f"m{i:04d}" for i in range(501)] + ["up"]
+        many = [f"m{i:04d}" for i in range(mm.SCHEMA_METRIC_CAP + 1)] + ["up"]
         calls = {"n": 0}
 
         def fake(method, url, headers=None, body=None, timeout=None):
@@ -153,18 +153,32 @@ class TestMetricMeta(_Base):
         self.assertEqual(len(cap), 6) # per-metric: 3 metrics × (metadata?metric= + labels)
 
         self.assertIn("up", b)
+        self.assertTrue(b["up"]["exists"])
         self.assertEqual(b["up"]["type"], "gauge")
         self.assertEqual(b["up"]["labels"], ["instance", "job"])
 
         # failed label fetch surfaces an error entry (not silently dropped); type still resolved
         self.assertIn("http_requests", b)
+        self.assertTrue(b["http_requests"]["exists"])
         self.assertEqual(b["http_requests"]["type"], "counter")
         self.assertEqual(b["http_requests"]["labels"], [])
         self.assertIn("error", b["http_requests"])
 
         self.assertIn("unknown", b)
+        self.assertFalse(b["unknown"]["exists"])
         self.assertIsNone(b["unknown"]["type"])
         self.assertEqual(b["unknown"]["labels"], [])
+
+    def test_metric_meta_uses_short_http_deadlines(self):
+        timeouts = []
+        def fake(method, url, headers=None, body=None, timeout=None):
+            timeouts.append(timeout)
+            if "metadata" in url:
+                return 200, {"status": "success", "data": {"up": [{"type": "gauge"}]}}
+            return 200, {"status": "success", "data": ["__name__", "instance"]}
+        with mock.patch.object(mm, "http_json", side_effect=fake):
+            mm.lambda_handler({"tool_name": "mimir_metric_meta", "arguments": {"metrics": ["up"]}}, None)
+        self.assertEqual(timeouts, [3, 3])
 
     def test_empty_metrics(self):
         out = mm.lambda_handler({"tool_name": "mimir_metric_meta", "arguments": {"metrics": []}}, None)
@@ -181,3 +195,91 @@ class TestMetricMeta(_Base):
 
 
 if __name__=="__main__": unittest.main()
+
+
+def test_metric_meta_transport_timeout_on_one_metric_is_that_metrics_error(monkeypatch):
+    import socket
+    calls = []
+
+    def fake_get(creds, path, params, http_timeout=None):
+        calls.append(path)
+        if params.get("metric") == "slow_metric" or params.get("match[]") == '{__name__="slow_metric"}':
+            raise socket.timeout("timed out")
+        if path.endswith("/metadata"):
+            return {params["metric"]: [{"type": "gauge"}]}
+        return ["__name__", "instance"]
+
+    monkeypatch.setattr(mm, "_get", fake_get)
+    monkeypatch.setattr(mm, "_ds", lambda: {"endpoint": "http://x"})
+    out = mm.mimir_metric_meta({"metrics": ["slow_metric", "up"]})
+    body = out["body"] if isinstance(out, dict) and "body" in out else out
+    import json as _json
+    data = _json.loads(body) if isinstance(body, str) else body
+    entries = data.get("result") or data
+    slow, up = entries["slow_metric"], entries["up"]
+    assert slow["error"].startswith("upstream unreachable")
+    assert slow["exists"] is None  # unknown — never a definitive absence
+    assert up["exists"] is True and up["type"] == "gauge"  # the other metric still resolved
+
+
+def test_metric_meta_api_error_yields_exists_unknown_not_false(monkeypatch):
+    def fake_get(creds, path, params, http_timeout=None):
+        raise mm._ApiError("Mimir HTTP 503: upstream overloaded")
+
+    monkeypatch.setattr(mm, "_get", fake_get)
+    monkeypatch.setattr(mm, "_ds", lambda: {"endpoint": "http://x"})
+    out = mm.mimir_metric_meta({"metrics": ["up"]})
+    body = out["body"] if isinstance(out, dict) and "body" in out else out
+    import json as _json
+    data = _json.loads(body) if isinstance(body, str) else body
+    entry = (data.get("result") or data)["up"]
+    assert entry["exists"] is None  # backend outage is UNKNOWN, never a definitive absence
+    assert "error" in entry
+
+
+def test_metric_meta_api_error_on_one_metric_is_unknown_not_absent(monkeypatch):
+    """HTTP 429/5xx or a non-success API status is the backend's error, not proof the metric is
+    absent — `exists` must be None (unknown), never a confident False (review MAJOR)."""
+    def fake_get(creds, path, params, http_timeout=None):
+        if params.get("metric") == "flaky_metric" or params.get("match[]") == '{__name__="flaky_metric"}':
+            raise mm._ApiError("HTTP 503: upstream busy")
+        if path.endswith("/metadata"):
+            return {params["metric"]: [{"type": "gauge"}]}
+        return ["__name__", "instance"]
+
+    monkeypatch.setattr(mm, "_get", fake_get)
+    monkeypatch.setattr(mm, "_ds", lambda: {"endpoint": "http://x"})
+    out = mm.mimir_metric_meta({"metrics": ["flaky_metric", "up"]})
+    body = out["body"] if isinstance(out, dict) and "body" in out else out
+    import json as _json
+    data = _json.loads(body) if isinstance(body, str) else body
+    entries = data.get("result") or data
+    flaky, up = entries["flaky_metric"], entries["up"]
+    assert "HTTP 503" in flaky["error"]
+    assert flaky["exists"] is None  # unknown — never a definitive absence
+    assert up["exists"] is True and up["type"] == "gauge"
+
+
+def test_metric_meta_operation_budget_keeps_partial_results(monkeypatch):
+    """12 metrics x 2 calls x 3s = 72s would exceed the connector Lambda's 60s timeout and lose
+    EVERYTHING — the operation-wide budget must stop probing and mark the rest unknown instead."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mm.time, "monotonic", lambda: clock["t"])
+
+    def fake_get(creds, path, params, http_timeout=None):
+        clock["t"] += 25.0  # each call burns 25 "seconds" — budget (40s) spends after metric 1
+        if path.endswith("/metadata"):
+            return {params["metric"]: [{"type": "gauge"}]}
+        return ["__name__"]
+
+    monkeypatch.setattr(mm, "_get", fake_get)
+    monkeypatch.setattr(mm, "_ds", lambda: {"endpoint": "http://x"})
+    out = mm.mimir_metric_meta({"metrics": ["m1", "m2", "m3"]})
+    body = out["body"] if isinstance(out, dict) and "body" in out else out
+    import json as _json
+    data = _json.loads(body) if isinstance(body, str) else body
+    entries = data.get("result") or data
+    assert entries["m1"]["exists"] is True          # probed before the budget spent
+    assert entries["m2"]["error"].startswith("metadata time budget exhausted")
+    assert entries["m2"]["exists"] is None and entries["m3"]["exists"] is None
+    assert set(entries) == {"m1", "m2", "m3"}      # nothing dropped

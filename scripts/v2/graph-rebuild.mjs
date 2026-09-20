@@ -1,29 +1,60 @@
-// ADR-043 — topology graph rebuild runner (OFF the BFF, per the thin-BFF mandate).
-// Rebuilds BOTH materialized graphs (each reuses its single-source builder — no rule duplication):
+// ADR-043 — manual graph execution; the default-off timer uses these builders in the web process.
+// Complete self infra supports normal trace; published stale/degraded self permits only qualified partial telemetry.
+// Builders retain their existing collection/publication behavior:
 //   - flow  (class='flow')  via rebuildGraph      → traffic-flow topology
 //   - infra (class='infra') via rebuildInfraGraph → resource-relationship topology (Step 2)
-// The two classes are key-distinct (class in the node PK + edge UNIQUE), so each mark-sweeps only
-// its own rows.
+//   - trace (class='trace') via rebuildTraceGraph → shared trace graph
+// Each builder retains its existing class/account storage boundary.
 //
-//   Run from a VPC-with-Aurora context (the ECS task or a bastion), with the Aurora env set:
+//   Run from a VPC-with-Aurora context (the ECS task or a bastion), with the Aurora env set
+//   and HOST_ACCOUNT_ID set to the configured host account for explicit-account DB host matching.
+//   This setting does not verify telemetry claims or grant queue-to-inventory attribution:
 //     cd web && npx tsx ../scripts/v2/graph-rebuild.mjs
 //
-// The post-inventory-sync AUTO trigger (a 'graph-rebuild' worker job) invokes this same logic.
+// The gated web/instrumentation.ts timer invokes this logic in the web process.
 import { getPool } from '../../web/lib/db.ts';
-import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from '../../web/lib/graph-store.ts';
+import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure, recordTraceDependencySkip } from '../../web/lib/graph-store.ts';
 import { loadGraphSources } from '../../web/lib/graph-sources.ts';
+import { graphDiagnostic } from '../../web/lib/graph-state.ts';
+import { executeGraphLayer } from '../../web/lib/graph-execution.ts';
 
+// Exit 1: unexpected/invalid execution, registry or cleanup failure; 2: incomplete publication; otherwise 0.
 const pool = getPool();
-const flow = await rebuildGraph(pool);
-console.log(`[graph-rebuild] flow: ${flow.nodes} nodes, ${flow.edges} edges`);
-const infra = await rebuildInfraGraph(pool);
-console.log(`[graph-rebuild] infra: ${infra.nodes} nodes, ${infra.edges} edges`);
-// Step 3 — trace-level (application) graph. Registry-driven (2026-07-08): sources come from every
-// registered datasource's pre-built graph-query catalog (datasource_graph_queries) — see
-// docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md. Falls back to a bare default
-// ClickHouse source (available()=false with no default clickhouse instance → empty layer) when no
-// ready row exists yet, e.g. before the first daily datasource_index run.
-const { sources, metricsSources } = await loadGraphSources(pool);
-const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-console.log(`[graph-rebuild] trace: ${trace.nodes} nodes, ${trace.edges} edges`);
-process.exit(0);
+let failed = false, incomplete = false;
+const execute = async (stage, action) => {
+  const result = await executeGraphLayer(stage, action, (line, error) => console[error ? 'error' : 'log'](line));
+  failed ||= result.failed;
+  incomplete ||= !!result.incomplete;
+  return result;
+};
+try {
+  await execute('flow', () => rebuildGraph(pool));
+  const infra = await execute('infra', () => rebuildInfraGraph(pool));
+  const qualification = ['degraded', 'stale'].includes(infra.selfInfraStatus) ? infra.selfInfraStatus : undefined;
+  if (!infra.selfInfraComplete && !qualification) {
+    console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
+      : '[graph-rebuild] trace skipped: infra publication incomplete');
+    await execute('trace', () => recordTraceDependencySkip(pool));
+  } else {
+    if (qualification) console.error(`[graph-rebuild] trace qualified: self infra ${qualification}`);
+    try {
+      const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
+      if (registryFailed) {
+        failed = true;
+        console.error('[graph-rebuild] trace_sources: registry_read_failed');
+        await execute('trace', () => recordTraceSourceFailure(pool));
+      } else await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources, qualification));
+    } catch (error) {
+      failed = true;
+      await execute('trace', () => recordTraceSourceFailure(pool));
+      console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+    }
+  }
+  process.exitCode = failed ? 1 : incomplete ? 2 : 0;
+} finally {
+  try { await pool.end(); }
+  catch (error) {
+    console.error(`[graph-rebuild] pool close failed ${graphDiagnostic('graph_state', error)}`);
+    process.exitCode = 1;
+  }
+}

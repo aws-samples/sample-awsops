@@ -1,0 +1,197 @@
+[
+  {
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "width": 1280,
+    "documentWidth": 1280,
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true,
+        "width": 640
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true,
+        "width": 840
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true,
+        "width": 840
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true,
+        "width": 840
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true,
+        "width": 840
+      }
+    ],
+    "headings": 8,
+    "originalControls": [
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      }
+    ],
+    "tocNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  },
+  {
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "width": 768,
+    "documentWidth": 768,
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true,
+        "width": 640
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true,
+        "width": 720
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true,
+        "width": 720
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true,
+        "width": 720
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true,
+        "width": 720
+      }
+    ],
+    "headings": 8,
+    "originalControls": [
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      }
+    ],
+    "tocNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  },
+  {
+    "title": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "h1": "Amazon Bedrock AgentCore와 읽기 전용 MCP 도구로 SRE 장애 조사와 정기 진단 연결하기",
+    "width": 375,
+    "documentWidth": 375,
+    "images": [
+      {
+        "src": "images/fig1-sre-workflow.png",
+        "loaded": true,
+        "width": 335
+      },
+      {
+        "src": "images/fig2a-interactive.png",
+        "loaded": true,
+        "width": 335
+      },
+      {
+        "src": "images/fig3-agentcore.png",
+        "loaded": true,
+        "width": 335
+      },
+      {
+        "src": "images/fig2b-diagnosis.png",
+        "loaded": true,
+        "width": 335
+      },
+      {
+        "src": "images/fig4-workers.png",
+        "loaded": true,
+        "width": 335
+      }
+    ],
+    "headings": 8,
+    "originalControls": [
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      },
+      {
+        "text": "그림 원본 크게 보기",
+        "height": 46.390625,
+        "fontSize": "19px"
+      }
+    ],
+    "tocNavigation": true,
+    "imageLink": true,
+    "errors": [],
+    "badResponses": []
+  }
+]

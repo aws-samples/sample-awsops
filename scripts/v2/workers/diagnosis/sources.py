@@ -8,6 +8,7 @@ import os
 import re
 import json
 import logging
+import math
 import time as _time
 import boto3
 from botocore.exceptions import ClientError
@@ -476,6 +477,39 @@ def _plan_queries(kind, schema):
     return plan[:_DS_MAX_QUERIES_PER_INSTANCE]
 
 
+def _summary_sample(value, *, string=False):
+    try:
+        if (not isinstance(value, list) or len(value) != 2 or type(value[0]) not in (int, float)
+                or not math.isfinite(value[0]) or not isinstance(value[1], str)
+                or len(value[1]) > 4096 or len(value[1].encode("utf-8")) > 4096):
+            return False
+        if not string:
+            float(value[1])
+        return True
+    except (ValueError, OverflowError, UnicodeError):
+        return False
+
+
+def _summary_record(row, key, shape):
+    if not isinstance(row, dict) or not row:
+        return False
+    if key == "traces":
+        identity = row.get("traceID")
+        return isinstance(identity, str) and bool(re.fullmatch(r"[0-9a-fA-F]{1,32}", identity)) and int(identity, 16) != 0
+    if key == "result" and shape in ("vector", "matrix"):
+        if not isinstance(row.get("metric"), dict):
+            return False
+        return (_summary_sample(row.get("value")) if shape == "vector" else
+                isinstance(row.get("values"), list) and any(_summary_sample(v) for v in row["values"]))
+    if key == "result" and shape == "streams":
+        return isinstance(row.get("stream"), dict) and isinstance(row.get("values"), list) and any(
+            isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0].isdigit()
+            and isinstance(v[1], str) for v in row["values"])
+    if key == "result":
+        return False
+    return True  # Nonempty structured rows in generic/legacy aggregate envelopes.
+
+
 def _summarize_result(body):
     """Compact a connector result to NON-PII SIGNAL ONLY — count, result type, source key, and metric
     LABEL NAMES (keys, never values). Critically: NEVER emit raw samples. Loki `result` is raw log
@@ -486,11 +520,18 @@ def _summarize_result(body):
     out = {}
     if not isinstance(body, dict):
         return out
+    validation_loss = False
     # top-level list-bearing key (prom/loki `result`, tempo `traces`, clickhouse `rows`, generic `data`/`series`)
     for key in ("result", "traces", "rows", "data", "series"):
         v = body.get(key)
         if isinstance(v, list):
-            out["source"], out["count"] = key, len(v)
+            out["source"] = key
+            out["count"] = sum(bool(_summary_record(row, key, body.get("resultType"))) for row in v)
+            if key == "result" and body.get("resultType") in ("scalar", "string"):
+                out["count"] = int(_summary_sample(v, string=body["resultType"] == "string"))
+                validation_loss = out["count"] == 0
+            else:
+                validation_loss = out["count"] < len(v)
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:
@@ -506,11 +547,35 @@ def _summarize_result(body):
         if isinstance(res, dict):
             series = res.get("series") or res.get("rows") or res.get("data")
             if isinstance(series, list):
-                out["count"] = len(series)
+                out["count"] = sum(bool(_summary_record(row, "rows", None)) for row in series)
+                validation_loss = out["count"] < len(series)
             if "shape" in res:
                 out["shape"] = res.get("shape")
     if "resultType" in body:
         out["resultType"] = body.get("resultType")
+    # Explicit upstream incompleteness is evidence, not a healthy zero. Only bounded
+    # status codes cross this boundary; raw errors/warnings can contain source data.
+    status = body.get("collectionStatus")
+    if body.get("completionReason") == "search_response_unverified":
+        out["completionReason"] = "search_response_unverified"
+    if "collectionStatus" in body:
+        out["collectionStatus"] = status if isinstance(status, str) and status in (
+            "ok", "empty", "partial", "error", "unknown",
+        ) else "unknown"
+    if body.get("truncated") is True:
+        out["truncated"] = True
+        if out.get("collectionStatus") not in ("error", "unknown"):
+            out["collectionStatus"] = "partial"
+    if validation_loss and out.get("collectionStatus") not in ("error", "unknown"):
+        out["collectionStatus"] = "partial"
+    if out.get("collectionStatus") in ("partial", "error", "unknown"):
+        if out["collectionStatus"] == "error":
+            out["error"] = "source collection error"
+        else:
+            out["incomplete"] = True
+        count = out.pop("count", None)
+        if count:
+            out["observedCount"] = count
     return out
 
 
@@ -647,7 +712,13 @@ def collect_datasources(conn):
                 if status and status >= 400:
                     results.append({"label": label, "error": (body.get("error") or f"HTTP {status}")})
                 else:
-                    results.append({"label": label, "summary": _summarize_result(body)})
+                    summary = _summarize_result(body)
+                    signal = {"label": label, "summary": summary}
+                    if "error" in summary:
+                        signal["error"] = summary["error"]
+                    if summary.get("incomplete"):
+                        signal["incomplete"] = True
+                    results.append(signal)
             except Exception as e:  # noqa: BLE001 — per-query isolation; one bad query never sinks the rest
                 results.append({"label": label, "error": type(e).__name__})
         finding = {"name": name, "kind": kind, "version": version,

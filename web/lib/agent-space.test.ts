@@ -1,5 +1,5 @@
 // web/lib/agent-space.test.ts
-// ADR-031 Phase 2 — pure intersection helper + degrade-safe CRUD.
+// Pure intersection helper + fail-closed policy reads.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const query = vi.fn();
@@ -72,7 +72,7 @@ describe('intersectToolAllowlist (pure)', () => {
   });
 });
 
-describe('getAgentSpace (degrade-safe)', () => {
+describe('getAgentSpace (fail-closed policy reads)', () => {
   it('returns null when AURORA_ENDPOINT is unset (never queries)', async () => {
     expect(await getAgentSpace('self')).toBeNull();
     expect(query).not.toHaveBeenCalled();
@@ -84,10 +84,10 @@ describe('getAgentSpace (degrade-safe)', () => {
     expect(await getAgentSpace('self')).toBeNull();
   });
 
-  it('returns null on DB error (never throws) ⇒ degrade to Phase-1', async () => {
+  it('rejects a DB error instead of treating an unavailable policy as absent', async () => {
     process.env.AURORA_ENDPOINT = 'aurora.example';
     query.mockRejectedValueOnce(new Error('connection refused'));
-    await expect(getAgentSpace('self')).resolves.toBeNull();
+    await expect(getAgentSpace('self')).rejects.toThrow('Agent Space policy unavailable');
   });
 
   it('maps a present row into AgentSpace, incl. integration + flag columns (nullish-safe)', async () => {

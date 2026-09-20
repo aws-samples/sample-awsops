@@ -8,17 +8,21 @@ import Link from 'next/link';
 import { Background, Controls, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
+import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
+import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySection';
 
 // ReactFlow touches the DOM on mount — client-only.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string }
-interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean }
+interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean; collection?: unknown }
 
 // kind → [bg, border] — same palette as the ego-graph page, plus new network kinds.
 const COLORS: Record<string, [string, string]> = {
@@ -39,23 +43,28 @@ const LEGEND: { kind: string; label: string }[] = [
 ];
 
 /** 기존 배치 그래프 뷰 (materialized infra 그래프 전체 렌더) — 검색어는 페이지 헤더에서 내려받는다. */
-function GraphView({ q }: { q: string }) {
+function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
   const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+
+  const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setBusy(true);
-    fetch(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+    setErr(null);
+    setGraph(null);
+    fetchGraph(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
-  }, [activeAccount]);
+    return () => { live = false; controller.abort(); };
+  }, [activeAccount, revision]);
 
   // Multi-match search highlight (v1 parity): id/label/kind/meta substring, case-insensitive.
   const matches = useMemo(() => {
@@ -88,7 +97,7 @@ function GraphView({ q }: { q: string }) {
       return {
         id: n.id,
         position: { x: p.x, y: p.y },
-        data: { label: `${n.kind in COLORS ? `${n.kind}: ` : ''}${n.label}` },
+        data: { label: `${n.kind in COLORS ? `${n.kind}: ` : ''}${n.label}`, kind: n.kind },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         style: {
@@ -110,9 +119,11 @@ function GraphView({ q }: { q: string }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
+        <span>{tt('VPC 노드를 클릭하면 TGW·피어링 연결을 조회할 수 있습니다.')}</span>
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
-        {graph && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
+        {err && <GraphReadError reason={err} />}
+        {graph && !unavailable && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
@@ -124,10 +135,19 @@ function GraphView({ q }: { q: string }) {
           );
         })}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('인프라 그래프가 비어 있습니다 (materializer 미실행).')}</span>}
+        {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 그래프 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
-      <div className="min-h-0 flex-1">
-        <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.05} proOptions={{ hideAttribution: true }}>
+      {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
+      {graph && !unavailable && !busy && !graph.nodes.length && !graph.captured_at && <div className="mx-4 my-2 rounded-lg border border-ink-200 bg-card p-3 text-[13px] text-ink-600">
+        <p>{tt('저장된 배치 그래프가 아직 없습니다. VPC 연결은 실시간 조회로 확인할 수 있습니다.')}</p>
+        <button type="button" onClick={() => onVpc('')} className="mt-2 rounded border border-ink-200 px-3 py-1.5 hover:bg-ink-50">
+          {tt('VPC 연결 그래프 열기')}
+        </button>
+      </div>}
+      <div className="min-h-[240px] flex-1">
+        <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.05}
+          onNodeClick={(_, node) => { if (node.data.kind === 'vpc' && node.id.startsWith('vpc:')) onVpc(node.id.slice(4)); }}
+          proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls />
         </ReactFlow>
@@ -136,10 +156,11 @@ function GraphView({ q }: { q: string }) {
   );
 }
 
-const VIEWS = [['graph', '배치 그래프'], ['map', '인프라 맵'], ['k8s', 'K8s 맵']] as const;
+const VIEWS = [['vpc', 'VPC 연결'], ['graph', '배치 그래프'], ['map', '인프라 맵'], ['k8s', 'K8s 맵']] as const;
 type View = (typeof VIEWS)[number][0];
 
 const SUBTITLES: Record<View, string> = {
+  vpc: 'VPC를 선택하여 TGW·피어링 연결을 조회합니다. 선은 활성 구성 관계이며 통신 가능성을 보장하지 않습니다.',
   graph: '계정 전체 리소스-관계 토폴로지 (VPC · Subnet · SG · 리소스). 노드 검색으로 하이라이트.',
   map: 'External | VPC | Subnet | Compute | NAT 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
   k8s: 'Ingress → Service → Pod → Node 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
@@ -151,23 +172,25 @@ function InfraTopologyPageInner() {
   const router = useRouter();
   const params = useSearchParams();
   const raw = params.get('view');
-  const view: View = raw === 'map' || raw === 'k8s' ? raw : 'graph';
+  const view: View = raw === 'map' || raw === 'k8s' || raw === 'vpc' ? raw : 'graph';
   const [q, setQ] = useState('');
   const setView = (v: View) => router.replace(`/topology/infra${v === 'graph' ? '' : `?view=${v}`}`);
+  const onVpc = (id: string) => router.push(`/topology/infra?${new URLSearchParams({ view: 'vpc', vpc: id })}`);
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title={tt('인프라 배치 그래프')}
+        title={tt(view === 'vpc' ? 'VPC 연결 그래프' : '인프라 배치 그래프')}
         subtitle={tt(SUBTITLES[view])}
         right={
-          <div className="flex items-center gap-3 text-[12px] text-ink-600">
-            <div className="flex overflow-hidden rounded-md border border-ink-200">
+          <div className="flex max-w-full flex-wrap items-center gap-2 text-[12px] text-ink-600">
+            <div className="flex max-w-full overflow-auto rounded-md border border-ink-200">
               {VIEWS.map(([v, label]) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
-                  className={`px-2 py-1 ${view === v ? 'bg-brand-600 text-white' : 'bg-card hover:bg-ink-50'}`}
+                  aria-pressed={view === v}
+                  className={`whitespace-nowrap px-2 py-1 ${view === v ? 'bg-brand-600 text-white' : 'bg-card hover:bg-ink-50'}`}
                 >
                   {tt(label)}
                 </button>
@@ -177,13 +200,16 @@ function InfraTopologyPageInner() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder={tt('검색 (id · 이름 · IP · 타입)…')}
-              className="w-56 rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+              className="w-full min-w-0 rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 sm:w-56"
             />
             <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
           </div>
         }
       />
-      {view === 'graph' && <GraphView q={q} />}
+      {view === 'vpc' && <div className="min-h-0 flex-1 overflow-auto p-4">
+        <VpcConnectivitySection topology initialVpc={params.get('vpc') ?? ''} query={q} />
+      </div>}
+      {view === 'graph' && <GraphView q={q} onVpc={onVpc} />}
       {view === 'map' && <InfraMapView query={q} />}
       {view === 'k8s' && <K8sMapView query={q} />}
     </div>

@@ -1,100 +1,73 @@
 ---
 sidebar_position: 5
 title: EKS Overview
-description: EKS クラスターの状況、ノードリソース、Pod 状態の要約
+description: 選択範囲の EKS クラスター登録、ノードリソース、Pod の状態
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-EKS クラスターの全体状況、ノードリソース、Pod の状態を一目で確認できるページです。
+選択したアカウントとリージョンの範囲で EKS クラスターと Kubernetes リソースを確認します。AWSops はクラウドとクラスターのリソースを読み取り専用で照会し、登録時はアプリの設定のみを保存します（ADR-005）。
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 
 ## 主な機能
 
-### クラスターフィルター
-- EKS クラスター別のフィルタリング
-- VPC 別のフィルタリング
-- 複数選択に対応
+### アカウント・リージョン・クラスターのフィルター
 
-### EKS クラスターカード
-各クラスターの主要情報をカード形式で表示:
-- Cluster Name、Status (ACTIVE)
-- Kubernetes Version、VPC ID、Platform Version、Region
-- **Access Entry ステータスバッジ**: K8s Connected(緑)/ 未登録(赤)
-- **Register ViewPolicy ボタン**: 未登録クラスターに Access Entry + AdminViewPolicy を自動登録
-- **クリックフィルタリング**: クラスターカードをクリックすると該当クラスターのみにフィルタリング(シアンの枠線)
+上部フィルターでアカウントとリージョンを選択し、クラスターや VPC でさらに絞り込みます。複数選択に対応しています。変更すると一覧と集計を再取得し、別のクラスターを登録することはありません。アカウント・リージョンを含む識別子で同名クラスターを区別します。
 
-:::tip クラスターへのアクセス権限
-Access Entry が未登録のクラスターはデータを取得できません。「Register ViewPolicy」ボタンで登録するか、クラスターの所有者に[認証ガイド](./eks-auth)を参照して登録を依頼してください。
+:::info 観測範囲
+件数とチャートは、選択範囲で取得に成功したリソースを示します。一部失敗や照会上限は明示され、未観測リソースが存在しないことを意味しません。全リージョンの検出は現在、設定済みリージョンと登録済みクラスターのリージョンが対象です。特定のリージョンを照会するには選択範囲を絞ってください。
 :::
 
-### 統計カード(クリックで移動)
-各カードをクリックすると詳細ページに移動します:
-- **Nodes** → ノード詳細(`/k8s/nodes`)
-- **Pods** → Pod 詳細(`/k8s/pods`)
-- **Deployments** → デプロイメント詳細(`/k8s/deployments`)
-- **Services** → サービス詳細(`/k8s/services`)
+### クラスターカードと接続状態
 
-### ノードカードグリッド
-各ノードのリソース使用量を視覚的に表示:
-- ノード名、Pod 数、状態(Ready/NotReady)
-- **CPU 使用量バー**: Pod のリクエスト量 / 全体容量(パーセント)
-- **Memory 使用量バー**: Pod のリクエスト量 / 全体容量(パーセント)
-- 80% 以上: 赤、50% 以上: オレンジ、それ以外: シアン/紫
+カードには Cluster Name、Status、Kubernetes Version、Account、Region、VPC ID、Platform Version を表示します。Connected **バッジ**は既定の Entry 経路または保存された認証が設定済みであることを示し、保存済み認証情報の有効性や到達性を保証しません。件数はライブ読み取りの成功後に表示されます。Connected **KPI** は、表示範囲でライブ読み取りに成功したクラスター数です。
 
-### ノード詳細ビュー
-ノードカードをクリックすると詳細ページに移動:
-- **CPU/Memory/Pod Info カード**: Capacity、Allocatable、Requested、Available
-- **ENI 一覧**: ネットワークインターフェイス別の IP 割り当て、トラフィック(NetworkIn/Out)
-- **Pods テーブル**: 該当ノードで実行中の Pod 一覧
+### クロスアカウントの照会登録
 
-### 可視化チャート(タブ切り替え)
+登録と登録解除は管理者のみ実行できます。
 
-**Pod Analysis タブ:**
-- **Pod Status Distribution**: Running、Pending、Failed、Succeeded の分布(円グラフ)
-- **Pods per Namespace**: ネームスペース別の Pod 数(棒グラフ)
+1. **Accounts** で対象アカウントを登録・有効化し、そのリージョンを設定します。信頼ポリシーで要求される場合は external ID も指定します。通常の対象ロールは `AWSopsReadOnlyRole` で、web タスクから引き受け可能であり、EKS メタデータの読み取り権限が必要です。
+2. 対象アカウントとリージョンを選択します。**メンバーアカウント**では、既定のメタデータ検出と Kubernetes トークン署名の両方に、そのアカウントの登録済み読み取り専用ロールを使用します。ホストアカウントのクラスターでは、引き続き web タスクロールが既定の認証主体です。AWSops はホストのタスクロールの bearer トークンをメンバークラスターへ送信しません。
+3. クラスター所有者が対象ロールの `STANDARD` Access Entry を用意します。共有メンバー読み取りロールには **`AmazonEKSViewPolicy` とグループ `awsops:eks-readonly` の最小限のノード読み取り RBAC**（`nodes` の `get/list/watch`）を使います。Secrets を読める `AmazonEKSAdminViewPolicy` をこの共有ロールに付与しないでください。View の追加だけでは既存の AdminView 関連付けは解除されないため、所有者がその関連付けを削除する必要があります。ホストクラスターは既存の Terraform 権限構成に従います。
+4. **照会登録**を選択します。アプリは `DescribeCluster` で選択したクラスターを直接確認し、対応する既存の Access Entry を確認します。ホストのクラスター一覧を検索したり、AWS リソースを作成したりはしません。登録と詳細画面への移動では、アカウントとリージョンが保持されます。
 
-**Service Resources タブ:**
-- **CPU per Service (millicores)**: Service に属する Pod の CPU リクエスト量の合計(棒グラフ)
-- **Memory per Service (MiB)**: Service に属する Pod の Memory リクエスト量の合計(棒グラフ)
+**任意機能の読み取り権限:** View とノードのバインディングは Secrets を許可しません。OpenCost API プロキシには `opencost` 名前空間の対象サービスに限定した `services/proxy` の GET、K8sGPT には `result.core.k8sgpt.ai` の `results` 読み取りバインディングが別途必要です。所有者が有効にする機能に必要な最小権限だけを追加し、アプリは適用しません。
 
-### Warning Events テーブル
-Kubernetes の Warning イベントをリアルタイムで表示:
-- Kind、Object、Reason、Message、Count、Last Seen
+**診断・ENI データの前提:** CloudWatch 診断には対象の読み取りロールに `cloudwatch:GetMetricData` と `cloudwatch:ListMetrics` の権限が必要です。Container Insights メトリクスも実際に発行されている必要があります。ENI パネルには、選択したアカウント・リージョンがインベントリ収集範囲に含まれ、EC2 インベントリ収集が完了していることが必要です。権限エラー、メトリクスなし、未収集インベントリは別の状態であり、AWSops が権限付与やエージェント導入を自動実行することはありません。
 
-## 使い方
+表示されたオンボーディングコマンドは所有者が実行し、アプリは実行しません。`make configure` → `eks.tf` は引き続きホストアカウントの Terraform プロビジョニング経路です。メンバーアカウントや既定以外のリージョンのクラスターでは、所有者がアクセスを準備した後、手動で照会登録する必要があります。ホストの EventBridge オブザーバーは、メンバーを自動登録する仕組みではありません。
 
-1. サイドバーで **Compute > EKS** をクリックします
-2. クラスターカードをクリックして特定のクラスターにフィルタリングします
-3. 統計カードをクリックすると Pods/Nodes/Deployments/Services の詳細ページに移動します
-4. ノードカードでリソース使用率の高いノードを特定します
-5. ノードをクリックして詳細リソースと Pod 一覧を確認します
-6. **Service Resources** タブで Service 別の CPU/Memory 割り当て量を分析します
-7. Warning Events で問題のあるイベントを監視します
+### 明示的な認証オプション
 
-## 利用のヒント
+- **ServiceAccount トークン**: 対象クラスター内で許可された読み取り専用 SA の認証主体を使用します。その Kubernetes 認証に IAM Access Entry は不要ですが、対象アカウントのメタデータ検出と API サーバーへの接続性は引き続き必要です。
+- **AssumeRole**: web タスクから引き受け可能で、対象 Kubernetes API が許可するロールを使用します。メンバークラスターの場合、ロール ARN は同じメンバーアカウントに属する必要があり、ホストや別アカウントのロールは拒否されます。必要な場合は external ID を指定してください。既定のデプロイでは `AWSopsReadOnlyRole` の引き受けを許可しており、他のロールには運用者による別途の許可が必要です。
 
-:::tip ノードリソースの監視
-ノードカードの CPU/Memory バーが赤(80% 以上)の場合、リソース不足のリスクがあります。ノードの追加または Pod の再配置を検討してください。
-:::
+### 登録エラー
 
-:::tip ENI の IP 使用量
-ノード詳細ビューで ENI ごとの IP Slots Used が 15/15 に近い場合、新しい Pod のスケジューリングが失敗する可能性があります。
-:::
+`400` は不正な ID・選択値・認証本文、`413` は本文サイズ超過を示します。`404` は選択したクラスターが見つからないことを示します。`409` は必要な Access Entry がないか、確認できなかったことを示します。`403` はアカウント・リージョンまたはロールの認証主体が許可されていない場合に返されます。`503` は検出またはストレージが利用できないことを示します。これらのエラーは、照会に成功してフリートが空だったことを意味しません。表示された対象を確認し、そのオンボーディングガイドをクラスター所有者へ渡してください。
 
-:::info AI 分析
-AI Assistant で「EKS クラスターの状態」「ノード別 CPU 使用量」「Warning イベントを分析して」などで分析できます。
+### ライブリソースと詳細ページ
+
+- **Nodes / Pods / Deployments / Services** から、それぞれの選択範囲のリソースページを開きます。
+- ノードパネルは capacity、allocatable リソース、リクエスト、Pod 情報を表示します。リクエスト比率は予約量であり、CPU・メモリ使用率の実測値ではありません。
+- ENI の詳細は、範囲を限定した EC2 インベントリと、取得可能な場合はインスタンス単位の CloudWatch トラフィックを使用します。
+- Pod 状態・ネームスペース・インスタンスタイプのチャートと Warning Events は観測データを要約します。到達不能なクラスターも明示されます。
+- 接続済みカードのタイトルからクラスター詳細画面を開きます。OpenCost の状態・設定とリソース照会ではクラスターの識別子が保持されます。
+
+:::tip アクセスとデータの可用性
+設定済みを示すバッジだけでは、トークン・読み取りポリシー・ネットワーク経路の有効性を確認できません。実際のライブ読み取り結果と失敗通知を確認してください。メンバーの既定モードでは登録済みメンバーロールにアクセスを付与し、ホストロールのクラスターアクセスを拡大して失敗を修復しようとしないでください。
 :::
 
 ## 関連ページ
 
-- [EKS 認証設定](./eks-auth) - Access Entry / aws-auth の認証ガイド
-- [EKS Explorer](./eks-explorer) - K9s スタイルのターミナル UI
-- [EKS Pods](./eks-pods) - Pod の詳細一覧
-- [EKS Nodes](./eks-nodes) - ノードの詳細一覧
-- [EKS Deployments](./eks-deployments) - デプロイメント一覧
-- [EKS Services](./eks-services) - サービス一覧
-- [EKS Container Cost](./eks-container-cost) - Pod のコスト分析(OpenCost)
+- [EKS 認証アーカイブと現行ガイドへの案内](./eks-auth)
+- [EKS Explorer](./eks-explorer)
+- [EKS Nodes](./eks-nodes)
+- [EKS Pods](./eks-pods)
+- [EKS Deployments](./eks-deployments)
+- [EKS Services](./eks-services)
+- [EKS Container Cost](./eks-container-cost)

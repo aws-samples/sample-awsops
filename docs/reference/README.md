@@ -62,7 +62,7 @@ fallback. 인앱 `/login` 폼 1차 + Hosted UI PKCE 다크 폴백, RS256 JWKS �
 is `data/schema.sql` + ULID migrations tracked in `schema_migrations`. App state lives in Aurora,
 not `data/*.json`. node-pg로 접근하는 Aurora 영속 상태.
 
-**Web thin-BFF — [`04-web-bff.md`](04-web-bff.md).** **Next.js 14 thin-BFF** (`web/`, standalone
+**Web thin-BFF — [`04-web-bff.md`](04-web-bff.md).** **Next.js 15 thin-BFF** (`web/`, standalone
 **arm64**, served at the **root path** — no basePath). Heavy/long/OOM-risk work is enqueued rather
 than run inline — the generic `POST /api/jobs` accepts `noop` types ONLY; domain work goes through its
 own ownership-scoped route (`POST /api/diagnosis`, `POST /api/compliance/run`) and the rest is
@@ -82,20 +82,49 @@ SQS → ESM (kill-switch) → idempotent dispatcher Lambda → **Step Functions*
 RunLambda (short) **or** `ecs:runTask.sync` Fargate (long/OOM). A reaper reconciles stale jobs.
 OOM-안전 비동기 워커 티어.
 
-**EKS Onboarding — [`07-eks.md`](07-eks.md).** `configure.mjs` multi-select → `eks.tf` grants the
-web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped, host-account only),
-exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
-view 정책(읽기 전용).
+**EKS Onboarding — [`07-eks.md`](07-eks.md).** `configure.mjs` → `eks.tf` provides host-account
+Terraform onboarding. The web runtime also registers enabled member-account clusters
+using account/region-qualified EKS ARN identities. The registered member role is used
+for both metadata and default member Kubernetes authentication; host clusters retain
+the web task-role default. The applicable role needs an Access Entry/read policy.
+Registration changes app state only. The reference distinguishes
+scoped registered-fleet coverage from incomplete wildcard discovery.
+
+**E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
+
+**VPC connectivity — [vpc-connectivity.md](vpc-connectivity.md).** On-demand peering
+and TGW attachment observations on `/inventory/vpc` and the
+`/topology/infra?view=vpc` tab, scoped to an enabled collecting account, region and
+indexed VPC. A bounded ReactFlow graph shows active PCX/TGW relationships above the
+record lists, with scoped identities, unknown peers, omissions and clickable details.
+The generic tab loads inventory choices only; **Fetch connections** or a uniquely
+resolved scoped deep link triggers connectivity lookup. The default infra view
+remains persisted resource placement; live connection results do not become saved
+graph edges. The reference covers `GET /api/vpc-connectivity`,
+owner disclosure, structural visibility limits, operational read gaps, bounded
+reads and four-minute caching when operational reads are complete. Peering and TGW
+attachment records retain unknown metadata and qualify lifecycle and route-table
+association states. These configuration observations remain read-only under
+ADR-005 and do not establish reachability.
+
+**Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
+Operator CI helper with four modes: policy, publication, inspection and restore.
+It grants no IAM permission, provisions no storage and does not enable product mutation
+or an ADR-005 exception. The Terraform workflow supplies the protected integration;
+owners must provision scoped access and plan-prefix lifecycle before publication.
 
 | Component | Reference | Key files |
 |---|---|---|
 | Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
 | Auth & Identity | [02-auth.md](02-auth.md) | `terraform/foundation/auth.tf` (+ `edge-lambda/cognito_edge.py.tftpl`), `web/app/login/`, `web/app/api/auth/login/` |
 | Data / Aurora | [03-data-aurora.md](03-data-aurora.md) | `terraform/foundation/data.tf` (+ `data/schema.sql`), `web/lib/db.ts` |
-| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 14 BFF; `terraform/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
+| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 15 BFF; `terraform/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| E2E observability | [observability-e2e.md](observability-e2e.md) | `web/lib/e2e-topology.ts`, `web/lib/e2e-topology-types.ts`, `web/lib/topology-observations.ts`, `web/lib/flow-topology.ts`, `web/components/topology/ServiceNetworkTopology.tsx`, `web/components/topology/E2eGraphCanvas.tsx` |
+| VPC connectivity | [vpc-connectivity.md](vpc-connectivity.md) | `web/lib/vpc-connectivity.ts`, `web/lib/vpc-connectivity-types.ts`, `web/lib/vpc-connectivity-scope.ts`, `web/lib/vpc-connection-graph.ts`, `web/app/api/vpc-connectivity/route.ts`, `web/components/inventory/VpcConnectivitySection.tsx`, `web/components/topology/VpcConnectionGraph.tsx`, `web/app/topology/infra/page.tsx` |
+| Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py`, `.github/workflows/terraform.yml` |
 
 ## Status / 상태
 
@@ -109,3 +138,8 @@ register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계�
 
 Per-phase execution history (plans, verification logs, design notes) lives under
 [`../history/archive/`](../history/archive/) — see its README. 각 단계의 실행 이력은 `../history/archive/`를 참조한다.
+
+The [2026-09-16 central telemetry operator record](../history/archive/2026-09-16-central-telemetry-operation.md)
+is an anonymized historical note with explicit verification limits. It is not a
+current component specification, a deployment recipe, or a change to the
+application's read-only posture.

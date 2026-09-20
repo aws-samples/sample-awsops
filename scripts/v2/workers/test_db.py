@@ -6,9 +6,498 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+from uuid import uuid4
+
+import pg8000.native
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
+
+
+TIMING_MIGRATION = (
+    Path(__file__).resolve().parents[3] / "terraform/foundation/migrations/"
+    "01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql"
+)
+
+
+class WorkerDatabase:
+    """Real PostgreSQL contract fixture; never connects to Aurora or uses AWS credentials.
+
+    Set AWSOPS_WORKER_TEST_PG_PORT to a disposable localhost PostgreSQL's port.
+    Each test gets a separate database, including the real public/sql_reader schemas.
+    Other targeted worker tests reuse this fixture.
+    """
+
+    def __init__(self, port):
+        self.port = port
+        self.database = "worker_timing_" + uuid4().hex
+        self.schema = "public"
+        self.connections = []
+        self.admin = pg8000.native.Connection(
+            user="postgres", host="127.0.0.1", port=port, database="postgres",
+        )
+        self.admin.run("""
+            DO $$
+            DECLARE role_name text;
+            BEGIN
+              FOREACH role_name IN ARRAY ARRAY['awsops_sql_reader', 'awsops_web', 'awsops_worker']
+              LOOP
+                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = role_name) THEN
+                  EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOINHERIT', role_name);
+                END IF;
+              END LOOP;
+            END $$;
+        """)
+        self.admin.run(f"CREATE DATABASE {self.database}")
+        self.conn = self.connect()
+        # The deployed ledger shape before the timing migration. Extended states already
+        # belong to the dark remediation substrate; tests ensure they stay protected.
+        self.conn.run("""
+            CREATE TABLE worker_jobs (
+                job_id uuid PRIMARY KEY, type text NOT NULL, runtime text,
+                status text NOT NULL DEFAULT 'queued' CHECK (status IN (
+                    'queued','running','succeeded','failed','canceled',
+                    'awaiting_approval','manual_intervention')),
+                payload jsonb NOT NULL DEFAULT '{}'::jsonb, result jsonb,
+                artifact_uri text, error text, dry_run boolean NOT NULL DEFAULT false,
+                idempotency_key text, requested_by text, attempt integer NOT NULL DEFAULT 0,
+                automation_execution_id text, sfn_execution_arn text, task_token text,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now()
+            );
+            CREATE FUNCTION touch_job() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN NEW.updated_at = clock_timestamp(); RETURN NEW; END $$;
+            CREATE TRIGGER touch_job BEFORE UPDATE ON worker_jobs
+                FOR EACH ROW EXECUTE FUNCTION touch_job();
+            GRANT USAGE ON SCHEMA public TO awsops_web, awsops_worker;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON worker_jobs TO awsops_web, awsops_worker;
+
+            -- Existing view/grants from 01KYVY9J2E8AMF35WR4J7036A3. The new migration
+            -- must append only timing metadata without granting base-table access.
+            CREATE SCHEMA sql_reader;
+            REVOKE ALL ON SCHEMA sql_reader FROM PUBLIC;
+            GRANT USAGE ON SCHEMA sql_reader TO awsops_sql_reader;
+            CREATE VIEW sql_reader.worker_jobs WITH (security_invoker = false) AS
+                SELECT job_id, type, runtime, status, artifact_uri, dry_run, idempotency_key,
+                       attempt, sfn_execution_arn, created_at, updated_at
+                FROM public.worker_jobs;
+            GRANT SELECT ON sql_reader.worker_jobs TO awsops_sql_reader;
+        """)
+
+    def connect(self):
+        conn = pg8000.native.Connection(
+            user="postgres", host="127.0.0.1", port=self.port, database=self.database,
+        )
+        conn.run(f"SET search_path TO {self.schema}")
+        self.connections.append(conn)
+        return conn
+
+    def migrate(self):
+        # Missing migration is observed through the resulting database contract, not a
+        # source-text assertion. Reapplying also exercises ADD COLUMN IF NOT EXISTS.
+        if TIMING_MIGRATION.exists():
+            self.conn.run(TIMING_MIGRATION.read_text())
+
+    def insert(self, **overrides):
+        values = {
+            "job_id": str(uuid4()), "type": "noop", "payload": json.dumps({"fixture": True}),
+            "requested_by": "fixture-owner", "idempotency_key": str(uuid4()),
+            **overrides,
+        }
+        cols = ",".join(values)
+        binds = ",".join(f":{key}" for key in values)
+        self.conn.run(f"INSERT INTO worker_jobs ({cols}) VALUES ({binds})", **values)
+        return values["job_id"]
+
+    def job(self, job_id):
+        rows = self.conn.run("SELECT * FROM worker_jobs WHERE job_id=:id", id=job_id)
+        return dict(zip((column["name"] for column in self.conn.columns), rows[0]))
+
+    def close(self):
+        for conn in self.connections:
+            try:
+                conn.close()
+            except pg8000.exceptions.InterfaceError as error:
+                if str(error) != "connection is closed":
+                    raise
+        self.admin.run(f"DROP DATABASE {self.database}")
+        self.admin.close()
+
+
+@pytest.fixture
+def legacy_worker_pg(monkeypatch):
+    port = os.environ.get("AWSOPS_WORKER_TEST_PG_PORT")
+    if not port:
+        pytest.skip("Set AWSOPS_WORKER_TEST_PG_PORT for localhost PostgreSQL SQL contracts")
+
+    def forbid_aws(*args, **kwargs):
+        pytest.fail("Worker SQL contracts must not create live AWS clients")
+
+    monkeypatch.setattr(db.boto3, "client", forbid_aws)
+    database = WorkerDatabase(int(port))
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+@pytest.fixture
+def worker_pg(legacy_worker_pg):
+    legacy_worker_pg.migrate()
+    return legacy_worker_pg
+
+
+def test_lifecycle_migration_is_nullable_and_leaves_history_unknown(legacy_worker_pg):
+    database = legacy_worker_pg
+    old_ids = [
+        database.insert(status=status, attempt=attempt)
+        for status, attempt in [("queued", 0), ("running", 2), ("succeeded", 1), ("failed", 0)]
+    ]
+    database.migrate()
+    database.migrate()
+    columns = database.conn.run("""
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema=:schema AND table_name='worker_jobs'
+          AND column_name IN ('started_at','finished_at')
+        ORDER BY column_name
+    """, schema=database.schema)
+    assert columns == [
+        ["finished_at", "timestamp with time zone", "YES", None],
+        ["started_at", "timestamp with time zone", "YES", None],
+    ]
+    for job_id in old_ids + [database.insert()]:
+        row = database.job(job_id)
+        assert row["started_at"] is None and row["finished_at"] is None
+
+
+def test_sql_reader_view_appends_only_lifecycle_columns(worker_pg):
+    job_id = worker_pg.insert(
+        payload=json.dumps({"private": "input"}), result=json.dumps({"private": "output"}),
+        error="private error", task_token="fixture-capability", requested_by="private-owner",
+    )
+    db.claim_running(worker_pg.conn, job_id, "lambda")
+    db.finish_job(worker_pg.conn, job_id, "succeeded", result={"private": "output"})
+    authoritative = worker_pg.job(job_id)
+    reader = worker_pg.connect()
+    reader.run("SET ROLE awsops_sql_reader")
+    reader.run("SET search_path TO sql_reader, pg_catalog")
+    rows = reader.run("SELECT * FROM worker_jobs WHERE job_id=:id", id=job_id)
+    columns = [column["name"] for column in reader.columns]
+    assert columns == [
+        "job_id", "type", "runtime", "status", "artifact_uri", "dry_run", "idempotency_key",
+        "attempt", "sfn_execution_arn", "created_at", "updated_at", "started_at", "finished_at",
+    ]
+    row = dict(zip(columns, rows[0]))
+    assert row["status"] == "succeeded"
+    assert row["started_at"] == authoritative["started_at"]
+    assert row["finished_at"] == authoritative["finished_at"]
+
+
+@pytest.mark.parametrize("statement", [
+    "SELECT * FROM public.worker_jobs",
+    "SELECT started_at FROM public.worker_jobs",
+    "UPDATE sql_reader.worker_jobs SET status='failed'",
+    "DELETE FROM sql_reader.worker_jobs",
+    "SELECT public.stamp_worker_job_lifecycle()",
+])
+def test_sql_reader_cannot_access_base_table_mutate_view_or_execute_trigger(worker_pg, statement):
+    worker_pg.insert()
+    reader = worker_pg.connect()
+    reader.run("SET ROLE awsops_sql_reader")
+    with pytest.raises(pg8000.exceptions.DatabaseError) as error:
+        reader.run(statement)
+    assert error.value.args[0]["C"] == "42501"  # insufficient_privilege, not a read-only transaction
+
+
+def test_trigger_function_is_not_publicly_executable(worker_pg):
+    assert worker_pg.conn.run("""
+        SELECT EXISTS (
+            SELECT FROM pg_proc p,
+              LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+            WHERE p.oid='public.stamp_worker_job_lifecycle()'::regprocedure
+              AND acl.grantee=0 AND acl.privilege_type='EXECUTE'
+        )
+    """) == [[False]]
+
+
+@pytest.mark.parametrize("role", ["awsops_web", "awsops_worker"])
+def test_app_role_status_writes_still_fire_trigger_without_execute_grant(worker_pg, role):
+    writer = worker_pg.connect()
+    writer.run(f"SET ROLE {role}")
+    assert writer.run(
+        "SELECT has_function_privilege(current_user, 'public.stamp_worker_job_lifecycle()', 'EXECUTE')"
+    ) == [[False]]
+    job_id = str(uuid4())
+    db.insert_job(writer, job_id, "noop", {"fixture": True}, requested_by="fixture-owner")
+    assert db.claim_running(writer, job_id, "lambda") == 1
+    assert db.finish_job(writer, job_id, "succeeded", result={"ok": True}) == 1
+    row = worker_pg.job(job_id)
+    assert row["status"] == "succeeded" and row["attempt"] == 1
+    assert row["started_at"] is not None and row["finished_at"] >= row["started_at"]
+    assert db.finish_job(writer, job_id, "failed", error="late") == 0
+    assert worker_pg.job(job_id) == row
+
+
+def test_first_claim_records_database_time_without_changing_owner(worker_pg):
+    job_id = worker_pg.insert(created_at="2020-01-01T00:00:00Z")
+    before = worker_pg.job(job_id)
+    earliest = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    assert db.claim_running(worker_pg.conn, job_id, "lambda") == 1
+    row = worker_pg.job(job_id)
+    latest = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    assert row["status"] == "running" and row["attempt"] == 1
+    assert row["started_at"] is not None
+    assert earliest <= row["started_at"] <= latest
+    assert row["finished_at"] is None
+    for field in ("requested_by", "idempotency_key", "payload", "created_at"):
+        assert row[field] == before[field]
+
+
+def test_retry_keeps_first_start_and_increments_existing_attempt(worker_pg):
+    job_id = worker_pg.insert(
+        status="running", attempt=1, runtime="lambda", started_at="2020-01-01T00:00:00Z",
+    )
+    before = worker_pg.job(job_id)
+    assert db.claim_running(worker_pg.conn, job_id, "lambda") == 1
+    row = worker_pg.job(job_id)
+    assert row["attempt"] == 2 and row["started_at"] == before["started_at"]
+    assert row["finished_at"] is None
+    assert row["updated_at"] != before["updated_at"]
+
+
+@pytest.mark.parametrize("attempt", [0, 2])
+def test_legacy_retry_does_not_fabricate_a_first_start(legacy_worker_pg, attempt):
+    database = legacy_worker_pg
+    job_id = database.insert(status="running", attempt=attempt)
+    database.migrate()
+    assert db.claim_running(database.conn, job_id, "lambda") == 1
+    assert db.finish_job(database.conn, job_id, "succeeded", result={"ok": True}) == 1
+    row = database.job(job_id)
+    assert row["attempt"] == attempt + 1 and row["started_at"] is None
+    assert row["finished_at"] is not None
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "canceled", "manual_intervention"])
+def test_terminal_write_stamps_finish_once_and_keeps_first_start(worker_pg, status):
+    job_id = worker_pg.insert(status="running", attempt=1, started_at="2020-01-01T00:00:00Z")
+    before = worker_pg.job(job_id)
+    earliest = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    assert db.finish_job(worker_pg.conn, job_id, status, result={"fixture": True}) == 1
+    finished = worker_pg.job(job_id)
+    assert finished["status"] == status and finished["started_at"] == before["started_at"]
+    assert finished["finished_at"] is not None
+    assert finished["finished_at"] >= earliest
+    assert db.finish_job(worker_pg.conn, job_id, "failed", error="late callback") == 0
+    assert db.claim_running(worker_pg.conn, job_id, "fargate") == 0
+    assert db.set_manual_intervention(worker_pg.conn, job_id, "late callback") == 0
+    assert worker_pg.job(job_id) == finished
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "canceled", "manual_intervention"])
+def test_legacy_terminal_jobs_stay_unknown_and_immutable(legacy_worker_pg, status):
+    database = legacy_worker_pg
+    job_id = database.insert(status=status, attempt=1)
+    database.migrate()
+    before = database.job(job_id)
+    assert before["started_at"] is None and before["finished_at"] is None
+    assert db.claim_running(database.conn, job_id, "lambda") == 0
+    assert db.finish_job(database.conn, job_id, "succeeded", result={"new": True}) == 0
+    assert db.set_manual_intervention(database.conn, job_id, "new") == 0
+    assert database.job(job_id) == before
+
+
+def test_failure_before_claim_has_finish_but_no_start(worker_pg):
+    job_id = worker_pg.insert()
+    assert db.finish_job(worker_pg.conn, job_id, "failed", error="dispatch failed") == 1
+    row = worker_pg.job(job_id)
+    assert row["attempt"] == 0 and row["started_at"] is None
+    assert row["finished_at"] is not None
+
+
+def test_success_requires_an_actual_worker_claim(worker_pg):
+    job_id = worker_pg.insert()
+    before = worker_pg.job(job_id)
+    assert db.finish_job(worker_pg.conn, job_id, "succeeded") == 0
+    assert worker_pg.job(job_id) == before
+
+
+def test_manual_intervention_is_a_terminal_completion(worker_pg):
+    job_id = worker_pg.insert(status="running", attempt=1, started_at="2020-01-01T00:00:00Z")
+    assert db.set_manual_intervention(worker_pg.conn, job_id, "fixture failure") == 1
+    row = worker_pg.job(job_id)
+    assert row["status"] == "manual_intervention" and row["finished_at"] is not None
+    assert db.set_manual_intervention(worker_pg.conn, job_id, "duplicate") == 0
+    assert worker_pg.job(job_id) == row
+
+
+@pytest.mark.parametrize("fixture_name", ["legacy_worker_pg", "worker_pg"])
+@pytest.mark.parametrize("runtime", ["lambda", "fargate", "ssm"])
+def test_adr005_frozen_awaiting_approval_deliberately_unclaimable(request, fixture_name, runtime):
+    """Run the actual SQL: approval is not authority to activate frozen remediation.
+
+    The exclusion must hold before/after the timing migration and preserve every ledger field.
+    A wider queued/running/awaiting_approval predicate makes this test fail.
+    """
+    worker_pg = request.getfixturevalue(fixture_name)
+    job_id = worker_pg.insert(status="awaiting_approval", type="remediation", attempt=1,
+                              task_token="fixture-approval-token")
+    before = worker_pg.job(job_id)
+    assert db.claim_running(worker_pg.conn, job_id, runtime) == 0
+    assert worker_pg.job(job_id) == before
+
+
+def test_nonexistent_job_never_updates_a_different_owner(worker_pg):
+    job_id = worker_pg.insert(requested_by="another-owner")
+    before = worker_pg.job(job_id)
+    missing_id = str(uuid4())
+    assert db.claim_running(worker_pg.conn, missing_id, "lambda") == 0
+    assert db.finish_job(worker_pg.conn, missing_id, "failed") == 0
+    assert worker_pg.job(job_id) == before
+
+
+def test_get_job_exposes_existing_attempt_without_depending_on_timing(worker_pg):
+    job_id = worker_pg.insert()
+    row = db.get_job(worker_pg.conn, job_id)
+    assert row["attempt"] == 0 and row["status"] == "queued"
+    db.claim_running(worker_pg.conn, job_id, "lambda")
+    db.finish_job(worker_pg.conn, job_id, "succeeded")
+    row = db.get_job(worker_pg.conn, job_id)
+    assert row["attempt"] == 1
+    timed = worker_pg.job(job_id)
+    assert timed["started_at"].tzinfo is not None and timed["finished_at"] >= timed["started_at"]
+
+
+@pytest.mark.parametrize("operation", ["read", "claim", "finish", "manual"])
+def test_workers_operate_before_timing_migration(legacy_worker_pg, operation):
+    database = legacy_worker_pg
+    job_id = database.insert()
+    if operation == "read":
+        assert db.get_job(database.conn, job_id)["status"] == "queued"
+    elif operation == "claim":
+        assert db.claim_running(database.conn, job_id, "lambda") == 1
+    elif operation == "finish":
+        assert db.finish_job(database.conn, job_id, "failed", error="fixture") == 1
+    else:
+        assert db.set_manual_intervention(database.conn, job_id, "fixture") == 1
+    # The parent's optional-column read contract must work before the migration.
+    assert database.conn.run(
+        "SELECT to_jsonb(j)->>'started_at', to_jsonb(j)->>'finished_at' "
+        "FROM worker_jobs j WHERE job_id=:id", id=job_id,
+    ) == [[None, None]]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "succeeded", "failed", "canceled", "manual_intervention"])
+def test_trigger_records_only_timing_observed_at_insert(worker_pg, status):
+    before = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    job_id = worker_pg.insert(status=status)
+    row = worker_pg.job(job_id)
+    assert row["status"] == status and row["attempt"] == 0
+    if status == "running":
+        assert row["started_at"] is not None and row["started_at"] >= before
+    else:
+        assert row["started_at"] is None
+    if status in ("succeeded", "failed", "canceled", "manual_intervention"):
+        assert row["finished_at"] is not None and row["finished_at"] >= before
+    else:
+        assert row["finished_at"] is None
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "canceled", "manual_intervention"])
+def test_trigger_stamps_existing_status_only_writers(worker_pg, status):
+    job_id = worker_pg.insert()
+    worker_pg.conn.run(
+        "UPDATE worker_jobs SET status='running', attempt=attempt+1 WHERE job_id=:id",
+        id=job_id,
+    )
+    started = worker_pg.job(job_id)
+    assert started["started_at"] is not None and started["finished_at"] is None
+    worker_pg.conn.run("UPDATE worker_jobs SET status=:s WHERE job_id=:id", s=status, id=job_id)
+    finished = worker_pg.job(job_id)
+    assert finished["started_at"] == started["started_at"]
+    assert finished["finished_at"] >= finished["started_at"]
+    # An old or duplicate writer cannot replace the authoritative timestamps.
+    worker_pg.conn.run(
+        "UPDATE worker_jobs SET status=:s, started_at=clock_timestamp(), "
+        "finished_at=clock_timestamp(), error='duplicate' WHERE job_id=:id",
+        s=status, id=job_id,
+    )
+    duplicate = worker_pg.job(job_id)
+    assert duplicate["started_at"] == finished["started_at"]
+    assert duplicate["finished_at"] == finished["finished_at"]
+
+
+def test_trigger_retry_clears_old_finish_and_preserves_first_start(worker_pg):
+    job_id = worker_pg.insert()
+    worker_pg.conn.run(
+        "UPDATE worker_jobs SET status='running', attempt=1 WHERE job_id=:id", id=job_id,
+    )
+    worker_pg.conn.run("UPDATE worker_jobs SET status='failed' WHERE job_id=:id", id=job_id)
+    failed = worker_pg.job(job_id)
+    assert failed["started_at"] is not None and failed["finished_at"] is not None
+    # Metadata only: the trigger does not initiate/authorize this explicit retry.
+    worker_pg.conn.run("UPDATE worker_jobs SET status='queued' WHERE job_id=:id", id=job_id)
+    retried = worker_pg.job(job_id)
+    assert retried["started_at"] == failed["started_at"] and retried["finished_at"] is None
+    worker_pg.conn.run(
+        "UPDATE worker_jobs SET status='running', attempt=attempt+1 WHERE job_id=:id", id=job_id,
+    )
+    worker_pg.conn.run("UPDATE worker_jobs SET status='succeeded' WHERE job_id=:id", id=job_id)
+    finished = worker_pg.job(job_id)
+    assert finished["started_at"] == failed["started_at"] and finished["attempt"] == 2
+    assert finished["finished_at"] > failed["finished_at"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "succeeded", "failed", "canceled", "manual_intervention"])
+def test_trigger_never_backfills_legacy_metadata_or_duplicate_status_updates(legacy_worker_pg, status):
+    database = legacy_worker_pg
+    job_id = database.insert(status=status, attempt=2)
+    database.migrate()
+    for sql in (
+        "UPDATE worker_jobs SET error='metadata' WHERE job_id=:id",
+        "UPDATE worker_jobs SET status=status WHERE job_id=:id",
+    ):
+        database.conn.run(sql, id=job_id)
+        row = database.job(job_id)
+        assert row["started_at"] is None and row["finished_at"] is None
+
+
+def test_status_and_timestamps_roll_back_together(worker_pg):
+    job_id = worker_pg.insert()
+    writer = worker_pg.connect()
+    writer.run("BEGIN")
+    db.claim_running(writer, job_id, "lambda")
+    assert worker_pg.job(job_id)["status"] == "queued"
+    writer.run("ROLLBACK")
+    row = worker_pg.job(job_id)
+    assert row["attempt"] == 0 and row["started_at"] is None
+    db.claim_running(writer, job_id, "lambda")
+    writer.run("BEGIN")
+    db.finish_job(writer, job_id, "succeeded")
+    assert worker_pg.job(job_id)["status"] == "running"
+    writer.run("ROLLBACK")
+    assert worker_pg.job(job_id)["finished_at"] is None
+
+
+def test_timestamp_is_transition_time_not_long_transaction_start(worker_pg):
+    job_id = worker_pg.insert()
+    writer = worker_pg.connect()
+    writer.run("BEGIN")
+    writer.run("SELECT pg_sleep(0.02)")
+    before_claim = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    db.claim_running(writer, job_id, "lambda")
+    writer.run("COMMIT")
+    started = worker_pg.job(job_id)["started_at"]
+    assert started is not None
+    assert started >= before_claim
+    writer.run("BEGIN")
+    writer.run("SELECT pg_sleep(0.02)")
+    before_finish = worker_pg.conn.run("SELECT clock_timestamp()")[0][0]
+    db.finish_job(writer, job_id, "succeeded")
+    writer.run("COMMIT")
+    assert worker_pg.job(job_id)["finished_at"] >= before_finish
 
 
 class FakeConn:
@@ -351,6 +840,34 @@ class TestUpsertDatasourceSchema:
         assert "INSERT INTO datasource_schemas" in sql and "::jsonb" in sql
         assert p["acct"] == "self" and p["iid"] == 42 and p["k"] == "clickhouse"
         assert json.loads(p["s"]) == {"version": "1.2", "tables": []}
+
+    def test_oversized_metric_schema_is_stored_bounded_and_truncated(self):
+        c = FakeConn()
+        big = {"metrics": [f"very_long_metric_name_{'x' * 80}_{i}" for i in range(3000)], "truncated": False}
+        db.upsert_datasource_schema(c, "self", 42, "prometheus", big)
+        assert len(c.calls) == 1
+        stored = json.loads(c.calls[0][1]["s"])
+        assert len(c.calls[0][1]["s"].encode("utf-8")) <= db._MAX_SCHEMA_BYTES
+        assert stored["truncated"] is True and 0 < len(stored["metrics"]) < 3000
+        assert stored["metrics"][0] == big["metrics"][0]
+
+    def test_metric_trim_keeps_probed_present_names_and_marks_trimmed(self):
+        metrics = [f"very_long_metric_name_{'x' * 80}_{i}" for i in range(3000)]
+        out = db._trim_schema_for_cache({"metrics": metrics, "probed": [metrics[1], metrics[1501], "absent"], "truncated": False})
+        assert out["trimmed"] is True and out["truncated"] is True
+        assert metrics[1] in out["metrics"] and metrics[1501] in out["metrics"]
+        assert "absent" not in out["metrics"]
+        assert out["probed"] == [metrics[1], metrics[1501], "absent"]
+        assert len(json.dumps(out).encode("utf-8")) <= db._MAX_SCHEMA_BYTES
+
+    def test_oversized_untrimmable_schema_still_raises(self):
+        c = FakeConn()
+        try:
+            db.upsert_datasource_schema(c, "self", 42, "clickhouse", {"blob": "x" * 300_000})
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+        assert c.calls == []
 
 
 # ── datasource_dashboard_cards (pre-built dashboard cards) ───────────────────────────────────────

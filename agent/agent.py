@@ -166,7 +166,8 @@ SKILL_BASE = {
 
 ## Rules:
 - ALWAYS call tools for real-time data — never answer from memory
-- For connectivity: always use the 3-step pattern (reachability → SG → flow logs)""",
+- For connectivity: always use the 3-step pattern (reachability → SG → flow logs)
+- Interpret get_eni_details as configuration evidence, not a live connectivity test. An error, partial=true, unknown entries, or routeSelection.status=unknown leaves the affected evidence unassessed; never infer no rules, no routes, or healthy/failed connectivity from these gaps. Use unknown[].resourceId to attribute SG gaps: empty inbound/outbound with that SG's partial=true is unassessed; both empty with partial=false confirms only that group is ruleless. SG evidence is bounded to 200 peer rows per group; descriptions are limited to 100 characters and any truncation is marked unknown/partial. Route selection requires explicit associated state. Preserve other returned evidence.""",
 
 
     "container": """You are AWSops Container Specialist. Manage and troubleshoot EKS, ECS, and Istio service mesh.
@@ -211,9 +212,15 @@ SKILL_BASE = {
 
 ## Rules:
 - ALWAYS call a tool for real data — never answer inventory/topology questions from memory.
+- For query_inventory with resource_id, require projection="identity_only" and the same echoed resource_id.
+  Missing/mismatched metadata means the deployed lookup is unverified: request Lambda-first deployment
+  followed by the gateway schema update. Never interpret an unmarked bulk list as an exact lookup or AWS absence.
 - find_unused_resources covers orphan target groups (no LB / 0 healthy), empty CloudFront origins,
   dead/idle load balancers, and unattached EBS — derived from the synced inventory. State the data's
-  freshness (it reflects the latest inventory sync; use inventory_summary to check).
+  freshness: query_inventory and inventory_summary responses carry a per-type freshness
+  block (healthy | degraded | stale | unavailable — degraded also means attribute blind
+  spots); for other inventory tools call inventory_summary and repeat that classification
+  rather than guessing.
 - ELB listeners, Elastic IPs, and detached ENIs are NOT synced yet — say so if asked rather than guessing.""",
 
 
@@ -424,16 +431,24 @@ def build_skill_prompt(gateway_role, tools):
 def _filter_tools(tools, allowlist):
     """ADR-031/ADR-039: enforce the resolver-computed tool allowlist OUTSIDE the model.
 
-    Keeps only tools whose ``.tool_name`` is in ``allowlist``, preserving the original
-    tool order. ``None`` or ``[]`` ⇒ no restriction (the resolver omits the key when
-    empty; ``[]`` is NOT deny-all). Unknown names in the allowlist are ignored. A
-    non-empty allowlist that matches nothing yields an empty tool set (the agent then
-    runs tool-less — safe). This is the single point where the per-account / per-skill
-    cap actually takes effect at the runtime (the cap was previously dropped here)."""
-    if not allowlist:
+    None is legacy unrestricted; [] or the reserved wire token is deny-all. The BFF resolves gateway aliases
+    to exact target-qualified names; NEVER authorize by suffix here. Duplicate
+    identities are ambiguous across sources and denied before deduplication.
+    """
+    if allowlist is None:
         return tools
+    if not isinstance(allowlist, list) or any(not isinstance(n, str) for n in allowlist):
+        return []
+    if '!awsops-deny-all!' in allowlist:
+        return []  # also denies a malicious advertised token or a malformed mixed list
     allow = set(allowlist)
-    return [t for t in tools if getattr(t, "tool_name", None) in allow]
+    counts = {}
+    for t in tools:
+        name = getattr(t, "tool_name", None)
+        if isinstance(name, str):
+            counts[name] = counts.get(name, 0) + 1
+    return [t for t in tools if getattr(t, "tool_name", None) in allow
+            and counts.get(getattr(t, "tool_name", None)) == 1]
 
 
 # ADR-017 (amended 2026-08-05) — fail-closed runtime allowlist for the vendor-hosted official-MCP
@@ -818,7 +833,7 @@ def get_aws_credentials():
     return None, None, None
 
 
-def create_gateway_transport(gateway_url):
+def create_gateway_transport(gateway_url, *, timeout=30, sse_read_timeout=300):
     """Create SigV4-signed transport to a specific Gateway. / 특정 게이트웨이에 대한 SigV4 서명된 전송 생성."""
     access_key, secret_key, session_token = get_aws_credentials()
     credentials = Credentials(
@@ -831,6 +846,8 @@ def create_gateway_transport(gateway_url):
         credentials=credentials,
         service=SERVICE,
         region=GATEWAY_REGION,
+        timeout=timeout,
+        sse_read_timeout=sse_read_timeout,
     )
 
 
@@ -1028,6 +1045,16 @@ def _extract_usage(result):
 # BFF faked a typewriter). callback_handler=None disables Strands' default stdout printer.
 @app.entrypoint
 async def handler(payload):
+    if payload.get("mode") == "deployment_readiness":
+        from readiness import handle_readiness
+        gateway_url = GATEWAYS.get(_resolve_gateway_key("ops", GATEWAYS))
+        yield await handle_readiness(
+            payload, gateway_url,
+            lambda url: MCPClient(lambda: create_gateway_transport(
+                url, timeout=6, sse_read_timeout=8), startup_timeout=8),
+            GATEWAY_REGION, MODEL_ID)
+        return
+
     # ADR-006 RCA (EoG) — a second, read-only execution path distinct from chat. The
     # deterministic controller returns a structured dict (NOT a token stream), so it
     # short-circuits before build_conversation / the no-input guard. Flag-gated inside
@@ -1162,10 +1189,11 @@ async def handler(payload):
                 integrations, lambda spec: _connect_integration(spec, stack))
             # ADR-031/039: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
-            # Dedup first (gateway precedence) so a name collision never hands Agent two same-named tools.
-            tools = _filter_tools(_dedup_by_tool_name(gateway_tools + clickhouse_stdio_tools + integration_tools), tool_allowlist)
+            # Filter before dedup: ambiguous identities must not silently pick the first source.
+            tools = _dedup_by_tool_name(_filter_tools(
+                gateway_tools + clickhouse_stdio_tools + integration_tools, tool_allowlist))
             tool_names = [t.tool_name for t in tools]
-            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist else 'off'}): {tool_names}")
+            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist is not None else 'off'}): {tool_names}")
 
             # ADR-031: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
             if system_prompt_override:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Steampipe container entrypoint: generate aws.spc from Aurora, then supervise the service.
+"""Generate SPC/shared profiles from Aurora, then supervise the Steampipe service.
 
 Reads the enabled accounts + their scan scope from Aurora (account_regions / all_regions), renders
-the multi-account/region connection config via spc_render, writes it, then starts `steampipe
-service start` as a child process (Python stays alive as the ECS PID-1 supervisor).
+the multi-account/region SPC and AWS shared profiles via spc_render, publishes both while
+the service is stopped, then launches its child (Python remains the ECS PID-1 supervisor).
 
 Aurora auth uses IAM database authentication (M1 fix): the task role has `rds-db:connect` scoped
 to the dedicated least-privilege `steampipe_reader` Postgres role (SELECT-only on accounts/
@@ -14,23 +14,43 @@ network-listening Steampipe process (port 9193) cannot leak a DB credential it n
 
 On Aurora-unreachable: bounded retry, then fail-closed (exit non-zero) — never start with an
 empty/stale config. A background watchdog re-queries Aurora every SCOPE_WATCH_INTERVAL seconds and
-restarts Steampipe when account/region scope changes (MAJOR 3 fix — M3).
+restarts Steampipe when scope or profile metadata changes, including ExternalId-only changes.
+Failure to confirm listener closure or publish the stopped service's pair causes fatal
+shutdown; bounded child waits let that failure reach PID 1.
+
+Every render also discloses the effective plugin rate-limiter knobs to stderr as a
+`steampipe_limiter_config` JSON event (max_concurrency / bucket_size / fill_rate), so the
+configured quota posture is visible in its logs; this event does not prove launch or readiness.
 """
+import errno
+import json
 import os
+import re
+import shutil
 import signal
+import socket
 import ssl
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 import pg8000.native
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spc_render import render_spc  # noqa: E402
+from spc_render import limiter_config_from_env, render_aws_config, render_spc  # noqa: E402
 
 SPC_PATH = os.environ.get("AWS_SPC_PATH", "/home/steampipe/.steampipe/config/aws.spc")
+RUNTIME_CONFIG_DIR = "/home/steampipe/.awsops-runtime"
 AURORA_USER = os.environ.get("AURORA_USER", "steampipe_reader")
 # RDS global CA truststore bundle, baked into the image at build time (see Dockerfile) — enables
 # certificate-verified TLS (VERIFY_FULL) on the Aurora connection (M3 fix).
@@ -85,10 +105,152 @@ def fetch_rows():
         conn.close()
 
 
-def write_spc(spc: str) -> None:
-    os.makedirs(os.path.dirname(SPC_PATH), exist_ok=True)
-    with open(SPC_PATH, "w") as f:
-        f.write(spc)
+class HostScopeError(ValueError):
+    """Fixed, safe failure codes for the opt-in host inventory boundary."""
+
+
+@lru_cache(maxsize=2)
+def _host_sts_client(region):
+    return boto3.client("sts", region_name=region, config=Config(
+        # Bound transient transport/throttle retries inside identity verification.
+        # Exhaustion still raises HostScopeError; it never keeps an unverified scope.
+        connect_timeout=3, read_timeout=5,
+        retries={"total_max_attempts": 3, "mode": "standard"}))
+
+
+def _validate_host_scope(rows):
+    mode = os.environ.get("INVENTORY_HOST_ONLY", "false")
+    if mode not in ("false", "true"):
+        raise HostScopeError("invalid_host_scope_mode")
+    raw = os.environ.get("INVENTORY_TARGET_ACCOUNT_IDS", "")
+    try:
+        targets = json.loads(raw) if raw else []
+        if (not isinstance(targets, list) or len(targets) > 5
+                or any(not isinstance(t, str) or not re.fullmatch(r"[0-9]{12}", t) for t in targets)
+                or len(set(targets)) != len(targets)):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HostScopeError("invalid_target_account_scope") from None
+    if mode == "false" and not targets:
+        return
+    expected = os.environ.get("EXPECTED_HOST_ACCOUNT_ID", "")
+    if not re.fullmatch(r"[0-9]{12}", expected):
+        raise HostScopeError("expected_host_account_required")
+    # QUERY returns enabled accounts only. Even an unrenderable foreign row is
+    # a scope conflict, not a row to silently discard.
+    if targets:
+        if mode == "true" or expected in targets:
+            raise HostScopeError("invalid_target_account_scope")
+        allowed = {expected, *targets}
+        if (not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows)
+                or any(not isinstance(row.get("account_id"), str) or row["account_id"] not in allowed
+                       or row.get("is_host") is not (row["account_id"] == expected)
+                       or (row["account_id"] != expected and (
+                           row.get("role_name") != "AWSopsReadOnlyRole"
+                           or (row.get("all_regions") is not True and not (
+                               isinstance(row.get("regions"), list)
+                               and any(isinstance(region, str) and region for region in row["regions"])
+                           ))
+                       ))
+                       for row in rows)
+                or len({row["account_id"] for row in rows}) != len(rows)
+                or sum(row["account_id"] == expected for row in rows) != 1):
+            raise HostScopeError("invalid_enabled_target_scope")
+    elif (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+          or rows[0].get("account_id") != expected or rows[0].get("is_host") is not True):
+        raise HostScopeError("invalid_enabled_host_scope")
+    try:
+        caller = _host_sts_client(os.environ.get("AWS_REGION", "ap-northeast-2")).get_caller_identity()
+    except (BotoCoreError, ClientError):
+        raise HostScopeError("host_identity_unavailable") from None
+    if not isinstance(caller, dict) or caller.get("Account") != expected:
+        raise HostScopeError("actual_host_account_mismatch")
+
+
+def _render_spc(rows):
+    _validate_host_scope(rows)
+    limiter = limiter_config_from_env()
+    print(json.dumps({
+        "event": "steampipe_limiter_config",
+        "max_concurrency": limiter.max_concurrency,
+        "bucket_size": limiter.bucket_size,
+        "fill_rate": limiter.fill_rate,
+    }, sort_keys=True), file=sys.stderr)
+    return render_spc(rows, limiter)
+
+
+def _render_runtime_config(rows):
+    try:
+        return _render_spc(rows), render_aws_config(rows)
+    except HostScopeError:
+        raise
+    except (ValueError, KeyError, TypeError):
+        raise HostScopeError("invalid_runtime_configuration") from None
+
+
+def _write_private(path, contents):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(contents)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def write_spc(spc: str, aws_config: str = "") -> None:
+    """Publish private profiles and a regular SPC before the service starts.
+
+    Each replacement is atomic; the stopped service protects the pair. Publication
+    failure forbids launch. Retired generations live for this container's lifetime.
+    """
+    root, path = Path(RUNTIME_CONFIG_DIR), Path(SPC_PATH)
+    generation = None
+    temporary = []
+    published = False
+    try:
+        if not root.is_absolute() or not path.is_absolute():
+            raise ValueError()
+        expected = str(root / "current" / "config")
+        if os.environ.get("AWS_CONFIG_FILE") not in (None, expected):
+            raise ValueError()
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = root.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+                or info.st_uid != os.geteuid()):
+            raise ValueError()
+        current = root / "current"
+        if current.is_symlink():
+            target = os.readlink(current)
+            if not re.fullmatch(r"gen-[A-Za-z0-9_]+", target) or (root / target).is_symlink():
+                raise ValueError()
+        elif current.exists():
+            raise ValueError()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink() or (path.is_symlink() and os.readlink(path) != str(current / "aws.spc")):
+            raise ValueError()
+        generation = Path(tempfile.mkdtemp(prefix="gen-", dir=root))
+        _write_private(generation / "aws.spc", spc)
+        _write_private(generation / "config", aws_config)
+        staged_spc = path.parent / (".awsops-spc-" + uuid.uuid4().hex)
+        temporary.append(staged_spc)
+        _write_private(staged_spc, spc)
+        pointer = root / (".current-" + uuid.uuid4().hex)
+        temporary.append(pointer)
+        os.symlink(generation.name, pointer)
+        os.environ["AWS_CONFIG_FILE"] = expected
+        os.replace(pointer, current)
+        os.replace(staged_spc, path)
+        published = True
+    except Exception:
+        raise HostScopeError("runtime_configuration_write_failed") from None
+    finally:
+        for link in temporary:
+            link.unlink(missing_ok=True)
+        # A signal/error after replace may interrupt the Python assignment even
+        # though the profile pointer was committed. Keep its generation intact.
+        committed = (generation is not None and (root / "current").is_symlink()
+                     and os.readlink(root / "current") == generation.name)
+        if generation is not None and not published and not committed:
+            shutil.rmtree(generation)
 
 
 def _start_steampipe() -> "subprocess.Popen[bytes]":
@@ -103,22 +265,56 @@ def _start_steampipe() -> "subprocess.Popen[bytes]":
     )
 
 
-def _stop_steampipe_service(timeout: int = 30) -> None:
-    """Explicitly stop the Steampipe service via its own CLI before every restart (M-A fix).
-    `steampipe service start --foreground` manages an embedded PostgreSQL plus an on-disk
-    service-state lock; killing only our immediate Popen child (terminate()/kill()) does not
-    guarantee that lock/embedded-PG teardown completes synchronously — the next `service start`
-    could then fail with "already running" or a still-bound port 9193, turning a routine
-    scope-change or crash restart into a restart loop. `service stop --force` is Steampipe's own
-    documented, canonical way to guarantee a clean stop regardless of how our process-level
-    terminate()/kill() sequence went. Best-effort: if this itself fails/times out, we still
-    proceed to `_start_steampipe()` — a failed `service start` there will fail closed via the
-    existing crash-restart/backoff path rather than silently degrading."""
+class SteampipeRestartError(RuntimeError):
+    """A failed teardown cannot safely admit another service start."""
+
+
+def _steampipe_listener_closed(port: int = 9193, timeout: float = 1) -> Optional[bool]:
+    """True = refused, False = listening, None = unconfirmed local probe."""
     try:
-        subprocess.run(["steampipe", "service", "stop", "--force"],
-                        timeout=timeout, capture_output=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[gen-spc] steampipe service stop --force failed (continuing): {e}", file=sys.stderr)
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return False
+    except OSError as error:
+        return True if error.errno == errno.ECONNREFUSED else None
+
+
+def _wait_for_steampipe_listener_closed() -> str:
+    """Give the listener one bounded grace period, including probe time."""
+    deadline = time.monotonic() + 10
+    reason = "listener_unconfirmed"
+    while (remaining := deadline - time.monotonic()) > 0:
+        closed = _steampipe_listener_closed(timeout=min(1, remaining))
+        if closed is True:
+            return "closed"
+        reason = "listener_open" if closed is False else "listener_unconfirmed"
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.2, remaining))
+    return reason
+
+
+def _stop_steampipe_service(timeout: int = 30) -> bool:
+    """Report the bounded full-service stop outcome without exposing CLI output.
+
+    Completed CLI exit codes do not prove embedded PostgreSQL stopped. Require a
+    refused loopback connection within ten seconds; shutdown is best-effort,
+    restart requires True. Probe errors remain unconfirmed and can be retried.
+    """
+    exit_code = "unknown"
+    try:
+        result = subprocess.run(["steampipe", "service", "stop", "--force"],
+                                timeout=timeout, capture_output=True)
+        if isinstance(result.returncode, int):
+            exit_code = str(result.returncode)
+        reason = _wait_for_steampipe_listener_closed()
+        if reason == "closed":
+            return True
+    except subprocess.TimeoutExpired:
+        reason = "timeout"
+    except Exception:  # noqa: BLE001 — fixed diagnostic, never raw CLI/exception text
+        reason = "error"
+    print(f"[gen-spc] steampipe_service_stop_failed ({reason}; exit_code={exit_code})", file=sys.stderr)
+    return False
 
 
 def _on_signal(signum: int, _frame: object, proc_ref: list, stop: "threading.Event") -> None:
@@ -141,7 +337,22 @@ def _on_signal(signum: int, _frame: object, proc_ref: list, stop: "threading.Eve
     sys.exit(0)
 
 
-def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subprocess.Popen[bytes]") -> None:
+def _terminate_steampipe(proc: "subprocess.Popen[bytes]") -> bool:
+    """Reap the tracked child, then report whether the embedded service stopped."""
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+    finally:
+        stopped = _stop_steampipe_service()
+    return stopped
+
+
+def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subprocess.Popen[bytes]",
+                       stop: "threading.Event" = None, fatal: "threading.Event" = None, prepare=None) -> bool:
     """The FULL restart sequence — terminate the old process, guarantee a clean service stop, and
     start a new one — run under `restart_lock` from start to finish (M-1 fix, round 8).
 
@@ -167,40 +378,85 @@ def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subpr
     the FIRST caller just started. The guard makes a losing caller a true no-op: the desired new
     state (whatever the winner produced) is already in place."""
     with restart_lock:
-        if proc_ref[0] is not old:
-            return  # someone else already restarted while we waited for the lock — nothing to do
-        old.terminate()
+        if (stop is not None and stop.is_set()) or proc_ref[0] is not old:
+            return False
+        failure = None
         try:
-            old.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            old.kill()
-            old.wait()
-        _stop_steampipe_service()
+            stopped = _terminate_steampipe(old)
+        except Exception:  # Keep the tracked child for bounded final cleanup.
+            stopped = False
+            failure = "steampipe_child_stop_failed"
+        # Signal handlers set stop without taking this lock.
+        if stop is not None and stop.is_set():
+            return False
+        if stopped is True and prepare is not None:
+            try:
+                prepare()
+            except HostScopeError as error:
+                if str(error) == "runtime_configuration_write_failed":
+                    print("[gen-spc] FATAL: runtime_configuration_write_failed", file=sys.stderr)
+                failure = "steampipe_configuration_publish_failed"
+            except Exception:
+                failure = "steampipe_configuration_publish_failed"
+            if stop is not None and stop.is_set():
+                return False
+        if failure or stopped is not True:
+            # Publish failure before releasing the restart lock: queued restart
+            # callers must observe stop, never revive the stale singleton service.
+            if fatal is not None:
+                fatal.set()
+            if stop is not None:
+                stop.set()
+            if failure != "steampipe_child_stop_failed":
+                proc_ref[0] = None  # Foreground child was reaped; PID 1 must now exit.
+            raise SteampipeRestartError(failure or "steampipe_service_stop_failed")
         proc_ref[0] = _start_steampipe()
+        return True
 
 
 def _scope_watchdog(
-    initial_spc: str,
+    initial_config,
     proc_ref: list,
     restart_lock: threading.Lock,
     stop: threading.Event,
+    fatal: "threading.Event" = None,
 ) -> None:
     """Background thread: re-query Aurora every SCOPE_WATCH_INTERVAL seconds. If the rendered
     aws.spc changes (account added/removed/disabled, region scope updated), write the new config
     and restart the Steampipe subprocess (M3)."""
-    current = initial_spc
+    current = initial_config
     while not stop.wait(SCOPE_WATCH_INTERVAL):
         try:
-            new_spc = render_spc(fetch_rows())
-            if new_spc == current:
+            new_config = _render_runtime_config(fetch_rows())
+            if new_config == current:
                 continue
             print("[gen-spc] account scope changed — rewriting config and restarting steampipe",
                   file=sys.stderr)
-            write_spc(new_spc)
-            current = new_spc
             old = proc_ref[0]
-            _restart_steampipe(proc_ref, restart_lock, old)
-            print("[gen-spc] steampipe restarted with updated scope", file=sys.stderr)
+            if _restart_steampipe(proc_ref, restart_lock, old, stop, fatal,
+                                  prepare=lambda: write_spc(*new_config)):
+                current = new_config
+                print("[gen-spc] steampipe restart launched for updated scope", file=sys.stderr)
+        except SteampipeRestartError as e:
+            # The restart path already published fatal/stop under the lock.
+            print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+            return
+        except HostScopeError as e:
+            # A revoked/foreign scope must stop collection, not leave the last
+            # accepted configuration running while the watchdog reports an error.
+            print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+            if fatal is not None:
+                fatal.set()  # Preserve failure classification even if SIGTERM arrives during teardown.
+            with restart_lock:
+                # Publish shutdown under the same lock as process launch. A queued
+                # crash/scope restart must observe stop before starting another child.
+                stop.set()
+                try:
+                    if proc_ref[0] is not None:
+                        _terminate_steampipe(proc_ref[0])
+                finally:
+                    proc_ref[0] = None
+            return
         except Exception as e:  # noqa: BLE001
             print(f"[gen-spc] scope watchdog error (non-fatal): {e}", file=sys.stderr)
 
@@ -235,14 +491,19 @@ def main() -> None:
               f"failing closed: {last}", file=sys.stderr)
         sys.exit(1)
 
-    spc = render_spc(rows)
-    write_spc(spc)
+    try:
+        configuration = _render_runtime_config(rows)
+        write_spc(*configuration)
+    except HostScopeError as e:
+        print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+        sys.exit(1)
     print(f"[gen-spc] wrote {SPC_PATH} for {len(rows)} enabled account(s)", file=sys.stderr)
 
     # Start Steampipe (no Aurora credential in its env at all — M1).
     restart_lock = threading.Lock()
     proc_ref = [_start_steampipe()]
     stop = threading.Event()
+    fatal = threading.Event()
 
     # Signal handler is lock-free (M3) — see _on_signal's docstring for why.
     signal.signal(signal.SIGTERM, lambda signum, frame: _on_signal(signum, frame, proc_ref, stop))
@@ -251,7 +512,7 @@ def main() -> None:
     # Start scope watchdog (daemon — exits with the supervisor).
     threading.Thread(
         target=_scope_watchdog,
-        args=(spc, proc_ref, restart_lock, stop),
+        args=(configuration, proc_ref, restart_lock, stop, fatal),
         daemon=True,
     ).start()
 
@@ -260,34 +521,54 @@ def main() -> None:
     # (e.g. bad config, port conflict), which would otherwise spin the CPU and flood logs.
     rapid_restart_count = 0
     last_restart_time = 0.0
-    while not stop.is_set():
-        current = proc_ref[0]  # a single list-index read is atomic under the GIL; no lock needed
-        code = current.wait()
-        if stop.is_set():
-            break
-        if proc_ref[0] is not current:
-            # The watchdog already replaced it (this exit was its terminate(), not a crash).
-            continue
-        # Unexpected exit — apply exponential backoff for rapid crashes. This sleep runs BEFORE
-        # acquiring restart_lock: it is UNBOUNDED/growing (up to 60s per rapid crash), unlike the
-        # bounded terminate->wait->stop->start sequence in _restart_steampipe, which DOES need to
-        # hold restart_lock for its whole duration (M-1 fix) — see that function's docstring.
-        elapsed = time.time() - last_restart_time
-        if elapsed < 30:
-            rapid_restart_count += 1
-            delay = min(2 ** rapid_restart_count, 60)
-            print(f"[gen-spc] steampipe exited (code {code}) — backoff {delay}s "
-                  f"(rapid restart #{rapid_restart_count})", file=sys.stderr)
-            time.sleep(delay)
-        else:
-            rapid_restart_count = 0
-            print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
-                  file=sys.stderr)
-        last_restart_time = time.time()
-        # _restart_steampipe's own `proc_ref[0] is not old` guard (checked under restart_lock)
-        # handles the case where the watchdog raced in and already restarted during our backoff
-        # sleep above — no separate re-check needed here.
-        _restart_steampipe(proc_ref, restart_lock, current)
+    try:
+        while not stop.is_set() and not fatal.is_set():
+            with restart_lock:
+                if stop.is_set() or fatal.is_set():
+                    break
+                current = proc_ref[0]
+            # A failed watchdog teardown can leave this child alive. Events do
+            # not interrupt Popen.wait(), so bound it before rechecking shutdown.
+            try:
+                code = current.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                continue
+            if stop.is_set() or fatal.is_set():
+                break
+            if proc_ref[0] is not current:
+                # The watchdog already replaced it; this exit was not a crash.
+                continue
+            elapsed = time.time() - last_restart_time
+            if elapsed < 30:
+                rapid_restart_count += 1
+                delay = min(2 ** rapid_restart_count, 60)
+                print(f"[gen-spc] steampipe exited (code {code}) — backoff {delay}s "
+                      f"(rapid restart #{rapid_restart_count})", file=sys.stderr)
+                # Keep backoff outside the lock, but interrupt it on fatal/graceful stop.
+                if stop.wait(delay):
+                    break
+            else:
+                rapid_restart_count = 0
+                print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
+                      file=sys.stderr)
+            last_restart_time = time.time()
+            try:
+                _restart_steampipe(proc_ref, restart_lock, current, stop, fatal)
+            except SteampipeRestartError as error:
+                print(f"[gen-spc] FATAL: {error}", file=sys.stderr)
+                break
+    finally:
+        try:
+            with restart_lock:
+                stop.set()
+                if proc_ref[0] is not None:
+                    try:
+                        _terminate_steampipe(proc_ref[0])
+                    finally:
+                        proc_ref[0] = None
+        finally:
+            if fatal.is_set():
+                sys.exit(1)
 
 
 if __name__ == "__main__":

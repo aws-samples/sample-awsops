@@ -26,7 +26,11 @@ export async function GET(request: Request) {
     // getMtdCost-is-primary contract: a failure here still 500s instead of rendering an empty page).
     const monthlyByService = await getMonthlyCostByService(months, account);
     // dailyByService / forecast are secondary — degrade so the monthly breakdown still renders.
-    const dailyByService = await getDailyCostByService(account).catch(() => []);
+    // The degradation is SURFACED (dailyDegraded): the client's day-normalized change verdict
+    // needs today's per-service bucket, and silently missing it reverts the math to the
+    // biased basis (review round 11).
+    let dailyDegraded = false;
+    const dailyByService = await getDailyCostByService(account).catch(() => { dailyDegraded = true; return []; });
     const forecast = await getCostForecast(account).catch(() => null);
 
     const lastMonth = monthlyByService[monthlyByService.length - 1]?.byService ?? [];
@@ -38,7 +42,7 @@ export async function GET(request: Request) {
 
     const body = {
       total, currency, byService, trend, monthly, forecast,
-      monthlyByService, dailyByService, account: account ?? 'self',
+      monthlyByService, dailyByService, dailyDegraded, account: account ?? 'self',
     };
     // v1 parity: keep the last-good response so a CE outage serves cached data, not a blank page.
     saveCostSnapshot(`${account ?? 'self'}:${months}`, body);

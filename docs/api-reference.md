@@ -1,10 +1,10 @@
 # API 레퍼런스 / API Reference
 
 ## 역할 / Role
-`web/app/api/**/route.ts` 전수(99개 라우트) 인덱스 — 경로·메서드·역할·인증.
-(Full index of all 99 `route.ts` files under `web/app/api` — path, methods, role, auth.)
+`web/app/api/**/route.ts` 경로 인덱스 — 경로·메서드·역할·인증.
+(API route index under `web/app/api` — path, methods, role, auth.)
 - 인증 컬럼: `verifyUser` = Cognito `awsops_token` 쿠키 검증(`@/lib/auth`). `없음` = 라우트 자체 비게이트(엣지 Lambda@Edge 게이트는 별도). 역할에 "admin"이 있으면 `isAdmin` 추가 게이트.
-- 모든 라우트는 루트 경로(`/api/*`) — basePath 없음. web은 thin-BFF: 무거운 작업은 `POST /api/jobs`로 enqueue.
+- 모든 라우트는 루트 경로(`/api/*`) — basePath 없음. web은 thin-BFF: 도메인 작업은 소유권을 검사하는 전용 라우트로 enqueue하며, 일반 `POST /api/jobs`는 허용된 noop 종류만 받는다.
 
 ## auth (2)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -15,7 +15,7 @@
 ## chat (4)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/chat` | POST | AI 챗 — 분류기 → 게이트웨이/Code Interpreter/Bedrock direct 라우팅, SSE 스트리밍 | verifyUser |
+| `/api/chat` | POST | AI 챗 — 분류기 → 게이트웨이/Code Interpreter/Bedrock direct 라우팅, SSE 스트리밍; custom-policy fallback / unavailable pin → 200 SSE (see below) | verifyUser |
 | `/api/chat/stats` | GET | AI 호출 운영 통계 (게이트웨이별 호출량/성공률/평균 지연, `agentcore_stats` 집계) | verifyUser |
 | `/api/chat/threads` | GET, DELETE | 대화 스레드 목록/검색(`?q=` 본인 메시지 substring) + 전체 삭제 | verifyUser |
 | `/api/chat/threads/[id]` | GET, DELETE | 스레드 단건 조회/삭제 (사용자별 분리) | verifyUser |
@@ -23,34 +23,246 @@
 ## inventory (8)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용 | verifyUser |
+| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용; `ecs_cluster`는 MTD 비용(CE) 병합 기본, `?cost=0`으로 생략(비용 미표시 소비자용); `?view=agg`는 행 대신 전 플릿 집계(총계·state/dist/facet GROUP BY, 동일 스코프·게이트; 클라이언트 파생 키 차원은 제외되어 표본 유지, 버킷 상한 50) 반환 | verifyUser |
 | `/api/inventory/[type]/metrics` | GET | 보조 KPI 카드 (CloudWatch/Pricing) + `?ids=`/`?nodes=` 타입별 라이브 진단 플릿(ec2/rds/alb/nlb/s3/transit_gateway/lambda/ebs_volume/dynamodb/elasticache/opensearch/msk) — 실패 시 `{cards:[]}`로 조용히 degrade | verifyUser |
-| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`) | verifyUser |
+| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`); admin 전용. `type=all`은 sync Lambda의 type=all fan-out을 1회 dispatch(행 미반환, `{status:'queued',dispatched:'all'}`; sync 비활성 시 503 `unconfigured`, enqueue 실패 시 503 `error`) | verifyUser |
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
-| `/api/inventory/summary` | GET | 타입/카테고리별 카운트 + 보안 분할(ec2 running, 미암호화 EBS 등) — `regions`/`includeGlobal` 스코프 반영(홈 대시보드 카운트 포함) | verifyUser |
-| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) | verifyUser |
+| `/api/inventory/summary` | GET | Default returns account/region-filtered resource counts and security splits plus `collection`. `?view=collection` returns only `{ collection }`, skipping fleet aggregation. `collection.scope=aggregate` is the job-level ledger and is not narrowed by those filters; missing, failed and unknown evidence remains explicit and does not establish per-account health. | verifyUser |
+| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
+
+### Inventory pagination and sweep ledger
+
+In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
+`run` metadata and `consistency: "statement-snapshot"`. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+to 0. The route uses numeric coercion/defaults, without positive/integer validation
+or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
+integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
+returned as HTTP 500 and an error message rather than a validation 400.
+
+`?view=agg` instead returns totals, state/distribution counts and facets, without
+`rows` or `run`. Both modes retain authentication, type-specific admin checks and
+the same account/region/global scope filters.
+
+The normal-mode `run` is global per-type job/sweep metadata under `account_id='self'`,
+including for member/all-account reads; its `row_count` is not the selected-scope
+or page count. The collector marks the job `running` before row writes. A successful
+finish advances `finished_at` and `last_success_at`; partial/failed finishes do not
+advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
+`row_count`, `error` and `last_success_at`, not a per-account completion certificate.
+
+`readResources` uses one read-only SQL statement: an ordered, limited page CTE and a
+single-row global-ledger CTE are combined into one result. JSON aggregation repeats the
+page ordering, including worst-first rules. An empty page still returns its ledger;
+a missing ledger remains null. One `pool.query` call borrows/releases its connection
+without a manually held transaction. PostgreSQL supplies one MVCC snapshot for that
+statement; `statement-snapshot` describes this guarantee, not a requested transaction
+isolation level. Parameters and scope filters are unchanged. `view=agg` remains separate.
+
+Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
+30-second browser load budget shared with EKS. All inventory and VPC/security-group
+enrichment requests share two lanes per load; critical pages run sequentially within a
+lane. This bounds this loader’s fan-out against the shared pool. Each critical page must carry the marker;
+legacy/missing markers fail closed. Succeeded status, finish, last-success and row-count
+must remain stable across pages. Ownership decisions do not compare browser and database clocks. The snapshot
+prevents a finalizing sweep from mixing one page's rows with another ledger snapshot.
+Separate pages/types are not a single snapshot; success still proves neither freshness
+nor complete AWS coverage. All ECS snapshot labels,
+including host labels, remain cached configuration rather than current ownership.
+Incomplete or changed
+sweeps retain bounded cached rows with confidence withheld; missing ledger, failed,
+malformed or capped reads never prove absence. Other display reads keep their
+existing row cap. Authentication and type-specific admin checks still apply.
+Inventory and EKS reads share the abort signal; superseded loads are aborted
+and late completions cannot overwrite newer results. If a failed/incomplete load builds
+an empty graph, the previous nonempty graph and its provenance are retained only for the same
+account, regions and `includeGlobal` scope;
+a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
+target-group row, not the independent task/subnet/pod evidence. The Refresh chip uses
+the newest source/eligible last-success capture time, so a new read does not reset old
+data freshness. Onboarding gaps use `cluster_not_connected` separately from actual
+read failures; their unknown ownership scopes remain blocked.
+
+Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
+[row/ledger reads](../web/lib/inventory.ts),
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py),
+[topology loader](../web/app/topology/page.tsx),
+[EKS evidence producer](../web/lib/topology-config.ts), and
+[IP-target builder](../web/lib/flow-topology.ts).
 
 ## eks (10)
-| 경로 | 메서드 | 역할 | 인증 |
-|------|--------|------|------|
-| `/api/eks` | GET | 클러스터 목록 + 접근 상태(Access Entry 여부, 온보딩 가이드) | verifyUser |
-| `/api/eks/fleet` | GET | 전 클러스터 서버측 라이브 집계 — raw pod row 미전송, 클러스터별 실패는 `reachable:false` | verifyUser |
-| `/api/eks/node-eni` | GET | 인스턴스 타입별 ENI당 IPv4 한도 (미등재 타입 15 폴백) | verifyUser |
-| `/api/eks/summary` | GET | v1 K8s-Overview 패리티 — 연결 클러스터 라이브 카운트 (실패는 0으로 degrade, 500 금지) | verifyUser |
-| `/api/eks/[cluster]/incluster` | GET | in-cluster 리소스 목록 (`?kind=`, 클러스터 allowlist) | verifyUser |
-| `/api/eks/[cluster]/incluster/describe` | GET | 단일 오브젝트 describe (K9s 패리티, secrets는 Kind 불가) | verifyUser |
-| `/api/eks/[cluster]/k8sgpt` | GET | K8sGPT read-only 진단 (ADR-006[legacy 035]) — admin + 클러스터 allowlist | verifyUser |
-| `/api/eks/[cluster]/metrics` | GET | 컨트롤플레인 + ContainerInsights CloudWatch 메트릭 | verifyUser |
-| `/api/eks/[cluster]/pod-transfer` | GET | NFM 파드 전송 쿼리 (최대 1h 윈도우) | verifyUser |
-| `/api/eks/[cluster]/register` | POST, DELETE | 클러스터 등록/해제 (admin, EKS 공식 이름 패턴 검증) | verifyUser |
+| Path | Method | Behavior | Authentication |
+|------|--------|----------|----------------|
+| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; partial errors and enumeration limits are disclosed | verifyUser |
+| `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; unavailable scope/registration storage returns 503 | verifyUser |
+| `/api/eks/node-eni` | GET | `node` DNS lookup in EC2 inventory and traffic metrics; optional `cluster` selects its registered account/region; node-only requests retain host/deployment-region behavior | verifyUser |
+| `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |
+| `/api/eks/[cluster]/incluster` | GET | Read-only Kubernetes resources selected by `kind`; canonical registration allowlist applies | verifyUser |
+| `/api/eks/[cluster]/incluster/describe` | GET | One Kubernetes object; secrets remain unsupported and config-map values are redacted | verifyUser |
+| `/api/eks/[cluster]/k8sgpt` | GET | Flag-gated read-only diagnosis (ADR-006); admin and cluster allowlist checks remain | verifyUser |
+| `/api/eks/[cluster]/metrics` | GET | Scoped control-plane/Container Insights metrics, resolved account/region, and per-source `ok`/`no-data`/`denied`/`unavailable`/`partial` outcomes; raw name remains the CloudWatch dimension | verifyUser |
+| `/api/eks/[cluster]/pod-transfer` | GET | NFM pod-transfer query, at most one hour; member/nondefault-region requests return `available:false` with an unsupported-scope reason | verifyUser |
+| `/api/eks/[cluster]/register` | POST, DELETE | Admin-only app registration/removal using a validated canonical ID; POST directly describes the selected cluster before checking its Access Entry | verifyUser |
+
+### EKS enumeration metadata
+
+The list, fleet, and summary accept `accounts`/`regions` CSV selections or `__all__`,
+with legacy singular `account`/`region` aliases. Omitted scope retains the
+host/deployment-region default. `includeGlobal` may accompany the shared UI scope
+but does not add global resources to these regional EKS reads.
+
+The `/api/eks` envelope contains `clusters`, `admin`, `errors`, and `truncated`.
+Each cluster has a separate display `name`, canonical `id`, `accountId`, and `region`.
+Envelope `region` is present only for exactly one query target, including a successful
+empty result; it is omitted for zero or multiple targets. Discovery describes at
+most 25 clusters per target and considers at most 12 account/region targets.
+Continuation or a target cap sets `truncated`. Wildcard discovery covers configured
+and registered regions and adds an explicit incomplete-discovery entry in `errors`;
+it does not certify exhaustive AWS-region coverage. Individual target failures are
+also in `errors`. All target queries failing returns 502 with that error detail,
+not a successful empty list. Invalid selectors return 400, disabled/unregistered
+member scope returns 403, and unavailable scope/registration storage returns 503.
+
+Fleet and summary use the selected registered population, including authorized
+registered regions under wildcard scope, with a separate 100-cluster cap.
+Fleet rows retain `id`, `name`, `accountId`, and `region`; individual failures have
+`reachable:false` and an error. Summary totals cover successful reads only:
+`reachable < clusters` or `truncated` means the result is incomplete. Neither
+endpoint converts a failed registration-table read into a complete empty population.
+Consumers must preserve failure/cap metadata and must not fuse these registered
+counts with a separately scoped discovery count based only on equal cardinality.
+
+### EKS read failure classification
+
+Failed EKS and OpenCost reads expose a coarse classification:
+`denied`, `unreachable`, `timeout`, or `upstream-error`. `message` remains a fixed,
+credential-free explanation (or an application-owned scope validation message).
+Classification uses allowlisted SDK error codes/names and numeric HTTP status,
+not raw error text. Kubernetes transport retains HTTP status and a timeout code
+internally so a real RBAC denial can be distinguished from connectivity failure.
+Logs contain only the fixed operation label, coarse reason, and validated/fallback
+status; they never serialize the exception, stack, response body, or credentials.
+
+Existing HTTP/status envelopes remain: list target failures and fleet rows carry
+their failure metadata; a failed required fleet read is still `reachable:false`.
+Error responses and unavailable allocation results use `reason`. Degraded K8sGPT
+results use `errorReason` with `message`; OpenCost status retains its human-readable
+`reason` and adds `failureReason`. These degraded results may retain HTTP 200.
+These results do not establish operator absence, a successful empty scan, or a
+zero cost. A K8sGPT 503 means the feature is disabled only when the payload explicitly
+says `enabled:false`; other 503 responses are read/scope failures. See
+[`eks-read-error.ts`](../web/lib/eks-read-error.ts) for the controlled classifications.
+
+### EKS identity and registration
+
+For `[cluster]`, URL-encode the complete EKS ARN once for member/nondefault-region
+clusters. Bare names retain their host/deployment-region meaning. Single-cluster
+routes also accept a bare name with singular `account` and `region`; collection-style
+plural selectors are rejected there. The legacy node-only ENI route remains a
+separate host-only compatibility path; use its `cluster` query for scoped lookup.
+
+[`eks-cluster-id.ts`](../web/lib/eks-cluster-id.ts) retains the EKS name charset/length,
+numeric 12-digit account, and region-pattern validation. [`eks-context.ts`](../web/lib/eks-context.ts)
+rejects conflicting selectors and disabled member scopes before metadata or cached
+connection/auth reads. POST registration returns 404 for an absent selected cluster,
+409 for an absent/unverifiable Access Entry, 413 for an oversized body, and typed
+400/403/503 validation/authorization/unavailability responses. It writes only the app's
+registration state; it does not create AWS roles, entries, policies, or connectivity.
+For compatibility, an empty or syntactically invalid JSON body selects the default
+signer; a parseable but invalid `auth` object returns 400. Saved authentication is
+reported through `authMode`, so clients must not infer that an omitted mode was saved.
+
+For member clusters, discovery and default Kubernetes token signing use the
+registered member read-only role. Its Access Entry/read policy is required.
+The shared role uses `AmazonEKSViewPolicy` plus minimal node-read RBAC; do not
+grant it AdminView/Secret reads. Optional Result-CRD and OpenCost service-proxy
+reads need separately scoped bindings.
+Host clusters retain the web task role. Explicit member AssumeRole overrides must
+belong to the selected member account; the host bearer is never a member fallback.
+Saved SA authentication remains separate. See [EKS onboarding](reference/07-eks.md).
+
+Admin DELETE validates the registration identity and removes the local row/auth
+without requiring an enabled member account or AWS discovery. This preserves
+offboarding cleanup after an account is disabled/removed. A bare member
+name needs its explicit region (or use the full ARN); Terraform-managed host entries remain protected. This
+cleanup changes no AWS role, Access Entry, or policy.
+
+### EKS metric read quality
+
+`/api/eks/[cluster]/metrics` retains `range`, `controlPlane`, `cluster`, and `nodes`
+and adds resolved `accountId`/`region` and `sources.controlPlane`, `sources.cluster`,
+and `sources.nodes`. Each source has a `status` and an optional fixed, sanitized
+`reason`. For submitted metric queries, `no-data` requires complete result envelopes
+for the requested IDs with no datapoints. Missing or zero result envelopes are
+`unavailable`; a missing later chunk retains earlier values as `partial`. Known
+global error classifications such as `denied` are preserved. Successful node
+discovery with no matching metrics still represents `no-data`. It is not proof
+that an observability agent is uninstalled. `denied` and `unavailable` identify
+failed reads, while `partial` preserves usable values alongside incomplete results.
+CloudWatch response/query failures, bounded continuation/discovery, and conflicting
+instance tuples for a node name are included in that quality assessment. Ambiguous
+node values are withheld rather than choosing an arbitrary instance. No raw SDK denial or credential value is returned in
+these source reasons. The response uses `Cache-Control: no-store`.
+The host response exposes the configured `HOST_ACCOUNT_ID` when available, while
+internal AWS reads continue to use the `self` target. Errors escaping the source
+readers use the shared `reason` envelope and controlled `eks-metrics` log record.
+See the AWS [MetricDataResult contract](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_MetricDataResult.html).
+
+Diagnosis consumers must use this metadata instead of inferring installation state
+from null metrics. Independent successful sources remain usable when another source
+fails. CloudWatch permissions (`GetMetricData` and `ListMetrics`) and actual
+Container Insights publication are separate prerequisites from Kubernetes access.
+
+### Overview EKS provenance
+
+`/api/overview` keeps its existing singleton `account` query in the deployment
+region; `account=__all__` retains host behavior, while jobs/compliance remain
+app-level. Successful EKS discovery adds `clusterScope` with `accountId` (`self`
+for host), `region`, raw `names`, and `truncated`. Discovery failure leaves both
+`clusterCount` and `clusterScope` null. This metadata describes the actual query;
+it does not claim that overview enumerated the entire account/region picker.
+
+The dashboard sends the full picker scope to `/api/eks/fleet`, labels its charts
+as selected registered-cluster observations, and discloses failures, timeouts,
+unreachable clusters, and truncation. It fuses node/pod details into the EKS
+headline only for an explicit singleton account/region whose complete discovery
+names exactly match the reachable fleet's names and account/region metadata.
+Older, incomplete, or mismatched responses do not qualify based on equal counts.
 
 ## nfm (2)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/nfm` | GET | NFM 상태(메뉴 게이트) — 모니터 목록 + Scope 수; 모니터 없으면 온보딩 안내로 degrade | verifyUser |
 | `/api/nfm/query` | GET | NFM 모니터 쿼리 — 최대 1시간 윈도우 (초과 시 API ValidationException) | verifyUser |
+
+### NFM observation metadata
+
+Successful `/api/nfm/query` responses retain `monitor`, `metric`, `category`, `range`,
+`rows`, `unit` and `tookMs`, and include:
+
+| Field | Meaning |
+|---|---|
+| `startTime`, `endTime` | ISO query bounds sent to NFM; preserved unchanged on a four-minute cache hit. |
+| `queriedAt` | Result assembly time, also preserved on cache hits; not the current HTTP request time. |
+| `capped` | The contributor limit was reached or a continuation token remained. More rows may exist. |
+
+These are query bounds and truncation signals, not proof of complete traffic coverage.
+The route owns `RANGE_ALLOWED` (900/1800/3600 seconds); an unsupported or omitted range
+uses its existing 3600-second default. Metric/category allowlists remain in `nfm.ts`.
+
+The client-side `topology-observations.ts` loader powers explicit queries in `/topology?view=e2e`.
+Its `NetworkBatch` is a client result, not additional HTTP response fields: it carries
+failed/capped categories, `complete`/`partial` status and per-category `verified`/`unknown`
+window quality. `verified` means parseable, ordered bounds only. Failures use closed codes
+(`query_failed`, `malformed_payload`, `malformed_rows`, `invalid_request`) without raw
+upstream error text. Missing/invalid windows remain unknown and make the batch partial.
+At most three workers bound category concurrency; cancellation stops further scheduling and result
+application, without guaranteeing cancellation of a server query already started.
+
+### Service/network graph composition
+
+The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` model and existing authenticated APIs. Source-evidence, identity and selection contracts are maintained in [E2E observability](reference/observability-e2e.md#graph-source-contract); `ServiceNetworkTopology` orchestrates sources and `E2eGraphCanvas` renders the model.
 
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -71,7 +283,7 @@
 ## dx (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
+| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). `locations[]`는 `available/down` owned·hosted의 확인된 위치/리전별 집계, `totals.locations`는 고유 위치명 수. 기타·미확인 상태는 원본 목록에 남지만 위치·상태·SLA 평가에서 제외·미평가로 고지하며 SLA는 owned만 대상. / Known deployed sites only; raw inventory remains available, excluded states are unassessed. 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
 
 ## ip-inventory (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -81,18 +293,63 @@
 ## tgw (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트 + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
+| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트(+VPC 어태치먼트 options: DNS/IPv6/Appliance — VPC 타입만, 불완전 경로[조회 실패·페이지 캡 절단·미반환 VPC 행]는 optionsDegradedRegions로 공개, options만 누락) + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
 
 ## vpce (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
-## 기타 (54)
+## vpc-connectivity (1)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/vpc-connectivity` | GET | On-demand, read-only VPC peering and TGW attachment observations for exactly one `account` (`self` or a 12-digit account ID), `region` (commercial-region allowlist shared with the picker) and `vpcId`. Requires an enabled registered account and an exact indexed inventory match, including host-to-`self` mapping. `source.ownerId` is disclosure only; it never selects authorization or credentials. Returns source identity, read-completion `checkedAt`, peering records, TGW groups and required `limitations` and `incompleteSources` arrays. All replies use `Cache-Control: private, no-store`. See [VPC connectivity](reference/vpc-connectivity.md). | `verifyUser` |
+
+Each scope parameter must occur exactly once. Errors return
+`{ status: "error", code }` with the following stable mapping:
+
+| Code | HTTP status | Meaning |
+|------|-------------|---------|
+| `invalid_request` | 400 | Missing, repeated or invalid scope input, including a region outside the commercial-region allowlist. |
+| `not_found` | 404 | No unique VPC matches the indexed collecting account, region and resource ID. |
+| `account_unavailable` | 403 | Missing, disabled or inconsistent registry account/host identity, or an invalid registered read-role name. |
+| `lookup_failed` | 502 | The lookup failed, exhausted its deadline without usable evidence, or exceeded the process's in-flight limit. |
+| `unauthenticated` | 401 | `verifyUser` rejected the session cookie. |
+
+`limitations` contains structural visibility signals (`shared-vpc`, `owner-unknown`,
+`shared-tgw`). `incompleteSources` identifies failed, denied, truncated, conflicting
+or malformed reads. Usable partial results remain HTTP 200. Either nonempty array
+prevents a definitive empty-connection claim. Results with no operational read
+gaps may reuse a four-minute process-local cache even with limitations, keyed by
+collecting account, region, VPC ID and disclosed owner identity. Nonempty
+`incompleteSources` prevents caching, so retries read AWS again. The HTTP
+`private, no-store` policy applies to both success and error responses.
+
+Reduced-info and pending peerings remain records: `peer.vpcId`, `peer.accountId`,
+`peer.region` and `peer.cidr` are each `string | null`. Missing optional fields
+remain unknown; present malformed metadata marks the affected read incomplete.
+Input regions use the shared `isVpcConnectivityRegion` predicate's current
+34-region commercial allowlist, and unsupported picker rows are excluded with a
+notice. Provider-reported peer regions need only valid syntax and may name a
+future region without authorizing queries there.
+
+TGW source and peer attachments expose `routeTableId: string | null` and
+`associationState: string | null`. Only `active` peerings and `available`
+attachments receive the active-record label; other lifecycle states remain
+configuration records with the current connection unconfirmed. The UI labels a
+table **Associated TGW route table** only for an `available` attachment with an
+`associated` association; otherwise it shows an association record with the ID and
+state or unknown. TGW peer lists describe VPC attachment records on that TGW.
+Retained pending or historical records and route-table associations do not prove
+reachability.
+
+## 기타 (55)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/accounts` | GET, POST, PATCH, DELETE | 등록 계정 CRUD (admin) — POST는 role assume + `GetCallerIdentity` anti-spoof 검증 후 insert | verifyUser |
+| `/api/accounts` | GET, POST, PATCH, DELETE | Registered-account CRUD. GET requires authentication; POST/PATCH/DELETE additionally require admin. POST assumes the pinned role and verifies the target account before writing. Host-only registration or a target outside the applied allowlist returns 409; malformed deployment scope returns 503 before STS or registry writes. PATCH retains the registered-account re-test behavior. | verifyUser; writes + admin |
 | `/api/accounts/regions` | GET, POST, DELETE | 계정별 리전 활성/비활성 (`'self'` → 호스트 실제 id 해석) — 조회 auth / 변경 admin | verifyUser |
+| `/api/accounts/onboarding` | GET, POST | Admin discovery and read-only connection diagnostics. GET returns host web role/account, region, `registrationEnabled`, and optional collector role/target allowlist; discovery or malformed scope returns 503. POST accepts `{accountId,region,externalId,firstParty}` (no alias), validates a 4 KiB body, then checks host identity, pinned target-role assumption and target identity under a shared 15-second STS deadline; `region` is requested inventory metadata and optional `stsRegion` identifies the deployment STS endpoint. STS endpoints use deployment `AWS_REGION` (default `ap-northeast-2`), not the selected inventory-region metadata. Requires a nonempty actor `sub` and either an applied allowlist entry or an enabled nonhost registered target. After single-flight/cooldown admission, unregistered/unlisted targets return 409 `target_not_configured` even in legacy multi-account mode; malformed scope or failed registry lookup returns 503. Registration and collector scope are unchanged. One in-flight probe including a three-second registry lookup limit and a 60-second admission cooldown per process, including failed/rejected lookups. Lookup timeout returns `scope_unavailable`/503, discards any checked-out DB connection and releases admission while preserving cooldown; 429 carries a safe code, `retryAfterSeconds` and `Retry-After`. Auth: 401/403; invalid input/body: 400/413; success: 200 `{ok:true,diagnostic}`; AWS check failures: 400/503/504 with `{ok:false,diagnostic}`. Boundary rejections carry a fixed message/code where available, not an AWS diagnostic. Unexpected verifier errors return `check_failed`/503 with single-flight released and cooldown preserved. Successful GET and all POST replies use `Cache-Control: private, no-store`. No registry or AWS-resource writes. See [onboarding](runbooks/onboard-target-account.md#connection-evidence-and-ai-guidance). | verifyUser + admin |
 | `/api/actions` | GET, POST | 액션 목록/생성 (ADR-007[legacy 040/041], admin) | verifyUser |
 | `/api/actions/[id]` | GET, POST | 액션 상세/실행 (admin) — kill-switch 분기(integrations-write vs mutating-actions), 빈 이름 fail-closed | verifyUser |
 | `/api/agentcore` | GET | AgentCore 컨트롤플레인 상태 (runtime/gateway/memory/interpreter, `?action=stats`) | verifyUser |
@@ -107,17 +364,17 @@
 | `/api/cost/availability` | GET | Cost Explorer 가용성 probe (1h 캐시, `?force=1` 재확인) | verifyUser |
 | `/api/cost/detail` | GET | 서비스별 비용 상세 (`?service=` 필수, ≤100자) | verifyUser |
 | `/api/finops/findings` | GET | ADR-020 FinOps 기본 권장 엔진 — 미해결 findings + 최근 배치 실행(`finops_runs`) 조회, Aurora만 읽음(라이브 AWS 호출 없음). `finops_baseline_enabled=false`면 `{enabled:false, findings:[], lastRun:null}` | verifyUser |
-| `/api/customization` | GET, POST, PUT | 스킬/에이전트 카탈로그 CRUD (ADR-004[legacy 031], admin) | verifyUser |
+| `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; invalid tool policy → 400; unavailable validation/read → 503 (see below) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin) | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
 | `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |
 | `/api/datasources/[id]/diag-signals` | GET | 사전 정의 진단 시그널 — Explore 칩 (DB read only, egress 없음). kind 범위: prometheus/mimir/loki 는 결정론 카탈로그, clickhouse 는 결정론 엔트리가 없어 폴백 전용. tempo 는 `tags_or_services` matcher 가 introspect 된 어떤 스키마에도 매칭되어 항상 ready 이므로 폴백에 도달하지 않는다. **LLM 폴백(`diag_signal_querygen_enabled`)은 clickhouse 전용이 아니다** — ready 0행인 *모든* 배선 kind 에서 발동하므로 라벨 미탐지로 0행이 된 loki 인스턴스의 칩에도 `provenance='generated'` 가 섞일 수 있다(리뷰 MAJOR-9). 생성 행은 칩 전용 — 리포트 경로 제외, 플래그 OFF 면 read 에서도 제외. jaeger/dynatrace/datadog 는 아직 배선 없음(빈 응답) | verifyUser |
-| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | 없음 |
+| `/api/db` | GET | Aurora ping — success returns `status: "ok"`, `public_tables` and UTC ISO `server_time` from the same table-count/`clock_timestamp()` SELECT; unset `AURORA_ENDPOINT` remains 503 and database errors remain generic 500 responses | CloudFront edge authentication; BFF `verifyUser()` omitted (ADR-002 §2-4) |
 | `/api/diagnosis` | GET, POST | AI 종합진단 리포트 목록/생성 — worker enqueue + 멱등키 | verifyUser |
 | `/api/diagnosis/intent` | GET, POST | Plan-2 Intent Engine — `architecture_intent` 조회(auth) + 쓰기(admin) | verifyUser |
 | `/api/diagnosis/schedule` | GET, PUT | 사용자별 자동 진단 스케줄 — row read/write만 (실행은 worker `schedule_dispatcher`) | verifyUser |
@@ -126,7 +383,7 @@
 | `/api/diagnosis/subscribers/test` | POST | 진단 알림 테스트 발송 — 토픽 한정 SNS Publish 1건 (admin 전용) | verifyUser |
 | `/api/diagnosis/[id]` | GET, PATCH, DELETE | 리포트 단건 조회/수정/삭제 | verifyUser |
 | `/api/diagnosis/[id]/download` | GET | 산출물(md/docx/pdf) S3 프록시 다운로드 (presign 아님) | verifyUser |
-| `/api/graph` | GET | 토폴로지 그래프 (legacy 043 — BASELINE §2 deferred 옵션, read-only) — class `flow\|infra`, `?from=`으로 서브그래프 | verifyUser |
+| `/api/graph` | GET | 읽기 전용 토폴로지 그래프 — class `flow\|infra\|trace`, `?from=`으로 서브그래프. 모든 class는 `collection` 수집·보존 상태를 노출하며, `trace`는 관측 edge count를 함께 제공. 큐 `meta.claimedAccountId/claimedRegion`은 보존된 행도 destination ARN에서만 재계산하고 비-ARN/누락 한정자는 null; `identityProvenance=telemetry_claim` 고정, 호출자 폴백·AWS 인벤토리 bridge 없음. 동일 ARN은 데이터소스·환경 안에서만 호출자 간 연결. / Queue claims derive only from destination ARNs; unverified, scoped by datasource/environment, never inventory authority. [계약·배포 / Contract and rollout](runbooks/source-sync-observability.md) | verifyUser |
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
@@ -137,15 +394,164 @@
 | `/api/integrations` | GET, POST, PUT | 통합 등록 — egress 커넥터 + ingress 웹훅 소스 (ADR-007[legacy 039], admin, SSRF 가드) | verifyUser |
 | `/api/integrations/credential` | GET, PUT | 통합 크리덴셜 저장 — 단일 Secrets Manager secret에 slug(kind) 키 (admin) | verifyUser |
 | `/api/integrations/schema` | GET, POST | 인스턴스 스키마 introspect/캐시 (admin) | verifyUser |
+| `/api/deployment/readiness` | POST | 실제 웹 역할·SSM·AgentCore·인벤토리·모델 검증. nonce/account/known CloudFront 입력, no-store, 401/403/429/503. 프로세스당 단일 실행·60초 제한 / bounded deployment evidence | verifyUser + admin or deployment-verifiers |
+| `/api/deployment/member-inventory` | GET | Minimal member-resource evidence within the applied target-account allowlist. Query: `accountId`, `type` (`ec2` or `cloudfront`), `resourceId`. One Aurora inventory query after authentication; no resource AWS API calls or writes. A unique matching row returns 200 `{schemaVersion:1,status:"verified",accountId,type,resourceId,region,capturedAt}` without raw resource attributes. Unregistered/disabled/out-of-scan-scope accounts or missing, ambiguous or mismatched row evidence return 200 `not_ready` with a fixed reason. Invalid input: 400; unauthenticated: 401; outside or absent applied target authorization: 403; DB/malformed-configuration failure: 503. All responses are private/no-store. The caller must check `capturedAt` against its trusted collection marker; this lookup alone is not complete collection or runtime readiness. | verifyUser + applied target allowlist |
 | `/api/jobs` | GET, POST | 비동기 작업 enqueue/목록 (P2 — `worker_jobs` + SQS) | verifyUser |
-| `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 형식 검증만 | 없음 |
+| `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 검증 + 소유자 또는 관리자 / owner-or-admin | verifyUser |
+| `/api/jobs/observability` | GET | 접수 기간별 작업 시간·완료 목표: `windowHours` 1–168, 선택적 `type` 및 `targetMs` 1–86400000. 소유자/관리자 범위, 최대 2000건 표본·최근 50건 상세, 누락·잘림 시 미확정 / ownership-scoped workload observations | verifyUser |
 | `/api/me` | GET | 현재 사용자 + `isAdmin` 시그널 (UI 표시용 — 쓰기 게이트는 서버측 별도 유지) | verifyUser |
 | `/api/monitoring` | GET | 모니터링 허브 — `?tab=ec2\|rds` 플릿, `?series=`+`range`로 단일 리소스 시계열 | verifyUser |
-| `/api/opencost/[cluster]` | GET, PUT | OpenCost 저장 설정 — 조회 auth / 저장 admin (null = 미저장, 페이지가 기본값 사용) | verifyUser |
-| `/api/opencost/[cluster]/allocation` | GET | 1-day allocation — KPI + 파드별 비용, degrade-safe | verifyUser |
-| `/api/opencost/[cluster]/bundle` | GET | 설치 번들(values.yaml + install.sh) 다운로드 — 사용자가 out-of-band 실행 (read-only) | verifyUser |
-| `/api/opencost/[cluster]/status` | GET | 설치 상태 배지 — 403/에러도 200 `{installed:false, reason}` | verifyUser |
-| `/api/overview` | GET | 대시보드 Overview 집계 — jobs/compliance는 계정 무관(Aurora 앱 레벨) | verifyUser |
+| `/api/opencost/[cluster]` | GET, PUT | Canonical-cluster saved config; GET requires authentication, PUT requires admin; `null` means no config returned (absent or storage unavailable) | verifyUser |
+| `/api/opencost/[cluster]/allocation` | GET | One-day allocation and per-pod cost for the selected registered identity; unavailable data returns `available:false`, while typed scope failures retain their error status | verifyUser |
+| `/api/opencost/[cluster]/bundle` | GET | Generate `values.yaml` and `install.sh` for manual operator execution; canonical request identity determines raw cluster name, region, and member-account guard | verifyUser |
+| `/api/opencost/[cluster]/status` | GET | Canonical scope/registration checks precede install detection; detection may return 200 `{installed:false, reason}`, while scope/allowlist failures retain typed 400/403/404/503 responses | verifyUser |
+| `/api/overview` | GET | App-level jobs/compliance plus singleton EKS/cost reads; `clusterScope` records actual EKS account/region, names, and truncation for safe consumer comparisons | verifyUser |
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
 | `/api/stream` | GET | SSE 스트림 | 없음 |
+
+
+## Chat custom-policy availability
+
+`GET /api/customization` returns `503 {"error":"Customization policy unavailable"}`
+when the catalog or Agent Space cannot be read. Confirmed absence of an Agent Space
+row retains Phase-1 global custom-agent membership; a read failure never means no cap.
+
+Chat obtains fresh custom policy per turn when needed. Built-in pins (including basic
+routing mode) and hybrid product help bypass custom selection. Initial catalog/space
+failures and final enablement-read failures have the same contract:
+
+| Selection | Response / execution |
+|---|---|
+| Explicit custom pin | HTTP 200 SSE with an unavailable guide and `[DONE]`; no custom or substitute invocation |
+| Automatic routing | HTTP 200 SSE using independent built-in routing, with one policy-fallback notice streamed and persisted; an Assistant fallback also keeps it |
+| Built-in pin / hybrid product help | Normal built-in / Assistant response; no custom policy or persona inherited |
+
+A confirmed disabled/missing custom pin also returns a guide without invocation, but
+is distinguished from unavailable policy. Successful `toolAllowlist: []` remains
+deny-all. The BFF encodes it as a reserved nonempty sentinel for old exact-match
+runtimes; both agent loops filter duplicate identities before deduplication.
+
+Apply `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql` through the reviewed
+standalone migration flow before the web reader update. Automatic Web migration rejects
+its ALTER/trigger statements; do not bypass that gate. No SQL-reader projection changes.
+It backfills currently bound nonempty declarations, including disabled skills, then
+transactionally retains that agent's restriction history through skill edits, binding
+moves/removal and deletion. It cannot reconstruct declarations removed before migration.
+Only never-configured agents without an account cap or integration tool grants inherit
+gateway reads. A cap only removes explicit grants; it cannot create a gateway grant. Reattach/re-enable explicitly declared skills to restore
+specific grants; editing a skill to `[]` does not reset the agent to unrestricted mode.
+Agent Space `enabledSkillIds` remains metadata, not a runtime skill permission check.
+
+Gateway identities come from `web/lib/gateway-tool-catalog.json`, parity-tested offline
+against `scripts/v2/agentcore/catalog.py`. A bare name must uniquely resolve within the
+selected gateway; unknown, ambiguous or foreign-target names grant nothing. Integration
+grants are separate exact names and cannot authorize gateway-qualified tools. No flag,
+credential boundary, arbitrary MCP support or mutating capability is enabled here.
+
+### Custom-tool declaration checks and frozen stdio limitation
+
+Skill writes reject unknown or ambiguous tool names (400). Edits and attachments also
+check current bindings, including disabled rows: each attached gateway must retain an
+effective grant for a nonempty declaration. Shared skills may contain known tools from
+several gateways; each agent resolves only its own subset. Instruction-only `[]` remains
+valid and never clears retained policy history. Unavailable validation returns 503 and
+performs no write. These are authoring preflight checks, not live tool-discovery proof.
+
+Restricted custom agents cannot address the vendor's bare ClickHouse stdio tool names
+through this gateway-qualified catalog. Reattaching a skill does not restore those stdio
+tools. `CLICKHOUSE_OFFICIAL_MCP` remains frozen/default-off; keep it off. The supported
+ClickHouse path here is the existing gated gateway/Lambda identity set; no stdio identities
+or new runtime capabilities are introduced.
+
+## Configuration topology inventory evidence
+
+The row/ledger wire contract is defined once in
+[Inventory pagination and sweep ledger](#inventory-pagination-and-sweep-ledger).
+For unresolved targets, incomplete reads, onboarding gaps and retained results, use
+[Topology evidence compatibility](runbooks/source-sync-observability.md#topology-evidence-compatibility).
+
+## Collection disclosure (including trace)
+
+The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
+`web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
+Trace `sources[].windowStartMs/windowEndMs` identify the source query window, separately
+from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
+Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
+`infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+The panel groups positive safe-integer losses and unavailable infrastructure in a localized
+**Collection limitations** list outside collapsed source details. This is a display
+predicate; it does not redefine the server projector's general numeric contract.
+Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
+and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
+`retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
+Missing collection metadata stays unknown rather than implying collector failure.
+
+
+## Graph collection metadata
+
+`GET /api/graph` returns `collection` for flow, infra and trace. Older responses without it remain compatible as unknown evidence. The shared TypeScript
+contract is `GraphCollection` / `GraphCollectionSource` in
+`web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
+runtime payloads for compatibility with older or malformed responses.
+
+| Fields | Meaning |
+| --- | --- |
+| `status`, `stale`, `retainedPrevious` | Collection result and snapshot age/retention; a retained graph does not establish current traffic. Missing metadata stays unknown. |
+| `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
+| `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
+| `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
+| `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, `not_attempted`, or API-only `state_read_failed`. |
+| `sourceAttempted` | Explicit false records a source read not attempted within the rebuild budget; it never changes the saved publication clock. |
+| `metadataTruncated` | Stored or computed recognized-field omission/malformation marker, shared by HTTP and SQL projections and included in freshness decisions. |
+| `coverage` | `unknown` for a flow/infra `__all__` union; host state cannot prove union coverage and top-level `captured_at` is null. Trace `__all__` reads the existing host storage scope. |
+| `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
+| `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
+| `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
+| `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
+
+The UI supports the existing trace envelope and optional inventory/saved-source
+fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
+Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
+includes displayed saved-source rows except when the entire current/saved lists match. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
+from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
+
+
+Graph requests and rebuild transactions share two admissions per pool. Requests use 1.5s statement/idle and 2s total transaction limits; rebuild checkout has a separate 2s deadline before 2s statements and a 4s PostgreSQL transaction budget, protected by a 6s post-checkout watchdog; an in-flight write COMMIT is allowed to settle. JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+
+A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
+
+Graph requests above the shared read/rebuild admission budget return HTTP 503, including when rebuilds occupy the available admissions. Other read failures return HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
+
+
+All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
+
+The active `fetchGraph` consumer retries only HTTP503 responses whose collection metadata
+explicitly has `readStatus: "unavailable"` and `readReason: "busy"`. It makes at most five
+requests to the same URL inside one ten-second abort budget. Base waits are
+250/750/1500/2000 ms, with a valid `Retry-After` (seconds or date) as a floor and 0–125 ms
+jitter. If a wait plus a two-second read reserve cannot fit, recovery stops as busy;
+five completed requests are not guaranteed. Authentication, other 4xx, query failures
+and untyped service errors are not retried.
+Cancellation propagates through pending waits/reads. Exhausted recovery returns unknown,
+read-unavailable metadata; it never certifies empty collection or exposes an error-body payload.
+The budget also covers a single stalled request. Without a confirmed busy response, its
+expiry can synthesize `readReason: "timeout"` locally without any HTTP response or SQLSTATE.
+After confirmed admission shedding, an unfinished recovery retains `busy` as the last
+observed server cause, not a diagnosis of the final stalled request. A later non-busy response clears that prior cause; if its body then stalls, the client deadline reports timeout. The value alone does
+not identify its origin; inspect completed response bodies and server logs.
+Deploy the updated web image for both recovery and collection-panel changes.
+
+HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
+
+The two-second request deadline includes pool acquisition. Expired late checkouts return immediately without starting SQL; admission stays reserved until they settle, preventing an abandoned queue. Both annotation normalization and JSON serialization occur after release. Top-level windows use Graph attempt window start/end labels; individual source windows keep Source window start/end labels. SQL and HTTP projections share null-clock compatibility, the count/not-attempted vocabulary, and metadataTruncated. Reason deduplication alone is not omission.
+
+Capped resource neighborhoods keep the requested root and nearest hops first, using the minimum distance from both traversal directions; lexical order only breaks ties within a hop. Authentication expiry (401 or a followed /login redirect), authorization denial (403), and other4xx rejections use a separate localized error path. They do not become query_failed or a retriable graph outage. Sign-in links stay on the local /login route, and stale graph content is cleared on rejection.
+
+A reader-synthesized unknown result with no collection clocks or source records is neutral “No collection state recorded” information; it does not assert stale age or a collector failure. Unknown aggregate coverage has its own neutral wording. This presentation does not change the backend unknown/stale envelope or establish completeness. Read failures, retention, truncation, metadata loss and other actionable evidence still render alerts.
+
+Class-wide infra truncation prioritizes the actual `vpc`, `subnet`, and `sg` container kinds before resource nodes; within each rank, IDs provide deterministic order. The cap still bounds the response and does not certify complete connectivity. Recognized metadata fields with invalid types/ranges or unknown enum vocabulary set `metadataTruncated` in both projections; unknown private fields remain excluded without that signal. This deliberately treats vocabulary not understood by the reader as unknown coverage. Published inventory evidence is stale for contradictory status/count pairs, any nonempty or malformed reason list, or an invalid/future optional capture clock. A confirmed zero may omit its capture clock or use null, but requires `empty`, zero count, a succeeded producer and a valid last-success clock.
+
+Graph full/subgraph metadata and generic inventory `data` exclude recognized origin-header and OIDC ClientSecret fields, including legacy JSON-string copies. This read-side projection covers existing rows without enabling a publisher; it does not change row counts or snapshot clocks and is not a general secret detector.

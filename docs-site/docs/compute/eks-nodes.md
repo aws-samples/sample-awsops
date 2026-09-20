@@ -12,13 +12,18 @@ Kubernetes 노드의 용량, 할당 가능 리소스, Pod 요청량을 상세히
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info 선택 범위와 관측 결과
+상단 계정·리전 필터가 이 페이지에 적용됩니다. 합계는 선택한 등록 클러스터 범위에서 실제 조회한 리소스 수이며, 모든 AWS 리소스의 총수가 아닙니다. 동명 클러스터의 선택 항목은 계정·리전을 함께 표시합니다. 부분 실패나 조회 한도 안내가 있으면 결과가 불완전할 수 있으므로, 범위를 좁혀 다시 확인하세요.
+:::
+
+
 ## 주요 기능
 
 ### 통계 카드
-- **Total Nodes**: 전체 노드 수 (시안)
+- **Total Nodes**: 선택 범위에서 조회된 노드 수 (시안)
 - **Ready**: Ready 상태 노드 수 (녹색)
-- **Total CPU**: 전체 vCPU 용량 합계 (보라색)
-- **Total Memory**: 전체 메모리 용량 합계 (주황색)
+- **Total CPU**: 선택 범위에서 관측한 노드의 vCPU 용량 합계 (보라색)
+- **Total Memory**: 선택 범위에서 관측한 노드의 메모리 용량 합계 (주황색) — allocatable 합계와 reserved %(Capacity − Allocatable)를 힌트로 함께 표시 (allocatable이 보고되지 않으면 힌트 생략)
 
 ### CPU Usage per Node 차트
 노드별 CPU 리소스 상태를 3단계 바 차트로 표시:
@@ -51,6 +56,9 @@ Kubernetes 노드의 용량, 할당 가능 리소스, Pod 요청량을 상세히
 | Allocatable Memory | 할당 가능한 메모리 |
 | Created | 생성 시간 |
 
+### 노드 드릴다운 Pods 테이블
+노드를 클릭하면 해당 노드에 스케줄된 Pods 테이블이 열립니다 — Namespace / Pod / Status / Owner / **Pod IP** / **Service Account** / Restarts / CPU / Mem / Age 컬럼(값이 없으면 '-', 예: 종료된 Pod는 IP 없음).
+
 ## 리소스 개념 이해
 
 ![노드 리소스 계층](/diagrams/eks-node-resources.png)
@@ -66,7 +74,7 @@ Kubernetes 노드의 용량, 할당 가능 리소스, Pod 요청량을 상세히
 ## 사용 방법
 
 1. 사이드바에서 **Compute > K8s > Nodes**를 클릭합니다
-2. 통계 카드에서 전체 노드 현황을 파악합니다
+2. 통계 카드에서 선택 범위에서 관측된 리소스를 확인합니다.
 3. CPU/Memory Usage 차트에서 리소스 사용률이 높은 노드를 식별합니다
 4. 80% 이상(빨간색) 노드는 스케일링을 검토합니다
 5. 테이블에서 각 노드의 상세 용량을 확인합니다
@@ -89,7 +97,7 @@ AI Assistant에서 "노드 리소스 사용량", "CPU 80% 이상 노드", "노�
 
 ## 관련 페이지
 
-- [EKS Overview](../compute/eks) - 클러스터 전체 현황
+- [EKS Overview](../compute/eks) - 선택 범위의 클러스터 현황
 - [EKS Pods](../compute/eks-pods) - Pod 상태 확인
 - [EC2](../compute/ec2) - 노드 기반 EC2 인스턴스
 - [EKS Container Cost](../compute/eks-container-cost) - 노드/Pod 비용 분석

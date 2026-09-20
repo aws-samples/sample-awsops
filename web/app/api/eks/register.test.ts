@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EksScopeError } from '@/lib/eks-context';
 
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
@@ -9,10 +10,15 @@ const isEnvCluster = vi.fn();
 const registerCluster = vi.fn();
 const unregisterCluster = vi.fn();
 const hasAccessEntry = vi.fn();
+const describeEksCluster = vi.fn();
 const onboardingGuide = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
-vi.mock('@/lib/aws', () => ({ listClusters: (...a: unknown[]) => listClusters(...a) }));
+vi.mock('@/lib/aws', () => ({
+  listClusters: (...a: unknown[]) => listClusters(...a),
+  listClusterInventory: async (...a: unknown[]) =>
+    ({ clusters: await listClusters(...a), region: 'ap-northeast-2', truncated: false }),
+}));
 vi.mock('@/lib/eks-registry', () => ({
   getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a),
   isAllowed: (...a: unknown[]) => isAllowed(...a),
@@ -23,12 +29,13 @@ vi.mock('@/lib/eks-registry', () => ({
   getAuthModes: async () => new Map(),
 }));
 vi.mock('@/lib/eks-access', () => ({
+  describeEksCluster: (...a: unknown[]) => describeEksCluster(...a),
   hasAccessEntry: (...a: unknown[]) => hasAccessEntry(...a),
   onboardingGuide: (...a: unknown[]) => onboardingGuide(...a),
 }));
 
 const req = (method = 'POST') => new Request('http://x/api/eks/c1/register', { method, headers: { cookie: 'awsops_token=t' } });
-const P = { params: { cluster: 'c1' } };
+const P = { params: Promise.resolve({ cluster: 'c1' }) };
 
 describe('GET /api/eks access synthesis', () => {
   beforeEach(() => { vi.clearAllMocks(); });
@@ -57,7 +64,10 @@ describe('GET /api/eks access synthesis', () => {
 });
 
 describe('POST /api/eks/[cluster]/register', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    describeEksCluster.mockReset().mockResolvedValue({ name: 'c1' });
+  });
 
   it('401 unauthenticated', async () => {
     verifyUser.mockResolvedValue(null);
@@ -75,7 +85,7 @@ describe('POST /api/eks/[cluster]/register', () => {
   it('404 for a cluster that does not exist', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
-    listClusters.mockResolvedValue([]);
+    describeEksCluster.mockRejectedValue(new EksScopeError('Unknown EKS cluster', 404));
     const { POST } = await import('./[cluster]/register/route');
     expect((await POST(req(), P)).status).toBe(404);
   });
@@ -84,7 +94,7 @@ describe('POST /api/eks/[cluster]/register', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
     const { POST } = await import('./[cluster]/register/route');
-    expect((await POST(req(), { params: { cluster: 'bad/../name' } })).status).toBe(400);
+    expect((await POST(req(), { params: Promise.resolve({ cluster: 'bad/../name' }) })).status).toBe(400);
   });
 
   it('200 registers when the access entry exists', async () => {
@@ -150,7 +160,7 @@ describe('POST /api/eks/[cluster]/register', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     isAdmin.mockResolvedValue(true);
     const { DELETE } = await import('./[cluster]/register/route');
-    expect((await DELETE(req('DELETE'), { params: { cluster: 'bad/../name' } })).status).toBe(400);
+    expect((await DELETE(req('DELETE'), { params: Promise.resolve({ cluster: 'bad/../name' }) })).status).toBe(400);
   });
 
   it('DELETE 400 for a Terraform(env) cluster', async () => {

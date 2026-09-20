@@ -1,0 +1,257 @@
+name: Migrate Development Database
+
+on:
+  workflow_dispatch:
+  # Reuse keeps the original event/ref/SHA; only Deploy Web can opt into dev pushes.
+  workflow_call:
+    inputs:
+      from_deploy_web:
+        type: boolean
+        default: false
+    outputs:
+      source_sha:
+        description: Source SHA whose private migration completed successfully
+        value: ${{ jobs.migrate.outputs.source_sha }}
+      project:
+        description: Verified development project
+        value: ${{ jobs.migrate.outputs.project }}
+    secrets:
+      TF_TFVARS_DEV: { required: true }
+      TF_BACKEND_HCL_DEV: { required: true }
+      AWS_ACCOUNT_ID_DEV: { required: true }
+      AWS_CI_BUILD_DEV_ROLE_ARN: { required: true }
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: { required: true }
+
+permissions:
+  contents: read
+
+env:
+  MIGRATION_FROM_DEPLOY_WEB: ${{ inputs.from_deploy_web }}
+
+# Web pushes cannot displace a pending operator/AgentCore run. The database
+# advisory lock admits one runner across these queues; contention fails immediately.
+concurrency:
+  group: migration-development-${{ inputs.from_deploy_web && 'web' || 'operator' }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a samples development migration context
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] &&
+          [ "$GITHUB_REF" = "refs/heads/dev" ] &&
+          { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] ||
+            { [ "$GITHUB_EVENT_NAME" = "push" ] &&
+              [ "${MIGRATION_FROM_DEPLOY_WEB:-}" = "true" ] &&
+              [ "${GITHUB_WORKFLOW_REF:-}" = "aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev" ]; }; } || {
+            echo "::error::Only a dev dispatch or the opted-in dev Deploy Web caller can run migrations"
+            exit 1
+          }
+
+  build:
+    needs: [guard]
+    runs-on: sample-awsops
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+    outputs:
+      project: ${{ steps.project.outputs.project }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve development project
+        id: project
+        env:
+          DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          set -o noclobber
+          CONFIG="$RUNNER_TEMP/migration-project-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tfvars"
+          trap 'rm -f "$CONFIG"' EXIT
+          [ -n "$DEV_TFVARS_B64" ] || { echo "::error::TF_TFVARS_DEV is required"; exit 1; }
+          printf '%s' "$DEV_TFVARS_B64" | base64 --decode > "$CONFIG"
+          unset DEV_TFVARS_B64
+          PROJECT=$(node scripts/v2/ci/run-migration.mjs project < "$CONFIG")
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Validate development role
+        env:
+          BUILD_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          MIGRATION_DEPLOY_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+        run: |
+          node scripts/v2/ci/run-migration.mjs check-build-role
+
+      - name: Validate independent development account before OIDC
+        run: node scripts/v2/ci/runtime-build.mjs check-migration-role
+
+      - name: Configure development build credentials
+        # The independent target is checked before requesting OIDC credentials.
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify the configured build caller before ECR access
+        env:
+          BUILD_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          MIGRATION_DEPLOY_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/run-migration.mjs verify-build-role
+
+      - name: Verify independent development account
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-migration-role
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to private ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push migration image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/v2/ci/Dockerfile.migration
+          platforms: linux/arm64
+          push: true
+          # A single-platform manifest makes the build and running-image digest
+          # directly comparable. No web tag is written.
+          provenance: false
+          sbom: false
+          tags: ${{ steps.ecr.outputs.registry }}/${{ steps.project.outputs.project }}-web:migration-${{ github.sha }}
+
+      - name: Clean development project config
+        if: always()
+        run: rm -f "$RUNNER_TEMP/migration-project-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tfvars"
+
+  migrate:
+    needs: [guard, build]
+    runs-on: sample-awsops
+    timeout-minutes: 35
+    environment: development
+    outputs:
+      source_sha: ${{ steps.run.outputs.source_sha }}
+      project: ${{ steps.run.outputs.project }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MIGRATION_PROJECT: ${{ needs.build.outputs.project }}
+      MIGRATION_DIGEST: ${{ needs.build.outputs.digest }}
+      MIGRATION_DEPLOY_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+          terraform_wrapper: false
+
+      - name: Validate development role
+        run: |
+          node scripts/v2/ci/run-migration.mjs check-deploy-role
+
+      - name: Validate independent development account before OIDC
+        run: node scripts/v2/ci/runtime-build.mjs check-migration-role
+
+      - name: Configure development execution credentials
+        id: credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify independent development account
+        id: account
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-migration-role
+
+      - name: Read migration output and run
+        id: run
+        timeout-minutes: 27
+        env:
+          TF_DATA_DIR: ${{ runner.temp }}/migration-tf-${{ github.run_id }}-${{ github.run_attempt }}
+          DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+          DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          FOUNDATION=terraform/foundation
+          trap 'rm -f "$FOUNDATION/backend.hcl" "$FOUNDATION/terraform.tfvars"' EXIT
+          [ -n "$DEV_BACKEND_B64" ] && [ -n "$DEV_TFVARS_B64" ] || {
+            echo "::error::Development backend and tfvars secrets are required"; exit 1;
+          }
+          printf '%s' "$DEV_BACKEND_B64" | base64 --decode > "$FOUNDATION/backend.hcl"
+          printf '%s' "$DEV_TFVARS_B64" | base64 --decode > "$FOUNDATION/terraform.tfvars"
+          unset DEV_BACKEND_B64 DEV_TFVARS_B64
+          PROJECT=$(node scripts/v2/ci/run-migration.mjs project < "$FOUNDATION/terraform.tfvars")
+          [ "$PROJECT" = "$MIGRATION_PROJECT" ] || { echo "::error::Development project changed since build"; exit 1; }
+          # output reads the applied state and needs no variable inputs.
+          rm -f "$FOUNDATION/terraform.tfvars"
+          terraform -chdir="$FOUNDATION" init -backend-config=backend.hcl -input=false -lockfile=readonly >/dev/null 2>&1 || {
+            echo "::error::Development backend initialization failed (details withheld)"; exit 1;
+          }
+          # Only this named, nonsecret output crosses into the controller.
+          # No show/state dump, refresh, plan or apply occurs in this workflow.
+          MIGRATION_CONFIG=$(terraform -chdir="$FOUNDATION" output -json migration_job 2>/dev/null) || {
+            echo "::error::Migration capability unavailable: configure CI_MIGRATIONS_ENABLED_DEV=true and apply ci_migrations_enabled=true"; exit 1;
+          }
+          printf '%s' "$MIGRATION_CONFIG" | node scripts/v2/ci/run-migration.mjs run
+          printf 'source_sha=%s\nproject=%s\n' "$GITHUB_SHA" "$MIGRATION_PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Stop only this run task if necessary
+        if: always() && steps.credentials.outcome == 'success' && steps.account.outcome == 'success'
+        timeout-minutes: 4
+        run: node scripts/v2/ci/run-migration.mjs cleanup
+
+      - name: Clean migration run files
+        if: always()
+        env:
+          TF_DATA_DIR: ${{ runner.temp }}/migration-tf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -rf "$TF_DATA_DIR"
+          rm -f "$RUNNER_TEMP/migration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            "$RUNNER_TEMP/migration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json.tmp"

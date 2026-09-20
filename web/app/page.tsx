@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import {
   Shield, ShieldCheck, DollarSign, TrendingUp, Bell, FileSearch, Cpu, Container,
@@ -8,55 +8,73 @@ import StatTile, { passVariant } from '@/components/ui/StatTile';
 import { TYPE_ICON } from '@/lib/type-icons';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import PageHeader from '@/components/ui/PageHeader';
-import RefreshButton from '@/components/ui/RefreshButton';
+import RefreshButton, { type ForceSyncOutcome } from '@/components/ui/RefreshButton';
+import { typeMicroLine, type TileSplits } from '@/lib/tile-micro';
 import SectionLabel from '@/components/ui/SectionLabel';
 import Card from '@/components/ui/Card';
 import InsightCard from '@/components/insights/InsightCard';
 import BarDistribution from '@/components/charts/BarDistribution';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import DivergingBarList from '@/components/charts/DivergingBarList';
 import AreaTrend from '@/components/charts/AreaTrend';
 import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
-import { useActiveScope, scopeParams } from '@/lib/account-context';
-import { nearestSnapshot, netChange } from '@/lib/trend-utils';
+import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
+import { nearestSnapshot, netChange, covCompleteForScope, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
+import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 
 interface Overview {
   jobs: { queued: number; running: number; succeeded: number; failed: number };
   clusterCount: number | null;
+  clusterScope?: { accountId: string; region: string; names: string[]; truncated: boolean } | null;
   mtdCost: number | null;
   compliance: { pass_rate: number | null; alarm: number | null; finished_at: string | null } | null;
 }
 interface ByType { type: string; label: string; count: number; [k: string]: unknown }
 interface ByCategory { group: string; count: number; [k: string]: unknown }
-interface Splits {
-  ec2Running: number;
-  ec2Stopped: number;
-  ebsUnencrypted: number;
-  iamUserNoMfa: number;
-  sgOpenIngress: number;
+// Gap L82: shared micro-subline inputs (web/lib/tile-micro.ts). The dashboard's security
+// rollup additionally REQUIRES s3Public (the summary route always sends it).
+interface Splits extends TileSplits {
   s3Public: number;
-  cwAlarm?: number;
 }
 interface Ec2Type { name: string; count: number; [k: string]: unknown }
 interface Summary { byType: ByType[]; byCategory: ByCategory[]; total: number; splits?: Splits; ec2Types?: Ec2Type[]; lastSyncAt?: string | null }
 interface TrendPoint { date: string; amount: number; [k: string]: unknown }
 interface Cost { trend: TrendPoint[]; monthly?: { month: string; total: number }[] }
 interface ResourceTrendPoint { date: string; total: number; ec2?: number; [k: string]: unknown }
-interface ResourceTrend { trend: ResourceTrendPoint[]; types?: string[] }
+interface ResourceTrend { trend: ResourceTrendPoint[]; types?: string[]; coverage?: TrendCoverage; accounts?: string[]; degraded?: boolean }
 interface FleetCluster {
+  id?: string;
   name: string;
+  accountId?: string;
+  region?: string;
   reachable: boolean;
+  error?: string;
   counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
   podStatus: Record<string, number>;
   events: { reason?: string; message?: string; object?: string; count?: number; lastSeenTs?: number; [k: string]: unknown }[];
 }
-interface Fleet { clusters: FleetCluster[] }
+interface Fleet {
+  clusters: FleetCluster[];
+  truncated?: boolean;
+  errors?: { accountId: string; region: string; message: string }[];
+}
 
 const DASH = '—';
-const INV_LABEL = (t: string): string => INVENTORY_TYPES[t]?.label ?? t;
+// Registry label, else a derived trend-series label (gap L129 — not inventory types), else raw.
+const INV_LABEL = (t: string): string => INVENTORY_TYPES[t]?.label ?? DERIVED_TREND_TYPES[t] ?? t;
+
+// Accounts half of the scope for the trend endpoint (gap L124). Regions are deliberately NOT
+// passed — inventory_snapshots carries no region dimension, so the route would silently ignore
+// them; reuses scopeParams' normalization (default 'self' selection omits the param entirely).
+const trendAcctParam = (scope: Parameters<typeof scopeParams>[0]): string => {
+  const a = new URLSearchParams(scopeParams(scope)).get('accounts');
+  return a ? `&accounts=${encodeURIComponent(a)}` : '';
+};
 // Section gateways per ADR-004 (8). Named so the AgentCore tile isn't a bare magic literal.
 const SECTION_GATEWAYS = 8;
 
@@ -68,6 +86,12 @@ function typeIcon(type: string): ReactNode {
 }
 
 export default function Home() {
+  const [scope, , ready] = useActiveScope();
+  if (!ready) return null;
+  return <ScopedHome key={scopeParams(scope)} scope={scope} />;
+}
+
+function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const { tt, lang } = useI18n();
   const [ov, setOv] = useState<Overview | null>(null);
   const [ovErr, setOvErr] = useState('');
@@ -75,51 +99,113 @@ export default function Home() {
   const [sumErr, setSumErr] = useState('');
   const [cost, setCost] = useState<Cost | null>(null);
   const [resTrend, setResTrend] = useState<ResourceTrend | null>(null);
+  // Cost-impact baseline (gap L225, review round-1): a FIXED 35-day trend fetch, independent
+  // of the chart-period selector — with the default 14d fetch the 30d baseline never exists
+  // and the panel would be invisible on the default view.
+  const [impactTrend, setImpactTrend] = useState<ResourceTrend | null>(null);
   const [fleet, setFleet] = useState<Fleet | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [fleetErr, setFleetErr] = useState('');
+  const [busy, setBusy] = useState(true);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
-  const [scope] = useActiveScope();
+  // Sync-all visibility (round-2 review): /api/me's isAdmin exists exactly so the UI can hide
+  // admin-only controls accurately — the button renders for admins only (the server-side
+  // isAdmin gate on the route stays as the actual authorization, this is presentation).
+  const [isAdminUser, setIsAdminUser] = useState(false);
   const [trendDays, setTrendDays] = useState(14);
 
+  // Request generation token: loadAll re-runs on scope/period change, and a SLOW response
+  // from the previous scope must not overwrite a newer scope's state (the trend fetches are
+  // scope-keyed now, so a stale overwrite would silently present the wrong account scope).
+  const loadGen = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const fleetTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadAll = useCallback(async () => {
+    const gen = ++loadGen.current;
+    activeRequest.current?.abort();
+    clearTimeout(fleetTimeout.current);
+    const ctl = new AbortController();
+    activeRequest.current = ctl;
+    const current = () => loadGen.current === gen && !ctl.signal.aborted;
+    const fresh = <T,>(set: (v: T) => void) => (v: T) => { if (current()) set(v); };
     setBusy(true);
+    setFleet(null);
+    setFleetErr('');
     // Core summaries (Aurora-backed, fast) gate the refresh spinner. Each degrades on its
     // own (allSettled) so one failure never blanks the others.
     await Promise.allSettled([
-      fetch(`/api/overview?account=${encodeURIComponent(scope.accounts === '__all__' ? '__all__' : scope.accounts[0] ?? 'self')}`)
+      fetch(`/api/overview?account=${encodeURIComponent(scope.accounts === '__all__' ? '__all__' : scope.accounts[0] ?? 'self')}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then((d) => { setOv(d); setOvErr(''); })
-        .catch((e) => setOvErr(String(e))),
-      fetch(`/api/inventory/summary?${scopeParams(scope)}`)
+        .then(fresh((d: Overview) => { setOv(d); setOvErr(''); }))
+        .catch((e) => fresh(setOvErr)(String(e))),
+      fetch(`/api/inventory/summary?${scopeParams(scope)}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then((d) => { setSum(d); setSumErr(''); })
-        .catch((e) => setSumErr(String(e))),
-      fetch('/api/cost')
+        .then(fresh((d: Summary) => { setSum(d); setSumErr(''); }))
+        .catch((e) => fresh(setSumErr)(String(e))),
+      fetch('/api/cost', { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then(setCost)
-        .catch(() => setCost({ trend: [] })),
-      fetch(`/api/inventory/trend?days=${trendDays}`)
+        .then(fresh(setCost))
+        .catch(() => fresh(setCost)({ trend: [] })),
+      // Trend is account-scoped (gap L124; snapshots have no region dimension, so only the
+      // accounts half of the scope is passed — the region-gated KPIs below account for that).
+      fetch(`/api/inventory/trend?days=${trendDays}${trendAcctParam(scope)}`, { signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then(setResTrend)
-        .catch(() => setResTrend({ trend: [] })),
+        .then(fresh(setResTrend))
+        .catch(() => fresh(setResTrend)({ trend: [] })),
+      fetch(`/api/inventory/trend?days=35${trendAcctParam(scope)}`, { signal: ctl.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then(fresh(setImpactTrend))
+        .catch(() => fresh(setImpactTrend)({ trend: [] })),
     ]);
+    if (!current()) return;
     setBusy(false);
 
     // EKS fleet is a LIVE K8s read (nodes/pods/events per cluster). Kept OUT of the
     // busy-gated set so it never blocks the spinner, and bounded on BOTH ends: the client
     // AbortController (6s) drops the request here, while the server-side k8sGet timeout
     // (K8S_REQUEST_TIMEOUT_MS in eks-incluster) closes the actual K8s socket so a slow/stuck
-    // API can't occupy the web task (thin-BFF). The charts fill in on resolve, else stay empty.
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 6000);
-    fetch('/api/eks/fleet', { signal: ctl.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(setFleet)
-      .catch(() => setFleet({ clusters: [] }))
-      .finally(() => clearTimeout(t));
+    // API can't occupy the web task (thin-BFF). A failed read remains unknown, never empty.
+    const t = setTimeout(() => {
+      if (current()) {
+        setFleet(null);
+        setFleetErr('EKS fleet 조회 시간 초과 (6s)');
+        ctl.abort();
+      }
+    }, 6000);
+    fleetTimeout.current = t;
+    fetch(`/api/eks/fleet?${scopeParams(scope)}`, { signal: ctl.signal })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok || d.status === 'error' || !Array.isArray(d.clusters)) {
+          throw new Error(d.message || String(r.status));
+        }
+        return d as Fleet;
+      })
+      .then(fresh((d: Fleet) => { setFleet(d); setFleetErr(''); }))
+      .catch((e) => fresh((message: string) => { setFleet(null); setFleetErr(message); })(String(e)))
+      .finally(() => {
+        clearTimeout(t);
+        if (fleetTimeout.current === t) fleetTimeout.current = undefined;
+        if (activeRequest.current === ctl) activeRequest.current = null;
+      });
   }, [scope, trendDays]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => {
+    loadAll();
+    return () => {
+      loadGen.current++;
+      activeRequest.current?.abort();
+      clearTimeout(fleetTimeout.current);
+    };
+  }, [loadAll]);
+  useEffect(() => {
+    let alive = true;
+    const ctl = new AbortController();
+    fetch('/api/me', { signal: ctl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d) setIsAdminUser(Boolean(d.isAdmin)); })
+      .catch(() => {});
+    return () => { alive = false; ctl.abort(); };
+  }, []);
 
   // Header freshness = when the inventory was last SYNCED (falls back to fetch time).
   useEffect(() => {
@@ -132,6 +218,30 @@ export default function Home() {
     return sum.byType.find((t) => t.type === type)?.count ?? 0;
   };
 
+  // Gap L79 (v1 header force-refresh parity): dispatch the sync Lambda's type=all fan-out.
+  // Admin-gated server-side; async semantics are disclosed by the button's note — the data
+  // lands minutes later via the normal Refresh, never an optimistic mutation here.
+  const forceSync = useCallback(async (): Promise<ForceSyncOutcome> => {
+    try {
+      const r = await fetch('/api/inventory/all/refresh', { method: 'POST' });
+      if (r.ok) return 'queued';
+      if (r.status === 403) return 'forbidden';
+      if (r.status === 503) {
+        // the route 503s for two DISTINCT states: sync disabled (permanent — latch the
+        // button) vs a transient enqueue failure (retryable) — branch on the body, not the code
+        const b = await r.json().catch(() => ({} as { status?: string }));
+        return b.status === 'unconfigured' ? 'unconfigured' : 'error';
+      }
+      return 'error';
+    } catch {
+      return 'error';
+    }
+  }, []);
+
+  // Gap L82: shared micro-stat sublines (same map as the group-overview pages).
+  const micro = (type: string): string | undefined =>
+    typeMicroLine(type, sum?.splits, (tp) => Number(sum?.byType.find((x) => x.type === tp)?.count ?? 0)) ?? undefined;
+
   const jobs = ov?.jobs;
 
   const barData = sum ? sum.byType.filter((t) => t.count > 0).slice(0, 12) : [];
@@ -140,24 +250,51 @@ export default function Home() {
 
   // Aggregate the EKS fleet across clusters (counts, pod phases, recent events).
   const clusters = fleet?.clusters ?? [];
-  const eks = clusters.reduce(
+  const reachableClusters = clusters.filter(c => c.reachable);
+  const unreachableClusters = clusters.filter(c => !c.reachable);
+  const fleetIncomplete = !!fleetErr || !!fleet?.truncated || !!fleet?.errors?.length || unreachableClusters.length > 0;
+  const fleetComplete = fleet !== null && !fleetIncomplete;
+  const fleetPopulation = `선택 범위의 등록 클러스터 · 조회 성공 ${reachableClusters.length}개 기준`;
+  const fleetEmpty = !fleet && !fleetErr
+    ? 'EKS 조회 중…'
+    : fleetIncomplete
+      ? '수집이 불완전하여 EKS 데이터를 확인할 수 없습니다 — 다시 조회하거나 범위를 좁혀 주세요.'
+      : clusters.length === 0
+        ? '선택 범위에 등록된 클러스터가 없습니다'
+        : null;
+  const eks = reachableClusters.reduce(
     (a, c) => {
       a.nodes += c.counts?.nodes ?? 0;
+      a.nodesReady += c.counts?.nodesReady ?? 0;
       a.pods += c.counts?.pods ?? 0;
       a.deployments += c.counts?.deployments ?? 0;
       for (const [k, v] of Object.entries(c.podStatus ?? {})) a.podStatus[k] = (a.podStatus[k] ?? 0) + Number(v);
       return a;
     },
-    { nodes: 0, pods: 0, deployments: 0, podStatus: {} as Record<string, number> },
+    { nodes: 0, nodesReady: 0, pods: 0, deployments: 0, podStatus: {} as Record<string, number> },
   );
   const podStatusDonut = Object.entries(eks.podStatus)
     .map(([name, value]) => ({ name, value }))
     .filter((d) => d.value > 0);
-  const recentEvents = clusters
-    .flatMap((c) => (c.events ?? []).map((e) => ({ ...e, cluster: c.name })))
+  const recentEvents = reachableClusters
+    .flatMap((c) => (c.events ?? []).map((e) => ({ ...e, cluster: eksClusterLabel(c.id ?? c.name) })))
     .sort((a, b) => (Number(b.lastSeenTs) || 0) - (Number(a.lastSeenTs) || 0))
     .slice(0, 8);
   const hasFleet = clusters.length > 0;
+  // Overview still reads one account in its deployment region. Equal counts alone cannot
+  // identify its population: require explicit singleton scope plus identical raw names and
+  // per-cluster account/region provenance. Older responses without metadata never fuse.
+  const headlineScope = ov?.clusterScope;
+  const selectedAccount = Array.isArray(scope.accounts) && scope.accounts.length === 1 ? scope.accounts[0] : null;
+  const selectedRegion = Array.isArray(scope.regions) && scope.regions.length === 1 ? scope.regions[0] : null;
+  const headlineNames = new Set(headlineScope?.names ?? []);
+  const fleetMicroOk = fleetComplete && fleet?.truncated === false && hasFleet && !ovErr
+    && !!headlineScope && headlineScope.truncated === false
+    && selectedAccount === headlineScope.accountId && selectedRegion === headlineScope.region
+    && ov?.clusterCount === headlineScope.names.length && headlineNames.size === headlineScope.names.length
+    && headlineNames.size === clusters.length
+    && new Set(clusters.map(c => c.name)).size === clusters.length
+    && clusters.every(c => c.accountId === headlineScope.accountId && c.region === headlineScope.region && headlineNames.has(c.name));
 
   // Security-issue rollup across the four /security findings (public S3 + open ingress +
   // unencrypted EBS + IAM without MFA). The public-S3 count is produced by the summary
@@ -202,27 +339,84 @@ export default function Home() {
     hasFleet && recentEvents.length > 0 && { key: 'k8s', dot: 'var(--warning)', text: `K8s Warning 이벤트 ${recentEvents.length}건`, href: '/eks' },
   ].filter((w): w is { key: string; dot: string; text: string; href: string } => Boolean(w));
 
-  // Multi-line trend series + Current/7d/30d delta rows (v1 parity). L126: top 8 types as
-  // toggle chips (the chart palette has exactly 8 hues — more would duplicate colors) — Core
-  // (top 5) visible by default, Other default-hidden; colors stay pinned to each series'
-  // original index inside MultiLineTrend.
-  const trendTypes = (resTrend?.types ?? []).slice(0, 8);
+  // Multi-line trend series + Current/7d/30d delta rows (v1 parity). L126: top 8 REAL types
+  // as toggle chips — Core (top 5) visible by default, Other default-hidden. L129: the derived
+  // security series are APPENDED after the top-8 (their own default-hidden legend group) —
+  // ranked ~40th among all synced types, a plain top-8 slice would make them unreachable in
+  // the chart entirely. The palette has 8 hues; indices past 8 wrap (colorFor is modulo), a
+  // conscious trade — derived series are default-hidden, so duplicated hues only co-occur
+  // when a user opts a security series in. Colors stay pinned to each series' index.
+  const realTrendTypes = (resTrend?.types ?? []).filter((t) => !isDerivedTrendType(t));
+  const derivedTrendTypes = (resTrend?.types ?? []).filter((t) => isDerivedTrendType(t));
+  const trendTypes = [...realTrendTypes.slice(0, 8), ...derivedTrendTypes];
   const trendSeries = trendTypes.map((t) => ({ key: t, label: INV_LABEL(t) }));
-  const coreTypes = trendTypes.slice(0, 5);
-  const otherTypes = trendTypes.slice(5);
+  const coreTypes = realTrendTypes.slice(0, 5); // never a derived series, even on a tiny fleet
+  // Chart honesty (gap L124): a (day, type) whose account coverage is less than the RESOLVED
+  // scope is DROPPED from that day's point — the summed line would otherwise dip on an
+  // account's silent day, presenting a sync artifact as a fleet change (the same rule the
+  // KPI/delta/impact guards apply). Dropped keys render as line gaps — the pre-scoping
+  // key-absence behavior; the disclosure caption below the chart names the rule.
+  const chartData = (() => {
+    const pts = resTrend?.trend ?? [];
+    const cov = resTrend?.coverage;
+    const resolved = resTrend?.accounts;
+    if (!cov || !resolved) return { pts, gapped: false };
+    let gapped = false;
+    const out = pts.map((p) => {
+      const q: ResourceTrendPoint = { date: p.date, total: 0 };
+      let total = 0;
+      for (const [k, v] of Object.entries(p)) {
+        if (k === 'date' || k === 'total' || typeof v !== 'number') continue;
+        if (!covCompleteForScope(cov, p.date, k, resolved)) { gapped = true; continue; }
+        q[k] = v;
+        if (!isDerivedTrendType(k)) total += v;
+      }
+      q.total = total;
+      return q;
+    });
+    return { pts: out, gapped };
+  })();
+  // Scope-narrowing disclosure (the route returns the RESOLVED account list): a CSV selection
+  // whose invalid/dropped ids shrank the resolved set is named rather than silently narrowed.
+  // The '__all__'→self fallback (accounts table unavailable) is disclosed by the route's own
+  // `degraded` flag — coverage is computed against the already-fallen-back scope, so no
+  // coverage gap would ever surface that narrowing by itself.
+  const selectedValidAccts = Array.isArray(scope.accounts)
+    ? [...new Set(scope.accounts.filter((a) => a === 'self' || /^\d{12}$/.test(a)))]
+    : null;
+  const trendScopeNarrowed = Boolean(resTrend?.degraded) || Boolean(
+    resTrend?.accounts && selectedValidAccts && resTrend.accounts.length < selectedValidAccts.length,
+  );
+  const otherTypes = trendTypes.slice(5).filter((t) => !isDerivedTrendType(t));
   // L127: 7d net change (lib/trend-utils netChange — coverage-parity diff with honest-degrade
-  // branches; see its doc). The trend endpoint is account_id='self'-fixed with no region
-  // dimension (scoping it is a separately tracked open item), so a narrowed scope also renders
-  // '—' — the adjacent 전체 리소스 IS scoped, and one KPI row must not silently mix the two.
-  const scopeIsDefault =
-    Array.isArray(scope.accounts) && scope.accounts.length === 1 && scope.accounts[0] === 'self'
-    && scope.regions === '__all__' && scope.includeGlobal === true;
-  const net7 = scopeIsDefault ? netChange(resTrend?.trend ?? [], 7) : null;
+  // branches; see its doc). The trend data IS account-scoped now (gap L124 — the fetch above
+  // passes the accounts scope), but snapshots still have no REGION dimension — so a narrowed
+  // region scope renders '—' (the adjacent 전체 리소스 IS region-scoped, and one KPI row must
+  // not silently mix the two). A narrowed ACCOUNT scope shows that account's own net change
+  // (history for non-self accounts accrues from the L124 deploy; netChange's missing-baseline
+  // branches degrade honestly until then).
+  const regionScopeIsDefault = scope.regions === '__all__' && scope.includeGlobal === true;
+  // coverage = per-(day, type) account sets + the RESOLVED scope from the route: netChange
+  // requires every summed type to cover exactly the resolved account set on both compared
+  // days (summed points are blind to one account's silence — even one silent on BOTH days).
+  const net7 = regionScopeIsDefault
+    ? netChange(resTrend?.trend ?? [], 7, resTrend?.coverage, resTrend?.accounts)
+    : null;
 
   const deltaRows = (() => {
     const pts = resTrend?.trend ?? [];
     if (pts.length < 2) return [];
     const last = pts[pts.length - 1];
+    // PER-TYPE account-coverage completeness vs the RESOLVED scope (gap L124): points are
+    // summed across the selected accounts, and the sync runs per type with its own trusted-
+    // account set — a (day, type) covering less than the resolved set (an account unreachable
+    // for just that type's run, on either or BOTH days, or the deploy boundary where only
+    // 'self' rows exist) would fabricate that type's value/delta — it renders '—', same as a
+    // missing type key. Applies to Current too: a partial latest-day sum is not a fleet count.
+    const cov = resTrend?.coverage;
+    const resolved = resTrend?.accounts;
+    const covOk = (p: { date: string } | null, t: string): boolean =>
+      !cov || !resolved || (p != null && covCompleteForScope(cov, p.date, t, resolved));
     const w = nearestSnapshot(pts, 7);
     const m = nearestSnapshot(pts, 30);
     // Key ABSENCE means "no successful sync for that type that day" (the route no longer
@@ -230,13 +424,71 @@ export default function Home() {
     const val = (p: Record<string, unknown> | null, t: string): number | null =>
       p && typeof p[t] === 'number' ? (p[t] as number) : null;
     return (resTrend?.types ?? []).map((t) => {
-      const cur = val(last, t);
-      const wv = val(w, t);
-      const mv = m && m !== w ? val(m, t) : null;
+      const cur = covOk(last, t) ? val(last, t) : null;
+      const wv = covOk(w, t) ? val(w, t) : null;
+      const mv = m && m !== w && covOk(m, t) ? val(m, t) : null;
       const pct = (from: number | null) =>
         cur == null || from == null || from === 0 ? null : ((cur - from) / from) * 100;
       return { type: t, label: INV_LABEL(t), cur, w: wv, m: mv, wPct: pct(wv), mPct: pct(mv) };
     }).filter((r) => (r.cur ?? 0) > 0 || (r.w ?? 0) > 0);
+  })();
+
+  // Cost Impact Estimation (gap L225, v1 parity): 30d count delta × static monthly weight,
+  // |impact| desc. Built from the dedicated 35d fetch over ALL trend types (NOT the delta
+  // table's presentation-filtered rows — a type that went to zero >7d ago is precisely the
+  // biggest genuine saving). Honest bounds: requires a non-stale latest point (the netChange
+  // guard — a sync that died days ago must not be priced as a 30d delta), a 30d baseline
+  // within tolerance, and the default REGION scope (the 35d fetch is account-scoped per L124,
+  // so a narrowed account scope prices that account's own deltas; snapshots have no region
+  // dimension, so a narrowed region scope would misprice host-wide deltas — the net7 gate).
+  const impactRows = (() => {
+    if (!regionScopeIsDefault) return [];
+    // The impact panel's OWN 35d fetch resolves __all__ independently of the chart's: if only
+    // this fetch hit the accounts-registry fallback (degraded), or the two fetches resolved
+    // different scopes, pricing would silently present host-only deltas as fleet-wide — hide.
+    if (impactTrend?.degraded) return [];
+    if (resTrend?.accounts && impactTrend?.accounts
+      && !sameAccountSet(resTrend.accounts, impactTrend.accounts)) return [];
+    const pts = [...(impactTrend?.trend ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+    if (pts.length < 2) return [];
+    const last = pts[pts.length - 1];
+    if (nearestSnapshot(pts, 0) !== last) return []; // latest point itself is stale
+    const base = nearestSnapshot(pts, 30);
+    if (!base || base === last) return [];
+    // actual-span validation (the netChange precedent): a ~26/34-day span must not be
+    // priced and labeled as a 30-day delta.
+    const spanDays = (new Date(last.date).getTime() - new Date(base.date).getTime()) / 86_400_000;
+    if (Math.abs(spanDays - 30) > 2) return [];
+    // PER-TYPE account-coverage completeness vs the RESOLVED scope (gap L124): a WEIGHTED
+    // type present on both endpoint days whose (day, type) coverage is less than the resolved
+    // account set on either day (an account silent for just that type's run — even on BOTH
+    // days — or the deploy boundary's self-only baseline) must not be priced as a 30d fleet
+    // delta — fail safe by hiding the panel, same as the partial-LATEST guard below (silently
+    // dropping the type could hide the largest genuine saving instead).
+    const cov = impactTrend?.coverage;
+    const covScope = impactTrend?.accounts;
+    if (cov && covScope) {
+      const covMismatch = (impactTrend?.types ?? []).some(
+        (t) => COST_IMPACT_WEIGHTS[t] != null
+          && typeof last[t] === 'number' && typeof base[t] === 'number'
+          && !(covCompleteForScope(cov, last.date, t, covScope) && covCompleteForScope(cov, base.date, t, covScope)),
+      );
+      if (covMismatch) return [];
+    }
+    // Partial-LATEST guard, scoped to WEIGHTED types only (review: an equality check over all
+    // types self-disabled the panel for ~30 days whenever any type — even an unweighted one —
+    // appeared or failed once). Hide only when the latest day is missing a weighted type the
+    // baseline has (a mid-fan-out latest day, or a died sync — indistinguishable, so fail
+    // safe); a type new since the baseline is handled per-type (no baseline → excluded).
+    const partialLatest = (impactTrend?.types ?? []).some(
+      (t) => COST_IMPACT_WEIGHTS[t] != null && typeof base[t] === 'number' && typeof last[t] !== 'number',
+    );
+    if (partialLatest) return [];
+    const val = (p: Record<string, unknown>, t: string): number | null =>
+      typeof p[t] === 'number' ? (p[t] as number) : null;
+    return estimateCostImpact(
+      (impactTrend?.types ?? []).map((t) => ({ type: t, cur: val(last, t), m: val(base, t) })),
+    );
   })();
 
   const loading = !ov && !ovErr && !sum && !sumErr;
@@ -246,13 +498,22 @@ export default function Home() {
       <PageHeader
         title="대시보드"
         subtitle="실시간 AWS · Kubernetes 운영 현황"
-        right={<RefreshButton busy={busy} onClick={loadAll} capturedAt={capturedAt} />}
+        right={<RefreshButton busy={busy} onClick={loadAll} capturedAt={capturedAt} onForceSync={isAdminUser ? forceSync : undefined} />}
       />
       <div className="px-4 lg:px-8 py-8 flex flex-col gap-6">
         {loading && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {ovErr && (
           <div className="text-[13px] text-rose-600">
             {tt('운영 요약 로드 실패:')} {ovErr} {tt('(세션 만료면 새로고침)')}
+          </div>
+        )}
+        {fleetIncomplete && (
+          <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
+            <div>{tt('EKS 수집 불완전 — 누락되거나 조회 실패한 데이터는 집계에서 제외됩니다. 다시 조회하거나 계정/리전 범위를 좁혀 주세요.')}</div>
+            {fleetErr && <div>{fleetErr}</div>}
+            {fleet?.truncated && <div>{tt('조회 한도로 일부 등록 클러스터가 누락되었습니다.')}</div>}
+            {fleet?.errors?.map((error, i) => <div key={`${error.accountId}/${error.region}/${i}`}>{error.accountId} / {error.region}: {error.message}</div>)}
+            {unreachableClusters.map(c => <div key={c.id ?? c.name}>{eksClusterLabel(c.id ?? c.name)}: {c.error || tt('조회 실패')}</div>)}
           </div>
         )}
 
@@ -397,21 +658,27 @@ export default function Home() {
           <div className="flex flex-col gap-3">
             <div className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-ink-400">COMPUTE &amp; CONTAINERS</div>
             <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-              <StatTile size="compact" label="EC2 인스턴스" value={n('ec2')} href="/inventory/ec2" icon={typeIcon('ec2')} />
-              <StatTile size="compact" label="Lambda 함수" value={n('lambda')} href="/inventory/lambda" icon={typeIcon('lambda')} />
-              <StatTile size="compact" label="ECS 클러스터" value={n('ecs_cluster')} href="/inventory/ecs_cluster" icon={typeIcon('ecs_cluster')} />
+              <StatTile size="compact" label="EC2 인스턴스" value={n('ec2')} href="/inventory/ec2" icon={typeIcon('ec2')} micro={micro('ec2')} />
+              <StatTile size="compact" label="Lambda 함수" value={n('lambda')} href="/inventory/lambda" icon={typeIcon('lambda')} micro={micro('lambda')} />
+              <StatTile size="compact" label="ECS 클러스터" value={n('ecs_cluster')} href="/inventory/ecs_cluster" icon={typeIcon('ecs_cluster')} micro={micro('ecs_cluster')} />
               <StatTile size="compact" label="AgentCore" value={`${SECTION_GATEWAYS} GW`} href="/assistant" icon={<Cpu size={13} />} />
-              <StatTile size="compact" label="ECR 리포지토리" value={n('ecr')} href="/inventory/ecr" icon={typeIcon('ecr')} />
-              <StatTile size="compact" label="EKS 클러스터" value={ov ? ov.clusterCount ?? DASH : DASH} href="/eks" icon={<Container size={13} />} />
-              <StatTile size="compact" label="CloudFront" value={n('cloudfront')} href="/inventory/cloudfront" icon={typeIcon('cloudfront')} />
+              <StatTile size="compact" label="ECR 리포지토리" value={n('ecr')} href="/inventory/ecr" icon={typeIcon('ecr')} micro={micro('ecr')} />
+              <StatTile size="compact" label="EKS 클러스터" value={ov?.clusterCount == null ? DASH : headlineScope?.truncated ? `≥${ov.clusterCount}` : ov.clusterCount} href="/eks" icon={<Container size={13} />} micro={fleetMicroOk ? `${eks.nodesReady}/${eks.nodes} ready · ${eks.pods} pods · ${eks.deployments} deploys` : undefined} />
+              <StatTile size="compact" label="CloudFront" value={n('cloudfront')} href="/inventory/cloudfront" icon={typeIcon('cloudfront')} micro={micro('cloudfront')} />
             </div>
+            {headlineScope && (
+              <div className="text-[11px] text-ink-400">
+                {tt('EKS 클러스터 수 조회 범위')}: {headlineScope.accountId} / {headlineScope.region}
+                {headlineScope.truncated && ` · ${tt('일부 결과만 표시')}`}
+              </div>
+            )}
             <div className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-ink-400 mt-1">STORAGE &amp; NETWORK</div>
             <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-3">
-              <StatTile size="compact" label="VPC" value={n('vpc')} href="/inventory/vpc" icon={typeIcon('vpc')} />
-              <StatTile size="compact" label="WAF" value={n('waf')} href="/inventory/waf" icon={typeIcon('waf')} />
-              <StatTile size="compact" label="EBS 볼륨" value={n('ebs_volume')} href="/inventory/ebs_volume" icon={typeIcon('ebs_volume')} />
-              <StatTile size="compact" label="S3 버킷" value={n('s3')} href="/inventory/s3" icon={typeIcon('s3')} />
-              <StatTile size="compact" label="RDS 인스턴스" value={n('rds')} href="/inventory/rds" icon={typeIcon('rds')} />
+              <StatTile size="compact" label="VPC" value={n('vpc')} href="/inventory/vpc" icon={typeIcon('vpc')} micro={micro('vpc')} />
+              <StatTile size="compact" label="WAF" value={n('waf')} href="/inventory/waf" icon={typeIcon('waf')} micro={micro('waf')} />
+              <StatTile size="compact" label="EBS 볼륨" value={n('ebs_volume')} href="/inventory/ebs_volume" icon={typeIcon('ebs_volume')} micro={micro('ebs_volume')} />
+              <StatTile size="compact" label="S3 버킷" value={n('s3')} href="/inventory/s3" icon={typeIcon('s3')} micro={micro('s3')} />
+              <StatTile size="compact" label="RDS 인스턴스" value={n('rds')} href="/inventory/rds" icon={typeIcon('rds')} micro={micro('rds')} />
               <StatTile size="compact" label="DynamoDB 테이블" value={n('dynamodb')} href="/inventory/dynamodb" icon={typeIcon('dynamodb')} />
               <StatTile size="compact" label="ElastiCache" value={n('elasticache')} href="/inventory/elasticache" icon={typeIcon('elasticache')} />
               <StatTile size="compact" label="OpenSearch" value={n('opensearch')} href="/inventory/opensearch" icon={typeIcon('opensearch')} />
@@ -420,8 +687,8 @@ export default function Home() {
             <div className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-ink-400 mt-1">IAM</div>
             <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-3">
               <StatTile size="compact" label="IAM 역할" value={n('iam_role')} href="/inventory/iam_role" icon={typeIcon('iam_role')} />
-              <StatTile size="compact" label="IAM 사용자" value={n('iam_user')} href="/inventory/iam_user" icon={typeIcon('iam_user')} />
-              <StatTile size="compact" label="보안 그룹" value={n('security_group')} href="/inventory/security_group" icon={typeIcon('security_group')} />
+              <StatTile size="compact" label="IAM 사용자" value={n('iam_user')} href="/inventory/iam_user" icon={typeIcon('iam_user')} micro={micro('iam_user')} />
+              <StatTile size="compact" label="보안 그룹" value={n('security_group')} href="/inventory/security_group" icon={typeIcon('security_group')} micro={micro('security_group')} />
             </div>
           </div>
         </section>
@@ -449,26 +716,35 @@ export default function Home() {
         {resTrend && (
           <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-6">
             {resTrend.trend.length >= 2 && trendSeries.length > 0 ? (
-              <MultiLineTrend
-                title={`리소스 추세 (${trendDays}d)`}
-                right={
-                  <SegmentedControl
-                    options={[{ value: '14', label: '14d' }, { value: '30', label: '30d' }, { value: '90', label: '90d' }]}
-                    value={String(trendDays)}
-                    onChange={(v) => setTrendDays(Number(v))}
-                  />
-                }
-                data={resTrend.trend}
-                xKey="date"
-                series={trendSeries}
-                key={trendTypes.join(',')} // period toggle re-ranks types → remount resets hidden state
-                interactiveLegend
-                legendGroups={[
-                  { label: tt('Core Resources'), keys: coreTypes },
-                  ...(otherTypes.length ? [{ label: tt('Other Resources'), keys: otherTypes }] : []),
-                ]}
-                defaultHidden={otherTypes}
-              />
+              <div className="min-w-0">
+                <MultiLineTrend
+                  title={`리소스 추세 (${trendDays}d)`}
+                  right={
+                    <SegmentedControl
+                      options={[{ value: '14', label: '14d' }, { value: '30', label: '30d' }, { value: '90', label: '90d' }]}
+                      value={String(trendDays)}
+                      onChange={(v) => setTrendDays(Number(v))}
+                    />
+                  }
+                  data={chartData.pts}
+                  xKey="date"
+                  series={trendSeries}
+                  key={trendTypes.join(',')} // period toggle re-ranks types → remount resets hidden state
+                  interactiveLegend
+                  legendGroups={[
+                    { label: tt('Core Resources'), keys: coreTypes },
+                    ...(otherTypes.length ? [{ label: tt('Other Resources'), keys: otherTypes }] : []),
+                    ...(derivedTrendTypes.length ? [{ label: tt('보안 시리즈'), keys: derivedTrendTypes }] : []),
+                  ]}
+                  defaultHidden={[...otherTypes, ...derivedTrendTypes]}
+                />
+                {(chartData.gapped || trendScopeNarrowed) && (
+                  <div className="mt-1 text-[11px] text-ink-400">
+                    {trendScopeNarrowed && <span>{tt('요청한 계정 스코프 중 일부만 집계에 반영되었습니다')} </span>}
+                    {chartData.gapped && <span>{tt('계정 커버리지가 불완전한 시점은 공백/—로 표시됩니다')}</span>}
+                  </div>
+                )}
+              </div>
             ) : (
               <Card title={`리소스 추세 (${trendDays}d)`}>
                 <div className="text-[13px] text-ink-400">{tt('이력 수집 중 — sync 주기마다 축적됩니다')}</div>
@@ -526,6 +802,24 @@ export default function Home() {
           </Card>
         )}
 
+        {/* ---- Cost Impact Estimation (gap L225): 30d delta x static monthly weight ---- */}
+        {impactRows.length > 0 && (
+          /* dataviz form-fit (batch 44): signed $ impact is a POLARITY job — a diverging bar
+             (shared zero axis, warm=increase / positive=decrease) replaces the plain ± list;
+             ordering (|impact| desc) and every honesty gate upstream are unchanged. */
+          <DivergingBarList
+            title="월 비용 영향 추정"
+            subtitle="30일 수량 변화 × 타입별 정적 단가 근사 — 실제 청구액이 아닙니다 (실측은 Cost 페이지)"
+            rows={impactRows.map((r) => ({
+              label: INV_LABEL(r.type),
+              value: r.monthly,
+              sub: `${r.delta > 0 ? '+' : ''}${r.delta.toLocaleString()}`,
+            }))}
+            valuePrefix="$"
+            valueSuffix="/mo est."
+          />
+        )}
+
         {/* ---- Charts row 1: distribution bar (full-width) ---- */}
         {sumErr ? (
           <div className="text-[13px] text-ink-400">
@@ -537,18 +831,22 @@ export default function Home() {
 
             {/* ---- Charts row 2: resource-distribution donuts (EC2 type · K8s pods) ---- */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* batch 46 (owner scope decision): the batch-44 donut→bar swap is HELD — only
+                  the diverging cost-impact chart (①) stays; this card returns to the donut. The
+                  top-10 DISCLOSURE is carried over (the summary API caps at LIMIT 10 — a review
+                  MAJOR closed it in batch 44 and the hold must not silently reopen it). */}
               {ec2Types.length > 0 ? (
-                <DonutBreakdown title="EC2 인스턴스 유형" data={ec2Types} nameKey="name" valueKey="count" />
+                <DonutBreakdown title="EC2 인스턴스 유형" subtitle={ec2Types.length === 10 ? tt('상위 10개 유형만 표시') : undefined} centerLabel={ec2Types.length === 10 ? '상위 10 합계' : undefined} data={ec2Types} nameKey="name" valueKey="count" />
               ) : (
                 <Card title="EC2 인스턴스 유형">
                   <div className="text-[13px] text-ink-400">{tt('EC2 데이터 없음')}</div>
                 </Card>
               )}
               {podStatusDonut.length > 0 ? (
-                <DonutBreakdown title="K8s 파드 상태" data={podStatusDonut} nameKey="name" valueKey="value" />
+                <DonutBreakdown title="K8s 파드 상태" subtitle={fleetPopulation} centerLabel="수집된 파드" data={podStatusDonut} nameKey="name" valueKey="value" />
               ) : (
-                <Card title="K8s 파드 상태">
-                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '파드 없음' : 'EKS 데이터 없음')}</div>
+                <Card title="K8s 파드 상태" subtitle={fleetPopulation}>
+                  <div className="text-[13px] text-ink-400">{tt(fleetEmpty ?? '파드 없음')}</div>
                 </Card>
               )}
             </div>
@@ -568,7 +866,7 @@ export default function Home() {
                   <div className="text-[13px] text-ink-400">{tt('비용 데이터 없음')}</div>
                 </Card>
               )}
-              <Card title="최근 K8s 이벤트">
+              <Card title="최근 K8s 이벤트" subtitle={`${fleetPopulation} · ${tt('수집된 최근 이벤트 최대 8건')}`}>
                 {recentEvents.length > 0 ? (
                   <ul className="flex flex-col divide-y divide-ink-100">
                     {recentEvents.map((e, i) => (
@@ -586,7 +884,7 @@ export default function Home() {
                     ))}
                   </ul>
                 ) : (
-                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '최근 이벤트 없음' : 'EKS 데이터 없음')}</div>
+                  <div className="text-[13px] text-ink-400">{tt(fleetEmpty ?? '최근 이벤트 없음')}</div>
                 )}
               </Card>
             </div>

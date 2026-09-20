@@ -16,12 +16,14 @@ interface GraphQueryRow {
 export interface GraphSources {
   sources: TraceSource[];
   metricsSources: MetricsCallsSource[];
+  /** Query failure is also signaled to coordinators; the synthetic error source still drives retention. */
+  registryFailed?: true;
 }
 
 /** Load ready graph-source adapters across every registered datasource instance. Falls back to a
  *  bare default ClickHouseOtelTraceSource (the pre-registry behavior) when no ready row exists yet
- *  — a fresh environment before the first daily datasource_index run, or the query itself failing —
- *  so nothing regresses. Never throws. */
+ *  — a fresh environment before the first daily datasource_index run.
+ *  Registry failures are explicit evidence failures, never a silent default-source fallback. */
 export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
   let rows: GraphQueryRow[] = [];
   try {
@@ -35,7 +37,17 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
     );
     rows = r.rows as GraphQueryRow[];
   } catch {
-    rows = [];
+    return {
+      registryFailed: true,
+      sources: [{
+        available: async () => false,
+        recentSpans: async (windowMins, _cap, endMs = Date.now()) => ({
+          sourceId: 'graph-registry', status: 'error', items: [], reasons: ['registry_read_failed'],
+          windowStartMs: endMs - windowMins * 60_000, windowEndMs: endMs,
+        }),
+      }],
+      metricsSources: [],
+    };
   }
 
   const sources: TraceSource[] = [];

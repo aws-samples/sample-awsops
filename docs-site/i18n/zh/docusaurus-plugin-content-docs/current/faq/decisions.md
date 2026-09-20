@@ -74,7 +74,7 @@ AWSops 使用**应用内登录表单**（`/login`）（ADR-042）。
 AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA**（ADR-037、ADR-030）。
 
 - **IaC**：Terraform（部分 S3 backend）。CDK 已废弃（ADR-024 → 由 ADR-037 承继）。
-- **计算**：ECS Fargate（arm64）。web 作为 Next.js 14 thin-BFF 在根路径提供服务。
+- **计算**：ECS Fargate（arm64）。web 作为 Next.js 15 thin-BFF 在根路径提供服务。
 - **异步 worker**：繁重或长时/有 OOM 风险的任务不由 web 直接处理，而是发送到 SQS → ESM（kill-switch）→ dispatcher Lambda（幂等）→ Step Functions → Lambda 或 `ecs:runTask.sync` Fargate。
 
 ADR-037 全面承继了 ADR-024，并精炼了 ADR-030 的机制（无实时 Steampipe，仅确定 flag-gated 库存 sync）。
@@ -138,7 +138,7 @@ ADR-039 多 Agent 平台引入了前沿 Agent（DevOps/Security/FinOps + N）与
 
 **仅提供 read-only 诊断**（ADR-035，DOWNGRADED 2026-06-11）。
 
-K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 4.5）**仅保留 read-only Result-CRD 集成（GET-only）**，通往自动处置的接线（H3a → 032/034/029 提案）已废弃。EKS 查询基于 task-role Access Entry + View policy，全部为只读。
+K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 4.5）**仅保留 read-only Result-CRD 集成（GET-only）**，通往自动处置的接线（H3a → 032/034/029 提案）已废弃。EKS 查询全部为只读。宿主集群的默认身份是 web 任务角色，成员集群的默认身份是已注册的成员只读角色（通常为 `AWSopsReadOnlyRole`），各自需要目标集群中的 Access Entry 和只读策略。成员元数据查询和默认 Kubernetes 令牌签名均使用成员角色凭证，仅有旧的宿主角色 Entry 不足以授权。保存的 SA 令牌或显式 AssumeRole 认证使用另行授权的 Kubernetes 身份，成员集群的 AssumeRole 仅允许同一成员账户的角色。SA 认证不需要 IAM Access Entry，但仍需要元数据查询权限。任何方式都不会启用自动修复。
 
 ## 运维 / Operations
 

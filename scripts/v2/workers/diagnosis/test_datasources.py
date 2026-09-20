@@ -162,6 +162,102 @@ def test_summarize_handles_tempo_traces_envelope(monkeypatch):
     assert summ.get("count") == 2 and summ.get("source") == "traces"
 
 
+@pytest.mark.parametrize("kind,key,schema", [
+    ("tempo", "traces", {"labels": ["service.name"]}),
+    ("clickhouse", "rows", {"tables": ["events"]}),
+    ("prometheus", "result", {"metrics": ["errors_total"]}),
+    ("mimir", "result", {"metrics": ["errors_total"]}),
+    ("loki", "result", {"labels": ["app"]}),
+])
+@pytest.mark.parametrize("markers,expected", [
+    ({"collectionStatus": "unknown"}, "unknown"),
+    ({"collectionStatus": "error"}, "error"),
+    ({"collectionStatus": "partial"}, "partial"),
+    ({"collectionStatus": "ok", "truncated": True}, "partial"),
+    ({"truncated": True}, "partial"),
+    ({"collectionStatus": ["sensitive-invalid-status"]}, "unknown"),
+])
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_incomplete_connector_signals_never_become_confident_zero(
+        monkeypatch, kind, key, schema, markers, expected, nonempty):
+    secret = "raw-sensitive-payload"
+    record = ({"traceID": "a1", "payload": secret} if kind == "tempo" else
+              {"stream": {"app": "api"}, "values": [["1", secret]]} if kind == "loki" else
+              {"metric": {"job": "api"}, "value": [1, "1"], "payload": secret} if kind in ("prometheus", "mimir") else
+              {"c": 0, "payload": secret})
+    rows = [record] if nonempty else []
+    shape = {"resultType": "streams" if kind == "loki" else "vector"}
+    _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **shape, **markers, "error": secret}))
+    out = src.collect_datasources(FakeConn([(5, "source", kind, True)], {5: schema}))
+    signal = out["data"]["findings"][0]["results"][0]
+    summary = signal["summary"]
+    if expected == "error":
+        assert signal["error"] == summary["error"] == "source collection error"
+    else:
+        assert "error" not in signal and "error" not in summary
+        assert signal["incomplete"] is True and summary["incomplete"] is True
+    assert summary["collectionStatus"] == expected
+    assert "count" not in summary
+    assert summary.get("observedCount") == (1 if nonempty else None)
+    assert secret not in json.dumps(out) and "sensitive-invalid-status" not in json.dumps(out)
+
+
+def test_partial_error_trace_observations_remain_evidence_not_query_failure(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": f"{i + 1:x}", "payload": "private-trace"} for i in range(20)], "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": ["service.name"]}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert "count" not in signal["summary"]
+    assert "private-trace" not in json.dumps(out)
+
+
+def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": f"{i + 1:x}"} for i in range(20)], "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "tempo", "tempo", True)], {5: {"labels": []}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert signal["summary"]["collectionStatus"] == "partial"
+
+
+@pytest.mark.parametrize("kind,value,valid", [("scalar", "7", True), ("string", "PRIVATE", True), ("string", "PRIVATE" * 1000, False)],
+                         ids=["scalar", "string", "oversized-string"])
+def test_non_series_pairs_never_become_two_observed_records(kind, value, valid):
+    summary = src._summarize_result({"resultType": kind, "result": [1, value],
+                                     "collectionStatus": "ok"})
+    assert summary.get("count") == (1 if valid else None)
+    assert summary.get("incomplete", False) is not valid
+    assert "observedCount" not in summary
+    assert "PRIVATE" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("rows,expected", [([None], None), ([None, {"metric": {}, "value": [1, "7"]}], 1)])
+def test_invalid_series_placeholders_do_not_count_as_observations(rows, expected):
+    summary = src._summarize_result({"resultType": "vector", "result": rows, "collectionStatus": "unknown"})
+    assert summary.get("observedCount") == expected
+    assert "count" not in summary
+
+
+@pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "abcdef"}])])
+def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": rows, "collectionStatus": status, "truncated": False,
+    }))
+    out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": []}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert "error" not in signal
+    assert signal["summary"]["count"] == len(rows)
+    assert signal["summary"]["collectionStatus"] == status
+    assert "abcdef" not in json.dumps(out)
+
+
 # consensus gate finding: a crafted/poisoned ClickHouse table name must NOT reach the SQL (identifier-validated).
 def test_clickhouse_table_name_is_identifier_validated(monkeypatch):
     fake = _patch_lambda(monkeypatch, FakeLambda(body={"result": {"rows": [{"c": 1}]}}))
@@ -261,3 +357,57 @@ def test_no_signal_rows_falls_back_to_generic_planner(monkeypatch):
     conn.schemas = {5: {"metrics": ["http_requests_total"]}}
     src.collect_datasources(conn)
     assert fake.calls, "generic planner should run when no signals are materialized"
+
+
+@pytest.mark.parametrize("kind,value", [("scalar", "0"), ("string", "SYNTHETIC_PRIVATE_VALUE")])
+def test_scalar_summary_counts_one_sample_without_exposing_value(kind, value):
+    summary = src._summarize_result({"resultType": kind, "result": [1.5, value], "collectionStatus": "ok"})
+    assert summary["count"] == 1
+    assert summary["resultType"] == kind
+    assert "SYNTHETIC_PRIVATE_VALUE" not in json.dumps(summary)
+    assert "result" not in summary and "value" not in summary
+
+
+def test_observed_counts_exclude_malformed_placeholders_and_records():
+    valid = {"metric": {"job": "api"}, "value": [1, "0"]}
+    invalid = [None, {}, {"metric": {}, "value": [1, "not-a-number"]}]
+    for rows, count in [(invalid, None), (invalid + [valid], 1)]:
+        result = src._summarize_result({"resultType": "vector", "result": rows, "collectionStatus": "unknown"})
+        assert result.get("observedCount") == count
+        assert "count" not in result
+        assert result["incomplete"] is True
+    trace = src._summarize_result({"traces": [None, {}, {"traceID": "a1"}], "collectionStatus": "partial"})
+    assert trace["observedCount"] == 1
+    table = src._summarize_result({"rows": [None, {}, {"c": 0}], "collectionStatus": "partial"})
+    assert table["observedCount"] == 1
+
+
+@pytest.mark.parametrize("body,observed", [
+    ({"resultType": "vector", "result": [None, {}]}, None),
+    ({"result": [{"metric": {}, "value": [1, "0"]}]}, None),
+    ({"traces": [None, {"traceID": "invalid-id"}]}, None),
+    ({"rows": [None, {"c": 0}]}, 1),
+    ({"result": {"rows": [None, {"c": 0}]}}, 1),
+    ({"resultType": "scalar", "result": [None, "0"]}, None),
+    ({"resultType": "scalar", "result": []}, None),
+])
+def test_unmarked_validation_loss_is_incomplete_not_clean_zero(body, observed):
+    result = src._summarize_result(body)
+    assert result["incomplete"] is True
+    assert result["collectionStatus"] == "partial"
+    assert "count" not in result
+    assert result.get("observedCount") == observed
+
+
+def test_valid_unmarked_scalar_pair_is_one_sample_not_validation_loss():
+    result = src._summarize_result({"resultType": "scalar", "result": [1, "0"]})
+    assert result["count"] == 1
+    assert "incomplete" not in result
+
+
+@pytest.mark.parametrize("value", [[10**1000, "0"], [1, "\ud800"], [1, "x" * 4097]])
+def test_invalid_summary_sample_bounds_remain_incomplete(value):
+    result = src._summarize_result({"resultType": "string", "result": value})
+    assert result["incomplete"] is True
+    assert result["collectionStatus"] == "partial"
+    assert "count" not in result and "observedCount" not in result

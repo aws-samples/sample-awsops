@@ -6,6 +6,13 @@ added 2026-06-18: `core_helpers` / `reachability_read` / `istio_read` — see th
 lists below.
 
 ## Key Files
+- `inventory_read_mcp.py` supports a CloudFront-only exact `query_inventory.resource_id`.
+  Validate the ID before SQL; bind it as a parameter, select only identity and cap at one row.
+  Responses disclose `projection=identity_only` and echo the validated ID. Existing sql_reader
+  view columns/grants suffice; this adds no schema/permission change or AWS mutation.
+  A zero-row identity result includes a fixed note: synced-inventory absence is not AWS absence.
+  Deploy Lambda code through the reviewed Terraform flow before updating the gateway schema.
+  Consumers must match projection and echoed ID; missing/mismatched metadata means unverified lookup.
 - `create_targets.py` — **v1/dark**: an older, hand-written Gateway Target creator (8 gateways,
   no `external-obs`). The live v2 provisioner is `scripts/v2/agentcore/{catalog,provision}.py`
   (9 gateways) — read those, not this file, for the current provisioning path.
@@ -18,6 +25,26 @@ files themselves — read those rather than this file for current tool counts.
 
 **`execute_sql`'s read-only guarantee rests on DB-level role permissions**, not a lexical
 guard — see the section below.
+
+## External query completion
+
+ClickHouse, Tempo and Prometheus/Mimir compute `collectionStatus` from validated HTTP
+responses, never copied upstream flags. Only complete ok/empty certifies empty. Tempo
+uses synchronous HTTP 200 response validation, not mandatory job counters. Unknown metric
+keys are ignored, never proof; known counters retain bounded decimal-string validation.
+Byte-omitted children retain structured spans or an explicit omission marker; a spanless/no-fit child
+cannot authorize graph replacement even alongside useful siblings. Preserve upstream truncation
+metadata without mutating its response dictionary. Projected spans validate identity/timing,
+reported trace ID and parent/link/status fields before budget admission; encountered malformed
+spans make the whole projection unknown, and unvisited rows remain unassessed.
+Trace producers strip upstream collection/projection/omission controls. Explicit upstream
+truncation remains negative; only local omitted unverified projections issue
+`tracePayloadUnverified`. Deploy this producer before marker-aware adapters.
+Prometheus/Mimir instant scalar/string results retain one bounded
+sample; malformed records are fixed markers with bounded output.
+Run `python3 -m pytest agent/lambda/test_tempo_mcp.py agent/lambda/test_prometheus_mcp.py agent/lambda/test_mimir_mcp.py agent/lambda/test_tempo_trace_budget.py agent/lambda/test_collection_markers.py agent/lambda/test_collection_boundaries.py agent/lambda/test_graph_source_producer_contract.py -q` from the root.
+Deploy Lambda code separately from the updated `scripts/v2/agentcore/catalog.py` descriptions;
+see `docs/runbooks/source-sync-observability.md` for rollout and retention boundaries.
 
 ## Rules
 - Gateway Targets: must use Python/boto3 — the CLI has inlinePayload issues.
@@ -76,11 +103,37 @@ guard — see the section below.
   - **JSONB blobs are exposed only through named-key projections** (`inventory_resources.data`,
     `topology_nodes.meta`). Putting raw JSONB in the column list **fails open again, per JSON
     key** — `data` carries CloudFront origin CustomHeaders (an origin secret), and `meta.row`
-    carries a full raw copy of the row. Conversely, simply **dropping the column breaks the
+    can carry sensitive provider content. Web inventory/graph reads and new graph writes now
+    remove recognized origin-header and OIDC ClientSecret fields, including legacy JSON encodings.
+    That targeted projection is not a general secret detector; old stored rows may still contain
+    the original values. Never expose raw `row` through the SQL-reader allowlist. Simply **dropping the column breaks the
     connector at runtime** (PR #197 review CRITICAL — wiped out `find_unused_resources`/
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
+  - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
+    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
+    carry `ownership_evidence` and `targetCapturedAt`, with VPC/subnet/ambiguity data where applicable.
+    Configuration-only IP targets also carry `ownership_reason`; other target kinds need not.
+    The timestamp dates only the target-group row, not ownership evidence. `candidate` is
+    page-only metadata, not materializer output. These names are excluded; bare `region`, `cluster`, `ecsService`
+    and `task` may be exposed and do not prove complete scope or live ownership. Any unlisted
+    key remains absent until a reviewed additive migration exposes it. Host ECS snapshot
+    target labels are cached configuration too; never infer live ownership from those labels.
+  - Interpret evidence per class: flow/infra labels are cached configuration, not live
+    ownership. Trace service/database account or region metadata, when present, is telemetry
+    attribution; database `infra_ref` is a host-name/prefix inference, not identity proof.
+    Trace queues explicitly carry `identityProvenance='telemetry_claim'`; destination ARN
+    qualifiers become nullable `claimedAccountId`/`claimedRegion`, never verified ownership.
+    Missing qualifiers never establish confidence.
+  - Node `captured_at` is graph materialization time, not underlying inventory or event time.
+    `sql_reader.topology_graph_state` supplies flow/infra/trace status, retained evidence
+    and source clocks; trace also has query windows. The writer records all three classes.
+    Missing state remains unknown. `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` owns the current collection-state projection.
+  - The topology assertions in `test_inventory_view_contract.py` still read the original
+    `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql`; they do not enforce the current
+    topology projection. Inspect its current owner and the queue/view tests in
+    `scripts/v2/workers/test_graph_collection.py` separately.
   - Effect: a new base-table column is **invisible** until someone adds it to a view (silently
     absent instead of silently exposed — the right direction for a model-invocable tool).
   - `search_path = sql_reader, pg_catalog` → an unqualified `FROM worker_jobs` written by the
@@ -113,3 +166,17 @@ guard — see the section below.
   noted as a follow-up, out of scope here).
 
 Detail: ADR-004 §7 amendment (2026-07-31).
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Route selection requires an explicit associated state; missing state is unknown and
+never permits a fallback. All ENI/component SDK failures expose only allowlisted codes.
+Each SG has a shared 200-row inbound/outbound budget, explicit peer fields and 100-character
+descriptions; omissions are marked partial/truncated. Returned data is configuration only.
+Test with `python3 -m pytest -q agent/lambda/test_network_mcp_eni.py`. Roll out Lambda through
+Terraform, then deploy the AgentCore prompt and reconcile the live Gateway catalog.

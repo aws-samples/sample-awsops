@@ -3,7 +3,9 @@
 // ADR-031 Phase 2 — custom branch enforces the per-account Agent Space tool cap
 // (server-side, OUTSIDE the model). The built-in branch is byte-identical to Phase 1.
 import type { AgentWithSkills } from '@/lib/catalog';
-import { intersectToolAllowlist, type AgentSpace } from '@/lib/agent-space';
+import type { AgentSpace } from '@/lib/agent-space';
+import { isReservedAgentName, gatewayToolIdentities, qualifyToolNames } from './skill-validation';
+export { qualifyToolNames } from './skill-validation';
 
 // Immutable, non-overridable safety boundary prepended to every custom prompt (Addendum #5).
 export const SAFEGUARD_LINE =
@@ -43,7 +45,7 @@ export interface ResolvedIntegration {
 export function pickCustomAgent(prompt: string, candidates: AgentWithSkills[]): string | null {
   const p = prompt.toLowerCase();
   for (const a of candidates) {
-    if (!a.enabled || a.tier !== 'custom') continue;
+    if (!a.enabled || a.tier !== 'custom' || isReservedAgentName(a.name)) continue;
     if (a.routingKeywords.some((k) => k && p.includes(k.toLowerCase()))) return a.name;
   }
   return null;
@@ -54,7 +56,7 @@ export function pickCustomAgent(prompt: string, candidates: AgentWithSkills[]): 
  * @param candidates enabled custom agents from the catalog source
  * @param space      Phase 2 per-account Agent Space (optional). Caps the custom tool
  *                   allowlist; has NO effect on the built-in branch. No space (or a DB
- *                   miss/error from getAgentSpace returning null) ⇒ Phase-1 behavior.
+ *                   miss from getAgentSpace returning null) ⇒ Phase-1 behavior. Policy read errors propagate.
  */
 // ADR-039 P2 — egress READ integration as the resolver sees it (only these contribute tools/context).
 export interface EgressReadIntegration {
@@ -117,7 +119,7 @@ export function resolveAgent(
   egressReadIntegrations: EgressReadIntegration[] = [],
   proposableWrites: ProposableWriteIntegration[] = [],
 ): ResolvedAgentSpec {
-  const custom = candidates.find((a) => a.name === routeKey && a.enabled && a.tier === 'custom');
+  const custom = candidates.find((a) => a.name === routeKey && a.enabled && a.tier === 'custom' && !isReservedAgentName(a.name));
   if (custom) {
     const ordered = [...custom.skills].sort((a, b) => a.ord - b.ord);
     const skillBlock = ordered.map((s) => s.instructions).filter(Boolean).join('\n\n');
@@ -127,16 +129,26 @@ export function resolveAgent(
     const proposableBlock = renderProposableWrites(proposableWrites);
     const systemPromptOverride = [SAFEGUARD_LINE, custom.persona.trim(), skillBlock, integrationBlock, proposableBlock]
       .filter(Boolean).join('\n\n');
-    // Phase 2: server-side enforcement (ADR-031 Addendum #5) — OUTSIDE the model.
-    // Skill tools: ∩ known catalog ∩ Agent Space cap. Integration tools are EXTERNAL (not gateway-native)
-    // so they BYPASS the KNOWN_TOOL_CATALOG[gateway] narrowing (else e.g. a datadog tool is dropped on the
-    // security gateway) — they are still subject ONLY to the account space cap (a non-catalog gateway key
-    // makes intersectToolAllowlist apply the space cap without any catalog filter). Then union.
+    // Resolve aliases only against this gateway's server-owned target catalog. Never strip
+    // arbitrary prefixes or match bare names across gateways/integrations at runtime.
+    const known = gatewayToolIdentities(custom.gateway);
     const declared = ordered.flatMap((s) => s.toolAllowlist);
-    const skillEnforced = intersectToolAllowlist(custom.gateway, declared, space);
-    const integTools = egressReadIntegrations.flatMap((i) => i.exposedTools ?? []);
-    const integEnforced = intersectToolAllowlist('__integration__', integTools, space);
+    const capped = !!space?.toolAllowlist.length;
+    const cap = new Set(qualifyToolNames(space?.toolAllowlist ?? [], known));
+    const declaredPolicy = custom.toolPolicyConfigured === true || declared.length > 0;
+    const integTools = egressReadIntegrations.flatMap((i) => i.exposedTools ?? []).filter(Boolean);
+    // Only the legacy unrestricted case inherits gateway reads. An account
+    // cap or integration declaration is a ceiling, never an implicit gateway grant.
+    const legacyUnrestricted = !declaredPolicy && !capped && integTools.length === 0;
+    const eligible = declaredPolicy ? qualifyToolNames(declared, known) : legacyUnrestricted ? known : [];
+    const skillEnforced = eligible.filter((id) => !capped || cap.has(id));
+    // Gateway-qualified names are reserved: an external integration cannot grant a gateway
+    // tool by putting its identity in exposedTools. Unqualified integration names remain exact.
+    const integrationAllowed = (tool: string) => !!tool && !tool.includes('___') &&
+      (!capped || space!.toolAllowlist.includes(tool));
+    const integEnforced = integTools.filter(integrationAllowed);
     const merged = Array.from(new Set([...skillEnforced, ...integEnforced]));
+    const restricted = capped || declaredPolicy || integTools.length > 0;
     // ADR-039 P2-infra inc2: surface ONLY connectable integrations (endpoint+transport present) for
     // agent.py to live-connect. Tool/context injection above is independent — a context-only integration
     // (no endpoint) still contributes tools/context but is not in this connect list.
@@ -147,7 +159,7 @@ export function resolveAgent(
         endpoint: i.endpoint!,
         transport: i.transport!,
         credentialsRef: i.credentialsRef,
-        exposedTools: i.exposedTools ?? [],
+        exposedTools: (i.exposedTools ?? []).filter(integrationAllowed),
         allowPrivate: i.allowPrivate ?? false,
         ...(i.sigv4Service ? { sigv4Service: i.sigv4Service } : {}),
         ...(i.sigv4Region ? { sigv4Region: i.sigv4Region } : {}),
@@ -156,7 +168,9 @@ export function resolveAgent(
       tier: 'custom',
       gateway: custom.gateway,
       systemPromptOverride,
-      toolAllowlist: merged.length ? merged : undefined,
+      // Empty configured intersections mean deny-all. Only the legacy no-restriction case
+      // omits the field; agentcore.ts encodes [] safely for old and new runtimes.
+      toolAllowlist: restricted ? merged : undefined,
       agentName: custom.name,
       agentVersion: custom.version,
       skillHashes: ordered.map((s) => s.contentHash),

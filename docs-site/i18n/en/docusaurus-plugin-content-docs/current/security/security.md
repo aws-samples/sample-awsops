@@ -34,7 +34,7 @@ A pie chart displays the distribution of vulnerabilities by severity:
 - **LOW** (Cyan): Low priority
 
 ### Security Issues Summary
-A bar chart compares the number of issues across each category.
+A bar chart compares the number of issues across each category. CVEs are split into Critical/High bars, and zero-count categories are hidden (when every category is zero, the chart itself is omitted).
 
 ## Tab Details
 

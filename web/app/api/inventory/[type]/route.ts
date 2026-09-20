@@ -1,14 +1,15 @@
 import { verifyUser } from '@/lib/auth';
-import { readResources, assertInventoryTypeAllowed } from '@/lib/inventory';
+import { readResources, readAggregates, assertInventoryTypeAllowed } from '@/lib/inventory';
 import { getEcsClusterCosts } from '@/lib/aws';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request, { params }: { params: { type: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ type: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
+  const params = await pendingParams;
   const gate = await assertInventoryTypeAllowed(params.type, user);
   if (gate) return Response.json({ status: 'error', message: gate.message }, { status: gate.status });
   const url = new URL(request.url);
@@ -23,10 +24,24 @@ export async function GET(request: Request, { params }: { params: { type: string
   const accountsParam = url.searchParams.get('accounts');
   const accounts = accountsParam === null ? ['self'] : accountsParam === '__all__' ? ('__all__' as const) : accountsParam.split(',').filter(Boolean);
   try {
+    // gap L102: full-fleet aggregates for capped pages — same gates, same scope params,
+    // no rows returned (the page pairs this with its 500-row sample fetch).
+    if (url.searchParams.get('view') === 'agg') {
+      try {
+        const aggs = await readAggregates(params.type, { regions, includeGlobal, accounts });
+        return Response.json(aggs);
+      } catch {
+        // generic message — a pg error can embed SQL/identifiers; the page falls back to the
+        // sample (with the disclosed qualifier) on any non-OK response
+        return Response.json({ status: 'error', message: 'aggregation failed' }, { status: 503 });
+      }
+    }
     const page = await readResources(params.type, { limit, offset, regions, includeGlobal, accounts });
     // MTD real cost isn't in inventory_resources (Steampipe has no CE access) — merge it in here.
     // Degrades silently: cost-allocation tag not active yet, or CE denied → rows just lack the field.
-    if (params.type === 'ecs_cluster') {
+    // ?cost=0 skips the billable Cost Explorer read for consumers that never render
+    // mtd_cost_usd (the ECS overview page) — the type page keeps the default merge.
+    if (params.type === 'ecs_cluster' && url.searchParams.get('cost') !== '0') {
       try {
         const costs = await getEcsClusterCosts();
         for (const row of page.rows) {

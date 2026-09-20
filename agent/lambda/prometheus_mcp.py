@@ -10,6 +10,7 @@ attack surface is the endpoint, guarded by datasource_http.assert_host_allowed (
 validation on credential save). Stdlib + boto3 only.
 """
 import json
+import math
 import re
 import time
 from urllib.parse import urlencode
@@ -28,8 +29,14 @@ from datasource_http import (
 
 SLUG = "prometheus"
 MAX_SERIES = 50
+# Schema metric-name cap (was 500 — alphabetical truncation dropped every `node_*`/`kube_*` family on
+# real kube-prometheus stacks, so NL→PromQL generation never saw the metrics users asked about).
+# 3000 names ≈ 120KB of JSON — inside the web cache's 256KB row bound with the 200-label list.
+SCHEMA_METRIC_CAP = 3000
+
 MAX_POINTS_PER_SERIES = 500
 MAX_TOTAL_SAMPLES = 5000
+MAX_RESULT_BYTES = 1_000_000
 
 _REL = re.compile(r"^(\d+)([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -58,44 +65,133 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params):
+def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=auth_headers(creds))
+    kwargs = {"headers": auth_headers(creds)}
+    if http_timeout is not None:
+        kwargs["timeout"] = http_timeout
+    status, data = http_json("GET", url, **kwargs)
     if status >= 400:
-        raise _ApiError(f"Prometheus HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
+        detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
+        raise _ApiError(f"Prometheus HTTP {status}: {str(detail)[:300]}")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Prometheus query failed ({data.get('errorType', 'error')}): {data.get('error', 'unknown')}")
-    return data.get("data") if isinstance(data, dict) else data
+    result = data.get("data") if isinstance(data, dict) else data
+    if not with_status:
+        return result
+    state = "unknown"
+    if status in (200, 206) and isinstance(data, dict) and data.get("status") == "success":
+        state = "partial" if status == 206 else "ok"
+    if isinstance(data, dict):
+        for key in ("warnings", "infos"):
+            if key in data:
+                if not isinstance(data[key], list) or not all(isinstance(item, str) for item in data[key]):
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        for key in ("partial", "truncated"):
+            if key in data:
+                if type(data[key]) is not bool:
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        if any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception")):
+            state = "error"
+    return result, state
 
 
 class _ApiError(Exception):
     pass
 
 
+def _sample(value):
+    if (not isinstance(value, list) or len(value) != 2
+            or type(value[0]) not in (int, float) or not isinstance(value[1], str)
+            or len(value[1]) > 128):
+        return False
+    try:
+        float(value[1])  # NaN and +/-Inf are valid Prometheus sample strings.
+        return math.isfinite(value[0])
+    except (ValueError, OverflowError):
+        return False
+
+
+def _bounded_result(payload):
+    body = json.dumps(payload, default=str)
+    if len(body.encode("utf-8")) > MAX_RESULT_BYTES:
+        empty = {key: [] for key in ("result", "labels", "series") if key in payload}
+        if payload.get("resultType") in ("vector", "matrix", "scalar", "string"):
+            empty["resultType"] = payload["resultType"]
+        state = payload.get("collectionStatus")
+        empty.update(truncated=True, reason="payload_truncated",
+                     collectionStatus=state if state in ("unknown", "error") else "partial")
+        body = json.dumps(empty)
+    return {"statusCode": 200, "body": body}
+
+
 def _bound(data):
-    """Cap series, points-per-series, and a global sample budget for matrix/vector results."""
+    """Keep bounded valid series; replace invalid records without echoing their contents."""
     if not isinstance(data, dict):
-        return data, False
+        return None, False
+    kind = data.get("resultType")
     result = data.get("result")
-    if not isinstance(result, list):
-        return data, False
+    if kind not in ("vector", "matrix") or not isinstance(result, list):
+        return {"resultType": kind if kind in ("vector", "matrix") else None, "result": None}, False
     truncated = len(result) > MAX_SERIES
-    result = result[:MAX_SERIES]
-    budget = MAX_TOTAL_SAMPLES
-    out = []
-    for series in result:
-        s = dict(series)
-        vals = s.get("values")
-        if isinstance(vals, list):
-            if len(vals) > MAX_POINTS_PER_SERIES:
-                truncated = True
-            allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
-            if len(vals) > allowed:
-                truncated = True
-            s["values"] = vals[:allowed]
-            budget -= len(s["values"])
-        out.append(s)
-    return {"resultType": data.get("resultType"), "result": out}, truncated
+    budget, out = MAX_TOTAL_SAMPLES, []
+    for series in result[:MAX_SERIES]:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in metric.items()):
+            out.append(None)
+            continue
+        if kind == "vector":
+            out.append({"metric": metric, "value": series["value"]} if _sample(series.get("value")) else None)
+            continue
+        values = series.get("values")
+        if not isinstance(values, list):
+            out.append(None)
+            continue
+        allowed = min(MAX_POINTS_PER_SERIES, max(0, budget))
+        truncated |= len(values) > allowed
+        kept = values[:allowed]
+        budget -= len(kept)
+        out.append({"metric": metric, "values": kept} if all(_sample(value) for value in kept) else None)
+    return {"resultType": kind, "result": out}, truncated
+
+
+
+def _query_result(observed, *, allow_scalar=False):
+    data, state = observed
+    raw_rows = data.get("result") if isinstance(data, dict) else None
+    if isinstance(raw_rows, list) and any(isinstance(row, dict) and
+            ("histogram" in row or "histograms" in row) for row in raw_rows[:MAX_SERIES]):
+        return err("Native histogram output is unsupported; request float-valued results.")
+    kind = data.get("resultType") if isinstance(data, dict) else None
+    if kind in ("scalar", "string"):
+        raw = data.get("result")
+        pair = isinstance(raw, list) and len(raw) == 2
+        oversized = False
+        try:
+            oversized = pair and isinstance(raw[1], str) and (
+                len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+            valid = (allow_scalar and pair and type(raw[0]) in (int, float)
+                     and math.isfinite(raw[0]) and isinstance(raw[1], str) and not oversized
+                     and (kind == "string" or _sample(raw)))
+        except (ValueError, OverflowError, UnicodeError):
+            valid = False
+        return _bounded_result({"resultType": kind, "result": raw if valid else [],
+                                "truncated": bool(oversized),
+                                "collectionStatus": state if valid or state == "error" else "unknown"})
+    bounded, truncated = _bound(data)
+    rows = bounded.get("result") if isinstance(bounded, dict) else None
+    valid = kind in ("vector", "matrix") and isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
+    if not valid and state != "error":
+        state = "unknown"
+    elif state == "ok":
+        state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
+    return _bounded_result({**(bounded if isinstance(bounded, dict) else {"result": None}),
+                            "truncated": truncated, "collectionStatus": state})
+
 
 
 def _timeout_param(v):
@@ -119,9 +215,7 @@ def prometheus_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), "/api/v1/query", params)
-    bounded, truncated = _bound(data)
-    return ok({"truncated": truncated, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):
@@ -135,24 +229,31 @@ def prometheus_query_range(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), "/api/v1/query_range", params)
-    bounded, truncated = _bound(data)
-    return ok({"truncated": truncated, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), "/api/v1/query_range", params, with_status=True))
+
+
+def _list_result(observed, field, limit, kind):
+    data, source_status = observed
+    rows = data[:limit] if isinstance(data, list) else []
+    truncated = isinstance(data, list) and len(data) > limit
+    state = (source_status if source_status in ("unknown", "error") else
+             "unknown" if not isinstance(data, list) else
+             "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
+             "ok" if rows else "empty")
+    rows = [row if isinstance(row, kind) else None for row in rows]
+    return _bounded_result({field: rows, "truncated": truncated, "collectionStatus": state})
 
 
 def prometheus_labels(args):
-    data = _get(_ds(), "/api/v1/labels", {})
-    names = data if isinstance(data, list) else []
-    return ok({"labels": names[:1000], "truncated": len(names) > 1000})
+    return _list_result(_get(_ds(), "/api/v1/labels", {}, with_status=True), "labels", 1000, str)
 
 
 def prometheus_series(args):
     match = (args.get("match") or "").strip()
     if not match:
         return err("match (series selector) required")
-    data = _get(_ds(), "/api/v1/series", {"match[]": match})
-    series = data if isinstance(data, list) else []
-    return ok({"series": series[:MAX_SERIES], "truncated": len(series) > MAX_SERIES})
+    return _list_result(_get(_ds(), "/api/v1/series", {"match[]": match}, with_status=True),
+                        "series", MAX_SERIES, dict)
 
 
 def prometheus_schema(args):
@@ -176,9 +277,9 @@ def prometheus_schema(args):
     metrics = metrics if metrics_ok else []
     # A failed metric fetch surfaces as truncation: absence is then UNDETERMINED (cards degrade to
     # "unknown"), never a confident "unavailable" derived from an empty list.
-    out = {"version": version, "metrics": metrics[:500], "labels": labels[:200],
-           "truncated": (not metrics_ok) or len(metrics) > 500 or len(labels) > 200}
-    # The alphabetical 500-name cap drops everything past it (every kube-prometheus stack has far
+    out = {"version": version, "metrics": metrics[:SCHEMA_METRIC_CAP], "labels": labels[:200],
+           "truncated": (not metrics_ok) or len(metrics) > SCHEMA_METRIC_CAP or len(labels) > 200}
+    # The alphabetical name cap drops everything past it (every kube-prometheus stack has far
     # more), which left requirement matching (dashboard cards) inert on real instances. The FULL
     # un-capped name list is still in memory here, so caller-named metrics are decided by local
     # membership — definitive presence/absence with zero extra network calls. `probed` lists every
@@ -213,22 +314,46 @@ def prometheus_metric_meta(args):
     creds = _ds()
     base = "/api/v1"
     out = {}
+    # Operation-wide budget: 12 metrics × 2 sequential calls × 3s = a 72s worst case, past the
+    # connector Lambda's 60s timeout — which would kill the WHOLE call and lose every partial
+    # result. Stop probing when the budget is spent; remaining metrics are honest unknowns.
+    _budget_start = time.monotonic()
+    _META_BUDGET_SEC = 40
     for m in metrics:
+        if time.monotonic() - _budget_start > _META_BUDGET_SEC:
+            out[m] = {"exists": None, "type": None, "labels": [],
+                      "error": "metadata time budget exhausted — retry with fewer metrics"}
+            continue
         # Per-metric scope (metadata?metric=<m>) — never download the server-wide metadata map.
-        entry = {"type": None, "labels": []}
+        entry = {"exists": False, "type": None, "labels": []}
         try:
-            meta_resp = _get(creds, f"{base}/metadata", {"metric": m})
-            meta = meta_resp if isinstance(meta_resp, dict) else {}
-            v = meta.get(m)
+            meta_resp = _get(creds, f"{base}/metadata", {"metric": m}, http_timeout=3)
+            # A 200 whose body isn't the API shape (a proxy splash page, etc.) proves nothing —
+            # conclude absence only from a shape-valid dict response; otherwise stay unknown.
+            if isinstance(meta_resp, dict):
+                v = meta_resp.get(m)
+                entry["exists"] = isinstance(v, list) and bool(v)
+            else:
+                v = None
+                entry["exists"] = None
             entry["type"] = v[0].get("type") if isinstance(v, list) and v and isinstance(v[0], dict) else None
-            labels_data = _get(creds, f"{base}/labels", {"match[]": f'{{__name__="{m}"}}'})
+            labels_data = _get(
+                creds, f"{base}/labels", {"match[]": f'{{__name__="{m}"}}'}, http_timeout=3)
+            if isinstance(labels_data, list) and "__name__" in labels_data:
+                entry["exists"] = True
             labels = [lb for lb in (labels_data if isinstance(labels_data, list) else []) if lb != "__name__"]
             if len(labels) > 200:  # bound high-cardinality label sets (mirrors *_labels [:N] convention)
                 entry["labels"], entry["labels_truncated"] = labels[:200], True
             else:
                 entry["labels"] = labels
-        except _ApiError as e:
+        except _ApiError as e:  # HTTP 429/5xx or a non-success API status — the backend, not the metric
             entry["error"] = str(e)[:200]
+            if entry["exists"] is not True:  # metadata may already have proven existence (labels failed)
+                entry["exists"] = None  # unknown, not "absent"
+        except OSError as e:  # socket.timeout/URLError from the 3s deadline — this metric's error, not the whole call's
+            entry["error"] = f"upstream unreachable: {str(e)[:150]}"
+            if entry["exists"] is not True:
+                entry["exists"] = None  # unknown, not "absent"
         out[m] = entry
 
     return ok(out)
@@ -279,4 +404,6 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    if len(str(msg)) > 400:
+        msg = "upstream error response exceeded limit"
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

@@ -8,17 +8,18 @@ import { networkPathCheckGate } from '@/lib/network-path-gate';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
   if (blocked) return blocked;
+  const params = await pendingParams;
   const check = await getCheck(params.id);
   if (!check || check.deleted_at) return NextResponse.json({ message: 'not found' }, { status: 404 });
   return NextResponse.json({ check });
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
@@ -33,6 +34,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   try {
+    const params = await pendingParams;
     const check = await updateCheck(user, params.id, body ?? {});
     return NextResponse.json({ check });
   } catch (e) {
@@ -43,13 +45,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(req: NextRequest, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(req.headers.get('cookie'));
   if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const blocked = networkPathCheckGate();
   if (blocked) return blocked;
 
   try {
+    const params = await pendingParams;
     await softDeleteCheck(user, params.id);
     return NextResponse.json({ status: 'deleted' });
   } catch (e) {

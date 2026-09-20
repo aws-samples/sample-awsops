@@ -4,6 +4,14 @@
 Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP protocol.
 
 ## Key Files
+- `readiness.py` — default off unless `DEPLOYMENT_READINESS_ENABLED=true`; payloads cannot enable it.
+  Provisioning uses only applied `ci_readiness_enabled`, never shell overrides.
+  Runtime queries the exact CloudFront ID (one identity-only row); unverified is not proof of absence.
+  The early `deployment_readiness` mode checks the runtime STS account,
+  curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
+  and a bounded model call. It returns strict nonce/account-bound evidence, never ordinary
+  chat text or fallback success. Inventory data is not sent to the model for this probe.
+  A readiness failure is not proof that an undiscovered resource does not exist.
 - `agent.py` — Main entrypoint: dynamic Gateway selection via the `payload.gateway` parameter;
   `_resolve_gateway_key`/`_GATEWAY_ALIAS` handle the `observability`→`external-obs` chat-key
   alias and the canonical-vs-`v2-`-prefixed key coexistence shim (see the do-not-"fix" note in
@@ -39,9 +47,17 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 - Real-time response delivery via SSE streaming.
 
 ## Rules
+- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+- `fixtures/*-contract.json` is shared with `web/lib/trace-source.test.ts` and
+  `web/lib/graph-read-postgres.test.ts` (Tempo publication/retention cases).
+  Lambda completion tests bind mocked HTTP payloads to those exact producer bodies;
+  preserve unknown/partial evidence and distinguish it from actual query errors.
+- Workload inventory reads go through MCP tools. Readiness directly checks only execution
+  identity and model permission; it sends no inventory data to the model.
 - Docker image must be arm64 (`docker buildx --platform linux/arm64`).
 - Gateway URL is selected dynamically from the `GATEWAYS` dict based on the payload.
 - The system prompt is role-specific, one per domain gateway.
-- Fallback: if the MCP connection fails, run without tools — direct Bedrock call.
+- Normal chat fallback: if the MCP connection fails, run without tools — direct Bedrock call.
+  Deployment readiness instead returns failed evidence.
 - Never embed secrets, AWS account IDs, ARNs, or live domains in source — they belong in
   SSM/Secrets Manager and runtime env.

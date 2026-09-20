@@ -27,12 +27,15 @@ async function gate(request: Request) {
   return { user };
 }
 
-/** Counts only — never the introspected values themselves. */
-function summarize(schema: unknown): Record<string, number> {
+/** Counts and collection-limit flags only — never sampled values or raw attributes. */
+function summarize(schema: unknown): Record<string, number | boolean> {
   const s = (schema || {}) as Record<string, unknown>;
-  const out: Record<string, number> = {};
-  for (const k of ['tables', 'metrics', 'labels', 'tags', 'domains', 'indices'] as const) {
+  const out: Record<string, number | boolean> = {};
+  for (const k of ['tables', 'metrics', 'labels', 'tags', 'attributes', 'domains', 'indices'] as const) {
     if (Array.isArray(s[k])) out[k] = (s[k] as unknown[]).length;
+  }
+  for (const key of ['names_truncated', 'types_truncated', 'truncated'] as const) {
+    if (typeof s[key] === 'boolean') out[key] = s[key] as boolean;
   }
   return out;
 }

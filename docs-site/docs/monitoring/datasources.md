@@ -1,7 +1,7 @@
 ---
 sidebar_position: 7
 title: 데이터소스
-description: 외부 데이터소스 연동 관리 (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
+description: 외부 데이터소스 연동 관리 (Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
@@ -21,7 +21,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 <DatasourceFlow />
 
 주요 특징:
-- **7종 데이터소스** 지원 (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
+- **8종 데이터소스** 지원 (Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
 - **CRUD 관리**: 데이터소스 추가, 수정, 삭제 (관리자 전용)
 - **연결 테스트**: 원클릭 연결 확인 및 응답 시간 측정
 - **쿼리 실행**: 각 데이터소스 고유 쿼리 언어 지원
@@ -32,6 +32,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 | 데이터소스 | 쿼리 언어 | 기본 포트 | 주요 기능 |
 |-----------|----------|----------|----------|
 | **Prometheus** | PromQL | 9090 | 메트릭 수집, 알림, 시계열 데이터 |
+| **Mimir** | PromQL | 9009 | 장기 보관 메트릭, 멀티테넌트(X-Scope-OrgID) |
 | **Loki** | LogQL | 3100 | 로그 집계, 레이블 기반 검색 |
 | **Tempo** | TraceQL | 3200 | 분산 트레이싱, 스팬 검색 |
 | **ClickHouse** | SQL | 8123 | 컬럼 기반 분석, 대량 데이터 처리 |
@@ -42,7 +43,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 ## 데이터소스 추가
 
 :::info 관리자 전용
-데이터소스 생성, 수정, 삭제는 관리자 역할이 필요합니다. 관리자는 `data/config.json`의 `adminEmails`에 등록된 사용자입니다. 비 관리자는 페이지 진입 시 **Access Denied** 화면이 표시됩니다.
+데이터소스 생성, 수정, 삭제는 관리자 역할이 필요합니다. v2의 관리자는 Cognito 관리자 그룹 또는 SSM 이메일 허용 목록으로 판별됩니다(v1의 `data/config.json` `adminEmails` 방식은 폐기). 비 관리자는 페이지 진입 시 **Access Denied** 화면이 표시됩니다.
 :::
 
 :::info 멀티 어카운트와 무관
@@ -54,24 +55,27 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 | 필드 | 필수 | 설명 |
 |------|------|------|
 | **Name** | O | 데이터소스 식별 이름 |
-| **Type** | O | 데이터소스 유형 (7종 중 선택) |
+| **Type** | O | 데이터소스 유형 (8종 중 선택) |
 | **URL** | O | 엔드포인트 URL (예: `http://prometheus:9090`) |
 | **Authentication** | - | 인증 방식 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 요청 타임아웃 (기본값: 30초) |
-| **Cache TTL** | - | 캐시 유효 시간 (기본값: 5분) |
-| **Database** | - | 데이터베이스 이름 (ClickHouse 전용) |
+| **Timeout** | - | 저장 범위 1–60초(기본 10초). ClickHouse는 모든 경로에서 `max_execution_time` 상한으로 적용하며 유효 최대는 55초(56–60초는 55초로 단축). Prometheus/Mimir는 Explore 경로에서만 API `timeout`으로 적용하며 최대 10초. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 저장만 되고 현재 적용되지 않음 |
+| **Database** | - | 기본 데이터베이스 이름 (ClickHouse 전용, 식별자만 허용) |
+
+:::note v1과의 차이
+v1의 결과 캐시 TTL 설정은 v2에 없습니다 — v2의 질의 경로는 의도적으로 캐시하지 않습니다(thin-BFF; 결과 캐시는 자체적인 staleness 공지 장치가 필요). Timeout 단위도 v1의 ms에서 초(1–60)로 바뀌었습니다.
+:::
 
 ### 추가 절차
 
-1. **Datasources** 페이지에서 **Add Datasource** 버튼 클릭
+1. **Datasources** 페이지에서 **＋ 데이터소스 추가** 버튼 클릭
 2. 데이터소스 유형 선택
 3. 이름, URL, 인증 정보 입력
-4. **Test Connection**으로 연결 확인
+4. **🧪 연결 테스트**로 연결 확인
 5. **Save**로 저장
 
 ## 연결 테스트
 
-**Test Connection** 버튼을 클릭하면 데이터소스별로 다음을 확인합니다:
+**연결 테스트** 버튼을 클릭하면 데이터소스별로 다음을 확인합니다:
 
 | 데이터소스 | 테스트 엔드포인트 | 확인 내용 |
 |-----------|-----------------|----------|
@@ -160,7 +164,7 @@ fetch logs | filter contains(content, "error") | limit 100
 
 데이터소스 URL에 대해 다음 보안 검사가 적용됩니다:
 
-- **프라이빗 IP 차단**: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, `127.0.0.1` 등 내부 IP 차단
+- **차단 대상**: 메타데이터(169.254.169.254)·루프백·링크로컬 주소만 차단 — 사설(RFC1918) 데이터소스 엔드포인트는 ADR-007에 따라 허용됩니다(백슬래시 포함 URL은 파서 차이 악용 방지를 위해 거부)
 - **메타데이터 엔드포인트 차단**: `169.254.169.254` (EC2 인스턴스 메타데이터) 접근 차단
 - **링크-로컬 주소 차단**: `169.254.x.x` 대역 차단
 - **프로토콜 제한**: `http://`와 `https://`만 허용
@@ -199,21 +203,15 @@ AI 어시스턴트는 등록된 데이터소스를 활용하여 분석을 수행
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
-| **timeout** | 30초 | 요청 타임아웃 (최대 120초) |
-| **cacheTTL** | 300초 (5분) | 쿼리 결과 캐시 유효 시간 |
+| **Timeout** | 10초 | 업스트림 쿼리 실행 제한(초, 1–60). ClickHouse는 모든 경로(Explore·서비스 그래프·에이전트)의 상한(ceiling)으로 적용되고(호출자는 더 짧게만 조정 가능) 커넥터가 자체 HTTP 타임아웃을 그 위로 정렬합니다(유효 최댓값 55초 — Lambda 60초 한도 아래 정렬을 위해 56–60초 설정은 55초로 단축됩니다). Prometheus/Mimir는 Explore 경로의 API `timeout` 파라미터로 적용되며 커넥터 HTTP 타임아웃(12초) 아래로 10초에 캡됩니다 |
 
 ### ClickHouse 전용
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
-| **database** | `default` | 대상 데이터베이스 이름 |
+| **Database** | (서버 기본) | 기본 데이터베이스 이름 — 식별자만 허용, `system`/`information_schema`는 거부(웹 계층과 커넥터 양쪽 검증) |
 
-### 제한사항
-
-- 최대 등록 가능 데이터소스 수: 제한 없음
-- 쿼리 결과 최대 행 수: 1,000행
-- ClickHouse: SELECT 쿼리만 허용 (DDL/DML 차단)
-- URL: 프라이빗 IP 및 메타데이터 엔드포인트 차단
+제한: ClickHouse 쿼리는 읽기 전용 가드(테이블 함수·SYSTEM 차단)를 통과해야 하며, 반환 행은 최대 1,000행(`max_result_rows`)으로 제한됩니다.
 
 ## Explore 페이지
 
@@ -280,6 +278,10 @@ Loki/Mimir/Tempo → `/monitoring`). 프롬프트는 자동으로 전송되지 �
 에이전트는 해당 커넥터의 쿼리/스키마 도구로 데이터소스의 응답 상태를 점검합니다.
 
 ## Allowed Networks
+
+:::caution v1 문서
+이 섹션은 v1의 Allowed Networks 기능을 설명합니다. v2에는 이 기능이 없습니다 — 사설(RFC1918) 데이터소스 엔드포인트는 ADR-007에 따라 기본 허용되며, 차단 대상은 메타데이터·루프백·링크로컬뿐입니다.
+:::
 
 관리자는 SSRF 방지로 차단되는 프라이빗 네트워크에 대해 예외 허용 목록을 설정할 수 있습니다.
 

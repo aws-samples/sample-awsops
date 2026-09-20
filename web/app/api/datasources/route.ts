@@ -24,7 +24,8 @@ export async function GET(request: Request) {
       name: r.name,
       kind: r.kind,
       // Connection detail is admin-only (v1 showed the URL; v2 keeps it off the read-any shape).
-      ...(admin ? { endpoint: r.endpoint } : {}),
+      // settings ride the same admin-only visibility as the endpoint (gap L203)
+      ...(admin ? { endpoint: r.endpoint, settings: r.settings } : {}),
       authType: r.authType,
       isDefault: r.isDefault,
       // "connected" = a credential is resolvable: the instance id key, or (for migrated defaults) the kind mirror.

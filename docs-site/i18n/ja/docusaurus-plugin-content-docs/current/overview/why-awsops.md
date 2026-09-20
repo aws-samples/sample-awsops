@@ -57,7 +57,7 @@ AWSops のデータエンジンは [Steampipe](https://steampipe.io/)（組み�
 
 ## 3. AWS リソースの基本ダッシュボード（43 ページ）
 
-EC2・Lambda・ECS/ECR・EKS（Pod/Node/Deployment/Service/Explorer）・VPC・CloudFront・WAF・EBS・S3・RDS・DynamoDB・ElastiCache・MSK・OpenSearch など **43 ページ**が、リアルタイムチャートと React Flow トポロジーマップで構成されます。MSK・RDS・ElastiCache・OpenSearch は CloudWatch メトリクスまでインライン表示します。
+EC2・Lambda・ECS/ECR・EKS（Pod/Node/Deployment/Service/Explorer）・VPC・CloudFront・WAF・EBS・S3・RDS・DynamoDB・ElastiCache・MSK・OpenSearch など **43 ページ**が、リアルタイムチャートと React Flow トポロジーマップで構成されます。MSK・RDS・ElastiCache・OpenSearch・EBS は CloudWatch メトリクスまでインライン表示します。
 
 ---
 

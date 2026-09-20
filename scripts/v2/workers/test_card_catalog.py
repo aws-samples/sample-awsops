@@ -21,6 +21,38 @@ def test_prometheus_ready_and_unavailable_split():
     assert by["memory_available"]["query"] is None
 
 
+def test_prometheus_operational_catalog_covers_resource_pressure_and_network():
+    schema = {"metrics": [
+        "up",
+        "node_cpu_seconds_total",
+        "node_memory_MemAvailable_bytes",
+        "node_memory_MemTotal_bytes",
+        "node_filesystem_avail_bytes",
+        "node_filesystem_size_bytes",
+        "node_load1",
+        "node_network_receive_bytes_total",
+        "node_network_transmit_bytes_total",
+        "container_cpu_usage_seconds_total",
+        "container_memory_working_set_bytes",
+        "kube_pod_container_status_restarts_total",
+    ]}
+    rows = cc.build_cards("prometheus", schema)
+    by = {r["card_key"]: r for r in rows}
+    assert len(rows) == 13
+    assert {
+        "up_targets", "down_targets", "cpu_usage", "node_cpu_top5",
+        "memory_available", "node_memory_usage_top5", "node_disk_usage_top5",
+        "node_load1_top5", "node_network_receive_top5", "node_network_transmit_top5",
+        "container_cpu", "container_memory_top5", "pod_restarts",
+    } == set(by)
+    assert by["node_memory_usage_top5"]["query"]["expr"] == (
+        "topk(5, 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)))"
+    )
+    assert by["down_targets"]["query"]["expr"] == "sum(up == bool 0)"
+    assert "max by (instance)" in by["node_disk_usage_top5"]["query"]["expr"]
+    assert by["node_disk_usage_top5"]["query"]["range"] == {"window": 3600, "step": 60}
+
+
 def test_mimir_uses_mimir_tool():
     rows = cc.build_cards("mimir", {"metrics": ["up"], "labels": []})
     by = {r["card_key"]: r for r in rows}

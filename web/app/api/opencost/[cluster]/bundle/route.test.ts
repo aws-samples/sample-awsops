@@ -9,7 +9,7 @@ vi.mock('@/lib/opencost-config', () => ({ getOpencostConfig: (...a: unknown[]) =
 // NOTE: @/lib/opencost (pure renderers) is intentionally NOT mocked — exercise the real output.
 
 const req = () => new Request('http://x/api/opencost/fsi-demo-cluster/bundle', { headers: { cookie: 'awsops_token=t' } });
-const P = { params: { cluster: 'fsi-demo-cluster' } };
+const P = { params: Promise.resolve({ cluster: 'fsi-demo-cluster' }) };
 
 beforeEach(() => {
   vi.clearAllMocks();

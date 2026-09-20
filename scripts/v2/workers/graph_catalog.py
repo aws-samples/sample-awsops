@@ -24,9 +24,9 @@ service-graph metric exists; Loki structurally cannot contribute call-graph data
 editing this catalog forces a rebuild even when the datasource's schema is unchanged.
 """
 
-# v2: db.table identifiers now quoted per-segment (`db`.`table`) — bump forces a catalog rebuild
-# so already-cached instances regenerate the corrected query (the v1 `db.table` form 404'd).
-CATALOG_VERSION = "v2"
+# v3: preserve span operation/status/links and metric identity scopes. Rebuild cached queries so
+# source adapters receive metadata before aggregation, and both time bounds share one anchor.
+CATALOG_VERSION = "v3"
 
 # The OTel ClickHouse exporter's default `otel_traces` column shape. A table matching this column
 # SET (regardless of its actual name) is treated as the span source.
@@ -37,6 +37,21 @@ _OTEL_REQUIRED_COLUMNS = {
 
 _SERVICEGRAPH_METRIC = "traces_service_graph_request_total"
 _ISTIO_METRIC = "istio_requests_total"
+
+# Keep these suffixes in sync with trace-source.ts METRIC_IDENTITY_LABELS. Retain shared labels and
+# both endpoint conventions: Tempo's client/server and Istio's source/destination. Missing labels
+# don't introduce series, while dropping a present label would merge unrelated service identities.
+_IDENTITY_LABEL_SUFFIXES = (
+    "cloud_account_id", "account_id", "cloud_region", "region",
+    "deployment_environment_name", "deployment_environment", "environment", "service_namespace",
+    "k8s_namespace_name", "k8s_namespace", "workload_namespace", "namespace",
+    "k8s_cluster_name", "k8s_cluster", "cluster",
+)
+_IDENTITY_LABELS = tuple(
+    f"{prefix}{suffix}"
+    for prefix in ("", "client_", "server_", "source_", "destination_")
+    for suffix in _IDENTITY_LABEL_SUFFIXES
+)
 
 
 def _quote_identifier(name):
@@ -65,9 +80,14 @@ def _clickhouse_trace_spans(schema):
             select_cols = "TraceId, SpanId, ParentSpanId, ServiceName" + (
                 ", SpanKind" if "SpanKind" in cols else ""
             ) + ", Timestamp, Duration, ResourceAttributes, SpanAttributes"
+            for optional in ("SpanName", "StatusCode", "Links.TraceId", "Links.SpanId"):
+                if optional in cols:
+                    # Nested subcolumns are a single quoted identifier, unlike db.table names.
+                    select_cols += ", " + (f"`{optional}`" if "." in optional else optional)
             sql = (
                 f"SELECT {select_cols} FROM {_quote_identifier(t.get('name'))} "
-                "WHERE Timestamp >= now() - INTERVAL {window} MINUTE ORDER BY Timestamp DESC LIMIT {cap}"
+                "WHERE Timestamp >= now() - INTERVAL {window} MINUTE AND Timestamp <= now() "
+                "ORDER BY Timestamp DESC LIMIT {cap}"
             )
             return {
                 "query_key": "trace_spans", "status": "ready",
@@ -101,12 +121,14 @@ def _servicegraph_calls(kind, schema):
     if isinstance(schema, dict):
         metrics = {m for m in (schema.get("metrics") or []) if isinstance(m, str)}
     if _SERVICEGRAPH_METRIC in metrics:
-        expr = f"sum by (client,server) (increase({_SERVICEGRAPH_METRIC}[{{window}}m]))"
+        labels = ",".join(("client", "server") + _IDENTITY_LABELS)
+        expr = f"sum by ({labels}) (increase({_SERVICEGRAPH_METRIC}[{{window}}m]))"
         return {"query_key": "servicegraph_calls", "status": "ready",
                 "query": {"tool": tool, "mapper": "servicegraph_v1", "args_template": {"query": expr}},
                 "missing": None, "meta": meta}
     if _ISTIO_METRIC in metrics:
-        expr = f"sum by (source_workload,destination_workload) (increase({_ISTIO_METRIC}[{{window}}m]))"
+        labels = ",".join(("source_workload", "destination_workload") + _IDENTITY_LABELS)
+        expr = f"sum by ({labels}) (increase({_ISTIO_METRIC}[{{window}}m]))"
         return {"query_key": "servicegraph_calls", "status": "ready",
                 "query": {"tool": tool, "mapper": "istio_v1", "args_template": {"query": expr}},
                 "missing": None, "meta": meta}

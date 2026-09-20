@@ -12,6 +12,10 @@ A page for analyzing EKS Pod costs. It supports two data sources: OpenCost (defa
 
 <Screenshot src="/screenshots/compute/eks-container-cost.png" alt="EKS Container Cost" />
 
+:::info Account, region, and transfer scope
+Cost lists query connected clusters in the selected account/region scope and keep same-named clusters distinct. Partial-collection, limit, or failure notices indicate incomplete results; narrow the scope and retry. The separate **NFM pod-transfer** view supports only the host account in the deployment region and reports member/other-region scopes as unsupported. This restriction is separate from the Network cost supplied by OpenCost. A View-based member role separately needs a `services/proxy` GET binding limited to service `opencost:9003` in namespace `opencost` to read the OpenCost API. A permission failure does not prove it is uninstalled.
+:::
+
 ## Key Features
 
 ### Data Source Indicator
@@ -29,7 +33,7 @@ The current data source is displayed at the top of the page:
 Pie chart showing daily cost distribution by namespace
 
 ### Node Daily Cost + Pod Count Chart
-Dual-axis bar chart showing daily cost and Pod count per node
+Shows daily cost and Pod count per node. In v2 this renders as **grouped bars with per-series scaling** (a cost track + a pod-count track, real values/units on the labels) instead of a dual axis — above the node cost table on `/eks/cost`, top 15 by cost. A cluster with incomplete pod→node attribution shows '—' pod values on its nodes (a shown count could undercount, so it is never a confident number).
 
 ### Pods Tab
 | Column | Description |

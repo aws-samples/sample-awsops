@@ -1,0 +1,56 @@
+# Topology reference only. Edit the .drawio source; build.py validates and exports it.
+canonical_source: fig3-agentcore.drawio
+title: AgentCore와 읽기 전용 도구 호출
+grouping: AWS account boundaries
+components:
+- id: web
+  label: AWS Fargate / Web BFF
+- id: runtime
+  label: AgentCore / Runtime
+- id: gateway
+  label: AgentCore Gateway / 도메인 9개
+- id: bedrock
+  label: Amazon Bedrock
+- id: tools
+  label: AWS Lambda / 읽기 전용 도구
+- id: aurora
+  label: Amazon Aurora / 인벤토리 · Graph
+- id: host_api
+  label: 호스트 AWS API
+- id: role
+  label: AWSopsReadOnlyRole
+- id: target_api
+  label: 대상 계정 AWS API / 구성 · 비용 · 지표
+flows:
+- id: e0
+  from: web
+  to: runtime
+  label: 채팅 요청
+- id: e2
+  from: runtime
+  to: bedrock
+  label: 추론
+- id: e3
+  from: runtime
+  to: gateway
+  label: MCP
+- id: e4
+  from: gateway
+  to: tools
+  label: 도구 호출
+- id: e5
+  from: tools
+  to: aurora
+  label: SELECT
+- id: host_read
+  from: tools
+  to: host_api
+  label: 호스트 실행 역할
+- id: assume
+  from: tools
+  to: role
+  label: AssumeRole / ExternalId
+- id: target_read
+  from: role
+  to: target_api
+  label: 읽기 전용 조회

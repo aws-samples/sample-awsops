@@ -86,6 +86,10 @@ Click a role in the table to view detailed information:
 - Displays `AssumeRolePolicyDocument` in JSON format
 - Shows which entities (services, accounts, users) can assume this role
 
+:::info SCP-blocked hydrate columns
+`iam_user.mfa_enabled` and `iam_role.attached_policy_arns` require additional AWS lookups. When the role query fails, sync retries once without `attached_policy_arns`; `GetRole` and instance-profile lookups remain and may also fail. Only a successful fallback refreshes base role rows. The missing policy list remains unassessed (`unknown_attribute_count`), and the S3 access section displays “Not synced.” If both queries fail, the type is failed, pruning is skipped and last-good rows are preserved. Final status still follows the normal reachability/write lifecycle. Check `inventory_sync_hydrate_fallback.remedy`: a confirmed capacity problem calls for reviewed refill tuning; an IAM/SCP denial requires review of `iam:ListAttachedRolePolicies` permission. Rate tuning cannot repair a denial. This is the ADR-010 amendment dated 2026-09-02. The user-MFA query has no such fallback; MFA statistics use a separate summary query.
+:::
+
 :::info Trust Policy Analysis
 The trust policy defines the principals that can assume the role. Check the `Principal` field for allowed services, account IDs, and user ARNs.
 :::

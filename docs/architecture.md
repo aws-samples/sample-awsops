@@ -15,12 +15,12 @@ AWSops v2 is a read-only AWS/Kubernetes operations dashboard with AI diagnosis, 
 |---|---|---|---|
 | Edge | CloudFront (TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) | Private request path; no public ALB. ALB SG allows 443 only from `CloudFront-VPCOrigins-Service-SG` | `terraform/foundation/edge.tf`, `network.tf` |
 | Auth | Cognito User Pool (PKCE public client) + Lambda@Edge (`us-east-1`, python3.12, viewer-request) | RS256 JWKS verification + iss/aud/token_use at the edge; self-hosted `/login` form (BFF `InitiateAuth`) mints `awsops_token`; Hosted UI PKCE kept as dark fallback | `auth.tf`, `edge-lambda/cognito_edge.py.tftpl`, `web/app/login/` |
-| Presentation (web BFF) | Next.js 14 thin-BFF on ECS Fargate `awsops-v2-web:3000` (standalone arm64, root path — no basePath) | Serves UI + light `/api/*` (`health`, `stream`, `db`, `jobs`, security/compliance); 6 Network menus (`/network-flow` live NFM top-contributors + E2E hop path, `/dns-query` Resolver/CoreDNS Logs Insights aggregation, `/ip-addresses` ENI-based IP inventory, `/vpc-endpoints` idle/policy/coverage analysis, `/direct-connect` connection/VIF down-detection + BGP route visibility, `/network-firewall` protection/logging/capacity + traffic-drop analysis) and the EKS drill-down (`/eks` cluster list → `[cluster]` tabs + nodes/pods/deployments/services/explorer/cost); heavy work is enqueued via `POST /api/jobs`, never run inline | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
-| Data | Aurora Serverless v2 (`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-managed secret) via node-pg; flag-gated Steampipe inventory sync (`steampipe_enabled`) | Durable app state (`data/schema.sql` + `schema_migrations`, ULID migrations) — replaces v1 `data/*.json`, not live Steampipe | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf` |
+| Presentation (web BFF) | Next.js 15 thin-BFF on ECS Fargate `awsops-v2-web:3000` (standalone arm64, root path — no basePath) | Serves UI + light `/api/*` (`health`, `stream`, `db`, `jobs`, security/compliance); 6 Network menus (`/network-flow` live NFM top-contributors + E2E hop path, `/dns-query` Resolver/CoreDNS Logs Insights aggregation, `/ip-addresses` ENI-based IP inventory, `/vpc-endpoints` idle/policy/coverage analysis, `/direct-connect` connection/VIF down-detection + BGP route visibility, `/network-firewall` protection/logging/capacity + traffic-drop analysis) and the EKS drill-down (`/eks` cluster list → `[cluster]` tabs + nodes/pods/deployments/services/explorer/cost); heavy work is enqueued via `POST /api/jobs`, never run inline | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
+| Data | Aurora Serverless v2 (`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-managed secret) via node-pg; flag-gated Steampipe inventory sync (`steampipe_enabled`) — **quota-safe** (ADR-021): env-tunable Steampipe plugin rate limiter, denial-safe SDK collectors, content-preserving `partial` runs (an SDK sub-call failure skips both prune phases; an unreachable-account partial still prunes reachable accounts while preserving that account's last-good rows), and a durable per-type freshness ledger (`last_success_at` via run_token CAS, `unknown_attribute_count` disclosure) | Durable app state (`data/schema.sql` + `schema_migrations`, ULID migrations) — replaces v1 `data/*.json`, not live Steampipe | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf`, `scripts/v2/steampipe/sync_lambda.py` |
 | AI | AgentCore Runtime (Strands `agent/agent.py`) + 9 section gateways (8 AWS domains + external-obs; ADR-004: 9 provisioned / 9 routed) + Memory + Code Interpreter; Bedrock Sonnet 5 / Opus 4.8 / Haiku 4.5; BFF-local chat routes — `aws-data` (LLM-generated Steampipe SQL executed live on the Steampipe Fargate, SELECT-only guard + row cap) + 6 auto-collect collectors (`web/lib/collectors/`) — web-local handlers, not AgentCore gateways | Read-only MCP tool agents over live AWS data; idempotent boto3 provisioner; config source of truth = SSM `/ops/awsops-v2/agentcore/*`. Design: 9 section agents + 1 incident orchestrator. All 16 chat section keys active (container/iac included): 9 gateway-routed + aws-data + 6 local collectors | `ai.tf`, `scripts/v2/agentcore/`, `agent/`, `web/lib/aws-data.ts`, `web/lib/collectors/` |
 | Async Workers | SQS + ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions Standard `$.runtime` Choice → worker Lambda (short) or `ecs:runTask.sync` Fargate (long/OOM); status_updater + reaper (5 min) | Ledger-first `worker_jobs`; a worker can OOM/crash without touching web availability. All gated on `workers_enabled` | `workers.tf`, `scripts/v2/workers/` |
 | Observability | monitoring gateway (CloudWatch/CloudTrail + Loki/Tempo/Mimir), external-obs gateway (Prometheus/ClickHouse connectors), SNS diagnosis notification, incident webhook ingest, K8sGPT diagnosis (all flag-gated) | External-metric and alert/diagnosis surfaces on top of the read-only posture | `notify.tf`, `incidents.tf`, `k8sgpt.tf` |
-| Security | ADR-005 freeze (remediation substrate do-not-enable), ADR-015 secret-rotation self-healing (single scoped exception), security findings + CIS compliance pages, EKS Access Entry + AdminView policy (read-only) | Read-only enforcement, governed exceptions, compliance history | `remediation.tf`, `secret-rotation.tf`, `eks.tf`, `web/app/security/`, `web/app/compliance/` |
+| Security | ADR-005 freeze (remediation substrate do-not-enable), ADR-015 secret-rotation self-healing (single scoped exception), security findings + CIS compliance pages, EKS host Access Entry + AdminView; member role Entry + View and node-read RBAC (read-only) | Read-only enforcement, governed exceptions, compliance history | `remediation.tf`, `secret-rotation.tf`, `eks.tf`, `web/app/security/`, `web/app/compliance/` |
 
 ## Architecture Diagram
 
@@ -40,12 +40,12 @@ flowchart TB
   end
 
   subgraph WEB["Presentation (web BFF)"]
-    W["ECS Fargate awsops-v2-web:3000 (Next.js 14 thin-BFF, arm64)"]
+    W["ECS Fargate awsops-v2-web:3000 (Next.js 15 thin-BFF, arm64)"]
   end
 
   subgraph DATA["Data"]
     AUR[("Aurora Serverless v2 (PG 17.9, 0.5-4 ACU)")]
-    SP["Steampipe Fargate (FDW) + inventory sync (flag-gated)"]
+    SP["Steampipe Fargate (FDW) + quota-safe inventory sync (rate-limited, freshness ledger)"]
   end
 
   subgraph AI["AI (AgentCore)"]
@@ -121,11 +121,12 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 | `auth.tf` + `edge-lambda/` | Cognito User Pool/client/domain + Lambda@Edge (RS256, templated Python) |
 | `data.tf` + `data/schema.sql` + `migrations/` | Aurora Serverless v2 + baseline schema + ULID migrations |
 | `workload.tf` | ECS cluster/service/task definition (web) |
+| `ci-migrations.tf` | Default-off `ci_migrations_enabled`: private ARM64 migration template, exact-secret IAM and logs; launched manually or by guarded current-source dev web releases, never an app service/scheduler |
 | `ecr.tf` | Dual-tier ECR (dev-private + prod-public) |
-| `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`) |
+| `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`); default-off `ci_readiness_enabled` controls the bounded runtime permission/data/model probe through applied output |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate worker (`workers_enabled`) |
-| `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView policy + endpoint/CA outputs |
-| `steampipe.tf` | Warm Steampipe Fargate (FDW) + sync Lambda → Aurora inventory (`steampipe_enabled`) |
+| `eks.tf` | Host-only `for_each onboard_eks_clusters` Access Entry + AdminView policy + endpoint/CA outputs; member registration is separate |
+| `steampipe.tf` | Warm Steampipe Fargate (FDW) + sync Lambda → Aurora inventory (`steampipe_enabled`) — plugin rate limiter (env-tunable) + freshness ledger; data flow: [diagrams/inventory-freshness-dataflow.html](diagrams/inventory-freshness-dataflow.html) |
 | `notify.tf` | Diagnosis-completion SNS topic + subscription IAM + admin-only web-task test Publish, single-topic-scoped (`diagnosis_notify_enabled`) |
 | `incidents.tf` | Incident-lifecycle webhook/status (`incident_lifecycle_enabled`, ADR-006) |
 | `k8sgpt.tf` | K8sGPT diagnosis layer Bedrock budget/resources (`k8sgpt_enabled`) |
@@ -184,12 +185,12 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 |---|---|---|---|
 | Edge | CloudFront(TLS) → VPC Origin `https-only:443` → 내부 ALB HTTPS:443(리전 ACM) | 비공개 요청 경로 — 공개 ALB 없음. ALB SG는 `CloudFront-VPCOrigins-Service-SG`에서만 443 허용 | `terraform/foundation/edge.tf`, `network.tf` |
 | Auth | Cognito User Pool(PKCE public client) + Lambda@Edge(`us-east-1`, python3.12, viewer-request) | 엣지에서 RS256 JWKS 검증 + iss/aud/token_use; 자체 `/login` 폼(BFF `InitiateAuth`)이 `awsops_token` 발급, Hosted UI PKCE는 다크 폴백 | `auth.tf`, `edge-lambda/cognito_edge.py.tftpl`, `web/app/login/` |
-| Presentation (web BFF) | ECS Fargate `awsops-v2-web:3000`의 Next.js 14 thin-BFF(standalone arm64, 루트 경로 — basePath 없음) | UI + 가벼운 `/api/*`(`health`, `stream`, `db`, `jobs`, security/compliance)만 담당; 네트워크 메뉴 6종(`/network-flow` 라이브 NFM top-contributor + E2E 홉 경로, `/dns-query` Resolver/CoreDNS Logs Insights 집계, `/ip-addresses` ENI 기반 IP 인벤토리, `/vpc-endpoints` 유휴/정책/커버리지 분석, `/direct-connect` 커넥션/VIF 다운 감지 + BGP 라우트 가시성, `/network-firewall` 보호/로깅/용량 + 트래픽·드롭 분석)과 EKS 드릴다운(`/eks` 클러스터 목록 → `[cluster]` 탭 + nodes/pods/deployments/services/explorer/cost); 무거운 작업은 `POST /api/jobs`로 큐잉, 인라인 실행 금지 | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
-| Data | Aurora Serverless v2(`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-관리 시크릿) — node-pg 접근; flag-gated Steampipe 인벤토리 sync(`steampipe_enabled`) | 영속 앱 상태(`data/schema.sql` + `schema_migrations`, ULID 마이그레이션) — v1 `data/*.json`의 대체이지 라이브 Steampipe 대체가 아님 | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf` |
+| Presentation (web BFF) | ECS Fargate `awsops-v2-web:3000`의 Next.js 15 thin-BFF(standalone arm64, 루트 경로 — basePath 없음) | UI + 가벼운 `/api/*`(`health`, `stream`, `db`, `jobs`, security/compliance)만 담당; 네트워크 메뉴 6종(`/network-flow` 라이브 NFM top-contributor + E2E 홉 경로, `/dns-query` Resolver/CoreDNS Logs Insights 집계, `/ip-addresses` ENI 기반 IP 인벤토리, `/vpc-endpoints` 유휴/정책/커버리지 분석, `/direct-connect` 커넥션/VIF 다운 감지 + BGP 라우트 가시성, `/network-firewall` 보호/로깅/용량 + 트래픽·드롭 분석)과 EKS 드릴다운(`/eks` 클러스터 목록 → `[cluster]` 탭 + nodes/pods/deployments/services/explorer/cost); 무거운 작업은 `POST /api/jobs`로 큐잉, 인라인 실행 금지 | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
+| Data | Aurora Serverless v2(`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-관리 시크릿) — node-pg 접근; flag-gated Steampipe 인벤토리 sync(`steampipe_enabled`) — **쿼터 안전**(ADR-021): env 조절 Steampipe 플러그인 rate limiter, 거부 내성 SDK 수집기, 내용 보존형 `partial` 런(SDK sub-call 실패는 두 prune 단계 모두 스킵; unreachable-account partial은 도달 가능한 계정만 prune하고 해당 계정의 last-good 행은 보존), 내구성 타입별 freshness 원장(`last_success_at` run_token CAS·`unknown_attribute_count` 공개) | 영속 앱 상태(`data/schema.sql` + `schema_migrations`, ULID 마이그레이션) — v1 `data/*.json`의 대체이지 라이브 Steampipe 대체가 아님 | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf`, `scripts/v2/steampipe/sync_lambda.py` |
 | AI | AgentCore Runtime(Strands `agent/agent.py`) + 9 섹션 게이트웨이(8 AWS 도메인 + external-obs; ADR-004: 9 프로비저닝 / 9 라우트) + Memory + Code Interpreter; Bedrock Sonnet 5 / Opus 4.8 / Haiku 4.5; BFF-로컬 챗 라우트 — `aws-data`(LLM 생성 Steampipe SQL을 Steampipe Fargate에 라이브 실행, SELECT-only 가드 + 행 캡) + auto-collect 콜렉터 6종(`web/lib/collectors/`) — web 로컬 핸들러, AgentCore 게이트웨이 경유 아님 | 라이브 AWS 데이터 위의 read-only MCP 도구 에이전트; 멱등 boto3 provisioner; 설정 source of truth = SSM `/ops/awsops-v2/agentcore/*`. 설계: 9 섹션 에이전트 + 1 인시던트 오케스트레이터. 챗 섹션 16키 전부 활성(container/iac 포함): 9 게이트웨이 라우트 + aws-data + 콜렉터 6 로컬 | `ai.tf`, `scripts/v2/agentcore/`, `agent/`, `web/lib/aws-data.ts`, `web/lib/collectors/` |
 | Async Workers | SQS + ESM(킬스위치) → dispatcher Lambda(job_id 멱등) → Step Functions Standard `$.runtime` Choice → worker Lambda(짧음) 또는 `ecs:runTask.sync` Fargate(긺/OOM); status_updater + reaper(5분) | ledger-first `worker_jobs`; 워커가 OOM/크래시해도 web 가용성 무영향. 전부 `workers_enabled` 게이트 | `workers.tf`, `scripts/v2/workers/` |
 | Observability | monitoring 게이트웨이(CloudWatch/CloudTrail + Loki/Tempo/Mimir), external-obs 게이트웨이(Prometheus/ClickHouse 커넥터), SNS 진단 알림, 인시던트 웹훅 수신, K8sGPT 진단(모두 flag-gated) | read-only 원칙 위의 외부 메트릭·알림·진단 표면 | `notify.tf`, `incidents.tf`, `k8sgpt.tf` |
-| Security | ADR-005 동결(리메디에이션 substrate do-not-enable), ADR-015 시크릿 회전 자가치유(단일 범위 예외), 보안 findings + CIS 컴플라이언스 페이지, EKS Access Entry + AdminView 정책(read-only) | read-only 강제, 거버넌스된 예외, 컴플라이언스 이력 | `remediation.tf`, `secret-rotation.tf`, `eks.tf`, `web/app/security/`, `web/app/compliance/` |
+| Security | ADR-005 동결(리메디에이션 substrate do-not-enable), ADR-015 시크릿 회전 자가치유(단일 범위 예외), 보안 findings + CIS 컴플라이언스 페이지, EKS host Entry + AdminView; member role Entry + View and node-read RBAC (read-only) | read-only 강제, 거버넌스된 예외, 컴플라이언스 이력 | `remediation.tf`, `secret-rotation.tf`, `eks.tf`, `web/app/security/`, `web/app/compliance/` |
 
 ## Architecture Diagram
 
@@ -209,7 +210,7 @@ flowchart TB
   end
 
   subgraph WEB["Presentation (web BFF)"]
-    W["ECS Fargate awsops-v2-web:3000 (Next.js 14 thin-BFF, arm64)"]
+    W["ECS Fargate awsops-v2-web:3000 (Next.js 15 thin-BFF, arm64)"]
   end
 
   subgraph DATA["Data / 데이터"]
@@ -290,11 +291,12 @@ flowchart LR
 | `auth.tf` + `edge-lambda/` | Cognito User Pool/클라이언트/도메인 + Lambda@Edge(RS256, 템플릿 Python) |
 | `data.tf` + `data/schema.sql` + `migrations/` | Aurora Serverless v2 + 베이스라인 스키마 + ULID 마이그레이션 |
 | `workload.tf` | ECS 클러스터/서비스/태스크 정의(web) |
+| `ci-migrations.tf` | 기본 비활성 `ci_migrations_enabled`: private ARM64 마이그레이션 템플릿, 제한된 시크릿 IAM과 로그; 수동 또는 검증된 현재 소스 dev 웹 배포에서 실행하며 앱 서비스·스케줄러에서는 호출하지 않음 |
 | `ecr.tf` | 듀얼 티어 ECR(dev-private + prod-public) |
-| `ai.tf` | AgentCore ECR + IAM + 에이전트 Lambda 슬라이스 + SSM(21개 `agentcore_enabled`, 6개 `integrations_enabled` 게이트) |
+| `ai.tf` | AgentCore ECR + IAM + 에이전트 Lambda 슬라이스 + SSM(21개 `agentcore_enabled`, 6개 `integrations_enabled` 게이트). 기본 비활성 `ci_readiness_enabled`는 적용된 output으로 제한된 런타임 권한·데이터·모델 검증을 제어 |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate 워커(`workers_enabled`) |
-| `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView 정책 + endpoint/CA output |
-| `steampipe.tf` | warm Steampipe Fargate(FDW) + sync Lambda → Aurora 인벤토리(`steampipe_enabled`) |
+| `eks.tf` | Host-only `for_each onboard_eks_clusters` Access Entry + AdminView policy + endpoint/CA outputs; member registration is separate |
+| `steampipe.tf` | warm Steampipe Fargate(FDW) + sync Lambda → Aurora 인벤토리(`steampipe_enabled`) — 플러그인 rate limiter(env 조절) + freshness 원장; 데이터 흐름: [diagrams/inventory-freshness-dataflow.html](diagrams/inventory-freshness-dataflow.html) |
 | `notify.tf` | 진단 완료 SNS 토픽 + 구독 IAM + 관리자 전용 web 태스크 테스트 발송(동일 토픽 한정 Publish)(`diagnosis_notify_enabled`) |
 | `incidents.tf` | 인시던트 라이프사이클 webhook/상태(`incident_lifecycle_enabled`, ADR-006) |
 | `k8sgpt.tf` | K8sGPT 진단층 Bedrock 예산/리소스(`k8sgpt_enabled`) |

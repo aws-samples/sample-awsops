@@ -70,7 +70,7 @@ When SCP (Service Control Policy) or an IAM boundary blocks specific AWS APIs, o
 | `ce:GetCostAndUsage` | Cannot query Cost data |
 | `cloudwatch:GetMetricData` | Cannot query metrics/graphs |
 
-Because AWSops is read-only, blocked APIs simply render as empty for that item while everything else works. If you need the missing data, add read permission for that API. When a partial query is possible without permission changes, asking the AI assistant returns whatever data is available.
+A denied API read is incomplete evidence, not proof of an empty AWS resource set. The IAM-role query retries once without `attached_policy_arns`, but still performs `GetRole` and instance-profile lookups and may fail. Successful fallback refreshes base rows with the policy list unassessed; if both queries fail, last-good rows remain and the type is failed. Other reachability/write outcomes can still make the run partial or failed. Use `inventory_sync_hydrate_fallback.remedy` to distinguish confirmed capacity and permission problems; changing refill cannot fix an IAM/SCP denial. The user-MFA query has no role-policy fallback (ADR-010, 2026-09-02). Ask an operator to review necessary read permissions, or ask the AI assistant for a clearly scoped answer using the available data.
 
 ## Pages load slowly
 

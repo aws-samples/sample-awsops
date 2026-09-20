@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { renderValuesYaml, renderInstallSh, assertSafeName, assertSafeYamlKeys, DEFAULT_CHART_VERSION, type OpencostConfig } from './opencost';
 
 const baseCfg: OpencostConfig = {
@@ -97,6 +98,31 @@ describe('assertSafeYamlKeys', () => {
 });
 
 describe('renderInstallSh', () => {
+  it('guards the member account before kubeconfig or Helm can target a namesake host cluster', () => {
+    const sh = renderInstallSh({ cluster: 'shared', region: 'us-west-2', accountId: '222222222222' });
+    expect(sh).toContain('aws sts get-caller-identity --query Account --output text');
+    expect(sh).toContain('222222222222');
+    expect(sh).toContain('exit 1');
+    expect(sh.indexOf('get-caller-identity')).toBeLessThan(sh.indexOf('update-kubeconfig'));
+    expect(sh).toContain('--kube-context arn:aws:eks:us-west-2:222222222222:cluster/shared');
+  });
+
+  it('stops the generated member script under host credentials before kubeconfig or Helm', () => {
+    const script = renderInstallSh({ cluster: 'shared', region: 'us-west-2', accountId: '222222222222' });
+    const result = spawnSync('bash', ['-c', `
+      aws() { if [[ "$1" == "sts" ]]; then echo 111111111111; else echo unexpected-kubeconfig; fi; }
+      helm() { echo unexpected-helm; }
+      ${script}
+    `], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('account 222222222222');
+    expect(result.stdout).not.toContain('unexpected-');
+  });
+
+  it('rejects a malformed account in the generated account guard', () => {
+    expect(() => renderInstallSh({ cluster: 'shared', region: 'us-west-2', accountId: '222222222222;whoami' })).toThrow(/account/i);
+  });
+
   it('embeds the exact cluster + region in update-kubeconfig and the helm upgrade --install form', () => {
     const sh = renderInstallSh({ cluster: 'fsi-demo-cluster', region: 'ap-northeast-2' });
     expect(sh).toContain('set -euo pipefail');

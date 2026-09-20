@@ -1,7 +1,9 @@
 // OpenCost allocation read (v1 eks-container-cost parity) — queries the in-cluster OpenCost
 // service via the K8s service proxy (no ingress/port-forward needed). READ-ONLY.
 import { k8sGetPath, listInCluster } from './eks-incluster';
+import { estimateDailyParts } from '@/lib/cost-basis';
 import type { PodRow } from './eks-resources';
+import { eksReadFailure, type EksReadReason } from './eks-read-error';
 
 export interface PodCost {
   namespace: string; pod: string; node: string;
@@ -12,6 +14,7 @@ export interface AllocationResult {
   /** 'opencost' = measured 1d allocation; 'request-estimate' = requests × unit prices fallback. */
   source?: 'opencost' | 'request-estimate';
   message?: string;
+  reason?: EksReadReason;
   nodes?: { node: string; cpuCost: number; ramCost: number; totalCost: number }[];
   pods: PodCost[];
   namespaces: { name: string; value: number }[];
@@ -36,10 +39,11 @@ export async function getAllocation(cluster: string): Promise<AllocationResult> 
   try {
     body = await k8sGetPath(cluster, PROXY_PATH);
   } catch (e) {
+    const failure = eksReadFailure(e, 'opencost-allocation');
     // v1 parity: OpenCost unavailable → request-based estimate (pods' requests × unit prices).
     const est = await requestEstimate(cluster).catch(() => null);
     if (est) return est;
-    return { ...empty, message: e instanceof Error ? e.message : String(e) };
+    return { ...empty, ...failure };
   }
   try {
     const parsed = JSON.parse(body) as { data?: Array<Record<string, Record<string, unknown>>> };
@@ -91,14 +95,32 @@ export async function getAllocation(cluster: string): Promise<AllocationResult> 
       hasPv: pods.some((p) => p.pvCost > 0),
       hasGpu: pods.some((p) => p.gpuCost > 0),
     };
-  } catch {
-    return { ...empty, message: 'OpenCost 응답 파싱 실패' };
+  } catch (error) {
+    return { ...empty, ...eksReadFailure(error, 'opencost-allocation') };
   }
 }
 
-// Fargate-style unit prices (ap-northeast-2 on-demand) — the request-estimate fallback's basis.
-const VCPU_H = 0.04656;
-const GB_H = 0.00511;
+
+
+/** Pure per-pod estimate mapper (exported for tests — the MiB→GiB conversion lives HERE).
+ *  PodRow.memRequest is MiB (parseMem); /1e9 as if bytes zeroed the RAM cost entirely
+ *  (a 1 GiB request became ~1e-6 GB; the basis-panel review exposed it). GiB semantics
+ *  (/1024) match the ecs_task deriver and the panel's documented formula; the estimator
+ *  CALLS the shared formula (lib/cost-basis.ts) — lockstep by construction. */
+export function estimatePodCost(p: { namespace?: string; name?: string; node?: string; cpuRequest?: number; memRequest?: number }): PodCost {
+  const cores = Number(p.cpuRequest) || 0;
+  const memGb = (Number(p.memRequest) || 0) / 1024;
+  const parts = estimateDailyParts(cores, memGb);
+  return {
+    namespace: p.namespace ?? '',
+    pod: p.name ?? '',
+    node: p.node ?? '',
+    cpuCost: r2(parts.cpu),
+    ramCost: r2(parts.ram),
+    networkCost: 0, pvCost: 0, gpuCost: 0,
+    totalCost: r2(parts.total),
+  };
+}
 
 /** OpenCost-unavailable fallback: per-pod daily cost from resource REQUESTS × unit prices. */
 async function requestEstimate(cluster: string): Promise<AllocationResult | null> {
@@ -106,20 +128,7 @@ async function requestEstimate(cluster: string): Promise<AllocationResult | null
   if (!rows.length) return null;
   const pods = rows
     .filter((p) => (p as { status?: string }).status !== 'Succeeded')
-    .map((p) => {
-      const cores = Number((p as { cpuRequest?: number }).cpuRequest) || 0;
-      const memGb = (Number((p as { memRequest?: number }).memRequest) || 0) / 1e9;
-      const daily = cores * VCPU_H * 24 + memGb * GB_H * 24;
-      return {
-        namespace: (p as { namespace?: string }).namespace ?? '',
-        pod: (p as { name?: string }).name ?? '',
-        node: (p as { node?: string }).node ?? '',
-        cpuCost: r2(cores * VCPU_H * 24),
-        ramCost: r2(memGb * GB_H * 24),
-        networkCost: 0, pvCost: 0, gpuCost: 0,
-        totalCost: r2(daily),
-      };
-    })
+    .map((p) => estimatePodCost(p as { namespace?: string; name?: string; node?: string; cpuRequest?: number; memRequest?: number }))
     .sort((a, b) => b.totalCost - a.totalCost);
   const byNs = new Map<string, number>();
   for (const p of pods) byNs.set(p.namespace, (byNs.get(p.namespace) ?? 0) + p.totalCost);

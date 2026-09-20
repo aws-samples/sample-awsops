@@ -12,10 +12,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-pods.png" alt="EKS Pods" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 统计卡片
-- **Total Pods**: 全部 Pod 数量（青色）
+- **Total Pods**: 所选范围内观测到的 Pod 数量（青色）
 - **Running**: 正在运行的 Pod 数量（绿色）
 - **Pending**: 等待中的 Pod 数量（橙色）
 - **Failed**: 失败的 Pod 数量（红色）
@@ -46,7 +50,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 
 1. 在侧边栏点击 **Compute > K8s > Pods**
-2. 在统计卡片中查看整体 Pod 状态分布
+2. 通过统计卡查看在所选范围内观测到的资源。
 3. 如有 Pending 或 Failed Pod，调查其原因
 4. 在表格中确认特定 Pod 的节点分布
 
@@ -83,7 +87,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体状况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Nodes](../compute/eks-nodes) - 查看节点资源
 - [EKS Explorer](../compute/eks-explorer) - 详细资源探索
 - [EKS Container Cost](../compute/eks-container-cost) - Pod 成本分析

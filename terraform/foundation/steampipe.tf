@@ -114,7 +114,7 @@ resource "aws_iam_role_policy" "steampipe_task" {
   # APIs don't support resource-level scoping. Far narrower than ReadOnlyAccess.
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = concat([{
       Effect = "Allow"
       Action = [
         "ec2:Describe*", "sts:GetCallerIdentity",
@@ -140,15 +140,8 @@ resource "aws_iam_role_policy" "steampipe_task" {
         "cloudtrail:Describe*", "cloudtrail:List*", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:GetInsightSelectors",
         "route53:List*", "route53:Get*"
       ]
-      Resource = "*"
-      },
-      # Cross-account read-only fan-out: the aws.spc connections assume each target account's
-      # AWSopsReadOnlyRole (1st-party: no ExternalId; 3rd-party: trust enforces it). Scoped to the
-      # role NAME (route.ts hard-pins it) — never an arbitrary role.
-      {
-        Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
+      Resource  = "*"
+      Condition = local.runtime_read_condition
       },
       # M1: IAM database auth — generate a short-lived signed token to connect to Aurora as the
       # dedicated least-privilege `steampipe_reader` role (SELECT-only on accounts/account_regions;
@@ -158,7 +151,12 @@ resource "aws_iam_role_policy" "steampipe_task" {
         Effect   = "Allow"
         Action   = ["rds-db:connect"]
         Resource = "arn:aws:rds-db:${var.region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_rds_cluster.aurora.cluster_resource_id}/steampipe_reader"
-    }]
+        }], var.inventory_host_only ? [] : [{
+        # Explicit runtime scope pins target roles; empty retains non-profile legacy behavior.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = jsondecode(length(local.runtime_target_role_arns) > 0 ? jsonencode(local.runtime_target_role_arns) : jsonencode("arn:aws:iam::*:role/AWSopsReadOnlyRole"))
+    }])
   })
 }
 
@@ -178,10 +176,10 @@ resource "aws_ecs_task_definition" "steampipe" {
   }
   container_definitions = jsonencode([{
     name         = "steampipe"
-    image        = "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}"
+    image        = var.steampipe_image_digest != null ? "${aws_ecr_repository.steampipe[0].repository_url}@${var.steampipe_image_digest}" : "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}"
     essential    = true
     portMappings = [{ containerPort = 9193, protocol = "tcp" }]
-    environment = [
+    environment = concat([
       { name = "AWS_REGION", value = var.region },
       # boot-time aws.spc generator reaches Aurora to read accounts ⋈ account_regions via IAM
       # database auth (M1): AURORA_USER is a dedicated least-privilege role name — not a secret —
@@ -190,12 +188,22 @@ resource "aws_ecs_task_definition" "steampipe" {
       { name = "AURORA_ENDPOINT", value = aws_rds_cluster.aurora.endpoint },
       { name = "AURORA_DATABASE", value = aws_rds_cluster.aurora.database_name },
       { name = "AURORA_USER", value = "steampipe_reader" },
-    ]
+      { name = "STEAMPIPE_AWS_MAX_CONCURRENCY", value = tostring(var.steampipe_aws_max_concurrency) },
+      { name = "STEAMPIPE_AWS_BUCKET_SIZE", value = tostring(var.steampipe_aws_bucket_size) },
+      { name = "STEAMPIPE_AWS_FILL_RATE", value = tostring(var.steampipe_aws_fill_rate) },
+      ], var.inventory_host_only ? [
+      { name = "INVENTORY_HOST_ONLY", value = "true" },
+      ] : [], var.inventory_host_only || length(local.runtime_target_account_ids) > 0 ? [
+      { name = "EXPECTED_HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
+      ] : [], length(local.runtime_target_account_ids) > 0 ? [
+      { name = "INVENTORY_TARGET_ACCOUNT_IDS", value = jsonencode(local.runtime_target_account_ids) },
+    ] : [])
     secrets = [
       { name = "STEAMPIPE_DATABASE_PASSWORD", valueFrom = aws_secretsmanager_secret.steampipe[0].arn },
     ]
     healthCheck = {
-      command  = ["CMD-SHELL", "steampipe query \"select 1\" >/dev/null 2>&1 || exit 1"]
+      # `steampipe query` can auto-start PostgreSQL outside the supervisor lock.
+      command  = ["CMD", "python3", "/app/healthcheck.py"]
       interval = 30
       timeout  = 10
       # retries=5 (150s consecutive-failure tolerance) — NOT just the initial startup case.
@@ -257,14 +265,20 @@ resource "aws_cloudwatch_metric_alarm" "steampipe_down" {
 
 # ---- sync Lambda (VPC, pg8000 layer; queries Steampipe + writes Aurora) ----
 resource "terraform_data" "inv_pg8000_build" {
-  count            = local.sp
-  triggers_replace = filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt")
+  count = local.sp
+  triggers_replace = [
+    filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci_tf_assets.py"),
+  ]
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      rm -rf ${path.module}/.build/inv_layer
-      mkdir -p ${path.module}/.build/inv_layer/python
-      python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/inv_layer/python
+      if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
+      else
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py build-layer --layer inv_layer
+      fi
     EOT
   }
 }
@@ -316,16 +330,16 @@ resource "aws_iam_role_policy" "inv_sync" {
       { Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = aws_lambda_function.inv_sync[0].arn },
       # SDK-sourced cloudfront_vpc_origin sync (Steampipe omits VpcOriginConfig): read-only CloudFront
       # list/get for VPC origins + per-distribution config. Read-only; no mutation.
-      { Effect = "Allow", Action = ["cloudfront:ListVpcOrigins", "cloudfront:GetVpcOrigin", "cloudfront:ListDistributions", "cloudfront:GetDistributionConfig"], Resource = "*" },
+      { Effect = "Allow", Action = ["cloudfront:ListVpcOrigins", "cloudfront:GetVpcOrigin", "cloudfront:ListDistributions", "cloudfront:GetDistributionConfig"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced s3_public_access sync (Steampipe aws_s3_bucket public-access columns fail the whole
       # query on one denied bucket): read-only per-bucket public-access flags. Read-only; no mutation.
-      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging", "s3:GetBucketTagging"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced alb_listener_rule sync (Steampipe rule table needs a per-listener qualifier):
       # read-only ELBv2 describe for LBs/listeners/rules. Read-only; no mutation.
-      { Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules"], Resource = "*" },
+      { Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced opensearch_serverless sync (pinned Steampipe plugin lacks the AOSS table):
       # read-only collection list/detail. Read-only; no mutation.
-      { Effect = "Allow", Action = ["aoss:ListCollections", "aoss:BatchGetCollection"], Resource = "*" }
+      { Effect = "Allow", Action = ["aoss:ListCollections", "aoss:BatchGetCollection"], Resource = "*", Condition = local.runtime_read_condition }
       # NOTE (M2, round 5): the "0-row account" reachability probe queries the account's OWN
       # Steampipe connection directly (data path) instead of doing an independent sts:AssumeRole
       # from this Lambda — an AssumeRole only proves the IAM trust policy is intact, not that the
@@ -344,9 +358,21 @@ resource "aws_lambda_function" "inv_sync" {
   handler          = "sync_lambda.lambda_handler"
   filename         = data.archive_file.inv_sync_src[0].output_path
   source_code_hash = data.archive_file.inv_sync_src[0].output_base64sha256
-  timeout          = 120
-  memory_size      = 512
-  layers           = [aws_lambda_layer_version.inv_pg8000[0].arn]
+  # 420s Lambda wall: primary/fallback statement caps are 180s/90s, and each socket
+  # timeout adds 15s. The primary IAM query lists both instance profiles and attached
+  # policies per role and reads GetRole-backed fields. The fallback omits only attached
+  # policies; its remaining hydrates can fail too. At refill 2/burst 4, 180s supplies
+  # 364 limiter admissions, not 364 complete roles. See the quota/staleness runbook
+  # for cold lower bounds and why observed fast reads do not establish cold capacity.
+  # AURORA_RESERVE_S=120 clamps every query against the remaining Lambda time;
+  # reachability probes have an additional 30s cap. Both query failures preserve
+  # last-good rows; a successful fallback still reports unknown policy attributes.
+  # Remedy is cause-specific: reviewed refill tuning for capacity, permission review
+  # for a confirmed iam:ListAttachedRolePolicies denial. Neither guarantees success.
+  timeout                        = 420
+  memory_size                    = 512
+  layers                         = [aws_lambda_layer_version.inv_pg8000[0].arn]
+  reserved_concurrent_executions = var.steampipe_sync_reserved_concurrency
   vpc_config {
     subnet_ids         = local.private_subnet_ids
     security_group_ids = [aws_security_group.service.id]
@@ -363,6 +389,13 @@ resource "aws_lambda_function" "inv_sync" {
   depends_on = [aws_cloudwatch_log_group.inv_sync, aws_iam_role_policy_attachment.inv_sync_vpc]
 }
 
+resource "aws_lambda_function_event_invoke_config" "inv_sync" {
+  count                        = local.sp
+  function_name                = aws_lambda_function.inv_sync[0].function_name
+  maximum_event_age_in_seconds = 900
+  maximum_retry_attempts       = 0
+}
+
 # ---- scheduled sync (EventBridge rate(15m) -> ec2) ----
 resource "aws_cloudwatch_event_rule" "inv_sync" {
   count               = local.sp
@@ -375,6 +408,10 @@ resource "aws_cloudwatch_event_target" "inv_sync" {
   target_id = "inv-sync-ec2"
   arn       = aws_lambda_function.inv_sync[0].arn
   input     = jsonencode({ type = "all" })
+  retry_policy {
+    maximum_event_age_in_seconds = 900
+    maximum_retry_attempts       = 0
+  }
 }
 resource "aws_lambda_permission" "inv_sync_events" {
   count         = local.sp
@@ -398,3 +435,7 @@ resource "aws_iam_role_policy" "task_inv_sync_invoke" {
 
 output "inv_sync_function" { value = one(aws_lambda_function.inv_sync[*].function_name) }
 output "steampipe_ecr_uri" { value = one(aws_ecr_repository.steampipe[*].repository_url) }
+output "inventory_task_role_arn" {
+  description = "Exact host Steampipe collector principal for target-account trust; null when inventory is disabled."
+  value       = one(aws_iam_role.steampipe_task[*].arn)
+}

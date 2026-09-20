@@ -5,7 +5,7 @@ vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => list
 
 const dep = (over: Record<string, unknown> = {}) => ({ name: 'opencost', namespace: 'opencost', ready: '1/1', upToDate: 1, available: 1, age: '2d', ...over });
 
-beforeEach(() => listInCluster.mockReset());
+beforeEach(() => { listInCluster.mockReset(); });
 
 describe('pickOpencostDeployment', () => {
   it('finds opencost/opencost, ignores others', async () => {
@@ -17,6 +17,24 @@ describe('pickOpencostDeployment', () => {
 });
 
 describe('detectOpencostInstall', () => {
+  it.each(['error', 'string', 'object'])('sanitizes a swallowed upstream %s in the degraded result', async kind => {
+    const sentinel = 'arn:aws:iam::222222222222:role/private-role ExternalId=private-external SessionToken=private-session';
+    listInCluster.mockRejectedValue(kind === 'error' ? Object.assign(new Error(sentinel), { stack: sentinel, $metadata: { requestId: sentinel } })
+      : kind === 'string' ? sentinel : { message: sentinel, toString: () => sentinel });
+    const { detectOpencostInstall } = await import('./opencost-status');
+    expect(await detectOpencostInstall('c')).toEqual({
+      installed: false, ready: false, deployment: null, failureReason: 'upstream-error', reason: 'OpenCost status is unavailable.',
+    });
+  });
+  it('keeps a typed safe scope reason in the existing degraded shape', async () => {
+    const { EksScopeError } = await import('./eks-context');
+    listInCluster.mockRejectedValue(new EksScopeError('EKS account is disabled', 403));
+    const { detectOpencostInstall } = await import('./opencost-status');
+    expect(await detectOpencostInstall('c')).toEqual({
+      installed: false, ready: false, deployment: null, failureReason: 'denied', reason: 'EKS account is disabled',
+    });
+  });
+
   it('installed + ready when the opencost deployment is healthy', async () => {
     listInCluster.mockResolvedValue([dep({ ready: '1/1', available: 1 })]);
     const { detectOpencostInstall } = await import('./opencost-status');
@@ -37,6 +55,7 @@ describe('detectOpencostInstall', () => {
     const { detectOpencostInstall } = await import('./opencost-status');
     const r = await detectOpencostInstall('c');
     expect(r.installed).toBe(false);
-    expect(r.reason).toContain('403');
+    expect(r.failureReason).toBe('upstream-error');
+    expect(r.reason).toBe('OpenCost status is unavailable.');
   });
 });

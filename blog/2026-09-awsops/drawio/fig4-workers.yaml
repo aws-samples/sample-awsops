@@ -1,0 +1,74 @@
+# Topology reference only. Edit the .drawio source; build.py validates and exports it.
+canonical_source: fig4-workers.drawio
+title: 비동기 워커와 공통 작업 기록
+grouping: execution and state-recording flow
+components:
+- id: web
+  label: AWS Fargate / Web BFF
+- id: sqs
+  label: Amazon SQS
+- id: dispatcher
+  label: 디스패처 / Lambda
+- id: sfn
+  label: AWS Step / Functions
+- id: wl
+  label: AWS Lambda / 짧은 작업
+- id: wf
+  label: AWS Fargate 워커 / 긴 작업
+- id: timer
+  label: Amazon EventBridge / 5분 주기
+- id: reaper
+  label: 정리 작업(reaper) / Lambda
+- id: aurora
+  label: Amazon Aurora / 공통 작업 기록
+- id: status
+  label: 실패 상태 갱신 / Lambda
+flows:
+- id: e0
+  from: web
+  to: aurora
+  label: ① queued 기록
+- id: e1
+  from: web
+  to: sqs
+  label: ② 큐 전달
+- id: e2
+  from: sqs
+  to: dispatcher
+  label: ③ ESM
+- id: e3
+  from: dispatcher
+  to: sfn
+  label: ④ 실행 시작
+- id: e4
+  from: sfn
+  to: wl
+  label: Lambda
+- id: e5
+  from: sfn
+  to: wf
+  label: AWS Fargate / (.sync)
+- id: e6
+  from: sfn
+  to: status
+  label: Catch
+- id: e7
+  from: status
+  to: aurora
+  label: failed 기록
+- id: e8
+  from: timer
+  to: reaper
+  label: 주기 호출
+- id: e9
+  from: reaper
+  to: aurora
+  label: 지연 작업 보정
+- id: e10
+  from: wl
+  to: aurora
+  label: running / succeeded
+- id: e11
+  from: wf
+  to: aurora
+  label: running / succeeded

@@ -2,10 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
 const getAllowedClusters = vi.fn();
 const listInCluster = vi.fn();
+vi.mock('@/lib/accounts', () => ({ listAccounts: async () => [
+  { accountId: '111111111111', isHost: true, enabled: true },
+  { accountId: '222222222222', isHost: false, enabled: true },
+] }));
+vi.mock('@/lib/account-regions', () => ({
+  listAccountRegions: async () => [],
+  listScanScope: async () => [{ accountId: '222222222222', regions: ['*'] }],
+}));
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/eks-registry', () => ({ getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a) }));
 vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => listInCluster(...a) }));
 import { GET } from './route';
+import { EksScopeError } from '@/lib/eks-context';
 
 const req = () => new Request('http://x/api/eks/fleet', { headers: { cookie: 'awsops_token=t' } });
 const NODE = { name: 'n1', status: 'Ready', roles: 'worker', version: 'v1.30', instanceType: 'm5.large', zone: 'a', age: '1d', cpuCapacity: 4, cpuAllocatable: 3.9, memCapacity: 16000, memAllocatable: 15000 };
@@ -13,6 +22,8 @@ const POD = { name: 'p1', namespace: 'default', status: 'Running', node: 'n1', r
 const EVENT = { kind: 'Pod', object: 'default/p1', reason: 'BackOff', message: 'm', count: 3, lastSeen: '5m', lastSeenTs: 1000 };
 
 beforeEach(() => {
+  vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+  vi.stubEnv('AWS_REGION', 'ap-northeast-2');
   verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset();
   verifyUser.mockResolvedValue({ sub: 'u' });
   getAllowedClusters.mockResolvedValue(new Set(['c1']));
@@ -55,6 +66,40 @@ describe('GET /api/eks/fleet', () => {
     const down = body.clusters.find((c: { name: string }) => c.name === 'down');
     expect(down.reachable).toBe(false);
     expect(down.counts.nodes).toBe(0);
+    expect(down.error).toBe('Kubernetes resource read unavailable');
+  });
+  it.each([
+    new Error('arn:aws:iam::222222222222:role/private ExternalId=private-id sessionToken=private-token'),
+    { status: 403, message: 'ExternalId=private-id sessionToken=private-token' },
+    'sessionToken=private-token',
+  ])('sanitizes upstream fleet failures without implying an empty reachable cluster: %#', async error => {
+    listInCluster.mockRejectedValue(error);
+    const response = await GET(req());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'Kubernetes resource read unavailable' });
+    expect(JSON.stringify(body)).not.toMatch(/private|ExternalId|sessionToken/);
+  });
+  it('preserves a trusted scope reason in a failed cluster', async () => {
+    listInCluster.mockRejectedValue(new EksScopeError('EKS region is not enabled for this account', 403));
+    const body = await (await GET(req())).json();
+    expect(body.clusters[0]).toMatchObject({ reachable: false, error: 'EKS region is not enabled for this account', reason: 'denied' });
+  });
+  it.each([
+    [{ statusCode: 403 }, 'denied'],
+    [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ code: 'ECONNREFUSED' }, 'unreachable'],
+  ])('classifies failed cluster reads from metadata %j', async (metadata, reason) => {
+    listInCluster.mockRejectedValue(Object.assign(new Error('private-role private-session'), metadata));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const response = await GET(req());
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.clusters[0]).toMatchObject({ reachable: false, reason });
+      expect(body.clusters[0].error).toMatch(/^Kubernetes resource read unavailable/);
+      expect(JSON.stringify([body, warn.mock.calls])).not.toContain('private');
+    } finally { warn.mockRestore(); }
   });
   it('an events-only failure keeps the cluster reachable with empty events', async () => {
     listInCluster.mockImplementation(async (_c: string, kind: string) => {
@@ -74,10 +119,19 @@ describe('GET /api/eks/fleet', () => {
     expect(body.clusters[0].events).toHaveLength(25);
     expect(body.clusters[0].events[0].lastSeenTs).toBe(29);
   });
-  it('registry failure degrades to an empty fleet, not 500', async () => {
+  it('registry failure is reported instead of implying a successfully empty fleet', async () => {
     getAllowedClusters.mockRejectedValue(new Error('aurora down'));
     const res = await GET(req());
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     expect((await res.json()).clusters).toEqual([]);
+  });
+  it('only reads the selected member, preserving identity for a same-name host cluster', async () => {
+    const member = 'arn:aws:eks:ap-northeast-2:222222222222:cluster/c1';
+    getAllowedClusters.mockResolvedValue(new Set(['c1', member]));
+    listInCluster.mockResolvedValue([]);
+    const body = await (await GET(new Request('http://x/api/eks/fleet?account=222222222222'))).json();
+    expect(body.clusters).toHaveLength(1);
+    expect(body.clusters[0]).toMatchObject({ id: member, name: 'c1', accountId: '222222222222', region: 'ap-northeast-2' });
+    expect(listInCluster.mock.calls.every(call => call[0] === member)).toBe(true);
   });
 });

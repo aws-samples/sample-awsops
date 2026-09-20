@@ -43,9 +43,10 @@ export const KIND_LABELS: Partial<Record<MapKind, string>> = {
   nlb: 'NLB', rds: 'RDS', nat: 'NAT', ingress: 'Ingress', service: 'Service', pod: 'Pod', node: 'Node',
 };
 
-/** Legend chips for the kinds present in a graph (gap-audit L248). */
+/** Legend chips for the kinds + status dots present in a graph (gap-audit L248). */
 export function MapLegend({ graph, theme }: { graph: MapGraph; theme: 'light' | 'dark' }) {
   const kinds = [...new Set(graph.nodes.map((n) => n.kind))];
+  const statuses = [...new Set(graph.nodes.map((n) => n.status).filter((s): s is NonNullable<MapNode['status']> => s != null))];
   return (
     <>
       {kinds.map((k) => {
@@ -60,6 +61,13 @@ export function MapLegend({ graph, theme }: { graph: MapGraph; theme: 'light' | 
           </span>
         );
       })}
+      {/* status-dot meanings — the same STATUS_DOT colors the cards render (gap L248). */}
+      {statuses.map((s) => (
+        <span key={s} className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: STATUS_DOT[s] }} />
+          {s}
+        </span>
+      ))}
     </>
   );
 }

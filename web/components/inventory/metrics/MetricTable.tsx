@@ -136,9 +136,9 @@ export default function MetricTable<T>({
             value={facets[c.key] ?? ''}
             onChange={(e) => setFacets((prev) => ({ ...prev, [c.key]: e.target.value }))}
             className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600"
-            aria-label={`${c.label} ${tt('필터')}`}
+            aria-label={`${tt(c.label)} ${tt('필터')}`}
           >
-            <option value="">{c.label}: {tt('전체')}</option>
+            <option value="">{tt(c.label)}: {tt('전체')}</option>
             {(facetValues[c.key] ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         ))}
@@ -160,7 +160,7 @@ export default function MetricTable<T>({
             {columns.map((c) => (
               <th key={c.key} className={`${TH} cursor-pointer select-none hover:text-ink-600`} title={c.title} onClick={() => cycle(c.key)}>
                 <span className="inline-flex items-center gap-1">
-                  {c.label}
+                  {tt(c.label)}
                   {sortKey === c.key && dir === 'asc' && <ArrowUp size={11} />}
                   {sortKey === c.key && dir === 'desc' && <ArrowDown size={11} />}
                   {sortKey !== c.key && <ArrowUpDown size={11} className="opacity-30" />}

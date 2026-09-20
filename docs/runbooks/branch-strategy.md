@@ -35,7 +35,8 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 - `dev` is the **default branch** — PRs (internal and external) target it by default.
 - `main` accepts PRs **only from `dev`**, enforced mechanically by
-  `guard-main-prs.yml` on top of the `protect-main` ruleset (PR required, no
+  `guard-main-prs.yml` on top of the `protect-main-dev` ruleset (PR required, required
+  `AI Code Review` and `Merge Verify` checks, no
   force-push/deletion). `dev` carries the same ruleset protections.
 
 ## Branch flow / 브랜치 흐름
@@ -45,11 +46,82 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    `<user>.awsops-dev.whchoi.net`. When ready, PR into `dev`. PR checks:
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
-2. **`dev`** — integration branch; every push auto-deploys the DEV stack
-   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
+2. **`dev`** — integration branch; pushes touching web code, CHANGELOG or migrations auto-deploy the DEV stack
+   via `deploy-web.yml` (build → readonly receipt/ECR proof → matching private migration →
+   guarded digest promotion → exact ECS/image verification → mandatory full runtime gate, including login/DB).
+   The applied private migration capability and initialized ledger are required; every pending file must pass the
+   forced automatic SQL subset. Bootstrap or unsupported SQL needs standalone migration first.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
-   terraform apply likewise (saved-plan, dispatch, per-branch environment).
+   Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
+   Terraform plan also enters that environment for private publication: its publisher
+   assumes the deployer role under an S3/KMS-only session policy. Main publication
+   waits for production approval; the separate automatic plan job remains read-only.
+
+## Oversized promotion review
+
+The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
+and up to 32 supported HEAD images under the existing byte/codec bounds. An
+accumulated dev-to-main promotion can exceed these bounds even if each feature PR
+was independently reviewed. It stays blocked; rerunning unchanged input cannot
+restore missing scope, and historical feature-review comments are not proof of
+complete review of the current promotion HEAD.
+
+For the `samples` repository, **dev is the default branch**. Verify the live setting
+with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before rollout.
+An ordinary reviewed PR merged into dev therefore updates the trusted workflow for
+subsequent reviews, including main-targeted promotions; the workflow need not reach
+main first. Do not assume this activation path for another repository whose default
+branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
+must authorize the workflow change under the existing protections.
+
+Before continuing such a promotion, implement and review complete bounded batching
+or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
+exists yet. The same protected workflow must then review the full promotion scope
+and integration changes on its current HEAD. Do not bypass required checks, alter
+main to hide changes, or publish the release tag while this prerequisite is pending.
+Smaller promotion intervals can prevent future accumulation, but cannot repair the
+already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).
+
+## Version and tag on main promotion
+
+Here `samples` means the Git remote for `aws-samples/sample-awsops`; verify its URL
+with `git remote -v` before fetching or pushing.
+
+Every `dev → main` release increments the application version in a reviewed PR
+into `dev` before the promotion is merged. Keep `web/package.json`, both root
+version fields in `web/package-lock.json`, the root README badge, and the first
+released English/Korean CHANGELOG headings aligned. Move the existing Unreleased
+feature entries under the new dated version and leave an empty Unreleased section;
+do not duplicate feature bullets. The sidebar reads CHANGELOG, while migration
+release fallback reads `web/package.json`. Existing migration `-- since:` headers
+are immutable and must not be retagged for a release bump. New migrations should
+declare the intended next application release before their first merge. Historical
+ledger labels are not an ordered application-release history: disclose mismatched
+labels in CHANGELOG rather than changing already-merged SQL or ledger checksums.
+This includes legacy 2.x-line labels and header-less files: the latter use the
+apply-time APP_VERSION override or package fallback, while existing rows remain
+unchanged. The release tag/commit and SQL checksums identify the release contents;
+an app_version equality filter does not.
+
+Choose the next application version from this release line; imported legacy v1
+history and the separate `scripts/v2` tooling package are not its version source.
+The accumulated promotion was initially prepared as `0.10.0` but was not promoted
+or tagged. Final `0.10.1` preparation consolidates that content and subsequent review
+hardening into one release section; it does not invent a published `0.10.0` release.
+The promotion PR, aligned package/changelog metadata and eventual main-merge tag
+identify the release. A dated preparation heading alone is not publication evidence.
+Future releases choose their increment from the actual changes.
+
+After the promotion's latest HEAD passes complete AI review and required CI, merge
+`dev → main` with a merge commit to retain ancestry between the standing branches.
+Read the promotion PR's actual merge SHA, fetch it, verify it is reachable from
+`samples/main`, and confirm its package and changelog versions. Create an annotated
+`v<version>` tag on that merge SHA and push that tag explicitly to `samples`.
+Check remote/local tag-name availability first; never force or move an existing
+release tag. Do not tag an unmerged dev tip or create the tag while required checks
+are blocked. A Git tag is not production deployment approval; the production
+workflow/environment gates above still apply.
 
 ## External (fork) PRs / 외부 PR
 
@@ -62,31 +134,70 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
   contributors" so unknown contributors' runs need a maintainer click.
 - PR content and review text are untrusted data for CI and AI review alike.
 
+Fork PRs intentionally do **not** receive the canonical `AI Code Review` check; a
+skipped job must not impersonate a completed review. A green test/CodeQL run alone
+does not make a fork PR eligible to merge under the review policy.
+
+Maintainer path:
+
+1. Review the contributor's patch as data, especially workflow/build-hook changes,
+   before putting it on a same-repository branch. Do not blindly mirror executable
+   CI changes into a branch that can receive repository secrets.
+2. Create a maintainer-owned topic branch and an internal PR targeting `dev`, linking
+   the original fork PR. The trusted automatic review runs against the internal PR's
+   exact HEAD; use the normal full AI/CI checks, not a recovery label.
+3. Merge the internal PR only after those checks pass, then close the original fork
+   PR with the integration link. A changed internal HEAD requires fresh review.
+
 (외부 fork PR은 시크릿·OIDC 토큰을 받지 못해 배포/AWS 접근이 불가하고, plan 잡은
 same-repo가 아니면 시작하지 않습니다. main 대상 PR은 head가 이 리포의 `dev`가 아니면
 guard 체크가 실패합니다. 첫 기여자의 CI 실행은 관리자 승인 후에만 동작합니다.)
+
+Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스트·CodeQL 통과만으로
+머지할 수 없습니다. 유지관리자는 패치, 특히 CI·빌드 훅 변경을 먼저 검토한 뒤 내부
+토픽 브랜치와 `dev` 대상 PR을 만들고 원본 PR을 연결합니다. 내부 PR의 최신 HEAD가
+전체 AI·CI 검사를 통과하면 그 PR을 머지하고 원본 fork PR에 통합 결과를 연결해
+닫습니다. 이 경로에서 복구 라벨이나 검사 우회는 사용하지 않습니다.
 
 ## Domain / deployment map / 도메인·배포 맵
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
-| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
-| Dev | `dev` | dev stack, `awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
+| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto web roll on configured pushes, including migrations; DDL/authenticated verification are operator-managed, so schema drift can block the app |
+| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | guarded build → full pending-SQL admission on initialized DB → private migration → verified web roll; bootstrap/unsupported SQL needs standalone migration first; [older-image rollback](web-release.md) runs no migrations; DNS requires explicit dispatch |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
+
+Dev's repo-level name/zone overrides feed console and plan consistently; main/preview ignore
+them and retain their own tfvars. PR/push Terraform plans are read-only advisory artifacts,
+never apply-eligible, and dev advisory preflight does no live certificate/SAN validation.
+For each authorized unpublished/same-domain dev rollout stage, set `domain_rollout=true`
+on the full plan dispatch; apply derives scoping from saved `ci_domain_rollout` metadata.
+Ordinary full DNS/Cloud Map changes still require explicit DNS permission. This does not
+authorize changing or deleting the old dev/parent records. Follow the
+[domain rollout runbook](dev-domain-rollout.md); preview names do not move with the dev override.
+
+dev 저장소 이름/존 변수는 console과 plan에 함께 적용되며 main/preview는 자체 tfvars를 유지합니다.
+PR/push는 적용 불가 참고 계획이고 dev 실시간 인증서 검증도 하지 않습니다. 승인된 미게시/동일
+도메인 전환은 모든 full plan에서 `domain_rollout=true`를 저장하며 apply에서 범위를 바꾸지 않습니다.
+일반 Cloud Map/DNS도 승인이 필요하고 이전/상위 DNS 삭제나 preview 이동 권한은 포함하지 않습니다.
 
 ### Production domain decision / 프로덕션 도메인 결정 (PENDING)
 
-Provision and deploy the production stack **without a custom domain first** — it
-serves on its CloudFront default domain (the `public_url` terraform output; every
-workflow smoke-tests that output, so attaching a domain later changes no CI). After
-reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
+Provisioning **without publishing service DNS** still needs a configured hostname and
+trusted certificates for both TLS hops. `public_url` is the service URL, while
+`cloudfront_domain` is the connection destination used by
+[Deploy Web's smoke step](../../.github/workflows/deploy-web.yml) to preserve Host/SNI/TLS
+before A publication. `/api/health` proves liveness only. Dev releases additionally require login/DB, a fresh known CloudFront record, complete post-marker success with known counts and zero unknown attributes for every current catalog type, web-role SSM/AgentCore/model access and both worker completions. Missing, partial, failed, stale or unknown evidence blocks release.
+After reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
 
 - `awsops.whchoi.net` is **currently in use by an existing deployment** — attaching
   it here is a cutover decision for the domain's owner, not a default.
 - Attaching later = tfvars domain + ACM cert (us-east-1 for CloudFront) + alias →
   `terraform plan` / dispatch apply. Nothing else moves; `public_url` follows.
 
-(프로덕션은 우선 도메인 없이 배포해 CloudFront 기본 도메인(`public_url`)으로 확인한 뒤
+(프로덕션은 서비스 DNS를 게시하지 않아도 설정 호스트와 TLS 인증서가 필요합니다.
+`public_url`은 서비스 URL이며 CloudFront 연결 주소를 사용한 smoke가 Host/SNI/TLS를 보존합니다.
+생존 확인과 DB·인증 검증을 마친 뒤
 `awsops.whchoi.net` 부착 여부를 결정합니다 — 현재 다른 배포가 사용 중인 도메인이므로
 부착은 소유자의 컷오버 결정입니다. 부착 = tfvars 도메인 + us-east-1 ACM + alias →
 plan/apply.)
@@ -139,7 +250,13 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` ends green, smoke against
-  `awsops-dev.whchoi.net/api/health`.
+- Push to `dev` changing web code, CHANGELOG or `terraform/foundation/migrations/**`:
+  `deploy-web.yml` builds ARM64, proves the selected receipt/ECR digest before matching-source private
+  migration on an initialized DB with an admitted pending set, then promotes that digest and verifies exact ECS/image
+  deployment followed by mandatory full runtime readiness. Apply `ci_migrations_enabled=true` with
+  `CI_MIGRATIONS_ENABLED_DEV=true` and the runtime prerequisites first; the workflow cannot provision them.
+  Manual `collect-runtime.yml` supports existing-web preparation or full collection verification.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
+
+For a missing ledger or unsupported pending SQL (`DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views), run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`. Inspect that exact run for **SUCCESS**, source SHA, migration-container exit `0` and reader sync as described in [web release](web-release.md), then run `gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`. Automatic runs never initialize a missing ledger or exempt historical pending files; standalone migrations retain locks/checksums, and contract cutovers need the documented coordination.

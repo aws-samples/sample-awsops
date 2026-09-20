@@ -45,7 +45,7 @@ def build_analysis_prompt(lang="English"):
 
 
 def extract_field(content, field):
-    m = re.search(rf"^{re.escape(field)}:\s*(.+)$", content or "", re.MULTILINE)
+    m = re.search(rf"^{re.escape(field)}:[ \t]*(.+)$", content or "", re.MULTILINE)
     return m.group(1).strip() if m else None
 
 
@@ -56,7 +56,8 @@ def extract_category(content):
 
 def extract_confidence(content):
     raw = extract_field(content, "CONFIDENCE")
-    return raw if raw in _VALID_CONFIDENCE else "medium"
+    # The persisted/write-back enum has no unknown value; absent evidence must use its lowest tier.
+    return raw if raw in _VALID_CONFIDENCE else "low"
 
 
 def parse_rca(content):

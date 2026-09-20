@@ -1,0 +1,56 @@
+# Topology reference only. Edit the .drawio source; build.py validates and exports it.
+canonical_source: fig2a-interactive.drawio
+title: 운영자 접근과 대화형 AI
+grouping: functional flow; no network boundaries
+components:
+- id: cf
+  label: Amazon CloudFront / + Lambda@Edge
+- id: alb
+  label: 내부 ALB
+- id: web
+  label: AWS Fargate / Web
+- id: cognito
+  label: Amazon Cognito
+- id: chat_web
+  label: AWS Fargate / Web (채팅)
+- id: runtime
+  label: AgentCore / Runtime
+- id: gateway
+  label: AgentCore / Gateway
+- id: mcp
+  label: AWS Lambda / 읽기 전용 도구
+- id: chat_bedrock
+  label: Amazon Bedrock
+flows:
+- id: access_0
+  from: browser
+  to: cf
+  label: HTTPS
+- id: access_1
+  from: cf
+  to: alb
+  label: VPC Origin / HTTPS:443
+- id: access_2
+  from: alb
+  to: web
+  label: HTTP:3000
+- id: auth
+  from: web
+  to: cognito
+  label: 로그인
+- id: chat_0
+  from: chat_web
+  to: runtime
+  label: 요청 · SSE 응답
+- id: chat_1
+  from: runtime
+  to: gateway
+  label: MCP
+- id: chat_2
+  from: gateway
+  to: mcp
+  label: 도구 호출
+- id: chat_3
+  from: runtime
+  to: chat_bedrock
+  label: 추론

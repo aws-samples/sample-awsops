@@ -69,7 +69,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose }: {
             createdAt={detail.node.createdAt}
           />
           <NodePodsSection pods={pods} error="" />
-          <NodeEniSection nodeName={nodeName} />
+          <NodeEniSection nodeName={nodeName} cluster={cluster} />
         </>
       )}
     </DetailPanel>

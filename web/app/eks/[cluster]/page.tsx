@@ -22,6 +22,8 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import EksDiagnosis from '@/components/eks/EksDiagnosis';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 
 type Row = Record<string, unknown>;
 type Tab = 'nodes' | 'pods' | 'deployments' | 'services' | 'events' | 'diagnosis' | 'cost';
@@ -52,11 +54,17 @@ interface DiagnosisFinding {
   llm_explanation: string | null;
   llm_model: string | null;
 }
+// Client-local API contract: the server classifier imports Node-only modules.
+type ReadFailureReason = 'denied' | 'unreachable' | 'upstream-error' | 'timeout';
 interface DiagnosisResult {
   enabled: boolean;
   stale: boolean;
   operator_detected?: boolean;
+  operator_missing?: boolean;
   findings: DiagnosisFinding[];
+  reason?: ReadFailureReason;
+  errorReason?: ReadFailureReason;
+  message?: string;
 }
 
 // Per-kind columns (match the lib's normalized rows). Kinds with a `namespace`
@@ -119,8 +127,26 @@ const NAMESPACED: Set<Tab> = new Set(['pods', 'deployments', 'services']);
 export default function EksClusterPage() {
   const { tt } = useI18n();
   const params = useParams();
-  const cluster = String(params.cluster);
+  const [scope, , ready] = useActiveScope();
+  // Next14 client navigation can retain percent encoding. Decode exactly once;
+  // raw ARNs/names are unchanged, and invalid values must never reach child fetches.
+  let cluster: string | null = null;
+  try {
+    if (typeof params.cluster === 'string') {
+      const decoded = decodeURIComponent(params.cluster);
+      if (parseEksClusterId(decoded)) cluster = decoded;
+    }
+  } catch {
+    // Malformed escapes/UTF-8 are an invalid route, not a render-time exception.
+  }
+  if (!cluster) {
+    return <div role="alert" className="px-8 py-8 text-[13px] text-rose-600">{tt('유효하지 않은 EKS 클러스터 ID입니다.')}</div>;
+  }
+  return ready ? <ScopedEksCluster key={`${scopeParams(scope)}/${cluster}`} cluster={cluster} /> : null;
+}
 
+function ScopedEksCluster({ cluster }: { cluster: string }) {
+  const { tt } = useI18n();
   const [tab, setTab] = useState<Tab>('nodes');
   const [rows, setRows] = useState<Row[] | null>(null);
   const [nodeAgg, setNodeAgg] = useState<NodeResourceAgg[] | null>(null);
@@ -148,21 +174,24 @@ export default function EksClusterPage() {
     setErr('');
     try {
       // ADR-035: the diagnosis endpoint returns {enabled,stale,findings:[...]},
-      // NOT {rows}. 503 (flag off) → degrade-safe disabled state, no thrown error.
+      // NOT {rows}. Only the explicit flag-off payload identifies a disabled feature.
       if (tab === 'cost') return; // CostPanel fetches its own data
       if (tab === 'diagnosis') {
         const r = await fetch(`/api/eks/${encodeURIComponent(cluster)}/k8sgpt`);
         if (!fresh()) return;
-        if (r.status === 503) {
+        const diagBody = await r.json().catch(() => null) as (DiagnosisResult & { status?: string }) | null;
+        if (!fresh()) return;
+        if (r.status === 503 && diagBody?.enabled === false
+          && diagBody.message === 'k8sgpt diagnosis disabled' && !diagBody.reason && !diagBody.errorReason && diagBody.status !== 'error') {
           setDiag({ enabled: false, stale: true, findings: [] });
           return;
         }
-        if (!r.ok) {
-          const d = await r.json().catch(() => null);
-          throw new Error(d?.message ? String(d.message) : String(r.status));
+        // A failed CRD read can degrade to HTTP 200 + operator_detected:false. Its
+        // classification takes priority over the absent/disabled/empty presentations.
+        if (!r.ok || diagBody?.reason || diagBody?.errorReason || diagBody?.message || !Array.isArray(diagBody?.findings)) {
+          throw new Error(diagBody?.message || 'K8sGPT diagnosis is unavailable.');
         }
-        const diagBody = (await r.json()) as DiagnosisResult;
-        if (fresh()) setDiag(diagBody);
+        setDiag(diagBody);
         return;
       }
       // Nodes tab also needs pods for the per-node request aggregation — fire both
@@ -211,7 +240,8 @@ export default function EksClusterPage() {
     setQuery('');
     setNs('전체');
     setSelected(null);
-    load();
+    void load();
+    return () => { ++loadSeqRef.current; };
   }, [load]);
 
   const allRows = useMemo(() => rows ?? [], [rows]);
@@ -285,14 +315,17 @@ export default function EksClusterPage() {
   }, [selectedNode, selectedNodeAgg, selectedNodePods]);
 
   const isDiagnosis = tab === 'diagnosis';
-  // ADR-035 Rule 9: disabled (503/enabled:false) or zero findings → quiet,
-  // degrade-safe state. No operator detected reads the same.
-  const diagDisabled = !!diag && (!diag.enabled || diag.findings.length === 0);
+  // Only successful reads can establish absence or a scan with no findings.
+  const diagEmpty = !diag ? null
+    : !diag.enabled ? 'K8sGPT 진단 비활성 (read-only)'
+      : diag.operator_missing === true ? 'K8sGPT operator 미감지 (read-only)'
+        : diag.operator_detected === false ? 'K8sGPT operator 상태를 확인할 수 없습니다 (read-only)'
+        : diag.findings.length === 0 ? 'K8sGPT 진단 결과 없음 (read-only)' : null;
 
   return (
     <>
       <PageHeader
-        title={cluster}
+        title={eksClusterLabel(cluster)}
         subtitle={
           isDiagnosis
             ? 'EKS · K8sGPT 진단 (read-only) · AI 가설은 검증 후 조치'
@@ -326,9 +359,9 @@ export default function EksClusterPage() {
                     last scan stale (&gt;5m)
                   </div>
                 )}
-                {diagDisabled ? (
+                {diagEmpty ? (
                   <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
-                    {tt('진단 비활성 또는 K8sGPT operator 미감지 (read-only)')}
+                    {tt(diagEmpty)}
                   </div>
                 ) : (
                   <DataTable
@@ -485,7 +518,7 @@ export default function EksClusterPage() {
             createdAt={selectedNode.createdAt}
           />
           <NodePodsSection pods={selectedNodePods} error={nodePodsErr} />
-          <NodeEniSection nodeName={selectedNode.name} />
+          <NodeEniSection nodeName={selectedNode.name} cluster={cluster} />
         </DetailPanel>
       ) : (
         <DetailPanel

@@ -12,6 +12,10 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-container-cost.png" alt="EKS Container Cost" />
 
+:::info 账户、区域与传输范围
+成本列表查询所选账户和区域范围内已连接的集群，并区分同名集群。部分采集、上限或失败提示表示结果不完整，请缩小范围后重试。独立的 **NFM Pod 传输量** 视图仅支持宿主账户的部署区域，成员账户或其他区域会显示为不支持。此限制与 OpenCost 提供的 Network 成本无关。 使用 View 权限的成员角色读取 OpenCost API 时，另需仅针对 `opencost` 命名空间中 `opencost:9003` 服务的 `services/proxy` GET 绑定。权限失败不代表尚未安装。
+:::
+
 ## 主要功能
 
 ### 数据源显示
@@ -29,7 +33,7 @@ import Screenshot from '@site/src/components/Screenshot';
 以饼图显示各命名空间的每日成本分布
 
 ### Node Daily Cost + Pod Count 图表
-以双轴条形图显示各节点的每日成本和 Pod 数量
+显示各节点的每日成本和 Pod 数量。在 v2 中以**按序列自适应缩放的分组条**（成本轨道 + Pod 数轨道，标签带真实数值/单位）替代双轴 — 位于 `/eks/cost` 节点成本表上方，按成本取前 15。pod→node 归属不完整的集群，其节点的 Pod 值显示为 '—'（显示的数字可能低估，因此不作为确定值渲染）。
 
 ### Pods 标签页
 | 列 | 说明 |

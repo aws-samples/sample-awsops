@@ -114,7 +114,7 @@ IAM（Identity and Access Management）页面可一目了然地查看 AWS 账户
 | `roleDetail` | 点击时的动态 SQL — 包含信任策略 + 实例配置文件 |
 
 :::info 规避 SCP 阻断列
-`mfa_enabled`、`attached_policy_arns` 已从列表查询中排除（应对组织 SCP 阻断 `ListMFADevices`、`ListAttachedUserPolicies` 的环境）。MFA 统计在单独的 `summary` 查询中汇总。
+`iam_user.mfa_enabled` 和 `iam_role.attached_policy_arns` 需要额外的 AWS 读取。角色查询失败时，只移除 `attached_policy_arns` 并重试一次；`GetRole` 和实例配置文件查询仍然执行，因此重试也可能失败。只有重试成功才更新基础角色行，策略列表仍标记为未确认（`unknown_attribute_count`），S3 访问部分显示“未同步”。两次查询都失败时，该类型记为 failed，跳过清理并保留最近成功的行。最终状态还取决于正常的账户可达性和写入结果。请查看 `inventory_sync_hydrate_fallback.remedy`：已确认的容量问题需要经审查的 refill 调整，IAM/SCP 拒绝则需要检查 `iam:ListAttachedRolePolicies` 权限。调整速度不能解决权限拒绝（ADR-010，2026-09-02 修订）。用户 MFA 查询没有此回退，MFA 统计通过单独的 summary 查询计算。
 :::
 
 ## 相关页面

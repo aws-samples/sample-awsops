@@ -8,7 +8,7 @@ vi.mock('@/lib/eks-incluster', async () => {
 });
 
 const req = (url: string, cookie = 'awsops_token=t') => new Request(url, { headers: { cookie } });
-const ctx = (cluster = 'fsi-demo-cluster') => ({ params: { cluster } });
+const ctx = (cluster = 'fsi-demo-cluster') => ({ params: Promise.resolve({ cluster }) });
 
 beforeEach(() => {
   verifyUser.mockReset();
@@ -65,6 +65,6 @@ describe('GET /api/eks/[cluster]/incluster', () => {
     const { GET } = await import('./route');
     const res = await GET(req('http://x/api/eks/fsi-demo-cluster/incluster?kind=pods'), ctx());
     expect(res.status).toBe(502);
-    expect((await res.json()).message).toBe('forbidden');
+    expect((await res.json()).message).toBe('EKS resources are unavailable.');
   });
 });

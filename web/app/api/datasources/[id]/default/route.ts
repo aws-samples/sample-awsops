@@ -11,10 +11,11 @@ function json(obj: unknown, status: number) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 }
 
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ id: string }> }) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ error: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ error: 'admin access required' }, 403);
+  const params = await pendingParams;
   const id = Number(params?.id);
   if (!Number.isInteger(id) || id <= 0) return json({ error: 'valid id required' }, 400);
   try {

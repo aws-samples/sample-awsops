@@ -8,9 +8,9 @@ reconnects "the topology data we built in Aurora" to AgentCore — the bridge th
 
 Tools (all read-only — SELECT only; no AWS mutation, no arbitrary SQL):
   - find_unused_resources : orphan TGs, empty CloudFront origins, dead/idle LBs, unattached EBS …
-  - query_inventory       : list/filter synced resources by type, including ecs_service
+  - query_inventory       : list/filter synced resources by type (+ per-type freshness block)
   - get_topology          : topology_nodes/edges graph (nodes+edges, matches /api/graph contract)
-  - inventory_summary     : counts by type + sync freshness
+  - inventory_summary     : counts by type + per-type freshness (healthy|degraded|stale|unavailable)
 
 Aurora access uses the **RDS Data API** (boto3 `rds-data`, bundled in the Lambda runtime) — no VPC
 attachment and no pg8000 packaging needed (the agent Lambdas are zipped from raw .py with no pip
@@ -21,9 +21,31 @@ pure detection logic (detect_unused) is unit-testable with fixtures (no DB, no b
 RDS Data API로 읽어 미사용 리소스·토폴로지 질의에 답한다. 전부 읽기 전용(SELECT만).
 """
 import json
+import math
 import os
+import re
+import time
+from datetime import datetime, timezone
 
 from cross_account import resolve_tool_name
+
+
+DEFAULT_INVENTORY_STALE_AFTER_MINUTES = 30
+
+
+def _inventory_stale_after_minutes(env=None):
+    """Read the non-secret stale threshold without letting malformed env crash the tool."""
+    source = os.environ if env is None else env
+    try:
+        value = int(source.get(
+            "INVENTORY_STALE_AFTER_MINUTES",
+            str(DEFAULT_INVENTORY_STALE_AFTER_MINUTES),
+        ))
+    except (TypeError, ValueError):
+        return DEFAULT_INVENTORY_STALE_AFTER_MINUTES
+    if value < 1 or value > 1440:
+        return DEFAULT_INVENTORY_STALE_AFTER_MINUTES
+    return value
 
 
 # ── Resource types the topology/unused detection reads (mirrors graph-store TYPE_TO_KEY) ──────────
@@ -34,7 +56,33 @@ TOPOLOGY_TYPES = ["cloudfront", "alb", "nlb", "target_group", "ec2", "ebs", "sec
 # and unattached EIP/ENI are out of scope for the Aurora-backed detector (live-API only).
 COVERAGE_NOTE = ("Derived from the synced Aurora inventory (inventory_resources). Elastic IPs, "
                  "detached ENIs, and ELB listeners are not synced yet, so those are out of scope "
-                 "here. Freshness = the latest inventory sync; see inventory_summary().")
+                 "here. query_inventory and inventory_summary carry a per-type freshness block "
+                 "(healthy | degraded | stale | unavailable) classified from the durable "
+                 "last_success_at and the oldest captured_at of current rows; degraded also covers "
+                 "succeeded runs with unknown attribute coverage (unknown_attribute_count null or > 0). For this "
+                 "tool's data, call inventory_summary().")
+
+TRACE_TOPOLOGY_NOTE = (
+    "Host-scoped trace topology from observed spans and service-graph metrics. "
+    "Edge confidence is 'observed' with count metadata and 'unknown' without it, not a probability. "
+    "Legacy normalized volume values are not evidence counts. meta.spanCount counts observed span "
+    "relationships; meta.metricCount is an aggregate metric count. These are separate evidence "
+    "counts, not complete traffic volume. collection describes the latest attempt and snapshot "
+    "freshness; retained nodes alone do not establish that collection succeeded or is current. "
+    "Queue identities are telemetry claims, not verified AWS accounts, regions or queue inventory. "
+    "claimedAccountId/claimedRegion are rederived only from parsed destination ARNs, including "
+    "retained rows; non-ARN destinations and absent qualifiers have null claims, never caller "
+    "account/region fallbacks. identityProvenance is always telemetry_claim, even when an ARN "
+    "names the host; queues never bridge into inventory. Shared destination ARNs join across "
+    "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
+)
+
+MATERIALIZED_TOPOLOGY_NOTE = (
+    "Host-scoped saved topology. selection and truncation describe this bounded response; "
+    "collection describes source/publication evidence. Retained or zero-node graphs do not "
+    "establish successful collection or absent inventory. readOutcome and snapshotConsistent=false "
+    "disclose failed flow/infra verification; an absent consistency field is not a guarantee."
+)
 
 
 # ── Pure detection logic (fixture-testable; no DB) ───────────────────────────────────────────────
@@ -147,48 +195,247 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
 
     Matches the /api/graph contract:
       nodes = [{id, kind, label, meta}]
-      edges = [{source, target, rel, confidence}]
+      edges = [{source, target, rel, confidence, meta?}] (trace meta: spanCount/metricCount)
 
-    If resource_id is given, scopes to that node + its 1-hop neighbourhood (filtered in Python
-    after the full-graph fetch so we avoid RDS Data API array-binding complexity).
-    JSONB `meta` is returned as a dict by formatRecordsAs=JSON; _parse_meta handles the rare
-    string case defensively.
+    Resolve an exact canonical ID first, then an exact raw ID (everything after the first
+    colon). The sanitized reader view deliberately omits meta.resourceId. Ambiguous raw IDs
+    never select a graph. Select the root and its one-hop neighbours BEFORE limiting nodes.
+    Return (nodes, edges, selection/truncation metadata); collection evidence belongs to
+    the caller. Limits describe this response, not source collection completeness.
     """
+    limit = max(1, min(int(limit), 500))
+    edge_limit = 1000
+    selection = {"status": "all"}
+    truncation = {"nodes": False, "edges": False, "node_limit": limit, "edge_limit": edge_limit}
+    metadata = {"selection": selection, "truncation": truncation}
+    class_param = {"name": "cls", "value": {"stringValue": cls}}
+    root = None
+    if resource_id is not None:
+        selection.update(status="not_found", requested_id=resource_id, resolved_id=None)
+        resolve_params = [class_param, {"name": "rid", "value": {"stringValue": resource_id}}]
+        matches = _execute(
+            "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
+            "AND id = :rid LIMIT :match_limit",
+            params=resolve_params + [{"name": "match_limit", "value": {"longValue": 1}}])
+        matched_by = "canonical"
+        if not matches:
+            matches = _execute(
+                "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
+                "AND strpos(id, ':') > 0 AND substring(id FROM strpos(id, ':') + 1) = :rid "
+                "ORDER BY id LIMIT :match_limit",
+                params=resolve_params + [{"name": "match_limit", "value": {"longValue": 3}}])
+            matched_by = "raw"
+            if len(matches) > 1:
+                selection.update(status="ambiguous", candidate_ids=[r["id"] for r in matches[:2]],
+                                 candidates_truncated=len(matches) > 2)
+                return [], [], metadata
+        if not matches:
+            return [], [], metadata
+        root = matches[0]["id"]
+        selection.update(status="resolved", resolved_id=root, matched_by=matched_by)
+
+    node_params = [class_param, {"name": "node_limit", "value": {"longValue": limit + 1}}]
+    predicate, node_order = "", "id"
+    if root is not None:
+        node_params.append({"name": "root", "value": {"stringValue": root}})
+        predicate = (
+            " AND (n.id = :root OR EXISTS (SELECT 1 FROM topology_edges e "
+            "WHERE e.account_id = 'self' AND e.class = :cls "
+            "AND ((e.source = :root AND e.target = n.id) OR "
+            "(e.target = :root AND e.source = n.id))))"
+        )
+        node_order = "(n.id = :root) DESC, n.id"
     node_rows = _execute(
-        "SELECT id, kind, label, meta FROM topology_nodes "
-        "WHERE account_id = 'self' AND class = :cls LIMIT " + str(int(min(limit, 1000))),
-        params=[{"name": "cls", "value": {"stringValue": cls}}])
+        "SELECT id, kind, label, meta FROM topology_nodes n "
+        "WHERE account_id = 'self' AND class = :cls" + predicate
+        + " ORDER BY " + node_order + " LIMIT :node_limit", params=node_params)
+    truncation["nodes"] = len(node_rows) > limit
+    node_rows = node_rows[:limit]
+    node_ids = {r["id"] for r in node_rows if r.get("id")}
+
+    # Row-to-JSON lookup also works against the pre-migration view, which has no meta column.
+    edge_columns = "source, target, rel, confidence" + (
+        ", to_jsonb(e)->'meta' AS meta" if cls == "trace" else "")
+    # A bounded JSON-encoded ID set lets both endpoint predicates share a scalar bind. Restrict
+    # BOTH endpoints in SQL, so a large graph never becomes an unbounded full-edge response.
+    edge_params = [class_param,
+                   {"name": "node_ids", "value": {"stringValue": json.dumps(sorted(node_ids))}},
+                   {"name": "edge_limit", "value": {"longValue": edge_limit + 1}}]
+    edge_order = "source, target, rel"
+    if root is not None:
+        edge_params.append({"name": "root", "value": {"stringValue": root}})
+        edge_order = "(source = :root OR target = :root) DESC, " + edge_order
     edge_rows = _execute(
-        "SELECT source, target, rel, confidence FROM topology_edges "
-        "WHERE account_id = 'self' AND class = :cls",
-        params=[{"name": "cls", "value": {"stringValue": cls}}])
+        "SELECT " + edge_columns + " FROM topology_edges e "
+        "WHERE account_id = 'self' AND class = :cls "
+        "AND source IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+        "AND target IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+        "ORDER BY " + edge_order + " LIMIT :edge_limit", params=edge_params)
+    truncation["edges"] = len(edge_rows) > edge_limit
+    edge_rows = edge_rows[:edge_limit]
+    if truncation["nodes"] and not truncation["edges"]:
+        # Count no rows: one existence result tells us whether the node cap omitted an
+        # applicable edge. Both endpoints must exist; dangling records are not graph edges.
+        omitted_params = edge_params[:2] + [
+            {"name": "omission_limit", "value": {"longValue": 1}}]
+        omitted_scope = ""
+        if root is not None:
+            omitted_scope = " AND (e.source = :root OR e.target = :root)"
+            omitted_params.append({"name": "root", "value": {"stringValue": root}})
+        omitted = _execute(
+            "SELECT EXISTS (SELECT 1 FROM topology_edges e "
+            "JOIN topology_nodes s ON s.account_id = e.account_id AND s.class = e.class AND s.id = e.source "
+            "JOIN topology_nodes t ON t.account_id = e.account_id AND t.class = e.class AND t.id = e.target "
+            "WHERE e.account_id = 'self' AND e.class = :cls" + omitted_scope
+            + " AND NOT (e.source IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+            "AND e.target IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb)))) "
+            "LIMIT :omission_limit) AS omitted", params=omitted_params)
+        if len(omitted) != 1 or type(omitted[0].get("omitted")) is not bool:
+            raise RuntimeError("Topology edge coverage could not be verified")
+        truncation["edges"] = omitted[0]["omitted"]
 
     def _parse_meta(m):
         if isinstance(m, dict):
             return m
         if isinstance(m, str) and m:
             try:
-                return json.loads(m)
-            except Exception:
+                parsed = json.loads(m)
+                return parsed if isinstance(parsed, dict) else {}
+            except ValueError:
                 return {}
         return {}
 
     nodes = [{"id": r["id"], "kind": r["kind"], "label": r["label"],
               "meta": _parse_meta(r.get("meta"))} for r in node_rows if r.get("id")]
-    edges = [{"source": r["source"], "target": r["target"],
-              "rel": r["rel"], "confidence": r["confidence"]}
-             for r in edge_rows if r.get("source") and r.get("target")]
+    if cls == "trace":
+        for node in nodes:
+            if node["kind"] != "queue":
+                continue
+            meta = node["meta"].copy()
+            # Re-derive before/after migration: stored claim fields may name the reporter.
+            destination = meta.get("destination")
+            arn = re.fullmatch(
+                r"arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):([0-9]{12}):\S+",
+                destination.strip(),
+            ) if isinstance(destination, str) else None
+            for key in ("accountId", "region", "infra_ref"):
+                meta.pop(key, None)
+            meta["claimedAccountId"] = arn[2] if arn else None
+            meta["claimedRegion"] = (arn[1] or None) if arn else None
+            meta["identityProvenance"] = "telemetry_claim"
+            node["meta"] = meta
+    edges = []
+    for row in edge_rows:
+        if row.get("source") not in node_ids or row.get("target") not in node_ids:
+            continue
+        edge = {"source": row["source"], "target": row["target"], "rel": row["rel"],
+                "confidence": "unknown" if cls == "trace" else row["confidence"]}
+        if cls == "trace":
+            # Legacy snapshots have no counts. Do not fabricate a count from old confidence values.
+            meta = _parse_meta(row.get("meta"))
+            edge["meta"] = {
+                key: meta[key] for key in ("spanCount", "metricCount")
+                if key in meta and type(meta[key]) in (int, float) and meta[key] >= 0
+                and (isinstance(meta[key], int) or math.isfinite(meta[key]))
+            }
+            if edge["meta"]:
+                edge["confidence"] = "observed"
+        edges.append(edge)
 
-    if resource_id:
-        neighbor_ids = {resource_id}
-        for e in edges:
-            if e["source"] == resource_id or e["target"] == resource_id:
-                neighbor_ids.add(e["source"])
-                neighbor_ids.add(e["target"])
-        nodes = [n for n in nodes if n["id"] in neighbor_ids]
-        edges = [e for e in edges if e["source"] in neighbor_ids and e["target"] in neighbor_ids]
+    return nodes, edges, metadata
 
-    return nodes, edges
+
+def _fetch_trace_collection(cls="trace"):
+    """Read graph-state evidence through the sanitized view; trace remains the default.
+
+    DB/permission errors deliberately propagate, just like the topology reads. An absent relation
+    or state row means unknown; a failed query must never certify a retained graph.
+    """
+    unknown = {"status": "unknown", "stale": True, "attempted_at": None,
+               "captured_at": None, "sources": [],
+               **({"evidenceKind": "inventory"} if cls != "trace" else {})}
+    # Probe the same search-path relation we actually read (the sql_reader view). Deployment may
+    # precede either the state-table migration or its reader-view projection. No public fallback,
+    # and no permission/connection error is caught or reclassified as an absent schema.
+    relation = _execute("SELECT to_regclass('topology_graph_state')::text AS state_relation")
+    if not relation or relation[0].get("state_relation") is None:
+        return unknown
+    rows = _execute(
+        "SELECT status, attempted_at, captured_at, details FROM topology_graph_state "
+        "WHERE account_id = 'self' AND class = :cls LIMIT 1",
+        params=[{"name": "cls", "value": {"stringValue": cls}}],
+    )
+    if not rows:
+        return unknown
+    row = rows[0]
+    details = row.get("details")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            details = None
+    valid_details = isinstance(details, dict) and isinstance(details.get("sources"), list)
+    details = details if valid_details else {"sources": []}
+    status = row.get("status")
+    if status not in ("ok", "empty", "partial", "unavailable", "error"):
+        status = "unknown"
+    if not valid_details and status not in ("error", "unavailable"):
+        status = "unknown"
+
+    # Same cadence policy as web/lib/graph-state.ts: two rebuild intervals, at least 15 minutes.
+    try:
+        interval = float(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS", "0"))
+    except ValueError:
+        interval = 0
+    max_age_minutes = max(15, interval * 2) if math.isfinite(interval) else 15
+    captured = None
+    try:
+        raw = row.get("captured_at")
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        captured = stamp.replace(tzinfo=timezone.utc).timestamp() if stamp.tzinfo is None else stamp.timestamp()
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        pass  # missing/invalid snapshot time is stale, never replaced with the current clock
+    stale = (
+        captured is None or captured > time.time() or time.time() - captured > max_age_minutes * 60
+        or status in ("unknown", "error", "unavailable") or details.get("retainedPrevious") is True
+        or details.get("metadataTruncated") is True
+    )
+    if cls != "trace":
+        details = {**details, "evidenceKind": "inventory"}
+        sources = details.get("publishedSources")
+        stale = stale or not isinstance(sources, list) or not sources
+        for source in sources if isinstance(sources, list) else []:
+            if not isinstance(source, dict):
+                stale = True
+                continue
+            if type(source.get("itemCount")) is not int or source["itemCount"] < 0:
+                stale = True
+                continue
+            clocks = [source.get("lastSuccessAtMs")]
+            if source["itemCount"] > 0 or source.get("capturedAtMs") is not None:
+                clocks.append(source.get("capturedAtMs"))
+            if ((source.get("status") == "empty" and source["itemCount"] != 0)
+                    or (source.get("status") == "ok" and source["itemCount"] == 0)
+                    or ("reasons" in source and
+                        (not isinstance(source["reasons"], list) or len(source["reasons"]) > 0))):
+                stale = True
+            stale = stale or source.get("producerStatus") != "succeeded" or source.get("status") not in ("ok", "empty") or any(
+                type(clock) not in (int, float) or not math.isfinite(clock) or clock <= 0
+                or clock > time.time() * 1000
+                or time.time() * 1000 - clock > _inventory_stale_after_minutes() * 60_000
+                for clock in clocks)
+    return {**details, "status": status, "stale": bool(stale),
+            "attempted_at": row.get("attempted_at"), "captured_at": row.get("captured_at")}
+
+
+def _inventory_graph_collection(cls):
+    try:
+        return _fetch_trace_collection(cls)
+    except Exception:
+        # Preserve readable last-good rows without exposing SQL/provider/credential errors.
+        return {"status": "error", "stale": True, "attempted_at": None, "captured_at": None,
+                "sources": [], "evidenceKind": "inventory",
+                "readOutcome": "state_read_failed", "snapshotConsistent": False}
 
 
 # ── Aurora access via the RDS Data API (lazy + injectable; boto3 is in the Lambda runtime) ─────────
@@ -268,7 +515,7 @@ def _fetch_by_type(types):
     return out
 
 
-def _fetch_one_type(rtype, limit):
+def _fetch_one_type(rtype, limit, resource_id=None):
     """Backs `query_inventory`, the one tool where the model picks `rtype` — so unlike
     `_fetch_by_type` (called only with the fixed TOPOLOGY_TYPES set), this can be asked about a type
     with no PROJECTIONS entry.
@@ -282,16 +529,108 @@ def _fetch_one_type(rtype, limit):
     way) does not fix the incompleteness by itself; the honesty fix is the `limited` flag the caller
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
-    rows = _execute("SELECT " + _projected_select(rtype) + " AS data FROM inventory_resources "
-                    "WHERE account_id = 'self' AND resource_type = :rt LIMIT " + str(int(limit)),
-                    params=[{"name": "rt", "value": {"stringValue": rtype}}])
+    params = [{"name": "rt", "value": {"stringValue": rtype}}]
+    predicate, projection = "", _projected_select(rtype)
+    if resource_id is not None:
+        predicate = " AND resource_id = :rid"
+        params.append({"name": "rid", "value": {"stringValue": resource_id}})
+        projection, limit = "jsonb_build_object('id', resource_id)", 1
+    rows = _execute("SELECT " + projection + " AS data FROM inventory_resources "
+                    "WHERE account_id = 'self' AND resource_type = :rt" + predicate
+                    + " ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
+                    params=params)
     return [_coerce(r.get("data")) for r in rows]
 
 
-def _sync_freshness():
-    rows = _execute("SELECT resource_type, status, finished_at, row_count FROM inventory_sync_runs "
-                    "WHERE account_id = 'self' ORDER BY resource_type")
+def _sync_freshness(resource_type=None):
+    """Return threshold-classified freshness per type using bound Data API parameters.
+
+    Current rows use their oldest captured_at so a partial refresh cannot hide preserved stale
+    rows behind newer rows. When no rows exist, the durable last_success_at keeps a genuine
+    zero-row success visible across later running/failed/partial attempts.
+
+    A succeeded run with unknown coverage (unknown_attribute_count null or > 0 — unmeasured or
+    denied attribute reads) reports 'degraded', not 'healthy': this must not block pruning
+    or last_success_at, but the reader must not be told the sweep saw everything either.
+    """
+    stale_after = _inventory_stale_after_minutes()
+    params = [{
+        "name": "stale_after_minutes",
+        "value": {"longValue": stale_after},
+    }]
+    type_filter = ""
+    if resource_type is not None:
+        type_filter = " WHERE classified.resource_type = :rt"
+        params.append({"name": "rt", "value": {"stringValue": resource_type}})
+
+    rows = _execute(
+        "WITH types AS ("
+        "SELECT resource_type FROM inventory_sync_runs WHERE account_id = 'self' "
+        "UNION "
+        "SELECT resource_type FROM inventory_resources WHERE account_id = 'self'"
+        "), resource_counts AS ("
+        "SELECT resource_type, COUNT(*)::integer AS current_count, "
+        "MIN(captured_at) AS oldest_captured_at FROM inventory_resources "
+        "WHERE account_id = 'self' GROUP BY resource_type"
+        "), per_type AS ("
+        "SELECT types.resource_type, runs.status, runs.finished_at, runs.row_count, "
+        "runs.last_success_at, runs.last_success_row_count, "
+        "runs.unknown_attribute_count, "
+        "COALESCE(resources.current_count, 0) AS current_count, "
+        "resources.oldest_captured_at "
+        "FROM types "
+        "LEFT JOIN inventory_sync_runs runs "
+        "ON runs.account_id = 'self' AND runs.resource_type = types.resource_type "
+        "LEFT JOIN resource_counts resources "
+        "ON resources.resource_type = types.resource_type"
+        "), classified AS ("
+        "SELECT resource_type, status, finished_at, row_count, last_success_at, "
+        "last_success_row_count, unknown_attribute_count, current_count, oldest_captured_at, "
+        "CASE WHEN last_success_at IS NULL THEN NULL ELSE "
+        "LEAST(last_success_at, COALESCE(oldest_captured_at, last_success_at)) END "
+        "AS latest_success_at "
+        "FROM per_type"
+        ") "
+        "SELECT resource_type, status, finished_at, row_count, last_success_at, "
+        "last_success_row_count, unknown_attribute_count, current_count, oldest_captured_at, "
+        "latest_success_at, "
+        "CASE "
+        "WHEN latest_success_at IS NULL THEN 'unavailable' "
+        "WHEN latest_success_at < CURRENT_TIMESTAMP - "
+        "(:stale_after_minutes * INTERVAL '1 minute') THEN 'stale' "
+        "WHEN status IN ('partial', 'failed', 'running') THEN 'degraded' "
+        "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) THEN 'degraded' "
+        "WHEN status = 'succeeded' THEN 'healthy' "
+        "ELSE 'unavailable' END AS freshness, "
+        "CASE WHEN latest_success_at IS NULL THEN NULL ELSE "
+        "GREATEST(0, FLOOR(EXTRACT(EPOCH FROM "
+        "(CURRENT_TIMESTAMP - latest_success_at)) / 60))::integer END AS age_minutes, "
+        ":stale_after_minutes AS stale_after_minutes "
+        "FROM classified" + type_filter + " ORDER BY resource_type",
+        params=params,
+    )
     return rows
+
+
+def _freshness_for_type(resource_type):
+    rows = _sync_freshness(resource_type)
+    if rows:
+        return rows[0]
+    return {
+        "resource_type": resource_type,
+        "status": None,
+        "finished_at": None,
+        "row_count": None,
+        "current_count": 0,
+        "last_success_at": None,
+        "last_success_row_count": None,
+        "unknown_attribute_count": None,
+        "oldest_captured_at": None,
+        "latest_success_at": None,
+        "freshness": "unavailable",
+        "age_minutes": None,
+        "stale_after_minutes": _inventory_stale_after_minutes(),
+    }
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────────────────────────
@@ -317,6 +656,13 @@ def lambda_handler(event, context):
 
     if tool_name == "get_topology":
         resource_id = arguments.get("resource_id") if isinstance(arguments, dict) else None
+        if resource_id is not None and (
+            not isinstance(resource_id, str) or not resource_id.strip() or len(resource_id) > 4096
+        ):
+            return {"statusCode": 400, "body": json.dumps(
+                {"error": "resource_id must be a nonempty string of at most 4096 characters"})}
+        if resource_id is not None:
+            resource_id = resource_id.strip()
         cls = (arguments.get("class") or "flow") if isinstance(arguments, dict) else "flow"
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns
@@ -324,26 +670,69 @@ def lambda_handler(event, context):
             # (plan T7b: both read paths reject identically) (M4).
             return {"statusCode": 400, "body": json.dumps(
                 {"error": "invalid class: " + str(cls) + " (expected flow|infra|trace)"})}
-        nodes, edges = _fetch_topology_graph(resource_id=resource_id, cls=cls)
-        result = {"class": cls, "nodes": nodes, "edges": edges,
-                  "node_count": len(nodes), "edge_count": len(edges), "note": COVERAGE_NOTE}
+        collection = _fetch_trace_collection() if cls == "trace" else _inventory_graph_collection(cls)
+        nodes, edges, graph_metadata = _fetch_topology_graph(resource_id=resource_id, cls=cls)
+        if cls != "trace":
+            # Data API selections use multiple bounded reads. A publication between them cannot
+            # certify one coherent snapshot; disclose it without altering Task2 selection limits.
+            after = _inventory_graph_collection(cls)
+            changed = any(after.get(key) != collection.get(key) for key in (
+                "attempted_at", "captured_at", "status", "sources", "publishedSources", "failureReason"))
+            failed_read = any(value.get("readOutcome") == "state_read_failed"
+                              for value in (collection, after))
+            collection = after
+            if changed or failed_read:
+                collection = {**after, "stale": True, "snapshotConsistent": False,
+                              "readOutcome": "state_read_failed" if failed_read else "publication_changed"}
+        result = {"class": cls, "nodes": nodes, "edges": edges, **graph_metadata,
+                  "node_count": len(nodes), "edge_count": len(edges),
+                  "note": TRACE_TOPOLOGY_NOTE if cls == "trace" else MATERIALIZED_TOPOLOGY_NOTE}
         if resource_id:
             result["from"] = resource_id
-        if not nodes:
-            result["warning"] = ("Graph not materialized yet — run scripts/v2/graph-rebuild.mjs "
-                                 "(or the post-sync worker job) to populate topology_nodes/edges.")
+        if collection is not None:
+            result["collection"] = collection
+            result["captured_at"] = collection["captured_at"]
+            if collection["stale"] or collection["status"] == "partial":
+                result["warning"] = (
+                    ("Trace" if cls == "trace" else "Graph") + " collection evidence is incomplete or stale; inspect collection before "
+                    "treating nodes or edges as current."
+                )
+        selection_status = graph_metadata["selection"]["status"]
+        selection_warning = None
+        if selection_status == "ambiguous":
+            selection_warning = "Ambiguous resource_id; use a canonical node ID from selection.candidate_ids."
+        elif selection_status == "not_found":
+            selection_warning = "Requested resource_id was not found in this host's selected graph class."
+        elif any(graph_metadata["truncation"][key] for key in ("nodes", "edges")):
+            selection_warning = "Topology response is truncated; inspect truncation before inferring full coverage."
+        if selection_warning:
+            result["warning"] = " ".join(filter(None, [result.get("warning"), selection_warning]))
         return _ok(result)
 
     if tool_name == "query_inventory":
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
         if not rtype:
             return {"statusCode": 400, "body": json.dumps({"error": "resource_type required"})}
+        resource_id = arguments.get("resource_id")
+        if resource_id is not None and (rtype != "cloudfront" or not isinstance(resource_id, str)
+                                            or not re.fullmatch(r"[A-Z0-9]{5,32}", resource_id)):
+            return {"statusCode": 400, "body": json.dumps({"error": "valid CloudFront resource_id required"})}
         try:
             limit = min(int(arguments.get("limit", 200)), 500) if isinstance(arguments, dict) else 200
         except (TypeError, ValueError):
             limit = 200  # a hallucinated non-numeric limit must not 500
-        rows = _fetch_one_type(rtype, limit)
-        result = {"resource_type": rtype, "count": len(rows), "resources": rows}
+        rows = _fetch_one_type(rtype, limit, resource_id)
+        result = {
+            "resource_type": rtype,
+            "count": len(rows),
+            "resources": rows,
+            "freshness": _freshness_for_type(rtype),
+        }
+        if resource_id is not None:
+            result.update(projection="identity_only", resource_id=resource_id)
+            if not rows:
+                result["note"] = ("No matching identity was observed in the host/self synced inventory. "
+                                  "This is not evidence of absence in AWS; check freshness or a direct CloudFront read.")
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

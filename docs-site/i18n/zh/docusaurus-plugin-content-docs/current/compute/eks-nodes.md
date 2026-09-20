@@ -12,13 +12,17 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-nodes.png" alt="EKS Nodes" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 统计卡片
-- **Total Nodes**：全部节点数量（青色）
+- **Total Nodes**：所选范围内观测到的节点数量（青色）
 - **Ready**：Ready 状态的节点数量（绿色）
-- **Total CPU**：全部 vCPU 容量总和（紫色）
-- **Total Memory**：全部内存容量总和（橙色）
+- **Total CPU**：所选范围内观测到的节点 vCPU 容量总和（紫色）
+- **Total Memory**：所选范围内观测到的节点内存容量总和（橙色）— 同时以提示显示 allocatable 总和与 reserved %（Capacity − Allocatable）（allocatable 未上报时省略提示）
 
 ### CPU Usage per Node 图表
 以三段式柱状图显示各节点的 CPU 资源状态：
@@ -51,6 +55,9 @@ import Screenshot from '@site/src/components/Screenshot';
 | Allocatable Memory | 可分配的内存 |
 | Created | 创建时间 |
 
+### 节点钻取 Pods 表
+点击节点会打开该节点上已调度的 Pods 表 — Namespace / Pod / Status / Owner / **Pod IP** / **Service Account** / Restarts / CPU / Mem / Age 列（未知时显示 '-'，例如已终止的 Pod 没有 IP）。
+
 ## 理解资源概念
 
 ![节点资源层级](/diagrams/eks-node-resources.png)
@@ -66,7 +73,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 
 1. 在侧边栏中点击 **Compute > K8s > Nodes**
-2. 通过统计卡片了解节点整体状况
+2. 通过统计卡查看在所选范围内观测到的资源。
 3. 在 CPU/Memory Usage 图表中识别资源使用率较高的节点
 4. 对使用率 80% 以上（红色）的节点考虑扩容
 5. 在表格中查看每个节点的详细容量
@@ -89,7 +96,7 @@ Available 可能为负数。这表示 Pod 只设置了 Request 而未设置 Limi
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体概况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - 查看 Pod 状态
 - [EC2](../compute/ec2) - 节点对应的 EC2 实例
 - [EKS Container Cost](../compute/eks-container-cost) - 节点/Pod 成本分析

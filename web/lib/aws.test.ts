@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const eksSend = vi.fn();
+const eksConstruct = vi.fn();
 const ceSend = vi.fn();
 vi.mock('@aws-sdk/client-eks', () => ({
-  EKSClient: class { send = eksSend; },
+  EKSClient: class { constructor(config: unknown) { eksConstruct(config); } send = eksSend; },
   ListClustersCommand: class { constructor(public input: unknown) {} },
   DescribeClusterCommand: class { constructor(public input: { name: string }) {} },
 }));
@@ -24,10 +25,23 @@ describe('listClusters', () => {
     const out = await listClusters();
     expect(out).toEqual([{ name: 'fsi-demo-cluster', status: 'ACTIVE', version: '1.30', endpoint: 'https://x', createdAt: '2026-01-01T00:00:00.000Z', region: 'ap-northeast-2', vpcId: '', platformVersion: '' }]);
   });
+  it.each([undefined, 'more'])('retains bounded enumeration metadata even for an empty page: %s', nextToken => {
+    eksSend.mockResolvedValueOnce({ clusters: [], nextToken });
+    return import('./aws').then(async ({ listClusterInventory }) => {
+      expect(await listClusterInventory()).toEqual({ clusters: [], region: 'ap-northeast-2', truncated: !!nextToken });
+      expect(eksSend.mock.calls[0][0].input).toEqual({ maxResults: 25 });
+    });
+  });
   it('returns [] when no clusters', async () => {
     eksSend.mockResolvedValueOnce({ clusters: [] });
     const { listClusters } = await import('./aws');
     expect(await listClusters()).toEqual([]);
+  });
+  it('queries and reports the selected region instead of the deployment region', async () => {
+    eksSend.mockResolvedValueOnce({ clusters: [] });
+    const { listClusterInventory } = await import('./aws');
+    expect(await listClusterInventory(undefined, 'us-east-1')).toMatchObject({ region: 'us-east-1' });
+    expect(eksConstruct).toHaveBeenLastCalledWith(expect.objectContaining({ region: 'us-east-1' }));
   });
 });
 

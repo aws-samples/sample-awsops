@@ -12,10 +12,15 @@ A page for viewing the replica status and availability of Kubernetes Deployments
 
 <Screenshot src="/screenshots/compute/eks-deployments.png" alt="EKS Deployments" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Deployments**: Total Deployment count (cyan)
+- **Total Deployments**: Observed Deployment count in the selected scope (cyan)
 - **Fully Available**: Deployment count with all desired replicas available (green)
 - **Partially Available**: Deployment count with only some replicas available (orange)
 
@@ -82,7 +87,7 @@ You can analyze with the AI Assistant using queries like "Deployment status", "F
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Pods](../compute/eks-pods) - Check Pods of Deployments
 - [EKS Explorer](../compute/eks-explorer) - ReplicaSet details
 - [EKS Services](../compute/eks-services) - Services connected to Deployments

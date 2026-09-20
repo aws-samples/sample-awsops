@@ -1,16 +1,16 @@
 name: Deploy AgentCore
 
 # workflow_dispatch-only; the dispatched branch selects the stack —
-# main -> production (environment-gated), dev -> development. Runs `make migrate` then
-# `make agentcore`, in that order, per the platform's DESIGN.md
-# ("make migrate -> make agentcore, order preserved"). Never reversed:
-# AgentCore's Data API auth assumes migrations are already applied.
+# main -> production (environment-gated), dev -> development. Dev reuses the private
+# migration task; main/previews retain `make migrate` before `make agentcore`.
+# Migrations establish awsops_sql_reader and its secret before the Data API tools.
+# See docs/runbooks/agent-sql-reader.md.
 
 on:
   workflow_dispatch:
     inputs:
       smoke:
-        description: "Invoke the deployed agent once as a smoke test (--smoke)"
+        description: "Post-provision smoke: strict dev readiness; advisory compatibility on other stacks"
         type: boolean
         default: false
 
@@ -18,13 +18,38 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: agentcore-deployment-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  migrate-dev:
+    if: github.ref == 'refs/heads/dev'
+    uses: ./.github/workflows/deploy-migrations.yml
+    secrets:
+      TF_TFVARS_DEV: ${{ secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_DEV: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      AWS_CI_BUILD_DEV_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+
   deploy:
     name: migrate + agentcore
+    needs: [migrate-dev]
+    if: >-
+      always() && !cancelled() &&
+      ((github.ref == 'refs/heads/dev' && needs.migrate-dev.result == 'success') ||
+       (github.ref != 'refs/heads/dev' && needs.migrate-dev.result == 'skipped'))
     runs-on: sample-awsops
+    timeout-minutes: ${{ github.ref == 'refs/heads/dev' && 120 || 240 }}
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      DOCKER: ${{ github.ref == 'refs/heads/dev' && 'docker' || 'sudo docker' }}
+      AGENT_IMAGE_TAG: ${{ github.ref == 'refs/heads/dev' && format('agent-{0}', github.sha) || 'agent-latest' }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
@@ -35,6 +60,22 @@ jobs:
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        id: provision_python
+        with:
+          python-version: "3.12"
+
+      - name: Prepare isolated AgentCore provisioner SDK
+        id: provision_sdk
+        run: python3 scripts/v2/ci/setup-provision-python.py prepare
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -51,18 +92,32 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$TARGET' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate independent development account before OIDC
+        if: github.ref == 'refs/heads/dev'
+        run: node scripts/v2/ci/runtime-build.mjs check-role
+
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+          unset-current-credentials: true
+
+      - name: Verify independent development account
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-role
 
       - name: Restore terraform.foundation backend
         # scripts/v2/migrate.mjs and agentcore.mjs both read terraform outputs
         # from terraform/foundation — see terraform.yml's header comment.
         working-directory: terraform/foundation
         run: |
+          set -euo pipefail
+          umask 077
           case "$TARGET" in
             main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
             dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
@@ -75,20 +130,76 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          terraform init -backend-config=backend.hcl -input=false
+          terraform init -backend-config=backend.hcl -input=false >/dev/null 2>&1 || {
+            echo "::error::Backend initialization failed (details withheld)"; exit 1;
+          }
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Login to Amazon ECR
+        if: github.ref != 'refs/heads/dev'
         uses: aws-actions/amazon-ecr-login@v2
 
       - run: npm ci --prefix scripts/v2
 
       - name: make migrate
+        if: github.ref != 'refs/heads/dev'
         run: make migrate
 
+      # Setup/backend work must not consume the build's one-hour session.
+      - name: Fresh development credentials for image build
+        if: github.ref == 'refs/heads/dev'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+
+      - name: Verify refreshed development build caller
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-role
+
+      - name: Build and verify development agent image
+        if: github.ref == 'refs/heads/dev'
+        id: agent_image
+        timeout-minutes: 52
+        run: node scripts/v2/agentcore.mjs --build-only
+
+      - name: Fresh development credentials for provisioning
+        if: github.ref == 'refs/heads/dev'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+
+      - name: Verify refreshed development provision caller
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-role
+
+      - name: Provision verified development agent image
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 52
+        env:
+          AGENT_IMAGE_PROJECT: ${{ steps.agent_image.outputs.project }}
+          AGENT_IMAGE_DIGEST: ${{ steps.agent_image.outputs.digest }}
+        run: node scripts/v2/agentcore.mjs --provision-only ${{ inputs.smoke && '--smoke' || '' }}
+
       - name: make agentcore
+        if: github.ref != 'refs/heads/dev'
         # SMOKE just needs to be non-empty to enable Makefile's `$(if $(SMOKE),...)`
         # — "false" is non-empty too, so only export it when actually true.
         run: make agentcore ${{ inputs.smoke && 'SMOKE=1' || '' }}
@@ -100,3 +211,9 @@ jobs:
         working-directory: terraform/foundation
         run: rm -f terraform.tfvars backend.hcl
 
+      - name: Clean AgentCore provisioner SDK
+        if: always() && steps.provision_sdk.outputs.directory != ''
+        env:
+          PROVISION_SDK_DIRECTORY: ${{ steps.provision_sdk.outputs.directory }}
+          PROVISION_BASE_PYTHON: ${{ steps.provision_python.outputs.python-path }}
+        run: '"$PROVISION_BASE_PYTHON" scripts/v2/ci/setup-provision-python.py cleanup'

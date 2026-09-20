@@ -9,6 +9,7 @@ import db
 import handlers
 import fargate_worker as fw
 from diagnosis import db as ddb
+from test_db import legacy_worker_pg, worker_pg
 
 
 class FakeConn:
@@ -72,3 +73,62 @@ def test_already_claimed_is_noop(monkeypatch):
         monkeypatch, {"type": "report", "payload": {"report_id": 1}, "dry_run": False}, claim=0)
     fw.main()
     assert finishes == [] and reports == [] and conn.closed
+
+
+@pytest.mark.parametrize("outcome", ["success", "exception", "unknown_type"])
+def test_fargate_terminal_paths_record_real_lifecycle(worker_pg, monkeypatch, outcome):
+    job_id = worker_pg.insert(type="noop" if outcome != "unknown_type" else "unknown")
+    monkeypatch.setattr(db, "connect", worker_pg.connect)
+    monkeypatch.setattr(sys, "argv", ["fargate_worker.py", "--job-id", job_id])
+
+    def handler(payload, dry_run):
+        running = worker_pg.job(job_id)
+        assert running["status"] == "running" and running["started_at"] is not None
+        assert running["finished_at"] is None and running["attempt"] == 1
+        if outcome == "exception":
+            raise RuntimeError("fixture crash")
+        return {"ok": True}, None
+
+    monkeypatch.setattr(handlers, "REGISTRY", {"noop": (handler, "fargate")})
+    if outcome == "unknown_type":
+        with pytest.raises(SystemExit, match="unknown job type"):
+            fw.main()
+    elif outcome == "exception":
+        with pytest.raises(RuntimeError, match="fixture crash"):
+            fw.main()
+    else:
+        fw.main()
+    finished = worker_pg.job(job_id)
+    assert finished["status"] == ("succeeded" if outcome == "success" else "failed")
+    assert finished["runtime"] == "fargate" and finished["attempt"] == 1
+    assert finished["started_at"] is not None
+    assert finished["finished_at"] >= finished["started_at"]
+    fw.main()
+    assert worker_pg.job(job_id) == finished
+
+
+def test_fargate_completes_before_timing_migration(legacy_worker_pg, monkeypatch):
+    database = legacy_worker_pg
+    job_id = database.insert()
+    monkeypatch.setattr(db, "connect", database.connect)
+    monkeypatch.setattr(sys, "argv", ["fargate_worker.py", "--job-id", job_id])
+    monkeypatch.setattr(handlers, "REGISTRY", {"noop": (lambda p, d: ({"ok": True}, None), "fargate")})
+    fw.main()
+    row = database.job(job_id)
+    assert row["status"] == "succeeded" and row["attempt"] == 1 and row["result"] == {"ok": True}
+
+
+def test_fargate_late_result_cannot_replace_a_terminal_failure(worker_pg, monkeypatch):
+    job_id = worker_pg.insert()
+    monkeypatch.setattr(db, "connect", worker_pg.connect)
+    monkeypatch.setattr(sys, "argv", ["fargate_worker.py", "--job-id", job_id])
+    authoritative = []
+
+    def handler(payload, dry_run):
+        db.finish_job(worker_pg.conn, job_id, "failed", error="fixture reaper")
+        authoritative.append(worker_pg.job(job_id))
+        return {"late": "success"}, None
+
+    monkeypatch.setattr(handlers, "REGISTRY", {"noop": (handler, "fargate")})
+    fw.main()
+    assert worker_pg.job(job_id) == authoritative[0]

@@ -7,23 +7,59 @@ vi.mock('@/lib/catalog', () => ({ listAgentsWithSkills: (...a: unknown[]) => lis
 const spaceMock = vi.fn();
 vi.mock('@/lib/agent-space', () => ({ getAgentSpace: (...a: unknown[]) => spaceMock(...a) }));
 
-import { getEnabledCustomAgents, _clearCacheForTests } from './catalog-source';
+import { getEnabledCustomAgents, getCustomAgentContext } from './catalog-source';
 
 beforeEach(() => {
   listMock.mockReset();
   spaceMock.mockReset();
   spaceMock.mockResolvedValue(null); // default: no space row ⇒ Phase-1 behavior
-  _clearCacheForTests();
   delete process.env.AURORA_ENDPOINT;
 });
 
 describe('catalog-source', () => {
-  it('returns [] when Aurora is unconfigured (no AURORA_ENDPOINT)', async () => {
-    expect(await getEnabledCustomAgents()).toEqual([]);
+  it.each(['space', 'agents'])('denies custom candidates consistently on a failed %s read', async (failure) => {
+    process.env.AURORA_ENDPOINT = 'h';
+    listMock.mockResolvedValue([{ id: 1, name: 'audit', enabled: true, tier: 'custom', skills: [] }]);
+    if (failure === 'space') spaceMock.mockRejectedValue(new Error('down'));
+    else listMock.mockRejectedValue(new Error('down'));
+    expect(await getCustomAgentContext('self')).toEqual({ status: 'unavailable', agents: [], space: null });
+    expect(spaceMock).toHaveBeenCalledTimes(1);
+    expect(listMock).toHaveBeenCalledTimes(failure === 'space' ? 0 : 1);
+  });
+  it('propagates policy read errors instead of degrading to an unscoped catalog', async () => {
+    process.env.AURORA_ENDPOINT = 'h';
+    spaceMock.mockRejectedValue(new Error('Agent Space policy unavailable'));
+    await expect(getEnabledCustomAgents()).rejects.toThrow('Custom-agent catalog unavailable');
+    expect(listMock).not.toHaveBeenCalled();
+  });
+  it('excludes historical command-name collisions from discovery and runtime candidates', async () => {
+    process.env.AURORA_ENDPOINT = 'h';
+    listMock.mockResolvedValue(['observability', 'auto', 'code', 'safe-agent'].map((name, id) => ({
+      id, name, enabled: true, tier: 'custom', skills: [], routingKeywords: [],
+    })));
+    expect((await getEnabledCustomAgents()).map((agent) => agent.name)).toEqual(['safe-agent']);
+  });
+  it('does not reuse a disabled skill from an earlier turn', async () => {
+    process.env.AURORA_ENDPOINT = 'h';
+    const agent = { id: 1, name: 'compliance', enabled: true, tier: 'custom', routingKeywords: [] };
+    listMock.mockResolvedValue([{ ...agent, skills: [{ name: 'revoked', instructions: 'Old instructions' }] }]);
+    expect((await getEnabledCustomAgents())[0].skills).toHaveLength(1);
+    listMock.mockResolvedValue([{ ...agent, skills: [] }]); // authoritative enabled-skill join after disable
+    expect((await getEnabledCustomAgents())[0].skills).toEqual([]);
+  });
+  it('denies stale content when the authoritative read fails after a successful turn', async () => {
+    process.env.AURORA_ENDPOINT = 'h';
+    listMock.mockResolvedValue([{ id: 1, name: 'compliance', enabled: true, tier: 'custom', skills: [], routingKeywords: [] }]);
+    expect(await getEnabledCustomAgents()).toHaveLength(1);
+    listMock.mockRejectedValue(new Error('unavailable'));
+    expect(await getCustomAgentContext()).toEqual({ status: 'unavailable', agents: [], space: null });
+  });
+  it('returns an available empty context when Aurora is unconfigured', async () => {
+    expect(await getCustomAgentContext()).toEqual({ status: 'available', agents: [], space: null });
     expect(listMock).not.toHaveBeenCalled();
   });
 
-  it('returns enabled custom agents from the DB and caches them', async () => {
+  it('reads enabled custom agents authoritatively on every turn', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     listMock.mockResolvedValue([
       { name: 'compliance', enabled: true, tier: 'custom', skills: [], routingKeywords: [] },
@@ -32,14 +68,14 @@ describe('catalog-source', () => {
     const a = await getEnabledCustomAgents();
     expect(a.map((x) => x.name)).toEqual(['compliance']); // builtin filtered out
     expect(listMock).toHaveBeenCalledWith({ enabledOnly: true });
-    await getEnabledCustomAgents(); // cached
-    expect(listMock).toHaveBeenCalledTimes(1);
+    await getEnabledCustomAgents();
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
-  it('returns [] (never throws) on DB error', async () => {
+  it('returns an unavailable context on catalog DB error', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     listMock.mockRejectedValue(new Error('down'));
-    expect(await getEnabledCustomAgents()).toEqual([]);
+    expect(await getCustomAgentContext()).toEqual({ status: 'unavailable', agents: [], space: null });
   });
 
   // --- Phase 2: account-aware, degrade-safe ---
@@ -54,7 +90,6 @@ describe('catalog-source', () => {
     ]);
     const noArg = await getEnabledCustomAgents();
     expect(noArg.map((x) => x.name)).toEqual(['compliance', 'finops']); // builtin filtered; all customs survive
-    _clearCacheForTests();
     const selfArg = await getEnabledCustomAgents('self');
     expect(selfArg.map((x) => x.name)).toEqual(['compliance', 'finops']); // identical
   });
@@ -69,11 +104,14 @@ describe('catalog-source', () => {
       { id: 2, name: 'finops', enabled: true, tier: 'custom', skills: [], routingKeywords: [] },
       { id: 3, name: 'network', enabled: true, tier: 'builtin', skills: [], routingKeywords: [] },
     ]);
-    const a = await getEnabledCustomAgents('self');
-    expect(a.map((x) => x.id)).toEqual([1]); // agent-level scoping
+    const context = await getCustomAgentContext('self');
+    expect(context.status).toBe('available');
+    expect(context.space?.version).toBe(1);
+    expect(spaceMock).toHaveBeenCalledOnce();
+    expect(context.agents.map((x) => x.id)).toEqual([1]); // agent-level scoping
   });
 
-  it('cache is keyed by account + version: bumping version re-queries', async () => {
+  it('reads fresh content even when the Agent Space version is unchanged', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     listMock.mockResolvedValue([
       { id: 1, name: 'compliance', enabled: true, tier: 'custom', skills: [], routingKeywords: [] },
@@ -82,16 +120,16 @@ describe('catalog-source', () => {
       accountId: 'self', enabledAgentIds: [1], enabledSkillIds: [], toolAllowlist: [], version: 1,
     });
     await getEnabledCustomAgents('self');
-    await getEnabledCustomAgents('self'); // cached (same version)
-    expect(listMock).toHaveBeenCalledTimes(1);
+    await getEnabledCustomAgents('self');
+    expect(listMock).toHaveBeenCalledTimes(2);
     spaceMock.mockResolvedValue({
       accountId: 'self', enabledAgentIds: [1], enabledSkillIds: [], toolAllowlist: [], version: 2,
     });
-    await getEnabledCustomAgents('self'); // version bumped ⇒ re-query
-    expect(listMock).toHaveBeenCalledTimes(2);
+    await getEnabledCustomAgents('self');
+    expect(listMock).toHaveBeenCalledTimes(3);
   });
 
-  it('separate accounts cache independently', async () => {
+  it('reads separate accounts independently', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     listMock.mockResolvedValue([
       { id: 1, name: 'compliance', enabled: true, tier: 'custom', skills: [], routingKeywords: [] },
@@ -99,13 +137,13 @@ describe('catalog-source', () => {
     spaceMock.mockResolvedValue(null);
     await getEnabledCustomAgents('111111111111');
     await getEnabledCustomAgents('222222222222');
-    expect(listMock).toHaveBeenCalledTimes(2); // distinct cache keys
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
-  it('DB error → [] (never throws), even with a space lookup in play', async () => {
+  it('reports unavailable after catalog failure with a space lookup in play', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     spaceMock.mockResolvedValue(null);
     listMock.mockRejectedValue(new Error('down'));
-    expect(await getEnabledCustomAgents('self')).toEqual([]);
+    expect(await getCustomAgentContext('self')).toEqual({ status: 'unavailable', agents: [], space: null });
   });
 });

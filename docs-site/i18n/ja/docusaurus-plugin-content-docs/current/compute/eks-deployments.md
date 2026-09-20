@@ -12,10 +12,14 @@ Kubernetes Deployment のレプリカ状態と可用性を確認できるペー�
 
 <Screenshot src="/screenshots/compute/eks-deployments.png" alt="EKS Deployments" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 統計カード
-- **Total Deployments**: 全 Deployment 数（シアン）
+- **Total Deployments**: 選択範囲で観測した Deployment 数（シアン）
 - **Fully Available**: 望ましいレプリカがすべて利用可能な Deployment 数（緑）
 - **Partially Available**: 一部のレプリカのみ利用可能な Deployment 数（オレンジ）
 
@@ -82,7 +86,7 @@ AI Assistant で「Deployment の状態」「レプリカが不一致の Deploym
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Pods](../compute/eks-pods) - Deployment の Pod を確認
 - [EKS Explorer](../compute/eks-explorer) - ReplicaSet の詳細確認
 - [EKS Services](../compute/eks-services) - Deployment に接続された Service

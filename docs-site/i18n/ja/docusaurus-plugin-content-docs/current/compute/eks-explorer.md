@@ -12,6 +12,10 @@ K9s スタイルのターミナル UI で Kubernetes リソースを探索でき
 
 <Screenshot src="/screenshots/compute/eks-explorer.png" alt="EKS Explorer" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 上部バー
@@ -96,7 +100,7 @@ AI Assistant で「kube-system ネームスペースの Pod 一覧」「Pending 
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Pods](../compute/eks-pods) - Pod の詳細ダッシュボード
 - [EKS Deployments](../compute/eks-deployments) - デプロイメントの詳細
 - [EKS Services](../compute/eks-services) - サービスの詳細

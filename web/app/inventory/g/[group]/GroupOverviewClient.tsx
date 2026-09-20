@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
@@ -9,38 +9,15 @@ import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { groupBySlug, ATTENTION_SPLITS, type NavLeaf } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, variantIcon, highlightIcon } from '@/lib/type-icons';
+// Gap L82: the per-type micro-stat subline map is SHARED with the dashboard tiles
+// (web/lib/tile-micro.ts) so the two surfaces cannot drift.
+import { typeMicroLine, type TileSplits } from '@/lib/tile-micro';
+import { scopeParams, useActiveScope } from '@/lib/account-context';
 
 interface ByType { type: string; label: string; count: number; [k: string]: unknown }
-interface Splits {
-  ec2Running: number; ec2Stopped: number; ebsUnencrypted: number; iamUserNoMfa: number; sgOpenIngress: number;
-  s3Public?: number; cwAlarm?: number;
-  // Gap L82 micro-stat sublines (optional — an older task during a rolling deploy may omit them).
-  lambdaRuntimes?: number; lambdaLongTimeout?: number; ebsTotalGb?: number;
-  rdsMultiAz?: number; rdsUnencrypted?: number; ecrScanOnPush?: number; ecrImmutable?: number;
-  s3VersioningOff?: number; cloudfrontEnabled?: number;
-}
-interface Summary { byType: ByType[]; total: number; splits?: Splits }
+interface Summary { byType: ByType[]; total: number; splits?: TileSplits }
 
 const DASH = '—';
-
-// Gap L82 (v1 parity): per-type tile micro-stat sublines — state decomposition rendered as
-// the tile's trend line. Only rendered once the summary is loaded (no fabricated zeros while
-// loading); an undefined split (rolling-deploy skew) drops just that part. Technical terms
-// stay English as v1 rendered them.
-const TYPE_MICRO: Record<string, (s: Splits, countOf: (t: string) => number) => string | null> = {
-  ec2: (s) => `${s.ec2Running} running · ${s.ec2Stopped} stopped`,
-  lambda: (s) => (s.lambdaRuntimes == null ? null : `${s.lambdaRuntimes} runtimes · ${s.lambdaLongTimeout ?? 0} >300s`),
-  ebs_volume: (s) => (s.ebsTotalGb == null ? null : `${s.ebsTotalGb.toLocaleString()} GiB · ${s.ebsUnencrypted} unencrypted`),
-  rds: (s) => (s.rdsMultiAz == null ? null : `${s.rdsMultiAz} Multi-AZ · ${s.rdsUnencrypted ?? 0} unencrypted`),
-  ecr: (s) => (s.ecrScanOnPush == null ? null : `${s.ecrScanOnPush} scan-on-push · ${s.ecrImmutable ?? 0} immutable`),
-  s3: (s) => (s.s3VersioningOff == null ? null : `${s.s3Public ?? 0} public · ${s.s3VersioningOff} versioning off`),
-  iam_user: (s) => `${s.iamUserNoMfa} no MFA`,
-  security_group: (s) => `${s.sgOpenIngress} open ingress`,
-  // cloudwatch_alarm lives in the singleton Monitoring group (no /inventory/g page) — no entry.
-  cloudfront: (s) => (s.cloudfrontEnabled == null ? null : `${s.cloudfrontEnabled} enabled`),
-  // Cross-type composition — subnet/NAT totals already ride byType, zero extra SQL.
-  vpc: (_s, countOf) => `${countOf('subnet')} subnets · ${countOf('nat_gateway')} NAT · ${countOf('transit_gateway')} TGW`,
-};
 
 /**
  * Group overview — Phase 1 status summary for one inventory category. Reuses the
@@ -49,27 +26,51 @@ const TYPE_MICRO: Record<string, (s: Splits, countOf: (t: string) => number) => 
  * slots here (inert, no fetch — API contracts TBD).
  */
 export default function GroupOverviewClient({ slug }: { slug: string }) {
+  const [scope, , ready] = useActiveScope();
+  if (!ready) return null;
+  const query = scopeParams(scope);
+  return <ScopedGroupOverview key={`${slug}:${query}`} slug={slug} query={query} />;
+}
+
+function ScopedGroupOverview({ slug, query }: { slug: string; query: string }) {
   const { t } = useI18n();
   const node = groupBySlug(slug);
   const [sum, setSum] = useState<Summary | null>(null);
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  const loadGen = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    const gen = ++loadGen.current;
+    activeRequest.current?.abort();
+    const ctl = new AbortController();
+    activeRequest.current = ctl;
+    const current = () => loadGen.current === gen && !ctl.signal.aborted;
     setBusy(true);
     try {
-      const r = await fetch('/api/inventory/summary');
+      const r = await fetch(`/api/inventory/summary?${query}`, { signal: ctl.signal });
       if (!r.ok) throw new Error(String(r.status));
-      setSum(await r.json());
+      const result = await r.json();
+      if (!current()) return;
+      setSum(result);
       setErr('');
       setCapturedAt(new Date().toISOString()); // only stamp on success (not on 401/500)
     } catch (e) {
-      setErr(String(e));
+      if (current()) setErr(String(e));
+    } finally {
+      if (current()) setBusy(false);
+      if (activeRequest.current === ctl) activeRequest.current = null;
     }
-    setBusy(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  }, [query]);
+  useEffect(() => {
+    load();
+    return () => {
+      loadGen.current++;
+      activeRequest.current?.abort();
+    };
+  }, [load]);
 
   if (!node) return null; // server already guarded; defensive
 
@@ -127,7 +128,7 @@ export default function GroupOverviewClient({ slug }: { slug: string }) {
                 <StatTile
                   label={leaf.labelKey ? t(leaf.labelKey) : leaf.label ?? leaf.type ?? ''}
                   value={countFor(leaf.type)}
-                  trend={(leaf.type && splits && TYPE_MICRO[leaf.type]?.(splits, (tp) => Number(sum?.byType.find((x) => x.type === tp)?.count ?? 0))) || undefined}
+                  trend={typeMicroLine(leaf.type, splits, (tp) => Number(sum?.byType.find((x) => x.type === tp)?.count ?? 0)) || undefined}
                   icon={(() => { const I = (leaf.type && TYPE_ICON[leaf.type]) || GROUP_ICON[node.group] || null; return I ? <I size={16} /> : undefined; })()}
                 />
               </Link>

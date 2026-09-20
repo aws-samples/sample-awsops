@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
@@ -21,15 +21,16 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query
 vi.mock('@/lib/http-body', () => ({ readJsonBounded: (...a: unknown[]) => readJsonBounded(...a) }));
 vi.mock('@/lib/account-regions', () => ({ upsertAccountRegion: (...a: unknown[]) => upsertAccountRegion(...a) }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn(() => ({ send })),
-  AssumeRoleCommand: vi.fn((i: unknown) => ({ cmd: 'assume', i })),
-  GetCallerIdentityCommand: vi.fn((i: unknown) => ({ cmd: 'ident', i })),
+  STSClient: vi.fn(function () { return { send }; }),
+  AssumeRoleCommand: vi.fn(function (i: unknown) { return { cmd: 'assume', i }; }),
+  GetCallerIdentityCommand: vi.fn(function (i: unknown) { return { cmd: 'ident', i }; }),
 }));
 
 const TARGET = '210987654321';
 const req = (method = 'GET', url = 'http://x/api/accounts', cookie = 'awsops_token=t') =>
   new Request(url, { method, headers: { cookie } });
 const validBody = { accountId: TARGET, alias: 'Prod', region: 'ap-northeast-2', externalId: 'ext-1' };
+afterEach(() => vi.unstubAllEnvs());
 
 beforeEach(() => {
   vi.resetModules();
@@ -60,6 +61,60 @@ describe('GET /api/accounts', () => {
 });
 
 describe('POST /api/accounts', () => {
+  it('uses deployment STS endpoints independently of the selected collection region', async () => {
+    vi.stubEnv('AWS_REGION', 'eu-west-1');
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'false');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    readJsonBounded.mockResolvedValue({ ...validBody, region: 'ap-east-1' });
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    vi.mocked(STSClient).mockClear();
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(200);
+    expect(vi.mocked(STSClient).mock.calls.map(([config]) => config?.region)).toEqual(['eu-west-1', 'eu-west-1']);
+  });
+  it('rejects an account outside the explicitly configured deployment scope before AWS or writes', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["333333333333"]');
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+  it('permits registration for an explicitly configured target', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', JSON.stringify([TARGET]));
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(200);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+  it.each(['invalid', '{}', '["111111111111"]', '["210987654321","210987654321"]'])(
+    'fails closed on malformed deployment account scope %s', async (scope) => {
+      vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+      vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', scope);
+      const { POST } = await import('./route');
+      expect((await POST(req('POST'))).status).toBe(503);
+      expect(send).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
+  it('rejects target onboarding in host-only mode before STS or registry writes', async () => {
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
+    const { POST } = await import('./route');
+    const response = await POST(req('POST'));
+    expect(response.status).toBe(409);
+    expect((await response.json()).message).toMatch(/host-only inventory/i);
+    expect(send).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(upsertAccountRegion).not.toHaveBeenCalled();
+  });
+  it('keeps authentication and admin checks ahead of the host-only restriction', async () => {
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
+    const { POST } = await import('./route');
+    verifyUser.mockResolvedValueOnce(null);
+    expect((await POST(req('POST'))).status).toBe(401);
+    isAdmin.mockResolvedValueOnce(false);
+    expect((await POST(req('POST'))).status).toBe(403);
+  });
   it('401 unauth', async () => {
     verifyUser.mockResolvedValue(null);
     const { POST } = await import('./route');

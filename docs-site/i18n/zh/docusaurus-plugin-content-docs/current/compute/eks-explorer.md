@@ -12,6 +12,10 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/compute/eks-explorer.png" alt="EKS Explorer" />
 
+:::info 账户、区域与观测范围
+顶部账户和区域选择也适用于本页，更改后会重新获取显示数据。合计值表示所选范围内已注册集群中观测到的资源。同名集群选项会包含账户和区域信息。部分失败或达到获取上限表示结果不完整，不能证明未观测到的资源不存在。
+:::
+
 ## 主要功能
 
 ### 顶部栏
@@ -96,7 +100,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 相关页面
 
-- [EKS Overview](../compute/eks) - 集群整体概况
+- [EKS Overview](../compute/eks) - 所选范围内的集群视图
 - [EKS Pods](../compute/eks-pods) - Pod 详细仪表板
 - [EKS Deployments](../compute/eks-deployments) - 部署详情
 - [EKS Services](../compute/eks-services) - 服务详情

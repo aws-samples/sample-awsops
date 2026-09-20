@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,7 +21,8 @@ def test_handle_rca_disabled_by_default(monkeypatch):
     assert o.handle_rca({"incident_id": "i1", "failing_entity": "ec2:x"}) == {"disabled": True}
 
 
-def test_handle_rca_returns_result_when_enabled(monkeypatch):
+@pytest.mark.parametrize("requested", ["ec2:x", "x"])
+def test_handle_rca_returns_result_when_enabled(monkeypatch, requested):
     o = load_orchestrator()
     monkeypatch.setenv("RCA_ORCHESTRATOR_ENABLED", "true")
     monkeypatch.setattr(o, "_open_clients", lambda stack, keys: {})
@@ -29,8 +31,11 @@ def test_handle_rca_returns_result_when_enabled(monkeypatch):
         def __init__(self, clients):
             self.clients = clients
 
-        def topology_edges(self):
-            return [{"source": "ec2:x", "target": "rds:db"}]
+        def topology_edges(self, resource_id):
+            assert resource_id == requested
+            return {"edges": [{"source": "ec2:x", "target": "rds:db"}],
+                    "selection": {"status": "resolved", "requested_id": requested, "resolved_id": "ec2:x"},
+                    "truncation": {"nodes": False, "edges": True}, "warning": "bounded graph"}
 
         def gather(self, node_id):
             return {"node": node_id}
@@ -45,9 +50,13 @@ def test_handle_rca_returns_result_when_enabled(monkeypatch):
         },
     )
 
-    out = o.handle_rca({"incident_id": "i1", "failing_entity": "ec2:x"})
+    out = o.handle_rca({"incident_id": "i1", "failing_entity": requested})
 
     assert out["incident_id"] == "i1"
     assert out["root_causes"] == ["rds:db"]
     assert "rca" in out
+    assert out["rca"]["failing_entity"] == "ec2:x"
+    assert out["topology"]["selection"]["requested_id"] == requested
+    assert out["topology"]["truncation"]["edges"] is True
+    assert out["topology"]["warning"] == "bounded graph"
     assert not hasattr(o, "write_rca")

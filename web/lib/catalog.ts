@@ -41,6 +41,7 @@ export interface AgentWithSkills {
   // ADR-039 frontier-agent fields — optional so existing call sites/fixtures stay valid;
   // listAgentsWithSkills always populates them (with defaults) from the new columns.
   agentType?: string; gateways?: string[]; responseLanguage?: string | null;
+  toolPolicyConfigured?: boolean; // persisted history: edits/detachment never restore unrestricted tools
 }
 
 /** SHA-256 over canonical JSON of integrity-relevant fields. Order-independent on toolAllowlist. */
@@ -132,13 +133,14 @@ export async function listAgentsWithSkills(opts?: { enabledOnly?: boolean }): Pr
   const { rows } = await getPool().query(
     `SELECT a.id, a.name, a.description, a.persona, a.gateway, a.tier, a.version, a.enabled,
             a.routing_keywords, a.agent_type, a.gateways, a.response_language,
+            a.tool_policy_configured,
             COALESCE(json_agg(json_build_object(
               'name', s.name, 'instructions', s.instructions, 'content_hash', s.content_hash,
               'ord', ags.ord, 'tool_allowlist', s.tool_allowlist
-            ) ORDER BY ags.ord) FILTER (WHERE s.id IS NOT NULL), '[]') AS skills
+            ) ORDER BY ags.ord) FILTER (WHERE s.id IS NOT NULL AND s.enabled = true), '[]') AS skills
      FROM agents a
      LEFT JOIN agent_skills ags ON ags.agent_id = a.id
-     LEFT JOIN skills s ON s.id = ags.skill_id AND s.enabled = true
+     LEFT JOIN skills s ON s.id = ags.skill_id
      ${where}
      GROUP BY a.id
      ORDER BY a.name`,
@@ -151,10 +153,11 @@ export async function listAgentsWithSkills(opts?: { enabledOnly?: boolean }): Pr
     agentType: (r.agent_type as string) ?? 'generic',
     gateways: (r.gateways as string[]) ?? [],
     responseLanguage: (r.response_language as string) ?? null,
+    toolPolicyConfigured: r.tool_policy_configured === true,
     skills: ((r.skills as Array<Record<string, unknown>>) ?? []).map((sk) => ({
       name: sk.name as string, instructions: sk.instructions as string,
       contentHash: sk.content_hash as string, ord: sk.ord as number,
-      toolAllowlist: (sk.tool_allowlist as string[]) ?? [],
+      toolAllowlist: Array.isArray(sk.tool_allowlist) ? sk.tool_allowlist.filter((name): name is string => typeof name === 'string') : [],
     })),
   }));
 }
@@ -162,19 +165,20 @@ export async function listAgentsWithSkills(opts?: { enabledOnly?: boolean }): Pr
 /**
  * ADR-031/ADR-039 fail-closed revocation. Authoritative (un-cached) check that a custom agent
  * is still enabled, used on the chat hot path BEFORE routing to a keyword-picked custom agent.
- * The catalog-source cache (30s TTL) can let `pickCustomAgent` *propose* a just-disabled agent;
- * this re-check reads Aurora (the single source of truth) on whichever Fargate task serves the
- * request, so a disable is effective immediately on every instance. Returns false (deny, never
- * grant) for missing / disabled / builtin rows and on ANY query error.
+ * This also catches revocation committed after the fresh catalog read. Missing / disabled /
+ * builtin rows return false. Compatibility callers also get false on query errors; dispatch
+ * must opt into throwOnError so unavailable policy cannot be mistaken for confirmed disablement
+ * and silently fall back to a builtin without the selected custom restriction.
  */
-export async function isCustomAgentEnabled(name: string): Promise<boolean> {
+export async function isCustomAgentEnabled(name: string, options?: { throwOnError?: boolean }): Promise<boolean> {
   try {
     const { rows } = await getPool().query(
       `SELECT 1 FROM agents WHERE name = $1 AND tier = 'custom' AND enabled = true LIMIT 1`,
       [name],
     );
     return rows.length > 0;
-  } catch {
+  } catch (error) {
+    if (options?.throwOnError) throw error;
     return false; // fail-closed
   }
 }
@@ -185,4 +189,20 @@ export async function writeAudit(a: { actor: string; action: string; objectType:
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [a.actor, a.action, a.objectType, a.objectId, a.beforeHash ?? null, a.afterHash ?? null],
   );
+}
+
+/** Preflight current bindings, including disabled skills/agents; no write on unavailable evidence. */
+export async function validateToolBindings(change: { skillName: string; tools: string[] } | { agentName: string; gateway: string } | { agentId: number; skillId: number }): Promise<string[]> {
+  const { toolPolicyErrors } = await import('./skill-validation');
+  if ('skillName' in change) {
+    const { rows } = await getPool().query(`SELECT DISTINCT a.gateway FROM agents a JOIN agent_skills b ON b.agent_id=a.id JOIN skills s ON s.id=b.skill_id WHERE s.name=$1`, [change.skillName]);
+    return rows.flatMap(r => toolPolicyErrors(change.tools, r.gateway));
+  }
+  if ('agentName' in change) {
+    const { rows } = await getPool().query(`SELECT s.tool_allowlist FROM skills s JOIN agent_skills b ON b.skill_id=s.id JOIN agents a ON a.id=b.agent_id WHERE a.name=$1`, [change.agentName]);
+    return rows.flatMap(r => toolPolicyErrors(r.tool_allowlist, change.gateway));
+  }
+  if (![change.agentId, change.skillId].every(id => Number.isSafeInteger(id) && id > 0)) return ['Invalid binding IDs'];
+  const { rows } = await getPool().query(`SELECT a.gateway, s.tool_allowlist FROM agents a JOIN skills s ON s.id=$2 WHERE a.id=$1`, [change.agentId, change.skillId]);
+  return rows.length === 1 ? toolPolicyErrors(rows[0].tool_allowlist, rows[0].gateway) : ['Agent or skill not found'];
 }

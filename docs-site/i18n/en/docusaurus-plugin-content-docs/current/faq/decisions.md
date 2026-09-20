@@ -74,7 +74,7 @@ Admin features are allowed only for users who are members of the Cognito `admins
 AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA** (ADR-037, ADR-030).
 
 - **IaC**: Terraform (partial S3 backend). CDK is dropped (ADR-024 → superseded by ADR-037).
-- **Compute**: ECS Fargate (arm64). web is a Next.js 14 thin-BFF served at the root path.
+- **Compute**: ECS Fargate (arm64). web is a Next.js 15 thin-BFF served at the root path.
 - **Async workers**: heavy / long / OOM-risk work is never run inline by web — it goes through SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
 
 ADR-037 supersedes ADR-024 in full and refines ADR-030's mechanism (no live Steampipe; flag-gated inventory sync only).
@@ -138,7 +138,7 @@ The ADR-039 multi-agent platform introduced frontier agents (DevOps/Security/Fin
 
 **It provides read-only diagnosis only** (ADR-035, DOWNGRADED 2026-06-11).
 
-The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) retains only **read-only Result-CRD integration (GET-only)**; the wiring that led to automated action (H3a → 032/034/029 proposals) was dropped. EKS queries are all read-only, based on a task-role Access Entry + View policy.
+The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) retains only **read-only Result-CRD integration (GET-only)**; the wiring that led to automated action (H3a → 032/034/029 proposals) was dropped. EKS queries are all read-only. The default identity is the web task role for host clusters or the registered member read role, normally `AWSopsReadOnlyRole`, for member clusters; the applicable role needs an Access Entry/read policy. Member metadata discovery and default Kubernetes token signing both use member-role credentials, and an old host-role entry alone is insufficient. Saved SA tokens or explicit AssumeRole authentication use separately authorized Kubernetes identities; member AssumeRole overrides are limited to that same member account. SA authentication needs no IAM Access Entry but still needs metadata discovery permissions. None of these modes enables automatic remediation.
 
 ## Operations
 

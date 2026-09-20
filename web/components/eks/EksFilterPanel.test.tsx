@@ -20,6 +20,20 @@ function mount(value: EksFilterState = { clusters: [], vpcs: [] }, onChange = vi
 const open = () => fireEvent.click(screen.getByText('클러스터 / VPC 필터'));
 
 describe('EksFilterPanel (gap L130)', () => {
+  it('keeps same-name clusters independently selectable by canonical identity', () => {
+    const first = 'arn:aws:eks:us-east-1:111111111111:cluster/shared';
+    const second = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
+    const onChange = vi.fn();
+    render(<EksFilterPanel
+      clusters={[{ id: first, name: 'shared' }, { id: second, name: 'shared' }]}
+      value={{ clusters: [first], vpcs: [] }} onChange={onChange} filteredCount={1}
+    />);
+    open();
+    const target = screen.getByRole('button', { name: /shared.*222222222222.*us-west-2/ });
+    expect(target.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(target);
+    expect(onChange).toHaveBeenLastCalledWith({ clusters: [first, second], vpcs: [] });
+  });
   it('VPC chips carry per-VPC cluster counts and a (no VPC) bucket', () => {
     mount();
     open();

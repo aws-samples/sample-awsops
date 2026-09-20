@@ -2,6 +2,117 @@
 # 공용 헬퍼: 슬롯 디렉터리, 스킵 로깅, 크리덴셜 스크럽.
 set -uo pipefail
 
+# One trusted budget file serves admission, panel and chair checks.
+review_limit() {
+  python3 -I - "$(dirname -- "${BASH_SOURCE[0]}")/review-limits.json" "$1" <<'PYLIMIT'
+import json, sys
+from pathlib import Path
+values = json.loads(Path(sys.argv[1]).read_text())
+if (any(type(value) is not int or value <= 0 for value in values.values())
+        or values["diff_bytes"] + values["panel_bytes"] + values["stdin_envelope_bytes"] > values["chair_stdin_bytes"]
+        or 2 * values["report_bytes"] > values["panel_bytes"]):
+    raise ValueError("Invalid review budget configuration")
+print(values[sys.argv[2]])
+PYLIMIT
+}
+
+# Read bounded trusted-stager context, never a script or a HEAD-selected file path.
+head_png_context() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then
+    echo "HEAD image evidence was not supplied. BASE pixels are historical, not HEAD proof."
+    echo "If required pixels cannot be inspected, emit IMAGE_COVERAGE: FAILED on its own unquoted line."
+    echo "Do not quote or fence your outcome. With no required images, the marker is optional."
+    return 0
+  fi
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
+}
+
+head_png_required() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
+}
+
+head_png_unavailable() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
+}
+
+head_png_attachments() {
+  [ -n "${HEAD_PNG_CONTEXT:-}" ] || return 0
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
+}
+
+image_coverage_valid() {
+  python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}"
+}
+
+mark_image_coverage_failure() {
+  : > "$WORK/image-coverage-failed.flag"
+  : > "$WORK/coverage-severe.flag"
+  echo "[image coverage unavailable] $1" >&2
+  [ -z "${GITHUB_ENV:-}" ] || echo "image_coverage_failed=1" >> "$GITHUB_ENV"
+}
+
+check_review_report() {
+  local rc=0
+  image_coverage_valid "$1" "${2:-${HEAD_PNG_REQUIRED:-0}}" || rc=$?
+  if [ "$rc" = 1 ]; then
+    mark_image_coverage_failure "$(basename "$1")"
+  elif [ "$rc" != 0 ]; then
+    : > "$WORK/report-invalid.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review output unavailable] $(basename "$1")" >&2
+    return 1
+  fi
+  if [ "${3:-}" = panel ] && ! python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" lenses "$1"; then
+    : > "$WORK/lens-coverage-failed.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review incomplete] required lens coverage missing" >&2
+  fi
+  if [ "${3:-}" = panel ]; then
+    local panel_cap size_file="$WORK/$(basename "$1").size.tmp"
+    if ! panel_cap="$(review_limit report_bytes)" || [[ ! "$panel_cap" =~ ^[1-9][0-9]*$ ]]; then
+      : > "$WORK/report-invalid.flag"; : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] invalid report budget configuration" >&2
+      return 1
+    fi
+    strip_controls < "$1" | scrub_secrets > "$size_file"
+    if [ "$(wc -c < "$size_file")" -gt "$panel_cap" ]; then
+      : > "$WORK/report-invalid.flag"
+      : > "$WORK/coverage-severe.flag"
+      echo "[review incomplete] comprehensive report exceeds its byte allocation" >&2
+    fi
+    rm -f "$size_file"
+  fi
+  return 0
+}
+
+strip_controls() {
+  sed -E -e 's#(\x1B\][^\x07\x1B]*(\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[()][0-9A-Z])##g' \
+         -e 's#(\xC2[\x80-\x9F]|[\x00-\x08\x0B-\x1F\x7F])##g'
+}
+
+# Recompute response presence, independently of image outcomes or stale flags.
+refresh_panel_presence() {
+  local model lens count
+  : > "$WORK/responded.txt"; : > "$WORK/degraded-models.txt"; : > "$WORK/degraded-lenses.txt"
+  rm -f "$WORK/coverage-severe.flag"
+  for model in codex claude; do
+    count=0
+    for lens in ALL; do
+      if [ -s "$WORK/slot/$model-$lens.md" ]; then
+        echo "$model/$lens" >> "$WORK/responded.txt"; count=$((count+1))
+      fi
+    done
+    [ "$count" -gt 0 ] || echo "$model" >> "$WORK/degraded-models.txt"
+  done
+  for lens in ALL; do
+    if [ ! -s "$WORK/slot/codex-$lens.md" ] || [ ! -s "$WORK/slot/claude-$lens.md" ]; then
+      echo "$lens" >> "$WORK/degraded-lenses.txt"; : > "$WORK/coverage-severe.flag"
+    fi
+  done
+}
+
 # slot 디렉터리 보장 — 비-ephemeral 러너에서 $WORK 가 재사용될 수 있으므로, 이전 실행의
 # 셀 파일이 남아 새 실행의 체어 입력에 섞이지 않도록 매번 비우고 새로 만든다. `rm -rf
 # "$1/slot"`처럼 파괴적 경로를 만드는 함수라 빈 인자를 자기 안에서 가드.
@@ -20,9 +131,12 @@ ensure_slots() {
 # 사람 범위보다 넓을 수 있으므로, 원시 200B 를 그대로 찍으면 별도의 스크럽 없는 유출구가 된다.
 record_result() {
   local slot="$1" label="$2" responded="$3"
-  echo "[preview] $label: $(scrub_secrets < "$slot" | head -c 200 | tr '\n' ' ')" >&2
   if [ -s "$slot" ]; then
     echo "$label" >> "$responded"
+    [ "${HEAD_PNG_UNAVAILABLE:-0}" = "0" ] || mark_image_coverage_failure "$label"
+    if check_review_report "$slot" "${HEAD_PNG_REQUIRED:-0}" panel; then
+      echo "[preview] $label: $(strip_controls < "$slot" | scrub_secrets | head -c 200 | tr '\n' ' ')" >&2
+    fi
   else
     echo "[skip] $label" >&2
     : > "$slot"  # 빈 슬롯 보장

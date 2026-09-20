@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 295a67f98d50 · generated-at: 2026-08-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f56e60cfe7f8 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -9,6 +9,11 @@ inventories live in `ai.tf`'s `local.agent_lambdas` and the Lambda source files 
 that's the source of truth for tool counts, not this doc.
 
 ## Rules
+- Exact `query_inventory.resource_id` is CloudFront-only: validate before SQL, bind the ID,
+  return at most one identity-only row, and disclose the projection plus validated ID.
+  It uses existing sql_reader columns/grants without schema, permission or AWS mutation changes.
+  Zero-row identity results explicitly disclose that synced-inventory absence is not AWS absence.
+  Roll out Lambda before gateway schema; consumers must match projection and echoed ID or report unverified.
 - Gateway Targets must use Python/boto3 — the AWS CLI has inlinePayload issues.
 - Every **Lambda-backed** target requires `credentialProviderConfigurations: GATEWAY_IAM_ROLE`
   (not universal — live ADR-017 `mcpServer` targets use `API_KEY` instead).
@@ -37,12 +42,52 @@ that's the source of truth for tool counts, not this doc.
   explicit-column, read-only views in a dedicated `sql_reader` schema (never `SELECT *`).
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
+- Raw provider rows remain sensitive. Web inventory/graph reads and new graph writes redact
+  recognized origin-header/OIDC secret fields, not arbitrary secrets; never expose raw `row`
+  through SQL-reader views. Old stored values are not automatically rewritten.
+- SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
+  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
+  carry ownership_evidence/targetCapturedAt and applicable VPC/subnet/ambiguity data, excluded
+  by the view. Configuration-only IP targets also carry ownership_reason; other target kinds
+  need not. The targetCapturedAt field dates only the target-group row, not ownership evidence.
+  Candidate is page-only, not materializer output, and also excluded. Exposed
+  region/cluster/ecsService/task fields are not complete
+  scope or live-ownership proof. Host ECS snapshot target labels remain cached configuration.
+  Unlisted keys need a reviewed additive migration to be exposed.
+- Flow/infra labels are cached configuration, not live ownership. Trace account/region or
+  Kubernetes metadata, when present, is telemetry attribution; database `infra_ref` is a
+  host-name/prefix inference. Trace queues explicitly use `identityProvenance='telemetry_claim'`
+  and nullable destination-ARN claims, never verified AWS ownership. Missing fields prove nothing.
+- Node `captured_at` is materialization time, not inventory/event time. Use
+  `sql_reader.topology_graph_state` for flow/infra/trace status, source clocks and retained
+  evidence; trace adds query windows. Missing state remains unknown. Current collection-state
+  projection: `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`.
+- `test_inventory_view_contract.py` reads the original reader-role migration for topology
+  assertions, not the current projection owner. Do not claim it enforces that owner; inspect
+  the current migration and `scripts/v2/workers/test_graph_collection.py` separately.
 - `execute_sql` is host-account AND single-cluster only — any other target fails closed (400).
 - The agent Lambda's IAM role has no `GetSecretValue` on the master secret, so bypassing the
   lexical guard (`sql_readonly_guard.py`) only reaches an unprivileged session — the guard is
   defense-in-depth, not the boundary.
 - The ClickHouse connector has no equivalent DB-role boundary yet — there the lexical guard is
   still the primary defense.
+
+## External query completion
+- Producers compute `collectionStatus`; only validated complete ok/empty certifies an empty query result.
+  Tempo uses synchronous HTTP 200 proof with negative-signal vetoes, not mandatory job counters.
+  Unknown metric fields are neither validation errors nor proof; known integer fields remain bounded.
+  Trace producers strip upstream copies of collection/projection/omission controls. Only local
+  unverified omission issues tracePayloadUnverified; upstream truncation remains negative evidence.
+  Deploy the sanitized producer before the marker-aware web adapter.
+  A spanless no-fit child retains the saved graph even with useful siblings; only parsed
+  structured spans support partial publication. Preserve upstream truncation without input mutation.
+  Projection admission validates identity/timing and reported trace-ID agreement; encountered
+  malformed spans leave the whole projection unknown. Unvisited rows remain unassessed.
+- Prometheus/Mimir instant scalar/string results retain one bounded sample; malformed records use
+  fixed markers, never raw passthrough. Output byte limits remain enforced.
+- Run the producer/completion/trace-bound suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
+  mocked HTTP outputs to web adapters and PostgreSQL publication/retention tests. Lambda code
+  and Gateway descriptions require separate deployment steps; no source merge activates them.
 
 ## Review checklist
 1. Any new `execute_sql`/`inventory-read` capability must go through the `sql_reader` view
@@ -56,3 +101,15 @@ that's the source of truth for tool counts, not this doc.
   live again.
 - The lexical guard missing some SQL construct is not itself a finding as long as the DB role's
   view-only grant boundary holds.
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Require established route-association state and sanitized codes for every component read.
+SG output is bounded to 200 peer rows per group with explicit metadata and 100-character
+descriptions; truncation is partial evidence. Validate the ENI test suite, then deploy
+Lambda, AgentCore prompt and live Gateway catalog through the existing operator flow.

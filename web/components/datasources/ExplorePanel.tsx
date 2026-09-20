@@ -67,6 +67,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
   const [busy, setBusy] = useState(false);
   const [nl, setNl] = useState('');
   const [genBusy, setGenBusy] = useState(false);
+  const [genWarn, setGenWarn] = useState('');
   // gap-audit L88: connector execution time from the query API (additive metadata field).
   const [execMs, setExecMs] = useState<number | null>(null);
   // gap-audit L200: what the last successful AI generation was drafted from (null = no banner).
@@ -120,7 +121,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
   // NL → query (AI drafts, user reviews, then runs). Never auto-runs.
   const generate = useCallback(async () => {
     if (selId === '' || !nl.trim()) return;
-    setGenBusy(true); setErr('');
+    setGenBusy(true); setErr(''); setGenWarn('');
     try {
       const r = await fetch('/api/datasources/generate', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -128,7 +129,11 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
       });
       const b = await r.json();
       if (!r.ok) throw new Error(b.error || tt(`오류 ${r.status}`));
-      if (b.query) { setQuery(b.query); setGenFrom(nl); }
+      if (b.query) {
+        setQuery(b.query); setGenFrom(nl);
+        // advisory vocabulary warning from the generator — shown, never blocking
+        setGenWarn(typeof b.warning === 'string' ? b.warning : '');
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : tt('AI 생성 실패'));
     } finally { setGenBusy(false); }
@@ -175,6 +180,11 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
             {genBusy ? tt('생성 중…') : tt('AI로 생성')}
           </Button>
         </div>
+        {genWarn && (
+          <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-1.5 text-[12px] text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
+            {tt('스키마 어휘 경고')}: {genWarn}
+          </div>
+        )}
         {ds && (AI_EXAMPLES[ds.kind] ?? []).length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {(AI_EXAMPLES[ds.kind] ?? []).map((p) => (
@@ -294,8 +304,16 @@ function ResultView({ result, kind, execMs }: { result: NormalizedResult; kind?:
       {result.truncated && (
         <p className="text-[12px] text-amber-700">{tt('결과가 잘렸습니다(상한 도달) — 쿼리를 좁혀 다시 시도하세요.')}</p>
       )}
+      {result.collectionNote && (result.shape !== 'empty' || result.note !== result.collectionNote) && (
+        <p role="status" className="text-[12px] text-amber-700">{tt(result.collectionNote)}</p>
+      )}
+      {typeof result.droppedEntries === 'number' && Number.isSafeInteger(result.droppedEntries) && result.droppedEntries > 0 && (
+        <p role="status" data-testid="dropped-response-entries" className="text-[12px] text-amber-700">
+          {tt('잘못된 응답 항목 생략')}: {result.droppedEntries}
+        </p>
+      )}
       {result.shape === 'empty' && (
-        <Card className="p-6 text-center text-[13px] text-ink-400">{result.note || tt('결과 없음')}</Card>
+        <Card className="p-6 text-center text-[13px] text-ink-400">{result.note ? tt(result.note) : tt('결과 없음')}</Card>
       )}
       {result.shape === 'series' && result.series && (
         result.seriesKeys && result.seriesKeys.length > 0 ? (
@@ -318,7 +336,7 @@ function ResultView({ result, kind, execMs }: { result: NormalizedResult; kind?:
         )
       )}
       {result.shape === 'series' && result.note && (
-        <p className="text-[12px] text-ink-400">{result.note}</p>
+        <p className="text-[12px] text-ink-400">{tt(result.note)}</p>
       )}
       {result.shape === 'series' && result.rows && result.columns && (
         <DataTable columns={result.columns} rows={result.rows} />

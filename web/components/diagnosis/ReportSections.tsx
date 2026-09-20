@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import ReportMarkdown from './ReportMarkdown';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -49,16 +49,20 @@ export function splitSections(markdown: string): { preamble: string; sections: R
 // keywords false-positived on the prompt-mandated '심각도' table column header (every well-formed
 // Korean section read red). A degraded/failed section must never read green. Still a DISPLAY
 // heuristic, not a scored verdict — the icon tooltip says so.
-export type Severity = 'critical' | 'warning' | 'ok';
-export function sectionSeverity(body: string): Severity {
+export type Severity = 'critical' | 'warning' | 'info' | 'ok';
+export function sectionSeverity(body: string, title?: string): Severity {
   if (/\[critical\]/i.test(body)) return 'critical';
   if (/\[warning\]/i.test(body) || /degraded|섹션 생성에 실패/i.test(body)) return 'warning';
+  // Only the deterministic assessment's standalone marker changes the Info display.
+  // Other model-rendered sections retain their existing informational/green convention.
+  if (title === 'Intended vs Actual' && body.trimStart().split('\n', 1)[0].trim() === '[Info]') return 'info';
   return 'ok';
 }
 
 function SeverityIcon({ severity, title }: { severity: Severity; title: string }) {
   if (severity === 'critical') return <XCircle size={15} className="shrink-0 text-red-500" aria-label={title} />;
   if (severity === 'warning') return <AlertTriangle size={15} className="shrink-0 text-amber-500" aria-label={title} />;
+  if (severity === 'info') return <Info size={15} className="shrink-0 text-sky-500" aria-label={title} />;
   return <CheckCircle size={15} className="shrink-0 text-emerald-500" aria-label={title} />;
 }
 
@@ -114,7 +118,7 @@ export default function ReportSections({ markdown }: { markdown: string }) {
                   className="flex w-full items-center gap-2 px-3 py-2 text-left"
                 >
                   {isCollapsed ? <ChevronRight size={15} className="shrink-0 text-ink-400" /> : <ChevronDown size={15} className="shrink-0 text-ink-400" />}
-                  <SeverityIcon severity={sectionSeverity(s.body)} title={severityTitle} />
+                  <SeverityIcon severity={sectionSeverity(s.body, s.title)} title={severityTitle} />
                   <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink-800">{s.title}</span>
                 </button>
                 {!isCollapsed && (
@@ -136,7 +140,7 @@ export default function ReportSections({ markdown }: { markdown: string }) {
                 onClick={() => jump(i)}
                 className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[12px] text-ink-600 hover:bg-ink-50"
               >
-                <SeverityIcon severity={sectionSeverity(s.body)} title={severityTitle} />
+                <SeverityIcon severity={sectionSeverity(s.body, s.title)} title={severityTitle} />
                 <span className="min-w-0 flex-1 truncate">{s.title}</span>
               </button>
             </li>

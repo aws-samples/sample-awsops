@@ -115,7 +115,7 @@ flowchart LR
 | **Cost** | Pay only on invocation, no idle cost |
 
 :::caution Gateway Target creation
-The CLI `--inline-payload` option has JSON parsing issues — use **Python/boto3** instead. Also, if a just-created gateway is not yet `READY`, the first Target creation may throw `ValidationException`; since the provisioner is idempotent, re-running resolves it.
+The CLI `--inline-payload` option has JSON parsing issues — use **Python/boto3** instead. A just-created gateway may reject the first Target creation with `ValidationException` before it is `READY`. Confirm `READY` through an authorized read before re-running. Persistent `FAILED` requires separate diagnosis; the provisioner does not automatically delete/recreate it.
 :::
 
 ## Why do I get a "cross-account blocked" error in a single-account setup?
@@ -204,7 +204,7 @@ make agentcore          # build/push arm64 agent image + idempotent provisioner
 make agentcore --smoke  # additionally validate with an invocation
 ```
 
-The provisioner is idempotent, so it is safe to re-run (e.g., when the first Target creation failed because the gateway was not yet ready).
+If Target creation failed because the gateway was not ready, confirm `READY` through an authorized read before re-running the provisioner. Persistent `FAILED` requires separate diagnosis; there is no automatic deletion/recreation. Request acceptance and readiness for actual tool invocation must be verified separately.
 
 :::tip Gateway routing is injected via env
 `agent.py` does not hardcode gateway URLs — they are injected via the `GATEWAYS_JSON` environment variable. So a gateway-routing change does not immediately require a Docker rebuild.

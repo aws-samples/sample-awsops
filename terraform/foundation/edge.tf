@@ -4,6 +4,7 @@ data "aws_route53_zone" "main" {
 }
 
 resource "aws_acm_certificate" "cf" {
+  count                     = var.existing_cf_certificate_arn == null ? 1 : 0
   provider                  = aws.use1
   domain_name               = var.domain_name
   subject_alternative_names = var.extra_domain_aliases
@@ -11,9 +12,18 @@ resource "aws_acm_certificate" "cf" {
   lifecycle { create_before_destroy = true }
 }
 
+# ACM shares validation tokens across Regions within the account. Keep one record
+# owner (and the existing cf_validation addresses) even when only ALB is managed.
+# With both certificates supplied, the empty set plans no validation DNS writes.
+locals {
+  certificate_validation_options = var.existing_cf_certificate_arn == null ? aws_acm_certificate.cf[0].domain_validation_options : (
+    var.existing_alb_certificate_arn == null ? aws_acm_certificate.alb[0].domain_validation_options : []
+  )
+}
+
 resource "aws_route53_record" "cf_validation" {
   for_each = {
-    for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.domain_name => {
+    for dvo in local.certificate_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
       type   = dvo.resource_record_type
@@ -28,9 +38,21 @@ resource "aws_route53_record" "cf_validation" {
 }
 
 resource "aws_acm_certificate_validation" "cf" {
+  count                   = var.existing_cf_certificate_arn == null ? 1 : 0
   provider                = aws.use1
-  certificate_arn         = aws_acm_certificate.cf.arn
+  certificate_arn         = aws_acm_certificate.cf[0].arn
   validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+}
+
+# Preserve existing managed certificates when the optional ARN remains null.
+moved {
+  from = aws_acm_certificate.cf
+  to   = aws_acm_certificate.cf[0]
+}
+
+moved {
+  from = aws_acm_certificate_validation.cf
+  to   = aws_acm_certificate_validation.cf[0]
 }
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -117,14 +139,14 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.cf.certificate_arn
+    acm_certificate_arn      = var.existing_cf_certificate_arn != null ? var.existing_cf_certificate_arn : aws_acm_certificate_validation.cf[0].certificate_arn
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }
 }
 
 resource "aws_route53_record" "alias" {
-  for_each = toset(concat([var.domain_name], var.extra_domain_aliases))
+  for_each = var.publish_service_dns ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
   zone_id  = data.aws_route53_zone.main.zone_id
   name     = each.value
   type     = "A"

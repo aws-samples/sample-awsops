@@ -125,18 +125,28 @@ export function renderValuesYaml(cfg: OpencostConfig): string {
 }
 
 /** Generate the out-of-band install script. Emits --version only when chartVersion is set. */
-export function renderInstallSh(opts: { cluster: string; region: string; chartVersion?: string }): string {
+export function renderInstallSh(opts: { cluster: string; region: string; chartVersion?: string; accountId?: string }): string {
   const cluster = assertSafeName('cluster', opts.cluster);
   const region = assertSafeName('region', opts.region);
+  if (opts.accountId !== undefined && !/^\d{12}$/.test(opts.accountId)) throw new Error('unsafe accountId');
+  const accountGuard = opts.accountId ? [
+    `if [[ "$(aws sts get-caller-identity --query Account --output text)" != "${opts.accountId}" ]]; then`,
+    `  echo "Use AWS credentials for account ${opts.accountId} before installing OpenCost." >&2`,
+    '  exit 1',
+    'fi',
+    '',
+  ] : [];
   const versionFlag = opts.chartVersion ? ` --version ${assertSafeName('chartVersion', opts.chartVersion)}` : '';
+  const contextFlag = opts.accountId ? ` --kube-context arn:aws:eks:${region}:${opts.accountId}:cluster/${cluster}` : '';
   return [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
     '',
+    ...accountGuard,
     `aws eks update-kubeconfig --name ${cluster} --region ${region}`,
     `helm repo add ${OPENCOST_REPO_NAME} ${OPENCOST_REPO_URL}`,
     'helm repo update',
-    `helm upgrade --install opencost ${OPENCOST_CHART} -n ${OPENCOST_NAMESPACE} --create-namespace${versionFlag} -f values.yaml`,
+    `helm upgrade --install opencost ${OPENCOST_CHART} -n ${OPENCOST_NAMESPACE} --create-namespace${versionFlag} -f values.yaml${contextFlag}`,
     '',
   ].join('\n');
 }

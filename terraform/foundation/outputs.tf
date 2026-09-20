@@ -1,5 +1,6 @@
 output "cloudfront_domain" {
-  value = aws_cloudfront_distribution.main.domain_name
+  description = "CloudFront connection hostname. Before service DNS is published, use curl --connect-to service-domain:443:this-hostname:443 against public_url to retain the requested Host, SNI, and TLS verification."
+  value       = aws_cloudfront_distribution.main.domain_name
 }
 
 output "distribution_id" {
@@ -7,7 +8,8 @@ output "distribution_id" {
 }
 
 output "public_url" {
-  value = "https://${var.domain_name}"
+  description = "Canonical HTTPS URL, retained even when publish_service_dns=false. DNS-deferred smoke tests connect to cloudfront_domain while requesting this URL."
+  value       = "https://${var.domain_name}"
 }
 
 output "alb_arn" {
@@ -21,6 +23,11 @@ output "ecr_uri" {
 output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
 output "cognito_client_id" { value = aws_cognito_user_pool_client.main.id }
 output "cognito_hosted_ui" { value = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${var.region}.amazoncognito.com" }
+
+output "demo_username" {
+  description = "Nonsecret deployed demo username for opt-in dev database verification; empty when no demo user is configured."
+  value       = var.create_demo_user ? aws_cognito_user.demo[0].username : ""
+}
 
 output "aurora_endpoint" { value = aws_rds_cluster.aurora.endpoint }
 output "aurora_database" { value = aws_rds_cluster.aurora.database_name }

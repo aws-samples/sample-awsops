@@ -1,5 +1,7 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import CostBasisPanel from '@/components/eks/CostBasisPanel';
+import GroupedBarList from '@/components/charts/GroupedBarList';
 import { DollarSign, CalendarDays, Boxes, Crown, Search } from 'lucide-react';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
@@ -13,6 +15,9 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import PodTransferSection from '@/components/eks/PodTransferSection';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
 
 // EKS 컨테이너 비용 (fleet-wide) — v1 /eks-container-cost parity. Every connected
 // cluster's OpenCost 1d allocation is fetched in parallel and merged; per-cluster
@@ -39,9 +44,16 @@ const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigi
 const ALL = '전체';
 
 export default function EksFleetCostPage() {
+  const [scope, , ready] = useActiveScope();
+  const query = scopeParams(scope);
+  return ready ? <ScopedEksFleetCost key={query} scopeQuery={query} /> : null;
+}
+
+function ScopedEksFleetCost({ scopeQuery }: { scopeQuery: string }) {
   const { tt } = useI18n();
   const [results, setResults] = useState<ClusterAlloc[] | null>(null);
   const [err, setErr] = useState('');
+  const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   // 상단 클러스터 선택: '전체' = 합산 뷰, 개별 = 해당 클러스터만.
@@ -64,12 +76,14 @@ export default function EksFleetCostPage() {
     setBusy(true);
     setErr('');
     try {
-      const r = await fetch('/api/eks?account=self');
+      const r = await fetch(`/api/eks?${scopeQuery}`);
       if (!r.ok) throw new Error(String(r.status));
       const d = await r.json();
-      const names = ((d.clusters ?? []) as { name: string; access: string }[])
+      if (!fresh()) return;
+      setCollection(d);
+      const names = ((d.clusters ?? []) as { id?: string; name: string; access: string }[])
         .filter((c) => c.access === 'connected')
-        .map((c) => c.name);
+        .map((c) => c.id ?? c.name);
       // Per-cluster allocation in parallel — a failing cluster becomes {data:null}
       // (미가용) instead of failing the whole page.
       const settled = await Promise.all(names.map(async (cluster): Promise<ClusterAlloc> => {
@@ -91,14 +105,18 @@ export default function EksFleetCostPage() {
     } finally {
       if (fresh()) setBusy(false);
     }
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  }, [scopeQuery]);
+  useEffect(() => {
+    void load();
+    return () => { ++seqRef.current; };
+  }, [load]);
 
   // Pod별 NFM 전송비용: NFM 모니터 쿼리는 최대 1시간 윈도우(API 한도)라 최근 1h를 실측하고
   // 테이블의 '일간' 기준에 맞춰 ×24 외삽한다 (KPI의 '월간 추정 = 일간 × 30'과 같은 방식).
   // 미온보딩 클러스터/실패는 조용히 빠지고 해당 셀은 '—' (best-effort, 테이블을 막지 않음).
   const [xfer, setXfer] = useState<Map<string, number> | null>(null);
   useEffect(() => {
+    setXfer(null);
     if (clusterNames.length === 0) return;
     let live = true;
     Promise.all(clusterNames.map(async (cluster) => {
@@ -149,8 +167,8 @@ export default function EksFleetCostPage() {
       monthly += data.kpi.monthly;
       podCount += data.kpi.podCount;
       for (const ns of data.namespaces) nsMap.set(ns.name, (nsMap.get(ns.name) ?? 0) + ns.value);
-      for (const p of data.pods) pods.push({ cluster, ...p });
-      for (const n of data.nodes ?? []) nodes.push({ cluster, ...n });
+      for (const p of data.pods) pods.push({ ...p, cluster });
+      for (const n of data.nodes ?? []) nodes.push({ ...n, cluster });
       hasNetwork = hasNetwork || data.hasNetwork;
       hasPv = hasPv || data.hasPv;
       hasGpu = hasGpu || data.hasGpu;
@@ -188,7 +206,7 @@ export default function EksFleetCostPage() {
 
   // v1 parity: Network/Storage(PV)/GPU 컬럼은 어떤 클러스터라도 해당 값을 보고할 때만 표시.
   const columns: Column[] = [
-    { key: 'cluster', label: 'Cluster' },
+    { key: 'clusterLabel', label: 'Cluster' },
     { key: 'namespace', label: 'Namespace' },
     { key: 'pod', label: 'Pod' },
     { key: 'node', label: 'Node' },
@@ -207,16 +225,17 @@ export default function EksFleetCostPage() {
     const x1h = xfer?.get(`${p.cluster}|${p.namespace}/${p.pod}`);
     const xDay = x1h == null ? undefined : x1h * 24;
     return {
-      cluster: p.cluster, namespace: p.namespace, pod: p.pod, node: p.node,
+      cluster: p.cluster, clusterLabel: eksClusterLabel(p.cluster), namespace: p.namespace, pod: p.pod, node: p.node,
       cpu_h: usd(p.cpuCost), ram_h: usd(p.ramCost), net_h: usd(p.networkCost),
       pv_h: usd(p.pvCost), gpu_h: usd(p.gpuCost), xfer_h: xferUsd(xDay), total_h: usd(p.totalCost),
       _raw: { ...p, nfmTransferUsd1h: x1h ?? null, nfmTransferUsdDayEst: xDay ?? null } as unknown as Record<string, unknown>,
     };
   });
 
-  const segOptions = useMemo(() => [ALL, ...(results ?? []).map((r) => r.cluster)], [results]);
+  const segOptions = useMemo(() => [ALL, ...(results ?? []).map((r) => ({ value: r.cluster, label: eksClusterLabel(r.cluster) }))], [results]);
   const anyEstimate = scoped.some((r) => r.data.source === 'request-estimate');
   const selectCls = 'rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[12px]';
+  const discoveryComplete = !collection.errors?.length && !collection.truncated;
 
   return (
     <>
@@ -226,15 +245,18 @@ export default function EksFleetCostPage() {
         right={<RefreshButton busy={busy} onClick={load} capturedAt={capturedAt} />}
       />
       <div className="px-8 py-8 flex flex-col gap-6">
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
-        {!results && !err && <div className="text-ink-400">로딩 중…</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        <EksCollectionNotice status={collection} />
+        {!results && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
         {results && !err && (
           <>
             {results.length === 0 ? (
               <Card>
                 <p className="text-[13px] text-ink-600">
-                  연결된 EKS 클러스터가 없습니다 — EKS 페이지에서 클러스터를 등록하세요.
+                  {tt(discoveryComplete
+                    ? '연결된 EKS 클러스터가 없습니다 — EKS 페이지에서 클러스터를 등록하세요.'
+                    : '일부 계정/리전 조회가 완료되지 않아 연결된 클러스터 유무를 확인할 수 없습니다 — 계정/리전 범위를 좁혀 다시 조회하세요.')}
                 </p>
               </Card>
             ) : (
@@ -243,11 +265,11 @@ export default function EksFleetCostPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {results.map(({ cluster, data }) =>
                     data === null ? (
-                      <Badge key={cluster} tone="neutral" variant="soft">{cluster}: 미가용</Badge>
+                      <Badge key={cluster} tone="neutral" variant="soft">{eksClusterLabel(cluster)}: {tt('미가용')}</Badge>
                     ) : data.source === 'request-estimate' ? (
-                      <Badge key={cluster} tone="brand" variant="soft" dot>{cluster}: 요청 기반 추정</Badge>
+                      <Badge key={cluster} tone="brand" variant="soft" dot>{eksClusterLabel(cluster)}: {tt('요청 기반 추정')}</Badge>
                     ) : (
-                      <Badge key={cluster} tone="positive" variant="soft" dot>{cluster}: OpenCost 실측</Badge>
+                      <Badge key={cluster} tone="positive" variant="soft" dot>{eksClusterLabel(cluster)}: {tt('OpenCost 실측')}</Badge>
                     ),
                   )}
                 </div>
@@ -258,7 +280,7 @@ export default function EksFleetCostPage() {
 
                 {anyEstimate && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-700">
-                    일부 클러스터는 OpenCost 미가용 — Pod 리소스 <b>요청(request) 기반 추정</b>입니다 (요청 × 단가, 실측 아님). 정확한 비용은 OpenCost 설치 후 표시됩니다.
+                    {tt('일부 클러스터는 OpenCost 미가용 — Pod 리소스 요청(request) 기반 추정입니다 (요청 × 단가, 실측 아님). 정확한 비용은 OpenCost 설치 후 표시됩니다.')}
                   </div>
                 )}
 
@@ -266,8 +288,8 @@ export default function EksFleetCostPage() {
                   <Card>
                     <p className="text-[13px] text-ink-600">
                       {sel === ALL
-                        ? '비용 데이터를 사용할 수 있는 클러스터가 없습니다 — 각 클러스터의 OpenCost 설치 상태를 확인하세요.'
-                        : `${sel}: 비용 데이터 미가용 — 클러스터의 OpenCost 설치 상태를 확인하세요.`}
+                        ? tt('비용 데이터를 사용할 수 있는 클러스터가 없습니다 — 각 클러스터의 OpenCost 설치 상태를 확인하세요.')
+                        : `${eksClusterLabel(sel)}: ${tt('비용 데이터 미가용 — 클러스터의 OpenCost 설치 상태를 확인하세요.')}`}
                     </p>
                   </Card>
                 ) : (
@@ -298,7 +320,7 @@ export default function EksFleetCostPage() {
                       <div className="w-full max-w-[280px]">
                         <Input
                           inputSize="sm"
-                          placeholder="검색…"
+                          placeholder={tt('검색…')}
                           value={query}
                           onChange={(e) => setQuery(e.target.value)}
                           icon={<Search className="h-3.5 w-3.5" />}
@@ -308,7 +330,7 @@ export default function EksFleetCostPage() {
                         <label className="flex items-center gap-1.5 text-[12px] text-ink-500">
                           Cluster
                           <select value={tableCluster} onChange={(e) => setTableCluster(e.target.value)} className={selectCls}>
-                            {clusterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                            {clusterOptions.map((c) => <option key={c} value={c}>{eksClusterLabel(c)}</option>)}
                           </select>
                         </label>
                       )}
@@ -333,6 +355,42 @@ export default function EksFleetCostPage() {
                       onRowClick={(r) => setSelected((r._raw ?? r) as Record<string, unknown>)}
                     />
 
+                    {/* gap L218 (v1 dual-axis parity → per-series-scaled grouped bars): node
+                        daily cost + pod count from the SAME merged data (no new fetch).
+                        Cost-desc sorted, Top 15. Pod counts render ONLY for clusters whose
+                        attribution is COMPLETE (every pod carries a node — OpenCost can omit
+                        pod→node per pod); any unattributed pod makes the whole cluster's
+                        counts unknowable (a shown count could undercount), so its nodes
+                        render '—', never a confident 0. */}
+                    {merged.nodes.length > 0 && (() => {
+                      const podsByNode = new Map<string, number>();
+                      const clustersWithUnattributed = new Set<string>();
+                      for (const pd of merged.pods) {
+                        if (!pd.node) { clustersWithUnattributed.add(pd.cluster); continue; }
+                        const k = `${pd.cluster}/${pd.node}`;
+                        podsByNode.set(k, (podsByNode.get(k) ?? 0) + 1);
+                      }
+                      const data = [...merged.nodes]
+                        .sort((a, b) => b.totalCost - a.totalCost)
+                        .slice(0, 15)
+                        .map((n) => ({
+                          label: `${eksClusterLabel(n.cluster)}/${n.node}`,
+                          cost: n.totalCost,
+                          pods: clustersWithUnattributed.has(n.cluster) ? null : podsByNode.get(`${n.cluster}/${n.node}`) ?? 0,
+                        }));
+                      return (
+                        <GroupedBarList
+                          title={merged.nodes.length > 15 ? `${tt('Node별 일일 비용 + Pod 수')} (Top 15/${merged.nodes.length})` : tt('Node별 일일 비용 + Pod 수')}
+                          data={data}
+                          labelKey="label"
+                          series={[
+                            { key: 'cost', label: tt('일일 비용'), color: '#3D6FB5', fmt: (v) => usd(v) },
+                            { key: 'pods', label: 'Pods', color: '#39C2B0' },
+                          ]}
+                        />
+                      );
+                    })()}
+
                     {merged.nodes.length > 0 && (
                       <Card title="Node별 비용 (일간)" padded={false}>
                         <table className="w-full">
@@ -342,7 +400,7 @@ export default function EksFleetCostPage() {
                           <tbody>
                             {merged.nodes.map((n) => (
                               <tr key={`${n.cluster}/${n.node}`} className="border-b border-ink-50 last:border-0">
-                                <td className="px-3 py-1.5 font-mono text-[11.5px] text-ink-500">{n.cluster}</td>
+                                <td className="px-3 py-1.5 font-mono text-[11.5px] text-ink-500">{eksClusterLabel(n.cluster)}</td>
                                 <td className="px-3 py-1.5 font-mono text-[11.5px] text-ink-600">{n.node}</td>
                                 <td className="tabular px-3 py-1.5 text-[12px] text-ink-600">{usd(n.cpuCost)}</td>
                                 <td className="tabular px-3 py-1.5 text-[12px] text-ink-600">{usd(n.ramCost)}</td>
@@ -361,6 +419,9 @@ export default function EksFleetCostPage() {
         )}
 
         {clusterNames.length > 0 && <PodTransferSection clusters={clusterNames} />}
+
+        {/* Gap L217: collapsible calculation-transparency panel — always available. */}
+        <CostBasisPanel />
       </div>
 
       <DetailPanel

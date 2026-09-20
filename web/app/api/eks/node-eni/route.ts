@@ -1,6 +1,9 @@
+import { eksReadFailure, type EksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { ec2DiagFleetLive } from '@/lib/metrics';
+import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
+import { isAllowed } from '@/lib/eks-registry';
 
 // IPv4 addresses per ENI for common instance types (AWS 공식 한도표의 자주 쓰는 항목만 —
 // 미등재 타입은 v1과 동일하게 15로 폴백). 정확한 전수 조회는 DescribeInstanceTypes가 필요.
@@ -27,19 +30,32 @@ const pick = (o: Record<string, unknown>, ...keys: string[]): unknown => {
 
 /**
  * EKS Node ENI panel (v1 parity): the node's EC2 network interfaces + IP capacity,
- * matched from the SYNCED ec2 inventory row by private DNS name — no live EC2 call.
+ * matched from SYNCED ec2 inventory by account, region and private DNS — no live EC2 call.
  */
 export async function GET(request: Request) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
-  const node = new URL(request.url).searchParams.get('node') ?? '';
+  const search = new URL(request.url).searchParams;
+  const node = search.get('node') ?? '';
   if (!node) return Response.json({ status: 'error', message: 'node required' }, { status: 400 });
+  const cluster = search.get('cluster');
+  if (cluster === '' || (!cluster && (search.has('account') || search.has('region')))) {
+    return Response.json({ status: 'error', message: 'cluster required for scoped lookup' }, { status: 400 });
+  }
   try {
+    // Legacy node-only callers remain host/default-region only.
+    const context = cluster
+      ? await resolveEksCluster(cluster, search)
+      : { accountId: 'self', region: process.env.AWS_REGION || 'ap-northeast-2' };
+    if ('id' in context && !(await isAllowed(context.id))) {
+      return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404 });
+    }
     const r = await getPool().query<{ id: string; data: Record<string, unknown> }>(
       `SELECT resource_id AS id, data FROM inventory_resources
-       WHERE resource_type='ec2' AND (data->>'private_dns_name') = $1 LIMIT 1`,
-      [node],
+       WHERE resource_type='ec2' AND (data->>'private_dns_name') = $1
+         AND account_id = $2 AND region = $3 LIMIT 1`,
+      [node, context.accountId, context.region],
     );
     const row = r.rows[0];
     if (!row) return Response.json({ found: false });
@@ -59,20 +75,24 @@ export async function GET(request: Request) {
     const maxEnis = Number(d.max_enis) || null;
     const instanceType = typeof d.instance_type === 'string' ? d.instance_type : null;
     const ipv4PerEni = instanceType ? IPV4_PER_ENI[instanceType] ?? 15 : 15; // v1 폴백: /15
-    // 인스턴스 트래픽 (1h): CloudWatch에 ENI별 메트릭은 없음 — 인스턴스 레벨로 정직하게 표시.
+    // 인스턴스 트래픽: CloudWatch에 ENI별 메트릭은 없음 — 인스턴스 레벨로 정직하게 표시.
+    // completeBuckets: 타일이 rate(÷3600)를 파생하므로 진행 중 부분 버킷이 아니라 '완결된
+    // 직전 1시간' 버킷을 사용(부분 Sum÷3600은 정시 직후 ~12× 과소 표시 — metrics.ts perSecond 선례).
     let traffic: { netIn: number | null; netOut: number | null; pktIn: number | null; pktOut: number | null } | null = null;
+    let trafficFailure: EksReadFailure | undefined;
     try {
-      const m = (await ec2DiagFleetLive([row.id], typeof d.region === 'string' ? d.region : undefined))[row.id] ?? {};
+      const m = (await ec2DiagFleetLive([row.id], context.region, 3600, true, context.accountId))[row.id] ?? {};
       traffic = {
         netIn: m.netIn ?? null, netOut: m.netOut ?? null,
         pktIn: m.pktIn ?? null, pktOut: m.pktOut ?? null,
       };
-    } catch { /* traffic omitted */ }
+    } catch (error) { trafficFailure = eksReadFailure(error, 'node-eni-traffic'); }
     return Response.json({
       found: true,
       instanceId: row.id,
       ipv4PerEni,
       traffic,
+      ...(trafficFailure ? { trafficReason: trafficFailure.reason, trafficMessage: trafficFailure.message } : {}),
       instanceType: (d.instance_type as string | undefined) ?? null,
       maxEnis,
       eniCount: enis.length,
@@ -80,6 +100,6 @@ export async function GET(request: Request) {
       enis,
     });
   } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    return Response.json({ status: 'error', ...eksReadFailure(e, 'node-eni') }, { status: e instanceof EksScopeError ? e.status : 500 });
   }
 }

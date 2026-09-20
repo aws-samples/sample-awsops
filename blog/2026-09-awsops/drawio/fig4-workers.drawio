@@ -1,0 +1,151 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net">
+  <diagram id="fig4-workers" name="비동기 워커와 공통 작업 기록">
+    <mxGraphModel grid="1" gridSize="10" page="1" pageWidth="1200" pageHeight="1000" dx="1200" dy="1000" pageScale="1" background="#FFFFFF" defaultFontFamily="Helvetica">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="비동기 워커와 공통 작업 기록" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="40" y="40" width="1120" height="50" />
+        </mxCell>
+        <mxCell id="web" value="AWS Fargate&lt;br&gt;Web BFF" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;fontFamily=Helvetica;fontSize=22;labelWidth=190;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="320" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="sqs" value="Amazon SQS" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;fontFamily=Helvetica;fontSize=22;labelWidth=190;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="300" y="320" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="dispatcher" value="디스패처&lt;br&gt;Lambda" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=190;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="320" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="sfn" value="AWS Step&lt;br&gt;Functions" style="sketch=0;outlineConnect=0;fontColor=#232F3E;dashed=0;html=1;shape=image;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB3aWR0aD0iNjRweCIgaGVpZ2h0PSI2NHB4IiB2aWV3Qm94PSIwIDAgNjQgNjQiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayI+CiAgICA8dGl0bGU+SWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BV1MtU3RlcC1GdW5jdGlvbnNfNDg8L3RpdGxlPgogICAgPGcgaWQ9Ikljb24tQXJjaGl0ZWN0dXJlLzQ4L0FyY2hfQVdTLVN0ZXAtRnVuY3Rpb25zXzQ4IiBzdHJva2U9Im5vbmUiIHN0cm9rZS13aWR0aD0iMSIgZmlsbD0ibm9uZSIgZmlsbC1ydWxlPSJldmVub2RkIj4KICAgICAgICA8ZyBpZD0iSWNvbi1BcmNoaXRlY3R1cmUtQkcvNDgvQXBwbGljYXRpb24tSW50ZWdyYXRpb24iIGZpbGw9IiNFNzE1N0IiPgogICAgICAgICAgICA8cmVjdCBpZD0iUmVjdGFuZ2xlIiB4PSIwIiB5PSIwIiB3aWR0aD0iNjQiIGhlaWdodD0iNjQiPjwvcmVjdD4KICAgICAgICA8L2c+CiAgICAgICAgPHBhdGggZD0iTTM3LDM0IEw1MiwzNCBMNTIsMzAgTDM3LDMwIEwzNywzNCBaIE01MywyOCBMMzYsMjggQzM1LjQ0NywyOCAzNSwyOC40NDggMzUsMjkgTDM1LDM1IEMzNSwzNS41NTIgMzUuNDQ3LDM2IDM2LDM2IEw1MywzNiBDNTMuNTUzLDM2IDU0LDM1LjU1MiA1NCwzNSBMNTQsMjkgQzU0LDI4LjQ0OCA1My41NTMsMjggNTMsMjggTDUzLDI4IFogTTM0LjUsNDkuNSBDMzQuNSw1MC44NzggMzMuMzc5LDUyIDMyLDUyIEMzMC42MjEsNTIgMjkuNSw1MC44NzggMjkuNSw0OS41IEMyOS41LDQ4LjEyMiAzMC42MjEsNDcgMzIsNDcgQzMzLjM3OSw0NyAzNC41LDQ4LjEyMiAzNC41LDQ5LjUgTDM0LjUsNDkuNSBaIE0xMiwzOCBMMTIsMzUgTDI1LDM1IEwyNSwzOCBMMjAsMzggTDE4LDM4IEwxMiwzOCBaIE0xMiwyOSBMMTIsMjYgTDE4LDI2IEwyMCwyNiBMMjUsMjYgTDI1LDI5IEwxMiwyOSBaIE0yOS41LDE0LjUgQzI5LjUsMTMuMTIyIDMwLjYyMSwxMiAzMiwxMiBDMzMuMzc5LDEyIDM0LjUsMTMuMTIyIDM0LjUsMTQuNSBDMzQuNSwxNS44NzggMzMuMzc5LDE3IDMyLDE3IEMzMC42MjEsMTcgMjkuNSwxNS44NzggMjkuNSwxNC41IEwyOS41LDE0LjUgWiBNNDQsNDIgTDIwLDQyIEwyMCw0MCBMMjYsNDAgQzI2LjU1Myw0MCAyNywzOS41NTIgMjcsMzkgTDI3LDM0IEMyNywzMy40NDggMjYuNTUzLDMzIDI2LDMzIEwyMCwzMyBMMjAsMzEgTDI2LDMxIEMyNi41NTMsMzEgMjcsMzAuNTUyIDI3LDMwIEwyNywyNSBDMjcsMjQuNDQ4IDI2LjU1MywyNCAyNiwyNCBMMjAsMjQgTDIwLDIyIEw0NCwyMiBMNDQsMjYgTDQ2LDI2IEw0NiwyMSBDNDYsMjAuNDQ4IDQ1LjU1MywyMCA0NSwyMCBMMzMsMjAgTDMzLDE4Ljg3OSBDMzUsMTguNDIyIDM2LjUsMTYuNjM3IDM2LjUsMTQuNSBDMzYuNSwxMi4wMTkgMzQuNDgxLDEwIDMyLDEwIEMyOS41MTksMTAgMjcuNSwxMi4wMTkgMjcuNSwxNC41IEMyNy41LDE2LjYzNyAyOSwxOC40MjIgMzEsMTguODc5IEwzMSwyMCBMMTksMjAgQzE4LjQ0NywyMCAxOCwyMC40NDggMTgsMjEgTDE4LDI0IEwxMSwyNCBDMTAuNDQ3LDI0IDEwLDI0LjQ0OCAxMCwyNSBMMTAsMzAgQzEwLDMwLjU1MiAxMC40NDcsMzEgMTEsMzEgTDE4LDMxIEwxOCwzMyBMMTEsMzMgQzEwLjQ0NywzMyAxMCwzMy40NDggMTAsMzQgTDEwLDM5IEMxMCwzOS41NTIgMTAuNDQ3LDQwIDExLDQwIEwxOCw0MCBMMTgsNDMgQzE4LDQzLjU1MiAxOC40NDcsNDQgMTksNDQgTDMxLDQ0IEwzMSw0NS4xMjEgQzI5LDQ1LjU3OCAyNy41LDQ3LjM2MyAyNy41LDQ5LjUgQzI3LjUsNTEuOTgxIDI5LjUxOSw1NCAzMiw1NCBDMzQuNDgxLDU0IDM2LjUsNTEuOTgxIDM2LjUsNDkuNSBDMzYuNSw0Ny4zNjMgMzUsNDUuNTc4IDMzLDQ1LjEyMSBMMzMsNDQgTDQ1LDQ0IEM0NS41NTMsNDQgNDYsNDMuNTUyIDQ2LDQzIEw0NiwzOCBMNDQsMzggTDQ0LDQyIFoiIGlkPSJBV1NfU3RlcF9GdW5jdGlvbnNfSWNvbl80OF9TcXVpZCIgZmlsbD0iI0ZGRkZGRiI+PC9wYXRoPgogICAgPC9nPgo8L3N2Zz4=;fontFamily=Helvetica;fontSize=22;labelWidth=190;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="320" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="wl" value="AWS Lambda&lt;br&gt;짧은 작업" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=190;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="960" y="150" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="wf" value="AWS Fargate 워커&lt;br&gt;긴 작업" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;fontFamily=Helvetica;fontSize=22;labelWidth=220;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="960" y="490" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="timer" value="Amazon EventBridge&lt;br&gt;5분 주기" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;fontFamily=Helvetica;fontSize=22;labelWidth=235;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="790" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="reaper" value="정리 작업(reaper)&lt;br&gt;Lambda" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=225;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="300" y="790" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="aurora" value="Amazon Aurora&lt;br&gt;공통 작업 기록" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;fontFamily=Helvetica;fontSize=22;labelWidth=225;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="790" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="status" value="실패 상태 갱신&lt;br&gt;Lambda" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=230;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="790" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="e0" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=0;exitY=0.8;entryX=0.25;entryY=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="web" target="aurora">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="20" y="382.4" />
+              <mxPoint x="20" y="660" />
+              <mxPoint x="539.5" y="660" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e0_label" value="① queued 기록" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="260" y="610" width="220" height="35" />
+        </mxCell>
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="web" target="sqs">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e1_label" value="② 큐 전달" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="175" y="310" width="125" height="35" />
+        </mxCell>
+        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="sqs" target="dispatcher">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e2_label" value="③ ESM" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="395" y="310" width="125" height="35" />
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="dispatcher" target="sfn">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e3_label" value="④ 실행 시작" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="615" y="310" width="125" height="35" />
+        </mxCell>
+        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="sfn" target="wl">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="885" y="339.5" />
+              <mxPoint x="885" y="189" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4_label" value="Lambda" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="840" y="160" width="110" height="35" />
+        </mxCell>
+        <mxCell id="e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.75;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="sfn" target="wf">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="885" y="378.5" />
+              <mxPoint x="885" y="529" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5_label" value="AWS Fargate&lt;br&gt;(.sync)" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="930" y="420" width="225" height="60" />
+        </mxCell>
+        <mxCell id="e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=1;exitY=0.9;entryX=0.5;entryY=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="sfn" target="status">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="850" y="390.2" />
+              <mxPoint x="850" y="710" />
+              <mxPoint x="779" y="710" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6_label" value="Catch" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="740" y="620" width="90" height="35" />
+        </mxCell>
+        <mxCell id="e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="status" target="aurora">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e7_label" value="failed 기록" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="615" y="780" width="125" height="35" />
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="timer" target="reaper">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e8_label" value="주기 호출" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="175" y="780" width="125" height="35" />
+        </mxCell>
+        <mxCell id="e9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="reaper" target="aurora">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e9_label" value="지연 작업 보정" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="395" y="775" width="125" height="45" />
+        </mxCell>
+        <mxCell id="e10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=1;exitY=0.5;entryX=0.75;entryY=0;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="wl" target="aurora">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="1090" y="189" />
+              <mxPoint x="1090" y="690" />
+              <mxPoint x="578.5" y="690" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10_label" value="running / succeeded" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="870" y="640" width="255" height="35" />
+        </mxCell>
+        <mxCell id="e11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=1;exitY=0.5;entryX=1;entryY=0.8;jumpStyle=arc;jumpSize=9;" edge="1" parent="1" source="wf" target="aurora">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="1150" y="529" />
+              <mxPoint x="1150" y="730" />
+              <mxPoint x="660" y="730" />
+              <mxPoint x="660" y="852.4" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11_label" value="running / succeeded" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="870" y="750" width="255" height="35" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

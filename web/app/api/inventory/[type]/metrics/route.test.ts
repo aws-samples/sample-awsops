@@ -25,7 +25,7 @@ vi.mock('@/lib/metrics', () => ({
 
 const req = (url = 'http://x/api/inventory/ec2/metrics', cookie = 'awsops_token=t') =>
   new Request(url, { headers: { cookie } });
-const ctx = (type = 'ec2') => ({ params: { type } });
+const ctx = (type = 'ec2') => ({ params: Promise.resolve({ type }) });
 
 beforeEach(() => {
   verifyUser.mockReset();

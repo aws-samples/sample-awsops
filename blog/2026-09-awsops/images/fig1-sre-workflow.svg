@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="910" viewBox="0 0 760 910" role="img" aria-labelledby="title desc">
+<title id="title">운영 신호를 개선 행동으로 연결하기</title>
+<desc id="desc">질문 정하기, 근거 모으기, AI와 분석하기, SRE가 판단하기의 네 단계</desc>
+<rect width="760" height="910" fill="#fff"/>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="none" stroke="#718096" stroke-width="1.5"/></marker></defs>
+<g font-family="Noto Sans CJK KR, Noto Sans KR, Arial, sans-serif">
+<text x="380" y="74" text-anchor="middle" font-size="32" font-weight="700" fill="#232F3E">운영 신호를 개선 행동으로 연결하기</text>
+<rect x="40" y="120" width="680" height="140" rx="18" fill="#EDF6FC" stroke="#147EBA" stroke-width="1.5"/>
+<circle cx="98" cy="190" r="28" fill="#147EBA"/>
+<text x="98" y="200" text-anchor="middle" font-size="28" font-weight="700" fill="#fff">1</text>
+<text x="152" y="174" font-size="32" font-weight="700" fill="#232F3E">질문 정하기</text>
+<text x="152" y="222" font-size="28" fill="#37475A">알람 · 연결 문제 · 비용 증가</text>
+<path d="M380,268 V292" fill="none" stroke="#718096" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="40" y="300" width="680" height="140" rx="18" fill="#EDF6FC" stroke="#147EBA" stroke-width="1.5"/>
+<circle cx="98" cy="370" r="28" fill="#147EBA"/>
+<text x="98" y="380" text-anchor="middle" font-size="28" font-weight="700" fill="#fff">2</text>
+<text x="152" y="354" font-size="32" font-weight="700" fill="#232F3E">근거 모으기</text>
+<text x="152" y="402" font-size="28" fill="#37475A">지표 · 로그 · 변경 이력 · 비용</text>
+<path d="M380,448 V472" fill="none" stroke="#718096" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="40" y="480" width="680" height="140" rx="18" fill="#F6F0FF" stroke="#7C3AED" stroke-width="1.5"/>
+<circle cx="98" cy="550" r="28" fill="#7C3AED"/>
+<text x="98" y="560" text-anchor="middle" font-size="28" font-weight="700" fill="#fff">3</text>
+<text x="152" y="534" font-size="32" font-weight="700" fill="#232F3E">AI와 분석하기</text>
+<text x="152" y="582" font-size="28" fill="#37475A">사실 · 원인 후보 · 추가 확인</text>
+<path d="M380,628 V652" fill="none" stroke="#718096" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="40" y="660" width="680" height="140" rx="18" fill="#EDF8F4" stroke="#147D68" stroke-width="1.5"/>
+<circle cx="98" cy="730" r="28" fill="#147D68"/>
+<text x="98" y="740" text-anchor="middle" font-size="28" font-weight="700" fill="#fff">4</text>
+<text x="152" y="714" font-size="32" font-weight="700" fill="#232F3E">SRE가 판단하기</text>
+<text x="152" y="762" font-size="28" fill="#37475A">우선순위 결정 · 변경 전후 검증</text>
+<text x="380" y="864" text-anchor="middle" font-size="26" fill="#37475A">AI는 조회와 제안 · 변경은 운영 절차로 실행</text>
+</g></svg>

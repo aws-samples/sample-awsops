@@ -15,7 +15,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('DatasourceExplorePage', () => {
   it('renders the Explore console scoped to the instance id (picker hidden)', async () => {
-    render(DatasourceExplorePage({ params: { id: '5' } }));
+    render(await DatasourceExplorePage({ params: Promise.resolve({ id: '5' }) }));
     await waitFor(() => expect(screen.getByPlaceholderText(/PromQL/)).toBeTruthy());
     // picker is shown and preselected to the scoped instance (no dead-end if id isn't resolvable)
     await waitFor(() => expect((screen.getByRole('combobox', { name: '데이터소스' }) as HTMLSelectElement).value).toBe('5'));

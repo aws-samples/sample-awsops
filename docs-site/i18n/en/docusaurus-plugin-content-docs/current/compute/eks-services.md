@@ -12,10 +12,15 @@ A page for viewing the list and network configuration of Kubernetes Services.
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info Selected scope and observed results
+The top account/region filter applies to this page. Totals count resources actually queried in the selected registered-cluster scope, not every AWS resource. Same-named cluster options include account and region. Partial failures or query-limit notices mean results may be incomplete; narrow the scope and retry.
+:::
+
+
 ## Key Features
 
 ### Stats Cards
-- **Total Services**: Total Service count (cyan)
+- **Total Services**: Observed Service count in the selected scope (cyan)
 - **ClusterIP**: ClusterIP type service count (green)
 - **NodePort**: NodePort type service count (purple)
 - **LoadBalancer**: LoadBalancer type service count (orange)
@@ -23,6 +28,12 @@ A page for viewing the list and network configuration of Kubernetes Services.
 ### Service Type Distribution Chart
 Visualize service type distribution with a pie chart:
 - ClusterIP, NodePort, LoadBalancer, Other (ExternalName, etc.)
+
+### Service Resources Charts
+Two top-15 bar charts of per-service resource requests:
+- **CPU per Service (millicores)** / **Memory per Service (MiB)** — each Service's selector is joined to **Running pods** in the same (cluster, namespace) and their scheduler-effective requests (max of app-container sum and init-container max, plus overhead) are summed
+- Values are requests (reservations), not live usage (stated in the caption)
+- Services without a selector (ExternalName / manual Endpoints) or with no matching Running pods are **excluded** rather than charted as 0, and a cluster whose pods fetch failed is excluded from the charts with its name shown in the caption
 
 ### Service Table
 | Column | Description |
@@ -93,7 +104,7 @@ You can analyze with the AI Assistant using queries like "Service list", "LoadBa
 
 ## Related Pages
 
-- [EKS Overview](../compute/eks) - Overall cluster status
+- [EKS Overview](../compute/eks) - Cluster view in the selected scope
 - [EKS Deployments](../compute/eks-deployments) - Deployments connected to Services
 - [VPC](../network/vpc) - Network configuration and load balancers
 - [EKS Explorer](../compute/eks-explorer) - Ingress details

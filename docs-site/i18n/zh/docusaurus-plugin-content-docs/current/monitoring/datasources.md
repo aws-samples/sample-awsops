@@ -1,7 +1,7 @@
 ---
 sidebar_position: 7
 title: 数据源
-description: 外部数据源集成管理 (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
+description: 外部数据源集成管理 (Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
@@ -21,7 +21,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 <DatasourceFlow />
 
 主要特点：
-- 支持 **7 种数据源**（Prometheus、Loki、Tempo、ClickHouse、Jaeger、Dynatrace、Datadog）
+- 支持 **8 种数据源**（Prometheus、Mimir、Loki、Tempo、ClickHouse、Jaeger、Dynatrace、Datadog）
 - **CRUD 管理**：添加、修改、删除数据源（仅限管理员）
 - **连接测试**：一键连接确认与响应时间测量
 - **查询执行**：支持各数据源专有的查询语言
@@ -32,6 +32,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 | 数据源 | 查询语言 | 默认端口 | 主要功能 |
 |-----------|----------|----------|----------|
 | **Prometheus** | PromQL | 9090 | 指标采集、告警、时序数据 |
+| **Mimir** | PromQL | 9009 | 长期指标存储、多租户（X-Scope-OrgID） |
 | **Loki** | LogQL | 3100 | 日志聚合、基于标签的搜索 |
 | **Tempo** | TraceQL | 3200 | 分布式追踪、Span 搜索 |
 | **ClickHouse** | SQL | 8123 | 列式分析、海量数据处理 |
@@ -42,7 +43,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 ## 添加数据源
 
 :::info 仅限管理员
-数据源的创建、修改、删除需要管理员角色。管理员是登记在 `data/config.json` 的 `adminEmails` 中的用户。非管理员进入页面时会显示 **Access Denied** 画面。
+数据源的创建、修改、删除需要管理员角色。v2 的管理员由 Cognito 管理员组或 SSM 邮箱允许列表判定（v1 的 `data/config.json` `adminEmails` 方式已废弃）。非管理员进入页面时会显示 **Access Denied** 画面。
 :::
 
 :::info 与多账户无关
@@ -54,24 +55,27 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | **Name** | O | 数据源识别名称 |
-| **Type** | O | 数据源类型（从 7 种中选择） |
+| **Type** | O | 数据源类型（从 8 种中选择） |
 | **URL** | O | 端点 URL（例：`http://prometheus:9090`） |
 | **Authentication** | - | 认证方式（None、Basic、Bearer Token、Custom Header） |
-| **Timeout** | - | 请求超时（默认值：30 秒） |
-| **Cache TTL** | - | 缓存有效时间（默认值：5 分钟） |
-| **Database** | - | 数据库名称（ClickHouse 专用） |
+| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒）。ClickHouse 在所有路径应用 `max_execution_time` 上限，有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir 仅在 Explore 路径应用 API `timeout`，上限为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）仅存储该值，目前不生效 |
+| **Database** | - | 默认数据库名称（仅 ClickHouse，仅允许标识符） |
+
+:::note 与 v1 的差异
+v2 中没有 v1 的结果缓存 TTL 设置 — v2 查询路径刻意不做缓存（thin-BFF；结果缓存需要自己的过期披露机制）。Timeout 单位也从 v1 的毫秒改为秒（1–60）。
+:::
 
 ### 添加步骤
 
-1. 在 **Datasources** 页面点击 **Add Datasource** 按钮
+1. 在 **Datasources** 页面点击 **＋ 添加数据源** 按钮
 2. 选择数据源类型
 3. 输入名称、URL、认证信息
-4. 通过 **Test Connection** 确认连接
+4. 通过 **🧪 测试连接** 确认连接
 5. 点击 **Save** 保存
 
 ## 连接测试
 
-点击 **Test Connection** 按钮后，按数据源类型确认以下内容：
+点击 **测试连接** 按钮后，按数据源类型确认以下内容：
 
 | 数据源 | 测试端点 | 确认内容 |
 |-----------|-----------------|----------|
@@ -160,7 +164,7 @@ fetch logs | filter contains(content, "error") | limit 100
 
 对数据源 URL 应用以下安全检查：
 
-- **拦截私有 IP**：拦截 `10.x.x.x`、`172.16-31.x.x`、`192.168.x.x`、`127.0.0.1` 等内部 IP
+- **拦截对象**：仅拦截元数据（169.254.169.254）、回环、链路本地地址 — 按 ADR-007，私有（RFC1918）数据源端点是允许的（含反斜杠的 URL 会被拒绝，以防解析器差异被利用）
 - **拦截元数据端点**：拦截对 `169.254.169.254`（EC2 实例元数据）的访问
 - **拦截链路本地地址**：拦截 `169.254.x.x` 网段
 - **协议限制**：仅允许 `http://` 和 `https://`
@@ -193,27 +197,21 @@ AI 助手可以利用已注册的数据源执行分析。
 与数据源相关的问题通过 `datasource` 路由处理。AI 可以将 Steampipe 数据与外部数据源结合分析。
 :::
 
-## 配置参考
+## 设置参考
 
-### 通用配置
+### 通用设置
 
-| 配置 | 默认值 | 说明 |
+| 设置 | 默认值 | 说明 |
 |------|--------|------|
-| **timeout** | 30 秒 | 请求超时（最长 120 秒） |
-| **cacheTTL** | 300 秒（5 分钟） | 查询结果缓存有效时间 |
+| **Timeout** | 10 秒 | 上游查询执行上限（秒，1–60）。ClickHouse 在所有路径（Explore、服务图、代理）作为上限生效（调用方只能调得更短），连接器会将自身 HTTP 超时对齐到该上限之上（有效上限 55 秒 — 为保持在 Lambda 60 秒限制之下，56–60 秒的设置会缩短为 55 秒）；Prometheus/Mimir 通过 Explore 路径的 API `timeout` 参数生效，并在连接器 12 秒 HTTP 超时之下封顶为 10 秒 |
 
-### ClickHouse 专用
+### 仅 ClickHouse
 
-| 配置 | 默认值 | 说明 |
+| 设置 | 默认值 | 说明 |
 |------|--------|------|
-| **database** | `default` | 目标数据库名称 |
+| **Database** | （服务器默认） | 默认数据库名 — 仅允许标识符；`system`/`information_schema` 会被拒绝（Web 层与连接器双重校验） |
 
-### 限制事项
-
-- 可注册数据源的最大数量：无限制
-- 查询结果最大行数：1,000 行
-- ClickHouse：仅允许 SELECT 查询（拦截 DDL/DML）
-- URL：拦截私有 IP 及元数据端点
+限制：ClickHouse 查询必须通过只读守卫（拦截表函数与 SYSTEM），返回行数上限为 1,000 行（`max_result_rows`）。
 
 ## Explore 页面
 
@@ -284,6 +282,10 @@ Loki/Mimir/Tempo → `/monitoring`)。**不会自动发送** — 请确认内容
 
 
 ## Allowed Networks
+
+:::caution v1 文档
+本节描述的是 v1 的 Allowed Networks 功能，v2 中不存在 — 按 ADR-007，私有（RFC1918）数据源端点默认允许；仅拦截元数据/回环/链路本地地址。
+:::
 
 管理员可以针对被 SSRF 防护拦截的私有网络设置例外允许列表。
 

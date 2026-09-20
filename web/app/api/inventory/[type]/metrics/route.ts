@@ -14,7 +14,7 @@ type Card = { label: string; value: string | number; accent?: boolean };
 // per-region clients via the inventory row's region, so the average card and the Top-15
 // ranking are fleet-wide. ec2HourlyCost (Pricing) and rdsMetrics still query a single fixed
 // AWS_REGION client — those cards can go null/inaccurate for a non-default region selection.
-export async function GET(request: Request, { params }: { params: { type: string } }) {
+export async function GET(request: Request, { params: pendingParams }: { params: Promise<{ type: string }> }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
@@ -27,6 +27,7 @@ export async function GET(request: Request, { params }: { params: { type: string
   const regions: RegionScope = regionsParam === null || regionsParam === '__all__' ? '__all__' : regionsParam.split(',').filter(Boolean);
   const includeGlobal = url.searchParams.get('includeGlobal') !== '0';
   try {
+    const params = await pendingParams;
     if (params.type === 'ec2') {
       // Per-instance diagnostic fleet (page bottom table) — must run BEFORE the KPI-cards path.
       if (url.searchParams.get('ids') !== null) {
@@ -321,11 +322,15 @@ export async function GET(request: Request, { params }: { params: { type: string
       return Response.json({ nodes, brokerMetrics, health, lags, range });
     }
 
-    // ElastiCache/OpenSearch/MSK: per-resource live metrics for the detail panel (?id=).
+    // ElastiCache/OpenSearch/MSK/EBS: per-resource live metrics for the detail panel (?id=).
     if (hasLiveMetrics(params.type)) {
       const id = url.searchParams.get('id');
       if (id) {
         if (!/^[a-zA-Z0-9._-]{1,128}$/.test(id)) {
+          return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
+        }
+        // per-type shape (round-3 L3 minor): the sibling ebs fleet branch already pins vol- ids.
+        if (params.type === 'ebs_volume' && !/^vol-[0-9a-f]+$/.test(id)) {
           return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
         }
         // `account`/`region` (validated) reach assumedClient so member-account and

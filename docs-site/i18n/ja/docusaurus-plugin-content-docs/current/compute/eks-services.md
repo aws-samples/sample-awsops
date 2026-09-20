@@ -12,10 +12,14 @@ Kubernetes Service の一覧とネットワーク設定を確認できるペー�
 
 <Screenshot src="/screenshots/compute/eks-services.png" alt="EKS Services" />
 
+:::info アカウント・リージョンと観測範囲
+上部のアカウント・リージョン選択はこのページにも適用され、変更すると表示を再取得します。合計は、選択範囲の登録済みクラスターで観測できたリソースの値です。同名クラスターの選択肢にはアカウント・リージョンを併記します。一部失敗や取得上限は結果が不完全であることを示し、未観測のリソースが存在しないことを意味しません。
+:::
+
 ## 主な機能
 
 ### 統計カード
-- **Total Services**: 全 Service 数（シアン）
+- **Total Services**: 選択範囲で観測した Service 数（シアン）
 - **ClusterIP**: ClusterIP タイプのサービス数（緑）
 - **NodePort**: NodePort タイプのサービス数（紫）
 - **LoadBalancer**: LoadBalancer タイプのサービス数（オレンジ）
@@ -23,6 +27,12 @@ Kubernetes Service の一覧とネットワーク設定を確認できるペー�
 ### Service Type Distribution チャート
 サービスタイプ別の分布を円グラフで可視化します:
 - ClusterIP、NodePort、LoadBalancer、Other（ExternalName など）
+
+### Service Resources チャート
+サービス別リソース要求量の top-15 バーチャート 2 つ:
+- **CPU per Service (millicores)** / **Memory per Service (MiB)** — 各 Service のセレクタを同じ（クラスター, ネームスペース）の **Running Pod** に結合し、スケジューラ有効要求量（アプリコンテナ合計と init コンテナ最大値の大きい方 + overhead）を合算
+- 値は要求量（予約）であり実使用量ではありません（キャプションに明記）
+- セレクタのないサービス（ExternalName／手動 Endpoints）や一致する Running Pod のないサービスは 0 として描画せず**除外**され、Pod 取得に失敗したクラスターはチャートから除外されキャプションに名前が表示されます
 
 ### Service テーブル
 | カラム | 説明 |
@@ -93,7 +103,7 @@ AI Assistant で「Service の一覧」「LoadBalancer サービスの状況」�
 
 ## 関連ページ
 
-- [EKS Overview](../compute/eks) - クラスター全体の状況
+- [EKS Overview](../compute/eks) - 選択範囲のクラスター表示
 - [EKS Deployments](../compute/eks-deployments) - Service が接続された Deployment
 - [VPC](../network/vpc) - ネットワーク構成とロードバランサー
 - [EKS Explorer](../compute/eks-explorer) - Ingress の詳細確認

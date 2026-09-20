@@ -114,7 +114,7 @@ MFA가 활성화되지 않은 사용자가 있으면 상단에 경고 배너가 
 | `roleDetail` | 클릭 시 동적 SQL — 트러스트 정책 + 인스턴스 프로파일 포함 |
 
 :::info SCP 차단 컬럼 회피
-`mfa_enabled`, `attached_policy_arns`는 목록 쿼리에서 제외됩니다 (조직 SCP가 `ListMFADevices`, `ListAttachedUserPolicies`를 차단하는 환경 대응). MFA 통계는 별도 `summary` 쿼리에서 집계합니다.
+`iam_user.mfa_enabled`와 `iam_role.attached_policy_arns`는 추가 AWS 조회가 필요합니다. 역할 쿼리가 실패하면 `attached_policy_arns`만 제외하고 한 번 재시도합니다. 재시도에도 `GetRole`과 인스턴스 프로파일 조회가 남아 있어 실패할 수 있습니다. 재시도가 성공한 경우에만 기본 역할 행을 갱신하며, 정책 목록은 미확인(`unknown_attribute_count`)으로 남고 S3 접근 섹션은 “미동기화”로 표시합니다. 두 쿼리가 모두 실패하면 타입을 failed로 기록하고 프루닝 없이 마지막 정상 행을 보존합니다. 최종 상태에는 일반적인 도달 가능성·저장 결과도 반영됩니다. `inventory_sync_hydrate_fallback.remedy`를 확인하세요. 확인된 용량 문제에는 검토된 refill 조정이 필요하고, IAM/SCP 거부에는 `iam:ListAttachedRolePolicies` 권한 검토가 필요합니다. 속도 조정으로 권한 거부를 해결할 수는 없습니다(ADR-010, 2026-09-02 개정). 사용자 MFA 쿼리에는 이 폴백이 없으며, MFA 통계는 별도 summary 쿼리에서 계산합니다.
 :::
 
 ## 관련 페이지

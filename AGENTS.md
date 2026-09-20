@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 84fc58d39999 · generated-at: 2026-09-01 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 49617c2a0399 · generated-at: 2026-09-16 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -6,7 +6,7 @@
 
 **v2 is live on `main`** (Terraform · ECS Fargate · Aurora · AgentCore agents · async workers). v1.8.0 (`src/`, CDK/EC2/Steampipe, `/awsops` basePath) is decommissioned per ADR-016 — its code left the tree 2026-07-12 (`git tag v1-pre-code-removal-20260712`); AWS teardown Phase 4.1-4.3 (CFN stack `AwsopsStack`, ALB/SQS) is complete (2026-08-25), Phase 4.4/4.5 (orphan Lambdas, AgentCore gateways/Memory/Interpreter, deploy bucket) is UNCONFIRMED as of 2026-08-27 pending a re-run against a corrected 21-name list — see `docs/runbooks/v1-decommission.md` §Phase 4. v1 rules do NOT apply to v2. A diff under `web/`, `terraform/`, `agent/`, or `scripts/v2/` is v2.
 
-**ADR numbering:** ADR bodies (001–020 + the BASELINE register) live in the private upstream repository, not in this public tree — docs here cite ADR numbers for traceability only.
+**ADR numbering:** ADR bodies (001–021 + the BASELINE register) live in the private upstream repository, not in this public tree — docs here cite ADR numbers for traceability only.
 
 ## ⛔ Product posture (ADR bodies maintained in the private upstream repo)
 v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *proposal* (read-only).**
@@ -17,7 +17,7 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **🚩 Flag any PR that enables mutation/autonomy/BYO-MCP** — flips a frozen flag or wires the dark substrate live.
 
 ## Stack / runtime
-- **Web:** Next.js 14 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, PR #195/ADR-009).
+- **Web:** Next.js 15 / React 19 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, PR #195/ADR-009).
 - **Data:** Aurora Serverless v2 (PG 17.9) via node-pg (`web/lib/db.ts`, shared `getPool`). App state in Aurora, **not `data/*.json`** (v1 pattern). Schema = `terraform/foundation/data/schema.sql` + ULID migrations (`migrations/<ULID>_*.sql`, never append to schema.sql — a migration's `-- since:` header is checksum-immutable once merged, never retag it).
 - **IaC:** Terraform only (CDK dropped). Single root `terraform/foundation/`, partial S3 backend (`backend.hcl`, no DynamoDB), TF ≥1.15, provider `~>6.0`.
 - **Edge:** CloudFront(TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only → 504).
@@ -25,14 +25,22 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **Chat routing (LIVE):** regex fast-path (`web/lib/route.ts`, first-match-wins RULES) → Haiku classifier fallback; gated by `hybrid_routing_enabled`. **16 routing keys are registered** = 9 gateway-routed sections + `aws-data` + 6 auto-collect collectors (`web/lib/collectors/`); the latter 7 are web-BFF-local (not via AgentCore) and their Steampipe-backed execution is hard-disabled — they fail-open to normal routing at runtime.
 - **Async workers (P2):** enqueue → `worker_jobs` + SQS → ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions → RunLambda (short) or `ecs:runTask.sync` Fargate (long/OOM) → worker writes running/succeeded itself → status_updater on Catch sets failed (SFN can't write VPC Aurora) → reaper (5min) reconciles stale. Files: `terraform/foundation/workers.tf`, `scripts/v2/workers/`.
 
+- **EKS account isolation:** host defaults retain the web task role and Terraform AdminView entry; member discovery/tokens use the registered member role with its own AmazonEKSViewPolicy + minimal node-read RBAC (`awsops:eks-readonly`). The operator guide generates the manifest from `web/lib/eks-member-rbac.ts`; the app executes no grants. Member/nondefault-region IDs are full EKS ARNs, and no failed member read falls back to host credentials. Wildcard discovery explicitly covers configured/registered regions only; local registration cleanup after account disablement does not authorize reads.
+
 ## Build · Test · Lint (copy-paste; do not invent)
 ```bash
 # v2 web (cwd = web/) — scripts: dev / build / start / test (no lint script)
 cd web && npm ci && npm run build       # next build (standalone)
 cd web && npx vitest run                 # web test suite (vitest)
 
+# Required database CI tests (repo root; no AWS credentials/OIDC)
+npm ci --prefix web
+npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
+node --test scripts/v2/ci/*.test.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
+
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py -q
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl
@@ -40,12 +48,41 @@ terraform -chdir=terraform/foundation validate
 terraform -chdir=terraform/foundation plan -out tfplan   # controller runs `apply tfplan`
 
 # Makefile
-make migrate     # ULID migrations + awsops_sql_reader password sync — REQUIRED before agentcore
+make migrate     # CLI/private-host migrations + reader sync, before make agentcore
 make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait stable → smoke /api/health
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
+Dev Deploy Web requires readonly producer/ECR proof before migrations and promotes only that same digest. Dev Deploy AgentCore and current-source dev Deploy Web require the reusable private `deploy-migrations.yml` workflow before provisioning or image promotion. Guarded dev web pushes run it automatically; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release verifies the exact ECS/image deployment, then full runtime readiness including login/DB; the compatibility input cannot disable these checks. This is operator CI under ADR-005, not product autonomy. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before release. Main/preview and direct private-host CLI retain `make migrate`
+before `make agentcore`. Migrations and reader password sync always precede AgentCore provisioning. Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform
+1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. The three PostgreSQL suites above require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase and policy suites
+additionally use the locked web driver and TypeScript dependencies. All three PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
+
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
+
+Deploy Web wires producer receipts and successful migration outputs. Its controller calls
+composed `promote(env, expected_digest=...)` after readonly proof and service/read preflight.
+Preserve the validated project/digest. `AWS_ACCOUNT_ID_DEV` is required in every AWS-facing Deploy Web job,
+including main's dev-account exclusion check; the guard job does not need it. Build/image-proof select
+`IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs.
+Image-helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`.
+See `docs/runbooks/web-image-provenance.md` and `docs/runbooks/web-release.md`.
+
+Dev Deploy Web requires applied inventory (`steampipe_enabled`), AgentCore, workers and readiness, their deployed images/runtime and enabled dispatch. Every dev push/dispatch release requires private `runtime_deployment` capture and a restricted workload session, then the full runtime controller with `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`. Missing prerequisites fail closed. It performs collection, a billed model probe and two real worker jobs; manual `collect-runtime.yml` prepare is not release proof. Every current catalog type needs clean post-marker success with known counts/zero unknown attributes; retained operational degraded data does not pass release acceptance. Preserve web identity/image, fresh known resource, SSM/AgentCore/model and both owned worker proofs. Activation and bounded failure policy: `docs/runbooks/runtime-foundation.md`.
+The image helper's required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
+`python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
+
+Every web migration caller forces `AUTOMATIC_MIGRATION=1`. Automatic web migration requires `public.schema_migrations` and rejects its absence under the advisory lock; it never calls `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Standalone `deploy-migrations.yml --ref dev` or approved private-host `INITIALIZE_EMPTY_DB=1 make migrate` completes empty-only bootstrap, historical SQL and reader sync first. On initialized databases preserve checksums and the full pending-file guard, including older gaps. `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views and other unsupported SQL require reviewed standalone migration, then fresh `deploy-web.yml --ref dev -f build=true`; no flag or historical exemptions.
+
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Run all three with `python3 -m pytest -q scripts/v2/test_ci_web_read.py scripts/v2/test_ci_web_deploy.py scripts/v2/test_ci_web_workflow.py`. See `docs/runbooks/release-safety-primitives.md`; actionlint is optional local lint, not a CI prerequisite.
+
+Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; follow `docs/runbooks/review-codec-sandbox.md#verification`.
+
+HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh`) require
+Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
+`python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
+Never combine this hash-locked file with unhashed requirements.
+
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).
@@ -55,7 +92,7 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 - **arm64 required** for web/agent/worker images (`buildx --platform linux/arm64`).
 - **`HOSTNAME=0.0.0.0` must be a runtime env** (task-def `environment`) for Next standalone — image ENV is insufficient (ECS overwrites → health check UNHEALTHY).
 - **Fargate worker Dockerfiles use `CMD`, not exec-form `ENTRYPOINT`** (SFN `containerOverrides.command` appends to ENTRYPOINT → argv doubles).
-- **ECS `secrets` valueFrom needs execution-role perms** (not task role) — else `ResourceInitializationError`.
+- **Where ECS `secrets`/`valueFrom` is used (e.g. optional Steampipe), execution-role permissions are required**, otherwise `ResourceInitializationError`. The web pool instead uses task-role `rds-db:connect` as `awsops_web`; it receives no Aurora master password.
 - **No `-auto-approve` on shared infra** — saved `tfplan` only; long applies run by the controller.
 - **Flag-gate large new features** (`agentcore_enabled`, `workers_enabled`, `steampipe_enabled`, `hybrid_routing_enabled`, `finops_baseline_enabled` — default false → `plan` = No changes, $0).
 
@@ -63,6 +100,10 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 - Components `export default`. Resources `awsops-v2-*`; gateways `awsops-v2-{key}-gateway`; SSM under `/ops/awsops-v2/...` (`aws...` prefix is SSM-reserved).
 - Admin authority = Cognito admin group OR SSM email allowlist (`web/lib/admin.ts`, fail-closed) — NOT v1 `data/config.json` `adminEmails`.
 - Edge auth = Cognito + Lambda@Edge **RS256 JWKS** + iss/aud/token_use + OAuth `state` + PKCE public client. Primary login = self-hosted `/login` + `POST /api/auth/login` (unsigned public `InitiateAuth USER_PASSWORD_AUTH`; ADR-002[legacy 042]); Hosted-UI `/_callback` is a dark fallback. Server-side logout = Aurora `session_revocations` (LIVE control, PR #199 — BFF-side check; edge is JWT-only). Ownership converges on the immutable Cognito `sub` (#203); `legacy_email_owner_match` (**default true — currently ON live**, ECS taskdef env) is a migration-window switch, not a feature gate — it lets legacy email-keyed ownership rows still resolve (read + report PATCH/DELETE, via `matchesIdentity()`) while the sub-migration is in flight. Do not flag legacy email-keyed matching code as violating the sub-only invariant, and never approve flipping this to `false` without a completed `--apply` (not just a clean plan) confirming zero remaining legacy rows.
+
+## Documentation language
+
+Apply [docs/CLAUDE.md](docs/CLAUDE.md) and [docs/runbooks/CLAUDE.md](docs/runbooks/CLAUDE.md): new or rewritten developer/reviewer content under `docs/`, including runbooks, is English-only. Preserve facts in old bilingual bodies without adding parallel translations; their layout is migration backlog, not a parity requirement. Multilingual `docs-site/` product guides retain locale parity; root `README.md` and `CHANGELOG.md` retain English/Korean requirements. These scopes are separate.
 
 ## Review checklist
 1. **Posture:** no mutation/autonomy enabled (ADR-005); external write must satisfy ADR-007 governance; current truth = BASELINE.md.
@@ -74,6 +115,7 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 7. **Routing:** golden-routing fixture labels must match `route.ts` RULES order (first-match-wins); `observability` chat key must resolve to a real gateway at runtime.
 
 ## Do-not-"fix" traps (real bugs that look wrong, and aren't)
+- **AgentCore reconciliation:** preserve known gateway IDs after read/update failures for baseline Runtime routing and ADR-017 teardown. Keep deployed auth/protocol; reconcile only managed role/Lambda ARN/credential type/tool schema. The deployer needs `bedrock-agentcore:GetGateway`. Request acceptance/configuration match does not prove readiness; no new wait/recovery rules or automatic destructive `FAILED` recreation. Canonical contract: `docs/reference/05-agentcore.md`.
 - **Gateway key-derivation mismatch (`agent/agent.py:_resolve_gateway_key`):** `_discover_gateways` derives keys via `name.replace("awsops-","").replace("-gateway","")`, so `awsops-v2-external-obs-gateway` yields `v2-external-obs` — but the `GATEWAYS_JSON` env fallback and the `observability`→`external-obs` alias use the canonical `external-obs` (no `v2-` prefix). `_resolve_gateway_key` tries BOTH the canonical key and the `v2-` variant on purpose (coexistence shim across the two key-naming paths); do not "simplify" it to a single lookup — that reopens the exact silent-fallback-to-`ops` bug the shim fixed.
 - **Cross-account self-assume trap (`agent/agent.py`/`cross_account.py`):** v2 is single-account, but if chat picks the host account, the agent used to force `target_account_id=<host>` and then self-assume `AWSopsReadOnlyRole` — a role that only exists in v1 *target* accounts, not the host — causing an `AccessDenied` the agent misdiagnosed as "cross-account blocked." `cross_account.get_role_arn()` now returns `None` when the target is the host (use the exec role directly instead). Do not "fix" this back to assuming a role on the host.
 

@@ -1,0 +1,144 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" agent="AWSops figure builder">
+  <diagram id="fig2b-diagnosis" name="인벤토리와 예약 진단">
+    <mxGraphModel dx="1120" dy="1160" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="1120" pageHeight="1160" background="#FFFFFF" defaultFontFamily="Helvetica">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="인벤토리와 예약 진단" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=32;fontStyle=1;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="40" y="40" width="1040" height="50" />
+        </mxCell>
+        <mxCell id="inventory_heading" value="인벤토리 · Resource Graph" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=26;fontStyle=1;fontColor=#2E65AE;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="40" y="125" width="1030" height="40" />
+        </mxCell>
+        <mxCell id="steampipe" value="Steampipe&lt;br&gt;AWS Fargate" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="80" y="210" width="78" height="78" />
+        </mxCell>
+        <mxCell id="sync" value="동기화 Lambda&lt;br&gt;SQL·SDK / 15분" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="340" y="210" width="78" height="78" />
+        </mxCell>
+        <mxCell id="aurora" value="Amazon Aurora&lt;br&gt;인벤토리" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="600" y="210" width="78" height="78" />
+        </mxCell>
+        <mxCell id="graph" value="Resource Graph" style="rounded=1;arcSize=5;html=1;whiteSpace=wrap;strokeColor=#CCD5DF;fillColor=#F4F7FA;strokeWidth=1.5;fontFamily=Helvetica;fontSize=22;fontColor=#232F3E;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="820" y="210" width="240" height="80" />
+        </mxCell>
+        <mxCell id="inventory_0" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="steampipe" target="sync">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="inventory_0_label" value="구성 수집" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="180" y="210" width="150" height="30" />
+        </mxCell>
+        <mxCell id="inventory_1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="sync" target="aurora">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="inventory_1_label" value="저장" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="435" y="210" width="155" height="30" />
+        </mxCell>
+        <mxCell id="inventory_2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="aurora" target="graph">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="inventory_2_label" value="관계 재구축&lt;br&gt;기본 OFF" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=18;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="690" y="200" width="125" height="45" />
+        </mxCell>
+        <mxCell id="report_heading" value="예약 진단 · 관리자 활성화 후 실행" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=26;fontStyle=1;fontColor=#8B471F;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="40" y="430" width="1030" height="40" />
+        </mxCell>
+        <mxCell id="schedule" value="Amazon EventBridge&lt;br&gt;매시간 예약 확인" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;fontFamily=Helvetica;fontSize=22;labelWidth=235;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="80" y="530" width="78" height="78" />
+        </mxCell>
+        <mxCell id="sqs" value="Amazon SQS" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="340" y="530" width="78" height="78" />
+        </mxCell>
+        <mxCell id="sfn" value="AWS Step&lt;br&gt;Functions" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;dashed=0;html=1;shape=image;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB3aWR0aD0iNjRweCIgaGVpZ2h0PSI2NHB4IiB2aWV3Qm94PSIwIDAgNjQgNjQiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayI+CiAgICA8dGl0bGU+SWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BV1MtU3RlcC1GdW5jdGlvbnNfNDg8L3RpdGxlPgogICAgPGcgaWQ9Ikljb24tQXJjaGl0ZWN0dXJlLzQ4L0FyY2hfQVdTLVN0ZXAtRnVuY3Rpb25zXzQ4IiBzdHJva2U9Im5vbmUiIHN0cm9rZS13aWR0aD0iMSIgZmlsbD0ibm9uZSIgZmlsbC1ydWxlPSJldmVub2RkIj4KICAgICAgICA8ZyBpZD0iSWNvbi1BcmNoaXRlY3R1cmUtQkcvNDgvQXBwbGljYXRpb24tSW50ZWdyYXRpb24iIGZpbGw9IiNFNzE1N0IiPgogICAgICAgICAgICA8cmVjdCBpZD0iUmVjdGFuZ2xlIiB4PSIwIiB5PSIwIiB3aWR0aD0iNjQiIGhlaWdodD0iNjQiPjwvcmVjdD4KICAgICAgICA8L2c+CiAgICAgICAgPHBhdGggZD0iTTM3LDM0IEw1MiwzNCBMNTIsMzAgTDM3LDMwIEwzNywzNCBaIE01MywyOCBMMzYsMjggQzM1LjQ0NywyOCAzNSwyOC40NDggMzUsMjkgTDM1LDM1IEMzNSwzNS41NTIgMzUuNDQ3LDM2IDM2LDM2IEw1MywzNiBDNTMuNTUzLDM2IDU0LDM1LjU1MiA1NCwzNSBMNTQsMjkgQzU0LDI4LjQ0OCA1My41NTMsMjggNTMsMjggTDUzLDI4IFogTTM0LjUsNDkuNSBDMzQuNSw1MC44NzggMzMuMzc5LDUyIDMyLDUyIEMzMC42MjEsNTIgMjkuNSw1MC44NzggMjkuNSw0OS41IEMyOS41LDQ4LjEyMiAzMC42MjEsNDcgMzIsNDcgQzMzLjM3OSw0NyAzNC41LDQ4LjEyMiAzNC41LDQ5LjUgTDM0LjUsNDkuNSBaIE0xMiwzOCBMMTIsMzUgTDI1LDM1IEwyNSwzOCBMMjAsMzggTDE4LDM4IEwxMiwzOCBaIE0xMiwyOSBMMTIsMjYgTDE4LDI2IEwyMCwyNiBMMjUsMjYgTDI1LDI5IEwxMiwyOSBaIE0yOS41LDE0LjUgQzI5LjUsMTMuMTIyIDMwLjYyMSwxMiAzMiwxMiBDMzMuMzc5LDEyIDM0LjUsMTMuMTIyIDM0LjUsMTQuNSBDMzQuNSwxNS44NzggMzMuMzc5LDE3IDMyLDE3IEMzMC42MjEsMTcgMjkuNSwxNS44NzggMjkuNSwxNC41IEwyOS41LDE0LjUgWiBNNDQsNDIgTDIwLDQyIEwyMCw0MCBMMjYsNDAgQzI2LjU1Myw0MCAyNywzOS41NTIgMjcsMzkgTDI3LDM0IEMyNywzMy40NDggMjYuNTUzLDMzIDI2LDMzIEwyMCwzMyBMMjAsMzEgTDI2LDMxIEMyNi41NTMsMzEgMjcsMzAuNTUyIDI3LDMwIEwyNywyNSBDMjcsMjQuNDQ4IDI2LjU1MywyNCAyNiwyNCBMMjAsMjQgTDIwLDIyIEw0NCwyMiBMNDQsMjYgTDQ2LDI2IEw0NiwyMSBDNDYsMjAuNDQ4IDQ1LjU1MywyMCA0NSwyMCBMMzMsMjAgTDMzLDE4Ljg3OSBDMzUsMTguNDIyIDM2LjUsMTYuNjM3IDM2LjUsMTQuNSBDMzYuNSwxMi4wMTkgMzQuNDgxLDEwIDMyLDEwIEMyOS41MTksMTAgMjcuNSwxMi4wMTkgMjcuNSwxNC41IEMyNy41LDE2LjYzNyAyOSwxOC40MjIgMzEsMTguODc5IEwzMSwyMCBMMTksMjAgQzE4LjQ0NywyMCAxOCwyMC40NDggMTgsMjEgTDE4LDI0IEwxMSwyNCBDMTAuNDQ3LDI0IDEwLDI0LjQ0OCAxMCwyNSBMMTAsMzAgQzEwLDMwLjU1MiAxMC40NDcsMzEgMTEsMzEgTDE4LDMxIEwxOCwzMyBMMTEsMzMgQzEwLjQ0NywzMyAxMCwzMy40NDggMTAsMzQgTDEwLDM5IEMxMCwzOS41NTIgMTAuNDQ3LDQwIDExLDQwIEwxOCw0MCBMMTgsNDMgQzE4LDQzLjU1MiAxOC40NDcsNDQgMTksNDQgTDMxLDQ0IEwzMSw0NS4xMjEgQzI5LDQ1LjU3OCAyNy41LDQ3LjM2MyAyNy41LDQ5LjUgQzI3LjUsNTEuOTgxIDI5LjUxOSw1NCAzMiw1NCBDMzQuNDgxLDU0IDM2LjUsNTEuOTgxIDM2LjUsNDkuNSBDMzYuNSw0Ny4zNjMgMzUsNDUuNTc4IDMzLDQ1LjEyMSBMMzMsNDQgTDQ1LDQ0IEM0NS41NTMsNDQgNDYsNDMuNTUyIDQ2LDQzIEw0NiwzOCBMNDQsMzggTDQ0LDQyIFoiIGlkPSJBV1NfU3RlcF9GdW5jdGlvbnNfSWNvbl80OF9TcXVpZCIgZmlsbD0iI0ZGRkZGRiI+PC9wYXRoPgogICAgPC9nPgo8L3N2Zz4=;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="600" y="530" width="78" height="78" />
+        </mxCell>
+        <mxCell id="worker" value="AWS Fargate 워커&lt;br&gt;허용 범위 분석" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;fontFamily=Helvetica;fontSize=22;labelWidth=255;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="860" y="530" width="78" height="78" />
+        </mxCell>
+        <mxCell id="report_0" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="schedule" target="sqs">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="report_0_label" value="예약 Lambda" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="180" y="510" width="150" height="50" />
+        </mxCell>
+        <mxCell id="report_1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="sqs" target="sfn">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="report_1_label" value="디스패처&lt;br&gt;Lambda" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="435" y="495" width="155" height="60" />
+        </mxCell>
+        <mxCell id="report_2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="sfn" target="worker">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="report_2_label" value="진단 실행" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="695" y="520" width="155" height="35" />
+        </mxCell>
+        <mxCell id="report_3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=0.5;exitY=0;entryX=1;entryY=0.9;" edge="1" parent="1" source="worker" target="aurora">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="899" y="390" />
+              <mxPoint x="740" y="390" />
+              <mxPoint x="740" y="280.2" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="report_3_label" value="인벤토리 조회" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="730" y="380" width="220" height="30" />
+        </mxCell>
+        <mxCell id="report_bedrock" value="Amazon Bedrock" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;dashed=0;html=1;shape=image;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB3aWR0aD0iNjRweCIgaGVpZ2h0PSI2NHB4IiB2aWV3Qm94PSIwIDAgNjQgNjQiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayI+CiAgICA8dGl0bGU+SWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BbWF6b24tQmVkcm9ja180ODwvdGl0bGU+CiAgICA8ZyBpZD0iSWNvbi1BcmNoaXRlY3R1cmUvNDgvQXJjaF9BbWF6b24tQmVkcm9ja180OCIgc3Ryb2tlPSJub25lIiBzdHJva2Utd2lkdGg9IjEiIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCI+CiAgICAgICAgPGcgaWQ9Ikljb24tQXJjaGl0ZWN0dXJlLUJHLzQ4L01hY2hpbmUtTGVhcm5pbmciIGZpbGw9IiMwMUE4OEQiPgogICAgICAgICAgICA8cmVjdCBpZD0iUmVjdGFuZ2xlIiB4PSIwIiB5PSIwIiB3aWR0aD0iNjQiIGhlaWdodD0iNjQiPjwvcmVjdD4KICAgICAgICA8L2c+CiAgICAgICAgPGcgaWQ9Ikljb24tU2VydmljZS80OC9BbWF6b24tQmVkcm9ja180OCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTAuMDAwMDAwLCAxMC4wMDAwMDApIiBmaWxsPSIjRkZGRkZGIj4KICAgICAgICAgICAgPHBhdGggZD0iTTQxLDIwLjk5OTg4MTggQzQwLjQ0OCwyMC45OTk4ODE4IDQwLDIwLjU1MDg4MTggNDAsMTkuOTk5ODgxOCBDNDAsMTkuNDQ4ODgxOCA0MC40NDgsMTguOTk5ODgxOCA0MSwxOC45OTk4ODE4IEM0MS41NTIsMTguOTk5ODgxOCA0MiwxOS40NDg4ODE4IDQyLDE5Ljk5OTg4MTggQzQyLDIwLjU1MDg4MTggNDEuNTUyLDIwLjk5OTg4MTggNDEsMjAuOTk5ODgxOCBMNDEsMjAuOTk5ODgxOCBaIE0xNi45NzcsNDEuODQ3ODgxOCBMMTMuNzc0LDQwLjEwMTg4MTggTDE3LjUxNSwzNy44NTY4ODE4IEwxNi40ODUsMzYuMTQyODgxOCBMMTEuNzM4LDM4Ljk5MDg4MTggTDcsMzYuNDA1ODgxOCBMNywzMC41NjU4ODE4IEwxMS41MTUsMjcuODU2ODgxOCBMMTAuNDg1LDI2LjE0Mjg4MTggTDYsMjguODMzODgxOCBMMiwyNi40MzM4ODE4IEwyLDIyLjYxNzg4MTggTDcuNDQ3LDE5Ljg5NDg4MTggTDYuNTUzLDE4LjEwNDg4MTggTDIsMjAuMzgxODgxOCBMMiwxNy42MTc4ODE4IEw2Ljk1NiwxNS4xMzk4ODE4IEwxMSwxNy41NjU4ODE4IEwxMSwyMC4zODE4ODE4IEw3LjU1MywyMi4xMDQ4ODE4IEw4LjQ0NywyMy44OTQ4ODE4IEwxMi4wMDMsMjIuMTE2ODgxOCBMMTUuNTU3LDIzLjg3Njg4MTggTDE2LjQ0MywyMi4wODQ4ODE4IEwxMywyMC4zNzk4ODE4IEwxMywxNy41NjU4ODE4IEwxNy41MTUsMTQuODU2ODgxOCBDMTcuODE1LDE0LjY3Njg4MTggMTgsMTQuMzUwODgxOCAxOCwxMy45OTk4ODE4IEwxOCw4Ljk5OTg4MTc4IEwxNiw4Ljk5OTg4MTc4IEwxNiwxMy40MzM4ODE4IEwxMiwxNS44MzM4ODE4IEw4LDEzLjQzMzg4MTggTDgsNi41ODc4ODE3OCBMMTEsNC45MjE4ODE3OCBMMTEsMTAuOTk5ODgxOCBMMTMsMTAuOTk5ODgxOCBMMTMsMy44MTA4ODE3OCBMMTYuMDI0LDIuMTI5ODgxNzggTDIxLjAwMiw0LjYxNTg4MTc4IEwyMS4wMDEsMjYuNDQ5ODgxOCBMMTAuNDYzLDMzLjE1NTg4MTggTDExLjUzNywzNC44NDM4ODE4IEwyMS4wMDEsMjguODIxODgxOCBMMjEsMzkuNDMzODgxOCBMMTYuOTc3LDQxLjg0Nzg4MTggWiBNMzgsMjguOTk5ODgxOCBDMzguNTUyLDI4Ljk5OTg4MTggMzksMjkuNDQ4ODgxOCAzOSwyOS45OTk4ODE4IEMzOSwzMC41NTA4ODE4IDM4LjU1MiwzMC45OTk4ODE4IDM4LDMwLjk5OTg4MTggQzM3LjQ0OCwzMC45OTk4ODE4IDM3LDMwLjU1MDg4MTggMzcsMjkuOTk5ODgxOCBDMzcsMjkuNDQ4ODgxOCAzNy40NDgsMjguOTk5ODgxOCAzOCwyOC45OTk4ODE4IEwzOCwyOC45OTk4ODE4IFogTTMwLDM4Ljk5OTg4MTggQzI5LjQ0OCwzOC45OTk4ODE4IDI5LDM4LjU1MDg4MTggMjksMzcuOTk5ODgxOCBDMjksMzcuNDQ4ODgxOCAyOS40NDgsMzYuOTk5ODgxOCAzMCwzNi45OTk4ODE4IEMzMC41NTIsMzYuOTk5ODgxOCAzMSwzNy40NDg4ODE4IDMxLDM3Ljk5OTg4MTggQzMxLDM4LjU1MDg4MTggMzAuNTUyLDM4Ljk5OTg4MTggMzAsMzguOTk5ODgxOCBMMzAsMzguOTk5ODgxOCBaIE0zMiw1Ljk5OTg4MTc4IEMzMi41NTIsNS45OTk4ODE3OCAzMyw2LjQ0ODg4MTc4IDMzLDYuOTk5ODgxNzggQzMzLDcuNTUwODgxNzggMzIuNTUyLDcuOTk5ODgxNzggMzIsNy45OTk4ODE3OCBDMzEuNDQ4LDcuOTk5ODgxNzggMzEsNy41NTA4ODE3OCAzMSw2Ljk5OTg4MTc4IEMzMSw2LjQ0ODg4MTc4IDMxLjQ0OCw1Ljk5OTg4MTc4IDMyLDUuOTk5ODgxNzggTDMyLDUuOTk5ODgxNzggWiBNNDEsMTYuOTk5ODgxOCBDMzkuNjk4LDE2Ljk5OTg4MTggMzguNTk4LDE3LjgzODg4MTggMzguMTg0LDE4Ljk5OTg4MTggTDIzLjAwMSwxOC45OTk4ODE4IEwyMy4wMDEsMTQuOTk5ODgxOCBMMzIsMTQuOTk5ODgxOCBDMzIuNTUzLDE0Ljk5OTg4MTggMzMsMTQuNTUxODgxOCAzMywxMy45OTk4ODE4IEwzMyw5LjgxNTg4MTc4IEMzNC4xNjEsOS40MDE4ODE3OCAzNSw4LjMwMTg4MTc4IDM1LDYuOTk5ODgxNzggQzM1LDUuMzQ1ODgxNzggMzMuNjU0LDMuOTk5ODgxNzggMzIsMy45OTk4ODE3OCBDMzAuMzQ2LDMuOTk5ODgxNzggMjksNS4zNDU4ODE3OCAyOSw2Ljk5OTg4MTc4IEMyOSw4LjMwMTg4MTc4IDI5LjgzOSw5LjQwMTg4MTc4IDMxLDkuODE1ODgxNzggTDMxLDEyLjk5OTg4MTggTDIzLjAwMSwxMi45OTk4ODE4IEwyMy4wMDIsMy45OTc4ODE3OCBDMjMuMDAyLDMuNjE4ODgxNzggMjIuNzg4LDMuMjcyODgxNzggMjIuNDQ5LDMuMTAzODgxNzggTDE2LjQ0NywwLjEwNDg4MTc4MSBDMTYuMTUxLC0wLjA0MjExODIxOTUgMTUuODAzLC0wLjAzNDExODIxOTUgMTUuNTE1LDAuMTI1ODgxNzgxIEw2LjUxNSw1LjEyNTg4MTc4IEM2LjE5Nyw1LjMwMTg4MTc4IDYsNS42MzY4ODE3OCA2LDUuOTk5ODgxNzggTDYsMTMuMzgxODgxOCBMMC41NTMsMTYuMTA0ODgxOCBDMC4yMTQsMTYuMjc0ODgxOCAwLDE2LjYyMDg4MTggMCwxNi45OTk4ODE4IEwwLDI2Ljk5OTg4MTggQzAsMjcuMzUwODgxOCAwLjE4NSwyNy42NzY4ODE4IDAuNDg1LDI3Ljg1Njg4MTggTDUsMzAuNTY1ODgxOCBMNSwzNi45OTk4ODE4IEM1LDM3LjM2NTg4MTggNS4yLDM3LjcwMjg4MTggNS41MjEsMzcuODc3ODgxOCBMMTYuNTIxLDQzLjg3Nzg4MTggQzE2LjY3MSw0My45NTg4ODE4IDE2LjgzNSw0My45OTk4ODE4IDE3LDQzLjk5OTg4MTggQzE3LjE3OSw0My45OTk4ODE4IDE3LjM1Niw0My45NTE4ODE4IDE3LjUxNSw0My44NTY4ODE4IEwyMi41MTUsNDAuODU2ODgxOCBDMjIuODE1LDQwLjY3Njg4MTggMjMsNDAuMzUwODgxOCAyMywzOS45OTk4ODE4IEwyMywzMi45OTk4ODE4IEwyOSwzMi45OTk4ODE4IEwyOSwzNS4xODM4ODE4IEMyNy44MzksMzUuNTk3ODgxOCAyNywzNi42OTc4ODE4IDI3LDM3Ljk5OTg4MTggQzI3LDM5LjY1Mzg4MTggMjguMzQ2LDQwLjk5OTg4MTggMzAsNDAuOTk5ODgxOCBDMzEuNjU0LDQwLjk5OTg4MTggMzMsMzkuNjUzODgxOCAzMywzNy45OTk4ODE4IEMzMywzNi42OTc4ODE4IDMyLjE2MSwzNS41OTc4ODE4IDMxLDM1LjE4Mzg4MTggTDMxLDMxLjk5OTg4MTggQzMxLDMxLjQ0Nzg4MTggMzAuNTUzLDMwLjk5OTg4MTggMzAsMzAuOTk5ODgxOCBMMjMsMzAuOTk5ODgxOCBMMjMuMDAxLDI2Ljk5OTg4MTggTDMzLjU4NiwyNi45OTk4ODE4IEwzNS4zMDEsMjguNzE0ODgxOCBDMzUuMTEzLDI5LjEwNTg4MTggMzUsMjkuNTM3ODgxOCAzNSwyOS45OTk4ODE4IEMzNSwzMS42NTM4ODE4IDM2LjM0NiwzMi45OTk4ODE4IDM4LDMyLjk5OTg4MTggQzM5LjY1NCwzMi45OTk4ODE4IDQxLDMxLjY1Mzg4MTggNDEsMjkuOTk5ODgxOCBDNDEsMjguMzQ1ODgxOCAzOS42NTQsMjYuOTk5ODgxOCAzOCwyNi45OTk4ODE4IEMzNy41MzgsMjYuOTk5ODgxOCAzNy4xMDYsMjcuMTEyODgxOCAzNi43MTUsMjcuMzAwODgxOCBMMzQuNzA3LDI1LjI5Mjg4MTggQzM0LjUyLDI1LjEwNDg4MTggMzQuMjY2LDI0Ljk5OTg4MTggMzQsMjQuOTk5ODgxOCBMMjMuMDAxLDI0Ljk5OTg4MTggTDIzLjAwMSwyMC45OTk4ODE4IEwzOC4xODQsMjAuOTk5ODgxOCBDMzguNTk4LDIyLjE2MDg4MTggMzkuNjk4LDIyLjk5OTg4MTggNDEsMjIuOTk5ODgxOCBDNDIuNjU0LDIyLjk5OTg4MTggNDQsMjEuNjUzODgxOCA0NCwxOS45OTk4ODE4IEM0NCwxOC4zNDU4ODE4IDQyLjY1NCwxNi45OTk4ODE4IDQxLDE2Ljk5OTg4MTggTDQxLDE2Ljk5OTg4MTggWiIgaWQ9IkZpbGwtMyI+PC9wYXRoPgogICAgICAgIDwvZz4KICAgIDwvZz4KPC9zdmc+;fontFamily=Helvetica;fontSize=22;labelWidth=250;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="600" y="780" width="78" height="78" />
+        </mxCell>
+        <mxCell id="artifacts" value="Amazon S3&lt;br&gt;진단 리포트" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#6CAE3E;gradientDirection=north;fillColor=#1B660F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="860" y="780" width="78" height="78" />
+        </mxCell>
+        <mxCell id="report_4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.7;entryX=0.5;entryY=0;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="worker" target="report_bedrock">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="790" y="585" />
+              <mxPoint x="790" y="700" />
+              <mxPoint x="639" y="700" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="report_4_label" value="직접 추론" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="680" y="710" width="150" height="30" />
+        </mxCell>
+        <mxCell id="report_5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitPerimeter=0;entryPerimeter=0;exitX=1;exitY=0.8;entryX=1;entryY=0.5;" edge="1" parent="1" source="worker" target="artifacts">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="1050" y="592.4" />
+              <mxPoint x="1050" y="819" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="report_5_label" value="저장" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="965" y="710" width="75" height="35" />
+        </mxCell>
+        <mxCell id="digest" value="완료 리포트 집계&lt;br&gt;Lambda · 15분 주기" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;fontSize=22;labelWidth=260;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="340" y="970" width="78" height="78" />
+        </mxCell>
+        <mxCell id="sns" value="Amazon SNS&lt;br&gt;선택적 이메일" style="html=1;fontColor=#232F3E;shadow=0;glass=0;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns;fontFamily=Helvetica;fontSize=22;labelWidth=200;whiteSpace=wrap;overflow=visible;spacingTop=10;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="860" y="970" width="78" height="78" />
+        </mxCell>
+        <mxCell id="notify" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;fontFamily=Helvetica;fontSize=20;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="digest" target="sns">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="notify_label" value="수신 확인된 구독자에게 알림" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=#FFFFFF;align=center;verticalAlign=middle;fontSize=20;fontStyle=0;fontColor=#232F3E;fontFamily=Helvetica;spacing=0;overflow=visible;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="500" y="960" width="330" height="40" />
+        </mxCell>
+        <mxCell id="sdk_apis" value="AWS APIs (SDK)&lt;br&gt;일부 유형 직접 조회" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#545B64;fontColor=#232F3E;fontFamily=Helvetica;fontSize=18;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="370" width="190" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="sdk_read" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#545B64;strokeWidth=2;exitX=1;exitY=0.5;entryX=0;entryY=0.75;exitPerimeter=0;entryPerimeter=0;" edge="1" parent="1" source="sdk_apis" target="sync">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="250" y="395" />
+              <mxPoint x="250" y="270" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

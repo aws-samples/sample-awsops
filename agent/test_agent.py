@@ -11,6 +11,7 @@ import asyncio
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 
 def _install_stubs():
@@ -44,7 +45,23 @@ def _install_stubs():
 
 
 _install_stubs()
-import agent  # noqa: E402  (import after stubs are installed)
+# Gateway discovery shells out at import time; an offline unit suite must never
+# discover resources using the developer/runner's ambient AWS credentials.
+with patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
+    import agent  # noqa: E402  (import after stubs are installed)
+
+
+class ReadinessEntrypointTest(unittest.TestCase):
+    def test_failure_is_one_structured_event_and_never_chat_fallback(self):
+        import readiness
+        payload = {"mode": "deployment_readiness"}
+        failure = {"status": "not_ready", "reason": "inventory_unavailable"}
+        async def consume():
+            return [event async for event in agent.handler(payload)]
+        with patch.object(readiness, "handle_readiness", new=AsyncMock(return_value=failure)) as probe, \
+                patch.object(agent, "build_conversation", side_effect=AssertionError("chat fallback")):
+            self.assertEqual(asyncio.run(consume()), [failure])
+            probe.assert_awaited_once()
 
 
 class FakeTool:
@@ -61,10 +78,26 @@ class FilterToolsTest(unittest.TestCase):
         tools = [FakeTool('a'), FakeTool('b')]
         self.assertIs(agent._filter_tools(tools, None), tools)
 
-    def test_empty_allowlist_returns_all_unchanged_not_deny_all(self):
-        # [] means "no restriction" (the resolver omits the key when empty), NOT deny-all.
+    def test_empty_allowlist_denies_all(self):
         tools = [FakeTool('a'), FakeTool('b')]
-        self.assertIs(agent._filter_tools(tools, []), tools)
+        self.assertEqual(agent._filter_tools(tools, []), [])
+
+    def test_qualified_names_never_authorize_other_targets_with_the_same_short_name(self):
+        tools = [FakeTool('first___query'), FakeTool('second___query')]
+        self.assertEqual(agent._filter_tools(tools, ['query']), [])
+        self.assertEqual(names(agent._filter_tools(tools, ['second___query'])), ['second___query'])
+
+    def test_duplicate_identities_are_denied_before_deduplication(self):
+        tools = [FakeTool('same'), FakeTool('same'), FakeTool('unique')]
+        self.assertEqual(names(agent._filter_tools(tools, ['same', 'unique'])), ['unique'])
+
+    def test_malformed_allowlists_fail_closed(self):
+        for allow in ('a', {}, [None], [1]):
+            self.assertEqual(agent._filter_tools([FakeTool('a')], allow), [])
+
+    def test_reserved_wire_deny_all_wins_even_if_advertised_or_mixed_with_a_tool(self):
+        tools = [FakeTool('!awsops-deny-all!'), FakeTool('a')]
+        self.assertEqual(agent._filter_tools(tools, ['!awsops-deny-all!', 'a']), [])
 
     def test_filters_to_allowlist_preserving_tool_order(self):
         tools = [FakeTool('a'), FakeTool('b'), FakeTool('c')]
@@ -83,6 +116,36 @@ class FilterToolsTest(unittest.TestCase):
         # A non-empty allowlist matching nothing → tool-less (safe), not "all tools".
         tools = [FakeTool('a'), FakeTool('b')]
         self.assertEqual(agent._filter_tools(tools, ['zzz']), [])
+
+
+class HandlerToolPolicyTest(unittest.TestCase):
+    def test_duplicate_sources_are_denied_before_agent_construction(self):
+        from unittest.mock import MagicMock, patch
+        seen = []
+        class ModelStub:
+            async def stream_async(self, _prompt):
+                yield {"data": "ok"}
+        def construct(**kwargs):
+            seen.append(kwargs)
+            return ModelStub()
+        dark = types.ModuleType("anthropic_loop")
+        dark.should_use_anthropic_loop = lambda payload: False
+        duplicate = "iam-mcp-target___list_users"
+        unique = "iam-mcp-target___list_roles"
+        async def consume():
+            return [event async for event in agent.handler({
+                "gateway": "security", "messages": [{"role": "user", "content": "inspect"}],
+                "toolAllowlist": [duplicate, unique],
+            })]
+        with patch.dict(sys.modules, {"anthropic_loop": dark}), \
+                patch.object(agent, "MCPClient", return_value=MagicMock()), \
+                patch.object(agent, "get_all_tools", return_value=[FakeTool(duplicate), FakeTool(unique)]), \
+                patch.object(agent, "gather_integration_tools", return_value=[FakeTool(duplicate)]), \
+                patch.object(agent, "Agent", side_effect=construct):
+            asyncio.run(consume())
+        self.assertEqual(len(seen), 1)  # no fallback masquerading as tool-less success
+        self.assertEqual(names(seen[0]["tools"]), [unique])
+        self.assertNotIn(duplicate, seen[0]["system_prompt"])
 
 
 class SsrfGuardTest(unittest.TestCase):
