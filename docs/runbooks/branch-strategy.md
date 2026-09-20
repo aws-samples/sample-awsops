@@ -106,10 +106,12 @@ an app_version equality filter does not.
 
 Choose the next application version from this release line; imported legacy v1
 history and the separate `scripts/v2` tooling package are not its version source.
-The accumulated promotion was initially prepared as `0.10.0`; subsequent review
-hardening is included in the final `0.10.1` preparation. The promotion PR and aligned
-package/changelog metadata identify the release candidate. Future releases choose
-their increment from the actual changes.
+The accumulated promotion was initially prepared as `0.10.0` but was not promoted
+or tagged. Final `0.10.1` preparation consolidates that content and subsequent review
+hardening into one release section; it does not invent a published `0.10.0` release.
+The promotion PR, aligned package/changelog metadata and eventual main-merge tag
+identify the release. A dated preparation heading alone is not publication evidence.
+Future releases choose their increment from the actual changes.
 
 After the promotion's latest HEAD passes complete AI review and required CI, merge
 `dev → main` with a merge commit to retain ancestry between the standing branches.
