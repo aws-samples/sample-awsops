@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-20
+
 ### Changed
 
 - PR review: two independent Codex/Claude reviewers each cover correctness, security, data integration and documentation, followed by the existing chair. Shared limits admit complete raw/scrubbed diffs up to 6,000 lines/128 KiB, each scrubbed report up to 60,000 bytes, the report bundle up to 120,000 bytes and actual chair stdin up to 256 KiB. Missing evidence or oversized reports block before unnecessary model calls. Failure comments publish fixed diagnostics and unadjudicated severity-keyword presence booleans only, never raw model text or a code-safety claim. The common prompt is supplied once, completion declarations tolerate list spacing/order but require all four unique checklists and substantive per-checklist sections (including security), and policy violations remain blocking without a runtime-failure prerequisite. Models, permissions, image codec bounds and required checks remain; oversized accumulated promotions still require complete batching or authenticated coverage reuse before release.
@@ -674,6 +676,8 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 **작성 규칙:** 기능별로 실제 사용자에게 보이는 최종 동작을 서술하며, 카테고리별로 기능당 1개 항목만 둔다(공유 마이그레이션 목록처럼 여러 기능에 걸치는 인프라/스키마 항목은 별도의 한 줄로 두어도 된다). PR 번호·CI 리뷰 라운드 번호·시도 횟수는 적지 않는다 — 그런 정보는 git 히스토리와 PR 스레드에 남는다. 같은 기능에 대한 이후 수정이 이전 항목을 대체하면 새 항목을 추가하지 말고 기존 항목을 고쳐 쓴다.
 
 ## [Unreleased]
+
+## [0.10.1] - 2026-09-20
 
 ### Changed
 
