@@ -106,8 +106,10 @@ an app_version equality filter does not.
 
 Choose the next application version from this release line; imported legacy v1
 history and the separate `scripts/v2` tooling package are not its version source.
-For this accumulated feature release the application advances from `0.9.0` to
-`0.10.0`. Future releases choose their own increment from the actual changes.
+The accumulated promotion was initially prepared as `0.10.0`; subsequent review
+hardening is included in the final `0.10.1` preparation. The promotion PR and aligned
+package/changelog metadata identify the release candidate. Future releases choose
+their increment from the actual changes.
 
 After the promotion's latest HEAD passes complete AI review and required CI, merge
 `dev → main` with a merge commit to retain ancestry between the standing branches.
