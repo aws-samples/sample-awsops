@@ -105,8 +105,11 @@ def _validate_datasource_url(args):
         return ok({"valid": False, "error": f"URL parse error: {e}"})
 
     scheme = parsed.scheme or ""
-    # DNS's optional root dot does not change the host's identity.
-    hostname = (parsed.hostname or "").removesuffix(".")
+    # Match the resolver's IDNA spelling, including Unicode dot equivalents and the root dot.
+    try:
+        hostname = (parsed.hostname or "").encode("idna").decode("ascii").lower().removesuffix(".")
+    except UnicodeError:
+        return ok({"valid": False, "error": "Invalid DNS hostname"})
     port = parsed.port
     path = parsed.path or ""
 
