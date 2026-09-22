@@ -95,7 +95,7 @@ async function login(page: Page): Promise<void> {
     }
     await route.continue();
   });
-  // localhost / EC2 direct serves the app without Cognito (auth is enforced at CloudFront).
+  // Only explicitly configured loopback hosts bypass login; remote origins require HTTPS.
   if (URL_POLICY.local) {
     console.log('Local URL detected — skipping Cognito login.');
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -288,6 +288,7 @@ async function main(): Promise<void> {
     console.log(`\nAll screenshots captured to ${OUTPUT_DIR}`);
   } catch (err) {
     console.error('Fatal error:', err);
+    process.exitCode = 1;
   } finally {
     await browser.close();
   }

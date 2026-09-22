@@ -65,7 +65,7 @@ class PresenterView {
       sheets += link.outerHTML + '\n';
     });
     document.querySelectorAll('style').forEach(style => {
-      // Serialize the element instead of reinterpreting its text as HTML.
+      // Preserve authored style elements; raw-text CSS serialization is not a sanitizer.
       sheets += style.outerHTML + '\n';
     });
     return sheets;

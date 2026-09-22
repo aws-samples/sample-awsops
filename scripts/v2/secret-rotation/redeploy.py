@@ -53,7 +53,8 @@ def handler(event, context):
     # FAIL-CLOSED: redeploy ONLY when we positively confirm this is the Aurora master secret (the rule
     # matches RotationSucceeded broadly across accounts/secrets). Skip — never restart prod web — if
     # the target secret is unconfigured, the event id is missing, or it doesn't match EXACTLY (by
-    # canonical key; no substring matching). Each skip logs WARN so a wrong event shape is visible.
+    # canonical key; no substring matching). Log skip reasons without unrelated secret identifiers;
+    # operators can correlate the source event in CloudTrail for detailed diagnosis.
     if not want:
         print("[secret-rotation-redeploy] WARN: AURORA_SECRET_ARN unset — SKIPPING (fail-closed)", file=sys.stderr)
         return {"skipped": "no-target-configured"}

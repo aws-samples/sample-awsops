@@ -3,6 +3,11 @@
 Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,guard-main-prs}.yml`,
 `docs/runbooks/dev-repo-setup.md` (CI/OIDC bring-up)
 
+Adding a preview user requires explicit secret-selection entries in
+`.github/workflows/deploy-web.yml`, `terraform.yml`, and `deploy-agentcore.yml`,
+alongside the existing branch triggers, target guards and OIDC trust setup.
+Creating `TF_*_PREVIEW_<USER>` secrets alone does not enable a new branch.
+
 ## The shape / 전체 구조 — single public repo / 단일 공개 리포
 
 Everything lives in **`aws-samples/sample-awsops`** (public). All branches are publicly

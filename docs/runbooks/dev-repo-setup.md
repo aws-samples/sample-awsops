@@ -437,6 +437,11 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
+When onboarding another preview branch, add its explicit `TF_BACKEND_HCL_PREVIEW_<USER>`
+and `TF_TFVARS_PREVIEW_<USER>` selections to `deploy-web.yml`, `terraform.yml`, and
+`deploy-agentcore.yml`, including every relevant job. Update branch triggers, target
+allowlists and OIDC trust separately; creating secrets alone does not enable a branch.
+
 Store `AWS_ACCOUNT_ID_DEV` as a repository-wide secret identifying the shared development
 and preview account. Those stacks' configured role and STS caller must match it before AWS reads/writes. A missing backend
 may skip an advisory plan; missing account verification on a configured stack fails.

@@ -2,8 +2,51 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { hclString } from '../hcl-string.mjs';
 import { captureUrlPolicy } from '../../../docs-site/scripts/capture-url.mjs';
+
+test('capture credential refusal exits nonzero and closes the browser', async () => {
+  const requireWeb = createRequire(new URL('../../../web/package.json', import.meta.url));
+  const ts = requireWeb('typescript');
+  const source = readFileSync(new URL('../../../docs-site/scripts/capture-screenshots.ts', import.meta.url), 'utf8')
+    .replace(/\bmain\(\);\s*$/, 'module.exports.finished = main();');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  for (const currentUrl of ['https://app.example/login', 'https://app.example.evil.test/login']) {
+    let closed = false;
+    const errors = [];
+    const page = {
+      route: async () => {},
+      goto: async () => {},
+      waitForTimeout: async () => {},
+      url: () => currentUrl,
+    };
+    const browser = {
+      newContext: async () => ({ newPage: async () => page }),
+      close: async () => { closed = true; },
+    };
+    const module = { exports: {} };
+    const process = { env: { AWSOPS_CAPTURE_URL: 'https://app.example' }, argv: [] };
+    runInNewContext(compiled, {
+      module, exports: module.exports, process, __dirname: '/capture', URL,
+      console: { log() {}, warn() {}, error: (...args) => errors.push(args.join(' ')) },
+      require(name) {
+        if (name === 'playwright') return { chromium: { launch: async () => browser } };
+        if (name === './capture-url.mjs') return { captureUrlPolicy };
+        if (name === 'fs') return { mkdirSync() {} };
+        if (name === 'dns') return { setServers() {} };
+        if (name === 'path') return requireWeb('node:path');
+        throw new Error('Unexpected capture dependency: ' + name);
+      },
+    });
+    await module.exports.finished;
+    assert.equal(process.exitCode, 1);
+    assert.equal(closed, true);
+    assert.match(errors.join('\n'), /AWSOPS_LOGIN_PASSWORD is required|unconfigured origin/);
+  }
+});
 
 test('presenter title serialization does not turn title text into a script', () => {
   const requireWeb = createRequire(new URL('../../../web/package.json', import.meta.url));

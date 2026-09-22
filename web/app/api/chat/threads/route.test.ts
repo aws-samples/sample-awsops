@@ -25,7 +25,7 @@ describe('threads API', () => {
     expect(await res.json()).toEqual({ status: 'error', message: 'Unable to delete chat history' });
     expect(deleteAllThreads).toHaveBeenCalledWith('u1');
   });
-  beforeEach(() => { verifyUser.mockReset(); listThreads.mockReset(); getThread.mockReset(); deleteThread.mockReset(); });
+  beforeEach(() => { verifyUser.mockReset(); listThreads.mockReset(); getThread.mockReset(); deleteThread.mockReset(); deleteAllThreads.mockReset(); });
 
   it('GET list: 401 without auth', async () => {
     verifyUser.mockResolvedValue(null);
