@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useChat, parseFrame } from './useChat';
+import { useChat, parseFrame, newSessionId } from './useChat';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -16,6 +16,20 @@ const localStorageMock = (() => {
 Object.defineProperty(global, 'localStorage', { value: localStorageMock });
 
 describe('useChat hook and parseFrame', () => {
+  it('uses cryptographic randomness even without randomUUID', () => {
+    const random = vi.spyOn(Math, 'random').mockImplementation(() => { throw new Error('insecure'); });
+    const original = globalThis.crypto;
+    vi.stubGlobal('crypto', { getRandomValues: original.getRandomValues.bind(original) });
+    try {
+      const first = newSessionId();
+      expect(first).toMatch(/^[a-f0-9]{36}$/);
+      expect(newSessionId()).not.toBe(first);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      random.mockRestore();
+    }
+  });
   it('handles event: status and extracts phase and elapsedMs', () => {
     const frame = 'event: status\ndata: {"phase":"working","elapsedMs":3000}\n\n';
     const parsed = parseFrame(frame);

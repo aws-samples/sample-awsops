@@ -62,8 +62,8 @@ def handler(event, context):
               f"{list((event.get('detail') or {}).keys())} — SKIPPING (fail-closed)", file=sys.stderr)
         return {"skipped": "unidentified-secret"}
     if not _matches_target(got, want):
-        print(f"[secret-rotation-redeploy] ignoring rotation of {got} (not the Aurora master secret)")
-        return {"skipped": got}
+        print("[secret-rotation-redeploy] ignoring rotation of an unrelated secret")
+        return {"skipped": "unrelated-secret"}
     ecs = boto3.client("ecs")
     redeployed = []
     failed = {}

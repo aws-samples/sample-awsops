@@ -4,16 +4,27 @@ const verifyUser = vi.fn();
 const listThreads = vi.fn();
 const getThread = vi.fn();
 const deleteThread = vi.fn();
+const deleteAllThreads = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/chat-store', () => ({
   listThreads: (...a: unknown[]) => listThreads(...a),
   getThread: (...a: unknown[]) => getThread(...a),
   deleteThread: (...a: unknown[]) => deleteThread(...a),
+  deleteAllThreads: (...a: unknown[]) => deleteAllThreads(...a),
 }));
 
 const req = (url: string, method = 'GET') => new Request(url, { method, headers: { cookie: 'awsops_token=t' } });
 
 describe('threads API', () => {
+  it('DELETE all: does not disclose database errors', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u1' });
+    deleteAllThreads.mockRejectedValue(new Error('private database hostname and SQL detail'));
+    const { DELETE } = await import('./route');
+    const res = await DELETE(req('http://x/api/chat/threads', 'DELETE'));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ status: 'error', message: 'Unable to delete chat history' });
+    expect(deleteAllThreads).toHaveBeenCalledWith('u1');
+  });
   beforeEach(() => { verifyUser.mockReset(); listThreads.mockReset(); getThread.mockReset(); deleteThread.mockReset(); });
 
   it('GET list: 401 without auth', async () => {

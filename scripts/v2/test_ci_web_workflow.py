@@ -15,6 +15,18 @@ class WorkflowTest(unittest.TestCase):
     def workflow(self, name):
         return yaml.safe_load((self.root / ".github/workflows" / name).read_text())
 
+    def test_deployment_jobs_never_expand_the_entire_secrets_context(self):
+        for name in ("deploy-web.yml", "deploy-agentcore.yml", "terraform.yml"):
+            workflow = self.workflow(name)
+            self.assertNotRegex(yaml.safe_dump(workflow), r"\bsecrets\s*\[")
+            for job in workflow["jobs"].values():
+                for key, value in job.get("env", {}).items():
+                    if key not in ("USER_BACKEND_B64", "USER_TFVARS_B64"):
+                        continue
+                    for branch in ("atomoh", "ssminji", "whchoi"):
+                        self.assertIn(f"== '{branch}' && secrets.TF_", value)
+                    self.assertTrue(value.rstrip().endswith("|| '' }}"))
+
     def test_image_proof_uses_only_explicit_preview_secret_references(self):
         proof = self.workflow("deploy-web.yml")["jobs"]["image-proof"]
         self.assertNotRegex(yaml.safe_dump(proof), r"\bsecrets\s*\[")

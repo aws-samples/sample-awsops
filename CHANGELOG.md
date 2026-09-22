@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix, and rotation diagnostics omit unrelated secret identifiers.
+
 ## [0.10.1] - 2026-09-20
 
 **Migration ledger note:** The features grouped in this release include eight migrations retaining checksum-immutable `-- since: 0.9.0` headers: `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`, `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`, `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`, `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`, `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`, `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`, `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql`. Their declared ledger label remains `0.9.0` rather than the application version `0.10.1`; this is not evidence that those features shipped with the historical 0.9.0 release. FinOps retains the separately disclosed `0.8.0` labels. This is a focused example list, not an exhaustive migration inventory. Other retained labels include legacy `2.0.0`–`2.4.0` and the literal non-semver `2.x.0`; they are equally not application-release evidence. Header-less migrations use the apply-time `APP_VERSION` override or package-version fallback, so existing and fresh environments can record different labels for identical SQL. Existing ledger rows are not rewritten by a version bump. Audit a release using its Git tag/commit, migration files and checksums, not by filtering the ledger for `app_version = '0.10.1'`. Do not rewrite SQL headers or applied checksums to make the labels match.

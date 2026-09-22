@@ -299,6 +299,7 @@ class TestHttpsPinning(unittest.TestCase):
 
         self.server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
         server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         server_ctx.load_cert_chain(certfile=self.certfile, keyfile=self.keyfile)
         self.server.socket = server_ctx.wrap_socket(self.server.socket, server_side=True)
         self.port = self.server.server_port

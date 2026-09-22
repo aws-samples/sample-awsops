@@ -110,8 +110,8 @@ def _validate_datasource_url(args):
     path = parsed.path or ""
 
     # Detect NLB DNS pattern / NLB DNS 패턴 감지
-    is_nlb_dns = ".elb." in hostname and ".amazonaws.com" in hostname
-    is_alb_dns = ".elb." in hostname and ".amazonaws.com" in hostname and hostname.startswith("k8s-")
+    is_nlb_dns = ".elb." in hostname and hostname.endswith(".amazonaws.com")
+    is_alb_dns = ".elb." in hostname and hostname.endswith(".amazonaws.com") and hostname.startswith("k8s-")
 
     # Check if hostname resolves to private IP / 사설 IP 여부 확인
     is_private_ip = False
