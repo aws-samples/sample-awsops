@@ -14,6 +14,7 @@ import { runMigration, cleanupMigration, selectProject } from './run-migration.m
 import { databaseFailure } from '../migration-errors.mjs';
 import { loadCredentials, readJsonSecret, migrateDatabase } from '../migrate.mjs';
 import { initializeEmptyDatabase } from '../initialize-db.mjs';
+import { hclString } from '../hcl-string.mjs';
 const account = '123456789012';
 const region = 'ap-northeast-2';
 const project = 'awsops-v2-dev';
@@ -179,9 +180,12 @@ test('configure-generated project omission resolves in lockstep with the Terrafo
   assert.equal(defaultProject, 'awsops-v2');
   const source = await readFile(new URL('../configure.mjs', import.meta.url), 'utf8');
   // Run the actual pure HCL writers without the interactive/AWS entry point.
-  const writers = source.slice(source.indexOf('function hclString('), source.indexOf('function readExistingFlag('));
+  const start = source.indexOf('function hclStringList(');
+  const end = source.indexOf('function readExistingFlag(');
+  assert.ok(start >= 0 && end > start, 'configurator writers must be present');
+  const writers = source.slice(start, end);
   for (const createNetwork of [true, false]) {
-    const text = runInNewContext(`${writers}\nbuildTfvars(cfg)`, { cfg: {
+    const text = runInNewContext(`${writers}\nbuildTfvars(cfg)`, { hclString, cfg: {
       createNetwork, domainName: 'dev.example.com', hostedZoneName: 'example.com',
       vpcCidr: '10.0.0.0/16', existingVpcId: 'vpc-0123456789abcdef0',
       existingPrivateSubnetIds: ['subnet-0123456789abcdef0'], agentcoreEnabled: true,
