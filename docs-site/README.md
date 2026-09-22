@@ -2,6 +2,8 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+For authenticated screenshot generation, see [capture configuration and credential handling](scripts/CAPTURE.md).
+
 ## Installation
 
 ```bash

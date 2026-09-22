@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix including root-dot and China-partition forms, and rotation diagnostics omit unrelated secret identifiers.
+
 ## [0.10.1] - 2026-09-20
 
 **Migration ledger note:** The features grouped in this release include eight migrations retaining checksum-immutable `-- since: 0.9.0` headers: `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`, `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`, `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`, `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`, `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`, `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`, `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql`. Their declared ledger label remains `0.9.0` rather than the application version `0.10.1`; this is not evidence that those features shipped with the historical 0.9.0 release. FinOps retains the separately disclosed `0.8.0` labels. This is a focused example list, not an exhaustive migration inventory. Other retained labels include legacy `2.0.0`–`2.4.0` and the literal non-semver `2.x.0`; they are equally not application-release evidence. Header-less migrations use the apply-time `APP_VERSION` override or package-version fallback, so existing and fresh environments can record different labels for identical SQL. Existing ledger rows are not rewritten by a version bump. Audit a release using its Git tag/commit, migration files and checksums, not by filtering the ledger for `app_version = '0.10.1'`. Do not rewrite SQL headers or applied checksums to make the labels match.
@@ -670,6 +674,10 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 **작성 규칙:** 기능별로 실제 사용자에게 보이는 최종 동작을 서술하며, 카테고리별로 기능당 1개 항목만 둔다(공유 마이그레이션 목록처럼 여러 기능에 걸치는 인프라/스키마 항목은 별도의 한 줄로 두어도 된다). PR 번호·CI 리뷰 라운드 번호·시도 횟수는 적지 않는다 — 그런 정보는 git 히스토리와 PR 스레드에 남는다. 같은 기능에 대한 이후 수정이 이전 항목을 대체하면 새 항목을 추가하지 말고 기존 항목을 고쳐 쓴다.
 
 ## [Unreleased]
+
+### 수정
+
+- 보안 검사 개선: 배포 워크플로가 명시된 미리보기 시크릿만 선택하며, 채팅 기록 삭제 오류는 내부 정보를 숨기고 세션 ID는 암호학적 난수만 사용합니다. 설정 도구는 HCL 문자열을 안전하게 인코딩하고, 스크린샷 로그인은 지정한 정확한 출처와 유효한 TLS를 요구합니다. 발표자 제목은 텍스트로 보존하며, 데이터소스 호스트 분류는 DNS 루트 점과 중국 파티션을 포함한 AWS 도메인 접미사를 확인하고, 회전 진단에서는 무관한 시크릿 식별자를 생략합니다.
 
 ## [0.10.1] - 2026-09-20
 

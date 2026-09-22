@@ -62,23 +62,27 @@ class PresenterView {
   _collectStyleSheets() {
     let sheets = '';
     document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
-      sheets += `<link rel="stylesheet" href="${link.href}">\n`;
+      sheets += link.outerHTML + '\n';
     });
     document.querySelectorAll('style').forEach(style => {
-      sheets += `<style>${style.textContent}</style>\n`;
+      // Preserve authored style elements; raw-text CSS serialization is not a sanitizer.
+      sheets += style.outerHTML + '\n';
     });
     return sheets;
   }
 
   createPresenterHTML() {
     const styleSheets = this._collectStyleSheets();
-    const baseHref = window.location.href.split('#')[0];
+    const base = document.createElement('base');
+    base.href = window.location.href.split('#')[0];
+    const title = document.createElement('title');
+    title.textContent = `Presenter View - ${document.title}`;
 
     return `<!DOCTYPE html>
 <html lang="ko"><head>
 <meta charset="UTF-8">
-<base href="${baseHref}">
-<title>Presenter View - ${document.title}</title>
+${base.outerHTML}
+${title.outerHTML}
 ${styleSheets}
 <style>
   /* === Override theme.css globals for presenter window === */

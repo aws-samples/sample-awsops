@@ -6,8 +6,10 @@ import type { ThreadSummary, ThreadMessage } from '@/lib/chat-store';
 import { getActiveAccount } from '@/lib/account-context';
 
 export function newSessionId(): string {
-  const s = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.round(Math.random() * 1e9)}`);
-  return s.length >= 33 ? s : s.padEnd(36, '0');
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  // getRandomValues also works where randomUUID is unavailable. Never fall back to Math.random.
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(18));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export function parseFrame(frame: string): {

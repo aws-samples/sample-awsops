@@ -2,6 +2,7 @@ import { chromium, type Page, type Browser, type BrowserContext } from 'playwrig
 import * as path from 'path';
 import * as fs from 'fs';
 import * as dns from 'dns';
+import { captureUrlPolicy } from './capture-url.mjs';
 
 // VPC内 default resolver does not know example.com — fall back to public DNS.
 dns.setServers(['8.8.8.8', '1.1.1.1']);
@@ -12,7 +13,9 @@ dns.setServers(['8.8.8.8', '1.1.1.1']);
 // live-env example predates that cutover and is otherwise-sanitized placeholder text, not this host.
 const BASE_URL = process.env.AWSOPS_CAPTURE_URL || 'https://awsops.atomai.click';
 const LOGIN_EMAIL = process.env.AWSOPS_LOGIN_EMAIL || 'admin@awsops.local';
-const LOGIN_PASSWORD = process.env.AWSOPS_LOGIN_PASSWORD || '!234Qwer';
+const LOGIN_PASSWORD = process.env.AWSOPS_LOGIN_PASSWORD || '';
+// Set the exact Hosted UI URL for the dark Cognito fallback; never infer trust from a substring.
+const URL_POLICY = captureUrlPolicy(BASE_URL, process.env.AWSOPS_CAPTURE_LOGIN_URL);
 const OUTPUT_DIR = path.join(__dirname, '..', 'static', 'screenshots');
 
 // DPR resolution map: viewport stays 1920x1080, only pixel density changes
@@ -82,8 +85,18 @@ function parseDprArg(): string[] {
 }
 
 async function login(page: Page): Promise<void> {
-  // localhost / EC2 direct serves the app without Cognito (auth is enforced at CloudFront).
-  if (BASE_URL.includes('localhost') || BASE_URL.includes('127.0.0.1')) {
+  // Prevent a navigation during selector waits from replacing the checked login page.
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame() &&
+        !URL_POLICY.isApp(request.url()) && !URL_POLICY.isHostedLogin(request.url())) {
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  // Only explicitly configured loopback hosts bypass login; remote origins require HTTPS.
+  if (URL_POLICY.local) {
     console.log('Local URL detected — skipping Cognito login.');
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
@@ -96,10 +109,13 @@ async function login(page: Page): Promise<void> {
   await page.waitForTimeout(5000);
 
   const currentUrl = page.url();
-  console.log(`Current URL: ${currentUrl}`);
+  if (!URL_POLICY.isApp(currentUrl) && !URL_POLICY.isHostedLogin(currentUrl)) {
+    throw new Error('Refusing to send login credentials to an unconfigured origin');
+  }
 
   // If redirected to Cognito hosted UI
-  if (currentUrl.includes('amazoncognito.com') || currentUrl.includes('auth.')) {
+  if (URL_POLICY.isHostedLogin(currentUrl)) {
+    if (!LOGIN_PASSWORD) throw new Error('AWSOPS_LOGIN_PASSWORD is required');
     console.log('Cognito hosted UI detected, filling credentials...');
 
     // Wait for the form element to exist in DOM (not necessarily visible)
@@ -156,16 +172,17 @@ async function login(page: Page): Promise<void> {
     // Match against BASE_URL's own origin, not just "amazoncognito.com" — a custom Cognito
     // domain (CLAUDE.md's `a-ops-v2-auth-*`) wouldn't contain that substring, which would make
     // this predicate true immediately on the auth page itself instead of after the redirect.
-    await page.waitForURL((u) => String(u).startsWith(BASE_URL), { timeout: 60000 });
+    await page.waitForURL((u) => URL_POLICY.isApp(u.href), { timeout: 60000 });
     console.log('Login successful, redirected to app.');
-  } else if (currentUrl.includes('/login') || (await page.locator('input[type="password"]').count()) > 0) {
+  } else if (new URL(currentUrl).pathname === '/login' || (await page.locator('input[type="password"]').count()) > 0) {
     // v2's self-hosted /login form (ADR-042) — email + password + a locale-dependent submit
     // button ("로그인 →" / "Sign in →"), no placeholder text and no basePath on redirect.
     console.log('Custom login page detected, filling credentials...');
+    if (!LOGIN_PASSWORD) throw new Error('AWSOPS_LOGIN_PASSWORD is required');
     await page.locator('input[type="email"], input[type="text"]').first().fill(LOGIN_EMAIL);
     await page.locator('input[type="password"]').first().fill(LOGIN_PASSWORD);
     await page.locator('button[type="submit"]').first().click();
-    await page.waitForURL((u) => !String(u).includes('/login'), { timeout: 60000 });
+    await page.waitForURL((u) => URL_POLICY.isApp(u.href) && u.pathname !== '/login', { timeout: 60000 });
     console.log('Custom login successful, redirected to app.');
   } else {
     console.log('Already logged in or no Cognito redirect.');
@@ -208,7 +225,7 @@ async function captureAllDprs(
     const context: BrowserContext = await browser.newContext({
       viewport: { width: 1920, height: 1080 },
       deviceScaleFactor: dpr,
-      ignoreHTTPSErrors: true,
+      ignoreHTTPSErrors: false,
     });
 
     // Restore session cookies so we don't need to login again per DPR
@@ -257,7 +274,7 @@ async function main(): Promise<void> {
   // Login once with DPR 1, then reuse cookies for other DPRs
   const loginContext = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
-    ignoreHTTPSErrors: true,
+    ignoreHTTPSErrors: false,
   });
   const loginPage = await loginContext.newPage();
 
@@ -271,6 +288,7 @@ async function main(): Promise<void> {
     console.log(`\nAll screenshots captured to ${OUTPUT_DIR}`);
   } catch (err) {
     console.error('Fatal error:', err);
+    process.exitCode = 1;
   } finally {
     await browser.close();
   }

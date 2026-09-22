@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { input, select, checkbox, confirm } from '@inquirer/prompts';
+import { hclString } from './hcl-string.mjs';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 
@@ -112,10 +113,6 @@ function eksAuthMode(name) {
 // ---------------------------------------------------------------------------
 // HCL writers
 // ---------------------------------------------------------------------------
-
-function hclString(v) {
-  return `"${String(v).replace(/"/g, '\\"')}"`;
-}
 
 function hclStringList(arr) {
   return `[${arr.map(hclString).join(', ')}]`;
