@@ -16,8 +16,8 @@ const config: Config = {
   },
   themes: ['@docusaurus/theme-mermaid'],
 
-  url: process.env.SITE_URL || 'https://www.atomai.click',
-  baseUrl: process.env.BASE_URL || '/awsops/',
+  url: process.env.SITE_URL || 'https://aws-samples.github.io',
+  baseUrl: process.env.BASE_URL || '/sample-awsops/',
 
   stylesheets: [
     {
@@ -31,8 +31,8 @@ const config: Config = {
     },
   ],
 
-  organizationName: 'Atom-oh',
-  projectName: 'awsops',
+  organizationName: 'aws-samples',
+  projectName: 'sample-awsops',
   deploymentBranch: 'gh-pages',
   trailingSlash: false,
 
@@ -70,10 +70,6 @@ const config: Config = {
         },
         theme: {
           customCss: './src/css/custom.css',
-        },
-        gtag: {
-          trackingID: 'G-GWVLEW5JLL',
-          anonymizeIP: true,
         },
       } satisfies Preset.Options,
     ],
@@ -115,8 +111,8 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://awsops.atomai.click/',
-          label: '대시보드',
+          href: 'https://github.com/aws-samples/sample-awsops',
+          label: 'GitHub',
           position: 'right',
         },
       ],
@@ -135,7 +131,7 @@ const config: Config = {
         {
           title: '리소스',
           items: [
-            { label: 'Dashboard', href: 'https://awsops.atomai.click/' },
+            { label: 'GitHub', href: 'https://github.com/aws-samples/sample-awsops' },
           ],
         },
         {

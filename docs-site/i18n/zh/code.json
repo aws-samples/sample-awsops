@@ -546,8 +546,8 @@
     "message": "开始阅读指南",
     "description": "Closing CTA guide button"
   },
-  "home.cta.ctaDemo": {
-    "message": "查看在线演示",
-    "description": "Closing CTA demo button"
+  "home.cta.ctaGithub": {
+    "message": "查看 GitHub 仓库",
+    "description": "Closing CTA GitHub button"
   }
 }

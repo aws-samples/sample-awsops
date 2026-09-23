@@ -41,7 +41,7 @@ Ingest alerts from external systems into AWSops and chain **correlation → auto
                           [Slack/SNS dispatch]
 ```
 
-Setup steps live in the server-side [runbook](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md).
+Setup steps live in the server-side [runbook](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md).
 
 ## Webhook Endpoint
 
@@ -179,7 +179,7 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 Click the 🚨 badge in the dashboard header to jump to `/ai-diagnosis` and see in-flight incident details.
 
 ### No alerts coming through
-The server-side runbook [alert-pipeline-troubleshoot.md](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md) has a symptom-based checklist.
+The server-side runbook [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md) has a symptom-based checklist.
 
 ## Related Pages
 

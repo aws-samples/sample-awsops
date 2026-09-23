@@ -7,7 +7,7 @@ import Translate, { translate } from '@docusaurus/Translate';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import styles from './index.module.css';
 
-const DASHBOARD_URL = 'https://awsops.atomai.click/';
+const GITHUB_URL = 'https://github.com/aws-samples/sample-awsops';
 
 function useScrollReveal(): React.RefObject<HTMLDivElement> {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -476,11 +476,11 @@ export default function Home(): React.ReactElement {
               </Link>
               <a
                 className={`${styles.button} ${styles.buttonGhost}`}
-                href={DASHBOARD_URL}
+                href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                <Translate id="home.cta.ctaDemo">제품 데모 보기</Translate>
+                <Translate id="home.cta.ctaGithub">GitHub 저장소 보기</Translate>
               </a>
             </div>
           </div>

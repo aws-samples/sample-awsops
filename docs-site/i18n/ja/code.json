@@ -546,8 +546,8 @@
     "message": "ガイドを始める",
     "description": "Closing CTA guide button"
   },
-  "home.cta.ctaDemo": {
-    "message": "ライブデモを見る",
-    "description": "Closing CTA demo button"
+  "home.cta.ctaGithub": {
+    "message": "GitHub リポジトリを見る",
+    "description": "Closing CTA GitHub button"
   }
 }

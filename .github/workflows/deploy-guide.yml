@@ -1,17 +1,21 @@
 name: Deploy Guide to GitHub Pages
 
-# DISABLED for upstream: runs-on the fork's self-hosted runner
-# 'awsops-claude-arm' which does not exist on whchoi98/awsops, and upstream
-# already publishes its guide from web/ via its own Pages workflow. Left as
-# workflow_dispatch only so a main push to docs-site/** does not queue forever
-# on a missing runner (and does not compete with upstream's Pages deploy).
+# Publishes docs-site/ (the Docusaurus user guide) to the repo's GitHub Pages
+# site (Actions build_type; environment `github-pages` is restricted to the
+# `dev` branch). Runs on the standard hosted `ubuntu-latest` runner — this
+# repo has no self-hosted arm runner reserved for docs builds.
 on:
+  push:
+    branches: [dev]
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/deploy-guide.yml'
   workflow_dispatch:
 
+# Least privilege: the build job (npm ci + third-party build code) gets
+# read-only contents; only the deploy job can write Pages / mint an OIDC token.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
@@ -19,12 +23,14 @@ concurrency:
 
 jobs:
   build:
-    runs-on: awsops-claude-arm
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: docs-site
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -34,11 +40,12 @@ jobs:
 
       - run: npm ci
 
+      # 4-locale build needs the larger heap; public-repo ubuntu-latest has 16 GB.
       - run: npm run build
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
-          SITE_URL: ${{ vars.SITE_URL || 'https://www.atomai.click' }}
-          BASE_URL: ${{ vars.BASE_URL || '/awsops/' }}
+          NODE_OPTIONS: --max-old-space-size=8192
+          SITE_URL: ${{ vars.SITE_URL || 'https://aws-samples.github.io' }}
+          BASE_URL: ${{ vars.BASE_URL || '/sample-awsops/' }}
 
       # Canary: fail loudly if the customer overview page is missing from the
       # build, so we never silently deploy an incomplete docs site again.
@@ -57,7 +64,12 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: awsops-claude-arm
+    # Mirrors the github-pages environment's dev-only branch policy in code.
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
