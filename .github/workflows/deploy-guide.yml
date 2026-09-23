@@ -29,6 +29,8 @@ jobs:
         working-directory: docs-site
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -38,6 +40,7 @@ jobs:
 
       - run: npm ci
 
+      # 4-locale build needs the larger heap; public-repo ubuntu-latest has 16 GB.
       - run: npm run build
         env:
           NODE_OPTIONS: --max-old-space-size=8192
@@ -61,6 +64,8 @@ jobs:
 
   deploy:
     needs: build
+    # Mirrors the github-pages environment's dev-only branch policy in code.
+    if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
       pages: write

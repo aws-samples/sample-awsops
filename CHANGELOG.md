@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- User guide: `docs-site/` is published as this repository's GitHub Pages site (deployed automatically on pushes to `dev`, or manually via workflow dispatch), retargeted from the previous personal-domain deployment — repo/GitHub links, robots.txt sitemap and runbook cross-references now point at this repository, and the previous dashboard link and personal analytics tracker are removed.
+- User guide: `docs-site/` is published as this repository's GitHub Pages site (deployed automatically on pushes to `dev`, or manually via workflow dispatch), retargeted from the previous personal-domain deployment — site URL, navigation/landing GitHub links, robots.txt sitemap and alert runbook cross-references now point at this repository, and the previous dashboard link and personal analytics tracker are removed.
 
 ### Fixed
 
@@ -681,7 +681,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Added
 
-- 사용자 가이드: `docs-site/`를 이 저장소의 GitHub Pages 사이트로 게시합니다(`dev` 브랜치 push 시 자동 배포, 또는 워크플로 수동 실행). 이전 개인 도메인 배포 대상을 이 저장소 기준으로 재조정하여 저장소·GitHub 링크, robots.txt sitemap, 런북 상호 참조가 이 저장소를 가리키며, 기존 대시보드 링크와 개인 애널리틱스 트래커는 제거합니다.
+- 사용자 가이드: `docs-site/`를 이 저장소의 GitHub Pages 사이트로 게시합니다(`dev` 브랜치 push 시 자동 배포, 또는 워크플로 수동 실행). 이전 개인 도메인 배포 대상을 이 저장소 기준으로 재조정하여 사이트 URL, 내비게이션·랜딩 페이지의 GitHub 링크, robots.txt sitemap, 알림 런북 상호 참조가 이 저장소를 가리키며, 기존 대시보드 링크와 개인 애널리틱스 트래커는 제거합니다.
 
 ### 수정
 
