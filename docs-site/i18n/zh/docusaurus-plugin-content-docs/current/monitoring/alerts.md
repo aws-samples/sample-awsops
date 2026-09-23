@@ -40,7 +40,7 @@ description: 接收 CloudWatch / Alertmanager / Grafana Webhook、告警关联�
                           [Slack/SNS 发送]
 ```
 
-详细的设置步骤见服务器端的[运维手册](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md)。
+详细的设置步骤见服务器端的[运维手册](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md)。
 
 ## Webhook 端点
 
@@ -178,7 +178,7 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 点击仪表板页头的 🚨 徽章会跳转到 `/ai-diagnosis` 页面，可查看进行中事件的详情视图。
 
 ### 收不到告警时
-服务器端运维手册 [alert-pipeline-troubleshoot.md](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md) 中提供了按症状分类的检查清单。
+服务器端运维手册 [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md) 中提供了按症状分类的检查清单。
 
 ## 相关页面
 

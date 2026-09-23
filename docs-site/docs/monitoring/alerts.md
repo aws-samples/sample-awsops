@@ -41,7 +41,7 @@ Deep(15+1섹션, 총 16 렌더)** 티어 구조입니다 — 최신 동작은
                           [Slack/SNS 발송]
 ```
 
-자세한 설정 단계는 서버 측 [런북](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md)에 있습니다.
+자세한 설정 단계는 서버 측 [런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md)에 있습니다.
 
 ## 웹훅 엔드포인트
 
@@ -179,7 +179,7 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 대시보드 헤더의 🚨 배지를 클릭하면 `/ai-diagnosis` 페이지로 이동해 진행 중인 인시던트의 상세 뷰를 확인할 수 있습니다.
 
 ### 알림이 오지 않을 때
-서버 측 런북 [alert-pipeline-troubleshoot.md](https://github.com/Atom-oh/awsops/tree/main/docs/runbooks/alert-pipeline-troubleshoot.md)에 증상별 체크리스트가 있습니다.
+서버 측 런북 [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md)에 증상별 체크리스트가 있습니다.
 
 ## 관련 페이지
 

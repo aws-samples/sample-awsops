@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- User guide: `docs-site/` is published as this repository's GitHub Pages site (deployed automatically on pushes to `dev`, or manually via workflow dispatch), retargeted from the previous personal-domain deployment — repo/GitHub links, robots.txt sitemap and runbook cross-references now point at this repository, and the previous dashboard link and personal analytics tracker are removed.
+
 ### Fixed
 
 - Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix including root-dot and China-partition forms, and rotation diagnostics omit unrelated secret identifiers.
@@ -674,6 +678,10 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 **작성 규칙:** 기능별로 실제 사용자에게 보이는 최종 동작을 서술하며, 카테고리별로 기능당 1개 항목만 둔다(공유 마이그레이션 목록처럼 여러 기능에 걸치는 인프라/스키마 항목은 별도의 한 줄로 두어도 된다). PR 번호·CI 리뷰 라운드 번호·시도 횟수는 적지 않는다 — 그런 정보는 git 히스토리와 PR 스레드에 남는다. 같은 기능에 대한 이후 수정이 이전 항목을 대체하면 새 항목을 추가하지 말고 기존 항목을 고쳐 쓴다.
 
 ## [Unreleased]
+
+### Added
+
+- 사용자 가이드: `docs-site/`를 이 저장소의 GitHub Pages 사이트로 게시합니다(`dev` 브랜치 push 시 자동 배포, 또는 워크플로 수동 실행). 이전 개인 도메인 배포 대상을 이 저장소 기준으로 재조정하여 저장소·GitHub 링크, robots.txt sitemap, 런북 상호 참조가 이 저장소를 가리키며, 기존 대시보드 링크와 개인 애널리틱스 트래커는 제거합니다.
 
 ### 수정
 

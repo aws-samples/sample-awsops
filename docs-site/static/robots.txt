@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.atomai.click/awsops/sitemap.xml
+Sitemap: https://aws-samples.github.io/sample-awsops/sitemap.xml
