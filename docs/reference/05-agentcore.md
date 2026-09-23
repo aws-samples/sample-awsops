@@ -101,7 +101,11 @@ Terraform; `provision.py` overwrites with real values.
 Before upgrading, verify that the operator-owned deployer has
 `bedrock-agentcore:GetGateway` as described in the
 [deployment role prerequisites](../runbooks/dev-repo-setup.md#4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한).
-Existing gateways are read in full before reconciling the applied role and catalog description. Updates preserve
+New gateways use `AWS_IAM` inbound auth: every caller SigV4-signs with the Runtime
+role, which holds `bedrock-agentcore:InvokeGateway` on the account's gateways.
+Existing gateways are read in full before reconciling the applied role and catalog description.
+A deployed `NONE` authorizer is drift: the update switches it to `AWS_IAM` and a
+failed switch records `ERR`. Updates otherwise preserve
 deployed inbound auth/protocol and optional security settings; absent optional
 protocol fields are omitted, never invented from create-time defaults. Known IDs
 remain available to Runtime routing, pruning and all ADR-017 teardown paths after
