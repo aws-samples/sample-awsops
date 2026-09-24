@@ -124,9 +124,15 @@ def gateway_url(gw_id, region):
     return f"https://{gw_id}.gateway.bedrock-agentcore.{region}.amazonaws.com/mcp"
 
 
-def ensure_gateways(ctrl, ac):
-    """Reconcile catalog role/description without changing deployed auth/protocol.
+# Inbound auth for every section gateway. All callers (agent.py create_gateway_transport)
+# SigV4-sign with the Runtime role, which holds bedrock-agentcore:InvokeGateway (ai.tf).
+GATEWAY_AUTHORIZER = "AWS_IAM"
 
+
+def ensure_gateways(ctrl, ac):
+    """Reconcile catalog role/description and upgrade unauthenticated (NONE) inbound auth.
+
+    Other deployed auth (AWS_IAM/CUSTOM_JWT) and protocol settings are preserved.
     Known IDs survive read/update failures for Runtime routing and ADR-017 teardown.
     CREATED/UPDATED records mean the API accepted a request, not readiness.
     """
@@ -144,9 +150,10 @@ def ensure_gateways(ctrl, ac):
             try:
                 gw = ctrl.get_gateway(gatewayIdentifier=gid)
                 role_drift = gw.get("roleArn") != ac["role_arn"]
-                failure_status = "ERR" if role_drift else "WARN"
+                auth_drift = gw.get("authorizerType") == "NONE"
+                failure_status = "ERR" if role_drift or auth_drift else "WARN"
                 want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
-                if role_drift or gw.get("description") != want:
+                if role_drift or auth_drift or gw.get("description") != want:
                     if not gw.get("authorizerType"):
                         log(f"gateway:{key}", failure_status, "gateway_configuration_unavailable")
                         continue
@@ -156,9 +163,14 @@ def ensure_gateways(ctrl, ac):
                                 "customTransformConfiguration", "wafConfiguration")
                     request = {field: copy.deepcopy(gw[field]) for field in preserve
                                if gw.get(field) is not None}
+                    if auth_drift:
+                        request["authorizerType"] = GATEWAY_AUTHORIZER
+                        request.pop("authorizerConfiguration", None)
                     ctrl.update_gateway(gatewayIdentifier=gid, name=name,
                                         roleArn=ac["role_arn"], description=want, **request)
-                    log(f"gateway:{key}", "UPDATED", "role drift" if role_drift else "description drift")
+                    reason = ("auth drift" if auth_drift else
+                              "role drift" if role_drift else "description drift")
+                    log(f"gateway:{key}", "UPDATED", reason)
                 else:
                     log(f"gateway:{key}", "EXISTS", name)
             except (ClientError, BotoCoreError) as error:
@@ -169,7 +181,7 @@ def ensure_gateways(ctrl, ac):
                 name=name,
                 roleArn=ac["role_arn"],
                 protocolType="MCP",
-                authorizerType="NONE",
+                authorizerType=GATEWAY_AUTHORIZER,
                 description=catalog.GATEWAY_DESCRIPTIONS.get(key, key),
             )
             ids[key] = resp["gatewayId"]

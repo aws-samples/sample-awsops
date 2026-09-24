@@ -131,7 +131,7 @@ class TestProvisionDrift(unittest.TestCase):
 
 def _gateway(description, **fields):
     return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": description,
-            "roleArn": "arn:aws:iam::1:role/r", "authorizerType": "NONE", "protocolType": "MCP", **fields}
+            "roleArn": "arn:aws:iam::1:role/r", "authorizerType": "AWS_IAM", "protocolType": "MCP", **fields}
 
 
 def _run_gateways(deployed_description, **fields):
@@ -163,7 +163,7 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         # never invent different values that could clobber the live gateway.
         self.assertEqual("awsops-v2-ops-gateway", kw["name"])
         self.assertEqual("MCP", kw["protocolType"])
-        self.assertEqual("NONE", kw["authorizerType"])
+        self.assertEqual("AWS_IAM", kw["authorizerType"])
         self.assertEqual({"ops": "gw-ops"}, ids)
 
     def test_matching_description_is_not_drift(self):
@@ -223,6 +223,48 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         ctrl.update_gateway.assert_not_called()
         self.assertEqual(ids, {"ops": "gw-ops"})
         self.assertIn("ERR", statuses)
+
+
+class TestGatewayInboundAuth(unittest.TestCase):
+    """A NONE (unauthenticated) inbound authorizer is drift, upgraded to AWS_IAM in place."""
+
+    def test_create_uses_iam_inbound_auth(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": []}
+        ctrl.create_gateway.return_value = {"gatewayId": "gw-new"}
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]):
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        self.assertEqual({"ops": "gw-new"}, ids)
+        self.assertEqual("AWS_IAM", ctrl.create_gateway.call_args.kwargs["authorizerType"])
+
+    def test_none_authorizer_is_upgraded_even_when_role_and_description_match(self):
+        ctrl, ids, statuses = _run_gateways(
+            "new text", authorizerType="NONE", authorizerConfiguration={"stale": True},
+            kmsKeyArn="arn:fixture:key")
+        self.assertEqual({"UPDATED"}, statuses)
+        self.assertEqual({"ops": "gw-ops"}, ids)
+        kw = ctrl.update_gateway.call_args.kwargs
+        self.assertEqual("AWS_IAM", kw["authorizerType"])
+        self.assertNotIn("authorizerConfiguration", kw)
+        self.assertEqual("arn:fixture:key", kw["kmsKeyArn"])
+        self.assertIn(("gateway:ops", "UPDATED", "auth drift"),
+                      [tuple(r[:3]) for r in provision.report])
+
+    def test_failed_auth_upgrade_is_an_error(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": [{
+            "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": "new text"}]}
+        ctrl.get_gateway.return_value = _gateway("new text", authorizerType="NONE")
+        ctrl.update_gateway.side_effect = provision.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "no"}}, "UpdateGateway")
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
+             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        # An unauthenticated gateway must fail the run, while its ID stays known for teardown.
+        self.assertEqual({"ops": "gw-ops"}, ids)
+        self.assertIn("ERR", {r[1] for r in provision.report})
 
 
 class TestTypedErrors(unittest.TestCase):

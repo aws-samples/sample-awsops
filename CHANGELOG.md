@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix including root-dot and China-partition forms, and rotation diagnostics omit unrelated secret identifiers.
+- AgentCore Gateway inbound authentication: the provisioner creates every section gateway with IAM (SigV4) inbound authentication instead of none, and on the next `make agentcore` upgrades any existing gateway that still accepts unauthenticated calls, keeping other deployed auth and protocol settings; a failed upgrade fails the run instead of leaving the gateway open.
 
 ## [0.10.1] - 2026-09-20
 
@@ -686,6 +687,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 ### 수정
 
 - 보안 검사 개선: 배포 워크플로가 명시된 미리보기 시크릿만 선택하며, 채팅 기록 삭제 오류는 내부 정보를 숨기고 세션 ID는 암호학적 난수만 사용합니다. 설정 도구는 HCL 문자열을 안전하게 인코딩하고, 스크린샷 로그인은 지정한 정확한 출처와 유효한 TLS를 요구합니다. 발표자 제목은 텍스트로 보존하며, 데이터소스 호스트 분류는 DNS 루트 점과 중국 파티션을 포함한 AWS 도메인 접미사를 확인하고, 회전 진단에서는 무관한 시크릿 식별자를 생략합니다.
+- AgentCore Gateway 유입 인증: 프로비저너가 모든 섹션 Gateway를 인증 없음 대신 IAM(SigV4) 유입 인증으로 생성하며, 다음 `make agentcore` 실행 시 아직 인증 없는 호출을 받는 기존 Gateway를 IAM 인증으로 전환합니다. 그 밖에 배포된 인증·프로토콜 설정은 유지하며, 전환에 실패하면 Gateway를 열린 채로 두지 않고 실행을 실패로 끝냅니다.
 
 ## [0.10.1] - 2026-09-20
 
