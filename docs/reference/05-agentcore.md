@@ -104,12 +104,34 @@ Before upgrading, verify that the operator-owned deployer has
 New gateways use `AWS_IAM` inbound auth: every caller SigV4-signs with the Runtime
 role, which holds `bedrock-agentcore:InvokeGateway` on the account's gateways.
 Existing gateways are read in full before reconciling the applied role and catalog description.
-A deployed `NONE` authorizer is drift: the update switches it to `AWS_IAM` and a
-failed switch records `ERR`. Updates otherwise preserve
+`UpdateGateway` rejects authorizer-type changes ("Authorizer type cannot be updated
+for an existing gateway"), so a deployed `NONE` gateway records `ERR`
+`gateway_auth_replacement_required` and the run exits nonzero; the provisioner
+never deletes or recreates it. Updates preserve
 deployed inbound auth/protocol and optional security settings; absent optional
 protocol fields are omitted, never invented from create-time defaults. Known IDs
 remain available to Runtime routing, pruning and all ADR-017 teardown paths after
 read/update failures. Description-only request failures remain warnings.
+
+### Replacing an unauthenticated gateway
+
+Gateways created before the `AWS_IAM` default use `NONE`: any caller who knows the
+gateway URL can list and invoke its tools. Replacement is an operator procedure for
+the affected stack only; the stack's section tools are unavailable until it completes.
+
+1. Select only this stack's gateways: `awsops-v2-*-gateway` whose `roleArn` is this
+   stack's AgentCore role and whose ID appears in this stack's Runtime
+   `GATEWAYS_JSON`. Gateway names are not project-scoped, so confirm no other stack's
+   Runtime references them, and leave every other gateway untouched.
+2. For each selected gateway, delete every target (`list-gateway-targets`,
+   `delete-gateway-target`) and wait until the target list is empty.
+3. Delete the gateway and poll `get-gateway` until it returns
+   `ResourceNotFoundException`; `DELETING` is not complete.
+4. Re-run `make agentcore SMOKE=1` (dev: dispatch Deploy AgentCore with `smoke=true`).
+   The provisioner creates `AWS_IAM` gateways and their targets and updates the
+   Runtime's `GATEWAYS_JSON`.
+5. Verify `get-gateway` reports `AWS_IAM`, an unsigned MCP `tools/list` request is
+   rejected, and the signed smoke/readiness check passes.
 
 Role verification is functional, even when the listed description already matches:
 a matching label cannot prove that the gateway uses the applied role. If SDK retry
