@@ -270,10 +270,24 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/dns-logs` | GET | Resolver query-log 설정 상태(메뉴 게이트) — 미설정/무권한도 200 + 빈 configs | verifyUser |
 | `/api/dns-logs/analytics` | GET | Resolver 로그 집계 분석 (Logs Insights 병렬 폴링, `maxDuration` 60s, group은 라이브 allowlist 검증) | verifyUser |
 
-## sg (1)
+## sg (4)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/sg` | GET | Security Group 사용 분석(ENI 부착+상호참조 미사용 감지, 룰 소스/목적지 식별). `?regions=`로 리전 스코핑(안 주면 인벤토리 전 리전). `?view=hits&id=sg-...` 트래픽 히트 매칭 — Flow Logs 우선(ACCEPT만 룰 귀속), NFM 폴백은 **상대 식별 전용**(양방향 집계라 룰 귀속 불가, hits=null) | verifyUser |
+| `/api/sg/rules` | GET | Filtered, paginated SG-rule inventory and activity from Aurora. Filters are bound parameters (`web/lib/sg-rules.ts`), never SQL fragments | verifyUser |
+| `/api/sg/rules/refresh` | POST | Manual refresh — enqueues the same `sg_rule_scan` job the daily dispatcher uses via `enqueueJob` (not the generic `/api/jobs`, ADR-009). 503 when workers are disabled | verifyUser + isAdmin |
+| `/api/sg/flow-sources` | GET, PUT | Flow Log Athena source configuration (ADR-019). GET for any user; PUT validates workgroup/database/table against allowlist regexes, and the live existence check runs in the isolated Athena broker Lambda | verifyUser (+ isAdmin on PUT) |
+
+
+## network-paths (4)
+All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network-path-gate.ts`).
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/network-paths` | GET, POST | List saved network-path checks / create one (`created_by_sub` = caller) | verifyUser |
+| `/api/network-paths/[id]` | GET, PATCH, DELETE | Read a check; edit or soft-delete it (creator or admin only, otherwise 403) | verifyUser |
+| `/api/network-paths/[id]/runs` | GET, POST | Run history (most recent first, max 50; kept after soft delete) / start a run, which enqueues the `network_path` job directly (ADR-009). New runs are also refused by `networkPathLiveTopologyCapabilityGate` until live topology re-reads are available | verifyUser |
+| `/api/network-path-runs/[runId]` | GET | Run status and phase; once concluded, `overall_status`, candidates, steps and the validation bundle | verifyUser |
 
 ## anfw (1)
 | 경로 | 메서드 | 역할 | 인증 |
