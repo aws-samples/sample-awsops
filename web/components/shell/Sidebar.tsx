@@ -24,7 +24,8 @@ import ThemeToggle from '@/components/shell/ThemeToggle';
 import ScopeSelector from '@/components/shell/ScopeSelector';
 import { cn } from '@/lib/cn';
 
-type FixedItem = { href: string; tkey: string; icon: LucideIcon; children?: FixedItem[] };
+type FixedLink = { href: string; tkey: string; icon: LucideIcon };
+type FixedItem = FixedLink & { children?: FixedLink[] }; // one level only — the renderer does not nest
 
 // Fixed top-level pages. `tkey` resolves the label via i18n. `children` renders the
 // entry as a collapsible group so sub-pages are reachable from the sidebar.
