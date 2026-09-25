@@ -80,6 +80,10 @@ describe('topology sub-navigation', () => {
     expect(src).toContain('${uid}-fixed-');
     expect(src).toMatch(/item\.children && underPath\(path, item\.href\)/);
   });
+  it('marks the header active when the panel is collapsed on a child page', () => {
+    // Collapsed panels unmount their children, so the header must carry aria-current.
+    expect(src).toContain('underPath(path, item.href) && (!open || !childActive)');
+  });
   it('defines localized sub-nav labels', async () => {
     const { translate } = await import('@/lib/i18n');
     for (const key of ['nav.topologyFlow', 'nav.topologyInfra', 'nav.topologyServices']) {

@@ -210,15 +210,16 @@ export default function Sidebar({ onNavigate, className, persist = true }: { onN
   );
 
   // A FIXED entry with children: header link + chevron toggle + child panel. A child is
-  // active on an exact match; the header stays active on other sub-pages (e.g. a
-  // resource's relationship graph) so the location is never unmarked.
+  // active on an exact match; the header is active on other sub-pages (e.g. a
+  // resource's relationship graph) and whenever the panel is collapsed, so the
+  // location is never unmarked.
   function renderFixedGroup(item: FixedItem) {
     const children = item.children!;
     const label = t(item.tkey);
     const open = expanded.has(fId(item.href));
     const panelId = `${uid}-fixed-${item.href.replace(/\W+/g, '-')}`;
     const childActive = children.some((c) => path === c.href);
-    const headerActive = underPath(path, item.href) && !childActive;
+    const headerActive = underPath(path, item.href) && (!open || !childActive);
     const Icon = item.icon;
     return (
       <div key={item.href} className="space-y-0.5">
