@@ -15,6 +15,8 @@ const ROUTE_TKEY: Record<string, string> = {
   '/cost': 'nav.cost',
   '/bedrock': 'nav.bedrock',
   '/topology': 'nav.topology',
+  '/topology/infra': 'nav.topologyInfra',
+  '/topology/services': 'nav.topologyServices',
   '/security': 'nav.security',
   '/compliance': 'nav.compliance',
   '/customization': 'nav.customAgents',
