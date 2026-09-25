@@ -65,3 +65,26 @@ describe('collapsible inventory groups', () => {
     expect(fixed).toContain("'/integrations'");
   });
 });
+
+// Topology sub-pages were reachable only from small in-page buttons; the sidebar now
+// lists them under a collapsible Topology entry.
+describe('topology sub-navigation', () => {
+  const src = read('./Sidebar.tsx');
+  const fixed = src.slice(src.indexOf('const FIXED'), src.indexOf('];', src.indexOf('const FIXED')));
+  it('lists request flow, infra layout and service map under Topology', () => {
+    for (const href of ["'/topology/infra'", "'/topology/services'"]) expect(fixed).toContain(href);
+    for (const key of ['nav.topologyFlow', 'nav.topologyInfra', 'nav.topologyServices']) expect(fixed).toContain(key);
+  });
+  it('renders FIXED children as a collapsible, instance-scoped panel that opens on topology paths', () => {
+    expect(src).toContain('item.children ? renderFixedGroup(item)');
+    expect(src).toContain('${uid}-fixed-');
+    expect(src).toMatch(/item\.children && underPath\(path, item\.href\)/);
+  });
+  it('defines localized sub-nav labels', async () => {
+    const { translate } = await import('@/lib/i18n');
+    for (const key of ['nav.topologyFlow', 'nav.topologyInfra', 'nav.topologyServices']) {
+      expect(translate('en', key)).not.toBe(key);
+      expect(translate('ko', key)).not.toBe(translate('en', key));
+    }
+  });
+});

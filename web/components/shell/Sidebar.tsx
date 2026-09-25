@@ -24,8 +24,11 @@ import ThemeToggle from '@/components/shell/ThemeToggle';
 import ScopeSelector from '@/components/shell/ScopeSelector';
 import { cn } from '@/lib/cn';
 
-// Fixed top-level pages. `tkey` resolves the label via i18n.
-const FIXED: { href: string; tkey: string; icon: LucideIcon }[] = [
+type FixedItem = { href: string; tkey: string; icon: LucideIcon; children?: FixedItem[] };
+
+// Fixed top-level pages. `tkey` resolves the label via i18n. `children` renders the
+// entry as a collapsible group so sub-pages are reachable from the sidebar.
+const FIXED: FixedItem[] = [
   { href: '/', tkey: 'nav.overview', icon: LayoutDashboard },
   { href: '/ai-diagnosis', tkey: 'nav.aiDiagnosis', icon: Stethoscope },
   { href: '/assistant', tkey: 'nav.assistant', icon: MessagesSquare },
@@ -33,7 +36,11 @@ const FIXED: { href: string; tkey: string; icon: LucideIcon }[] = [
   { href: '/cost', tkey: 'nav.cost', icon: DollarSign },
   { href: '/bedrock', tkey: 'nav.bedrock', icon: Gauge },
   { href: '/agentcore', tkey: 'nav.agentcore', icon: Cpu },
-  { href: '/topology', tkey: 'nav.topology', icon: Network },
+  { href: '/topology', tkey: 'nav.topology', icon: Network, children: [
+    { href: '/topology', tkey: 'nav.topologyFlow', icon: Route },
+    { href: '/topology/infra', tkey: 'nav.topologyInfra', icon: Layers },
+    { href: '/topology/services', tkey: 'nav.topologyServices', icon: Boxes },
+  ] },
   { href: '/security', tkey: 'nav.security', icon: Shield },
   { href: '/compliance', tkey: 'nav.compliance', icon: FileSearch },
   { href: '/integrations', tkey: 'nav.integrations', icon: Cable },
@@ -94,6 +101,8 @@ const FEATURE_ICON: Record<string, LucideIcon> = {
 const STORAGE_KEY = 'awsops:nav:expanded';
 const gId = (slug: string) => `g:${slug}`;
 const sId = (key: string) => `s:${key}`;
+const fId = (href: string) => `f:${href}`;
+const underPath = (path: string, href: string) => path === href || path.startsWith(`${href}/`);
 
 // Seed expand state from the active path (pure, identical on server + client → no
 // hydration mismatch). localStorage is merged in only after mount.
@@ -104,6 +113,7 @@ function seedFromPath(path: string): Set<string> {
     s.add(gId(active.slug));
     if (active.subgroupKey) s.add(sId(active.subgroupKey));
   }
+  for (const item of FIXED) if (item.children && underPath(path, item.href)) s.add(fId(item.href));
   return s;
 }
 
@@ -168,14 +178,9 @@ export default function Sidebar({ onNavigate, className, persist = true }: { onN
   // Navigating into a group (or its subgroup) re-seeds it open — manual collapse
   // persists until the next navigation into that group.
   useEffect(() => {
-    const active = groupForPath(path);
-    if (!active) return;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.add(gId(active.slug));
-      if (active.subgroupKey) next.add(sId(active.subgroupKey));
-      return next;
-    });
+    const seed = seedFromPath(path);
+    if (!seed.size) return;
+    setExpanded((prev) => new Set([...prev, ...seed]));
   }, [path]);
 
   const toggle = (id: string) =>
@@ -202,6 +207,55 @@ export default function Sidebar({ onNavigate, className, persist = true }: { onN
       className={className}
     />
   );
+
+  // A FIXED entry with children: header link + chevron toggle + child panel. A child is
+  // active on an exact match; the header stays active on other sub-pages (e.g. a
+  // resource's relationship graph) so the location is never unmarked.
+  function renderFixedGroup(item: FixedItem) {
+    const children = item.children!;
+    const label = t(item.tkey);
+    const open = expanded.has(fId(item.href));
+    const panelId = `${uid}-fixed-${item.href.replace(/\W+/g, '-')}`;
+    const childActive = children.some((c) => path === c.href);
+    const headerActive = underPath(path, item.href) && !childActive;
+    const Icon = item.icon;
+    return (
+      <div key={item.href} className="space-y-0.5">
+        <div className="flex items-center gap-0.5">
+          <Link
+            href={item.href}
+            onClick={() => { setExpanded((p) => new Set(p).add(fId(item.href))); onNavigate?.(); }}
+            aria-current={headerActive ? 'page' : undefined}
+            className={cn(
+              'flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-[7px] text-[13px] font-medium no-underline transition-colors duration-[120ms]',
+              headerActive ? 'bg-chrome-active text-chrome-active-fg shadow-sm' : 'text-chrome-fg-muted hover:bg-chrome-active/40 hover:text-chrome-fg',
+            )}
+          >
+            <Icon size={16} strokeWidth={1.7} className={cn('shrink-0', headerActive ? 'text-chrome-active-fg' : 'text-chrome-fg-muted')} />
+            <span className="truncate">{label}</span>
+          </Link>
+          <button
+            type="button"
+            onClick={() => toggle(fId(item.href))}
+            aria-expanded={open}
+            aria-controls={open ? panelId : undefined}
+            aria-label={`${open ? t('sidebar.collapse') : t('sidebar.expand')} ${label}`}
+            className="shrink-0 rounded-md p-1.5 text-chrome-fg-muted transition-colors hover:bg-chrome-active/40 hover:text-chrome-fg"
+          >
+            <ChevronRight size={15} strokeWidth={2} className={cn('transition-transform duration-150', open && 'rotate-90')} />
+          </button>
+        </div>
+        {open && (
+          <div id={panelId} className="space-y-0.5 pl-2">
+            {children.map((c) => (
+              <NavItem key={c.href} href={c.href} label={t(c.tkey)} icon={c.icon}
+                active={path === c.href} onNavigate={onNavigate} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   function renderGroup(g: NavGroupNode) {
     const label = t(g.labelKey);
@@ -309,7 +363,7 @@ export default function Sidebar({ onNavigate, className, persist = true }: { onN
       {/* Nav */}
       <nav className="flex-1 space-y-4">
         <div className="space-y-0.5">
-          {FIXED.map((item) => (
+          {FIXED.map((item) => item.children ? renderFixedGroup(item) : (
             <NavItem
               key={item.href}
               href={item.href}
