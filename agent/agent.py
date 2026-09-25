@@ -68,6 +68,22 @@ def _resolve_gateway_key(role, gateways):
 GATEWAY_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 SERVICE = "bedrock-agentcore"
 
+def _gateways_from_env(raw):
+    """Parse GATEWAYS_JSON into {section: url}. A malformed value is reported, not silently
+    dropped — otherwise the agent runs without MCP tools and only the generic warning says so."""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        print(f"[Agent] ERROR: GATEWAYS_JSON is not valid JSON ({e}); ignoring it")
+        return {}
+    if not isinstance(parsed, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+        print("[Agent] ERROR: GATEWAYS_JSON must be an object of section → URL strings; ignoring it")
+        return {}
+    print(f"[Agent] Loaded {len(parsed)} gateways from GATEWAYS_JSON env")
+    return parsed
+
 def _discover_gateways():
     """AWS CLI로 Gateway URL 자동 감지 / Auto-discover gateway URLs via AWS CLI"""
     gateways = {}
@@ -91,14 +107,7 @@ def _discover_gateways():
 
     # 환경변수 폴백: GATEWAYS_JSON='{"network":"https://...","ops":"https://..."}' / Env var fallback
     if not gateways:
-        env_gw = os.environ.get("GATEWAYS_JSON", "")
-        if env_gw:
-            try:
-                import json as _json
-                gateways = _json.loads(env_gw)
-                print(f"[Agent] Loaded {len(gateways)} gateways from GATEWAYS_JSON env")
-            except:
-                pass
+        gateways = _gateways_from_env(os.environ.get("GATEWAYS_JSON", ""))
 
     if not gateways:
         print("[Agent] WARNING: No gateways discovered. Agent will run without MCP tools.")
