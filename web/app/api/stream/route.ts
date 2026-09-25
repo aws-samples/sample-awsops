@@ -1,6 +1,11 @@
+import { NextResponse } from 'next/server';
+import { verifyUser } from '@/lib/auth';
+
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
+  const user = await verifyUser(req.headers.get('cookie'));
+  if (!user) return NextResponse.json({ message: 'unauthenticated' }, { status: 401 });
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
