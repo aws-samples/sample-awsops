@@ -1,9 +1,8 @@
 # Lambda Module
 
 ## Role
-Lambda functions + shared modules for AgentCore Gateway MCP tools. +3 v2 read-only sources
-added 2026-06-18: `core_helpers` / `reachability_read` / `istio_read` — see the per-gateway
-lists below.
+Lambda functions + shared modules for AgentCore Gateway MCP tools, including the v2 read-only
+replacements `core_helpers` / `reachability_read` / `istio_read` (see Rules).
 
 ## Key Files
 - `inventory_read_mcp.py` supports a CloudFront-only exact `query_inventory.resource_id`.
@@ -83,32 +82,30 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
 - `aws_rds_mcp.py`'s `execute_sql` and `inventory_read_mcp.py` connect to the app's own Aurora
   via the RDS Data API. The credential is **not the Aurora master secret** but the dedicated
   least-privilege role's **`awsops_sql_reader`** secret (`AURORA_SQL_READER_SECRET_ARN` /
-  `AURORA_SECRET_ARN` env, injected by `ai.tf`). A caller-supplied `secret_arn` argument is
-  **ignored** and has been removed from the tool schema — credential selection is a server
+  `AURORA_SECRET_ARN` env, injected by `ai.tf`). The tool schema has no `secret_arn` argument
+  and a caller-supplied one is **ignored** — credential selection is a server
   config, not a model input. An unset env **fails closed** (never falls back to a higher
   privilege).
 - Role privileges: `NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`,
   `CONNECT`(awsops) + `USAGE`(**`sql_reader`**) + **`SELECT` on that schema's views only**,
   `default_transaction_read_only=on`, zero EXECUTE grants to this role, zero predefined-role
   memberships.
-- **Round 10 pivot — table allowlist → view-only grant. The default was inverted.** This role
+- **Grants are view-only, not a table allowlist.** This role
   has **no privilege on any table/column in `public`**. Data is exposed only through read-only
   views in the dedicated `sql_reader` schema, and each view lists **explicit columns**
   (`SELECT *` is forbidden).
-  - Why: round 8's blanket grant missed `eks_registrations.auth` (a k8s bearer token), and
-    round 9's ~38-**table** allowlist missed `worker_jobs.task_token` — that isn't data, it's a
-    **capability** (holding a Step Functions task token lets you `SendTaskSuccess/Failure` on a
-    running workflow). A table-level allowlist **fails open per column**, so the same failure
-    recurred.
+  - Why: a table-level grant **fails open per column**. A blanket grant exposed
+    `eks_registrations.auth` (a k8s bearer token), and a ~38-**table** allowlist still exposed
+    `worker_jobs.task_token` — not data but a **capability** (holding a Step Functions task
+    token lets you `SendTaskSuccess/Failure` on a running workflow).
   - **JSONB blobs are exposed only through named-key projections** (`inventory_resources.data`,
     `topology_nodes.meta`). Putting raw JSONB in the column list **fails open again, per JSON
     key** — `data` carries CloudFront origin CustomHeaders (an origin secret), and `meta.row`
-    can carry sensitive provider content. Web inventory/graph reads and new graph writes now
+    can carry sensitive provider content. Web inventory/graph reads and new graph writes
     remove recognized origin-header and OIDC ClientSecret fields, including legacy JSON encodings.
     That targeted projection is not a general secret detector; old stored rows may still contain
     the original values. Never expose raw `row` through the SQL-reader allowlist. Simply **dropping the column breaks the
-    connector at runtime** (PR #197 review CRITICAL — wiped out `find_unused_resources`/
-    `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
+    connector at runtime** (`find_unused_resources`/`query_inventory`/`get_topology` read it). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
     `sql_reader.inventory_resources` is currently owned by
@@ -153,13 +150,13 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
 - Because the credential is scoped to the host account + a **single cluster**, `execute_sql`
   has **no cross-account support** (a different-account target fails closed with 400), and even
   within the same account it fails closed with 400 if the target isn't the foundation cluster
-  (`AURORA_CLUSTER_ARN` comparison — round 10 MAJOR: previously an unhandled Data API exception
-  surfaced as an unhandled 500 with a stack trace). The rest of the rds-mcp tools' cross-account
-  path is unchanged.
+  (`AURORA_CLUSTER_ARN` comparison, so a mismatched target never reaches the Data API, whose
+  exception would surface as an unhandled 500 with a stack trace). The other rds-mcp tools keep
+  their cross-account path.
 - The agent Lambda's IAM role has **no** `GetSecretValue` on the master secret
   (`ai.tf`'s `agent_lambda_inventory`) — bypassing the lexical guard only reaches an
   unprivileged session.
-- **Why this design**: PR #197 review rounds 3–7 found a new bypass every round. The root cause
+- **Why this design**: successive reviews each found a new lexical bypass. The root cause
   is a class a denylist can't enumerate — a core function that takes SQL as a *string argument*
   and executes it (`query_to_xml('SELECT pg_cancel_backend(...)')`) is invisible to a guard that
   strips string literals before matching, and `SET TRANSACTION READ ONLY` only blocks data
