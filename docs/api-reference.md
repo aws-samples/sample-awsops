@@ -279,7 +279,7 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/sg/flow-sources` | GET, PUT | Flow Log Athena source configuration (ADR-019). GET for any user; PUT validates workgroup/database/table against allowlist regexes, and the live existence check runs in the isolated Athena broker Lambda | verifyUser (+ isAdmin on PUT) |
 
 
-## network-paths (4)
+## network-paths / network-path-runs (4)
 All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network-path-gate.ts`).
 
 | Path | Method | Role | Auth |

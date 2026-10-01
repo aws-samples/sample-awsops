@@ -21,7 +21,7 @@ AWS + Kubernetes operations dashboard with real-time monitoring, a private Cloud
 
 ## Overview
 
-AWSops v2 is a single-pane operations dashboard for AWS and Kubernetes, rebuilt as a Terraform-based MSA: a private edge (CloudFront VPC Origin → internal ALB → ECS Fargate), Cognito + Lambda@Edge auth, Aurora Serverless v2 persistent state, AgentCore section agents for live AWS queries, and an OOM-safe async worker tier. The previous v1 architecture (single EC2, CDK, embedded Steampipe) was decommissioned per ADR-016 (2026-07-09); its code was removed from this tree on 2026-07-12 (decision records are maintained in the private upstream repository).
+AWSops v2 is a single-pane operations dashboard for AWS and Kubernetes, rebuilt as a Terraform-based MSA: a private edge (CloudFront VPC Origin → internal ALB → ECS Fargate), Cognito + Lambda@Edge auth, Aurora Serverless v2 persistent state, AgentCore section agents for live AWS queries, and an OOM-safe async worker tier. The previous v1 architecture (single EC2, CDK, embedded Steampipe) is being retired per ADR-016: the decision (2026-07-09) and removal of its code from this tree (2026-07-12) are done, and the remaining infrastructure teardown is tracked in `docs/runbooks/v1-decommission.md` (decision records are maintained in the private upstream repository).
 
 ![AWSops v2 Architecture](images/awsops_arch_v2.png)
 
@@ -261,7 +261,7 @@ Licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ## 개요
 
-AWSops v2는 AWS와 Kubernetes를 위한 단일 화면 운영 대시보드로, Terraform 기반 MSA로 재구축되었습니다: 비공개 엣지(CloudFront VPC Origin → 내부 ALB → ECS Fargate), Cognito + Lambda@Edge 인증, Aurora Serverless v2 영속 상태, 라이브 AWS 조회를 수행하는 AgentCore 섹션 에이전트, OOM-안전 비동기 워커 계층으로 구성됩니다. 이전 v1 아키텍처(단일 EC2, CDK, 내장 Steampipe)는 ADR-016에 따라 폐기되었고(2026-07-09), 코드는 2026-07-12에 이 트리에서 제거되었습니다 (결정 기록은 비공개 upstream 리포지토리에서 관리됩니다).
+AWSops v2는 AWS와 Kubernetes를 위한 단일 화면 운영 대시보드로, Terraform 기반 MSA로 재구축되었습니다: 비공개 엣지(CloudFront VPC Origin → 내부 ALB → ECS Fargate), Cognito + Lambda@Edge 인증, Aurora Serverless v2 영속 상태, 라이브 AWS 조회를 수행하는 AgentCore 섹션 에이전트, OOM-안전 비동기 워커 계층으로 구성됩니다. 이전 v1 아키텍처(단일 EC2, CDK, 내장 Steampipe)는 ADR-016에 따라 폐기 중입니다. 결정(2026-07-09)과 이 트리의 코드 제거(2026-07-12)는 완료되었고, 남은 인프라 정리는 `docs/runbooks/v1-decommission.md`에서 추적합니다 (결정 기록은 비공개 upstream 리포지토리에서 관리됩니다).
 
 ![AWSops v2 Architecture](images/awsops_arch_v2.png)
 
