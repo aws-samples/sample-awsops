@@ -90,14 +90,21 @@ def lambda_handler(event, context):
             prev_end = now.replace(day=1).strftime("%Y-%m-01")
 
             def get_costs(start, end):
-                resp = ce.get_cost_and_usage(
-                    TimePeriod={"Start": start, "End": end}, Granularity="MONTHLY",
-                    Metrics=["UnblendedCost"], GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}])
-                costs = {}
-                for p in resp.get("ResultsByTime", []):
-                    for g in p.get("Groups", []):
-                        svc = g["Keys"][0]
-                        costs[svc] = costs.get(svc, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                # Follow NextPageToken: totals and the comparison are certified complete below.
+                costs, token = {}, None
+                while True:
+                    kwargs = {"TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
+                              "Metrics": ["UnblendedCost"], "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}]}
+                    if token:
+                        kwargs["NextPageToken"] = token
+                    resp = ce.get_cost_and_usage(**kwargs)
+                    for p in resp.get("ResultsByTime", []):
+                        for g in p.get("Groups", []):
+                            svc = g["Keys"][0]
+                            costs[svc] = costs.get(svc, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                    token = resp.get("NextPageToken")
+                    if not token:
+                        break
                 return costs
 
             prev_costs = get_costs(prev_start, prev_end)
@@ -130,15 +137,23 @@ def lambda_handler(event, context):
             prev_end = now.replace(day=1).strftime("%Y-%m-01")
 
             def get_detailed(start, end):
-                resp = ce.get_cost_and_usage(
-                    TimePeriod={"Start": start, "End": end}, Granularity="MONTHLY",
-                    Metrics=["UnblendedCost"],
-                    GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "USAGE_TYPE"}])
-                costs = {}
-                for p in resp.get("ResultsByTime", []):
-                    for g in p.get("Groups", []):
-                        key = " / ".join(g["Keys"])
-                        costs[key] = costs.get(key, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                # SERVICE x USAGE_TYPE routinely spans many pages; read them all so the top drivers
+                # are ranked over the whole month, not the first page.
+                costs, token = {}, None
+                while True:
+                    kwargs = {"TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
+                              "Metrics": ["UnblendedCost"],
+                              "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "USAGE_TYPE"}]}
+                    if token:
+                        kwargs["NextPageToken"] = token
+                    resp = ce.get_cost_and_usage(**kwargs)
+                    for p in resp.get("ResultsByTime", []):
+                        for g in p.get("Groups", []):
+                            key = " / ".join(g["Keys"])
+                            costs[key] = costs.get(key, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                    token = resp.get("NextPageToken")
+                    if not token:
+                        break
                 return costs
 
             prev = get_detailed(prev_start, prev_end)

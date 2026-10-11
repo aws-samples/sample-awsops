@@ -116,12 +116,17 @@ def lambda_handler(event, context):
         # Get all currently active (ALARM state) alarms / 현재 활성(ALARM 상태) 알람 전체 조회
         elif t == "get_active_alarms":
             # Describe alarms in ALARM state / ALARM 상태의 알람 조회
-            resp = cw.describe_alarms(StateValue="ALARM")
-            kept, meta = cap_list(resp.get("MetricAlarms", []), 20, bool(resp.get("NextToken")))
-            alarms = [{"name": a["AlarmName"], "metric": a.get("MetricName", ""),
+            # Request composite alarms too: without AlarmTypes the API returns metric alarms only, and
+            # an account whose firing alarms are composite would be certified "no active alarms".
+            resp = cw.describe_alarms(StateValue="ALARM", AlarmTypes=["CompositeAlarm", "MetricAlarm"])
+            firing = ([dict(a, _type="metric") for a in resp.get("MetricAlarms", [])]
+                      + [dict(a, _type="composite") for a in resp.get("CompositeAlarms", [])])
+            kept, meta = cap_list(firing, 20, bool(resp.get("NextToken")))
+            alarms = [{"name": a["AlarmName"], "type": a["_type"], "metric": a.get("MetricName", ""),
                 "namespace": a.get("Namespace", ""), "state": a["StateValue"],
                 "reason": a.get("StateReason", "")[:150],
                 "threshold": a.get("Threshold"), "comparison": a.get("ComparisonOperator", ""),
+                "rule": (a.get("AlarmRule") or "")[:200] if a["_type"] == "composite" else None,
                 "updatedAt": str(a.get("StateUpdatedTimestamp", ""))}
                 for a in kept]
             return ok({**meta, "region": region, "activeAlarms": alarms, "count": len(alarms)})
@@ -198,6 +203,9 @@ def lambda_handler(event, context):
             resp = logs.get_query_results(queryId=query_id)
             status = resp.get("status", "")
             rows, meta = cap_list(resp.get("results", []), 50)
+            if status != "Complete":
+                # Running/Scheduled results are interim: never certify them complete (or empty).
+                meta.update(truncated=True, more_pages=True)
             results = [{f["field"]: f["value"] for f in row} for row in rows]
             return ok({**meta, "region": region, "queryId": query_id, "status": status,
                 "results": results, "count": len(results),
