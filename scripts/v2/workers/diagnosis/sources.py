@@ -29,8 +29,8 @@ POSTURE_TOP_FINDINGS = 15
 COLLECTION_WINDOWS = {
     "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
                  f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types = types with rows but no "
-                 f"sample, partial_types = types whose sample was cut by the cap; rows reflect the last inventory sync, "
-                 f"not this instant; each row carries its own region)",
+                 f"sample, partial_types = types whose sample was cut by the cap; rows reflect the last inventory sync "
+                 f"(synced_at.oldest/newest captured_at), not this instant; each row carries its own region)",
     "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
     "cost": "Cost Explorer: month-to-date by service, monthly totals from about two months back (current month partial), top 15 usage types",
     "idle": "inventory-derived: unattached EBS volumes and stopped EC2 (EIP/snapshots not synced)",
@@ -186,7 +186,19 @@ def collect_inventory(conn, scope="self"):
         else:
             unsampled.append(rtype)
     return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
-                                      "unsampled_types": unsampled, "partial_types": partial})
+                                      "unsampled_types": unsampled, "partial_types": partial,
+                                      "synced_at": _inventory_synced_at(conn, scope)})
+
+
+def _inventory_synced_at(conn, scope):
+    """Oldest and newest captured_at for the scope, so the model can judge staleness instead of
+    hedging abstractly. Best-effort: None when unavailable."""
+    try:
+        row = conn.run("SELECT min(captured_at), max(captured_at) FROM inventory_resources "
+                       "WHERE account_id = :scope", scope=scope)[0]
+        return {"oldest": str(row[0]) if row[0] else None, "newest": str(row[1]) if row[1] else None}
+    except Exception:  # noqa: BLE001 — freshness is informative, never fatal
+        return None
 
 
 def collect_cw_metrics(conn, scope="self"):

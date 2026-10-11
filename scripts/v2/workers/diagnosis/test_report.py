@@ -940,3 +940,17 @@ def test_mutating_cli_guard_covers_copy_and_similar_verbs():
     for cmd in ("aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default",
                 "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage"):
         assert not report._MUTATING_CLI.search(cmd), cmd
+
+
+
+def test_inventory_reports_sync_window():
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("ec2", 1)]
+            if "min(captured_at)" in sql:
+                return [("2026-10-11 08:00:00+00", "2026-10-11 08:15:00+00")]
+            return [("i-1", "ap-northeast-2", {"a": 1})]
+    data = sources.collect_inventory(_Conn())["data"]
+    assert data["synced_at"] == {"oldest": "2026-10-11 08:00:00+00", "newest": "2026-10-11 08:15:00+00"}
+    assert "synced_at" in sources.COLLECTION_WINDOWS["inventory"]
