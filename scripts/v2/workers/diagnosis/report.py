@@ -59,14 +59,16 @@ _CHROME = {
     "ja": {"title": "AWS 診断レポート", "generated": "生成日時", "toc": "目次", "coverage": "データカバレッジ (Data coverage)"},
 }
 TIER_CATALOG = {"light": SECTIONS, "mid": SECTIONS, "deep": DEEP_SECTIONS}
-TIER_MAX_TOKENS = {"light": 1500, "mid": 1500, "deep": 2200}
+# Budgets leave room for the per-finding RCA table (_RULES) after the prescribed tables — at the old
+# 1500/2200 a live render cut off exactly where the root-cause/remediation rows start.
+TIER_MAX_TOKENS = {"light": 2500, "mid": 2500, "deep": 3200}
 
 
 def _resolve_tier(tier, model):
     """(catalog, model_id, max_tokens) for a tier. Only deep may use Opus; others pin Sonnet."""
     catalog = TIER_CATALOG.get(tier, SECTIONS)
     model_id = _MODEL_OPUS if (tier == "deep" and model == "opus") else _MODEL_SONNET
-    return catalog, model_id, TIER_MAX_TOKENS.get(tier, 1500)
+    return catalog, model_id, TIER_MAX_TOKENS.get(tier, TIER_MAX_TOKENS["mid"])
 
 
 def make_title_and_tags(md, lang="ko"):
@@ -89,7 +91,7 @@ def make_title_and_tags(md, lang="ko"):
 # A3 (V1 parity): per-section Bedrock idle/read timeout so one hung section can't stall the whole
 # job indefinitely (V1 aborted after 60s with no token). On timeout invoke_model raises →
 # _report's except → finish_report(failed) → the report surfaces as failed, never eternal "running".
-_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "90"))
+_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "120"))  # fits the larger RCA budgets
 _BEDROCK_CONFIG = Config(
     connect_timeout=10, read_timeout=_BEDROCK_READ_TIMEOUT_S, retries={"max_attempts": 2},
 )

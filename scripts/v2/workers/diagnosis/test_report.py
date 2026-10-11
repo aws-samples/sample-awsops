@@ -210,10 +210,10 @@ def test_generate_resolves_tier_catalog_and_model(monkeypatch):
                         lambda prompt, ctx, model_id, max_tokens: (calls.append((model_id, max_tokens)) or "본문"))
 
     calls.clear(); report.generate(object(), account="1", tier="mid")
-    assert len(calls) == 8 and all(m == report._MODEL_SONNET and t == 1500 for m, t in calls)
+    assert len(calls) == 8 and all(m == report._MODEL_SONNET and t == report.TIER_MAX_TOKENS["mid"] for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="deep", model="opus")
-    assert len(calls) == 15 and all(m == report._MODEL_OPUS and t == 2200 for m, t in calls)
+    assert len(calls) == 15 and all(m == report._MODEL_OPUS and t == report.TIER_MAX_TOKENS["deep"] for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="deep")  # default model = sonnet
     assert len(calls) == 15 and all(m == report._MODEL_SONNET for m, t in calls)
@@ -759,7 +759,7 @@ def test_report_handler_partial_when_a_section_render_degraded(monkeypatch):
 
 def test_section_rules_require_rca_and_operator_remediation():
     from diagnosis import sections as S
-    for needle in ("원인 미확정", "확인 방법", "해결 절차", "신뢰도", "근거(소스.필드=값)"):
+    for needle in ("원인 미확정", "확인 방법", "해결 절차", "신뢰도", "근거(소스.필드=값)", "### 원인 분석 및 조치"):
         assert needle in S._RULES
     assert "자동 실행을 제안하지 마라" in S._RULES  # ADR-005: advice only, never auto-change
 
