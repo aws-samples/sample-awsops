@@ -555,6 +555,44 @@ describe('ADR-031 Phase 2 — per-account space wiring', () => {
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'self' }));
   });
 
+  it('says so when a requested account is unregistered/disabled instead of silently using the host', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { getAccount } = await import('@/lib/accounts');
+    vi.mocked(getAccount).mockResolvedValueOnce({ accountId: '222222222222', enabled: false } as never);
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'status', accountId: '222222222222', sessionId: 's'.repeat(36) })));
+    expect(body).toContain('계정 222222222222은(는) 등록되지 않았거나 비활성화되어');
+    expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'self' }));
+    expect(recordExchange).toHaveBeenCalledWith(expect.objectContaining({
+      assistantContent: expect.stringContaining('호스트 계정 기준'),
+    }));
+  });
+
+  it('distinguishes an account lookup failure from an unregistered account', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { getAccount } = await import('@/lib/accounts');
+    vi.mocked(getAccount).mockRejectedValueOnce(new Error('db down'));
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'status', accountId: '222222222222', lang: 'en', sessionId: 's'.repeat(36) })));
+    expect(body).toContain('Account 222222222222 could not be verified');
+  });
+
+  it('an enabled requested account is used and gets no scope notice', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { getAccount } = await import('@/lib/accounts');
+    vi.mocked(getAccount).mockResolvedValueOnce({ accountId: '222222222222', enabled: true, alias: 'prod' } as never);
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'status', accountId: '222222222222', sessionId: 's'.repeat(36) })));
+    expect(body).not.toContain('호스트 계정 기준');
+    expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: '222222222222', accountAlias: 'prod' }));
+  });
+
   it('built-in path is unchanged: no spaceVersion in meta, PONG-style passthrough still streams', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     pickGateway.mockReturnValue('ops');

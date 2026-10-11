@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderRecentHistory, sanitizeHistory, accountLabel } from './chat-context';
+import { accountLabel, boundOutgoingHistory, renderRecentHistory, sanitizeHistory } from './chat-context';
 
 describe('renderRecentHistory', () => {
   it('returns "" for no/empty history', () => {
@@ -114,5 +114,63 @@ describe('accountLabel', () => {
   it('maps the host to "host" and keeps a member id', () => {
     expect(accountLabel('999988887777', '999988887777')).toBe('host');
     expect(accountLabel('111122223333', '999988887777')).toBe('111122223333');
+  });
+});
+
+describe('boundOutgoingHistory', () => {
+  const msg = (role: 'user' | 'assistant', content: string) => ({ role, content });
+
+  it('keeps the newest messages within the count cap', () => {
+    const all = Array.from({ length: 50 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', `m${i}`));
+    const kept = boundOutgoingHistory(all, 10);
+    expect(kept).toHaveLength(10);
+    expect(kept[9].content).toBe('m49');
+    expect(kept[0].content).toBe('m40');
+  });
+
+  it('drops the oldest messages first when the byte budget is exceeded', () => {
+    // Two newest messages fit including their role/key framing and separators.
+    const kept = boundOutgoingHistory([msg('user', 'a'.repeat(60)), msg('assistant', 'b'.repeat(30)), msg('user', 'c'.repeat(30))], 40, 130);
+    expect(kept.map((m) => m.content[0])).toEqual(['b', 'c']);
+  });
+
+  it('budgets UTF-8 bytes, so Korean text cannot overflow the 512KB body cap', () => {
+    const korean = '가'.repeat(60_000); // 60k chars = 180KB as UTF-8
+    const kept = boundOutgoingHistory([msg('user', korean), msg('assistant', korean), msg('user', korean)]);
+    expect(kept).toHaveLength(1); // two would be ~360KB > 300KB
+    const body = JSON.stringify({ prompt: 'p'.repeat(50_000), messages: boundOutgoingHistory(
+      Array.from({ length: 40 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', '가'.repeat(5_000)))) });
+    expect(new TextEncoder().encode(body).length).toBeLessThan(512_000);
+  });
+
+  it('skips empty placeholders from an in-flight or aborted answer', () => {
+    expect(boundOutgoingHistory([msg('user', 'q'), msg('assistant', ''), msg('user', 'q2')]).map((m) => m.content)).toEqual(['q', 'q2']);
+  });
+
+  it('reserves the escaped prompt and every request field before fitting history', () => {
+    const requestFields = { prompt: '\u0000'.repeat(50_000), section: 'monitoring',
+      sessionId: 's', threadId: 't', lang: 'ko', accountId: 'self' };
+    const all = Array.from({ length: 40 }, (_, i) =>
+      msg(i % 2 ? 'assistant' : 'user', '가'.repeat(5_000)));
+    const kept = boundOutgoingHistory(all, undefined, undefined, requestFields);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(boundOutgoingHistory(all).length);
+    expect(new TextEncoder().encode(JSON.stringify({ ...requestFields, messages: kept })).length)
+      .toBeLessThanOrEqual(512_000);
+    expect(kept[kept.length - 1]).toBe(all[all.length - 1]);
+  });
+
+  it('includes message framing at a tight byte boundary', () => {
+    const m = msg('assistant', 'x');
+    const bytes = new TextEncoder().encode(JSON.stringify(m)).length;
+    expect(boundOutgoingHistory([m], 40, bytes - 1)).toEqual([]);
+    expect(boundOutgoingHistory([m], 40, bytes + 1)).toEqual([m]);
+  });
+});
+
+describe('boundOutgoingHistory keeps per-turn account labels', () => {
+  it('passes the account field through untouched', () => {
+    const m = { role: 'user' as const, content: 'q', account: '111122223333' };
+    expect(boundOutgoingHistory([m])).toEqual([m]);
   });
 });

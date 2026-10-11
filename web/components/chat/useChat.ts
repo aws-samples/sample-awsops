@@ -4,6 +4,14 @@ import type { Msg } from './MessageList';
 import { sectionByKey } from '@/lib/sections';
 import type { ThreadSummary, ThreadMessage } from '@/lib/chat-store';
 import { getActiveAccount } from '@/lib/account-context';
+import { boundOutgoingHistory } from '@/lib/chat-context';
+
+const TOO_LARGE_MSG: Record<string, string> = {
+  ko: '대화나 질문이 너무 길어 보낼 수 없습니다. 새 대화를 시작하거나 질문을 줄여 주세요.',
+  en: 'This conversation or question is too long to send. Start a new conversation or shorten the question.',
+  zh: '对话或问题过长，无法发送。请开始新对话或缩短问题。',
+  ja: '会話または質問が長すぎて送信できません。新しい会話を始めるか、質問を短くしてください。',
+};
 
 export function newSessionId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -254,13 +262,18 @@ export function useChat() {
         const a = getActiveAccount();
         accountId = a && a !== 'self' && a !== '__all__' ? a : undefined;
       } catch { /* SSR / no storage — server defaults apply */ }
+      const requestFields = { prompt, section: overrideSection ?? null, previousSection, switchedFrom,
+        sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId };
       const res = await fetch('/api/chat', {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, previousSection, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
+        body: JSON.stringify({ ...requestFields,
+          messages: boundOutgoingHistory(history, undefined, undefined, requestFields) }),
       });
       if (!res.ok || !res.body) {
-        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.' : 'AI 응답을 받지 못했습니다.', streaming: false }));
+        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.'
+          : res.status === 413 ? (TOO_LARGE_MSG[lang ?? 'ko'] ?? TOO_LARGE_MSG.ko)
+          : 'AI 응답을 받지 못했습니다.', streaming: false }));
         return;
       }
       const reader = res.body.getReader();

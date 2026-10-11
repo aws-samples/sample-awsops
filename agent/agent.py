@@ -10,6 +10,7 @@ import socket
 import ipaddress
 import urllib.parse
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from strands import Agent
 from strands.hooks import AfterToolCallEvent, HookProvider, HookRegistry
 try:
@@ -400,8 +401,8 @@ COMMON_FOOTER = """
 - This is mandatory.
 
 ## Honesty & routing (do NOT hallucinate)
-- The AWSops section agents are EXACTLY these 8: network, container, data, security, cost,
-  monitoring, iac, ops. NEVER invent or name an agent that is not in this list.
+- The AWSops section agents are EXACTLY these 9: network, container, data, security, cost,
+  monitoring, observability, iac, ops. NEVER invent or name an agent that is not in this list.
 - NEVER tell the user to type a slash command or "go to / switch to" another section — the main
   chat routes to the right section automatically. Just answer.
 - If you lack a tool for the request, say so honestly and answer with what you have; do not
@@ -902,19 +903,32 @@ LANG_TOOL_REMINDER = {
 }
 
 
+# History bounds: keep recent turns and trim long messages so history cannot crowd out tool results.
+HISTORY_MAX_MESSAGES = 40
+HISTORY_MAX_CHARS_PER_MESSAGE = 12000
+
+
 def build_conversation(payload):
     """Extract user input and conversation history from payload. / 페이로드에서 사용자 입력과 대화 히스토리 추출."""
     messages_list = payload.get("messages", [])
     if messages_list and isinstance(messages_list, list):
         history = []
         for msg in messages_list[:-1]:
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role in ("user", "assistant") and content:
+            if role in ("user", "assistant") and isinstance(content, str) and content:
+                if len(content) > HISTORY_MAX_CHARS_PER_MESSAGE:
+                    content = content[:HISTORY_MAX_CHARS_PER_MESSAGE] + "\n…[rest of this message truncated]"
                 history.append({"role": role, "content": [{"text": content}]})
-        last_msg = messages_list[-1]
+        history = history[-HISTORY_MAX_MESSAGES:]
+        # Bedrock Converse requires the conversation to open with a user turn.
+        while history and history[0]["role"] != "user":
+            history.pop(0)
+        last_msg = messages_list[-1] if isinstance(messages_list[-1], dict) else {}
         user_input = last_msg.get("content", "")
-        return user_input, history
+        return (user_input if isinstance(user_input, str) else ""), history
 
     # Legacy format / 레거시 형식
     user_input = payload.get("prompt", payload.get("message", ""))
@@ -1034,6 +1048,78 @@ def scoped_conversation(payload):
     messages = [neutralize_markers(m) for m in payload.get("messages", [])] \
         if isinstance(payload.get("messages"), list) else payload.get("messages", [])
     return build_conversation({**payload, "messages": label_account_turns(messages, label)})
+
+
+EXTRA_CONTEXT_MAX_CHARS = 8000
+
+
+def _bounded_extra_context(extra_context):
+    """BFF-supplied context (datasource schemas, integration notes), capped with a visible marker so
+    the model knows names past the cut exist rather than assuming the list is complete."""
+    text = str(extra_context)
+    if len(text) <= EXTRA_CONTEXT_MAX_CHARS:
+        return text
+    return text[:EXTRA_CONTEXT_MAX_CHARS] + "\n…[context truncated — more entries exist than shown]"
+
+
+_KST = timezone(timedelta(hours=9))
+
+
+def build_runtime_context(account_id, account_alias, requested_account_id=""):
+    """Authoritative facts the model cannot know on its own: which account the tools act on, the
+    region live reads cover, and how to treat partial evidence. Stable per account, so it stays in
+    the cached system prompt; the per-request clock goes on the user turn (build_time_prefix).
+
+    ``account_id`` is the effective target (already blanked for host / ``__all__`` by
+    effective_account_id); ``requested_account_id`` is the raw payload value, used only to tell an
+    explicit all-accounts request apart from a plain host request."""
+    if account_id:
+        label = f"{account_alias} ({account_id})" if account_alias else account_id
+        scope = (f"target account {label}. Live tools read it through its read-only role. The synced "
+                 f"Aurora inventory tools (query_inventory, inventory_summary, find_unused_resources, "
+                 f"get_topology) cover the HOST account only; for this account they return host data marked "
+                 f"scope.requested_account_served=false — use live describe/list tools instead and never "
+                 f"present host inventory as this account's")
+    elif str(requested_account_id).strip() == "__all__":
+        scope = ("all registered accounts were selected, but tool calls run in the HOST account unless a "
+                 "tool accepts an explicit target_account_id — say which account each result came from")
+    else:
+        scope = "host account (the AWSops deployment's own account, read through the agent's read-only role)"
+    return f"""
+
+## Runtime Context (authoritative — use these facts, do not guess them)
+- Current time: given in the [Current time: …] tag on the latest user message. Resolve "today", "last N hours" and "this month" against it.
+- Account scope: {scope}.
+- Region: live AWS reads cover {GATEWAY_REGION} unless a tool result names another region. State the region when you report resources; never claim another region is empty.
+- Evidence limits: a list is complete only when the tool says so with truncated=false (also in a *Meta block or the breakdown* keys). If truncated=true or returned < total, say the list is partial and give the total; with more_pages=true the AWS API had more pages, so total is only a lower bound — say "at least <total>". With api_result_capped=true AWS itself capped the result and there is no next page to fetch: total is a lower bound and only a narrower filter can reach the rest. complete=false with query_status means the query had not finished (Running/Scheduled) or ended without results (query_failed=true for Failed/Cancelled/Timeout): report the status, never the rows as the whole answer. A list without these fields may be capped: do not call it complete. A successful call with truncated=false and nothing returned is a real empty result for that account and region — say so. A tool error, a failed call, or a stale/degraded/unavailable freshness block means "unknown", never "no issues" or "does not exist".
+- Root-cause answers: name the evidence (tool + field/value) behind each conclusion, separate confirmed facts from hypotheses, and give read-only verification steps before any change the operator might make."""
+
+
+def build_time_prefix(now=None):
+    """Per-request clock tag for the latest user turn (kept out of the system prompt so prompt
+    caching still hits)."""
+    now = now or datetime.now(timezone.utc)
+    return (f"[Current time: {now.strftime('%Y-%m-%d %H:%M')} UTC / "
+            f"{now.astimezone(_KST).strftime('%Y-%m-%d %H:%M')} KST] ")
+
+
+# Tool-less fallback: the skill prompts say "ALWAYS call tools", which a tool-less model would obey by
+# answering from memory. This directive follows every other block (except language), so it overrides them.
+TOOLS_UNAVAILABLE_DIRECTIVE = """
+
+## CRITICAL: Tools unavailable for this request
+The live AWS tool connection failed, so NO tools are available and you have NO real-time data.
+- Do NOT present any resource, metric, cost, or status as current or observed. Do not invent IDs or numbers.
+- Say first that live data could not be retrieved, then give only general guidance and the read-only
+  checks (console page or AWS CLI describe/list/get command) the user can run to gather the evidence.
+- This overrides every "ALWAYS call tools" rule above."""
+
+TOOLS_UNAVAILABLE_NOTICE = {
+    "ko": "_[실시간 AWS 도구 연결에 실패해 실제 데이터 없이 답변합니다. 아래 내용은 일반 안내이며 현재 상태가 아닙니다.]_\n\n",
+    "en": "_[Live AWS tools could not be reached, so this answer uses no real data. It is general guidance, not current state.]_\n\n",
+    "zh": "_[无法连接实时 AWS 工具，本回答未使用真实数据，仅为一般指导，并非当前状态。]_\n\n",
+    "ja": "_[ライブ AWS ツールに接続できなかったため、実データなしで回答します。以下は一般的な案内であり、現在の状態ではありません。]_\n\n",
+}
 
 
 async def _stream_text(agent, user_input):
@@ -1253,7 +1339,10 @@ async def handler(payload):
     # agent's own role (no target_account_id directive, no self-assume).
     account_id = effective_account_id(payload.get('accountId', ''))
     account_alias = payload.get('accountAlias', '')
-    account_directive = build_account_directive(account_id, account_alias) + build_region_scope(payload.get("regions"))
+    account_directive = build_account_directive(account_id, account_alias)
+    # Runtime facts ride with the account directive so every prompt branch carries them.
+    account_directive += build_runtime_context(account_id, account_alias, payload.get('accountId', ''))
+    account_directive += build_region_scope(payload.get("regions"))
 
     # Prefix user input with account context / 사용자 입력에 어카운트 컨텍스트 접두사 추가
     # (account_id was already blanked for the host account / __all__ by
@@ -1261,6 +1350,7 @@ async def handler(payload):
     #  there is no other account to disambiguate against.)
     if account_id and account_id != '__all__':
         user_input = f"[Target Account: {account_alias or account_id} ({account_id})] {user_input}"
+    user_input = build_time_prefix() + user_input
     if lang_user_suffix:
         user_input = f"{user_input}{lang_user_suffix}"
 
@@ -1312,7 +1402,7 @@ async def handler(payload):
 
             # Cached datasource schemas (and any other BFF-supplied context) reach BOTH branches here.
             if extra_context:
-                system_prompt = system_prompt + "\n\n" + str(extra_context)[:8000]
+                system_prompt = system_prompt + "\n\n" + _bounded_extra_context(extra_context)
             # Sandwich: directive leads AND closes the system prompt (see lang_directive_top note).
             system_prompt = lang_directive_top + system_prompt + lang_directive
             # stdout diagnostic (root logging is not surfaced by the runtime log capture):
@@ -1345,8 +1435,11 @@ async def handler(payload):
     # 폴백: 베이스 프롬프트만으로 Bedrock 직접 호출 (스트림 시작 전 게이트웨이 실패 시에만 도달).
     base_prompt = (system_prompt_override or SKILL_BASE.get(skill_role, SKILL_BASE[DEFAULT_GATEWAY])) + COMMON_FOOTER + account_directive
     if extra_context:
-        base_prompt = base_prompt + "\n\n" + str(extra_context)[:8000]
-    base_prompt = lang_directive_top + base_prompt + lang_directive
+        base_prompt = base_prompt + "\n\n" + _bounded_extra_context(extra_context)
+    base_prompt = lang_directive_top + base_prompt + TOOLS_UNAVAILABLE_DIRECTIVE + lang_directive
+    # The notice rides on the FIRST model delta: if this model fails before answering, nothing was
+    # streamed, so the BFF's Bedrock-direct ladder (empty-answer only) still recovers.
+    notice = TOOLS_UNAVAILABLE_NOTICE.get(response_language, TOOLS_UNAVAILABLE_NOTICE["ko"])
     agent = Agent(
         model=model,
         system_prompt=base_prompt,
@@ -1355,6 +1448,8 @@ async def handler(payload):
         hooks=lang_hooks,  # tool-less fallback still benefits if tools attach later
     )
     async for chunk in _stream_text(agent, user_input):
+        if notice and "delta" in chunk:
+            chunk, notice = {**chunk, "delta": notice + chunk["delta"]}, None
         yield chunk
 
 

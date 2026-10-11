@@ -6,7 +6,7 @@ AWS EKS MCP Lambda - EKS 클러스터 관리, K8s 리소스, CloudWatch, IAM
 # AgentCore Gateway MCP를 통해 9개 이상의 EKS 운영 도구를 제공합니다.
 """
 import json
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -45,13 +45,15 @@ def lambda_handler(event, context):
         # List all EKS clusters with status and version / 모든 EKS 클러스터를 상태 및 버전과 함께 목록 조회
         if t == "list_eks_clusters":
             eks = get_client('eks', 'ap-northeast-2', role_arn)
-            clusters = eks.list_clusters().get('clusters', [])
+            resp = eks.list_clusters()
+            kept, meta = cap_list(resp.get('clusters', []), 10, bool(resp.get('nextToken')))
             details = []
-            for c in clusters[:10]:
+            for c in kept:
                 d = eks.describe_cluster(name=c)['cluster']
                 details.append({'name': c, 'status': d['status'], 'version': d['version'],
                     'endpoint': d.get('endpoint', '')[:60], 'platformVersion': d.get('platformVersion', '')})
-            return {"statusCode": 200, "body": json.dumps({"clusters": details}, default=str)}
+            return {"statusCode": 200, "body": json.dumps(
+                {**meta, "region": "ap-northeast-2", "clusters": details}, default=str)}
 
         # Get EKS cluster VPC/network configuration / EKS 클러스터 VPC/네트워크 구성 조회
         elif t == "get_eks_vpc_config":

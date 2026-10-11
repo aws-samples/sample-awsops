@@ -425,6 +425,12 @@ The root and its incoming/outgoing one-hop neighbours are selected before the no
 | `truncation.edges` | The edge limit or node cap omitted applicable valid edges; a capped isolated node alone does not imply an omitted edge |
 | `collection.readOutcome` | Reader-only `state_read_failed` or `publication_changed`; never a stored `failureReason` |
 | `collection.snapshotConsistent` | Only `false` is emitted, when flow/infra verification fails or observes a publication change; absence is not a consistency guarantee |
+| `scope.account`, `scope.inventory_key` | Always `host` / `self`: reads never switch to the requested account |
+| `scope.requested_account_id`, `scope.requested_account_served` | Present only when another account was requested, a 12-digit ID or `an unrecognized account`; `requested_account_served` is always `false` |
+
+When `scope.requested_account_served` is `false`, a scope warning goes first in
+`warning`, ahead of any collection or selection warning. `query_inventory`,
+`inventory_summary` and `find_unused_resources` carry the same `scope` block.
 
 Edges require both endpoints in the returned node set. When nodes are capped, a
 bounded `EXISTS` check detects applicable edge loss; dangling records are excluded.
