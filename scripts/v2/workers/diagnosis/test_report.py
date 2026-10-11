@@ -737,7 +737,8 @@ def test_generate_discloses_partial_sources_in_model_context_and_summary(monkeyp
         return "Available evidence only."
     monkeypatch.setattr(report, "_bedrock_render", render)
     _, summary, _ = report.generate(object(), account="self")
-    assert summary["degraded"] == ["inventory"]
+    # a by-design sample cap is disclosed (model + summary.incomplete) but is not a failure of the run
+    assert summary["degraded"] == [] and summary["incomplete"] == ["inventory"]
     contexts = [ctx for ctx in seen if "inventory" in ctx]
     assert contexts and all(ctx["_collection"]["inventory"]["status"] == "partial" for ctx in contexts)
     assert all(ctx["inventory"]["by_type"] == {"ec2": 2} for ctx in contexts)
@@ -1009,7 +1010,10 @@ def test_mutating_cli_guard_flags_anything_not_provably_read_only():
         "aws acm request-certificate --domain-name d", "aws ec2 move-address-to-vpc --public-ip 1.2.3.4",
         "aws ec2 grant-something --x", "aws ssm start-session --target i-1", "aws sts assume-role --role-arn r",
         "aws athena start-query-execution --query-string 'DROP TABLE t'",
-        "aws ecs execute-command --cluster c", "aws iam activate-foo --x")
+        "aws ecs execute-command --cluster c", "aws iam activate-foo --x",
+        # `verify-*` is not read-only: SES creates an identity and sends a verification mail
+        "aws ses verify-email-identity --email-address a@b.io", "aws ses verify-domain-identity --domain d",
+        "aws kms verify --key-id k --message m --signature s")
     for cmd in mutating:
         assert report._has_mutating_cli(cmd), cmd
     read_only = (
@@ -1134,3 +1138,47 @@ def test_generate_degrades_remaining_sections_when_the_render_budget_is_spent(mo
     md, summary, _ = report.generate(object(), account="1", tier="mid")
     assert len(summary["render_degraded"]) == 8           # every LLM section failed fast, none hung
     assert "(degraded)" in md and report._render_deadline is None  # report still assembled; deadline cleared
+
+
+
+# ── by-design caps vs unexpected gaps: only failures make a real report `partial` ──────────────────
+
+def _gen(monkeypatch, data, **extra):
+    monkeypatch.setattr(report.src, "collect_all", lambda conn, scope="self": [
+        {"key": "posture", "ok": True, "degraded": False, "notes": "", "data": data, **extra}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a: "body")
+    return report.generate(object(), account="self")[1]
+
+
+def test_security_hub_page_cap_alone_does_not_make_the_report_partial(monkeypatch):
+    # >100 ACTIVE+NEW findings is the normal state of an account with standards enabled
+    summary = _gen(monkeypatch, {"enabled": True, "findings_by_severity": {"HIGH": 100}, "more_findings": True,
+                                 "more_top_findings": True, "more_top_groups": True})
+    assert summary["degraded"] == [] and summary["incomplete"] == ["posture"]
+
+
+def test_unexpected_gaps_still_make_the_report_partial(monkeypatch):
+    s1 = _gen(monkeypatch, {"enabled": True, "findings_by_severity": {"HIGH": 1}, "top_findings_unavailable": "throttled"})
+    assert s1["degraded"] == ["posture"] and s1["incomplete"] == []
+    s2 = _gen(monkeypatch, {"by_type": {"ec2": 1}, "read_failed_types": ["ec2"], "unsampled_types": ["ec2"]})
+    assert s2["degraded"] == ["posture"]
+
+
+def test_datasource_payload_cap_is_a_by_design_gap():
+    assert report._collection_gaps({"_truncated": True}) == (True, False)
+    assert report._collection_status("datasources_obs", {"key": "datasources_obs", "data": {"_truncated": True, "queried": 1}}
+                                     )["status"] == "partial"
+
+
+def test_inventory_marks_failed_reads_separately_from_the_byte_cap():
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("ec2", 1), ("rds", 1)]
+            if kw.get("rtype") == "rds":
+                raise RuntimeError("timeout")
+            return [("i-1", "ap-northeast-2", {"a": 1})]
+    data = sources.collect_inventory(_Conn())["data"]
+    assert data["read_failed_types"] == ["rds"] and data["unsampled_types"] == ["rds"]
+    assert report._collection_gaps(data) == (True, True)

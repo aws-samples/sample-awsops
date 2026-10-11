@@ -49,9 +49,14 @@ Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier)
 `_collection` entry per declared source: `ok`, `empty`, `partial`, `failed` or `not_collected`,
 plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
 prompt treats empty, failed and uncollected sources as unavailable evidence, never as a healthy
-result. Partial inventory samples and Security Hub detail/page omissions retain their returned
-evidence, while the missing portion remains unknown. Those sources are also listed in
-`summary.degraded`, so incomplete collection cannot leave the report marked fully succeeded.
+result. A `partial` source keeps the evidence it returned while the missing portion stays unknown.
+Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
+Hub page, the 24 KB inventory sample and the datasource payload cap, are disclosed to the model and
+listed in `summary.incomplete`, but they do not change the report status: an account with Security
+Hub standards enabled exceeds 100 findings routinely, and a status that always read `partial` would
+no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
+read failed, a failed Security Hub detail query) and failed collectors are listed in
+`summary.degraded` and make the report `partial`.
 Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review

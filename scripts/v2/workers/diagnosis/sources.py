@@ -149,6 +149,7 @@ def collect_inventory(conn, scope="self"):
 
     resources, truncated, size = {}, False, 0
     unsampled = []  # types with rows but no sample (cap hit / read failed / no rows) — named, so absence is not read as "none"
+    read_failed = []  # the subset of unsampled whose sample query raised — an unexpected gap, not a cap
     partial = []    # the type being sampled when the byte cap hit (some rows kept, the rest dropped)
     for rtype in by_type:
         if truncated:
@@ -163,6 +164,7 @@ def collect_inventory(conn, scope="self"):
             )
         except Exception:  # noqa: BLE001 — one type degrading must not lose the rest
             unsampled.append(rtype)  # named, so a failed sample is not read as "no resources"
+            read_failed.append(rtype)
             continue
         items = []
         for r in drows:
@@ -186,7 +188,7 @@ def collect_inventory(conn, scope="self"):
         else:
             unsampled.append(rtype)
     return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
-                                      "unsampled_types": unsampled, "partial_types": partial,
+                                      "unsampled_types": unsampled, "partial_types": partial, "read_failed_types": read_failed,
                                       "synced_at": _inventory_synced_at(conn, scope)})
 
 
@@ -382,8 +384,9 @@ def collect_service_map():
 
 
 def _posture_top_findings(sh):
-    """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter, so the list is not an
-    arbitrary first page) by title+severity+control. Control findings keep their generic control
+    """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter) by title+severity+control.
+    The first 100 matches are an arbitrary page (no SortCriteria), so the group counts are sample
+    frequencies, not account totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
     title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
     labelled by product + finding type instead. No resource identifiers are kept."""
     r = sh.get_findings(

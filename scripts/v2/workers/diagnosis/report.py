@@ -337,6 +337,20 @@ def _render_intended_vs_actual(verdicts, lang):
     return "\n".join(lines)
 
 
+def _collection_gaps(data):
+    """(by_design, unexpected) coverage gaps of a collector's data.
+
+    by_design: caps the collector always applies (100-finding Security Hub page, 24 KB inventory
+    sample, datasource payload cap) — disclosed to the model, but not a failure of the run.
+    unexpected: reads that failed (a type's sample query, the Security Hub detail query)."""
+    by_design = bool(data.get("truncated") is True or data.get("_truncated") is True
+                     or data.get("partial_types") or data.get("unsampled_types")
+                     or data.get("more_findings") is True or data.get("more_top_findings") is True
+                     or data.get("more_top_groups") is True)
+    unexpected = bool(data.get("read_failed_types") or data.get("top_findings_unavailable"))
+    return by_design, unexpected
+
+
 def _collection_status(key, source):
     """What the model must know about a source besides its data: did collection work, and is the
     data complete? An empty or failed source is 'no evidence', never 'no problems'."""
@@ -346,9 +360,7 @@ def _collection_status(key, source):
     data = source.get("data") or {}
     if source.get("degraded") or source.get("ok") is False:
         status = "failed"  # not "degraded": the UI flags that word in a section body as a render failure
-    elif (data.get("truncated") is True or data.get("unsampled_types") or data.get("partial_types")
-          or data.get("top_findings_unavailable") or data.get("more_findings") is True
-          or data.get("more_top_findings") is True or data.get("more_top_groups") is True):
+    elif any(_collection_gaps(data)):
         status = "partial"
     elif _is_empty(data):
         status = "empty"
@@ -393,8 +405,10 @@ _GLOBAL_OPTIONS_WITH_VALUE = frozenset((
 # change-…`, `sns subscribe`, `ssm start-session` — and Athena `start-query-execution` runs DDL/CTAS.)
 _READ_ONLY_VERBS = frozenset((
     "describe list get lookup search query scan select check validate simulate estimate preview test "
-    "verify wait filter find read fetch retrieve show view head tail generate analyze evaluate detect "
+    "wait filter find read fetch retrieve show view head tail generate analyze evaluate detect "
     "compare inspect count help").split())
+# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail),
+# `generate` is kept (iam generate-credential-report / service-last-accessed only build reports).
 # Operations that look mutating by name but only read, or only touch local config / a Logs query.
 _READ_ONLY_OPERATIONS = frozenset((
     "start-query", "stop-query", "start-live-tail", "update-kubeconfig"))
@@ -603,8 +617,16 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     _emit(0, "데이터 수집", "collect")
     collected = {r["key"]: r for r in src.collect_all(conn, scope)}
     sources_used = [k for k, r in collected.items() if r["ok"]]
-    degraded = [k for k, r in collected.items()
-                if _collection_status(k, r)["status"] in ("failed", "partial")]
+    # degraded = failed collectors and unexpected gaps (they make the report `partial`). incomplete =
+    # by-design caps: disclosed to the model and in the coverage note, but a normal 100-finding
+    # Security Hub page or a 24 KB inventory sample must not leave every real report `partial`.
+    degraded, incomplete = [], []
+    for k, r in collected.items():
+        status = _collection_status(k, r)["status"]
+        if status == "failed" or _collection_gaps(r.get("data") or {})[1]:
+            degraded.append(k)
+        elif status == "partial":
+            incomplete.append(k)
 
     # --- Plan 2: intended-vs-actual (active invariants only; deterministic; verdict-only) ---
     actual = _build_actual(collected)
@@ -668,7 +690,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     render_degraded = [s["key"] for s in rendered
                        if s.get("render_failed") or s.get("truncated") or s.get("mutating_command")]
     summary = {"sections": len(rendered), "sources_used": sources_used,
-               "degraded": degraded, "render_degraded": render_degraded, "drift": drift,
+               "degraded": degraded, "incomplete": incomplete, "render_degraded": render_degraded, "drift": drift,
                "unassessed": unassessed, "invariant_coverage": invariant_coverage}
 
     # --- Plan 2: report diff vs the parent report (only if this report has a parent) ---
