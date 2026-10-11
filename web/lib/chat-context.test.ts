@@ -107,9 +107,19 @@ describe('boundOutgoingHistory', () => {
     expect(kept[0].content).toBe('m40');
   });
 
-  it('drops the oldest messages first when the char budget is exceeded', () => {
+  it('drops the oldest messages first when the byte budget is exceeded', () => {
+    // each 30-char ASCII message encodes to 32 JSON bytes (quotes included)
     const kept = boundOutgoingHistory([msg('user', 'a'.repeat(60)), msg('assistant', 'b'.repeat(30)), msg('user', 'c'.repeat(30))], 40, 70);
     expect(kept.map((m) => m.content[0])).toEqual(['b', 'c']);
+  });
+
+  it('budgets UTF-8 bytes, so Korean text cannot overflow the 512KB body cap', () => {
+    const korean = '가'.repeat(60_000); // 60k chars = 180KB as UTF-8
+    const kept = boundOutgoingHistory([msg('user', korean), msg('assistant', korean), msg('user', korean)]);
+    expect(kept).toHaveLength(1); // two would be ~360KB > 300KB
+    const body = JSON.stringify({ prompt: 'p'.repeat(50_000), messages: boundOutgoingHistory(
+      Array.from({ length: 40 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', '가'.repeat(5_000)))) });
+    expect(new TextEncoder().encode(body).length).toBeLessThan(512_000);
   });
 
   it('skips empty placeholders from an in-flight or aborted answer', () => {

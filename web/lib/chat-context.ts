@@ -51,25 +51,31 @@ function escapeTagBreakout(s: string): string {
   return s.replace(/<\/?(?:awsops_chat_history|user_query|query)>/gi, (m) => m.replace('<', '&lt;').replace('>', '&gt;'));
 }
 
-// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512KB with 413, which a
-// long thread used to hit as a generic "no answer" error. Keep the NEWEST turns that fit (older ones
-// drop first), skip empty placeholders (an in-flight or aborted answer), and never split a message.
+// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512,000 BYTES with 413,
+// which a long thread used to hit as a generic "no answer" error. The budget is UTF-8 bytes, not
+// characters (Korean is 3 bytes/char): 300KB of history + a max 50k-char prompt (≤150KB) + JSON
+// framing stays under the cap. Keep the NEWEST turns that fit (older ones drop first), skip empty
+// placeholders (an in-flight or aborted answer), and never split a message.
 export const OUTGOING_HISTORY_MAX_MESSAGES = 40;
-export const OUTGOING_HISTORY_MAX_CHARS = 300_000;
+export const OUTGOING_HISTORY_MAX_BYTES = 300_000;
+
+const utf8 = new TextEncoder();
 
 export function boundOutgoingHistory(
   messages: HistoryMsg[],
   maxMessages = OUTGOING_HISTORY_MAX_MESSAGES,
-  maxChars = OUTGOING_HISTORY_MAX_CHARS,
+  maxBytes = OUTGOING_HISTORY_MAX_BYTES,
 ): HistoryMsg[] {
   const kept: HistoryMsg[] = [];
   let used = 0;
   for (let i = messages.length - 1; i >= 0 && kept.length < maxMessages; i--) {
     const m = messages[i];
     if (!m.content) continue;
-    if (used + m.content.length > maxChars) break;
+    // JSON.stringify escapes quotes/newlines/control chars, so measure the encoded form.
+    const size = utf8.encode(JSON.stringify(m.content)).length;
+    if (used + size > maxBytes) break;
     kept.unshift(m);
-    used += m.content.length;
+    used += size;
   }
   return kept;
 }
