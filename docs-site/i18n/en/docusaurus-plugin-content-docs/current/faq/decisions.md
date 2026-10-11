@@ -127,11 +127,12 @@ In addition to the 8 AWS-domain gateways — network · container · data · sec
 
 ### Can I add my own agents or tools?
 
-**Only via curated connectors** (ADR-039, ADR-031, ADR-041).
+**Only via governed connectors** (ADR-039, ADR-031, ADR-041): curated connectors, official presets, or an administrator-registered `custom_mcp` integration.
 
 The ADR-039 multi-agent platform introduced frontier agents (DevOps/Security/FinOps + N) and the Integrations axis, and admin-configured Agent Spaces (ADR-031 Phase 1/2) are LIVE. However:
 
-- **Arbitrary-form BYO-MCP (ADR-031 Phase 3) is dropped** (2026-06-11 reversal). Connectors are allowed in **curated form** only (ADR-041).
+- **Arbitrary-form BYO-MCP (ADR-031 Phase 3) is dropped** (2026-06-11 reversal). An MCP endpoint path without governance controls is not allowed (ADR-041).
+- The administrator-only `custom_mcp` integration is a governed path with those controls: administrator-only registration, per-account enablement, an administrator-set exposed-tool ceiling (empty exposes no tools), a credential read from Secrets Manager at connect time, and connect-time SSRF checks. The official presets keep their host pins.
 - Among **mutating tools (ADR-031 Phase 4)**, only non-AWS external *data* writes are narrowly allowed under ADR-040 governance; AWS-resource mutation stays dropped.
 
 ### Does the AI diagnose Kubernetes (EKS) automatically too?
