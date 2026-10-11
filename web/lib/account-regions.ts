@@ -97,7 +97,9 @@ export async function chatRegionScope(accountId: string): Promise<string[] | und
     if (scope.regions.includes('*')) return ['*'];
     const regions = scope.regions.filter(validateRegion).slice(0, MAX_CHAT_REGIONS);
     return regions.length ? regions : undefined;
-  } catch {
+  } catch (e) {
+    // Degrades to the agent's default-region wording; log so a missing scope is diagnosable.
+    console.warn(JSON.stringify({ evt: 'chat_region_scope_unavailable', error: e instanceof Error ? e.name : 'unknown' }));
     return undefined;
   }
 }

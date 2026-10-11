@@ -1006,10 +1006,22 @@ def label_account_turns(messages_list, current_label):
             label = current_label
         else:
             label = label_of(m)
-        # A user-typed copy of the marker must not read as a label we added.
-        content = m["content"].replace("[Account for this turn:", "(Account for this turn:")
-        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {content}"})
+        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {m['content']}"})
     return out
+
+
+# Markers the runtime itself adds to user turns. A user-typed copy must not read as one of ours,
+# in any thread (labelled or not), so every user message is neutralized before labelling.
+_RUNTIME_MARKERS = ("[Account for this turn:", "[Target Account:")
+
+
+def neutralize_markers(m):
+    if not isinstance(m, dict) or m.get("role") != "user" or not isinstance(m.get("content"), str):
+        return m
+    content = m["content"]
+    for marker in _RUNTIME_MARKERS:
+        content = content.replace(marker, "(" + marker[1:])
+    return {**m, "content": content} if content != m["content"] else m
 
 
 def scoped_conversation(payload):
@@ -1019,7 +1031,9 @@ def scoped_conversation(payload):
     when HOST_ACCOUNT_ID is unset — the BFF labels those turns 'host' too)."""
     current = effective_account_id(payload.get('accountId', ''))
     label = current if isinstance(current, str) and _ACCOUNT_LABEL_RE.match(current) else 'host'
-    return build_conversation({**payload, "messages": label_account_turns(payload.get("messages", []), label)})
+    messages = [neutralize_markers(m) for m in payload.get("messages", [])] \
+        if isinstance(payload.get("messages"), list) else payload.get("messages", [])
+    return build_conversation({**payload, "messages": label_account_turns(messages, label)})
 
 
 async def _stream_text(agent, user_input):

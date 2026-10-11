@@ -447,7 +447,8 @@ export async function POST(request: Request) {
   } else {
     gateway = pickGateway(prompt, body.section, previous);
   }
-  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2).
+  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2),
+  // then the previous answering section (follow-up continuity) before the default catch-all.
   // ADR-031 Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
   // v1-parity multi-account target (v1 route.ts:926-930): an explicit body.accountId targets a
   // REGISTERED+ENABLED account (accounts table); anything else keeps the host default. The value
