@@ -13,6 +13,8 @@ import {
   PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
 import { getPool } from '@/lib/db';
+import { buildAuthHeaders, type AuthType, type DatasourceCreds } from './datasource-auth';
+import { assertDatasourceEndpointAllowed } from './ssrf-guard';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const SECRET_NAME =
@@ -207,6 +209,38 @@ export async function getConfiguredIds(): Promise<string[]> {
     );
     return [];
   }
+}
+
+/** Instance-specific configuration evidence only; never a provider connectivity claim.
+ * Kind mirrors belong to the agent default path and are not borrowed by Explore. */
+export async function getConfiguredDatasourceIds(rows: {
+  id: number; endpoint: string | null; authType: string | null;
+}[]): Promise<string[]> {
+  let map: Record<string, unknown> = {};
+  if (rows.some(row => row.authType !== 'none')) {
+    try { map = await readMap(); }
+    catch { console.warn('[integration-credentials] datasource credential configuration unavailable'); }
+  }
+  return rows.filter(row => {
+    if (!row.endpoint) return false;
+    try { assertDatasourceEndpointAllowed(row.endpoint); } catch { return false; }
+    if (row.authType === 'none') return true;
+    const blob = map[String(row.id)];
+    if (!blob || typeof blob !== 'object' || Array.isArray(blob)) return false;
+    const cred = blob as Record<string, unknown>;
+    const auth = row.authType ?? cred.authType;
+    if (!['none', 'basic', 'bearer', 'custom_header'].includes(String(auth))) return false;
+    const fields: DatasourceCreds = {};
+    for (const key of ['username', 'password', 'token', 'headerName', 'headerValue', 'headerName2', 'headerValue2'] as const) {
+      if (typeof cred[key] === 'string') fields[key] = cred[key];
+    }
+    if (auth === 'basic' && !fields.username?.trim() || auth === 'bearer' && !fields.token?.trim()) return false;
+    if (auth === 'custom_header' && !fields.headerValue?.trim() && !fields.headerValue2?.trim()) return false;
+    try {
+      const headers = buildAuthHeaders(auth as AuthType, fields);
+      return auth === 'none' || Object.keys(headers).length > 0;
+    } catch { return false; }
+  }).map(row => String(row.id));
 }
 
 /** Remove the given map keys (e.g. an instance id and, when deleting the default, its kind mirror). */

@@ -17,6 +17,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('DatasourcesTab', () => {
+  it('uses explicit configuration evidence instead of a legacy connected flag', async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ datasources: [{
+        id: 1, name: 'unconfirmed-default', kind: 'prometheus', isDefault: true,
+        connected: true, configured: false,
+      }] }),
+    })) as unknown as typeof fetch;
+    render(<DatasourcesTab />);
+    expect(await screen.findByText('설정 미확인')).toBeTruthy();
+    expect(screen.queryByText('● 연결됨')).toBeNull();
+  });
   it('lists instances (name/type/auth/default) with an Explore link per row', async () => {
     render(<DatasourcesTab canManage={false} />);
     await waitFor(() => expect(screen.getByText('prod-prom')).toBeTruthy());
@@ -48,7 +59,8 @@ describe('DatasourcesTab', () => {
     render(<DatasourcesTab canManage={false} />);
     await waitFor(() => expect(screen.getByText('prod-prom')).toBeTruthy());
     expect(screen.getByText('총 데이터소스')).toBeTruthy();
-    expect(screen.getByText('연결됨')).toBeTruthy();
+    expect(screen.getAllByText('설정됨').length).toBeGreaterThan(0);
+    expect(screen.queryByText('● 연결됨')).toBeNull();
     expect(screen.getByText('타입 종류')).toBeTruthy();
     expect(screen.getByText('기본 데이터소스')).toBeTruthy();
     // single default in this scenario → the tile names it

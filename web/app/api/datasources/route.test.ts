@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
 const listDatasources = vi.fn();
-const getConfiguredIds = vi.fn();
+const getConfiguredDatasourceIds = vi.fn();
 const deleteDatasource = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
@@ -11,20 +11,20 @@ vi.mock('@/lib/datasources', () => ({
   listDatasources: (...a: unknown[]) => listDatasources(...a),
   deleteDatasource: (...a: unknown[]) => deleteDatasource(...a),
 }));
-vi.mock('@/lib/integration-credentials', () => ({ getConfiguredIds: (...a: unknown[]) => getConfiguredIds(...a) }));
+vi.mock('@/lib/integration-credentials', () => ({ getConfiguredDatasourceIds: (...a: unknown[]) => getConfiguredDatasourceIds(...a) }));
 
 const get = () => new Request('http://x/api/datasources', { headers: { cookie: 'awsops_token=t' } });
 const del = () => new Request('http://x/api/datasources/5', { method: 'DELETE', headers: { cookie: 'awsops_token=t' } });
 
 beforeEach(() => {
-  for (const m of [verifyUser, isAdmin, listDatasources, getConfiguredIds, deleteDatasource]) m.mockReset();
+  for (const m of [verifyUser, isAdmin, listDatasources, getConfiguredDatasourceIds, deleteDatasource]) m.mockReset();
   verifyUser.mockResolvedValue({ sub: 'u' });
   isAdmin.mockResolvedValue(true);
   listDatasources.mockResolvedValue([
     { id: 1, name: 'prod-prom', kind: 'prometheus', endpoint: 'http://p', authType: 'none', isDefault: true, enabled: true },
     { id: 2, name: 'stg-prom', kind: 'prometheus', endpoint: 'http://s', authType: 'basic', isDefault: false, enabled: true },
   ]);
-  getConfiguredIds.mockResolvedValue(['2']);
+  getConfiguredDatasourceIds.mockResolvedValue(['1', '2']);
   deleteDatasource.mockResolvedValue(undefined);
 });
 
@@ -41,7 +41,8 @@ describe('GET /api/datasources (list instances)', () => {
     const { datasources } = await resp.json();
     expect(datasources).toHaveLength(2);
     // admin (default mock): the registered URL is included (v1 parity for managers)
-    expect(datasources[0]).toEqual({ id: 1, name: 'prod-prom', kind: 'prometheus', endpoint: 'http://p', authType: 'none', isDefault: true, connected: true });
+    expect(datasources[0]).toEqual({ id: 1, name: 'prod-prom', kind: 'prometheus', endpoint: 'http://p', authType: 'none', isDefault: true,
+      connected: true, configured: true, connectionStatus: 'not_checked' });
     expect(datasources[1].connected).toBe(true); // id '2' has a credential
   });
 
@@ -58,6 +59,14 @@ describe('GET /api/datasources (list instances)', () => {
     const resp = await GET(get());
     expect(resp.status).toBe(200);
     expect((await resp.json()).datasources).toEqual([]);
+  });
+  it('does not infer a default instance is configured or connected without its auth configuration', async () => {
+    listDatasources.mockResolvedValue([{ id: 1, name: 'default-missing', kind: 'prometheus',
+      endpoint: 'https://provider.example.test', authType: 'bearer', isDefault: true }]);
+    getConfiguredDatasourceIds.mockResolvedValue([]);
+    const { GET } = await import('./route');
+    const { datasources } = await (await GET(get())).json();
+    expect(datasources[0]).toMatchObject({ isDefault: true, configured: false, connected: false, connectionStatus: 'not_checked' });
   });
 });
 

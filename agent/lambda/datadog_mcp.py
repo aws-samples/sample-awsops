@@ -79,16 +79,19 @@ def datadog_query(args):
     data = _get(_ds(), "/api/v1/query", params)
     series = data.get("series", []) if isinstance(data, dict) else []
     out = []
+    truncated = len(series) > MAX_SERIES
     for s in series[:MAX_SERIES]:
         if not isinstance(s, dict):
             continue
         pts = s.get("pointlist") or []
+        truncated = truncated or len(pts) > MAX_POINTS
         out.append({
             "metric": s.get("metric", ""), "scope": s.get("scope", ""),
             "unit": (s.get("unit") or [{}])[0].get("name") if isinstance(s.get("unit"), list) and s.get("unit") else None,
             "pointlist": pts[:MAX_POINTS],
         })
-    return ok({"series": out, "truncated": len(series) > MAX_SERIES,
+    return ok({"series": out, "truncated": truncated,
+               **({"collectionStatus": "partial"} if truncated else {}),
                "status": data.get("status") if isinstance(data, dict) else None})
 
 
@@ -101,14 +104,27 @@ def datadog_schema(args):
 
 
 def datadog_health(args):
-    """Key validation probe: GET /api/v1/validate (API key), then a 1-metric list (app key scope)."""
+    """Validate configured API keys, then metric-query access (key pair or bearer)."""
     creds = load_datasource(SLUG)
     assert_host_allowed(creds["endpoint"])
     try:
-        v = _get(creds, "/api/v1/validate")
-        return ok({"ok": bool(isinstance(v, dict) and v.get("valid"))})
-    except _ApiError as e:
-        return ok({"ok": False, "error": str(e)})
+        # The API-key validator does not validate bearer access tokens. Those use
+        # the supported metric-query operation itself as the authentication proof.
+        if any(name.lower() == "dd-api-key" for name in _headers(creds)):
+            v = _get(creds, "/api/v1/validate")
+            if not isinstance(v, dict) or v.get("valid") is not True:
+                return ok({"ok": False, "error": "Datadog API key validation failed"})
+        end = int(time.time())
+        # A one-minute, single-metric query with a probe-only host filter verifies
+        # metric-query permission without fetching the fleet's real metric series.
+        probe = _get(creds, "/api/v1/query", {
+            "query": "avg:system.cpu.user{host:awsops-connection-probe}",
+            "from": str(end - 60), "to": str(end),
+        })
+        verified = isinstance(probe, dict) and probe.get("status") == "ok" and isinstance(probe.get("series"), list)
+        return ok({"ok": verified, **({} if verified else {"error": "Datadog metric-query access could not be verified"})})
+    except _ApiError:
+        return ok({"ok": False, "error": "Datadog credentials or metric-query access could not be verified"})
 
 
 _TOOLS = {

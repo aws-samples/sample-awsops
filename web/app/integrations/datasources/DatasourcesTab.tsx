@@ -10,7 +10,7 @@ import DatasourceForm, { type DatasourceFormValue } from './DatasourceForm';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface Instance {
-  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean; settings?: { timeoutS?: number; database?: string };
+  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean; configured?: boolean; settings?: { timeoutS?: number; database?: string };
 }
 
 // Chat section per datasource kind (the deep-link prompt pins it with a leading /section —
@@ -65,7 +65,8 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
   }
 
   // gap-audit L201: KPI roll-up from the already-fetched list — no extra API call.
-  const connectedN = list.filter((i) => i.connected).length;
+  const configured = (i: Instance) => i.configured ?? i.connected ?? false;
+  const configuredN = list.filter(configured).length;
   const kindN = new Set(list.map((i) => i.kind)).size;
   // Defaults are PER KIND — one arbitrary name would misrepresent the set, so show the count
   // (with every kind: name pair in a tooltip) once there's more than one.
@@ -76,7 +77,8 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-[13px] text-ink-500">{tt('관측성 데이터소스 (Prometheus·Mimir·Loki·Tempo·ClickHouse). 같은 타입 여러 개 등록 가능.')}</p>
+        <p className="text-[13px] text-ink-500">{tt('관측성 데이터소스 (Prometheus·Mimir·Loki·Tempo·ClickHouse). 같은 타입 여러 개 등록 가능.')}
+          {' '}{tt('설정 상태는 실제 연결 성공을 의미하지 않습니다.')}</p>
         <div className="flex items-center gap-2">
           {/* gap-audit L202: re-fetch without a full page reload. */}
           <button
@@ -95,7 +97,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatTile label={tt('총 데이터소스')} value={list.length} />
-        <StatTile label={tt('연결됨')} value={connectedN} />
+        <StatTile label={tt('설정됨')} value={configuredN} />
         <StatTile label={tt('타입 종류')} value={kindN} />
         <div title={defaults.map((d) => `${d.kind}: ${d.name}`).join(', ')}>
           <StatTile label={tt('기본 데이터소스')} value={defaultVal} />
@@ -128,7 +130,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
                 )}
                 <td className="px-3 py-2 text-ink-500">{i.authType ?? 'none'}</td>
                 <td className="px-3 py-2">
-                  <span className={i.connected ? 'text-emerald-600' : 'text-amber-600'}>{i.connected ? tt('● 연결됨') : tt('○ 미설정')}</span>
+                  <span className={configured(i) ? 'text-ink-600' : 'text-amber-600'}>{configured(i) ? tt('설정됨') : tt('설정 미확인')}</span>
                 </td>
                 <td className="px-3 py-2">{i.isDefault ? <span className="text-amber-600">{tt('★ 기본')}</span> : (canManage && <button className="text-[12px] text-brand-600 hover:underline" onClick={() => onSetDefault(i)} disabled={busyId === i.id}>{tt('기본으로 설정')}</button>)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">

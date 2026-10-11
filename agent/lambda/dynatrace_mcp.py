@@ -81,9 +81,13 @@ def dynatrace_query(args):
     data = _get(_ds(), "/api/v2/metrics/query", params)
     result = data.get("result", []) if isinstance(data, dict) else []
     out = []
+    # Current Metrics v2 query responses have a null nextPageKey. Retain partial
+    # evidence if an older/compatible response advertises an unconsumed page.
+    truncated = len(result) > MAX_SERIES or bool(isinstance(data, dict) and data.get("nextPageKey"))
     for metric in result[:MAX_SERIES]:
         if not isinstance(metric, dict):
             continue
+        truncated = truncated or len(metric.get("data") or []) > MAX_SERIES
         out.append({
             "metricId": metric.get("metricId", ""),
             "data": [
@@ -96,7 +100,8 @@ def dynatrace_query(args):
                 if isinstance(d, dict)
             ],
         })
-    return ok({"result": out, "truncated": len(result) > MAX_SERIES,
+    return ok({"result": out, "truncated": truncated,
+               **({"collectionStatus": "partial"} if truncated else {}),
                "resolution": data.get("resolution") if isinstance(data, dict) else None})
 
 

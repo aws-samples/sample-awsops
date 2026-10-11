@@ -1,10 +1,11 @@
 // GET /api/datasources — list configured datasource INSTANCES for the hub + Explore picker.
 // Authenticated (read-only), NOT admin. Returns {id,name,kind,authType,isDefault,connected} — never
-// credentials. Degrade-safe: [] when Aurora is off / on error so the page doesn't 500.
+// credentials. Configured is distinct from tested connectivity; connected is a legacy
+// configuration alias. Degrade-safe: [] when Aurora is off / on error.
 import { verifyUser } from '@/lib/auth';
 import { listDatasources } from '@/lib/datasources';
 import { isAdmin } from '@/lib/admin';
-import { getConfiguredIds } from '@/lib/integration-credentials';
+import { getConfiguredDatasourceIds } from '@/lib/integration-credentials';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,8 @@ export async function GET(request: Request) {
   if (!user) return json({ error: 'unauthenticated' }, 401);
 
   try {
-    const [rows, configuredIds, admin] = await Promise.all([listDatasources(), getConfiguredIds(), isAdmin(user)]);
+    const [rows, admin] = await Promise.all([listDatasources(), isAdmin(user)]);
+    const configuredIds = await getConfiguredDatasourceIds(rows);
     const idSet = new Set(configuredIds);
     const datasources = rows.map((r) => ({
       id: r.id,
@@ -28,8 +30,9 @@ export async function GET(request: Request) {
       ...(admin ? { endpoint: r.endpoint, settings: r.settings } : {}),
       authType: r.authType,
       isDefault: r.isDefault,
-      // "connected" = a credential is resolvable: the instance id key, or (for migrated defaults) the kind mirror.
-      connected: idSet.has(String(r.id)) || r.isDefault,
+      configured: idSet.has(String(r.id)),
+      connected: idSet.has(String(r.id)), // compatibility alias; not a live connection test
+      connectionStatus: 'not_checked',
     }));
     return json({ datasources }, 200);
   } catch {
