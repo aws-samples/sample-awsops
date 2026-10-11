@@ -27,7 +27,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from cross_account import resolve_tool_name
+from cross_account import host_account_id, resolve_tool_name
 
 
 DEFAULT_INVENTORY_STALE_AFTER_MINUTES = 30
@@ -634,7 +634,28 @@ def _freshness_for_type(resource_type):
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────────────────────────
-def _ok(body):
+def _scope(requested_account_id):
+    """Which account this response describes. Reads are always host-scoped (account_id='self');
+    when the caller asked about another account, say plainly that this is NOT that account's data,
+    so a chat about a member account never presents host inventory as the member's."""
+    scope = {"account": "host", "inventory_key": "self"}
+    requested = str(requested_account_id or "").strip()
+    if not requested or requested in ("self", "__all__") or requested == (host_account_id() or ""):
+        return scope, None
+    if not re.fullmatch(r"\d{12}", requested):
+        requested = "an unrecognized account"  # never echo arbitrary model-supplied text
+    scope.update(requested_account_id=requested, requested_account_served=False)
+    warning = (f"This is HOST-account inventory, not {requested if requested.startswith('an ') else 'account ' + requested}: the synced inventory tools "
+               f"read the host account only. Do not attribute these results to {requested}; use the "
+               f"live describe/list tools for that account.")
+    return scope, warning
+
+
+def _ok(body, scope=None, scope_warning=None):
+    if scope is not None and isinstance(body, dict):
+        body["scope"] = scope
+        if scope_warning:
+            body["warning"] = " ".join(filter(None, [scope_warning, body.get("warning")]))
     return {"statusCode": 200, "body": json.dumps(body, default=str)}
 
 
@@ -643,8 +664,11 @@ def lambda_handler(event, context):
     params = event if isinstance(event, dict) else json.loads(event)
     tool_name = resolve_tool_name(params, context)
     arguments = params.get("arguments", params)
+    requested_account_id = None
     if isinstance(arguments, dict):
-        arguments.pop("target_account_id", None)  # single-account; accept-and-ignore
+        # Reads stay host-scoped (never the requested account); the response says so via `scope`.
+        requested_account_id = arguments.pop("target_account_id", None)
+    scope, scope_warning = _scope(requested_account_id)
 
     if tool_name in ("find_unused_resources", ""):
         by_type = _fetch_by_type(["target_group", "alb", "nlb", "cloudfront", "ebs"])
@@ -652,7 +676,7 @@ def lambda_handler(event, context):
         category = arguments.get("category") if isinstance(arguments, dict) else None
         if category:
             findings = [f for f in findings if category.lower() in f["category"].lower()]
-        return _ok({"findings": findings, "count": len(findings), "note": COVERAGE_NOTE})
+        return _ok({"findings": findings, "count": len(findings), "note": COVERAGE_NOTE}, scope, scope_warning)
 
     if tool_name == "get_topology":
         resource_id = arguments.get("resource_id") if isinstance(arguments, dict) else None
@@ -707,7 +731,7 @@ def lambda_handler(event, context):
             selection_warning = "Topology response is truncated; inspect truncation before inferring full coverage."
         if selection_warning:
             result["warning"] = " ".join(filter(None, [result.get("warning"), selection_warning]))
-        return _ok(result)
+        return _ok(result, scope, scope_warning)
 
     if tool_name == "query_inventory":
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
@@ -744,9 +768,9 @@ def lambda_handler(event, context):
                 f"coincidence) — use inventory_summary/find_unused_resources/get_topology, or the "
                 f"AWS describe_* tools, for this type's full detail."
             )
-        return _ok(result)
+        return _ok(result, scope, scope_warning)
 
     if tool_name == "inventory_summary":
-        return _ok({"sync": _sync_freshness(), "note": COVERAGE_NOTE})
+        return _ok({"sync": _sync_freshness(), "note": COVERAGE_NOTE}, scope, scope_warning)
 
     return {"statusCode": 400, "body": json.dumps({"error": "Unknown tool: " + str(tool_name)})}

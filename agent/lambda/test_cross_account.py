@@ -181,3 +181,24 @@ def test_resolve_tool_name_context_without_client_context_attr():
 def test_resolve_tool_name_client_context_without_custom():
     ctx = _FakeContext(custom=None)
     assert ca.resolve_tool_name({}, ctx) == ""
+
+
+def test_cap_list_reports_returned_total_and_truncation():
+    kept, meta = ca.cap_list(range(25), 20)
+    assert kept == list(range(20))
+    assert meta == {"returned": 20, "total": 25, "truncated": True}
+
+
+def test_cap_list_under_limit_is_not_truncated():
+    kept, meta = ca.cap_list(["a"], 20)
+    assert kept == ["a"]
+    assert meta == {"returned": 1, "total": 1, "truncated": False}
+
+
+def test_cap_list_api_pagination_marks_total_as_lower_bound():
+    _, meta = ca.cap_list(["a", "b"], 20, more_pages=True)
+    assert meta == {"returned": 2, "total": 2, "truncated": True, "more_pages": True}
+
+
+def test_cap_list_tolerates_none():
+    assert ca.cap_list(None, 5) == ([], {"returned": 0, "total": 0, "truncated": False})

@@ -5,7 +5,7 @@ AWS CloudWatch MCP 람다 - 지표, 알람, 로그, 로그 인사이트
 import json
 import time
 from datetime import datetime, timedelta
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -53,10 +53,13 @@ def lambda_handler(event, context):
                 Dimensions=dim_list, StartTime=start, EndTime=end,
                 Period=period, Statistics=[stat])
             datapoints = sorted(resp.get("Datapoints", []), key=lambda x: x.get("Timestamp", ""))
-            return ok({"namespace": namespace, "metricName": metric_name,
-                "statistic": stat, "period": period,
+            # Keep the LATEST 30 points and say when older ones were dropped.
+            latest, meta = cap_list(list(reversed(datapoints)), 30)
+            latest.reverse()
+            return ok({**meta, "kept": "latest", "region": region, "namespace": namespace,
+                "metricName": metric_name, "statistic": stat, "period": period,
                 "datapoints": [{"timestamp": str(d["Timestamp"]), "value": round(d.get(stat, 0), 4)}
-                    for d in datapoints[-30:]]})
+                    for d in latest]})
 
         # Get metric metadata (available dimensions) / 지표 메타데이터 (사용 가능한 차원) 조회
         elif t == "get_metric_metadata":
@@ -64,8 +67,8 @@ def lambda_handler(event, context):
             metric_name = args.get("metric_name", "")
             resp = cw.list_metrics(Namespace=namespace,
                 MetricName=metric_name if metric_name else None)
-            metrics = resp.get("Metrics", [])[:20]
-            return ok({"namespace": namespace, "metrics": [
+            metrics, meta = cap_list(resp.get("Metrics", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "namespace": namespace, "metrics": [
                 {"name": m["MetricName"], "dimensions": {d["Name"]: d["Value"] for d in m.get("Dimensions", [])}}
                 for m in metrics]})
 
@@ -116,14 +119,25 @@ def lambda_handler(event, context):
         # Get all currently active (ALARM state) alarms / 현재 활성(ALARM 상태) 알람 전체 조회
         elif t == "get_active_alarms":
             # Describe alarms in ALARM state / ALARM 상태의 알람 조회
-            resp = cw.describe_alarms(StateValue="ALARM")
-            alarms = [{"name": a["AlarmName"], "metric": a.get("MetricName", ""),
+            # AlarmTypes: without it only metric alarms come back, so composite-only incidents read as none.
+            resp = cw.describe_alarms(StateValue="ALARM", AlarmTypes=["CompositeAlarm", "MetricAlarm"])
+            firing = ([dict(a, _type="metric") for a in resp.get("MetricAlarms", [])]
+                      + [dict(a, _type="composite") for a in resp.get("CompositeAlarms", [])])
+            composite = [a for a in firing if a["_type"] == "composite"]
+            metric = [a for a in firing if a["_type"] == "metric"]
+            # Composite alarms first; metric alarms fill the remaining slots (within this one API page).
+            kept = composite[:20]
+            kept += metric[:20 - len(kept)]
+            # Metadata reflects what was shown.
+            _, meta = cap_list(firing, len(kept), bool(resp.get("NextToken")))
+            alarms = [{"name": a["AlarmName"], "type": a["_type"], "metric": a.get("MetricName", ""),
                 "namespace": a.get("Namespace", ""), "state": a["StateValue"],
                 "reason": a.get("StateReason", "")[:150],
                 "threshold": a.get("Threshold"), "comparison": a.get("ComparisonOperator", ""),
+                "rule": (a.get("AlarmRule") or "")[:200] if a["_type"] == "composite" else None,
                 "updatedAt": str(a.get("StateUpdatedTimestamp", ""))}
-                for a in resp.get("MetricAlarms", [])[:20]]
-            return ok({"activeAlarms": alarms, "count": len(alarms)})
+                for a in kept]
+            return ok({**meta, "region": region, "activeAlarms": alarms, "count": len(alarms)})
 
         # Get alarm state change history / 알람 상태 변경 이력 조회
         elif t == "get_alarm_history":
@@ -134,10 +148,11 @@ def lambda_handler(event, context):
             resp = cw.describe_alarm_history(
                 AlarmName=alarm_name, StartDate=start, EndDate=end,
                 HistoryItemType="StateUpdate", MaxRecords=20)
+            items, meta = cap_list(resp.get("AlarmHistoryItems", []), 20, bool(resp.get("NextToken")))
             history = [{"timestamp": str(h.get("Timestamp", "")),
                 "summary": h.get("HistorySummary", ""), "type": h.get("HistoryItemType", "")}
-                for h in resp.get("AlarmHistoryItems", [])]
-            return ok({"alarmName": alarm_name, "history": history})
+                for h in items]
+            return ok({**meta, "region": region, "alarmName": alarm_name, "history": history})
 
         # ========== Logs / 로그 ==========
         # List CloudWatch log groups / CloudWatch 로그 그룹 목록 조회
@@ -146,11 +161,13 @@ def lambda_handler(event, context):
             kwargs = {"limit": 20}
             if prefix: kwargs["logGroupNamePrefix"] = prefix
             resp = logs.describe_log_groups(**kwargs)
+            # The cap is API-side (limit=20), so only nextToken can say more groups exist.
+            kept, meta = cap_list(resp.get("logGroups", []), 20, bool(resp.get("nextToken")))
             groups = [{"name": g["logGroupName"], "storedBytes": g.get("storedBytes", 0),
                 "retentionDays": g.get("retentionInDays", "Never expires"),
                 "createdAt": str(datetime.fromtimestamp(g.get("creationTime", 0) / 1000))}
-                for g in resp.get("logGroups", [])]
-            return ok({"logGroups": groups, "count": len(groups)})
+                for g in kept]
+            return ok({**meta, "region": region, "logGroups": groups, "count": len(groups)})
 
         # Filter and analyze log events by pattern / 패턴으로 로그 이벤트 필터링 및 분석
         elif t == "analyze_log_group":
@@ -163,10 +180,11 @@ def lambda_handler(event, context):
             resp = logs.filter_log_events(
                 logGroupName=log_group, startTime=start_time,
                 filterPattern=filter_pattern, limit=50)
+            kept, meta = cap_list(resp.get("events", []), 50, bool(resp.get("nextToken")))
             events = [{"timestamp": str(datetime.fromtimestamp(e.get("timestamp", 0) / 1000)),
                 "message": e.get("message", "")[:300]}
-                for e in resp.get("events", [])]
-            return ok({"logGroup": log_group, "filterPattern": filter_pattern,
+                for e in kept]
+            return ok({**meta, "region": region, "logGroup": log_group, "filterPattern": filter_pattern,
                 "timeRange": "{} minutes".format(minutes),
                 "matchingEvents": len(events), "events": events})
 
@@ -192,10 +210,15 @@ def lambda_handler(event, context):
             query_id = args.get("query_id", "")
             resp = logs.get_query_results(queryId=query_id)
             status = resp.get("status", "")
-            results = []
-            for row in resp.get("results", [])[:50]:
-                results.append({f["field"]: f["value"] for f in row})
-            return ok({"queryId": query_id, "status": status,
+            rows, meta = cap_list(resp.get("results", []), 50)
+            if status != "Complete":
+                # Not pagination: Running/Scheduled are interim; Failed/Cancelled/Timeout have no remainder.
+                # Never certify either as complete or empty; name the status.
+                meta.update(truncated=True, complete=False, query_status=status or "Unknown")
+                if status in ("Failed", "Cancelled", "Timeout"):
+                    meta["query_failed"] = True
+            results = [{f["field"]: f["value"] for f in row} for row in rows]
+            return ok({**meta, "region": region, "queryId": query_id, "status": status,
                 "results": results, "count": len(results),
                 "stats": resp.get("statistics", {})})
 
