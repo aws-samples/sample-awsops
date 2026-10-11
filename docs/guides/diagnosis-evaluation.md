@@ -68,7 +68,7 @@ is an allowlist, not a denylist of mutating verbs (which always misses some, suc
 passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
 `query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `generate`, `detect`,
 and the like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of four
-read-only exceptions (`start-query`, `stop-query`, `start-live-tail`, `update-kubeconfig`). Athena
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`). Line continuations are joined before parsing, and the first adjacent (service, operation)-shaped pair after any leading options and their values is the command, so an option value cannot hide the operation. Athena
 `start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, only `ls` and
 `presign` pass. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are

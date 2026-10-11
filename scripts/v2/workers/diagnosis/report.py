@@ -396,7 +396,9 @@ _TRUNCATED_MARK = {
 # Case-sensitive on purpose: real CLI invocations are lowercase, while prose like "AWS Lambda update"
 # must not match. Global options before the service are skipped token by token.
 _CLI_START = re.compile(r"(?<![A-Za-z0-9_-])aws\s+")
-_CLI_TOKEN = re.compile(r"[^\s`'\"|;)]+")
+_CLI_TOKEN = re.compile(r"[^\s`'\"|;)\\]+")  # a bare line-continuation backslash is not a token
+_LINE_CONTINUATION = re.compile(r"\\\r?\n\s*")
+_SERVICE_SHAPED = re.compile(r"[a-z0-9][a-z0-9-]*")
 _GLOBAL_OPTIONS_WITH_VALUE = frozenset((
     "--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle",
     "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
@@ -411,7 +413,7 @@ _READ_ONLY_VERBS = frozenset((
 # `generate` is kept (iam generate-credential-report / service-last-accessed only build reports).
 # Operations that look mutating by name but only read, or only touch local config / a Logs query.
 _READ_ONLY_OPERATIONS = frozenset((
-    "start-query", "stop-query", "start-live-tail", "update-kubeconfig"))
+    "start-query", "start-live-tail", "update-kubeconfig"))
 _S3_READ_ONLY = frozenset(("ls", "presign"))
 _S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb", "website"))
 # Real operations are hyphenated; these are the un-hyphenated ones worth classifying (sns, lambda,
@@ -423,16 +425,29 @@ _SINGLE_WORD_OPERATIONS = frozenset((
 _HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
 
+def _looks_like_command(service, operation):
+    """A (service, operation) pair shaped like a real CLI invocation: a plain service name followed by
+    a hyphenated operation, one of the few un-hyphenated operations, or an `aws s3` command."""
+    if not _SERVICE_SHAPED.fullmatch(service):
+        return False
+    return bool(_HYPHENATED.fullmatch(operation) or operation in _SINGLE_WORD_OPERATIONS
+                or (service == "s3" and operation in _S3_COMMANDS))
+
+
 def _cli_commands(text):
-    """Yield (service, operation) for each `aws ...` invocation, skipping leading global options
-    (`--region x`, `--profile=y`, `--debug`, ...)."""
+    """Yield (service, operation) for each `aws ...` invocation.
+
+    Line continuations are joined first (`aws ec2 \\` + newline + `terminate-instances`). Leading
+    options and their values — known or not (`--region x`, `--cli-input-yaml f.yaml`, `--debug`) —
+    are skipped by taking the first adjacent (service, operation)-shaped pair, so an option value can
+    never be mistaken for the service and hide the real operation."""
+    text = _LINE_CONTINUATION.sub(" ", text)
     for start in _CLI_START.finditer(text):
         tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 300])
-        i = 0
-        while i < len(tokens) and tokens[i].startswith("--"):
-            i += 2 if tokens[i] in _GLOBAL_OPTIONS_WITH_VALUE else 1
-        if i + 1 < len(tokens):
-            yield tokens[i], tokens[i + 1]
+        for i in range(len(tokens) - 1):
+            if not tokens[i].startswith("-") and _looks_like_command(tokens[i], tokens[i + 1]):
+                yield tokens[i], tokens[i + 1]
+                break
 
 
 def _has_mutating_cli(text):

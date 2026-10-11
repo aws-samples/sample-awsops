@@ -1182,3 +1182,30 @@ def test_inventory_marks_failed_reads_separately_from_the_byte_cap():
     data = sources.collect_inventory(_Conn())["data"]
     assert data["read_failed_types"] == ["rds"] and data["unsampled_types"] == ["rds"]
     assert report._collection_gaps(data) == (True, True)
+
+
+# ── review: line continuations and unknown global options must not hide the operation ──────────────
+
+def test_cli_guard_sees_through_line_continuations_and_unknown_global_options():
+    mutating = (
+        "aws ec2 \\\n  terminate-instances --instance-ids i-1",
+        "aws s3 \\\n rm s3://b/k --recursive",
+        "aws --cli-input-yaml f.yaml ec2 delete-volume --volume-id v",     # value-taking option not in the list
+        "aws --foo bar ec2 delete-volume --volume-id v",                  # unknown option with a service-shaped value
+        "aws ec2 --region ap-northeast-2 terminate-instances --instance-ids i-1",
+        "`aws iam \\\n   delete-user --user-name u`",
+        "aws logs stop-query --query-id q")                                # cancelling a query is a state change
+    for cmd in mutating:
+        assert report._has_mutating_cli(cmd), cmd
+    read_only = (
+        "aws ec2 \\\n  describe-instances --filters Name=instance-state-name,Values=stopped",
+        "aws --cli-input-yaml f.yaml ec2 describe-volumes", "aws ec2 --region x describe-instances",
+        "aws ec2 describe-instances --instance-ids i-1 --query 'Reservations[].Instances[]'",
+        "aws --version", "run aws against the account", "use aws cloudwatch dashboards to compare")
+    for cmd in read_only:
+        assert not report._has_mutating_cli(cmd), cmd
+
+
+def test_cli_commands_yield_one_pair_per_invocation():
+    text = "first `aws ec2 describe-instances` then\n`aws \\\n s3api put-object --bucket b`"
+    assert list(report._cli_commands(text)) == [("ec2", "describe-instances"), ("s3api", "put-object")]
