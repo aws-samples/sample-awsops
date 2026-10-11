@@ -993,23 +993,39 @@ def test_long_sections_get_a_token_floor():
 
 
 
-def test_mutating_cli_guard_covers_copy_and_similar_verbs():
-    for cmd in ("aws ec2 copy-snapshot --source-snapshot-id s", "aws sqs send-message --queue-url q",
-                "aws iam tag-role --role-name r", "aws ssm set-default-patch-baseline",
-                "aws lambda invoke --function-name f out.json", "aws sns publish --topic-arn t",
-                "aws cloudformation deploy --template-file t", "aws s3 rm s3://b/k", "aws s3 sync . s3://b",
-                "aws logs put-query-definition --name n", "aws logs delete-query-definition --query-definition-id i",
-                "aws dynamodb batch-write-item --request-items x",
-                "aws --region ap-northeast-2 ec2 terminate-instances --instance-ids i-1",
-                "aws --profile=prod --debug ec2 delete-volume --volume-id v", "`aws s3 rm s3://b/k`"):
+def test_mutating_cli_guard_flags_anything_not_provably_read_only():
+    mutating = (
+        "aws ec2 copy-snapshot --source-snapshot-id s", "aws sqs send-message --queue-url q",
+        "aws iam tag-role --role-name r", "aws ssm set-default-patch-baseline",
+        "aws lambda invoke --function-name f out.json", "aws sns publish --topic-arn t",
+        "aws cloudformation deploy --template-file t", "aws s3 rm s3://b/k", "aws s3 sync . s3://b",
+        "aws logs put-query-definition --name n", "aws logs delete-query-definition --query-definition-id i",
+        "aws dynamodb batch-write-item --request-items x",
+        "aws --region ap-northeast-2 ec2 terminate-instances --instance-ids i-1",
+        "aws --profile=prod --debug ec2 delete-volume --volume-id v", "`aws s3 rm s3://b/k`",
+        # reviewer examples: verbs a denylist missed, and Athena DDL/CTAS
+        "aws route53 change-resource-record-sets --hosted-zone-id Z --change-batch file://c.json",
+        "aws sns subscribe --topic-arn t --protocol email", "aws rds suspend-db-activity-stream x",
+        "aws acm request-certificate --domain-name d", "aws ec2 move-address-to-vpc --public-ip 1.2.3.4",
+        "aws ec2 grant-something --x", "aws ssm start-session --target i-1", "aws sts assume-role --role-arn r",
+        "aws athena start-query-execution --query-string 'DROP TABLE t'",
+        "aws ecs execute-command --cluster c", "aws iam activate-foo --x")
+    for cmd in mutating:
         assert report._has_mutating_cli(cmd), cmd
-    for cmd in ("aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default",
-                "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage",
-                "aws logs start-live-tail --log-group-identifiers g", "aws eks update-kubeconfig --name c",
-                "aws s3 ls s3://b", "aws dynamodb batch-get-item --request-items x",
-                "aws athena start-query-execution --query-string q",
-                "AWS Lambda update windows are announced", "Use AWS Config enable recording guidance",
-                "aws --region ap-northeast-2 ec2 describe-instances"):
+    read_only = (
+        "aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default", "aws ce get-cost-and-usage",
+        "aws logs start-query --log-group-name g", "aws logs start-live-tail --log-group-identifiers g",
+        "aws logs filter-log-events --log-group-name g", "aws logs tail /aws/lambda/x",
+        "aws eks update-kubeconfig --name c", "aws s3 ls s3://b", "aws s3 presign s3://b/k",
+        "aws dynamodb batch-get-item --request-items x", "aws dynamodb scan --table-name t",
+        "aws iam simulate-principal-policy --policy-source-arn a", "aws cloudtrail lookup-events",
+        "aws ec2 search-transit-gateway-routes --x", "aws s3api head-bucket --bucket b",
+        "aws cloudformation validate-template --template-body t", "aws ec2 wait instance-running",
+        "aws iam generate-credential-report", "aws --region ap-northeast-2 ec2 describe-instances",
+        # prose and non-commands must not be read as commands
+        "AWS Lambda update windows are announced", "Use AWS Config enable recording guidance",
+        "use aws cloudwatch dashboards to compare", "run aws ec2 against the account", "aws --version")
+    for cmd in read_only:
         assert not report._has_mutating_cli(cmd), cmd
 
 
@@ -1040,8 +1056,9 @@ def test_empty_inventory_stays_empty_with_sync_window():
 
 
 def test_read_timeout_scales_with_the_token_budget(monkeypatch):
-    assert report._read_timeout_for(1500) == report._BEDROCK_READ_TIMEOUT_S
-    assert report._read_timeout_for(8000) >= 8000 / report._SLOWEST_TOKENS_PER_S + 60
+    assert report._BEDROCK_READ_TIMEOUT_S == 90  # base value stays the floor for small calls
+    assert report._read_timeout_for(300) == report._BEDROCK_READ_TIMEOUT_S
+    assert report._read_timeout_for(8000) == 8000 // report._SLOWEST_TOKENS_PER_S + 60
     seen = []
     monkeypatch.setattr(report, "_bedrock_clients", {})
     monkeypatch.setattr(report.boto3, "client", lambda *a, **k: seen.append(k["config"].read_timeout) or object())
@@ -1049,3 +1066,71 @@ def test_read_timeout_scales_with_the_token_budget(monkeypatch):
     report._get_bedrock_client("r", 460)
     report._get_bedrock_client("r", 460)
     assert seen == [300, 460]  # one client per (region, timeout), reused
+
+
+
+# ── render budget: the Step Functions task (3600 s) must never be killed by Bedrock waits ─────────
+
+def test_bedrock_client_has_no_botocore_retries():
+    # a legacy retry would multiply a read timeout x3 per section per render wave
+    assert report._bedrock_config(100).retries == {"max_attempts": 0}
+
+
+def test_call_timeout_is_capped_by_the_remaining_render_budget(monkeypatch):
+    monkeypatch.setattr(report, "_render_deadline", None)
+    assert report._call_timeout(8000) == report._read_timeout_for(8000)
+    monkeypatch.setattr(report.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(report, "_render_deadline", 1000.0 + 200)
+    assert report._call_timeout(8000) == 180            # min(460, 200) quantized down to 30 s
+    monkeypatch.setattr(report, "_render_deadline", 1000.0 + 10)
+    with pytest.raises(TimeoutError):
+        report._call_timeout(8000)                      # less than _MIN_CALL_S left: fail fast
+
+
+def test_throttling_is_retried_inside_the_budget_but_other_errors_are_not(monkeypatch):
+    from botocore.exceptions import ClientError
+    monkeypatch.setattr(report, "_bedrock_clients", {})
+    monkeypatch.setattr(report.time, "sleep", lambda s: None)
+    calls = []
+
+    class _Client:
+        def __init__(self, errors):
+            self.errors = list(errors)
+
+        def invoke_model(self, modelId, body):
+            calls.append(1)
+            if self.errors:
+                raise ClientError({"Error": {"Code": self.errors.pop(0)}}, "InvokeModel")
+
+            class _R:
+                def read(self):
+                    return json.dumps({"content": [{"text": "ok"}], "stop_reason": "end_turn"}).encode()
+            return {"body": _R()}
+
+    client = _Client(["ThrottlingException", "ServiceUnavailableException"])
+    monkeypatch.setattr(report.boto3, "client", lambda *a, **k: client)
+    assert report._bedrock_render("p", "{}", report.MODEL_ID, 100) == "ok"
+    assert len(calls) == 3                               # 2 retries then success
+    calls.clear()
+    client = _Client(["AccessDeniedException"])
+    monkeypatch.setattr(report, "_bedrock_clients", {})
+    with pytest.raises(ClientError):
+        report._bedrock_render("p", "{}", report.MODEL_ID, 100)
+    assert len(calls) == 1                               # not retryable: fail at once
+    calls.clear()
+    client = _Client(["ThrottlingException"] * 5)
+    monkeypatch.setattr(report, "_bedrock_clients", {})
+    with pytest.raises(ClientError):
+        report._bedrock_render("p", "{}", report.MODEL_ID, 100)
+    assert len(calls) == report._CALL_ATTEMPTS           # bounded, never unbounded retry
+
+
+def test_generate_degrades_remaining_sections_when_the_render_budget_is_spent(monkeypatch):
+    monkeypatch.setattr(report.src, "collect_all",
+                        lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    monkeypatch.setattr(report, "_RENDER_BUDGET_S", 0)   # budget already spent when rendering starts
+    monkeypatch.setattr(report, "_get_bedrock_client", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call expected")))
+    md, summary, _ = report.generate(object(), account="1", tier="mid")
+    assert len(summary["render_degraded"]) == 8           # every LLM section failed fast, none hung
+    assert "(degraded)" in md and report._render_deadline is None  # report still assembled; deadline cleared

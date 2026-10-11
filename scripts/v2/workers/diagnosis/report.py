@@ -6,9 +6,12 @@ import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
+import random
 import threading
+import time
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # KST as a fixed +9 offset — Korea has no DST, so this needs no `tzdata` package in the slim image.
@@ -100,11 +103,24 @@ def make_title_and_tags(md, lang="ko"):
         return {"title": None, "tags": []}
 
 # A3 (V1 parity): per-section Bedrock idle/read timeout so one hung section can't stall the whole
-# job indefinitely (V1 aborted after 60s with no token). On timeout invoke_model raises →
-# _report's except → finish_report(failed) → the report surfaces as failed, never eternal "running".
-# invoke_model is not streamed: the read waits for the whole answer, so it must cover a full 5-6k
-# token generation (Opus is the slowest). Still bounded, so a hung section fails instead of stalling.
-_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "300"))
+# job indefinitely (V1 aborted after 60s with no token). invoke_model is not streamed: the read waits
+# for the whole answer, so the timeout is sized from the section's token budget (below). The floor
+# keeps the original 90 s for small calls.
+#
+# The report job runs as ONE Step Functions task with TimeoutSeconds 3600, and a task kill loses the
+# whole report (finish_report never runs). So the render phase has a shared wall-clock budget:
+# botocore retries are OFF (a legacy retry would multiply a read timeout x3 per section per wave),
+# throttling/5xx are retried here within the budget, and once the budget is spent the remaining
+# sections fail fast (visible `degraded` bodies, report `partial`) instead of the task being killed.
+_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "90"))
+_RENDER_BUDGET_S = int(os.environ.get("DIAGNOSIS_RENDER_BUDGET_S", "2400"))
+_MIN_CALL_S = 30            # a call with less than this left in the budget cannot finish a section
+_CALL_TIMEOUT_STEP_S = 30   # quantize remaining time so the client cache stays small
+_CALL_ATTEMPTS = 3          # initial call + throttling/5xx retries
+_RETRYABLE_ERROR_CODES = frozenset((
+    "ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException",
+    "InternalServerException"))
+_render_deadline = None     # time.monotonic() deadline of the generate() in flight (one report per task)
 # Worst-case generation speed assumed when sizing the read timeout from the token budget (Opus is
 # the slowest), plus a fixed allowance for time-to-first-token.
 _SLOWEST_TOKENS_PER_S = 20
@@ -115,8 +131,19 @@ def _read_timeout_for(max_tokens):
     return max(_BEDROCK_READ_TIMEOUT_S, int(max_tokens / _SLOWEST_TOKENS_PER_S) + 60)
 
 
+def _call_timeout(max_tokens):
+    """Read timeout for one call: the token-budget estimate, capped by the render budget left."""
+    want = _read_timeout_for(max_tokens)
+    if _render_deadline is None:
+        return want
+    remaining = int(_render_deadline - time.monotonic())
+    if remaining < _MIN_CALL_S:
+        raise TimeoutError("diagnosis render budget exhausted")
+    return min(want, remaining - remaining % _CALL_TIMEOUT_STEP_S or _MIN_CALL_S)
+
+
 def _bedrock_config(read_timeout):
-    return Config(connect_timeout=10, read_timeout=read_timeout, retries={"max_attempts": 2})
+    return Config(connect_timeout=10, read_timeout=read_timeout, retries={"max_attempts": 0})
 
 
 _BEDROCK_CONFIG = _bedrock_config(_BEDROCK_READ_TIMEOUT_S)
@@ -167,8 +194,6 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # /aws/bedrock/invocation-logs and are attributable to awsops (caller-role filter) for cost.
     # model_id + max_tokens are resolved per-tier by generate() (deep may select Opus + a larger cap).
     bedrock_region = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
-    # thread-safe shared client (ADR-045 concurrent render), read timeout sized to this budget
-    client = _get_bedrock_client(bedrock_region, _read_timeout_for(max_tokens))
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
@@ -177,7 +202,18 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
             {"type": "text", "text": f"{prompt}\n\n<untrusted>\n{context_json}\n</untrusted>"}
         ]}],
     }
-    r = client.invoke_model(modelId=model_id, body=json.dumps(body))
+    for attempt in range(1, _CALL_ATTEMPTS + 1):
+        # thread-safe shared client (ADR-045 concurrent render); read timeout sized to this budget
+        # and capped by what is left of the render budget (raises once it is spent)
+        client = _get_bedrock_client(bedrock_region, _call_timeout(max_tokens))
+        try:
+            r = client.invoke_model(modelId=model_id, body=json.dumps(body))
+            break
+        except ClientError as e:
+            code = (e.response.get("Error") or {}).get("Code", "")
+            if code not in _RETRYABLE_ERROR_CODES or attempt == _CALL_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** attempt, 10) + random.random())
     payload = json.loads(r["body"].read())
     text = _RenderedText("".join(b.get("text", "") for b in payload.get("content", [])))
     text.stop_reason = payload.get("stop_reason")
@@ -343,8 +379,8 @@ _TRUNCATED_MARK = {
 # Deterministic backstop for the prompt rule: a mutating AWS CLI command in a section body (e.g. in
 # the remediation column) degrades the section visibly. Reports stay advice only (ADR-005).
 # Each `aws <service> <operation>` is classified by its leading verb (hyphenated or bare, e.g.
-# `lambda invoke`, `sns publish`), the high-level `aws s3` transfer commands, and an explicit
-# allowlist of operations that only read or only touch local config.
+# `lambda invoke`, `sns publish`) and the high-level `aws s3` commands; only provably read-only
+# operations pass.
 # Case-sensitive on purpose: real CLI invocations are lowercase, while prose like "AWS Lambda update"
 # must not match. Global options before the service are skipped token by token.
 _CLI_START = re.compile(r"(?<![A-Za-z0-9_-])aws\s+")
@@ -352,15 +388,25 @@ _CLI_TOKEN = re.compile(r"[^\s`'\"|;)]+")
 _GLOBAL_OPTIONS_WITH_VALUE = frozenset((
     "--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle",
     "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
-_MUTATING_VERBS = frozenset((
-    "create delete modify put update terminate revoke attach detach authorize start stop reboot run "
-    "remove disable enable associate disassociate replace restore copy import register deregister tag "
-    "untag reset cancel purchase release allocate accept reject send publish set rotate apply execute "
-    "invoke deploy add upload rebuild promote failover reboot schedule").split())
-_S3_MUTATING = frozenset(("cp", "mv", "rm", "sync", "rb", "mb"))
+# A command is accepted only when its operation is provably read-only; everything else that looks
+# like a CLI operation is flagged. (A denylist of mutating verbs always misses some — `route53
+# change-…`, `sns subscribe`, `ssm start-session` — and Athena `start-query-execution` runs DDL/CTAS.)
+_READ_ONLY_VERBS = frozenset((
+    "describe list get lookup search query scan select check validate simulate estimate preview test "
+    "verify wait filter find read fetch retrieve show view head tail generate analyze evaluate detect "
+    "compare inspect count help").split())
+# Operations that look mutating by name but only read, or only touch local config / a Logs query.
 _READ_ONLY_OPERATIONS = frozenset((
-    "start-query", "stop-query", "start-query-execution", "stop-query-execution", "start-live-tail",
-    "update-kubeconfig"))
+    "start-query", "stop-query", "start-live-tail", "update-kubeconfig"))
+_S3_READ_ONLY = frozenset(("ls", "presign"))
+_S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb", "website"))
+# Real operations are hyphenated; these are the un-hyphenated ones worth classifying (sns, lambda,
+# kms, dynamodb, cloudformation, `wait`, `configure set`). Anything else un-hyphenated is treated as
+# prose ("aws cloudwatch dashboards") and ignored.
+_SINGLE_WORD_OPERATIONS = frozenset((
+    "invoke", "publish", "subscribe", "unsubscribe", "deploy", "package", "scan", "query", "tail",
+    "wait", "help", "encrypt", "decrypt", "sign", "verify", "set"))
+_HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
 
 def _cli_commands(text):
@@ -376,21 +422,23 @@ def _cli_commands(text):
 
 
 def _has_mutating_cli(text):
+    """True when the text contains an `aws` command not provably read-only."""
     for service, operation in _cli_commands(text):
         if service == "s3":
-            if operation in _S3_MUTATING:
+            if operation in _S3_COMMANDS and operation not in _S3_READ_ONLY:
                 return True
             continue
         if operation in _READ_ONLY_OPERATIONS:
             continue
-        verb = operation.split("-", 1)[0]
-        if verb == "batch":
-            if any(w in operation for w in ("write", "delete", "put", "update", "execute")):
-                return True
-            continue
-        if verb in _MUTATING_VERBS:
+        if not (_HYPHENATED.fullmatch(operation) or operation in _SINGLE_WORD_OPERATIONS):
+            continue  # not shaped like a CLI operation: prose, a flag value, a path
+        parts = operation.split("-")
+        verb = parts[1] if parts[0] == "batch" and len(parts) > 1 else parts[0]  # batch-get-item
+        if verb not in _READ_ONLY_VERBS:
             return True
     return False
+
+
 _MUTATING_MARK = {
     "ko": "\n\n_[이 섹션에 리소스를 변경하는 AWS CLI 명령이 포함되어 있습니다. 실행하지 말고 변경 관리 절차로 검토하세요 (degraded)]_",
     "en": "\n\n_[This section contains an AWS CLI command that changes resources. Do not run it; review it through your change process (degraded)]_",
@@ -597,17 +645,22 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
             return i, {"key": sec.get("key"), "title": localized_title(sec, lang),
                        "body": f"_{fail.get(lang, fail['ko'])}_", "render_failed": True}
 
+    global _render_deadline
     rendered_by_idx, done, completed_titles = {}, 0, []
-    with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
-        futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
-        for fut in as_completed(futures):
-            i, result = fut.result()
-            rendered_by_idx[i] = result
-            done += 1
-            # gap L177: accumulate finished-section titles (completion order — render is
-            # concurrent, so this is NOT catalog order) for the UI checklist grid.
-            completed_titles.append(result["title"])
-            _emit(done, result["title"], "render", list(completed_titles))
+    _render_deadline = time.monotonic() + _RENDER_BUDGET_S
+    try:
+        with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
+            futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
+            for fut in as_completed(futures):
+                i, result = fut.result()
+                rendered_by_idx[i] = result
+                done += 1
+                # gap L177: accumulate finished-section titles (completion order — render is
+                # concurrent, so this is NOT catalog order) for the UI checklist grid.
+                completed_titles.append(result["title"])
+                _emit(done, result["title"], "render", list(completed_titles))
+    finally:
+        _render_deadline = None
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
     md = build_markdown(rendered, account, tier, collected, lang, generated_at=now)

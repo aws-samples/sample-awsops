@@ -56,15 +56,19 @@ Critical and Warning findings end the section in one `### 원인 분석 및 조�
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
 and apply through their own change process, and a confidence level. The prompt forbids
-resource-changing CLI commands. As a deterministic backstop, a body that still contains
-one gets a visible warning and counts as degraded. Each `aws <service> <operation>` is
-classified by its leading verb, hyphenated or bare (`create-…`, `put-…`, `lambda invoke`,
-`sns publish`), plus the `aws s3` transfer commands (`cp`, `mv`, `rm`, `sync`, `rb`, `mb`). An
-explicit allowlist exempts operations that only read or only touch local config
-(`start-query`, `stop-query`, `start-query-execution`, `stop-query-execution`,
-`start-live-tail`, `update-kubeconfig`). Leading global options such as `--region` and
-`--profile` are skipped, and matching is case-sensitive, so prose like "AWS Lambda update" is
-not treated as a command. Nothing is executed (ADR-005).
+resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
+command that is not provably read-only gets a visible warning and counts as degraded. The check
+is an allowlist, not a denylist of mutating verbs (which always misses some, such as
+`route53 change-resource-record-sets` or `sns subscribe`): each `aws <service> <operation>`
+passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
+`query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `generate`, `detect`,
+and the like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of four
+read-only exceptions (`start-query`, `stop-query`, `start-live-tail`, `update-kubeconfig`). Athena
+`start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, only `ls` and
+`presign` pass. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
+ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
+skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
+added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
 
 A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.
@@ -74,10 +78,20 @@ provider exception details in the report body. Section budgets were raised from 
 live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
 the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
 (deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`
-get at least 8000 (`SECTION_MIN_TOKENS`). Because `invoke_model` waits for the whole answer,
-the Bedrock read timeout scales with each section's budget at 20 tokens/s plus 60 s, about
-460 s for 8000 tokens. `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S` (default 300 s) is the floor. The report
-job runs on Fargate with a 3600 s limit. Per-report output-token cost rises accordingly.
+get at least 8000 (`SECTION_MIN_TOKENS`). Per-report output-token cost rises accordingly.
+
+The report job is one Step Functions task with a 3600 s limit, and killing the task loses the
+whole report, because `finish_report` never runs. Waits on Bedrock are therefore bounded together
+rather than per call. The render phase has one wall-clock budget, `DIAGNOSIS_RENDER_BUDGET_S`
+(default 2400 s), which leaves the rest for collection, assembly, export and the title call. Each
+`invoke_model` call is not streamed, so its read timeout is sized from the section's token budget
+(20 tokens/s plus 60 s, about 460 s for 8000 tokens, with `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`,
+default 90 s, as the floor) and capped by the budget that remains. botocore retries are off, because
+a legacy retry would multiply a read timeout threefold for every section in every wave of four.
+Throttling and 5xx errors are retried up to three attempts in total inside the budget. Once the
+budget is spent, the remaining sections fail fast with the localized degraded body and the report
+completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
+bound.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the
 model and reader only. The evaluator still reads `to`, which stays unresolved, so the
