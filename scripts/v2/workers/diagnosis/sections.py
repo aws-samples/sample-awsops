@@ -23,6 +23,10 @@ _RULES = (
     "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. "
     "제공된 데이터에만 근거하라 — 신호가 없으면 '데이터 불가'로 명시하고 추측/날조 금지. "
     "각 발견에 심각도 [Critical]/[Warning]/[Info], 우선순위 P1/P2/P3, 공수 Low/Med/High, 근거(소스)를 붙여라. "
+    "[Critical]/[Warning] 발견은 다음을 반드시 포함하라: 대상(리소스 유형·이름/ID 또는 서비스), "
+    "근거(소스.필드=값), 원인(확인됨/추정 구분 — 근거가 부족하면 '원인 미확정: 필요한 데이터 X'), "
+    "확인 방법(읽기 전용 AWS CLI describe/get/list 명령 또는 콘솔 경로), "
+    "해결 절차(운영자가 검토 후 직접 수행할 단계별 권고), 신뢰도 High/Med/Low. 근거 필드가 없는 발견은 쓰지 마라. "
     "AWS 리소스 변경·자동 실행을 제안하지 마라(읽기 전용 진단 — 권고만)."
 )
 # Report output language (gap L50) — appended to every section prompt at render time. The prompt

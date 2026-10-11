@@ -22,6 +22,22 @@ PROJECT = os.environ.get("PROJECT", "awsops-v2")
 DIAG_INV_PER_TYPE = int(os.environ.get("DIAG_INV_PER_TYPE", "15"))   # max resources sampled per type
 DIAG_INV_MAX_BYTES = int(os.environ.get("DIAG_INV_MAX_BYTES", "24000"))  # global cap on serialized detail
 _MAX_STR = 500  # truncate any string value longer than this
+POSTURE_TOP_FINDINGS = 15
+
+# What each collector covers — handed to the model with every section so it states the window and
+# never reads a capped or windowed sample as the whole account (report.render_section).
+COLLECTION_WINDOWS = {
+    "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
+                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types lists types cut by the cap)",
+    "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
+    "cost": "Cost Explorer: month-to-date by service, 3 monthly totals, top 15 usage types",
+    "idle": "inventory-derived: unattached EBS volumes and stopped EC2 (EIP/snapshots not synced)",
+    "commitment": "RI / Savings Plans coverage %, last 30 days (null = unavailable, not 0%)",
+    "service_map": "X-Ray service graph, last 3h",
+    "datasources_obs": "external observability datasources: signal counts and label names only",
+    "posture": "Security Hub ACTIVE+NEW findings, first 100 (more_findings=true means more exist)",
+    "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
+}
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
 # the generic report._redact would NOT catch (Lambda env vars, user-data scripts, IAM policy docs).
 # Compared against a NORMALIZED key (lowercased, separators stripped) so 'UserData'/'user_data'/
@@ -127,7 +143,11 @@ def collect_inventory(conn, scope="self"):
         return _classify("inventory", e)
 
     resources, truncated, size = {}, False, 0
+    unsampled = []  # types with rows but no sample (byte cap hit) — named, so absence is not read as "none"
     for rtype in by_type:
+        if truncated:
+            unsampled.append(rtype)
+            continue
         try:
             drows = conn.run(
                 "SELECT resource_id, region, data FROM inventory_resources "
@@ -154,9 +174,10 @@ def collect_inventory(conn, scope="self"):
             size += esz
         if items:
             resources[rtype] = items
-        if truncated:
-            break
-    return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated})
+        elif truncated:
+            unsampled.append(rtype)
+    return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
+                                      "unsampled_types": unsampled})
 
 
 def collect_cw_metrics(conn, scope="self"):
@@ -318,13 +339,14 @@ def collect_service_map():
         end = dt.datetime.utcnow()
         start = end - dt.timedelta(hours=3)
         g = xr.get_service_graph(StartTime=start, EndTime=end)
+        names = {s.get("ReferenceId"): s.get("Name") for s in g.get("Services", [])}
         edges = []
         for svc in g.get("Services", []):
             name = svc.get("Name")
             for e in svc.get("Edges", []):
                 s = e.get("SummaryStatistics", {})
                 edges.append({
-                    "from": name, "to_ref": e.get("ReferenceId"),
+                    "from": name, "to_ref": e.get("ReferenceId"), "to": names.get(e.get("ReferenceId")),
                     "calls": s.get("TotalCount", 0),
                     "error_rate": round((s.get("ErrorStatistics", {}).get("TotalCount", 0)
                                          / s["TotalCount"]) if s.get("TotalCount") else 0, 4),
@@ -348,11 +370,24 @@ def collect_posture():
                      "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
             MaxResults=100,
         )
-        by_sev = {}
+        by_sev, by_title = {}, {}
         for f in r.get("Findings", []):
             sev = f.get("Severity", {}).get("Label", "UNKNOWN")
             by_sev[sev] = by_sev.get(sev, 0) + 1
-        return _result("posture", data={"enabled": True, "findings_by_severity": by_sev})
+            if sev in ("CRITICAL", "HIGH"):
+                title = (f.get("Title") or "")[:200]
+                agg = by_title.setdefault(title, {
+                    "title": title, "severity": sev,
+                    "control_id": (f.get("Compliance") or {}).get("SecurityControlId"),
+                    "resource_types": set(), "count": 0})
+                agg["count"] += 1
+                agg["resource_types"].update(x.get("Type") for x in f.get("Resources", []) if x.get("Type"))
+        top = sorted(by_title.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
+        for a in top:
+            a["resource_types"] = sorted(a["resource_types"])
+        return _result("posture", data={"enabled": True, "findings_by_severity": by_sev,
+                                        "top_findings": top, "sampled_findings": len(r.get("Findings", [])),
+                                        "more_findings": bool(r.get("NextToken"))})
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "InvalidAccessException":
             return _result("posture", ok=True, degraded=False,

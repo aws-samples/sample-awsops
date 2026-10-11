@@ -676,3 +676,129 @@ def test_coverage_note_datasource_unavailable_reason():
     assert "사용" not in note
     assert "실행 가능한 신호 없음" in note
     assert "oom_kills" in note
+
+
+# ── RCA grounding: run context, collection status, truncation (AI diagnosis quality) ──────────────
+
+def test_render_section_hands_the_model_collection_status_and_run_context(monkeypatch):
+    captured = {}
+
+    def fake_invoke(prompt, context_json, *a, **k):
+        captured.update(prompt=prompt, ctx=json.loads(context_json))
+        return "본문"
+    monkeypatch.setattr(report, "_bedrock_render", fake_invoke)
+    collected = {
+        "cost": {"key": "cost", "ok": False, "degraded": True, "notes": "AccessDenied", "data": {"_failed": True}},
+        "inventory": {"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"by_type": {"ec2": 2}}},
+    }
+    sec = {"key": "s", "title": "S", "sources": ["cost", "inventory", "posture"], "prompt": "p.",
+           "_run": {"generated_at_utc": "2026-10-11 09:00", "scope": "host account", "region": "ap-northeast-2"}}
+    report.render_section(sec, collected, report.MODEL_ID, 100)
+    status = captured["ctx"]["_collection"]
+    assert status["cost"]["status"] == "degraded" and status["cost"]["notes"] == "AccessDenied"
+    assert status["inventory"]["status"] == "ok" and "inventory" in status["inventory"]["window"]
+    assert status["posture"] == {"status": "not_collected"}
+    assert captured["ctx"]["_run"]["region"] == "ap-northeast-2"
+    assert "정상·문제 없음으로 판단하지 마라" in captured["prompt"]
+
+
+def test_render_section_empty_source_is_reported_as_empty():
+    assert report._collection_status({"key": "posture", "degraded": False, "data": {}})["status"] == "empty"
+
+
+def test_render_section_marks_max_tokens_truncation(monkeypatch):
+    text = report._RenderedText("잘린 본문")
+    text.stop_reason = "max_tokens"
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a, **k: text)
+    out = report.render_section({"key": "x", "title": "X", "sources": [], "prompt": "p"}, {}, report.MODEL_ID, 100, lang="en")
+    assert out["truncated"] is True
+    assert out["body"].endswith("cut off at the output length limit (degraded)]_")
+
+
+def test_bedrock_render_keeps_stop_reason(monkeypatch):
+    class _FakeClient:
+        def invoke_model(self, modelId, body):
+            class _R:
+                def read(self):
+                    return json.dumps({"content": [{"text": "t"}], "stop_reason": "max_tokens"}).encode()
+            return {"body": _R()}
+    monkeypatch.setattr(report, "_bedrock_clients", {})
+    monkeypatch.setattr(report.boto3, "client", lambda *a, **k: _FakeClient())
+    out = report._bedrock_render("p", "{}", report.MODEL_ID, 10)
+    assert out == "t" and out.stop_reason == "max_tokens"
+
+
+def test_generate_counts_failed_and_truncated_sections_as_render_degraded(monkeypatch):
+    monkeypatch.setattr(report.src, "collect_all",
+                        lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    seen_run = []
+
+    def fake_render(section, collected, model_id, max_tokens, lang="ko"):
+        seen_run.append(section.get("_run"))
+        if section["key"] == "cost_overview":
+            raise RuntimeError("boom")
+        out = {"key": section["key"], "title": section["title"], "body": "b"}
+        if section["key"] == "security_posture":
+            out["truncated"] = True
+        return out
+    monkeypatch.setattr(report, "render_section", fake_render)
+    _, summary, _ = report.generate(object(), account="1", tier="mid")
+    assert set(summary["render_degraded"]) == {"cost_overview", "security_posture"}
+    assert summary["degraded"] == []  # collectors were fine — render problems are tracked separately
+    assert all(r and r["scope"] == "host account" and r["generated_at_kst"] for r in seen_run)
+
+
+def test_report_handler_partial_when_a_section_render_degraded(monkeypatch):
+    state = _patch_report(monkeypatch, generate=lambda c, a, t, **_: (
+        "# md", {"degraded": [], "render_degraded": ["cost_overview"]}, ["inventory"]))
+    result, _ = handlers._report(
+        {"account": "1", "tier": "mid", "requested_by": "u", "report_id": 9}, dry_run=False)
+    assert result["status"] == "partial" and state["finish"]["status"] == "partial"
+
+
+def test_section_rules_require_rca_and_operator_remediation():
+    from diagnosis import sections as S
+    for needle in ("원인 미확정", "확인 방법", "해결 절차", "신뢰도", "근거(소스.필드=값)"):
+        assert needle in S._RULES
+    assert "자동 실행을 제안하지 마라" in S._RULES  # ADR-005: advice only, never auto-change
+
+
+def test_posture_keeps_top_finding_titles_without_resource_ids(monkeypatch):
+    class _FakeSh:
+        def get_findings(self, **kw):
+            f = {"Severity": {"Label": "CRITICAL"}, "Title": "S3 general purpose buckets should block public access",
+                 "Compliance": {"SecurityControlId": "S3.8"},
+                 "Resources": [{"Type": "AwsS3Bucket", "Id": "arn:aws:s3:::secret-bucket"}]}
+            return {"Findings": [f, f, {"Severity": {"Label": "LOW"}, "Title": "low"}], "NextToken": "n"}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    data = sources.collect_posture()["data"]
+    assert data["top_findings"] == [{"title": "S3 general purpose buckets should block public access",
+                                     "severity": "CRITICAL", "control_id": "S3.8",
+                                     "resource_types": ["AwsS3Bucket"], "count": 2}]
+    assert data["more_findings"] is True and data["sampled_findings"] == 3
+    assert "secret-bucket" not in json.dumps(data)
+
+
+def test_service_map_resolves_target_names(monkeypatch):
+    class _FakeXr:
+        def get_service_graph(self, **kw):
+            return {"Services": [
+                {"ReferenceId": 1, "Name": "api", "Edges": [{"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 4}}]},
+                {"ReferenceId": 2, "Name": "orders-db", "Edges": []}]}
+    monkeypatch.setattr(sources, "_xray_client", lambda: _FakeXr())
+    edge = sources.collect_service_map()["data"]["edges"][0]
+    assert (edge["from"], edge["to"], edge["to_ref"]) == ("api", "orders-db", 2)
+
+
+def test_inventory_names_types_cut_by_the_byte_cap(monkeypatch):
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("ec2", 3), ("rds", 2), ("s3", 1)]
+            return [("id-" + kw["rtype"], "ap-northeast-2", {"blob": "x" * 400})]
+    monkeypatch.setattr(sources, "DIAG_INV_MAX_BYTES", 500)
+    data = sources.collect_inventory(_Conn())["data"]
+    assert data["truncated"] is True
+    assert list(data["resources"]) == ["ec2"]
+    assert data["unsampled_types"] == ["rds", "s3"]

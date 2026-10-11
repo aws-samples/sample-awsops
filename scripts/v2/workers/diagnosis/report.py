@@ -126,6 +126,12 @@ def _get_bedrock_client(region):
     return client
 
 
+class _RenderedText(str):
+    """Model text that remembers why generation stopped. A plain ``str`` everywhere it is used, so
+    callers and test doubles returning bare strings keep working (``stop_reason`` is then None)."""
+    stop_reason = None
+
+
 def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # global.* inference profiles route worldwide and can be invoked from the home region; we pin
     # BEDROCK_REGION to ap-northeast-2 (matches agent.py) so calls land in the ap-northeast-2
@@ -143,7 +149,9 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     }
     r = client.invoke_model(modelId=model_id, body=json.dumps(body))
     payload = json.loads(r["body"].read())
-    return "".join(b.get("text", "") for b in payload.get("content", []))
+    text = _RenderedText("".join(b.get("text", "") for b in payload.get("content", [])))
+    text.stop_reason = payload.get("stop_reason")
+    return text
 
 
 def _balance_code_fences(text):
@@ -263,17 +271,58 @@ def _render_intended_vs_actual(verdicts, lang):
     return "\n".join(lines)
 
 
+def _collection_status(source):
+    """What the model must know about a source besides its data: did collection work, and is the
+    data complete? An empty or failed source is 'no evidence', never 'no problems'."""
+    if source is None:
+        return {"status": "not_collected"}
+    if source.get("degraded"):
+        status = "degraded"
+    elif _is_empty(source.get("data")):
+        status = "empty"
+    else:
+        status = "ok"
+    out = {"status": status, "window": src.COLLECTION_WINDOWS.get(source.get("key"), "")}
+    if source.get("notes"):
+        out["notes"] = str(source["notes"])[:300]
+    return out
+
+
+# Appended to every LLM section prompt: how to read the `_run` / `_collection` blocks.
+_CONTEXT_RULES = (
+    "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
+    "수집 상태(ok/empty/degraded/not_collected)·수집 범위(window)·사유(notes)다. status가 ok가 아닌 소스는 "
+    "'데이터 불가(사유)'로 쓰고 정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
+)
+
+_TRUNCATED_MARK = {
+    "ko": "\n\n_[출력 길이 한도로 이 섹션이 중간에 잘렸습니다 (degraded)]_",
+    "en": "\n\n_[This section was cut off at the output length limit (degraded)]_",
+    "zh": "\n\n_[此章节因输出长度上限被截断 (degraded)]_",
+    "ja": "\n\n_[出力長の上限によりこのセクションは途中で切れました (degraded)]_",
+}
+
+
 def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if section["key"] == INTENDED_VS_ACTUAL_SECTION["key"]:
         verdicts = collected.get("intended_vs_actual", {}).get("data", {}).get("verdicts", [])
         return {"key": section["key"], "title": localized_title(section, lang),
                 "body": _render_intended_vs_actual(verdicts, lang)}
-    # Section sees ONLY the sources it declares (least-context).
+    # Section sees ONLY the sources it declares (least-context), plus their collection status and
+    # the run context, so missing evidence is never mistaken for a healthy account.
     ctx = {k: collected[k]["data"] for k in section["sources"] if k in collected}
+    ctx["_collection"] = {k: _collection_status(collected.get(k)) for k in section["sources"]}
+    if section.get("_run"):
+        ctx["_run"] = section["_run"]
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM
-    prompt = section["prompt"] + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
-    body = _normalize_headings(_balance_code_fences(_bedrock_render(prompt, ctx_json, model_id, max_tokens)))
-    return {"key": section["key"], "title": localized_title(section, lang), "body": body}
+    prompt = section["prompt"] + " " + _CONTEXT_RULES + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
+    raw = _bedrock_render(prompt, ctx_json, model_id, max_tokens)
+    body = _normalize_headings(_balance_code_fences(raw))
+    out = {"key": section["key"], "title": localized_title(section, lang), "body": body}
+    if getattr(raw, "stop_reason", None) == "max_tokens":
+        out["body"] = body + _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
+        out["truncated"] = True
+    return out
 
 
 def _is_empty(data):
@@ -420,13 +469,18 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     }
 
     catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
+    now = datetime.now(timezone.utc)
+    run_ctx = {"generated_at_utc": now.strftime("%Y-%m-%d %H:%M"),
+               "generated_at_kst": now.astimezone(_KST).strftime("%Y-%m-%d %H:%M"),
+               "scope": "host account" if scope == "self" else "member account",
+               "region": src.REGION, "tier": tier}
 
     # ADR-045: render sections concurrently (bounded). Each section keeps its own Bedrock read/connect
     # timeout; a single section that fails degrades to a visible error body (loud, not silent) WITHOUT
     # sinking the whole report; results reassembled in catalog order. Progress is emitted on completion.
     def _render_one(i, sec):
         try:
-            return i, render_section(sec, collected, model_id, max_tokens, lang)
+            return i, render_section(dict(sec, _run=run_ctx), collected, model_id, max_tokens, lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.
@@ -435,7 +489,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
                     "zh": "此章节生成失败 (degraded)",
                     "ja": "このセクションの生成に失敗しました (degraded)"}
             return i, {"key": sec.get("key"), "title": localized_title(sec, lang),
-                       "body": f"_{fail.get(lang, fail['ko'])}: {e}_"}
+                       "body": f"_{fail.get(lang, fail['ko'])}: {e}_", "render_failed": True}
 
     rendered_by_idx, done, completed_titles = {}, 0, []
     with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
@@ -451,9 +505,11 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
     md = build_markdown(rendered, account, tier, collected, lang)
+    # A section that failed or was cut off is a degraded report even when every collector worked.
+    render_degraded = [s["key"] for s in rendered if s.get("render_failed") or s.get("truncated")]
     summary = {"sections": len(rendered), "sources_used": sources_used,
-               "degraded": degraded, "drift": drift, "unassessed": unassessed,
-               "invariant_coverage": invariant_coverage}
+               "degraded": degraded, "render_degraded": render_degraded, "drift": drift,
+               "unassessed": unassessed, "invariant_coverage": invariant_coverage}
 
     # --- Plan 2: report diff vs the parent report (only if this report has a parent) ---
     if report_id is not None:
