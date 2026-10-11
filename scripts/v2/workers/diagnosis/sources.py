@@ -28,14 +28,17 @@ POSTURE_TOP_FINDINGS = 15
 # never reads a capped or windowed sample as the whole account (report.render_section).
 COLLECTION_WINDOWS = {
     "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
-                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types lists types cut by the cap)",
+                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types lists types with no sample "
+                 f"because the cap was hit or the read failed, and the type being sampled at the cap may be partial; "
+                 f"rows reflect the last inventory sync, not this instant; each row carries its own region)",
     "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
-    "cost": "Cost Explorer: month-to-date by service, 3 monthly totals, top 15 usage types",
+    "cost": "Cost Explorer: month-to-date by service, monthly totals from about two months back (current month partial), top 15 usage types",
     "idle": "inventory-derived: unattached EBS volumes and stopped EC2 (EIP/snapshots not synced)",
     "commitment": "RI / Savings Plans coverage %, last 30 days (null = unavailable, not 0%)",
-    "service_map": "X-Ray service graph, last 3h",
-    "datasources_obs": "external observability datasources: signal counts and label names only",
-    "posture": "Security Hub ACTIVE+NEW findings, first 100 (more_findings=true means more exist)",
+    "service_map": "X-Ray service graph, last 3h, first page only (untraced or paginated traffic is absent, not proof of no traffic)",
+    "datasources_obs": "external observability datasources (default instance per kind): signal counts and label names only, no sample values",
+    "posture": "Security Hub ACTIVE+NEW findings: severity counts from the first 100 (more_findings=true means more exist); "
+               "top_findings groups the first 100 CRITICAL/HIGH findings (more_top_findings=true means more exist)",
     "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
 }
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
@@ -156,6 +159,7 @@ def collect_inventory(conn, scope="self"):
                 rtype=rtype, scope=scope,
             )
         except Exception:  # noqa: BLE001 — one type degrading must not lose the rest
+            unsampled.append(rtype)  # named, so a failed sample is not read as "no resources"
             continue
         items = []
         for r in drows:
@@ -339,14 +343,16 @@ def collect_service_map():
         end = dt.datetime.utcnow()
         start = end - dt.timedelta(hours=3)
         g = xr.get_service_graph(StartTime=start, EndTime=end)
-        names = {s.get("ReferenceId"): s.get("Name") for s in g.get("Services", [])}
+        # Display-only target names (`to_name`): the invariant evaluator reads `to`, which stays
+        # unresolved on purpose — a 3h trace sample must not certify expected/forbidden edges.
+        names = {s["ReferenceId"]: s.get("Name") for s in g.get("Services", []) if s.get("ReferenceId") is not None}
         edges = []
         for svc in g.get("Services", []):
             name = svc.get("Name")
             for e in svc.get("Edges", []):
                 s = e.get("SummaryStatistics", {})
                 edges.append({
-                    "from": name, "to_ref": e.get("ReferenceId"), "to": names.get(e.get("ReferenceId")),
+                    "from": name, "to_ref": e.get("ReferenceId"), "to_name": names.get(e.get("ReferenceId")),
                     "calls": s.get("TotalCount", 0),
                     "error_rate": round((s.get("ErrorStatistics", {}).get("TotalCount", 0)
                                          / s["TotalCount"]) if s.get("TotalCount") else 0, 4),
@@ -354,6 +360,38 @@ def collect_service_map():
         return _result("service_map", data={"edges": edges, "service_count": len(g.get("Services", []))})
     except Exception as e:  # noqa: BLE001
         return _classify("service_map", e)
+
+
+def _posture_top_findings(sh):
+    """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter, so the list is not an
+    arbitrary first page) by title+severity+control. Control findings keep their generic control
+    title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
+    labelled by product + finding type instead. No resource identifiers are kept."""
+    r = sh.get_findings(
+        Filters={"RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+                 "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}],
+                 "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"},
+                                   {"Value": "HIGH", "Comparison": "EQUALS"}]},
+        MaxResults=100,
+    )
+    groups = {}
+    for f in r.get("Findings", []):
+        sev = f.get("Severity", {}).get("Label", "UNKNOWN")
+        control = (f.get("Compliance") or {}).get("SecurityControlId")
+        if control:
+            label = (f.get("Title") or control)[:200]
+        else:
+            types = f.get("Types") or []
+            label = f"{f.get('ProductName') or 'finding'}: {types[0] if types else 'unspecified type'}"[:200]
+        agg = groups.setdefault((label, sev, control), {
+            "title": label, "severity": sev, "control_id": control, "resource_types": set(), "count": 0})
+        agg["count"] += 1
+        agg["resource_types"].update(x.get("Type") for x in f.get("Resources", []) if x.get("Type"))
+    top = sorted(groups.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
+    for a in top:
+        a["resource_types"] = sorted(a["resource_types"])
+    return {"top_findings": top, "top_findings_sampled": len(r.get("Findings", [])),
+            "more_top_findings": bool(r.get("NextToken"))}
 
 
 def collect_posture():
@@ -370,24 +408,17 @@ def collect_posture():
                      "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
             MaxResults=100,
         )
-        by_sev, by_title = {}, {}
+        by_sev = {}
         for f in r.get("Findings", []):
             sev = f.get("Severity", {}).get("Label", "UNKNOWN")
             by_sev[sev] = by_sev.get(sev, 0) + 1
-            if sev in ("CRITICAL", "HIGH"):
-                title = (f.get("Title") or "")[:200]
-                agg = by_title.setdefault(title, {
-                    "title": title, "severity": sev,
-                    "control_id": (f.get("Compliance") or {}).get("SecurityControlId"),
-                    "resource_types": set(), "count": 0})
-                agg["count"] += 1
-                agg["resource_types"].update(x.get("Type") for x in f.get("Resources", []) if x.get("Type"))
-        top = sorted(by_title.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
-        for a in top:
-            a["resource_types"] = sorted(a["resource_types"])
-        return _result("posture", data={"enabled": True, "findings_by_severity": by_sev,
-                                        "top_findings": top, "sampled_findings": len(r.get("Findings", [])),
-                                        "more_findings": bool(r.get("NextToken"))})
+        data = {"enabled": True, "findings_by_severity": by_sev,
+                "sampled_findings": len(r.get("Findings", [])), "more_findings": bool(r.get("NextToken"))}
+        try:  # best-effort detail; the severity rollup above stands on its own
+            data.update(_posture_top_findings(sh))
+        except Exception as e:  # noqa: BLE001
+            data["top_findings_unavailable"] = str(e)[:200]
+        return _result("posture", data=data)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "InvalidAccessException":
             return _result("posture", ok=True, degraded=False,

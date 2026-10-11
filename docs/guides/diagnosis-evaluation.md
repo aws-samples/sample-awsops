@@ -43,6 +43,28 @@ LLM 없이 해당 결과를 렌더링하므로 Markdown·내보내기에도 미�
 화면은 같은 건수·사유를 표시하며 과거 보고서의 평가 기록이 없으면 평가 정보 없음으로
 표시한다. 활성 불변식이 없는 상태와 실제로 평가해 통과한 상태도 구분한다.
 
+### Section evidence and root-cause contract
+
+Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier) and a
+`_collection` entry per declared source: `ok`, `empty`, `degraded` or `not_collected`,
+plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
+prompt treats any non-`ok` source as unavailable evidence, never as a healthy result.
+Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
+the target, the evidence field and value, a confirmed or suspected cause (or the missing
+data), a read-only verification command, remediation steps for the operator to review
+and apply through their own change process, and a confidence level. Mutating commands
+are not emitted, and nothing is executed (ADR-005).
+
+A section that fails, or stops at `max_tokens`, is listed in `summary.render_degraded`.
+Its body carries a visible marker, and the report status becomes `partial`, the same
+status a degraded collector produces. To fit the table, section budgets are 2500 tokens
+(light/mid) and 3200 tokens (deep), up from 1500/2200, with a 120 s Bedrock read timeout
+(`DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`). Per-report output-token cost rises accordingly.
+
+The service-map collector adds `to_name`, the resolved X-Ray target name, for the
+model and reader only. The evaluator still reads `to`, which stays unresolved, so the
+invariant boundary above is unchanged.
+
 ## Offline use / 오프라인 실행
 
 Run from the repository root. Offline scoring uses only Python's standard library;

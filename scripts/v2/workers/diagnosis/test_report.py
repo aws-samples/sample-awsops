@@ -697,13 +697,13 @@ def test_render_section_hands_the_model_collection_status_and_run_context(monkey
     status = captured["ctx"]["_collection"]
     assert status["cost"]["status"] == "degraded" and status["cost"]["notes"] == "AccessDenied"
     assert status["inventory"]["status"] == "ok" and "inventory" in status["inventory"]["window"]
-    assert status["posture"] == {"status": "not_collected"}
+    assert status["posture"]["status"] == "not_collected" and "Security Hub" in status["posture"]["window"]
     assert captured["ctx"]["_run"]["region"] == "ap-northeast-2"
     assert "정상·문제 없음으로 판단하지 마라" in captured["prompt"]
 
 
 def test_render_section_empty_source_is_reported_as_empty():
-    assert report._collection_status({"key": "posture", "degraded": False, "data": {}})["status"] == "empty"
+    assert report._collection_status("posture", {"key": "posture", "degraded": False, "data": {}})["status"] == "empty"
 
 
 def test_render_section_marks_max_tokens_truncation(monkeypatch):
@@ -752,6 +752,7 @@ def test_generate_counts_failed_and_truncated_sections_as_render_degraded(monkey
 def test_report_handler_partial_when_a_section_render_degraded(monkeypatch):
     state = _patch_report(monkeypatch, generate=lambda c, a, t, **_: (
         "# md", {"degraded": [], "render_degraded": ["cost_overview"]}, ["inventory"]))
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda md, rid: None)  # exports tested separately
     result, _ = handlers._report(
         {"account": "1", "tier": "mid", "requested_by": "u", "report_id": 9}, dry_run=False)
     assert result["status"] == "partial" and state["finish"]["status"] == "partial"
@@ -761,23 +762,48 @@ def test_section_rules_require_rca_and_operator_remediation():
     from diagnosis import sections as S
     for needle in ("원인 미확정", "확인 방법", "해결 절차", "신뢰도", "근거(소스.필드=값)", "### 원인 분석 및 조치"):
         assert needle in S._RULES
-    assert "자동 실행을 제안하지 마라" in S._RULES  # ADR-005: advice only, never auto-change
+    # ADR-005: remediation is a reviewed proposal — never executed, never a mutating command.
+    assert "어떤 변경도 실행·자동화하지 말고" in S._RULES and "변경을 수행하는 CLI 명령" in S._RULES
+    assert "AWS 리소스 변경·자동 실행을 제안하지 마라" not in S._RULES  # the old self-contradiction
 
 
-def test_posture_keeps_top_finding_titles_without_resource_ids(monkeypatch):
+def test_posture_top_findings_come_from_a_severity_filtered_query(monkeypatch):
+    control = {"Severity": {"Label": "CRITICAL"}, "Title": "S3 general purpose buckets should block public access",
+               "Compliance": {"SecurityControlId": "S3.8"},
+               "Resources": [{"Type": "AwsS3Bucket", "Id": "arn:aws:s3:::secret-bucket"}]}
+    product = {"Severity": {"Label": "HIGH"}, "Title": "EC2 instance i-0secret is communicating with a C2 server",
+               "ProductName": "GuardDuty", "Types": ["TTPs/Command and Control"],
+               "Resources": [{"Type": "AwsEc2Instance", "Id": "i-0secret"}]}
+    calls = []
+
     class _FakeSh:
         def get_findings(self, **kw):
-            f = {"Severity": {"Label": "CRITICAL"}, "Title": "S3 general purpose buckets should block public access",
-                 "Compliance": {"SecurityControlId": "S3.8"},
-                 "Resources": [{"Type": "AwsS3Bucket", "Id": "arn:aws:s3:::secret-bucket"}]}
-            return {"Findings": [f, f, {"Severity": {"Label": "LOW"}, "Title": "low"}], "NextToken": "n"}
+            calls.append(kw["Filters"])
+            if "SeverityLabel" in kw["Filters"]:
+                return {"Findings": [control, control, product], "NextToken": "n"}
+            return {"Findings": [control, {"Severity": {"Label": "LOW"}, "Title": "low"}]}
     monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
     data = sources.collect_posture()["data"]
-    assert data["top_findings"] == [{"title": "S3 general purpose buckets should block public access",
-                                     "severity": "CRITICAL", "control_id": "S3.8",
-                                     "resource_types": ["AwsS3Bucket"], "count": 2}]
-    assert data["more_findings"] is True and data["sampled_findings"] == 3
-    assert "secret-bucket" not in json.dumps(data)
+    assert [v["Value"] for v in calls[1]["SeverityLabel"]] == ["CRITICAL", "HIGH"]
+    assert data["top_findings"] == [
+        {"title": "S3 general purpose buckets should block public access", "severity": "CRITICAL",
+         "control_id": "S3.8", "resource_types": ["AwsS3Bucket"], "count": 2},
+        {"title": "GuardDuty: TTPs/Command and Control", "severity": "HIGH", "control_id": None,
+         "resource_types": ["AwsEc2Instance"], "count": 1}]
+    assert data["more_top_findings"] is True and data["more_findings"] is False
+    assert "secret" not in json.dumps(data)  # no resource ids, no product titles that embed them
+
+
+def test_posture_top_findings_failure_keeps_the_severity_rollup(monkeypatch):
+    class _FakeSh:
+        def get_findings(self, **kw):
+            if "SeverityLabel" in kw["Filters"]:
+                raise RuntimeError("throttled")
+            return {"Findings": [{"Severity": {"Label": "HIGH"}}]}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    res = sources.collect_posture()
+    assert res["ok"] is True and res["data"]["findings_by_severity"] == {"HIGH": 1}
+    assert "throttled" in res["data"]["top_findings_unavailable"]
 
 
 def test_service_map_resolves_target_names(monkeypatch):
@@ -788,7 +814,27 @@ def test_service_map_resolves_target_names(monkeypatch):
                 {"ReferenceId": 2, "Name": "orders-db", "Edges": []}]}
     monkeypatch.setattr(sources, "_xray_client", lambda: _FakeXr())
     edge = sources.collect_service_map()["data"]["edges"][0]
-    assert (edge["from"], edge["to"], edge["to_ref"]) == ("api", "orders-db", 2)
+    assert (edge["from"], edge["to_name"], edge["to_ref"]) == ("api", "orders-db", 2)
+    # `to` stays unresolved: invariant verdicts must keep treating the 3h sample as insufficient.
+    assert "to" not in edge
+
+
+def test_resolved_xray_names_do_not_activate_invariant_verdicts(monkeypatch):
+    class _FakeXr:
+        def get_service_graph(self, **kw):
+            return {"Services": [
+                {"ReferenceId": 1, "Name": "internet", "Edges": [{"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 4}}]},
+                {"ReferenceId": 2, "Name": "rds", "Edges": []},
+                {"Name": "no-ref", "Edges": [{"ReferenceId": None, "SummaryStatistics": {}}]}]}
+    monkeypatch.setattr(sources, "_xray_client", lambda: _FakeXr())
+    collected = {"service_map": sources.collect_service_map(),
+                 "inventory": sources._result("inventory", data={"by_type": {"rds": 1}})}
+    actual = report._build_actual(collected)
+    verdicts = report._evaluate_intent([
+        {"id": 1, "kind": "expected_edge", "params": {"from": "internet", "to": "rds"}, "severity": "warning"},
+        {"id": 2, "kind": "private_only", "target": "rds", "params": {}, "severity": "critical"}], actual)
+    assert all(v["passed"] is None for v in verdicts)
+    assert collected["service_map"]["data"]["edges"][1]["to_name"] is None  # None ReferenceId borrows no name
 
 
 def test_inventory_names_types_cut_by_the_byte_cap(monkeypatch):
@@ -802,3 +848,15 @@ def test_inventory_names_types_cut_by_the_byte_cap(monkeypatch):
     assert data["truncated"] is True
     assert list(data["resources"]) == ["ec2"]
     assert data["unsampled_types"] == ["rds", "s3"]
+
+
+def test_inventory_names_a_type_whose_sample_read_failed():
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("ec2", 1), ("rds", 1)]
+            if kw["rtype"] == "rds":
+                raise RuntimeError("timeout")
+            return [("i-1", "ap-northeast-2", {"a": 1})]
+    data = sources.collect_inventory(_Conn())["data"]
+    assert list(data["resources"]) == ["ec2"] and data["unsampled_types"] == ["rds"]

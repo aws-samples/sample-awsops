@@ -105,7 +105,8 @@ def test_propose_passes_model_and_token_budget(monkeypatch):
         seen.update(model_id=model_id, max_tokens=max_tokens)
         return "[]"
     monkeypatch.setattr(propose, "_bedrock_render", render)
-    propose.propose({"service_map": {"edges": []}}, model="m-1")
-    assert seen == {"model_id": "m-1", "max_tokens": propose.PROPOSE_MAX_TOKENS}
-    propose.propose({"service_map": {"edges": []}})
-    assert seen["model_id"] == propose._MODEL_SONNET
+    propose.propose({"service_map": {"edges": []}}, model="opus")
+    assert seen == {"model_id": propose._MODEL_OPUS, "max_tokens": propose.PROPOSE_MAX_TOKENS}
+    for alias in (None, "sonnet", "x"):
+        propose.propose({"service_map": {"edges": []}}, model=alias)
+        assert seen["model_id"] == propose._MODEL_SONNET

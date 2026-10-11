@@ -273,18 +273,19 @@ def _render_intended_vs_actual(verdicts, lang):
     return "\n".join(lines)
 
 
-def _collection_status(source):
+def _collection_status(key, source):
     """What the model must know about a source besides its data: did collection work, and is the
     data complete? An empty or failed source is 'no evidence', never 'no problems'."""
+    window = src.COLLECTION_WINDOWS.get(key, "")
     if source is None:
-        return {"status": "not_collected"}
+        return {"status": "not_collected", "window": window}
     if source.get("degraded"):
         status = "degraded"
     elif _is_empty(source.get("data")):
         status = "empty"
     else:
         status = "ok"
-    out = {"status": status, "window": src.COLLECTION_WINDOWS.get(source.get("key"), "")}
+    out = {"status": status, "window": window}
     if source.get("notes"):
         out["notes"] = str(source["notes"])[:300]
     return out
@@ -313,7 +314,7 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     # Section sees ONLY the sources it declares (least-context), plus their collection status and
     # the run context, so missing evidence is never mistaken for a healthy account.
     ctx = {k: collected[k]["data"] for k in section["sources"] if k in collected}
-    ctx["_collection"] = {k: _collection_status(collected.get(k)) for k in section["sources"]}
+    ctx["_collection"] = {k: _collection_status(k, collected.get(k)) for k in section["sources"]}
     if section.get("_run"):
         ctx["_run"] = section["_run"]
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM

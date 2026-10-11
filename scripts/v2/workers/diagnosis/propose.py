@@ -9,7 +9,7 @@ import json
 import re
 
 from . import invariants as inv
-from .report import _MODEL_SONNET, _bedrock_render, _redact
+from .report import _MODEL_OPUS, _MODEL_SONNET, _bedrock_render, _redact
 
 PROPOSE_MAX_TOKENS = 1500
 
@@ -80,7 +80,8 @@ def propose(actual, model=None):
     """Ask Bedrock for candidate invariants, then validate+drop invalid, attach heuristic_risk,
     provenance='ai_proposed', status='draft'. The LLM never activates anything."""
     ctx_json = _redact(json.dumps(actual, ensure_ascii=False, default=str))
-    raw = _bedrock_render(_PROPOSE_PROMPT, ctx_json, model or _MODEL_SONNET, PROPOSE_MAX_TOKENS)
+    model_id = _MODEL_OPUS if model == "opus" else _MODEL_SONNET  # same 'sonnet'|'opus' alias as reports
+    raw = _bedrock_render(_PROPOSE_PROMPT, ctx_json, model_id, PROPOSE_MAX_TOKENS)
     out = []
     for c in _extract_json_array(raw):
         valid = validate_candidate(c)
