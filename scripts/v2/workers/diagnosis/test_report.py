@@ -1209,3 +1209,22 @@ def test_cli_guard_sees_through_line_continuations_and_unknown_global_options():
 def test_cli_commands_yield_one_pair_per_invocation():
     text = "first `aws ec2 describe-instances` then\n`aws \\\n s3api put-object --bucket b`"
     assert list(report._cli_commands(text)) == [("ec2", "describe-instances"), ("s3api", "put-object")]
+
+
+
+# ── review: the allowlist must not pass operations that create or register things ────────────────────
+
+def test_generate_and_push_style_operations_are_not_read_only():
+    for cmd in ("aws apigateway generate-client-certificate", "aws deploy push --application-name a",
+                "aws deploy register --instance-name i", "aws deploy install --config-file c",
+                "aws codeartifact login --tool npm --repository r", "aws emr put --cluster-id c --src f"):
+        assert report._has_mutating_cli(cmd), cmd
+    for cmd in ("aws iam generate-credential-report", "aws iam generate-service-last-accessed-details --arn a",
+                "aws emr get --cluster-id c --src f"):
+        assert not report._has_mutating_cli(cmd), cmd
+
+
+def test_every_aws_s3_subcommand_is_classified():
+    # `aws s3` has exactly these subcommands; the code's lists must cover all of them
+    assert report._S3_COMMANDS == {"cp", "ls", "mb", "mv", "presign", "rb", "rm", "sync", "website"}
+    assert {c for c in report._S3_COMMANDS if not report._has_mutating_cli(f"aws s3 {c} x")} == report._S3_READ_ONLY

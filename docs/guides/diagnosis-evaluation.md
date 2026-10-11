@@ -66,11 +66,11 @@ command that is not provably read-only gets a visible warning and counts as degr
 is an allowlist, not a denylist of mutating verbs (which always misses some, such as
 `route53 change-resource-record-sets` or `sns subscribe`): each `aws <service> <operation>`
 passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
-`query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `generate`, `detect`,
-and the like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of four
-read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`). Line continuations are joined before parsing, and the first adjacent (service, operation)-shaped pair after any leading options and their values is the command, so an option value cannot hide the operation. Athena
-`start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, only `ls` and
-`presign` pass. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
+`query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `detect`, and the
+like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of six
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, and the three IAM `generate-…` report builders; the `generate` verb itself is not read-only). Line continuations are joined before parsing, and the first adjacent (service, operation)-shaped pair after any leading options and their values is the command, so an option value cannot hide the operation. Athena
+`start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
+`presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
 skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
 added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).

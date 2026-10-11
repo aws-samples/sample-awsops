@@ -407,13 +407,16 @@ _GLOBAL_OPTIONS_WITH_VALUE = frozenset((
 # change-…`, `sns subscribe`, `ssm start-session` — and Athena `start-query-execution` runs DDL/CTAS.)
 _READ_ONLY_VERBS = frozenset((
     "describe list get lookup search query scan select check validate simulate estimate preview test "
-    "wait filter find read fetch retrieve show view head tail generate analyze evaluate detect "
+    "wait filter find read fetch retrieve show view head tail analyze evaluate detect "
     "compare inspect count help").split())
-# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail),
-# `generate` is kept (iam generate-credential-report / service-last-accessed only build reports).
+# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail) and
+# `generate` (apigateway generate-client-certificate creates one); the harmless IAM report builders are
+# listed by name in _READ_ONLY_OPERATIONS instead.
 # Operations that look mutating by name but only read, or only touch local config / a Logs query.
 _READ_ONLY_OPERATIONS = frozenset((
-    "start-query", "start-live-tail", "update-kubeconfig"))
+    "start-query", "start-live-tail", "update-kubeconfig",
+    "generate-credential-report", "generate-service-last-accessed-details",
+    "generate-organizations-access-report"))
 _S3_READ_ONLY = frozenset(("ls", "presign"))
 _S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb", "website"))
 # Real operations are hyphenated; these are the un-hyphenated ones worth classifying (sns, lambda,
@@ -421,7 +424,9 @@ _S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb",
 # prose ("aws cloudwatch dashboards") and ignored.
 _SINGLE_WORD_OPERATIONS = frozenset((
     "invoke", "publish", "subscribe", "unsubscribe", "deploy", "package", "scan", "query", "tail",
-    "wait", "help", "encrypt", "decrypt", "sign", "verify", "set"))
+    "wait", "help", "encrypt", "decrypt", "sign", "verify", "set",
+    # codedeploy / emr / codeartifact customizations
+    "push", "register", "deregister", "install", "uninstall", "put", "get", "ssh", "socks", "login"))
 _HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
 
