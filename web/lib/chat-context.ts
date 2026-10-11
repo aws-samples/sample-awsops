@@ -1,7 +1,20 @@
 // Shared bounded-history rendering for the routing classifier + AWSops Assistant fallback
 // (web/lib/classifier.ts, web/lib/assistant.ts). Both feed a short excerpt of the client-supplied
 // conversation into a Bedrock call; this is the one place that decides what survives the cap.
-export interface HistoryMsg { role: 'user' | 'assistant'; content: string }
+export interface HistoryMsg {
+  role: 'user' | 'assistant';
+  content: string;
+  // Which account the turn was answered for ('host' or a 12-digit id), from the server's own meta
+  // frame. The agent labels earlier turns with it only when a thread spans accounts.
+  account?: string;
+}
+
+const ACCOUNT_LABEL_RE = /^(?:host|\d{12})$/;
+
+/** The account label the chat route reports for an answer (and the agent compares turns by). */
+export function accountLabel(accountId: string, hostAccountId: string): string {
+  return accountId === hostAccountId ? 'host' : accountId;
+}
 
 export interface RenderHistoryOpts {
   turns: number;       // how many of the most recent messages to consider at all
@@ -34,12 +47,17 @@ export function renderRecentHistory(messages: HistoryMsg[] | undefined, opts: Re
 // throws inside String.prototype.slice deep in renderRecentHistory, silently degrading routing
 // to its fallback path (classifier) or the deterministic guide (assistant, via its try/catch).
 // Sanitize ONCE at the request boundary so every downstream consumer gets a well-formed array.
+// Rebuilds each entry from the known fields so no other client-supplied key reaches the agent payload.
 export function sanitizeHistory(input: unknown): HistoryMsg[] {
   if (!Array.isArray(input)) return [];
-  return input.filter((m): m is HistoryMsg =>
-    !!m && typeof m === 'object'
-    && (m.role === 'user' || m.role === 'assistant')
-    && typeof m.content === 'string');
+  return input
+    .filter((m): m is HistoryMsg =>
+      !!m && typeof m === 'object'
+      && (m.role === 'user' || m.role === 'assistant')
+      && typeof m.content === 'string')
+    .map((m) => (typeof m.account === 'string' && ACCOUNT_LABEL_RE.test(m.account)
+      ? { role: m.role, content: m.content, account: m.account }
+      : { role: m.role, content: m.content }));
 }
 
 // Bug fix (PR #138 review, MINOR): history content is untrusted (prior user turns, and prior

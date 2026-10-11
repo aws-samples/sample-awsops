@@ -272,7 +272,7 @@ async def run_anthropic_loop(payload):
         import agent  # noqa: F811 — module-import fallback
     from anthropic import AsyncAnthropicBedrock  # lazy: only the dark path needs the SDK
 
-    user_input, history = agent.build_conversation(payload)
+    user_input, history = agent.scoped_conversation(payload)  # + per-turn account labels
     if not user_input:
         yield {"delta": "No input provided."}
         return
@@ -288,7 +288,8 @@ async def run_anthropic_loop(payload):
     # Cross-account directive (effective_account_id blanks the host / __all__ → same-account, no prefix).
     account_id = agent.effective_account_id(payload.get("accountId", ""))
     account_alias = payload.get("accountAlias", "")
-    account_directive = agent.build_account_directive(account_id, account_alias)
+    account_directive = (agent.build_account_directive(account_id, account_alias)
+                         + agent.build_region_scope(payload.get("regions")))
     if account_id and account_id != "__all__":
         user_input = f"[Target Account: {account_alias or account_id} ({account_id})] {user_input}"
 

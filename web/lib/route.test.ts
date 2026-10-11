@@ -351,3 +351,32 @@ describe('auto-collect collector rules — dedicated strong keywords only (v1 au
     expect(matchedSections('DynamoDB 스로틀링 원인 분석')).not.toContain('incident'); // no 장애/사고 noun → stays data
   });
 });
+
+describe('pickGateway follow-up continuity', () => {
+  it('keeps the previous section for a keyword-less follow-up', () => {
+    expect(pickGateway('그럼 그건 왜 그래?', undefined, 'cost')).toBe('cost');
+  });
+  it('a keyword still re-routes away from the previous section', () => {
+    expect(pickGateway('보안 그룹 연결 확인해줘', undefined, 'cost')).not.toBe('cost');
+  });
+  it('a pin beats the previous section', () => {
+    expect(pickGateway('더 자세히', 'security', 'cost')).toBe('security');
+  });
+  it('falls back to ops without a (valid) previous section', () => {
+    expect(pickGateway('더 자세히')).toBe('ops');
+    expect(pickGateway('더 자세히', undefined, 'nope')).toBe('ops');
+  });
+});
+
+describe('classifyRoute follow-up continuity (hybrid)', () => {
+  it('uses the previous section when neither a keyword nor the classifier picks a route', async () => {
+    const r = await classifyRoute('더 자세히', undefined, { llmEnabled: true, classify: async () => [], previous: 'cost' });
+    expect(r.primary).toBe('cost');
+    expect(r.method).toBe('previous');
+  });
+  it('a classifier answer still wins over the previous section', async () => {
+    const r = await classifyRoute('더 자세히', undefined, {
+      llmEnabled: true, classify: async () => [{ key: 'security', score: 0.9 }], previous: 'cost' });
+    expect(r.primary).toBe('security');
+  });
+});

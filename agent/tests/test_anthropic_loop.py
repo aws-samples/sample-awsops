@@ -433,6 +433,8 @@ def _install_agent_stub(gateway_tools, *, footer="FOOTER", skill_prompt="SKILLPR
             return msgs[-1].get("content", ""), hist
         return payload.get("prompt", ""), []
     m.build_conversation = _bc
+    m.scoped_conversation = _bc
+    m.build_region_scope = lambda regions: (f"\nREGIONS:{regions}" if regions else "")
     sys.modules["agent"] = m
     return m
 
@@ -566,6 +568,20 @@ class RunAnthropicLoopTest(unittest.TestCase):
         self.assertIn("Target Account: prod (999999999999)", last_text)
         sys_text = _CapturingBedrock.instances[-1].messages.calls[0]["system"][0]["text"]
         self.assertIn("ACCT:999999999999", sys_text)
+
+    def test_region_scope_and_account_labels_reach_the_dark_path(self):
+        m = _install_agent_stub([FakeTool("t")])
+        seen = {}
+
+        def scoped(payload):
+            seen["payload"] = payload
+            return m.build_conversation(payload)
+        m.scoped_conversation = scoped
+        run(al.run_anthropic_loop({"messages": [{"role": "user", "content": "x"}],
+                                   "regions": ["us-east-1"]}))
+        sys_text = _CapturingBedrock.instances[-1].messages.calls[0]["system"][0]["text"]
+        self.assertIn("REGIONS:['us-east-1']", sys_text)
+        self.assertIn("payload", seen)  # history goes through the shared labelling helper
 
 
 if __name__ == "__main__":
