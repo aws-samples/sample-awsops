@@ -671,3 +671,4 @@ def test_list_tgw_peerings_and_route_tables_disclose_more_pages(monkeypatch):
     assert peer["more_pages"] is True and peer["returned"] == 1
     allr = json.loads(network.lambda_handler({"tool_name": "get_all_tgw_routes", "arguments": {"tgw_id": "t"}}, None)["body"])
     assert allr["routeTablesMorePages"] is True
+    assert allr["truncated"] is True

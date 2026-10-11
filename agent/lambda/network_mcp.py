@@ -462,8 +462,10 @@ def lambda_handler(event, context):
                 kept_routes, meta = cap_list(resp["Routes"], 20, bool(resp.get("AdditionalRoutesAvailable")))
                 all_routes.append({"routeTableId": rt_id, "routeCount": len(resp["Routes"]), **meta,
                     "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in kept_routes]})
-            return ok({"tgwId": tgw_id, "routeTables": all_routes,
-                       "routeTablesMorePages": bool(rt_resp.get("NextToken"))})
+            more_tables = bool(rt_resp.get("NextToken"))
+            return ok({"tgwId": tgw_id, "routeTables": all_routes, "routeTablesMorePages": more_tables,
+                       # top-level certificate: complete only if every table and the table list are
+                       "truncated": more_tables or any(r["truncated"] for r in all_routes)})
 
         # List TGW peering attachments / TGW 피어링 어태치먼트 목록 조회
         elif t == "list_tgw_peerings":
