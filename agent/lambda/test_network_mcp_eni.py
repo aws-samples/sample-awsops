@@ -632,3 +632,53 @@ def test_gateway_context_and_host_account_keep_legacy_response_fields(ec2):
     sg = body["securityGroups"][0]
     assert (sg["id"], sg["name"], sg["inbound"][0]["source"], sg["outbound"][0]["dest"]) == (
         "sg-test", "web", "10.0.0.0/16", "0.0.0.0/0")
+
+
+
+def _tgw_call(monkeypatch, tool, args, resp):
+    from unittest import mock
+    ec2 = mock.Mock()
+    ec2.search_transit_gateway_routes.return_value = resp
+    ec2.describe_transit_gateway_route_tables.return_value = {
+        "TransitGatewayRouteTables": [{"TransitGatewayRouteTableId": "tgw-rtb-1"}]}
+    monkeypatch.setattr(network, "get_client", lambda *a, **k: ec2)
+    return json.loads(network.lambda_handler({"tool_name": tool, "arguments": args}, None)["body"])
+
+
+def test_get_tgw_routes_marks_additional_routes(monkeypatch):
+    # SearchTransitGatewayRoutes caps without a NextToken; AdditionalRoutesAvailable must surface.
+    body = _tgw_call(monkeypatch, "get_tgw_routes", {"route_table_id": "tgw-rtb-1"},
+                     {"Routes": [{"DestinationCidrBlock": "10.0.0.0/16", "State": "active"}],
+                      "AdditionalRoutesAvailable": True})
+    # No pagination token exists, so it is a server-side cap — never a fetchable "next page".
+    assert body["truncated"] is True and body["api_result_capped"] is True and "more_pages" not in body
+
+
+def test_get_all_tgw_routes_flags_a_capped_table(monkeypatch):
+    table = _tgw_call(monkeypatch, "get_all_tgw_routes", {"tgw_id": "tgw-1"},
+                      {"Routes": [{"DestinationCidrBlock": "10.0.0.0/16", "State": "active"}],
+                       "AdditionalRoutesAvailable": True})
+    assert table["truncated"] is True
+    rt = table["routeTables"][0]
+    assert rt["api_result_capped"] is True and rt["truncated"] is True and "more_pages" not in rt
+
+
+def test_get_all_tgw_routes_reports_per_table_truncation(monkeypatch):
+    routes = [{"DestinationCidrBlock": f"10.{i}.0.0/16", "State": "active"} for i in range(25)]
+    table = _tgw_call(monkeypatch, "get_all_tgw_routes", {"tgw_id": "tgw-1"}, {"Routes": routes})["routeTables"][0]
+    assert (table["routeCount"], table["returned"], table["truncated"]) == (25, 20, True)
+
+
+
+def test_list_tgw_peerings_and_route_tables_disclose_more_pages(monkeypatch):
+    from unittest import mock
+    ec2 = mock.Mock()
+    ec2.describe_transit_gateway_attachments.return_value = {
+        "TransitGatewayAttachments": [{"TransitGatewayAttachmentId": "a", "State": "available"}], "NextToken": "n"}
+    ec2.describe_transit_gateway_route_tables.return_value = {"TransitGatewayRouteTables": [], "NextToken": "n"}
+    monkeypatch.setattr(network, "get_client", lambda *a, **k: ec2)
+    peer = json.loads(network.lambda_handler({"tool_name": "list_tgw_peerings", "arguments": {"tgw_id": "t"}}, None)["body"])
+    assert peer["more_pages"] is True and peer["returned"] == 1
+    allr = json.loads(network.lambda_handler({"tool_name": "get_all_tgw_routes", "arguments": {"tgw_id": "t"}}, None)["body"])
+    assert allr["routeTablesMorePages"] is True
+    assert allr["truncated"] is True

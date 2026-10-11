@@ -3,8 +3,54 @@ AWS Cost Operations MCP Lambda - Cost Explorer, Pricing, Budgets
 AWS 비용 운영 MCP 람다 - Cost Explorer, 요금 조회, 예산 관리
 """
 import json
+import time
 from datetime import datetime, timedelta
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
+
+# Cost Explorer paging is bounded (the Lambda times out at 60 s): stop at a page cap, a time budget or a
+# token that does not advance, and say so.
+CE_MAX_PAGES = 5
+CE_BUDGET_S = 40
+
+
+_CUT_REASONS = {
+    "page_cap": "the %d-page limit" % CE_MAX_PAGES,
+    "time_budget": "the %d s time budget" % CE_BUDGET_S,
+    "repeated_token": "a pagination token that did not advance",
+}
+
+
+def _cut_note(cut_reads):
+    """Disclosure for a Cost Explorer read that stopped early: totals/rankings cover only what was
+    read. ``cut_reads`` holds each read's stop reason (None = read to the end)."""
+    reasons = sorted({r for r in cut_reads if r})
+    if not reasons:
+        return {}
+    why = " and ".join(_CUT_REASONS.get(r, r) for r in reasons)
+    return {"costPagesCut": True, "costPagesCutReason": reasons,
+            "note": "Cost Explorer pagination stopped at %s; totals and rankings cover only the pages read." % why}
+
+
+def _ce_pages(ce, base, started):
+    """Read get_cost_and_usage pages. Returns (pages, cut_reason): None when the API had no more
+    pages, else why the read stopped early ('repeated_token' | 'page_cap' | 'time_budget')."""
+    pages, token, seen = [], None, set()
+    while True:
+        kwargs = dict(base)
+        if token:
+            kwargs["NextPageToken"] = token
+        resp = ce.get_cost_and_usage(**kwargs)
+        pages.append(resp)
+        token = resp.get("NextPageToken")
+        if not token:
+            return pages, None
+        if token in seen:
+            return pages, "repeated_token"
+        if len(pages) >= CE_MAX_PAGES:
+            return pages, "page_cap"
+        if time.monotonic() - started > CE_BUDGET_S:
+            return pages, "time_budget"
+        seen.add(token)
 
 
 def lambda_handler(event, context):
@@ -69,8 +115,15 @@ def lambda_handler(event, context):
                     })
             results.sort(key=lambda x: x["amount"], reverse=True)
             total = sum(r["amount"] for r in results)
-            return ok({"period": "{} ~ {}".format(start, end), "granularity": granularity,
-                "metric": metric, "total": round(total, 2), "breakdown": results[:30]})
+            # `total` is already the cost sum, so the cap metadata gets its own breakdown* keys.
+            breakdown, bm = cap_list(results, 30, bool(resp.get("NextPageToken")))
+            body = {"period": "{} ~ {}".format(start, end), "granularity": granularity,
+                "metric": metric, "total": round(total, 2), "breakdown": breakdown,
+                "breakdownReturned": bm["returned"], "breakdownTotal": bm["total"],
+                "breakdownTruncated": bm["truncated"]}
+            if bm.get("more_pages"):
+                body["note"] = "Cost Explorer returned more pages; total covers only the first page."
+            return ok(body)
 
         # Compare current vs previous month costs / 이번 달과 지난 달 비용 비교
         elif t == "get_cost_and_usage_comparisons":
@@ -82,15 +135,20 @@ def lambda_handler(event, context):
             prev_start = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m-01")
             prev_end = now.replace(day=1).strftime("%Y-%m-01")
 
+            started = time.monotonic()
+            cut_reads = []
+
             def get_costs(start, end):
-                resp = ce.get_cost_and_usage(
-                    TimePeriod={"Start": start, "End": end}, Granularity="MONTHLY",
-                    Metrics=["UnblendedCost"], GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}])
+                pages, cut_reason = _ce_pages(ce, {
+                    "TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
+                    "Metrics": ["UnblendedCost"], "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}]}, started)
+                cut_reads.append(cut_reason)
                 costs = {}
-                for p in resp.get("ResultsByTime", []):
-                    for g in p.get("Groups", []):
-                        svc = g["Keys"][0]
-                        costs[svc] = costs.get(svc, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                for resp in pages:
+                    for p in resp.get("ResultsByTime", []):
+                        for g in p.get("Groups", []):
+                            svc = g["Keys"][0]
+                            costs[svc] = costs.get(svc, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
                 return costs
 
             prev_costs = get_costs(prev_start, prev_end)
@@ -111,7 +169,8 @@ def lambda_handler(event, context):
                 "currentPeriod": "{} ~ {}".format(cur_start, cur_end),
                 "previousTotal": round(sum(prev_costs.values()), 2),
                 "currentTotal": round(sum(cur_costs.values()), 2),
-                "comparison": comparison[:20]})
+                "comparison": comparison[:20], "comparisonMeta": cap_list(comparison, 20, any(cut_reads))[1],
+                **_cut_note(cut_reads)})
 
         # Identify top cost change drivers between months / 월간 비용 변동 주요 원인 분석
         elif t == "get_cost_comparison_drivers":
@@ -122,16 +181,22 @@ def lambda_handler(event, context):
             prev_start = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m-01")
             prev_end = now.replace(day=1).strftime("%Y-%m-01")
 
+            started = time.monotonic()
+            cut_reads = []
+
             def get_detailed(start, end):
-                resp = ce.get_cost_and_usage(
-                    TimePeriod={"Start": start, "End": end}, Granularity="MONTHLY",
-                    Metrics=["UnblendedCost"],
-                    GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "USAGE_TYPE"}])
+                # SERVICE x USAGE_TYPE can span many pages; read up to the bound, then say so.
+                pages, cut_reason = _ce_pages(ce, {
+                    "TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
+                    "Metrics": ["UnblendedCost"],
+                    "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "USAGE_TYPE"}]}, started)
+                cut_reads.append(cut_reason)
                 costs = {}
-                for p in resp.get("ResultsByTime", []):
-                    for g in p.get("Groups", []):
-                        key = " / ".join(g["Keys"])
-                        costs[key] = costs.get(key, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+                for resp in pages:
+                    for p in resp.get("ResultsByTime", []):
+                        for g in p.get("Groups", []):
+                            key = " / ".join(g["Keys"])
+                            costs[key] = costs.get(key, 0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
                 return costs
 
             prev = get_detailed(prev_start, prev_end)
@@ -144,7 +209,8 @@ def lambda_handler(event, context):
                     drivers.append({"driver": k, "previous": round(prev.get(k, 0), 2),
                         "current": round(cur.get(k, 0), 2), "impact": round(diff, 2)})
             drivers.sort(key=lambda x: abs(x["impact"]), reverse=True)
-            return ok({"topDrivers": drivers[:10],
+            return ok({"topDrivers": drivers[:10], "topDriversMeta": cap_list(drivers, 10, any(cut_reads))[1],
+                **_cut_note(cut_reads),
                 "period": "{} ~ {} vs {} ~ {}".format(prev_start, prev_end, cur_start, cur_end)})
 
         # Forecast future costs / 향후 비용 예측
@@ -179,7 +245,8 @@ def lambda_handler(event, context):
             resp = ce.get_dimension_values(
                 TimePeriod={"Start": start, "End": end}, Dimension=dimension)
             values = [v["Value"] for v in resp.get("DimensionValues", [])]
-            return ok({"dimension": dimension, "values": values[:50], "count": len(values)})
+            return ok({**cap_list(values, 50, bool(resp.get("NextPageToken")))[1],
+                       "dimension": dimension, "values": values[:50], "count": len(values)})
 
         # Get tag values for cost allocation / 비용 할당용 태그 값 조회
         elif t == "get_tag_values":
@@ -189,7 +256,8 @@ def lambda_handler(event, context):
             end = now.strftime("%Y-%m-%d")
             tag_key = args.get("tag_key", "")
             resp = ce.get_tags(TimePeriod={"Start": start, "End": end}, TagKey=tag_key if tag_key else None)
-            return ok({"tagKey": tag_key, "values": resp.get("Tags", [])[:50]})
+            return ok({**cap_list(resp.get("Tags", []), 50, bool(resp.get("NextPageToken")))[1],
+                       "tagKey": tag_key, "values": resp.get("Tags", [])[:50]})
 
         # Get AWS service pricing information / AWS 서비스 요금 정보 조회
         elif t == "get_pricing":

@@ -50,3 +50,35 @@ export function sanitizeHistory(input: unknown): HistoryMsg[] {
 function escapeTagBreakout(s: string): string {
   return s.replace(/<\/?(?:awsops_chat_history|user_query|query)>/gi, (m) => m.replace('<', '&lt;').replace('>', '&gt;'));
 }
+
+// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512,000 BYTES (413). Budget
+// UTF-8 bytes, reserving the encoded request fields too (a 50k-char prompt can reach 300KB once JSON-
+// escaped). Keep the NEWEST turns that fit, skip empty placeholders, never split a message.
+export const OUTGOING_HISTORY_MAX_MESSAGES = 40;
+export const OUTGOING_HISTORY_MAX_BYTES = 300_000;
+const CHAT_REQUEST_MAX_BYTES = 512_000;
+
+const utf8 = new TextEncoder();
+
+export function boundOutgoingHistory(
+  messages: HistoryMsg[],
+  maxMessages = OUTGOING_HISTORY_MAX_MESSAGES,
+  maxBytes = OUTGOING_HISTORY_MAX_BYTES,
+  requestFields: object = {},
+): HistoryMsg[] {
+  const envelopeBytes = utf8.encode(JSON.stringify({ ...requestFields, messages: [] })).length;
+  maxBytes = Math.max(0, Math.min(maxBytes, CHAT_REQUEST_MAX_BYTES - envelopeBytes));
+  const kept: HistoryMsg[] = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0 && kept.length < maxMessages; i--) {
+    const m = messages[i];
+    if (!m.content) continue;
+    // JSON.stringify escapes quotes/newlines/control chars, so measure the encoded form.
+    // Include role/key framing and one separator (conservative for the first item).
+    const size = utf8.encode(JSON.stringify(m)).length + 1;
+    if (used + size > maxBytes) break;
+    kept.unshift(m);
+    used += size;
+  }
+  return kept;
+}

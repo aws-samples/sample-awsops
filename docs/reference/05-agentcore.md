@@ -65,6 +65,29 @@ the old Lambda ignore the ID and return an unmarked bulk list. Consumers must re
 never an exact result or absence proof. Existing sql_reader views/grants suffice; no mutation or migration is added.
 A miss includes a fixed note directing readers to freshness/direct reads, not an AWS-absence verdict.
 
+### Tool result completeness contract
+
+Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never
+reads the first N items as the whole set. `cap_list(items, limit, more_pages)`
+(`agent/lambda/cross_account.py`) produces the base fields; the Runtime Context
+(`build_runtime_context`, `agent/agent.py`) tells the model how to read them.
+
+| Field | Meaning |
+|---|---|
+| `returned`, `total` | Items in this response, and items the API returned before the cap. `total` is a lower bound when `more_pages` or `api_result_capped` is set. |
+| `truncated` | `false` is the only completeness certificate; `true` means partial. A successful call with `truncated=false` and no items is a real empty result for that account and region. |
+| `more_pages` | The API returned a pagination token, so more items can be fetched. |
+| `api_result_capped` | AWS capped the result and offers no next page (`SearchTransitGatewayRoutes`); only a narrower filter reaches the rest. |
+| `complete=false`, `query_status`, `query_failed` | A Logs Insights result that is interim (`Running`/`Scheduled`) or ended without results (`Failed`/`Cancelled`/`Timeout`). This is not a pagination signal. |
+| `kept` | Which end of a capped series was kept (`latest` for `get_metric_data`). |
+| `*Meta`, `breakdown*` | The same fields for a nested list when the top-level `total` means something else, such as a cost sum. |
+| `details_incomplete`, `readFailed` | ECS describe calls failed or omitted resources, or the read itself failed (serverless caches): the result is unknown, not empty. |
+| `costPagesCut`, `costPagesCutReason` | Cost Explorer paging stopped early (`page_cap`, `time_budget`, `repeated_token`); totals and rankings cover only the pages read. |
+
+A list without these fields may still be capped, so it is never presented as complete. The
+synced-inventory tools add a separate `scope` block stating that they read the host account only (see
+[graph read contract](../runbooks/graph-read-contract.md#model-facing-topology-reader)).
+
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py, provision_report.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
 create/update` for Runtime, the 9 gateways, the target slices, Memory, and the Code

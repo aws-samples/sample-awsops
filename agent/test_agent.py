@@ -378,7 +378,7 @@ class TestDatasourceGuidance(unittest.TestCase):
         # Env fallback path: GATEWAYS_JSON uses the canonical `external-obs`.
         env = {"network": "u", "ops": "u", "external-obs": "u"}
         self.assertEqual(agent._resolve_gateway_key("observability", env), "external-obs")
-        # The 8 sections pass through unchanged (no alias, key present).
+        # The other 8 of the 9 sections (all but the aliased observability) pass through unchanged.
         self.assertEqual(agent._resolve_gateway_key("network", disc), "network")
         # Unknown / unprovisioned → DEFAULT_GATEWAY (never a hard crash).
         self.assertEqual(agent._resolve_gateway_key("observability", {"ops": "u"}), agent.DEFAULT_GATEWAY)
@@ -713,6 +713,146 @@ class TestApplyOfficialMcpGates(unittest.TestCase):
         self.assertIsNone(client)
         # mutual exclusion must NOT fire when the stdio connect failed — both survive.
         self.assertEqual(names(gw), ['clickhouse-mcp-target___clickhouse_query', 'plain_tool'])
+
+
+class RuntimeContextTest(unittest.TestCase):
+    """The model cannot know the time, account scope, or region by itself — the prompt must say."""
+
+    def test_host_scope_names_host_and_region(self):
+        ctx = agent.build_runtime_context('', '')
+        self.assertIn('host account', ctx)
+        self.assertIn(agent.GATEWAY_REGION, ctx)
+        self.assertIn('truncated=true', ctx)
+
+    def test_evidence_rule_separates_certified_empty_from_unknown(self):
+        ctx = agent.build_runtime_context('', '')
+        self.assertIn('complete only when the tool says so with truncated=false', ctx)
+        self.assertIn('real empty result', ctx)
+        self.assertIn('may be capped: do not call it complete', ctx)
+
+    def test_target_scope_warns_inventory_is_host_only(self):
+        ctx = agent.build_runtime_context('111122223333', 'prod')
+        self.assertIn('prod (111122223333)', ctx)
+        self.assertIn('HOST account only', ctx)
+        self.assertIn('query_inventory', ctx)
+
+    def test_all_accounts_scope_is_distinct_from_host(self):
+        ctx = agent.build_runtime_context('', '', '__all__')
+        self.assertIn('all registered accounts', ctx)
+
+    def test_runtime_context_has_no_clock_so_prompt_cache_survives(self):
+        # The clock lives on the user turn; a per-minute system prompt would defeat caching.
+        self.assertNotRegex(agent.build_runtime_context('', ''), r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}')
+
+    def test_time_prefix_has_utc_and_kst(self):
+        from datetime import datetime, timezone
+        prefix = agent.build_time_prefix(datetime(2026, 10, 11, 23, 30, tzinfo=timezone.utc))
+        self.assertEqual(prefix, '[Current time: 2026-10-11 23:30 UTC / 2026-10-12 08:30 KST] ')
+
+    def test_footer_roster_includes_observability(self):
+        self.assertIn('exactly these 9', agent.COMMON_FOOTER.lower())
+        self.assertIn('observability', agent.COMMON_FOOTER)
+
+    def test_extra_context_truncation_is_marked(self):
+        self.assertEqual(agent._bounded_extra_context('abc'), 'abc')
+        cut = agent._bounded_extra_context('x' * (agent.EXTRA_CONTEXT_MAX_CHARS + 5))
+        self.assertTrue(cut.endswith('more entries exist than shown]'))
+
+
+class ConversationBoundsTest(unittest.TestCase):
+    def test_history_is_capped_and_opens_with_user_turn(self):
+        msgs = [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': f'm{i}'}
+                for i in range(agent.HISTORY_MAX_MESSAGES + 11)]
+        msgs.append({'role': 'user', 'content': 'latest'})
+        user_input, history = agent.build_conversation({'messages': msgs})
+        self.assertEqual(user_input, 'latest')
+        self.assertLessEqual(len(history), agent.HISTORY_MAX_MESSAGES)
+        self.assertEqual(history[0]['role'], 'user')
+        self.assertEqual(history[-1]['content'][0]['text'], f'm{agent.HISTORY_MAX_MESSAGES + 10}')
+
+    def test_long_message_is_trimmed_with_marker(self):
+        big = 'y' * (agent.HISTORY_MAX_CHARS_PER_MESSAGE + 100)
+        _, history = agent.build_conversation({'messages': [
+            {'role': 'user', 'content': big}, {'role': 'user', 'content': 'q'}]})
+        self.assertTrue(history[0]['content'][0]['text'].endswith('[rest of this message truncated]'))
+
+    def test_malformed_entries_are_skipped(self):
+        _, history = agent.build_conversation({'messages': [
+            'junk', {'role': 'user', 'content': ['not', 'text']}, {'role': 'user', 'content': 'ok'},
+            {'role': 'user', 'content': 'q'}]})
+        self.assertEqual([h['content'][0]['text'] for h in history], ['ok'])
+
+
+class ToolLessFallbackTest(unittest.TestCase):
+    """A pre-stream gateway failure must not produce a memory answer that reads as live data."""
+
+    def _run(self, payload):
+        seen = []
+
+        class ModelStub:
+            async def stream_async(self, _prompt):
+                yield {"data": "general advice"}
+
+        def construct(**kwargs):
+            seen.append(kwargs)
+            return ModelStub()
+
+        def broken_client(*a, **k):
+            raise RuntimeError('gateway down')
+
+        dark = types.ModuleType("anthropic_loop")
+        dark.should_use_anthropic_loop = lambda payload: False
+
+        async def consume():
+            return [e async for e in agent.handler(payload)]
+
+        with patch.dict(sys.modules, {"anthropic_loop": dark}), \
+                patch.object(agent, "MCPClient", side_effect=broken_client), \
+                patch.object(agent, "Agent", side_effect=construct):
+            events = asyncio.run(consume())
+        return events, seen
+
+    def test_fallback_overrides_tool_rules_and_tells_the_user(self):
+        events, seen = self._run({"gateway": "ops", "responseLanguage": "en",
+                                  "messages": [{"role": "user", "content": "list my EC2"}]})
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn("tools", seen[0])
+        self.assertIn("Tools unavailable for this request", seen[0]["system_prompt"])
+        self.assertIn("Runtime Context", seen[0]["system_prompt"])
+        deltas = "".join(e.get("delta", "") for e in events)
+        self.assertTrue(deltas.startswith(agent.TOOLS_UNAVAILABLE_NOTICE["en"]))
+
+    def test_non_string_last_message_is_no_input(self):
+        user_input, _ = agent.build_conversation({'messages': [{'role': 'user', 'content': ['x']}]})
+        self.assertEqual(user_input, '')
+
+    def test_fallback_model_failure_streams_no_notice(self):
+        # Nothing may be streamed before the fallback model answers, or the BFF's
+        # Bedrock-direct ladder (empty-answer guard) can no longer recover.
+        class Failing:
+            async def stream_async(self, _prompt):
+                raise RuntimeError('fallback model down')
+                yield  # pragma: no cover
+
+        def broken_client(*a, **k):
+            raise RuntimeError('gateway down')
+        dark = types.ModuleType("anthropic_loop")
+        dark.should_use_anthropic_loop = lambda payload: False
+        events = []
+
+        async def consume():
+            async for e in agent.handler({"gateway": "ops", "messages": [{"role": "user", "content": "q"}]}):
+                events.append(e)
+        with patch.dict(sys.modules, {"anthropic_loop": dark}), \
+                patch.object(agent, "MCPClient", side_effect=broken_client), \
+                patch.object(agent, "Agent", return_value=Failing()):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(consume())
+        self.assertFalse(any(e.get("delta") for e in events))
+
+    def test_fallback_notice_defaults_to_korean(self):
+        events, _ = self._run({"gateway": "ops", "messages": [{"role": "user", "content": "q"}]})
+        self.assertIn(agent.TOOLS_UNAVAILABLE_NOTICE["ko"], "".join(e.get("delta", "") for e in events))
 
 
 if __name__ == '__main__':
