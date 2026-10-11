@@ -32,7 +32,7 @@ _RULES = (
     "근거 필드가 없는 발견은 쓰지 마라. "
     "수집 상태 표를 따로 만들지 말고 해당 항목에 '데이터 불가(사유)'로만 표시하라(리포트 끝에 커버리지 목록이 있다). "
     "진단은 읽기 전용이다 — 어떤 변경도 실행·자동화하지 말고, 변경을 수행하는 CLI 명령"
-    "(create/modify/put/update/delete/copy/start/stop/attach/revoke 등)은 출력하지 마라 — 해결 절차는 명령 대신 "
+    "(create/modify/put/update/delete/copy/start/stop/attach/revoke/enable/disable/register/deploy 등)은 출력하지 마라 — 해결 절차는 명령 대신 "
     "무엇을 어떻게 바꿀지 문장으로 쓰라(권고만)."
 )
 # Report output language (gap L50) — appended to every section prompt at render time. The prompt

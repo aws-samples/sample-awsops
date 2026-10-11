@@ -1228,3 +1228,12 @@ def test_every_aws_s3_subcommand_is_classified():
     # `aws s3` has exactly these subcommands; the code's lists must cover all of them
     assert report._S3_COMMANDS == {"cp", "ls", "mb", "mv", "presign", "rb", "rm", "sync", "website"}
     assert {c for c in report._S3_COMMANDS if not report._has_mutating_cli(f"aws s3 {c} x")} == report._S3_READ_ONLY
+
+
+
+def test_rules_name_enable_and_disable_among_the_forbidden_command_verbs():
+    # a live run wrote `aws ec2 enable-ebs-encryption-by-default` into a remediation column
+    from diagnosis import sections as S
+    for verb in ("enable", "disable", "register", "deploy"):
+        assert verb in S._RULES
+    assert report._has_mutating_cli("aws ec2 enable-ebs-encryption-by-default")
