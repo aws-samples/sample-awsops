@@ -768,7 +768,7 @@ class ConversationBoundsTest(unittest.TestCase):
         big = 'y' * (agent.HISTORY_MAX_CHARS_PER_MESSAGE + 100)
         _, history = agent.build_conversation({'messages': [
             {'role': 'user', 'content': big}, {'role': 'user', 'content': 'q'}]})
-        self.assertTrue(history[0]['content'][0]['text'].endswith('[earlier message truncated]'))
+        self.assertTrue(history[0]['content'][0]['text'].endswith('[rest of this message truncated]'))
 
     def test_malformed_entries_are_skipped(self):
         _, history = agent.build_conversation({'messages': [
@@ -815,6 +815,34 @@ class ToolLessFallbackTest(unittest.TestCase):
         self.assertIn("Runtime Context", seen[0]["system_prompt"])
         deltas = "".join(e.get("delta", "") for e in events)
         self.assertTrue(deltas.startswith(agent.TOOLS_UNAVAILABLE_NOTICE["en"]))
+
+    def test_non_string_last_message_is_no_input(self):
+        user_input, _ = agent.build_conversation({'messages': [{'role': 'user', 'content': ['x']}]})
+        self.assertEqual(user_input, '')
+
+    def test_fallback_model_failure_streams_no_notice(self):
+        # Nothing may be streamed before the fallback model answers, or the BFF's
+        # Bedrock-direct ladder (empty-answer guard) can no longer recover.
+        class Failing:
+            async def stream_async(self, _prompt):
+                raise RuntimeError('fallback model down')
+                yield  # pragma: no cover
+
+        def broken_client(*a, **k):
+            raise RuntimeError('gateway down')
+        dark = types.ModuleType("anthropic_loop")
+        dark.should_use_anthropic_loop = lambda payload: False
+        events = []
+
+        async def consume():
+            async for e in agent.handler({"gateway": "ops", "messages": [{"role": "user", "content": "q"}]}):
+                events.append(e)
+        with patch.dict(sys.modules, {"anthropic_loop": dark}), \
+                patch.object(agent, "MCPClient", side_effect=broken_client), \
+                patch.object(agent, "Agent", return_value=Failing()):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(consume())
+        self.assertFalse(any(e.get("delta") for e in events))
 
     def test_fallback_notice_defaults_to_korean(self):
         events, _ = self._run({"gateway": "ops", "messages": [{"role": "user", "content": "q"}]})

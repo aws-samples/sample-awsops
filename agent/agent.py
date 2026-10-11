@@ -921,7 +921,7 @@ def build_conversation(payload):
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str) and content:
                 if len(content) > HISTORY_MAX_CHARS_PER_MESSAGE:
-                    content = content[:HISTORY_MAX_CHARS_PER_MESSAGE] + "\n…[earlier message truncated]"
+                    content = content[:HISTORY_MAX_CHARS_PER_MESSAGE] + "\n…[rest of this message truncated]"
                 history.append({"role": role, "content": [{"text": content}]})
         history = history[-HISTORY_MAX_MESSAGES:]
         # Bedrock Converse requires the conversation to open with a user turn.
@@ -929,7 +929,7 @@ def build_conversation(payload):
             history.pop(0)
         last_msg = messages_list[-1] if isinstance(messages_list[-1], dict) else {}
         user_input = last_msg.get("content", "")
-        return user_input, history
+        return (user_input if isinstance(user_input, str) else ""), history
 
     # Legacy format / 레거시 형식
     user_input = payload.get("prompt", payload.get("message", ""))
@@ -991,7 +991,7 @@ def build_runtime_context(account_id, account_alias, requested_account_id=""):
 - Current time: given in the [Current time: …] tag on the latest user message. Resolve "today", "last N hours" and "this month" against it.
 - Account scope: {scope}.
 - Region: live AWS reads cover {GATEWAY_REGION} unless a tool result names another region. State the region when you report resources; never claim another region is empty.
-- Evidence limits: if a result has truncated=true or returned < total, say the list is partial and give the total. A tool error, a failed or empty call, or a stale/degraded/unavailable freshness block means "unknown" — never "no issues" or "does not exist".
+- Evidence limits: if a result has truncated=true or returned < total, say the list is partial and give the total. If it also has more_pages=true, the AWS API had more pages, so total is only a lower bound — say "at least <total>". A tool error, a failed or empty call, or a stale/degraded/unavailable freshness block means "unknown" — never "no issues" or "does not exist".
 - Root-cause answers: name the evidence (tool + field/value) behind each conclusion, separate confirmed facts from hypotheses, and give read-only verification steps before any change the operator might make."""
 
 
@@ -1004,8 +1004,9 @@ def build_time_prefix(now=None):
 
 
 # Fallback without tools: the base SKILL prompts insist on "ALWAYS call tools", which a tool-less
-# model cannot do — left alone it answers from memory while sounding live. This directive is
-# appended LAST so it overrides those rules for this one request.
+# model cannot do — left alone it answers from memory while sounding live. This directive follows
+# every skill/footer/context block (only the response-language directive comes after it), so it
+# overrides those rules for this one request.
 TOOLS_UNAVAILABLE_DIRECTIVE = """
 
 ## CRITICAL: Tools unavailable for this request
@@ -1338,8 +1339,10 @@ async def handler(payload):
         base_prompt = base_prompt + "\n\n" + _bounded_extra_context(extra_context)
     base_prompt = lang_directive_top + base_prompt + TOOLS_UNAVAILABLE_DIRECTIVE + lang_directive
     # Tell the reader too — a prompt-only guard still leaves the user unable to tell a grounded
-    # answer from a memory answer.
-    yield {"delta": TOOLS_UNAVAILABLE_NOTICE.get(response_language, TOOLS_UNAVAILABLE_NOTICE["ko"])}
+    # answer from a memory answer. The notice rides on the FIRST model delta: if the fallback model
+    # itself fails before answering, nothing was streamed and the BFF's Bedrock-direct ladder
+    # (which only fires on an empty answer) still recovers.
+    notice = TOOLS_UNAVAILABLE_NOTICE.get(response_language, TOOLS_UNAVAILABLE_NOTICE["ko"])
     agent = Agent(
         model=model,
         system_prompt=base_prompt,
@@ -1348,6 +1351,8 @@ async def handler(payload):
         hooks=lang_hooks,  # tool-less fallback still benefits if tools attach later
     )
     async for chunk in _stream_text(agent, user_input):
+        if notice and "delta" in chunk:
+            chunk, notice = {**chunk, "delta": notice + chunk["delta"]}, None
         yield chunk
 
 

@@ -514,6 +514,8 @@ export async function POST(request: Request) {
   // instead of an AgentCore gateway. Fail-open like the code route: Steampipe unreachable /
   // secret missing ⇒ one 'sql-unavailable' status line + normal routing below (ops home).
   let sqlUnavailable = false;
+  // NOTE: the aws-data/collector early returns below are dark (steampipeAvailable() is always false)
+  // and do not stream fallbackNotice/accountScopeNotice — wire them in if those paths ever return.
   if (routeKey === 'aws-data') {
     if (await steampipeAvailable()) {
       const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
@@ -646,6 +648,8 @@ export async function POST(request: Request) {
       if (sqlUnavailable) {
         controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({ phase: 'sql-unavailable' }) + '\n\n'));
       }
+      // Notices go out before every branch below (record() stores them with each answer).
+      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // ADR-044 §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
       // HONEST message — never a silent fallback to keyword/classifier routing.
       if (unavailablePin) {
@@ -658,7 +662,6 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // AWSops Assistant: product/how-to answer grounded in the KB (Bedrock-direct), OR the graceful
       // fallback for an auto-routed inactive section — instead of the 🔒 dead-end.
       if (useAssistant) {

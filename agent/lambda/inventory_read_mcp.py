@@ -642,8 +642,10 @@ def _scope(requested_account_id):
     requested = str(requested_account_id or "").strip()
     if not requested or requested in ("self", "__all__") or requested == (_host_account_id() or ""):
         return scope, None
+    if not re.fullmatch(r"\d{12}", requested):
+        requested = "an unrecognized account"  # never echo arbitrary model-supplied text
     scope.update(requested_account_id=requested, requested_account_served=False)
-    warning = (f"This is HOST-account inventory, not account {requested}: the synced inventory tools "
+    warning = (f"This is HOST-account inventory, not {requested if requested.startswith('an ') else 'account ' + requested}: the synced inventory tools "
                f"read the host account only. Do not attribute these results to {requested}; use the "
                f"live describe/list tools for that account.")
     return scope, warning
