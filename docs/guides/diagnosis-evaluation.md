@@ -46,9 +46,12 @@ LLM 없이 해당 결과를 렌더링하므로 Markdown·내보내기에도 미�
 ### Section evidence and root-cause contract
 
 Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier) and a
-`_collection` entry per declared source: `ok`, `empty`, `failed` or `not_collected`,
+`_collection` entry per declared source: `ok`, `empty`, `partial`, `failed` or `not_collected`,
 plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
-prompt treats any non-`ok` source as unavailable evidence, never as a healthy result.
+prompt treats empty, failed and uncollected sources as unavailable evidence, never as a healthy
+result. Partial inventory samples and Security Hub detail/page omissions retain their returned
+evidence, while the missing portion remains unknown. Those sources are also listed in
+`summary.degraded`, so incomplete collection cannot leave the report marked fully succeeded.
 Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
@@ -63,10 +66,11 @@ explicit allowlist exempts operations that only read or only touch local config
 `--profile` are skipped, and matching is case-sensitive, so prose like "AWS Lambda update" is
 not treated as a command. Nothing is executed (ADR-005).
 
-A section that fails, stops at `max_tokens`, or contains a resource-changing command is
+A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same
-status a degraded collector produces. Section budgets were raised from 1500/2200 tokens. A
+status a degraded collector produces. Failed sections show a fixed localized message, without
+provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
 live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
 the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
 (deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`

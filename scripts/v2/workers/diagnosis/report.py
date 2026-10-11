@@ -307,9 +307,14 @@ def _collection_status(key, source):
     window = src.COLLECTION_WINDOWS.get(key, "")
     if source is None:
         return {"status": "not_collected", "window": window}
-    if source.get("degraded"):
+    data = source.get("data") or {}
+    if source.get("degraded") or source.get("ok") is False:
         status = "failed"  # not "degraded": the UI flags that word in a section body as a render failure
-    elif _is_empty(source.get("data")):
+    elif (data.get("truncated") is True or data.get("unsampled_types") or data.get("partial_types")
+          or data.get("top_findings_unavailable") or data.get("more_findings") is True
+          or data.get("more_top_findings") is True or data.get("more_top_groups") is True):
+        status = "partial"
+    elif _is_empty(data):
         status = "empty"
     else:
         status = "ok"
@@ -322,8 +327,9 @@ def _collection_status(key, source):
 # Appended to every LLM section prompt: how to read the `_run` / `_collection` blocks.
 _CONTEXT_RULES = (
     "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
-    "수집 상태(ok/empty/failed/not_collected)·수집 범위(window)·사유(notes)다. status가 ok가 아닌 소스는 "
-    "'데이터 불가(사유)'로 쓰고 정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
+    "수집 상태(ok/empty/partial/failed/not_collected)·수집 범위(window)·사유(notes)다. partial은 반환된 근거만 "
+    "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
+    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
 )
 
 _TRUNCATED_MARK = {
@@ -407,6 +413,8 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM
     prompt = section["prompt"] + " " + _CONTEXT_RULES + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
     raw = _bedrock_render(prompt, ctx_json, model_id, max_tokens)
+    if not raw.strip():
+        raise ValueError("Model returned no section text")
     body = _normalize_headings(_balance_code_fences(raw))
     out = {"key": section["key"], "title": localized_title(section, lang), "body": body}
     if getattr(raw, "stop_reason", None) == "max_tokens":
@@ -435,8 +443,10 @@ def _coverage_note(collected, lang="ko"):
             continue  # Synthetic assessment has its own coverage section; it is not a collector.
         if key == "datasources_obs":
             status = _datasource_utilization(r)            # 외부 datasource 활용 여부 (사용/비활성/없음/unavailable)
-        elif r.get("degraded"):
+        elif _collection_status(key, r)["status"] == "failed":
             status = f"degraded — {r.get('notes') or 'collection failed'}"
+        elif _collection_status(key, r)["status"] == "partial":
+            status = "partial — incomplete source coverage; missing evidence remains unknown"
         elif _is_empty(r.get("data")):
             status = "empty (no data returned)"
         else:
@@ -545,7 +555,8 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     _emit(0, "데이터 수집", "collect")
     collected = {r["key"]: r for r in src.collect_all(conn, scope)}
     sources_used = [k for k, r in collected.items() if r["ok"]]
-    degraded = [k for k, r in collected.items() if r["degraded"]]
+    degraded = [k for k, r in collected.items()
+                if _collection_status(k, r)["status"] in ("failed", "partial")]
 
     # --- Plan 2: intended-vs-actual (active invariants only; deterministic; verdict-only) ---
     actual = _build_actual(collected)
@@ -584,7 +595,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
                     "zh": "此章节生成失败 (degraded)",
                     "ja": "このセクションの生成に失敗しました (degraded)"}
             return i, {"key": sec.get("key"), "title": localized_title(sec, lang),
-                       "body": f"_{fail.get(lang, fail['ko'])}: {e}_", "render_failed": True}
+                       "body": f"_{fail.get(lang, fail['ko'])}_", "render_failed": True}
 
     rendered_by_idx, done, completed_titles = {}, 0, []
     with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:

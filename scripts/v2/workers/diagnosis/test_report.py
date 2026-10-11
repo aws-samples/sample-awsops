@@ -707,6 +707,66 @@ def test_render_section_empty_source_is_reported_as_empty():
     assert report._collection_status("posture", {"key": "posture", "degraded": False, "data": {}})["status"] == "empty"
 
 
+@pytest.mark.parametrize("key,data", [
+    ("inventory", {"by_type": {"ec2": 2}, "truncated": True}),
+    ("inventory", {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"]}),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "top_findings_unavailable": "unavailable"}),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_findings": True}),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_top_groups": True}),
+])
+def test_incomplete_collection_is_partial_without_discarding_available_evidence(key, data):
+    source = {"key": key, "ok": True, "degraded": False, "notes": "", "data": data}
+    assert report._collection_status(key, source)["status"] == "partial"
+    assert "partial — incomplete source coverage" in report._coverage_note({key: source})
+
+
+def test_explicit_failed_collection_cannot_be_certified_ok():
+    assert report._collection_status("cost", {
+        "ok": False, "degraded": False, "data": {"_failed": True}})["status"] == "failed"
+
+
+def test_generate_discloses_partial_sources_in_model_context_and_summary(monkeypatch):
+    monkeypatch.setattr(report.src, "collect_all", lambda conn, scope="self": [{
+        "key": "inventory", "ok": True, "degraded": False, "notes": "",
+        "data": {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"]}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    seen = []
+
+    def render(prompt, context, *args):
+        seen.append(json.loads(context))
+        return "Available evidence only."
+    monkeypatch.setattr(report, "_bedrock_render", render)
+    _, summary, _ = report.generate(object(), account="self")
+    assert summary["degraded"] == ["inventory"]
+    contexts = [ctx for ctx in seen if "inventory" in ctx]
+    assert contexts and all(ctx["_collection"]["inventory"]["status"] == "partial" for ctx in contexts)
+    assert all(ctx["inventory"]["by_type"] == {"ec2": 2} for ctx in contexts)
+
+
+@pytest.mark.parametrize("text", ["", " \n\t"])
+def test_empty_model_sections_degrade_report(monkeypatch, text):
+    monkeypatch.setattr(report.src, "collect_all", lambda conn, scope="self": [])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    monkeypatch.setattr(report, "_bedrock_render", lambda *args: report._RenderedText(text))
+    md, summary, _ = report.generate(object(), account="self", lang="en")
+    assert set(summary["render_degraded"]) == {sec["key"] for sec in report.SECTIONS}
+    assert "This section failed to render (degraded)" in md
+    assert "Model returned no section text" not in md
+
+
+def test_section_failure_does_not_publish_provider_error_text(monkeypatch):
+    monkeypatch.setattr(report.src, "collect_all", lambda conn, scope="self": [])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+
+    def fail(*args):
+        raise RuntimeError("private provider context and credentials")
+    monkeypatch.setattr(report, "_bedrock_render", fail)
+    md, summary, _ = report.generate(object(), account="self", lang="en")
+    assert summary["render_degraded"]
+    assert "private provider context" not in md
+    assert "This section failed to render (degraded)" in md
+
+
 def test_render_section_marks_max_tokens_truncation(monkeypatch):
     text = report._RenderedText("잘린 본문")
     text.stop_reason = "max_tokens"
