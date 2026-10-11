@@ -67,9 +67,9 @@ def handle_resource(args, role_arn=None):
         resp = ecs.list_services(cluster=cluster)
         services, meta = cap_list(resp.get('serviceArns', []), 10, bool(resp.get('nextToken')))
         if not services:
-            return ok({**meta, "services": [], "cluster": cluster})
+            return ok({**meta, "region": "ap-northeast-2", "services": [], "cluster": cluster})
         details = ecs.describe_services(cluster=cluster, services=services).get('services', [])
-        return ok({**meta, "cluster": cluster, "services": [{"name": s['serviceName'], "status": s['status'],
+        return ok({**meta, "region": "ap-northeast-2", "cluster": cluster, "services": [{"name": s['serviceName'], "status": s['status'],
             "desiredCount": s.get('desiredCount', 0), "runningCount": s.get('runningCount', 0),
             "taskDef": s.get('taskDefinition', '').split('/')[-1],
             "launchType": s.get('launchType', 'FARGATE')} for s in details]})
@@ -84,9 +84,9 @@ def handle_resource(args, role_arn=None):
         resp = ecs.list_tasks(**kwargs)
         tasks, meta = cap_list(resp.get('taskArns', []), 20, bool(resp.get('nextToken')))
         if not tasks:
-            return ok({**meta, "tasks": [], "cluster": cluster})
+            return ok({**meta, "region": "ap-northeast-2", "tasks": [], "cluster": cluster})
         details = ecs.describe_tasks(cluster=cluster, tasks=tasks).get('tasks', [])
-        return ok({**meta, "cluster": cluster, "tasks": [{"taskId": t['taskArn'].split('/')[-1], "status": t.get('lastStatus', ''),
+        return ok({**meta, "region": "ap-northeast-2", "cluster": cluster, "tasks": [{"taskId": t['taskArn'].split('/')[-1], "status": t.get('lastStatus', ''),
             "cpu": t.get('cpu', ''), "memory": t.get('memory', ''),
             "group": t.get('group', ''), "startedAt": str(t.get('startedAt', ''))}
             for t in details]})
@@ -107,7 +107,7 @@ def handle_resource(args, role_arn=None):
     elif op == "list_task_definitions":
         resp = ecs.list_task_definition_families(status='ACTIVE')
         families, meta = cap_list(resp.get('families', []), 30, bool(resp.get('nextToken')))
-        return ok({**meta, "families": families})
+        return ok({**meta, "region": "ap-northeast-2", "families": families})
 
     # Describe task definition with container details / 태스크 정의 상세 조회 (컨테이너 세부사항 포함)
     elif op == "describe_task_definition":
@@ -125,7 +125,7 @@ def handle_resource(args, role_arn=None):
         ecr = get_client('ecr', 'ap-northeast-2', role_arn)
         resp = ecr.describe_repositories()
         repos, meta = cap_list(resp.get('repositories', []), 20, bool(resp.get('nextToken')))
-        return ok({**meta, "repositories": [{"name": r['repositoryName'], "uri": r['repositoryUri'],
+        return ok({**meta, "region": "ap-northeast-2", "repositories": [{"name": r['repositoryName'], "uri": r['repositoryUri'],
             "createdAt": str(r.get('createdAt', ''))} for r in repos]})
 
     return ok({"error": "Unknown operation: " + op, "available": [
