@@ -75,6 +75,11 @@ ignored, so prose does not trigger it. Leading global options such as `--region`
 skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
 added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
 
+The detector is a best-effort text heuristic, not a shell parser. It does not recognize commands built
+through shell variables or command substitution, passed through wrappers such as `xargs`, `bash -c` or
+`ssh`, or written for other tools (`terraform apply`, `kubectl apply`). The prompt rule is the primary
+control; the detector catches a model that disregards it in the common forms and makes that visible.
+
 A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same

@@ -439,7 +439,7 @@ _HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 _GLOBAL_FLAGS = frozenset((
     "--debug", "--no-verify-ssl", "--no-paginate", "--no-sign-request", "--no-cli-pager",
     "--no-cli-auto-prompt", "--cli-auto-prompt"))
-_SERVICE_WINDOW = 6  # a service name sits among the first few tokens, after any global options
+_SERVICE_POSITIONS = 3  # the service is one of the first few POSITIONAL tokens; options never count
 
 
 def _operation_shaped(token, service):
@@ -467,24 +467,42 @@ def _operation_after(tokens, index, service):
     return None
 
 
+def _skip_option(tokens, index):
+    """Index just past the option at tokens[index] and its value. A known value-taking option always
+    consumes its value; for an unknown option the next token is its value unless it is operation-shaped
+    or another option."""
+    token = tokens[index]
+    index += 1
+    if "=" in token or token in _GLOBAL_FLAGS or index >= len(tokens) or tokens[index].startswith("-"):
+        return index
+    if token in _GLOBAL_OPTIONS_WITH_VALUE or not _operation_shaped(tokens[index], None):
+        index += 1
+    return index
+
+
 def _cli_commands(text):
     """Yield (service, operation) for each `aws ...` invocation.
 
     Line continuations are joined first (`aws ec2 \\` + newline + `terminate-instances`). Options and
-    their values are skipped wherever they appear before the operation (`aws --region x ec2 ...`,
-    `aws s3 --profile p rm ...`), known or not. The first service-shaped token among the leading tokens
-    that is followed by an operation is the command, so an option value can neither pose as the service
-    nor hide the operation."""
+    their values are skipped wherever they appear before the operation, however many there are
+    (`aws --profile p --region r --output json ec2 ...`, `aws s3 --profile p rm ...`), known or not.
+    The service is the first of the leading POSITIONAL tokens that is followed by an operation, so an
+    option value can neither pose as the service nor hide the operation."""
     text = _LINE_CONTINUATION.sub(" ", text)
     for start in _CLI_START.finditer(text):
-        tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 300])
-        for i, token in enumerate(tokens[:_SERVICE_WINDOW]):
-            if token.startswith("-") or not _SERVICE_SHAPED.fullmatch(token):
+        tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 400])
+        i = positional = 0
+        while i < len(tokens) and positional < _SERVICE_POSITIONS:
+            if tokens[i].startswith("-"):
+                i = _skip_option(tokens, i)
                 continue
-            operation = _operation_after(tokens, i + 1, token)
-            if operation is not None:
-                yield token, operation
-                break
+            positional += 1
+            if _SERVICE_SHAPED.fullmatch(tokens[i]):
+                operation = _operation_after(tokens, i + 1, tokens[i])
+                if operation is not None:
+                    yield tokens[i], operation
+                    break
+            i += 1
 
 
 def _has_mutating_cli(text):

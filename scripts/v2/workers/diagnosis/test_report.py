@@ -1252,7 +1252,11 @@ _READ_PAIRS = (("ec2", "describe-instances --instance-ids i-1"), ("s3", "ls s3:/
                ("dynamodb", "scan --table-name t"), ("sts", "get-caller-identity"))
 _OPTION_FORMS = ("", "--region ap-northeast-2", "--region=ap-northeast-2", "--profile prod", "--debug",
                  "--output json", "--cli-input-yaml f.yaml", "--unknown-opt value", "--endpoint-url https://e.example",
-                 "--region us-east-1 --profile p")
+                 "--region us-east-1 --profile p",
+                 # three or more options once exhausted a fixed token window and hid the service
+                 "--profile prod --region us-east-1 --output json",
+                 "--no-verify-ssl --debug --region ap-northeast-2 --profile p",
+                 "--profile=p --region=r --output=json --cli-read-timeout 0 --color off")
 _WRAPPERS = ("{c}", "`{c}`", "$ {c}", "run {c} now", "| {c} |", "({c})")
 
 
@@ -1300,3 +1304,13 @@ def test_title_call_receives_only_the_head_of_the_report(monkeypatch):
     assert report.make_title_and_tags("x" * 500_000)["title"] == "t"
     assert seen["len"] == report._TITLE_INPUT_CHARS
     assert report.make_title_and_tags("short")["title"] == "t" and seen["len"] == len("short")
+
+
+
+def test_many_leading_options_never_hide_the_command():
+    cmd = "aws --profile prod --region us-east-1 --output json ec2 terminate-instances --instance-ids i-1"
+    assert report._has_mutating_cli(cmd)
+    assert list(report._cli_commands(cmd)) == [("ec2", "terminate-instances")]
+    many = "aws " + " ".join(f"--opt{n} v{n}" for n in range(12)) + " s3 rm s3://b/k"
+    assert report._has_mutating_cli(many)
+    assert not report._has_mutating_cli("aws " + " ".join(f"--opt{n} v{n}" for n in range(12)) + " ec2 describe-instances")
