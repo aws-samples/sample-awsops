@@ -695,7 +695,7 @@ def test_render_section_hands_the_model_collection_status_and_run_context(monkey
            "_run": {"generated_at_utc": "2026-10-11 09:00", "scope": "host account", "region": "ap-northeast-2"}}
     report.render_section(sec, collected, report.MODEL_ID, 100)
     status = captured["ctx"]["_collection"]
-    assert status["cost"]["status"] == "degraded" and status["cost"]["notes"] == "AccessDenied"
+    assert status["cost"]["status"] == "failed" and status["cost"]["notes"] == "AccessDenied"
     assert status["inventory"]["status"] == "ok" and "inventory" in status["inventory"]["window"]
     assert status["posture"]["status"] == "not_collected" and "Security Hub" in status["posture"]["window"]
     assert captured["ctx"]["_run"]["region"] == "ap-northeast-2"
@@ -860,3 +860,65 @@ def test_inventory_names_a_type_whose_sample_read_failed():
             return [("i-1", "ap-northeast-2", {"a": 1})]
     data = sources.collect_inventory(_Conn())["data"]
     assert list(data["resources"]) == ["ec2"] and data["unsampled_types"] == ["rds"]
+
+
+
+def test_posture_discloses_the_group_cap(monkeypatch):
+    findings = [{"Severity": {"Label": "HIGH"}, "Title": f"control {i}", "Compliance": {"SecurityControlId": f"X.{i}"}}
+                for i in range(sources.POSTURE_TOP_FINDINGS + 5)]
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            return {"Findings": findings}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    data = sources.collect_posture()["data"]
+    assert len(data["top_findings"]) == sources.POSTURE_TOP_FINDINGS
+    assert data["top_groups_total"] == sources.POSTURE_TOP_FINDINGS + 5 and data["more_top_groups"] is True
+    assert data["more_top_findings"] is False  # API had no more pages; the cut is ours and is disclosed
+    assert f"at most {sources.POSTURE_TOP_FINDINGS} groups" in sources.COLLECTION_WINDOWS["posture"]
+
+
+def test_inventory_names_partial_and_zero_row_types(monkeypatch):
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("ec2", 3), ("ebs", 1)]
+            if kw["rtype"] == "ebs":
+                return []  # counted but the detail read returned nothing
+            return [(f"i-{n}", "ap-northeast-2", {"blob": "x" * 150}) for n in range(3)]
+    monkeypatch.setattr(sources, "DIAG_INV_MAX_BYTES", 400)
+    data = sources.collect_inventory(_Conn())["data"]
+    assert data["partial_types"] == ["ec2"] and len(data["resources"]["ec2"]) < 3
+    assert data["unsampled_types"] == ["ebs"]
+
+
+def test_collection_windows_cover_every_section_source():
+    from diagnosis import sections as S
+    used = {k for sec in S.DEEP_SECTIONS for k in sec["sources"]}
+    assert used <= set(sources.COLLECTION_WINDOWS), used - set(sources.COLLECTION_WINDOWS)
+
+
+def test_mutating_cli_in_a_section_is_marked_and_degrades_the_report(monkeypatch):
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a, **k: (
+        "| 해결 절차 | `aws ec2 revoke-security-group-ingress --group-id sg-1` |\n확인: `aws logs start-query`"))
+    out = report.render_section({"key": "x", "title": "X", "sources": [], "prompt": "p"}, {}, report.MODEL_ID, 100)
+    assert out["mutating_command"] is True and "실행하지 말고" in out["body"]
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a, **k: "확인: `aws logs start-query --log-group-name g`")
+    assert "mutating_command" not in report.render_section(
+        {"key": "x", "title": "X", "sources": [], "prompt": "p"}, {}, report.MODEL_ID, 100)
+
+
+def test_report_header_and_sections_share_one_clock(monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setattr(report.src, "collect_all",
+                        lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    seen = []
+
+    def fake_render(section, collected, model_id, max_tokens, lang="ko"):
+        seen.append(section.get("_run", {}).get("generated_at_kst"))
+        return {"key": section["key"], "title": section["title"], "body": "b"}
+    monkeypatch.setattr(report, "render_section", fake_render)
+    md = report.generate(object(), account="1", tier="mid")[0]
+    assert seen[0] and f"{seen[0]} (KST)" in md
+    assert report.build_markdown([], "1", "mid", generated_at=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)).count("2026-01-01 09:00") == 1

@@ -46,16 +46,19 @@ LLM 없이 해당 결과를 렌더링하므로 Markdown·내보내기에도 미�
 ### Section evidence and root-cause contract
 
 Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier) and a
-`_collection` entry per declared source: `ok`, `empty`, `degraded` or `not_collected`,
+`_collection` entry per declared source: `ok`, `empty`, `failed` or `not_collected`,
 plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
 prompt treats any non-`ok` source as unavailable evidence, never as a healthy result.
 Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
-and apply through their own change process, and a confidence level. Mutating commands
-are not emitted, and nothing is executed (ADR-005).
+and apply through their own change process, and a confidence level. The prompt forbids
+resource-changing CLI commands. As a deterministic backstop, a body that still contains
+one (`aws <service> create-|delete-|modify-|put-|…`, with read-only `start-query` exempt)
+gets a visible warning and counts as degraded. Nothing is executed (ADR-005).
 
-A section that fails, or stops at `max_tokens`, is listed in `summary.render_degraded`.
+A section that fails, stops at `max_tokens`, or contains a resource-changing command is
+listed in `summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same
 status a degraded collector produces. To fit the table, section budgets are 2500 tokens
 (light/mid) and 3200 tokens (deep), up from 1500/2200, with a 120 s Bedrock read timeout

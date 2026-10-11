@@ -280,7 +280,7 @@ def _collection_status(key, source):
     if source is None:
         return {"status": "not_collected", "window": window}
     if source.get("degraded"):
-        status = "degraded"
+        status = "failed"  # not "degraded": the UI flags that word in a section body as a render failure
     elif _is_empty(source.get("data")):
         status = "empty"
     else:
@@ -294,7 +294,7 @@ def _collection_status(key, source):
 # Appended to every LLM section prompt: how to read the `_run` / `_collection` blocks.
 _CONTEXT_RULES = (
     "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
-    "수집 상태(ok/empty/degraded/not_collected)·수집 범위(window)·사유(notes)다. status가 ok가 아닌 소스는 "
+    "수집 상태(ok/empty/failed/not_collected)·수집 범위(window)·사유(notes)다. status가 ok가 아닌 소스는 "
     "'데이터 불가(사유)'로 쓰고 정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
 )
 
@@ -303,6 +303,21 @@ _TRUNCATED_MARK = {
     "en": "\n\n_[This section was cut off at the output length limit (degraded)]_",
     "zh": "\n\n_[此章节因输出长度上限被截断 (degraded)]_",
     "ja": "\n\n_[出力長の上限によりこのセクションは途中で切れました (degraded)]_",
+}
+
+
+# Deterministic backstop for the prompt rule: a mutating AWS CLI command in a section body (e.g. in
+# the remediation column) degrades the section visibly. Reports stay advice only (ADR-005).
+_MUTATING_CLI = re.compile(
+    r"\baws\s+[a-z0-9-]+\s+(?:create|delete|modify|put|update|terminate|revoke|attach|detach|"
+    r"authorize|start|stop|reboot|run|remove|disable|enable|associate|disassociate|replace|restore)-"
+    r"(?!query)[a-z0-9-]+",  # start-query / stop-query (Logs Insights, Athena) only read
+    re.I)
+_MUTATING_MARK = {
+    "ko": "\n\n_[이 섹션에 리소스를 변경하는 AWS CLI 명령이 포함되어 있습니다. 실행하지 말고 변경 관리 절차로 검토하세요 (degraded)]_",
+    "en": "\n\n_[This section contains an AWS CLI command that changes resources. Do not run it; review it through your change process (degraded)]_",
+    "zh": "\n\n_[此章节包含会更改资源的 AWS CLI 命令。请勿直接执行，请通过变更流程审核 (degraded)]_",
+    "ja": "\n\n_[このセクションにはリソースを変更する AWS CLI コマンドが含まれます。実行せず、変更管理手順で確認してください (degraded)]_",
 }
 
 
@@ -323,8 +338,11 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     body = _normalize_headings(_balance_code_fences(raw))
     out = {"key": section["key"], "title": localized_title(section, lang), "body": body}
     if getattr(raw, "stop_reason", None) == "max_tokens":
-        out["body"] = body + _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
+        out["body"] += _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
         out["truncated"] = True
+    if _MUTATING_CLI.search(body):
+        out["body"] += _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"])
+        out["mutating_command"] = True
     return out
 
 
@@ -378,12 +396,13 @@ def _datasource_utilization(r):
     return f"사용 — {used}/{queried}개 인스턴스 신호 실행({names}){extra}"
 
 
-def build_markdown(rendered, account, tier, collected=None, lang="ko"):
+def build_markdown(rendered, account, tier, collected=None, lang="ko", generated_at=None):
     chrome = _CHROME.get(lang, _CHROME["ko"])
     toc = "\n".join(f"- [{s['title']}](#{s['key']})" for s in rendered)
     # TOC sits ABOVE the first `## ` section heading (bold label, not a heading) so a
     # reader — and `md.split("##", 1)[0]` — sees the full table of contents first.
-    generated = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
+    # One clock per report: generate() passes the same instant it gave the sections in _run.
+    generated = (generated_at or datetime.now(timezone.utc)).astimezone(_KST).strftime("%Y-%m-%d %H:%M")
     parts = [f"# {chrome['title']} — 계정 {account} ({tier})" if lang == "ko"
              else f"# {chrome['title']} — {account} ({tier})", "",
              f"> {chrome['generated']}: {generated} (KST)", "",
@@ -507,9 +526,10 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
             _emit(done, result["title"], "render", list(completed_titles))
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
-    md = build_markdown(rendered, account, tier, collected, lang)
+    md = build_markdown(rendered, account, tier, collected, lang, generated_at=now)
     # A section that failed or was cut off is a degraded report even when every collector worked.
-    render_degraded = [s["key"] for s in rendered if s.get("render_failed") or s.get("truncated")]
+    render_degraded = [s["key"] for s in rendered
+                       if s.get("render_failed") or s.get("truncated") or s.get("mutating_command")]
     summary = {"sections": len(rendered), "sources_used": sources_used,
                "degraded": degraded, "render_degraded": render_degraded, "drift": drift,
                "unassessed": unassessed, "invariant_coverage": invariant_coverage}

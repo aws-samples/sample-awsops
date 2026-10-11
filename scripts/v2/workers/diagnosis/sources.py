@@ -28,17 +28,19 @@ POSTURE_TOP_FINDINGS = 15
 # never reads a capped or windowed sample as the whole account (report.render_section).
 COLLECTION_WINDOWS = {
     "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
-                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types lists types with no sample "
-                 f"because the cap was hit or the read failed, and the type being sampled at the cap may be partial; "
-                 f"rows reflect the last inventory sync, not this instant; each row carries its own region)",
+                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types = types with rows but no "
+                 f"sample, partial_types = types whose sample was cut by the cap; rows reflect the last inventory sync, "
+                 f"not this instant; each row carries its own region)",
     "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
     "cost": "Cost Explorer: month-to-date by service, monthly totals from about two months back (current month partial), top 15 usage types",
     "idle": "inventory-derived: unattached EBS volumes and stopped EC2 (EIP/snapshots not synced)",
     "commitment": "RI / Savings Plans coverage %, last 30 days (null = unavailable, not 0%)",
     "service_map": "X-Ray service graph, last 3h, first page only (untraced or paginated traffic is absent, not proof of no traffic)",
     "datasources_obs": "external observability datasources (default instance per kind): signal counts and label names only, no sample values",
-    "posture": "Security Hub ACTIVE+NEW findings: severity counts from the first 100 (more_findings=true means more exist); "
-               "top_findings groups the first 100 CRITICAL/HIGH findings (more_top_findings=true means more exist)",
+    "posture": f"Security Hub ACTIVE+NEW findings: severity counts are a sampled distribution of the first 100 "
+               f"(more_findings=true means more exist); top_findings keeps at most {POSTURE_TOP_FINDINGS} groups from the "
+               "first 100 CRITICAL/HIGH findings (top_groups_total/more_top_groups give the group count, "
+               "more_top_findings=true means more findings exist)",
     "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
 }
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
@@ -146,7 +148,8 @@ def collect_inventory(conn, scope="self"):
         return _classify("inventory", e)
 
     resources, truncated, size = {}, False, 0
-    unsampled = []  # types with rows but no sample (byte cap hit) — named, so absence is not read as "none"
+    unsampled = []  # types with rows but no sample (cap hit / read failed / no rows) — named, so absence is not read as "none"
+    partial = []    # the type being sampled when the byte cap hit (some rows kept, the rest dropped)
     for rtype in by_type:
         if truncated:
             unsampled.append(rtype)
@@ -178,10 +181,12 @@ def collect_inventory(conn, scope="self"):
             size += esz
         if items:
             resources[rtype] = items
-        elif truncated:
+            if truncated:
+                partial.append(rtype)
+        else:
             unsampled.append(rtype)
     return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
-                                      "unsampled_types": unsampled})
+                                      "unsampled_types": unsampled, "partial_types": partial})
 
 
 def collect_cw_metrics(conn, scope="self"):
@@ -391,6 +396,7 @@ def _posture_top_findings(sh):
     for a in top:
         a["resource_types"] = sorted(a["resource_types"])
     return {"top_findings": top, "top_findings_sampled": len(r.get("Findings", [])),
+            "top_groups_total": len(groups), "more_top_groups": len(groups) > POSTURE_TOP_FINDINGS,
             "more_top_findings": bool(r.get("NextToken"))}
 
 
