@@ -312,7 +312,7 @@ def lambda_handler(event, context):
                     enis = resp.get("NetworkInterfaces", [])
             else:
                 return err("ip_address required")
-            enis, meta = cap_list(enis, 10)
+            enis, meta = cap_list(enis, 10, bool(resp.get("NextToken")))
             results = [{"eniId": e["NetworkInterfaceId"], "privateIp": e.get("PrivateIpAddress"),
                 "publicIp": e.get("Association", {}).get("PublicIp"),
                 "vpcId": e.get("VpcId"), "subnetId": e.get("SubnetId"),
@@ -438,10 +438,11 @@ def lambda_handler(event, context):
         # Search TGW route table for active/blackhole routes / TGW 라우트 테이블에서 활성/블랙홀 경로 검색
         elif t == "get_tgw_routes":
             rt_id = args.get("route_table_id", "")
-            routes = ec2.search_transit_gateway_routes(
+            resp = ec2.search_transit_gateway_routes(
                 TransitGatewayRouteTableId=rt_id,
-                Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])["Routes"]
-            kept_routes, meta = cap_list(routes, 50)
+                Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
+            # SearchTransitGatewayRoutes is not paginated; AdditionalRoutesAvailable marks a capped result.
+            kept_routes, meta = cap_list(resp["Routes"], 50, bool(resp.get("AdditionalRoutesAvailable")))
             return ok({**meta, "routeTableId": rt_id, "routes": [{"dest": r.get("DestinationCidrBlock", ""),
                 "type": r.get("Type", ""), "state": r.get("State", ""),
                 "attachmentId": r.get("TransitGatewayAttachments", [{}])[0].get("TransitGatewayAttachmentId", "") if r.get("TransitGatewayAttachments") else ""}
@@ -454,10 +455,11 @@ def lambda_handler(event, context):
             all_routes = []
             for rt in rts:
                 rt_id = rt["TransitGatewayRouteTableId"]
-                routes = ec2.search_transit_gateway_routes(TransitGatewayRouteTableId=rt_id,
-                    Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])["Routes"]
-                all_routes.append({"routeTableId": rt_id, "routeCount": len(routes),
-                    "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in routes[:20]]})
+                resp = ec2.search_transit_gateway_routes(TransitGatewayRouteTableId=rt_id,
+                    Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
+                kept_routes, meta = cap_list(resp["Routes"], 20, bool(resp.get("AdditionalRoutesAvailable")))
+                all_routes.append({"routeTableId": rt_id, "routeCount": len(resp["Routes"]), **meta,
+                    "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in kept_routes]})
             return ok({"tgwId": tgw_id, "routeTables": all_routes})
 
         # List TGW peering attachments / TGW 피어링 어태치먼트 목록 조회

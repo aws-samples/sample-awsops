@@ -632,3 +632,28 @@ def test_gateway_context_and_host_account_keep_legacy_response_fields(ec2):
     sg = body["securityGroups"][0]
     assert (sg["id"], sg["name"], sg["inbound"][0]["source"], sg["outbound"][0]["dest"]) == (
         "sg-test", "web", "10.0.0.0/16", "0.0.0.0/0")
+
+
+
+def _tgw_call(monkeypatch, tool, args, resp):
+    from unittest import mock
+    ec2 = mock.Mock()
+    ec2.search_transit_gateway_routes.return_value = resp
+    ec2.describe_transit_gateway_route_tables.return_value = {
+        "TransitGatewayRouteTables": [{"TransitGatewayRouteTableId": "tgw-rtb-1"}]}
+    monkeypatch.setattr(network, "get_client", lambda *a, **k: ec2)
+    return json.loads(network.lambda_handler({"tool_name": tool, "arguments": args}, None)["body"])
+
+
+def test_get_tgw_routes_marks_additional_routes(monkeypatch):
+    # SearchTransitGatewayRoutes caps without a NextToken; AdditionalRoutesAvailable must surface.
+    body = _tgw_call(monkeypatch, "get_tgw_routes", {"route_table_id": "tgw-rtb-1"},
+                     {"Routes": [{"DestinationCidrBlock": "10.0.0.0/16", "State": "active"}],
+                      "AdditionalRoutesAvailable": True})
+    assert body["truncated"] is True and body["more_pages"] is True
+
+
+def test_get_all_tgw_routes_reports_per_table_truncation(monkeypatch):
+    routes = [{"DestinationCidrBlock": f"10.{i}.0.0/16", "State": "active"} for i in range(25)]
+    table = _tgw_call(monkeypatch, "get_all_tgw_routes", {"tgw_id": "tgw-1"}, {"Routes": routes})["routeTables"][0]
+    assert (table["routeCount"], table["returned"], table["truncated"]) == (25, 20, True)
