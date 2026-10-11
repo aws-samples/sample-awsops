@@ -255,6 +255,17 @@ def _get_eni_details(ec2, eni_id):
                "routeSelection": selection, "partial": bool(unknown), "unknown": unknown})
 
 
+def _tgw_route_cap(resp, limit):
+    """Cap a SearchTransitGatewayRoutes result. That API has NO pagination token: when
+    AdditionalRoutesAvailable is set, AWS capped the result server-side and the remainder cannot be
+    fetched by paging (only a narrower filter reaches it). Flag that as ``api_result_capped`` — not
+    ``more_pages``, which promises a fetchable next page. ``total`` is then a lower bound."""
+    kept, meta = cap_list(resp.get("Routes", []), limit)
+    if resp.get("AdditionalRoutesAvailable"):
+        meta.update(truncated=True, api_result_capped=True)
+    return kept, meta
+
+
 def lambda_handler(event, context):
     # Parse event and extract tool name and arguments / 이벤트를 파싱하고 도구 이름과 인자를 추출
     params = event if isinstance(event, dict) else json.loads(event)
@@ -442,8 +453,7 @@ def lambda_handler(event, context):
             resp = ec2.search_transit_gateway_routes(
                 TransitGatewayRouteTableId=rt_id,
                 Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
-            # SearchTransitGatewayRoutes is not paginated; AdditionalRoutesAvailable marks a capped result.
-            kept_routes, meta = cap_list(resp["Routes"], 50, bool(resp.get("AdditionalRoutesAvailable")))
+            kept_routes, meta = _tgw_route_cap(resp, 50)
             return ok({**meta, "routeTableId": rt_id, "routes": [{"dest": r.get("DestinationCidrBlock", ""),
                 "type": r.get("Type", ""), "state": r.get("State", ""),
                 "attachmentId": r.get("TransitGatewayAttachments", [{}])[0].get("TransitGatewayAttachmentId", "") if r.get("TransitGatewayAttachments") else ""}
@@ -459,7 +469,7 @@ def lambda_handler(event, context):
                 rt_id = rt["TransitGatewayRouteTableId"]
                 resp = ec2.search_transit_gateway_routes(TransitGatewayRouteTableId=rt_id,
                     Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
-                kept_routes, meta = cap_list(resp["Routes"], 20, bool(resp.get("AdditionalRoutesAvailable")))
+                kept_routes, meta = _tgw_route_cap(resp, 20)
                 all_routes.append({"routeTableId": rt_id, "routeCount": len(resp["Routes"]), **meta,
                     "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in kept_routes]})
             more_tables = bool(rt_resp.get("NextToken"))

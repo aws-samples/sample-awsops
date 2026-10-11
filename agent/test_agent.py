@@ -378,7 +378,7 @@ class TestDatasourceGuidance(unittest.TestCase):
         # Env fallback path: GATEWAYS_JSON uses the canonical `external-obs`.
         env = {"network": "u", "ops": "u", "external-obs": "u"}
         self.assertEqual(agent._resolve_gateway_key("observability", env), "external-obs")
-        # The 8 sections pass through unchanged (no alias, key present).
+        # The other 8 of the 9 sections (all but the aliased observability) pass through unchanged.
         self.assertEqual(agent._resolve_gateway_key("network", disc), "network")
         # Unknown / unprovisioned → DEFAULT_GATEWAY (never a hard crash).
         self.assertEqual(agent._resolve_gateway_key("observability", {"ops": "u"}), agent.DEFAULT_GATEWAY)

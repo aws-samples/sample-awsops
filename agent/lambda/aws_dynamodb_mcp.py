@@ -39,7 +39,8 @@ def lambda_handler(event, context):
                 result.append({"name": tn, "status": desc["TableStatus"],
                     "itemCount": desc.get("ItemCount", 0), "sizeBytes": desc.get("TableSizeBytes", 0),
                     "billingMode": desc.get("BillingModeSummary", {}).get("BillingMode", "PROVISIONED")})
-            return ok({**meta, "region": region, "tables": result, "count": len(tables)})
+            # count == returned (the shown tables), like every other capped list; total is in meta.
+            return ok({**meta, "region": region, "tables": result, "count": len(result)})
 
         # Describe table schema, GSIs, billing mode / 테이블 스키마, GSI, 과금 모드 상세 조회
         elif t == "describe_table":

@@ -53,10 +53,14 @@ def lambda_handler(event, context):
                 Dimensions=dim_list, StartTime=start, EndTime=end,
                 Period=period, Statistics=[stat])
             datapoints = sorted(resp.get("Datapoints", []), key=lambda x: x.get("Timestamp", ""))
-            return ok({"namespace": namespace, "metricName": metric_name,
-                "statistic": stat, "period": period,
+            # Keep the LATEST 30 points (newest are the evidence for "now"), and say when older
+            # points in the window were dropped so a trimmed series is never read as the full range.
+            latest, meta = cap_list(list(reversed(datapoints)), 30)
+            latest.reverse()
+            return ok({**meta, "kept": "latest", "region": region, "namespace": namespace,
+                "metricName": metric_name, "statistic": stat, "period": period,
                 "datapoints": [{"timestamp": str(d["Timestamp"]), "value": round(d.get(stat, 0), 4)}
-                    for d in datapoints[-30:]]})
+                    for d in latest]})
 
         # Get metric metadata (available dimensions) / 지표 메타데이터 (사용 가능한 차원) 조회
         elif t == "get_metric_metadata":
@@ -123,8 +127,9 @@ def lambda_handler(event, context):
                       + [dict(a, _type="composite") for a in resp.get("CompositeAlarms", [])])
             composite = [a for a in firing if a["_type"] == "composite"]
             metric = [a for a in firing if a["_type"] == "metric"]
-            # Per-type cap: up to 10 composite alarms (incident summaries) first, the rest metric alarms.
-            kept = composite[:10]
+            # Composite alarms (incident summaries) first, then metric alarms fill the remaining slots
+            # — so composites are never crowded out within this one API page.
+            kept = composite[:20]
             kept += metric[:20 - len(kept)]
             # Metadata reflects what was actually shown, so dropping composite alarms is never "complete".
             _, meta = cap_list(firing, len(kept), bool(resp.get("NextToken")))
@@ -210,8 +215,12 @@ def lambda_handler(event, context):
             status = resp.get("status", "")
             rows, meta = cap_list(resp.get("results", []), 50)
             if status != "Complete":
-                # Running/Scheduled results are interim: never certify them complete (or empty).
-                meta.update(truncated=True, more_pages=True)
+                # Not a pagination signal: Running/Scheduled results are interim, and Failed/Cancelled/
+                # Timeout are terminal with no remainder to fetch. Either way never certify them
+                # complete (or empty) — mark the result incomplete and name the status.
+                meta.update(truncated=True, complete=False, query_status=status or "Unknown")
+                if status in ("Failed", "Cancelled", "Timeout"):
+                    meta["query_failed"] = True
             results = [{f["field"]: f["value"] for f in row} for row in rows]
             return ok({**meta, "region": region, "queryId": query_id, "status": status,
                 "results": results, "count": len(results),

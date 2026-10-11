@@ -501,10 +501,6 @@ class TestExecuteSqlNonFoundationCluster(unittest.TestCase):
         self.rds_data_client.begin_transaction.assert_not_called()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestListResultsDiscloseTruncation(unittest.TestCase):
     """A capped list must say it is capped, or the model reports the first 20 as all of them."""
 
@@ -530,3 +526,7 @@ class TestListResultsDiscloseTruncation(unittest.TestCase):
         body = self._list({"DBInstances": [self._inst(1)], "Marker": "next"})
         self.assertTrue(body["truncated"])
         self.assertTrue(body["more_pages"])
+
+
+if __name__ == "__main__":
+    unittest.main()

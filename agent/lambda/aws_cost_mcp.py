@@ -14,17 +14,27 @@ CE_MAX_PAGES = 5
 CE_BUDGET_S = 40
 
 
+_CUT_REASONS = {
+    "page_cap": "the %d-page limit" % CE_MAX_PAGES,
+    "time_budget": "the %d s time budget" % CE_BUDGET_S,
+    "repeated_token": "a pagination token that did not advance",
+}
+
+
 def _cut_note(cut_reads):
-    """Disclosure for a Cost Explorer read that stopped early: totals/rankings cover only what was read."""
-    if not any(cut_reads):
+    """Disclosure for a Cost Explorer read that stopped early: totals/rankings cover only what was
+    read. ``cut_reads`` holds each read's stop reason (None = read to the end)."""
+    reasons = sorted({r for r in cut_reads if r})
+    if not reasons:
         return {}
-    return {"costPagesCut": True, "note": "Cost Explorer pagination stopped at %d pages / %d s; totals and rankings "
-            "cover only the pages read." % (CE_MAX_PAGES, CE_BUDGET_S)}
+    why = " and ".join(_CUT_REASONS.get(r, r) for r in reasons)
+    return {"costPagesCut": True, "costPagesCutReason": reasons,
+            "note": "Cost Explorer pagination stopped at %s; totals and rankings cover only the pages read." % why}
 
 
 def _ce_pages(ce, base, started):
-    """Read get_cost_and_usage pages. Returns (pages, cut) where cut=True means more pages existed
-    but the page cap, the time budget, or a non-advancing token stopped the read."""
+    """Read get_cost_and_usage pages. Returns (pages, cut_reason): None when the API had no more
+    pages, else why the read stopped early ('repeated_token' | 'page_cap' | 'time_budget')."""
     pages, token, seen = [], None, set()
     while True:
         kwargs = dict(base)
@@ -34,9 +44,13 @@ def _ce_pages(ce, base, started):
         pages.append(resp)
         token = resp.get("NextPageToken")
         if not token:
-            return pages, False
-        if token in seen or len(pages) >= CE_MAX_PAGES or time.monotonic() - started > CE_BUDGET_S:
-            return pages, True
+            return pages, None
+        if token in seen:
+            return pages, "repeated_token"
+        if len(pages) >= CE_MAX_PAGES:
+            return pages, "page_cap"
+        if time.monotonic() - started > CE_BUDGET_S:
+            return pages, "time_budget"
         seen.add(token)
 
 
@@ -126,10 +140,10 @@ def lambda_handler(event, context):
             cut_reads = []
 
             def get_costs(start, end):
-                pages, cut = _ce_pages(ce, {
+                pages, cut_reason = _ce_pages(ce, {
                     "TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
                     "Metrics": ["UnblendedCost"], "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}]}, started)
-                cut_reads.append(cut)
+                cut_reads.append(cut_reason)
                 costs = {}
                 for resp in pages:
                     for p in resp.get("ResultsByTime", []):
@@ -173,11 +187,11 @@ def lambda_handler(event, context):
 
             def get_detailed(start, end):
                 # SERVICE x USAGE_TYPE can span many pages; read up to the bound, then say so.
-                pages, cut = _ce_pages(ce, {
+                pages, cut_reason = _ce_pages(ce, {
                     "TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
                     "Metrics": ["UnblendedCost"],
                     "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "USAGE_TYPE"}]}, started)
-                cut_reads.append(cut)
+                cut_reads.append(cut_reason)
                 costs = {}
                 for resp in pages:
                     for p in resp.get("ResultsByTime", []):

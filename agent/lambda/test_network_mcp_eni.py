@@ -650,7 +650,17 @@ def test_get_tgw_routes_marks_additional_routes(monkeypatch):
     body = _tgw_call(monkeypatch, "get_tgw_routes", {"route_table_id": "tgw-rtb-1"},
                      {"Routes": [{"DestinationCidrBlock": "10.0.0.0/16", "State": "active"}],
                       "AdditionalRoutesAvailable": True})
-    assert body["truncated"] is True and body["more_pages"] is True
+    # No pagination token exists, so it is a server-side cap — never a fetchable "next page".
+    assert body["truncated"] is True and body["api_result_capped"] is True and "more_pages" not in body
+
+
+def test_get_all_tgw_routes_flags_a_capped_table(monkeypatch):
+    table = _tgw_call(monkeypatch, "get_all_tgw_routes", {"tgw_id": "tgw-1"},
+                      {"Routes": [{"DestinationCidrBlock": "10.0.0.0/16", "State": "active"}],
+                       "AdditionalRoutesAvailable": True})
+    assert table["truncated"] is True
+    rt = table["routeTables"][0]
+    assert rt["api_result_capped"] is True and rt["truncated"] is True and "more_pages" not in rt
 
 
 def test_get_all_tgw_routes_reports_per_table_truncation(monkeypatch):

@@ -470,6 +470,8 @@ export async function POST(request: Request) {
       accountId = target.accountId;
       accountAlias = target.alias || undefined;
     } else {
+      // Interpolating the client-supplied id is safe only because the enclosing branch required
+      // validateAccountId (/^\d{12}$/) — keep that guard if this condition is ever reworked.
       accountScopeNotice = `${ACCOUNT_SCOPE_NOTICE[lang](body.accountId, target === null ? 'lookup_failed' : 'unavailable')}\n\n`;
     }
   }
