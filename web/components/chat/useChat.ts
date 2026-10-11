@@ -4,6 +4,7 @@ import type { Msg } from './MessageList';
 import { sectionByKey } from '@/lib/sections';
 import type { ThreadSummary, ThreadMessage } from '@/lib/chat-store';
 import { getActiveAccount } from '@/lib/account-context';
+import { boundOutgoingHistory } from '@/lib/chat-context';
 
 export function newSessionId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -219,7 +220,7 @@ export function useChat() {
 
   async function send(prompt: string, overrideSection?: string | null, switchedFrom?: string) {
     if (busy) return;
-    const history = msgs.map((m) => ({ role: m.role, content: m.content }));
+    const history = boundOutgoingHistory(msgs.map((m) => ({ role: m.role, content: m.content })));
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);
     setBusy(true);
     const ac = new AbortController();
@@ -243,7 +244,9 @@ export function useChat() {
         body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
       });
       if (!res.ok || !res.body) {
-        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.' : 'AI 응답을 받지 못했습니다.', streaming: false }));
+        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.'
+          : res.status === 413 ? '대화나 질문이 너무 길어 보낼 수 없습니다. 새 대화를 시작하거나 질문을 줄여 주세요.'
+          : 'AI 응답을 받지 못했습니다.', streaming: false }));
         return;
       }
       const reader = res.body.getReader();

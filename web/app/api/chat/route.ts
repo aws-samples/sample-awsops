@@ -32,6 +32,22 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
 
 const MAX_PROMPT = 50_000;
+// A requested account the chat cannot use must be said out loud: answering from the host account
+// while the user believes they are looking at another account is the worst kind of wrong answer.
+const ACCOUNT_SCOPE_NOTICE: Record<ChatLang, (id: string, reason: 'unavailable' | 'lookup_failed') => string> = {
+  ko: (id, r) => r === 'lookup_failed'
+    ? `계정 ${id} 정보를 확인하지 못해 이번 답변은 호스트 계정 기준입니다.`
+    : `계정 ${id}은(는) 등록되지 않았거나 비활성화되어 이번 답변은 호스트 계정 기준입니다.`,
+  en: (id, r) => r === 'lookup_failed'
+    ? `Account ${id} could not be verified, so this answer covers the host account.`
+    : `Account ${id} is not registered or is disabled, so this answer covers the host account.`,
+  zh: (id, r) => r === 'lookup_failed'
+    ? `无法验证账户 ${id}，本次回答基于主机账户。`
+    : `账户 ${id} 未注册或已禁用，本次回答基于主机账户。`,
+  ja: (id, r) => r === 'lookup_failed'
+    ? `アカウント ${id} を確認できなかったため、この回答はホストアカウントが対象です。`
+    : `アカウント ${id} は未登録または無効のため、この回答はホストアカウントが対象です。`,
+};
 const CUSTOM_POLICY_FAILURE_NOTICE: Record<ChatLang, { fallback: string; pin: string }> = {
   ko: {
     fallback: '커스텀 에이전트를 사용할 수 없어 이번 답변은 기본 에이전트로 라우팅합니다.',
@@ -447,11 +463,14 @@ export async function POST(request: Request) {
   // only ever reaches the agent payload/Agent-Space keying — never IAM decisions.
   let accountId = currentAccountId();
   let accountAlias = currentAccountAlias();
+  let accountScopeNotice = '';
   if (typeof body.accountId === 'string' && validateAccountId(body.accountId) && body.accountId !== accountId) {
-    const target = await getAccount(body.accountId).catch(() => undefined);
+    const target = await getAccount(body.accountId).catch(() => null); // null = lookup failed
     if (target?.enabled) {
       accountId = target.accountId;
       accountAlias = target.alias || undefined;
+    } else {
+      accountScopeNotice = `${ACCOUNT_SCOPE_NOTICE[lang](body.accountId, target === null ? 'lookup_failed' : 'unavailable')}\n\n`;
     }
   }
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
@@ -561,8 +580,8 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = !explicitPin && !productHelpIntent && finalPolicyUnavailable
-    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '';
+  const fallbackNotice = accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
+    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
   // enforced at write time by chat-store's owner-guarded upsert (forged ids just drop).

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderRecentHistory, sanitizeHistory } from './chat-context';
+import { boundOutgoingHistory, renderRecentHistory, sanitizeHistory } from './chat-context';
 
 describe('renderRecentHistory', () => {
   it('returns "" for no/empty history', () => {
@@ -93,5 +93,26 @@ describe('sanitizeHistory', () => {
       { role: 'user', content: 'ok' },
       { role: 'assistant', content: 'also ok' },
     ]);
+  });
+});
+
+describe('boundOutgoingHistory', () => {
+  const msg = (role: 'user' | 'assistant', content: string) => ({ role, content });
+
+  it('keeps the newest messages within the count cap', () => {
+    const all = Array.from({ length: 50 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', `m${i}`));
+    const kept = boundOutgoingHistory(all, 10);
+    expect(kept).toHaveLength(10);
+    expect(kept[9].content).toBe('m49');
+    expect(kept[0].content).toBe('m40');
+  });
+
+  it('drops the oldest messages first when the char budget is exceeded', () => {
+    const kept = boundOutgoingHistory([msg('user', 'a'.repeat(60)), msg('assistant', 'b'.repeat(30)), msg('user', 'c'.repeat(30))], 40, 70);
+    expect(kept.map((m) => m.content[0])).toEqual(['b', 'c']);
+  });
+
+  it('skips empty placeholders from an in-flight or aborted answer', () => {
+    expect(boundOutgoingHistory([msg('user', 'q'), msg('assistant', ''), msg('user', 'q2')]).map((m) => m.content)).toEqual(['q', 'q2']);
   });
 });

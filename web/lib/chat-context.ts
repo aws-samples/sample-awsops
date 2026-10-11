@@ -50,3 +50,26 @@ export function sanitizeHistory(input: unknown): HistoryMsg[] {
 function escapeTagBreakout(s: string): string {
   return s.replace(/<\/?(?:awsops_chat_history|user_query|query)>/gi, (m) => m.replace('<', '&lt;').replace('>', '&gt;'));
 }
+
+// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512KB with 413, which a
+// long thread used to hit as a generic "no answer" error. Keep the NEWEST turns that fit (older ones
+// drop first), skip empty placeholders (an in-flight or aborted answer), and never split a message.
+export const OUTGOING_HISTORY_MAX_MESSAGES = 40;
+export const OUTGOING_HISTORY_MAX_CHARS = 300_000;
+
+export function boundOutgoingHistory(
+  messages: HistoryMsg[],
+  maxMessages = OUTGOING_HISTORY_MAX_MESSAGES,
+  maxChars = OUTGOING_HISTORY_MAX_CHARS,
+): HistoryMsg[] {
+  const kept: HistoryMsg[] = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0 && kept.length < maxMessages; i--) {
+    const m = messages[i];
+    if (!m.content) continue;
+    if (used + m.content.length > maxChars) break;
+    kept.unshift(m);
+    used += m.content.length;
+  }
+  return kept;
+}

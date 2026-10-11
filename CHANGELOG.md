@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix including root-dot and China-partition forms, and rotation diagnostics omit unrelated secret identifiers.
 - AgentCore Gateway inbound authentication: the provisioner creates every section gateway with IAM (SigV4) inbound authentication instead of none. Because a gateway's authorizer type cannot be changed after creation, `make agentcore` fails on any existing gateway that still accepts unauthenticated calls, and the AgentCore reference documents the operator replacement procedure.
+- AI chat grounding: the chat agent is told the current time, which account and region its tools read, and how to treat capped or failed results; capped AWS list results report how many items exist and whether more pages remain; synced-inventory answers state that they cover the host account and warn when another account was asked for; a requested account that is unregistered, disabled or cannot be verified is named in the answer instead of silently falling back to the host account; an answer produced without live tools starts with a notice that it uses no real data; and long conversations send only the most recent turns instead of failing with a generic error.
 
 ## [0.10.1] - 2026-09-20
 
@@ -690,6 +691,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 - 보안 검사 개선: 배포 워크플로가 명시된 미리보기 시크릿만 선택하며, 채팅 기록 삭제 오류는 내부 정보를 숨기고 세션 ID는 암호학적 난수만 사용합니다. 설정 도구는 HCL 문자열을 안전하게 인코딩하고, 스크린샷 로그인은 지정한 정확한 출처와 유효한 TLS를 요구합니다. 발표자 제목은 텍스트로 보존하며, 데이터소스 호스트 분류는 DNS 루트 점과 중국 파티션을 포함한 AWS 도메인 접미사를 확인하고, 회전 진단에서는 무관한 시크릿 식별자를 생략합니다.
 - AgentCore Gateway 유입 인증: 프로비저너가 모든 섹션 Gateway를 인증 없음 대신 IAM(SigV4) 유입 인증으로 생성합니다. Gateway의 인증 방식은 생성 후 바꿀 수 없으므로, 아직 인증 없는 호출을 받는 기존 Gateway가 있으면 `make agentcore`가 실패하며, 운영자 교체 절차는 AgentCore 참조 문서에 안내합니다.
+- AI 채팅 근거 강화: 채팅 에이전트가 현재 시각, 도구가 조회하는 계정·리전, 잘리거나 실패한 결과를 다루는 방법을 전달받습니다. 상한이 걸린 AWS 목록 결과는 전체 개수와 추가 페이지 여부를 알려 주고, 동기화 인벤토리 답변은 호스트 계정 기준임을 밝히며 다른 계정을 물었을 때 경고합니다. 요청한 계정이 등록되지 않았거나 비활성화되었거나 확인할 수 없으면 조용히 호스트 계정으로 바꾸지 않고 답변에 그 사실을 밝힙니다. 실시간 도구 없이 만든 답변은 실제 데이터가 아니라는 안내로 시작하며, 긴 대화는 일반 오류로 실패하지 않고 최근 대화만 보냅니다.
 
 ## [0.10.1] - 2026-09-20
 
