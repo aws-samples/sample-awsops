@@ -503,3 +503,30 @@ class TestExecuteSqlNonFoundationCluster(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestListResultsDiscloseTruncation(unittest.TestCase):
+    """A capped list must say it is capped, or the model reports the first 20 as all of them."""
+
+    def _list(self, resp):
+        client = mock.Mock()
+        client.describe_db_instances.return_value = resp
+        with mock.patch.object(rds_mcp, "get_client", return_value=client):
+            return json.loads(rds_mcp.lambda_handler(
+                {"tool_name": "list_db_instances", "arguments": {}}, None)["body"])
+
+    @staticmethod
+    def _inst(i):
+        return {"DBInstanceIdentifier": f"db-{i}", "Engine": "postgres",
+                "DBInstanceClass": "db.t4g.micro", "DBInstanceStatus": "available"}
+
+    def test_over_cap_is_marked_truncated_with_total(self):
+        body = self._list({"DBInstances": [self._inst(i) for i in range(23)]})
+        self.assertEqual((body["returned"], body["total"], body["truncated"]), (20, 23, True))
+        self.assertEqual(len(body["instances"]), 20)
+        self.assertIn("region", body)
+
+    def test_api_marker_marks_more_pages(self):
+        body = self._list({"DBInstances": [self._inst(1)], "Marker": "next"})
+        self.assertTrue(body["truncated"])
+        self.assertTrue(body["more_pages"])

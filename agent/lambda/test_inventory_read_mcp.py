@@ -190,6 +190,29 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
                 self.assertEqual(body["resources"], [{"instance_id": "fixture"}])
                 self.assertNotIn("projection", body)
 
+    def test_foreign_account_request_is_marked_not_served(self):
+        # Reads stay host-scoped; the response must say this is NOT the requested account's data.
+        inv._execute_override = lambda sql, params=None: [{"data": {"instance_id": "host-only"}}]
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}), \
+                mock.patch.object(inv, "_host_account_id", return_value="123456789012"):
+            result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "ec2", "target_account_id": "222222222222"}}, None)
+        body = json.loads(result["body"])
+        self.assertEqual(body["scope"], {"account": "host", "inventory_key": "self",
+                                         "requested_account_id": "222222222222",
+                                         "requested_account_served": False})
+        self.assertIn("not account 222222222222", body["warning"])
+
+    def test_host_or_absent_account_is_plain_host_scope(self):
+        inv._execute_override = lambda sql, params=None: []
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}), \
+                mock.patch.object(inv, "_host_account_id", return_value="123456789012"):
+            for extra in ({}, {"target_account_id": "123456789012"}, {"target_account_id": "__all__"}):
+                body = json.loads(inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                    "resource_type": "ec2", **extra}}, None)["body"])
+                self.assertEqual(body["scope"], {"account": "host", "inventory_key": "self"})
+                self.assertNotIn("warning", body)
+
     def test_identity_lookup_rejects_other_types_and_invalid_ids_before_sql(self):
         with mock.patch.object(inv, "_execute") as execute:
             for resource_type, identifier in (("ec2", "E123EXAMPLE"), ("cloudfront", "' OR 1=1"),

@@ -3,7 +3,7 @@ AWS MSK MCP Lambda - Kafka cluster management, configuration, monitoring
 AWS MSK MCP 람다 - Kafka 클러스터 관리, 구성, 모니터링
 """
 import json
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -30,13 +30,14 @@ def lambda_handler(event, context):
             # List clusters using v2 API / v2 API로 클러스터 목록 조회
             resp = kafka.list_clusters_v2()
             clusters = []
-            for c in resp.get("ClusterInfoList", [])[:20]:
+            kept, meta = cap_list(resp.get("ClusterInfoList", []), 20, bool(resp.get("NextToken")))
+            for c in kept:
                 info = c.get("Provisioned", c.get("Serverless", {}))
                 clusters.append({"name": c.get("ClusterName"), "arn": c.get("ClusterArn"),
                     "state": c.get("State"), "type": c.get("ClusterType"),
                     "version": info.get("CurrentBrokerSoftwareInfo", {}).get("KafkaVersion", ""),
                     "brokerCount": info.get("NumberOfBrokerNodes", 0)})
-            return ok({"clusters": clusters, "count": len(clusters)})
+            return ok({**meta, "region": region, "clusters": clusters, "count": len(clusters)})
 
         # Get detailed MSK cluster info with broker config / MSK 클러스터 상세 정보 및 브로커 설정 조회
         elif t == "get_cluster_info":

@@ -3,7 +3,7 @@ AWS DynamoDB MCP Lambda - table management, query, scan, data modeling
 AWS DynamoDB MCP 람다 - 테이블 관리, 쿼리, 스캔, 데이터 모델링
 """
 import json
-from cross_account import get_client, get_resource, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_resource, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -30,14 +30,16 @@ def lambda_handler(event, context):
         # List all DynamoDB tables with status and size / 모든 DynamoDB 테이블 상태 및 크기 조회
         if t == "list_tables":
             # Fetch table names and describe each / 테이블 이름 조회 후 각 테이블 상세 조회
-            tables = ddb.list_tables().get("TableNames", [])
+            resp = ddb.list_tables()
+            tables = resp.get("TableNames", [])
+            kept, meta = cap_list(tables, 20, bool(resp.get("LastEvaluatedTableName")))
             result = []
-            for tn in tables[:20]:
+            for tn in kept:
                 desc = ddb.describe_table(TableName=tn)["Table"]
                 result.append({"name": tn, "status": desc["TableStatus"],
                     "itemCount": desc.get("ItemCount", 0), "sizeBytes": desc.get("TableSizeBytes", 0),
                     "billingMode": desc.get("BillingModeSummary", {}).get("BillingMode", "PROVISIONED")})
-            return ok({"tables": result, "count": len(tables)})
+            return ok({**meta, "region": region, "tables": result, "count": len(tables)})
 
         # Describe table schema, GSIs, billing mode / 테이블 스키마, GSI, 과금 모드 상세 조회
         elif t == "describe_table":

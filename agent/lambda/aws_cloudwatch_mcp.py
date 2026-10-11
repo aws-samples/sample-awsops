@@ -5,7 +5,7 @@ AWS CloudWatch MCP 람다 - 지표, 알람, 로그, 로그 인사이트
 import json
 import time
 from datetime import datetime, timedelta
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -64,8 +64,8 @@ def lambda_handler(event, context):
             metric_name = args.get("metric_name", "")
             resp = cw.list_metrics(Namespace=namespace,
                 MetricName=metric_name if metric_name else None)
-            metrics = resp.get("Metrics", [])[:20]
-            return ok({"namespace": namespace, "metrics": [
+            metrics, meta = cap_list(resp.get("Metrics", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "namespace": namespace, "metrics": [
                 {"name": m["MetricName"], "dimensions": {d["Name"]: d["Value"] for d in m.get("Dimensions", [])}}
                 for m in metrics]})
 
@@ -117,13 +117,14 @@ def lambda_handler(event, context):
         elif t == "get_active_alarms":
             # Describe alarms in ALARM state / ALARM 상태의 알람 조회
             resp = cw.describe_alarms(StateValue="ALARM")
+            kept, meta = cap_list(resp.get("MetricAlarms", []), 20, bool(resp.get("NextToken")))
             alarms = [{"name": a["AlarmName"], "metric": a.get("MetricName", ""),
                 "namespace": a.get("Namespace", ""), "state": a["StateValue"],
                 "reason": a.get("StateReason", "")[:150],
                 "threshold": a.get("Threshold"), "comparison": a.get("ComparisonOperator", ""),
                 "updatedAt": str(a.get("StateUpdatedTimestamp", ""))}
-                for a in resp.get("MetricAlarms", [])[:20]]
-            return ok({"activeAlarms": alarms, "count": len(alarms)})
+                for a in kept]
+            return ok({**meta, "region": region, "activeAlarms": alarms, "count": len(alarms)})
 
         # Get alarm state change history / 알람 상태 변경 이력 조회
         elif t == "get_alarm_history":

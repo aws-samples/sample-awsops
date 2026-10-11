@@ -4,7 +4,7 @@ AWS 비용 운영 MCP 람다 - Cost Explorer, 요금 조회, 예산 관리
 """
 import json
 from datetime import datetime, timedelta
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -69,8 +69,15 @@ def lambda_handler(event, context):
                     })
             results.sort(key=lambda x: x["amount"], reverse=True)
             total = sum(r["amount"] for r in results)
-            return ok({"period": "{} ~ {}".format(start, end), "granularity": granularity,
-                "metric": metric, "total": round(total, 2), "breakdown": results[:30]})
+            # `total` is already the cost sum, so the cap metadata gets its own breakdown* keys.
+            breakdown, bm = cap_list(results, 30, bool(resp.get("NextPageToken")))
+            body = {"period": "{} ~ {}".format(start, end), "granularity": granularity,
+                "metric": metric, "total": round(total, 2), "breakdown": breakdown,
+                "breakdownReturned": bm["returned"], "breakdownTotal": bm["total"],
+                "breakdownTruncated": bm["truncated"]}
+            if bm.get("more_pages"):
+                body["note"] = "Cost Explorer returned more pages; total covers only the first page."
+            return ok(body)
 
         # Compare current vs previous month costs / 이번 달과 지난 달 비용 비교
         elif t == "get_cost_and_usage_comparisons":

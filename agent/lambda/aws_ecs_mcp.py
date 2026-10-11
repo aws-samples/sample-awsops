@@ -6,7 +6,7 @@ AWS ECS MCP Lambda - 클러스터/서비스/태스크 관리, 트러블슈팅, E
 # 3개의 도구 핸들러 제공: 리소스 관리, 트러블슈팅, 서비스 준비 상태 확인.
 """
 import json
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 
 def lambda_handler(event, context):
@@ -51,11 +51,12 @@ def handle_resource(args, role_arn=None):
 
     # List all ECS clusters with running/pending task counts / 모든 ECS 클러스터를 실행/대기 중인 태스크 수와 함께 조회
     if op == "list_clusters":
-        clusters = ecs.list_clusters().get('clusterArns', [])
+        resp = ecs.list_clusters()
+        clusters, meta = cap_list(resp.get('clusterArns', []), 10, bool(resp.get('nextToken')))
         if not clusters:
-            return ok({"clusters": [], "count": 0})
-        details = ecs.describe_clusters(clusters=clusters[:10]).get('clusters', [])
-        return ok({"clusters": [{"name": c['clusterName'], "status": c['status'],
+            return ok({**meta, "region": "ap-northeast-2", "clusters": [], "count": 0})
+        details = ecs.describe_clusters(clusters=clusters).get('clusters', [])
+        return ok({**meta, "region": "ap-northeast-2", "clusters": [{"name": c['clusterName'], "status": c['status'],
             "runningTasks": c.get('runningTasksCount', 0), "pendingTasks": c.get('pendingTasksCount', 0),
             "services": c.get('activeServicesCount', 0), "instances": c.get('registeredContainerInstancesCount', 0)}
             for c in details]})
@@ -63,11 +64,12 @@ def handle_resource(args, role_arn=None):
     # List services in a cluster with desired/running counts / 클러스터의 서비스를 원하는/실행 중인 수와 함께 조회
     elif op == "list_services":
         cluster = args.get("cluster", "")
-        services = ecs.list_services(cluster=cluster).get('serviceArns', [])
+        resp = ecs.list_services(cluster=cluster)
+        services, meta = cap_list(resp.get('serviceArns', []), 10, bool(resp.get('nextToken')))
         if not services:
-            return ok({"services": [], "cluster": cluster})
-        details = ecs.describe_services(cluster=cluster, services=services[:10]).get('services', [])
-        return ok({"services": [{"name": s['serviceName'], "status": s['status'],
+            return ok({**meta, "services": [], "cluster": cluster})
+        details = ecs.describe_services(cluster=cluster, services=services).get('services', [])
+        return ok({**meta, "cluster": cluster, "services": [{"name": s['serviceName'], "status": s['status'],
             "desiredCount": s.get('desiredCount', 0), "runningCount": s.get('runningCount', 0),
             "taskDef": s.get('taskDefinition', '').split('/')[-1],
             "launchType": s.get('launchType', 'FARGATE')} for s in details]})
@@ -79,11 +81,12 @@ def handle_resource(args, role_arn=None):
         kwargs = {"cluster": cluster}
         if service:
             kwargs["serviceName"] = service
-        tasks = ecs.list_tasks(**kwargs).get('taskArns', [])
+        resp = ecs.list_tasks(**kwargs)
+        tasks, meta = cap_list(resp.get('taskArns', []), 20, bool(resp.get('nextToken')))
         if not tasks:
-            return ok({"tasks": [], "cluster": cluster})
-        details = ecs.describe_tasks(cluster=cluster, tasks=tasks[:20]).get('tasks', [])
-        return ok({"tasks": [{"taskId": t['taskArn'].split('/')[-1], "status": t.get('lastStatus', ''),
+            return ok({**meta, "tasks": [], "cluster": cluster})
+        details = ecs.describe_tasks(cluster=cluster, tasks=tasks).get('tasks', [])
+        return ok({**meta, "cluster": cluster, "tasks": [{"taskId": t['taskArn'].split('/')[-1], "status": t.get('lastStatus', ''),
             "cpu": t.get('cpu', ''), "memory": t.get('memory', ''),
             "group": t.get('group', ''), "startedAt": str(t.get('startedAt', ''))}
             for t in details]})
@@ -102,8 +105,9 @@ def handle_resource(args, role_arn=None):
 
     # List active task definition families / 활성 태스크 정의 패밀리 목록 조회
     elif op == "list_task_definitions":
-        families = ecs.list_task_definition_families(status='ACTIVE').get('families', [])
-        return ok({"families": families[:30]})
+        resp = ecs.list_task_definition_families(status='ACTIVE')
+        families, meta = cap_list(resp.get('families', []), 30, bool(resp.get('nextToken')))
+        return ok({**meta, "families": families})
 
     # Describe task definition with container details / 태스크 정의 상세 조회 (컨테이너 세부사항 포함)
     elif op == "describe_task_definition":
@@ -119,9 +123,10 @@ def handle_resource(args, role_arn=None):
     # List ECR repositories / ECR 리포지토리 목록 조회
     elif op == "list_ecr_repositories":
         ecr = get_client('ecr', 'ap-northeast-2', role_arn)
-        repos = ecr.describe_repositories().get('repositories', [])
-        return ok({"repositories": [{"name": r['repositoryName'], "uri": r['repositoryUri'],
-            "createdAt": str(r.get('createdAt', ''))} for r in repos[:20]]})
+        resp = ecr.describe_repositories()
+        repos, meta = cap_list(resp.get('repositories', []), 20, bool(resp.get('nextToken')))
+        return ok({**meta, "repositories": [{"name": r['repositoryName'], "uri": r['repositoryUri'],
+            "createdAt": str(r.get('createdAt', ''))} for r in repos]})
 
     return ok({"error": "Unknown operation: " + op, "available": [
         "list_clusters", "list_services", "list_tasks", "describe_service",

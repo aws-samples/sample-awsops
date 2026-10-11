@@ -977,8 +977,9 @@ def build_runtime_context(account_id, account_alias, requested_account_id=""):
         label = f"{account_alias} ({account_id})" if account_alias else account_id
         scope = (f"target account {label}. Live tools read it through its read-only role. The synced "
                  f"Aurora inventory tools (query_inventory, inventory_summary, find_unused_resources, "
-                 f"get_topology) cover the HOST account only and return a scope error for this account — "
-                 f"use live describe/list tools instead and never present host inventory as this account's")
+                 f"get_topology) cover the HOST account only; for this account they return host data marked "
+                 f"scope.requested_account_served=false — use live describe/list tools instead and never "
+                 f"present host inventory as this account's")
     elif str(requested_account_id).strip() == "__all__":
         scope = ("all registered accounts were selected, but tool calls run in the HOST account unless a "
                  "tool accepts an explicit target_account_id — say which account each result came from")

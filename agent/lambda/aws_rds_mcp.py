@@ -5,7 +5,7 @@ AWS RDS MCP 람다 - MySQL/PostgreSQL 인스턴스 관리, RDS Data API를 통�
 import json
 import logging
 import os
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 from sql_readonly_guard import assert_read_only
 
 logger = logging.getLogger(__name__)
@@ -46,22 +46,24 @@ def lambda_handler(event, context):
         # List all RDS instances with basic info / 모든 RDS 인스턴스 기본 정보 조회
         if t == "list_db_instances":
             # Describe all DB instances / 모든 DB 인스턴스 조회
-            instances = rds.describe_db_instances().get("DBInstances", [])
-            return ok({"instances": [{"id": i["DBInstanceIdentifier"], "engine": i["Engine"],
+            resp = rds.describe_db_instances()
+            instances, meta = cap_list(resp.get("DBInstances", []), 20, bool(resp.get("Marker")))
+            return ok({**meta, "region": region, "instances": [{"id": i["DBInstanceIdentifier"], "engine": i["Engine"],
                 "version": i.get("EngineVersion"), "class": i["DBInstanceClass"],
                 "status": i["DBInstanceStatus"], "az": i.get("AvailabilityZone"),
                 "multiAZ": i.get("MultiAZ"), "storage": i.get("AllocatedStorage"),
                 "endpoint": i.get("Endpoint", {}).get("Address", "")}
-                for i in instances[:20]]})
+                for i in instances]})
 
         # List all Aurora DB clusters / 모든 Aurora DB 클러스터 조회
         elif t == "list_db_clusters":
-            clusters = rds.describe_db_clusters().get("DBClusters", [])
-            return ok({"clusters": [{"id": c["DBClusterIdentifier"], "engine": c["Engine"],
+            resp = rds.describe_db_clusters()
+            clusters, meta = cap_list(resp.get("DBClusters", []), 20, bool(resp.get("Marker")))
+            return ok({**meta, "region": region, "clusters": [{"id": c["DBClusterIdentifier"], "engine": c["Engine"],
                 "version": c.get("EngineVersion"), "status": c["Status"],
                 "members": len(c.get("DBClusterMembers", [])),
                 "endpoint": c.get("Endpoint", ""), "readerEndpoint": c.get("ReaderEndpoint", "")}
-                for c in clusters[:20]]})
+                for c in clusters]})
 
         # Get detailed DB instance info / DB 인스턴스 상세 정보 조회
         elif t == "describe_db_instance":
@@ -271,10 +273,11 @@ def lambda_handler(event, context):
 
         # List DB snapshots (automated or manual) / DB 스냅샷 목록 조회 (자동 또는 수동)
         elif t == "list_snapshots":
-            snaps = rds.describe_db_snapshots(SnapshotType=args.get("snapshot_type", "automated")).get("DBSnapshots", [])
-            return ok({"snapshots": [{"id": s["DBSnapshotIdentifier"], "instance": s.get("DBInstanceIdentifier"),
+            resp = rds.describe_db_snapshots(SnapshotType=args.get("snapshot_type", "automated"))
+            snaps, meta = cap_list(resp.get("DBSnapshots", []), 20, bool(resp.get("Marker")))
+            return ok({**meta, "region": region, "snapshots": [{"id": s["DBSnapshotIdentifier"], "instance": s.get("DBInstanceIdentifier"),
                 "engine": s["Engine"], "status": s["Status"], "size": s.get("AllocatedStorage"),
-                "created": str(s.get("SnapshotCreateTime", ""))} for s in snaps[:20]]})
+                "created": str(s.get("SnapshotCreateTime", ""))} for s in snaps]})
 
         return err("Unknown tool: " + t)
     except Exception as e:
