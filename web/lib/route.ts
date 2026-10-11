@@ -70,12 +70,20 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
-/** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; else 'ops'. */
-export function pickGateway(prompt: string, pinned?: string): string {
+/** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
+ *  conversation's previous section (when the caller vouches for it); else 'ops'.
+ *
+ *  Follow-up continuity: on the regex-only path (hybrid routing off, the default) a follow-up such
+ *  as "그럼 그건 왜 그래?" or "더 자세히" carries no domain keyword. It used to land on the 'ops'
+ *  catch-all, which dropped the domain prompt and tools the previous answer was built with. A
+ *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
+ *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
+export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
   if (pinned && sectionByKey(pinned)) return pinned;
   for (const r of RULES) {
     if (r.re.test(prompt)) return r.key;
   }
+  if (previous && sectionByKey(previous)) return previous;
   return 'ops';
 }
 

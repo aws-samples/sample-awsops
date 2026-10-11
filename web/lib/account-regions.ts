@@ -82,6 +82,25 @@ export async function listScanScope(): Promise<AccountScanScope[]> {
   return out;
 }
 
+const MAX_CHAT_REGIONS = 30;
+
+/**
+ * The regions the chat agent should treat as in scope for one account: the same scan scope the
+ * inventory uses (`['*']` for the host / all-regions accounts). `undefined` when the account has no
+ * enabled scope row or the read fails — the agent then states only its default region. Never throws.
+ */
+export async function chatRegionScope(accountId: string): Promise<string[] | undefined> {
+  try {
+    const scope = (await listScanScope()).find((s) => s.accountId === accountId);
+    if (!scope) return undefined;
+    if (scope.regions.includes('*')) return ['*'];
+    const regions = scope.regions.filter(validateRegion).slice(0, MAX_CHAT_REGIONS);
+    return regions.length ? regions : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function disableAccountRegion(accountId: string, region: string): Promise<void> {
   await getPool().query(
     'UPDATE account_regions SET enabled = false, updated_at = now() WHERE account_id = $1 AND region = $2',

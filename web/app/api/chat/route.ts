@@ -12,7 +12,8 @@ import { chatMsg, normalizeChatLang, type ChatLang } from '@/lib/chat-i18n';
 import { getAccount, validateAccountId } from '@/lib/accounts';
 import { pickGateway, classifyRoute, type RouteResult } from '@/lib/route';
 import { classifyPrompt, buildClassifierContext } from '@/lib/classifier';
-import { sanitizeHistory } from '@/lib/chat-context';
+import { sanitizeHistory, accountLabel } from '@/lib/chat-context';
+import { chatRegionScope } from '@/lib/account-regions';
 import { synthesizeStream } from '@/lib/synthesize';
 import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
@@ -304,7 +305,7 @@ export async function POST(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
 
-  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
+  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; previousSection?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
   try {
     // bound BEFORE parse (App-Router has no default body cap → OOM guard); 512KB covers prompt + thread history
     body = (await readJsonBounded(request, 512_000)) as typeof body;
@@ -438,7 +439,12 @@ export async function POST(request: Request) {
     });
     gateway = route.primary;
   } else {
-    gateway = pickGateway(prompt, body.section);
+    // Follow-up continuity: a keyword-less follow-up stays on the section that answered the
+    // previous turn instead of the 'ops' catch-all. Only an active, gateway-backed built-in section
+    // qualifies — aws-data/collectors are local handlers that would just fail open to ops again.
+    const prev = typeof body.previousSection === 'string' ? body.previousSection : '';
+    const previous = prev && sectionByKey(prev)?.active && prev !== 'aws-data' && !collectorByKey(prev) ? prev : undefined;
+    gateway = pickGateway(prompt, body.section, previous);
   }
   // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2).
   // ADR-031 Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
@@ -454,6 +460,9 @@ export async function POST(request: Request) {
       accountAlias = target.alias || undefined;
     }
   }
+  // Echoed on the meta frame and stored with the exchange so later turns can say which account
+  // each earlier answer was about (agent.py labels turns only when a thread spans accounts).
+  const turnAccount = accountLabel(accountId, currentAccountId());
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
   const productHelpIntent = hybridOn && !body.section && isProductHelpIntent(prompt);
   // Builtin pins and product help do not consult or inherit custom policy.
@@ -581,9 +590,11 @@ export async function POST(request: Request) {
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
       userContent: prompt, assistantContent: fallbackNotice + assistantContent,
-      gateway: recordGateway, meta: extras ? { ...(exchangeMeta ?? {}), ...extras } : exchangeMeta,
+      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), account: turnAccount },
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
+  // Region scope for the agent's live reads — skipped on paths that never invoke an agent.
+  const regions = useAssistant || unavailablePin || inactiveSection ? undefined : await chatRegionScope(accountId);
 
   // Inject cached datasource schemas (the agent reads the cache) for the observability gateways —
   // for the single-route spec AND any matching gateway in a fan-out. 'observability' owns the
@@ -613,7 +624,7 @@ export async function POST(request: Request) {
       const meta = {
         gateway: useAssistant ? 'assistant' : spec.gateway,
         agentName: useAssistant ? 'AWSops Assistant' : spec.agentName,
-        tier: spec.tier, skillHashes: spec.skillHashes, threadId,
+        tier: spec.tier, skillHashes: spec.skillHashes, threadId, account: turnAccount,
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
@@ -663,7 +674,7 @@ export async function POST(request: Request) {
         // gate CRITICAL: each gateway gets its OWN built-in invoke input (no shared primary spec).
         const settled = await Promise.allSettled(
           fanGateways.map((g) => invokeAgent({
-            gateway: g, messages, sessionId, accountId, accountAlias,
+            gateway: g, messages, sessionId, accountId, accountAlias, regions,
             extraContext: obs(g) ? datasourceSchemaContext : undefined, // cached schema reaches fanned monitoring/data agents too
             responseLanguage: lang,
           })),
@@ -732,7 +743,7 @@ export async function POST(request: Request) {
           systemPromptOverride: spec.systemPromptOverride,
           toolAllowlist: spec.toolAllowlist,
           agentName: spec.agentName, agentVersion: spec.agentVersion, skillHashes: spec.skillHashes,
-          accountId, accountAlias,
+          accountId, accountAlias, regions,
           integrations: spec.integrations, // ADR-039 P2-infra inc2: live egress-READ MCP connections
           extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing

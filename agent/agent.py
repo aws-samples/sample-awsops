@@ -2,6 +2,7 @@
 # AWSops Strands agent: dynamic gateway routing + optimized skill prompts
 # 동적 게이트웨이 라우팅 + 최적화된 스킬 프롬프트
 import json
+import re
 import logging
 import os
 import functools
@@ -934,6 +935,74 @@ You MUST include "target_account_id": "{account_id}" in EVERY tool call's argume
 This is a non-negotiable requirement for cross-account access."""
 
 
+_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
+_MAX_SCOPE_REGIONS = 30
+
+
+def build_region_scope(regions):
+    """Region scope block from the BFF's ``regions`` (the target account's enabled inventory
+    regions; ``["*"]`` = all regions). Without it the model only knows the gateway's default region
+    and silently answers multi-region questions from that one region. Empty when absent/invalid."""
+    if not isinstance(regions, list):
+        return ''
+    if "*" in regions:
+        scope = (f"every region is enabled for this account. Tools that take a `region` argument default "
+                 f"to {GATEWAY_REGION}; for an account-wide question, query each region it needs and list "
+                 f"the regions you checked")
+    else:
+        valid = [r for r in regions if isinstance(r, str) and _REGION_RE.match(r)][:_MAX_SCOPE_REGIONS]
+        if not valid:
+            return ''
+        scope = (f"this account's enabled regions are {', '.join(valid)}. Pass `region` to tools that "
+                 f"accept it so each enabled region the question needs is covered, and list the regions "
+                 f"you checked; regions outside this list are not inventoried")
+    return f"""
+
+## Region Scope
+- {scope}.
+- A region you did not query is unknown, never empty."""
+
+
+_ACCOUNT_LABEL_RE = re.compile(r"^(?:host|\d{12})$")
+
+
+def _account_phrase(label):
+    if label == "host":
+        return "host account"
+    return f"account {label}" if label else "account not recorded"
+
+
+def label_account_turns(messages_list, current_label):
+    """Prefix user turns with the account they were answered for — only when the thread spans
+    accounts. The BFF stamps each history message with ``account`` ('host' | 12-digit id); without
+    labels, answers about another account read as facts about the current target. The latest turn
+    is labelled only for the host (a member target already gets the [Target Account: …] prefix).
+    Returns a new list; the input is not mutated."""
+    if not isinstance(messages_list, list) or not messages_list:
+        return messages_list
+    def label_of(m):
+        a = m.get("account") if isinstance(m, dict) else None
+        return a if isinstance(a, str) and _ACCOUNT_LABEL_RE.match(a) else None
+    known = {label_of(m) for m in messages_list[:-1]} - {None}
+    if not known or known == {current_label}:
+        return messages_list
+    out = []
+    last = len(messages_list) - 1
+    for i, m in enumerate(messages_list):
+        if not isinstance(m, dict) or m.get("role") != "user" or not isinstance(m.get("content"), str):
+            out.append(m)
+            continue
+        if i == last:
+            if current_label != "host":
+                out.append(m)
+                continue
+            label = current_label
+        else:
+            label = label_of(m)
+        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {m['content']}"})
+    return out
+
+
 async def _stream_text(agent, user_input):
     """Yield assistant text deltas from a Strands agent run as ``{"delta": str}`` chunks,
     plus one ``{"tool": name}`` chunk per tool invocation (answer-provenance footer).
@@ -1079,7 +1148,11 @@ async def handler(payload):
             yield chunk
         return
 
-    user_input, history = build_conversation(payload)
+    # Label earlier turns by account when the thread spans accounts (the target is blanked to ''
+    # for the host by effective_account_id, so '' ⇒ 'host').
+    current_account_label = effective_account_id(payload.get('accountId', '')) or 'host'
+    user_input, history = build_conversation({
+        **payload, "messages": label_account_turns(payload.get("messages", []), current_account_label)})
     if not user_input:
         yield {"delta": "No input provided."}
         return
@@ -1150,7 +1223,7 @@ async def handler(payload):
     # agent's own role (no target_account_id directive, no self-assume).
     account_id = effective_account_id(payload.get('accountId', ''))
     account_alias = payload.get('accountAlias', '')
-    account_directive = build_account_directive(account_id, account_alias)
+    account_directive = build_account_directive(account_id, account_alias) + build_region_scope(payload.get("regions"))
 
     # Prefix user input with account context / 사용자 입력에 어카운트 컨텍스트 접두사 추가
     # (account_id was already blanked for the host account / __all__ by

@@ -72,3 +72,23 @@ describe('listScanScope', () => {
     ]);
   });
 });
+
+describe('chatRegionScope', () => {
+  const rows = [
+    { account_id: '110000000000', all_regions: false, is_host: true, regions: [] },
+    { account_id: '210987654321', all_regions: false, is_host: false, regions: ['us-east-1', 'bad;region', 'eu-west-1'] },
+  ];
+  it('returns ["*"] for the host and the valid enabled regions for a member', async () => {
+    query.mockResolvedValue({ rows });
+    const { chatRegionScope } = await import('./account-regions');
+    expect(await chatRegionScope('110000000000')).toEqual(['*']);
+    expect(await chatRegionScope('210987654321')).toEqual(['us-east-1', 'eu-west-1']);
+  });
+  it('is undefined for an unknown account or a failed read (never throws)', async () => {
+    query.mockResolvedValueOnce({ rows });
+    const { chatRegionScope } = await import('./account-regions');
+    expect(await chatRegionScope('999999999999')).toBeUndefined();
+    query.mockRejectedValueOnce(new Error('db down'));
+    expect(await chatRegionScope('210987654321')).toBeUndefined();
+  });
+});

@@ -29,6 +29,7 @@ export function parseFrame(frame: string): {
   costUsd?: number;
   tool?: string;
   query?: string;
+  account?: string;
 } {
   const isMeta = frame.startsWith('event: meta');
   const isStatus = frame.startsWith('event: status');
@@ -123,13 +124,21 @@ export function useChat() {
         return;
       }
       const data: { thread: ThreadSummary; messages: ThreadMessage[] } = await res.json();
-      setMsgs(data.messages.map((m) => {
+      // The answered-for account lives on the assistant row's meta; its user turn (the row before
+      // it) shares it.
+      const accountOf = (m?: ThreadMessage) => {
+        const a = (m?.meta as { account?: unknown } | null | undefined)?.account;
+        return typeof a === 'string' ? a : undefined;
+      };
+      setMsgs(data.messages.map((m, i) => {
         const meta = (m.meta ?? {}) as { ranked?: Msg['ranked']; method?: string; via?: string; tools?: string[]; model?: string; elapsedMs?: number; usage?: Msg['usage']; costUsd?: number };
+        const next = data.messages[i + 1];
         return {
           role: m.role, content: m.content, gateway: m.gateway ?? undefined,
           ranked: meta.ranked, method: meta.method, via: meta.via,
           tools: meta.tools, model: meta.model, elapsedMs: meta.elapsedMs,
           usage: meta.usage, costUsd: meta.costUsd,
+          account: m.role === 'assistant' ? accountOf(m) : (next?.role === 'assistant' ? accountOf(next) : undefined),
         };
       }));
       sessionRef.current = data.thread.sessionId;
@@ -185,6 +194,12 @@ export function useChat() {
     const parsed = parseFrame(frame);
     if (parsed.kind === 'meta') {
       if (parsed.threadId) setThread(parsed.threadId);
+      if (typeof parsed.account === 'string') {
+        // Stamp the in-flight exchange (the trailing user + assistant pair) with the account the
+        // server actually answered for.
+        const account = parsed.account;
+        setMsgs((arr) => arr.map((m, i) => (i >= arr.length - 2 ? { ...m, account } : m)));
+      }
       if (parsed.gateway) {
         patchLast((m) => ({ ...m, gateway: parsed.gateway, ranked: parsed.ranked, method: parsed.method, via: parsed.via }));
       }
@@ -219,7 +234,9 @@ export function useChat() {
 
   async function send(prompt: string, overrideSection?: string | null, switchedFrom?: string) {
     if (busy) return;
-    const history = msgs.map((m) => ({ role: m.role, content: m.content }));
+    const history = msgs.map((m) => ({ role: m.role, content: m.content, ...(m.account ? { account: m.account } : {}) }));
+    // Follow-up continuity: the section that answered last (server re-validates; a keyword wins).
+    const previousSection = [...msgs].reverse().find((m) => m.role === 'assistant' && m.gateway)?.gateway;
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);
     setBusy(true);
     const ac = new AbortController();
@@ -240,7 +257,7 @@ export function useChat() {
       const res = await fetch('/api/chat', {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
+        body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, previousSection, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
       });
       if (!res.ok || !res.body) {
         patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.' : 'AI 응답을 받지 못했습니다.', streaming: false }));

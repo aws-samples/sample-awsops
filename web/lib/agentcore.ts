@@ -27,6 +27,7 @@ export async function getRuntimeArn(): Promise<string> {
 export interface ChatMsg {
   role: 'user' | 'assistant';
   content: string;
+  account?: string; // 'host' | 12-digit id — which account the turn was answered for (chat-context.ts)
 }
 
 export interface InvokeInput {
@@ -46,6 +47,7 @@ export interface InvokeInput {
   integrations?: ResolvedIntegration[]; // ADR-039 P2-infra inc2: live egress-READ MCP connections
   extraContext?: string; // bounded BFF context appended to the agent system prompt (e.g. cached datasource schemas)
   responseLanguage?: string; // v1-parity: UI-language directive ('ko'|'en'|'zh'|'ja') — agent.py forces the answer language
+  regions?: string[]; // the target account's enabled inventory regions (['*'] = all regions) — agent.py region scope
 }
 
 async function readResponse(resp: unknown): Promise<string> {
@@ -170,6 +172,7 @@ function buildCommand(input: InvokeInput, arn: string): InvokeAgentRuntimeComman
   if (input.integrations?.length) body.integrations = input.integrations;
   if (input.extraContext) body.extraContext = input.extraContext;
   if (input.responseLanguage) body.responseLanguage = input.responseLanguage;
+  if (input.regions?.length) body.regions = input.regions;
   return new InvokeAgentRuntimeCommand({
     agentRuntimeArn: arn,
     qualifier: 'DEFAULT',

@@ -98,6 +98,8 @@ vi.mock('@/lib/accounts', () => ({
   validateAccountId: (id: string) => /^\d{12}$/.test(id),
   getAccount: vi.fn().mockResolvedValue(undefined), // unregistered ⇒ host default
 }));
+const chatRegionScope = vi.fn();
+vi.mock('@/lib/account-regions', () => ({ chatRegionScope: (...a: unknown[]) => chatRegionScope(...a) }));
 const recordExchange = vi.fn();
 vi.mock('@/lib/chat-store', () => ({ recordExchange: (...a: unknown[]) => recordExchange(...a) }));
 const listConfiguredSchemas = vi.fn();
@@ -159,6 +161,7 @@ beforeEach(() => {
   classifyPrompt.mockReset();
   recordExchange.mockReset();
   recordExchange.mockResolvedValue(undefined);
+  chatRegionScope.mockReset(); chatRegionScope.mockResolvedValue(undefined);
   listConfiguredSchemas.mockReset(); listConfiguredSchemas.mockResolvedValue([]);
   listDatasources.mockReset(); listDatasources.mockResolvedValue([]);
   synthesizeStream.mockReset();
@@ -1131,4 +1134,88 @@ it('keeps explicit built-in routing usable when custom policy is unavailable', a
   expect(res.status).toBe(200);
   expect(await readStream(res)).toContain('ok');
   expect(pickCustomAgent).not.toHaveBeenCalled();
+});
+
+describe('follow-up continuity, account labels and region scope', () => {
+  afterEach(() => { delete process.env.HOST_ACCOUNT_ID; });
+
+  it('forwards an active gateway-backed previousSection to pickGateway', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('cost');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: '그럼 그건 왜?', previousSection: 'cost', sessionId: 's'.repeat(36) })));
+    expect(pickGateway).toHaveBeenCalledWith('그럼 그건 왜?', undefined, 'cost');
+  });
+
+  it.each([
+    ['an inactive section', 'container'],
+    ['the local aws-data handler', 'aws-data'],
+    ['a local collector', 'idle-scan'],
+    ['an unknown key', 'not-a-section'],
+    ['a non-string', 42],
+  ])('drops %s as previousSection', async (_label, previousSection) => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: '더 자세히', previousSection, sessionId: 's'.repeat(36) })));
+    expect(pickGateway).toHaveBeenCalledWith('더 자세히', undefined, undefined);
+  });
+
+  it('labels a host answer "host" on the meta frame and in the stored exchange', async () => {
+    process.env.HOST_ACCOUNT_ID = '999988887777';
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'x', sessionId: 's'.repeat(36) })));
+    expect(body).toContain('"account":"host"');
+    expect(recordExchange).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ account: 'host' }) }));
+  });
+
+  it('labels a registered member answer with its account id', async () => {
+    process.env.HOST_ACCOUNT_ID = '999988887777';
+    const accounts = await import('@/lib/accounts');
+    vi.mocked(accounts.getAccount).mockResolvedValueOnce({ accountId: '111122223333', alias: 'm', enabled: true } as never);
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'x', accountId: '111122223333', sessionId: 's'.repeat(36) })));
+    expect(body).toContain('"account":"111122223333"');
+    expect(chatRegionScope).toHaveBeenCalledWith('111122223333');
+  });
+
+  it('forwards the account region scope and sanitized per-turn account labels to the agent', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    chatRegionScope.mockResolvedValue(['ap-northeast-2', 'us-east-1']);
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({
+      prompt: 'now?',
+      messages: [
+        { role: 'user', content: 'q1', account: '111122223333', extra: 'dropped' },
+        { role: 'assistant', content: 'a1', account: 'not-a-label' },
+      ],
+      sessionId: 's'.repeat(36),
+    })));
+    const input = invokeAgent.mock.calls[0][0] as { regions?: string[]; messages: unknown[] };
+    expect(input.regions).toEqual(['ap-northeast-2', 'us-east-1']);
+    expect(input.messages).toEqual([
+      { role: 'user', content: 'q1', account: '111122223333' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'now?' },
+    ]);
+  });
+
+  it('does not read the region scope on the product-help assistant path', async () => {
+    process.env.HYBRID_ROUTING_ENABLED = 'true';
+    isProductHelpIntent.mockReturnValue(true);
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: '커스텀 에이전트 만드는 법', sessionId: 's'.repeat(36) })));
+    expect(chatRegionScope).not.toHaveBeenCalled();
+  });
 });
