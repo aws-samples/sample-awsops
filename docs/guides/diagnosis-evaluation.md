@@ -60,9 +60,13 @@ gets a visible warning and counts as degraded. Nothing is executed (ADR-005).
 A section that fails, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same
-status a degraded collector produces. To fit the table, section budgets are 2500 tokens
-(light/mid) and 3200 tokens (deep), up from 1500/2200, with a 120 s Bedrock read timeout
-(`DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`). Per-report output-token cost rises accordingly.
+status a degraded collector produces. Section budgets were raised from 1500/2200 tokens. A
+live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
+the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
+(deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`
+get at least 8000 (`SECTION_MIN_TOKENS`), and the Bedrock read timeout is 300 s
+(`DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`; `invoke_model` waits for the whole answer). The report
+job runs on Fargate with a 3600 s limit. Per-report output-token cost rises accordingly.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the
 model and reader only. The evaluator still reads `to`, which stays unresolved, so the

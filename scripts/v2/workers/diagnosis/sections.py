@@ -20,7 +20,8 @@ Pillar → section map (6 Well-Architected pillars):
 # Shared rules appended to every section prompt: evidence discipline, read-only, finding shape.
 # The OUTPUT language is appended separately per render via LANG_RULES (report lang, gap L50).
 _RULES = (
-    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. "
+    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. 표 중심으로 간결하게 쓰고 서론·결론 요약·같은 내용의 반복을 넣지 마라 — "
+    "출력 길이에 한도가 있으니 마지막 원인 분석 표까지 완성할 수 있게 분량을 조절하라. "
     "제공된 데이터에만 근거하라 — 신호가 없으면 '데이터 불가'로 명시하고 추측/날조 금지. "
     "각 발견에 심각도 [Critical]/[Warning]/[Info], 우선순위 P1/P2/P3, 공수 Low/Med/High, 근거(소스)를 붙여라. "
     "[Critical]/[Warning] 발견은 섹션 마지막의 '### 원인 분석 및 조치' 표(| 발견 | 대상 | 근거 | 원인 | 확인 방법 | 해결 절차 | 신뢰도 |)에 "
@@ -31,7 +32,8 @@ _RULES = (
     "근거 필드가 없는 발견은 쓰지 마라. "
     "수집 상태 표를 따로 만들지 말고 해당 항목에 '데이터 불가(사유)'로만 표시하라(리포트 끝에 커버리지 목록이 있다). "
     "진단은 읽기 전용이다 — 어떤 변경도 실행·자동화하지 말고, 변경을 수행하는 CLI 명령"
-    "(create/modify/put/update/delete/start/stop/attach/revoke 등)은 출력하지 마라(권고만)."
+    "(create/modify/put/update/delete/copy/start/stop/attach/revoke 등)은 출력하지 마라 — 해결 절차는 명령 대신 "
+    "무엇을 어떻게 바꿀지 문장으로 쓰라(권고만)."
 )
 # Report output language (gap L50) — appended to every section prompt at render time. The prompt
 # BODIES stay Korean; this instruction governs the output language only. The [Critical]/[Warning]/

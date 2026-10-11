@@ -59,9 +59,20 @@ _CHROME = {
     "ja": {"title": "AWS 診断レポート", "generated": "生成日時", "toc": "目次", "coverage": "データカバレッジ (Data coverage)"},
 }
 TIER_CATALOG = {"light": SECTIONS, "mid": SECTIONS, "deep": DEEP_SECTIONS}
-# Budgets leave room for the per-finding RCA table (_RULES) after the prescribed tables — at the old
-# 1500/2200 a live render cut off exactly where the root-cause/remediation rows start.
-TIER_MAX_TOKENS = {"light": 2500, "mid": 2500, "deep": 3200}
+# Budgets leave room for the per-finding RCA table (_RULES) after the prescribed tables. Measured on a
+# live mid-tier generate() against real collectors: at 2500 tokens 8 of 9 sections stopped at
+# max_tokens (Korean sections ran 4-8k chars), so the old 1500/2200 budgets were silently cutting
+# most sections before the truncation marker existed; lengths also vary run to run, hence the
+# headroom. The report job runs on Fargate (3600 s).
+TIER_MAX_TOKENS = {"light": 6000, "mid": 6000, "deep": 7000}
+# Sections whose prescribed tables are inherently long (pricing tables, the cross-section roadmap)
+# still hit 5000 on live data; they get a floor instead of raising every section's cost.
+SECTION_MIN_TOKENS = {"executive_summary": 8000, "cost_overview": 8000, "cost_optimization": 8000,
+                      "recommendations": 8000}
+
+
+def _section_budget(section, tier_budget):
+    return max(tier_budget, SECTION_MIN_TOKENS.get(section.get("key"), 0))
 
 
 def _resolve_tier(tier, model):
@@ -91,7 +102,9 @@ def make_title_and_tags(md, lang="ko"):
 # A3 (V1 parity): per-section Bedrock idle/read timeout so one hung section can't stall the whole
 # job indefinitely (V1 aborted after 60s with no token). On timeout invoke_model raises →
 # _report's except → finish_report(failed) → the report surfaces as failed, never eternal "running".
-_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "120"))  # fits the larger RCA budgets
+# invoke_model is not streamed: the read waits for the whole answer, so it must cover a full 5-6k
+# token generation (Opus is the slowest). Still bounded, so a hung section fails instead of stalling.
+_BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "300"))
 _BEDROCK_CONFIG = Config(
     connect_timeout=10, read_timeout=_BEDROCK_READ_TIMEOUT_S, retries={"max_attempts": 2},
 )
@@ -310,7 +323,9 @@ _TRUNCATED_MARK = {
 # the remediation column) degrades the section visibly. Reports stay advice only (ADR-005).
 _MUTATING_CLI = re.compile(
     r"\baws\s+[a-z0-9-]+\s+(?:create|delete|modify|put|update|terminate|revoke|attach|detach|"
-    r"authorize|start|stop|reboot|run|remove|disable|enable|associate|disassociate|replace|restore)-"
+    r"authorize|start|stop|reboot|run|remove|disable|enable|associate|disassociate|replace|restore|"
+    r"copy|import|register|deregister|tag|untag|reset|cancel|purchase|release|allocate|accept|reject|"
+    r"send|publish|set|rotate|apply|execute|invoke|deploy)-"
     r"(?!query)[a-z0-9-]+",  # start-query / stop-query (Logs Insights, Athena) only read
     re.I)
 _MUTATING_MARK = {
@@ -502,7 +517,8 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     # sinking the whole report; results reassembled in catalog order. Progress is emitted on completion.
     def _render_one(i, sec):
         try:
-            return i, render_section(dict(sec, _run=run_ctx), collected, model_id, max_tokens, lang)
+            return i, render_section(dict(sec, _run=run_ctx), collected, model_id,
+                                     _section_budget(sec, max_tokens), lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.

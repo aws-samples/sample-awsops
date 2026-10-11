@@ -210,10 +210,11 @@ def test_generate_resolves_tier_catalog_and_model(monkeypatch):
                         lambda prompt, ctx, model_id, max_tokens: (calls.append((model_id, max_tokens)) or "본문"))
 
     calls.clear(); report.generate(object(), account="1", tier="mid")
-    assert len(calls) == 8 and all(m == report._MODEL_SONNET and t == report.TIER_MAX_TOKENS["mid"] for m, t in calls)
+    assert len(calls) == 8 and all(m == report._MODEL_SONNET for m, t in calls)
+    assert sorted(set(t for _, t in calls)) == [report.TIER_MAX_TOKENS["mid"], 8000]
 
     calls.clear(); report.generate(object(), account="1", tier="deep", model="opus")
-    assert len(calls) == 15 and all(m == report._MODEL_OPUS and t == report.TIER_MAX_TOKENS["deep"] for m, t in calls)
+    assert len(calls) == 15 and all(m == report._MODEL_OPUS and t >= report.TIER_MAX_TOKENS["deep"] for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="deep")  # default model = sonnet
     assert len(calls) == 15 and all(m == report._MODEL_SONNET for m, t in calls)
@@ -922,3 +923,20 @@ def test_report_header_and_sections_share_one_clock(monkeypatch):
     md = report.generate(object(), account="1", tier="mid")[0]
     assert seen[0] and f"{seen[0]} (KST)" in md
     assert report.build_markdown([], "1", "mid", generated_at=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)).count("2026-01-01 09:00") == 1
+
+
+
+def test_long_sections_get_a_token_floor():
+    assert report._section_budget({"key": "recommendations"}, 5000) == report.SECTION_MIN_TOKENS["recommendations"]
+    assert report._section_budget({"key": "security_posture"}, 6000) == 6000
+    assert report._section_budget({"key": "cost_overview"}, 9000) == 9000  # a larger tier budget wins
+
+
+
+def test_mutating_cli_guard_covers_copy_and_similar_verbs():
+    for cmd in ("aws ec2 copy-snapshot --source-snapshot-id s", "aws sqs send-message --queue-url q",
+                "aws iam tag-role --role-name r", "aws ssm set-default-patch-baseline"):
+        assert report._MUTATING_CLI.search(cmd), cmd
+    for cmd in ("aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default",
+                "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage"):
+        assert not report._MUTATING_CLI.search(cmd), cmd
