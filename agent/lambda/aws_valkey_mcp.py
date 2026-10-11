@@ -85,7 +85,9 @@ def lambda_handler(event, context):
                     "endpoint": c.get("Endpoint", {}).get("Address", "")}
                     for c in caches]})
             except Exception:
-                return ok({"serverlessCaches": [], "note": "Serverless cache API may not be available in this region"})
+                # Unknown, not empty: say the list could not be read so it is never read as "no caches".
+                return ok({"serverlessCaches": [], "truncated": True, "readFailed": True, "region": region,
+                           "note": "Serverless cache API unavailable or failed in this region; the list is unknown, not empty"})
 
         # Return ElastiCache/Valkey best practices / ElastiCache/Valkey 모범 사례 반환
         elif t == "elasticache_best_practices":

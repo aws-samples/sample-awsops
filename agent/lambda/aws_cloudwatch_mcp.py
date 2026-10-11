@@ -121,7 +121,13 @@ def lambda_handler(event, context):
             resp = cw.describe_alarms(StateValue="ALARM", AlarmTypes=["CompositeAlarm", "MetricAlarm"])
             firing = ([dict(a, _type="metric") for a in resp.get("MetricAlarms", [])]
                       + [dict(a, _type="composite") for a in resp.get("CompositeAlarms", [])])
-            kept, meta = cap_list(firing, 20, bool(resp.get("NextToken")))
+            composite = [a for a in firing if a["_type"] == "composite"]
+            metric = [a for a in firing if a["_type"] == "metric"]
+            # Per-type cap: up to 10 composite alarms (incident summaries) first, the rest metric alarms.
+            kept = composite[:10]
+            kept += metric[:20 - len(kept)]
+            # Metadata reflects what was actually shown, so dropping composite alarms is never "complete".
+            _, meta = cap_list(firing, len(kept), bool(resp.get("NextToken")))
             alarms = [{"name": a["AlarmName"], "type": a["_type"], "metric": a.get("MetricName", ""),
                 "namespace": a.get("Namespace", ""), "state": a["StateValue"],
                 "reason": a.get("StateReason", "")[:150],
