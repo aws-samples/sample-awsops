@@ -27,7 +27,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from cross_account import _host_account_id, resolve_tool_name
+from cross_account import host_account_id, resolve_tool_name
 
 
 DEFAULT_INVENTORY_STALE_AFTER_MINUTES = 30
@@ -640,7 +640,7 @@ def _scope(requested_account_id):
     so a chat about a member account never presents host inventory as the member's."""
     scope = {"account": "host", "inventory_key": "self"}
     requested = str(requested_account_id or "").strip()
-    if not requested or requested in ("self", "__all__") or requested == (_host_account_id() or ""):
+    if not requested or requested in ("self", "__all__") or requested == (host_account_id() or ""):
         return scope, None
     if not re.fullmatch(r"\d{12}", requested):
         requested = "an unrecognized account"  # never echo arbitrary model-supplied text

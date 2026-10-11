@@ -657,3 +657,17 @@ def test_get_all_tgw_routes_reports_per_table_truncation(monkeypatch):
     routes = [{"DestinationCidrBlock": f"10.{i}.0.0/16", "State": "active"} for i in range(25)]
     table = _tgw_call(monkeypatch, "get_all_tgw_routes", {"tgw_id": "tgw-1"}, {"Routes": routes})["routeTables"][0]
     assert (table["routeCount"], table["returned"], table["truncated"]) == (25, 20, True)
+
+
+
+def test_list_tgw_peerings_and_route_tables_disclose_more_pages(monkeypatch):
+    from unittest import mock
+    ec2 = mock.Mock()
+    ec2.describe_transit_gateway_attachments.return_value = {
+        "TransitGatewayAttachments": [{"TransitGatewayAttachmentId": "a", "State": "available"}], "NextToken": "n"}
+    ec2.describe_transit_gateway_route_tables.return_value = {"TransitGatewayRouteTables": [], "NextToken": "n"}
+    monkeypatch.setattr(network, "get_client", lambda *a, **k: ec2)
+    peer = json.loads(network.lambda_handler({"tool_name": "list_tgw_peerings", "arguments": {"tgw_id": "t"}}, None)["body"])
+    assert peer["more_pages"] is True and peer["returned"] == 1
+    allr = json.loads(network.lambda_handler({"tool_name": "get_all_tgw_routes", "arguments": {"tgw_id": "t"}}, None)["body"])
+    assert allr["routeTablesMorePages"] is True

@@ -38,6 +38,11 @@ def _host_account_id():
         return None
 
 
+def host_account_id():
+    """Public accessor for the account this Lambda runs in (None when it cannot be resolved)."""
+    return _host_account_id()
+
+
 def get_role_arn(account_id):
     """Cross-account read-only role ARN for a *different* account.
 
