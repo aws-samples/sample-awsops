@@ -58,7 +58,10 @@ one gets a visible warning and counts as degraded. Each `aws <service> <operatio
 classified by its leading verb, hyphenated or bare (`create-…`, `put-…`, `lambda invoke`,
 `sns publish`), plus the `aws s3` transfer commands (`cp`, `mv`, `rm`, `sync`, `rb`, `mb`). An
 explicit allowlist exempts operations that only read or only touch local config
-(`start-query`, `start-query-execution`, `start-live-tail`, `update-kubeconfig`). Nothing is executed (ADR-005).
+(`start-query`, `stop-query`, `start-query-execution`, `stop-query-execution`,
+`start-live-tail`, `update-kubeconfig`). Leading global options such as `--region` and
+`--profile` are skipped, and matching is case-sensitive, so prose like "AWS Lambda update" is
+not treated as a command. Nothing is executed (ADR-005).
 
 A section that fails, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.

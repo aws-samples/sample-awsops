@@ -339,7 +339,13 @@ _TRUNCATED_MARK = {
 # Each `aws <service> <operation>` is classified by its leading verb (hyphenated or bare, e.g.
 # `lambda invoke`, `sns publish`), the high-level `aws s3` transfer commands, and an explicit
 # allowlist of operations that only read or only touch local config.
-_CLI_COMMAND = re.compile(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", re.I)
+# Case-sensitive on purpose: real CLI invocations are lowercase, while prose like "AWS Lambda update"
+# must not match. Global options before the service are skipped token by token.
+_CLI_START = re.compile(r"(?<![A-Za-z0-9_-])aws\s+")
+_CLI_TOKEN = re.compile(r"[^\s`'\"|;)]+")
+_GLOBAL_OPTIONS_WITH_VALUE = frozenset((
+    "--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle",
+    "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
 _MUTATING_VERBS = frozenset((
     "create delete modify put update terminate revoke attach detach authorize start stop reboot run "
     "remove disable enable associate disassociate replace restore copy import register deregister tag "
@@ -351,9 +357,20 @@ _READ_ONLY_OPERATIONS = frozenset((
     "update-kubeconfig"))
 
 
+def _cli_commands(text):
+    """Yield (service, operation) for each `aws ...` invocation, skipping leading global options
+    (`--region x`, `--profile=y`, `--debug`, ...)."""
+    for start in _CLI_START.finditer(text):
+        tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 300])
+        i = 0
+        while i < len(tokens) and tokens[i].startswith("--"):
+            i += 2 if tokens[i] in _GLOBAL_OPTIONS_WITH_VALUE else 1
+        if i + 1 < len(tokens):
+            yield tokens[i], tokens[i + 1]
+
+
 def _has_mutating_cli(text):
-    for service, operation in _CLI_COMMAND.findall(text):
-        service, operation = service.lower(), operation.lower()
+    for service, operation in _cli_commands(text):
         if service == "s3":
             if operation in _S3_MUTATING:
                 return True

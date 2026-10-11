@@ -939,13 +939,17 @@ def test_mutating_cli_guard_covers_copy_and_similar_verbs():
                 "aws lambda invoke --function-name f out.json", "aws sns publish --topic-arn t",
                 "aws cloudformation deploy --template-file t", "aws s3 rm s3://b/k", "aws s3 sync . s3://b",
                 "aws logs put-query-definition --name n", "aws logs delete-query-definition --query-definition-id i",
-                "aws dynamodb batch-write-item --request-items x"):
+                "aws dynamodb batch-write-item --request-items x",
+                "aws --region ap-northeast-2 ec2 terminate-instances --instance-ids i-1",
+                "aws --profile=prod --debug ec2 delete-volume --volume-id v", "`aws s3 rm s3://b/k`"):
         assert report._has_mutating_cli(cmd), cmd
     for cmd in ("aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default",
                 "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage",
                 "aws logs start-live-tail --log-group-identifiers g", "aws eks update-kubeconfig --name c",
                 "aws s3 ls s3://b", "aws dynamodb batch-get-item --request-items x",
-                "aws athena start-query-execution --query-string q"):
+                "aws athena start-query-execution --query-string q",
+                "AWS Lambda update windows are announced", "Use AWS Config enable recording guidance",
+                "aws --region ap-northeast-2 ec2 describe-instances"):
         assert not report._has_mutating_cli(cmd), cmd
 
 
