@@ -54,8 +54,11 @@ the target, the evidence field and value, a confirmed or suspected cause (or the
 data), a read-only verification command, remediation steps for the operator to review
 and apply through their own change process, and a confidence level. The prompt forbids
 resource-changing CLI commands. As a deterministic backstop, a body that still contains
-one (`aws <service> create-|delete-|modify-|put-|…`, with read-only `start-query` exempt)
-gets a visible warning and counts as degraded. Nothing is executed (ADR-005).
+one gets a visible warning and counts as degraded. Each `aws <service> <operation>` is
+classified by its leading verb, hyphenated or bare (`create-…`, `put-…`, `lambda invoke`,
+`sns publish`), plus the `aws s3` transfer commands (`cp`, `mv`, `rm`, `sync`, `rb`, `mb`). An
+explicit allowlist exempts operations that only read or only touch local config
+(`start-query`, `start-query-execution`, `start-live-tail`, `update-kubeconfig`). Nothing is executed (ADR-005).
 
 A section that fails, stops at `max_tokens`, or contains a resource-changing command is
 listed in `summary.render_degraded`.
@@ -64,8 +67,9 @@ status a degraded collector produces. Section budgets were raised from 1500/2200
 live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
 the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
 (deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`
-get at least 8000 (`SECTION_MIN_TOKENS`), and the Bedrock read timeout is 300 s
-(`DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`; `invoke_model` waits for the whole answer). The report
+get at least 8000 (`SECTION_MIN_TOKENS`). Because `invoke_model` waits for the whole answer,
+the Bedrock read timeout scales with each section's budget at 20 tokens/s plus 60 s, about
+460 s for 8000 tokens. `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S` (default 300 s) is the floor. The report
 job runs on Fargate with a 3600 s limit. Per-report output-token cost rises accordingly.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the

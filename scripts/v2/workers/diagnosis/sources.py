@@ -196,6 +196,8 @@ def _inventory_synced_at(conn, scope):
     try:
         row = conn.run("SELECT min(captured_at), max(captured_at) FROM inventory_resources "
                        "WHERE account_id = :scope", scope=scope)[0]
+        if not row[0] and not row[1]:
+            return None  # no rows: keep the source classifiable as empty, not "ok"
         return {"oldest": str(row[0]) if row[0] else None, "newest": str(row[1]) if row[1] else None}
     except Exception:  # noqa: BLE001 — freshness is informative, never fatal
         return None

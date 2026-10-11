@@ -935,11 +935,18 @@ def test_long_sections_get_a_token_floor():
 
 def test_mutating_cli_guard_covers_copy_and_similar_verbs():
     for cmd in ("aws ec2 copy-snapshot --source-snapshot-id s", "aws sqs send-message --queue-url q",
-                "aws iam tag-role --role-name r", "aws ssm set-default-patch-baseline"):
-        assert report._MUTATING_CLI.search(cmd), cmd
+                "aws iam tag-role --role-name r", "aws ssm set-default-patch-baseline",
+                "aws lambda invoke --function-name f out.json", "aws sns publish --topic-arn t",
+                "aws cloudformation deploy --template-file t", "aws s3 rm s3://b/k", "aws s3 sync . s3://b",
+                "aws logs put-query-definition --name n", "aws logs delete-query-definition --query-definition-id i",
+                "aws dynamodb batch-write-item --request-items x"):
+        assert report._has_mutating_cli(cmd), cmd
     for cmd in ("aws ec2 describe-snapshots", "aws ec2 get-ebs-encryption-by-default",
-                "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage"):
-        assert not report._MUTATING_CLI.search(cmd), cmd
+                "aws logs start-query --log-group-name g", "aws ce get-cost-and-usage",
+                "aws logs start-live-tail --log-group-identifiers g", "aws eks update-kubeconfig --name c",
+                "aws s3 ls s3://b", "aws dynamodb batch-get-item --request-items x",
+                "aws athena start-query-execution --query-string q"):
+        assert not report._has_mutating_cli(cmd), cmd
 
 
 
@@ -954,3 +961,27 @@ def test_inventory_reports_sync_window():
     data = sources.collect_inventory(_Conn())["data"]
     assert data["synced_at"] == {"oldest": "2026-10-11 08:00:00+00", "newest": "2026-10-11 08:15:00+00"}
     assert "synced_at" in sources.COLLECTION_WINDOWS["inventory"]
+
+
+
+def test_empty_inventory_stays_empty_with_sync_window():
+    class _Conn:
+        def run(self, sql, **kw):
+            if "min(captured_at)" in sql:
+                return [(None, None)]
+            return []
+    res = sources.collect_inventory(_Conn())
+    assert res["data"]["synced_at"] is None
+    assert report._collection_status("inventory", res)["status"] == "empty"
+
+
+def test_read_timeout_scales_with_the_token_budget(monkeypatch):
+    assert report._read_timeout_for(1500) == report._BEDROCK_READ_TIMEOUT_S
+    assert report._read_timeout_for(8000) >= 8000 / report._SLOWEST_TOKENS_PER_S + 60
+    seen = []
+    monkeypatch.setattr(report, "_bedrock_clients", {})
+    monkeypatch.setattr(report.boto3, "client", lambda *a, **k: seen.append(k["config"].read_timeout) or object())
+    report._get_bedrock_client("r", 300)
+    report._get_bedrock_client("r", 460)
+    report._get_bedrock_client("r", 460)
+    assert seen == [300, 460]  # one client per (region, timeout), reused

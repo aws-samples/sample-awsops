@@ -105,9 +105,21 @@ def make_title_and_tags(md, lang="ko"):
 # invoke_model is not streamed: the read waits for the whole answer, so it must cover a full 5-6k
 # token generation (Opus is the slowest). Still bounded, so a hung section fails instead of stalling.
 _BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "300"))
-_BEDROCK_CONFIG = Config(
-    connect_timeout=10, read_timeout=_BEDROCK_READ_TIMEOUT_S, retries={"max_attempts": 2},
-)
+# Worst-case generation speed assumed when sizing the read timeout from the token budget (Opus is
+# the slowest), plus a fixed allowance for time-to-first-token.
+_SLOWEST_TOKENS_PER_S = 20
+
+
+def _read_timeout_for(max_tokens):
+    """The read must outlast a full generation of `max_tokens`; the env value stays the floor."""
+    return max(_BEDROCK_READ_TIMEOUT_S, int(max_tokens / _SLOWEST_TOKENS_PER_S) + 60)
+
+
+def _bedrock_config(read_timeout):
+    return Config(connect_timeout=10, read_timeout=read_timeout, retries={"max_attempts": 2})
+
+
+_BEDROCK_CONFIG = _bedrock_config(_BEDROCK_READ_TIMEOUT_S)
 
 # [GATE-FIX CRITICAL] PII/secret redaction BEFORE any Bedrock call (spec §9 mandatory).
 # Patterns live in the top-level redact.py so every LLM caller in this worker tier (finops/llm.py
@@ -125,19 +137,21 @@ _SYSTEM = (
 
 # Bedrock clients are thread-safe for invoke calls, but creating one through boto3's shared default
 # Session is NOT — concurrent section rendering (ADR-045) could race during creation. Create one client
-# per region under a lock (double-checked) and reuse it across threads.
+# per (region, read timeout) under a lock (double-checked) and reuse it across threads.
 _bedrock_lock = threading.Lock()
 _bedrock_clients: dict = {}
 
 
-def _get_bedrock_client(region):
-    client = _bedrock_clients.get(region)
+def _get_bedrock_client(region, read_timeout=_BEDROCK_READ_TIMEOUT_S):
+    key = (region, read_timeout)
+    client = _bedrock_clients.get(key)
     if client is None:
         with _bedrock_lock:
-            client = _bedrock_clients.get(region)
+            client = _bedrock_clients.get(key)
             if client is None:
-                client = boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG)
-                _bedrock_clients[region] = client
+                client = boto3.client("bedrock-runtime", region_name=region,
+                                      config=_bedrock_config(read_timeout))
+                _bedrock_clients[key] = client
     return client
 
 
@@ -153,7 +167,8 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # /aws/bedrock/invocation-logs and are attributable to awsops (caller-role filter) for cost.
     # model_id + max_tokens are resolved per-tier by generate() (deep may select Opus + a larger cap).
     bedrock_region = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
-    client = _get_bedrock_client(bedrock_region)  # thread-safe shared client (ADR-045 concurrent render)
+    # thread-safe shared client (ADR-045 concurrent render), read timeout sized to this budget
+    client = _get_bedrock_client(bedrock_region, _read_timeout_for(max_tokens))
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
@@ -321,13 +336,38 @@ _TRUNCATED_MARK = {
 
 # Deterministic backstop for the prompt rule: a mutating AWS CLI command in a section body (e.g. in
 # the remediation column) degrades the section visibly. Reports stay advice only (ADR-005).
-_MUTATING_CLI = re.compile(
-    r"\baws\s+[a-z0-9-]+\s+(?:create|delete|modify|put|update|terminate|revoke|attach|detach|"
-    r"authorize|start|stop|reboot|run|remove|disable|enable|associate|disassociate|replace|restore|"
-    r"copy|import|register|deregister|tag|untag|reset|cancel|purchase|release|allocate|accept|reject|"
-    r"send|publish|set|rotate|apply|execute|invoke|deploy)-"
-    r"(?!query)[a-z0-9-]+",  # start-query / stop-query (Logs Insights, Athena) only read
-    re.I)
+# Each `aws <service> <operation>` is classified by its leading verb (hyphenated or bare, e.g.
+# `lambda invoke`, `sns publish`), the high-level `aws s3` transfer commands, and an explicit
+# allowlist of operations that only read or only touch local config.
+_CLI_COMMAND = re.compile(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", re.I)
+_MUTATING_VERBS = frozenset((
+    "create delete modify put update terminate revoke attach detach authorize start stop reboot run "
+    "remove disable enable associate disassociate replace restore copy import register deregister tag "
+    "untag reset cancel purchase release allocate accept reject send publish set rotate apply execute "
+    "invoke deploy add upload rebuild promote failover reboot schedule").split())
+_S3_MUTATING = frozenset(("cp", "mv", "rm", "sync", "rb", "mb"))
+_READ_ONLY_OPERATIONS = frozenset((
+    "start-query", "stop-query", "start-query-execution", "stop-query-execution", "start-live-tail",
+    "update-kubeconfig"))
+
+
+def _has_mutating_cli(text):
+    for service, operation in _CLI_COMMAND.findall(text):
+        service, operation = service.lower(), operation.lower()
+        if service == "s3":
+            if operation in _S3_MUTATING:
+                return True
+            continue
+        if operation in _READ_ONLY_OPERATIONS:
+            continue
+        verb = operation.split("-", 1)[0]
+        if verb == "batch":
+            if any(w in operation for w in ("write", "delete", "put", "update", "execute")):
+                return True
+            continue
+        if verb in _MUTATING_VERBS:
+            return True
+    return False
 _MUTATING_MARK = {
     "ko": "\n\n_[이 섹션에 리소스를 변경하는 AWS CLI 명령이 포함되어 있습니다. 실행하지 말고 변경 관리 절차로 검토하세요 (degraded)]_",
     "en": "\n\n_[This section contains an AWS CLI command that changes resources. Do not run it; review it through your change process (degraded)]_",
@@ -355,7 +395,7 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if getattr(raw, "stop_reason", None) == "max_tokens":
         out["body"] += _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
         out["truncated"] = True
-    if _MUTATING_CLI.search(body):
+    if _has_mutating_cli(body):
         out["body"] += _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"])
         out["mutating_command"] = True
     return out
