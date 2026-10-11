@@ -227,7 +227,7 @@ export function useChat() {
 
   async function send(prompt: string, overrideSection?: string | null, switchedFrom?: string) {
     if (busy) return;
-    const history = boundOutgoingHistory(msgs.map((m) => ({ role: m.role, content: m.content })));
+    const history = msgs.map((m) => ({ role: m.role, content: m.content }));
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);
     setBusy(true);
     const ac = new AbortController();
@@ -245,10 +245,13 @@ export function useChat() {
         const a = getActiveAccount();
         accountId = a && a !== 'self' && a !== '__all__' ? a : undefined;
       } catch { /* SSR / no storage — server defaults apply */ }
+      const requestFields = { prompt, section: overrideSection ?? null, switchedFrom,
+        sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId };
       const res = await fetch('/api/chat', {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
+        body: JSON.stringify({ ...requestFields,
+          messages: boundOutgoingHistory(history, undefined, undefined, requestFields) }),
       });
       if (!res.ok || !res.body) {
         patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.'

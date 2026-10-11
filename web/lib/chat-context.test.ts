@@ -108,8 +108,8 @@ describe('boundOutgoingHistory', () => {
   });
 
   it('drops the oldest messages first when the byte budget is exceeded', () => {
-    // each 30-char ASCII message encodes to 32 JSON bytes (quotes included)
-    const kept = boundOutgoingHistory([msg('user', 'a'.repeat(60)), msg('assistant', 'b'.repeat(30)), msg('user', 'c'.repeat(30))], 40, 70);
+    // Two newest messages fit including their role/key framing and separators.
+    const kept = boundOutgoingHistory([msg('user', 'a'.repeat(60)), msg('assistant', 'b'.repeat(30)), msg('user', 'c'.repeat(30))], 40, 130);
     expect(kept.map((m) => m.content[0])).toEqual(['b', 'c']);
   });
 
@@ -124,5 +124,25 @@ describe('boundOutgoingHistory', () => {
 
   it('skips empty placeholders from an in-flight or aborted answer', () => {
     expect(boundOutgoingHistory([msg('user', 'q'), msg('assistant', ''), msg('user', 'q2')]).map((m) => m.content)).toEqual(['q', 'q2']);
+  });
+
+  it('reserves the escaped prompt and every request field before fitting history', () => {
+    const requestFields = { prompt: '\u0000'.repeat(50_000), section: 'monitoring',
+      sessionId: 's', threadId: 't', lang: 'ko', accountId: 'self' };
+    const all = Array.from({ length: 40 }, (_, i) =>
+      msg(i % 2 ? 'assistant' : 'user', '가'.repeat(5_000)));
+    const kept = boundOutgoingHistory(all, undefined, undefined, requestFields);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(boundOutgoingHistory(all).length);
+    expect(new TextEncoder().encode(JSON.stringify({ ...requestFields, messages: kept })).length)
+      .toBeLessThanOrEqual(512_000);
+    expect(kept[kept.length - 1]).toBe(all[all.length - 1]);
+  });
+
+  it('includes message framing at a tight byte boundary', () => {
+    const m = msg('assistant', 'x');
+    const bytes = new TextEncoder().encode(JSON.stringify(m)).length;
+    expect(boundOutgoingHistory([m], 40, bytes - 1)).toEqual([]);
+    expect(boundOutgoingHistory([m], 40, bytes + 1)).toEqual([m]);
   });
 });

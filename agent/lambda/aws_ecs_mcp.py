@@ -45,6 +45,18 @@ def lambda_handler(event, context):
 
 
 # Handle ECS resource management operations / ECS 리소스 관리 작업 처리
+def _described_list(response, field, requested, meta):
+    """List success does not certify the subsequent per-resource describe reads."""
+    details = response.get(field, [])
+    incomplete = bool(response.get("failures")) or len(details) != len(requested)
+    meta = {**meta, "returned": len(details)}
+    if incomplete:
+        meta.update(truncated=True, details_incomplete=True,
+                    description_failures=len(response.get("failures", [])))
+        meta["warning"] = "Some listed resources could not be described; their state is unknown."
+    return details, meta
+
+
 def handle_resource(args, role_arn=None):
     ecs = get_client('ecs', 'ap-northeast-2', role_arn)
     op = args.get("operation", "list_clusters")
@@ -55,7 +67,8 @@ def handle_resource(args, role_arn=None):
         clusters, meta = cap_list(resp.get('clusterArns', []), 10, bool(resp.get('nextToken')))
         if not clusters:
             return ok({**meta, "region": "ap-northeast-2", "clusters": [], "count": 0})
-        details = ecs.describe_clusters(clusters=clusters).get('clusters', [])
+        details, meta = _described_list(ecs.describe_clusters(clusters=clusters),
+                                        "clusters", clusters, meta)
         return ok({**meta, "region": "ap-northeast-2", "clusters": [{"name": c['clusterName'], "status": c['status'],
             "runningTasks": c.get('runningTasksCount', 0), "pendingTasks": c.get('pendingTasksCount', 0),
             "services": c.get('activeServicesCount', 0), "instances": c.get('registeredContainerInstancesCount', 0)}
@@ -68,7 +81,8 @@ def handle_resource(args, role_arn=None):
         services, meta = cap_list(resp.get('serviceArns', []), 10, bool(resp.get('nextToken')))
         if not services:
             return ok({**meta, "region": "ap-northeast-2", "services": [], "cluster": cluster})
-        details = ecs.describe_services(cluster=cluster, services=services).get('services', [])
+        details, meta = _described_list(ecs.describe_services(cluster=cluster, services=services),
+                                        "services", services, meta)
         return ok({**meta, "region": "ap-northeast-2", "cluster": cluster, "services": [{"name": s['serviceName'], "status": s['status'],
             "desiredCount": s.get('desiredCount', 0), "runningCount": s.get('runningCount', 0),
             "taskDef": s.get('taskDefinition', '').split('/')[-1],
@@ -85,7 +99,8 @@ def handle_resource(args, role_arn=None):
         tasks, meta = cap_list(resp.get('taskArns', []), 20, bool(resp.get('nextToken')))
         if not tasks:
             return ok({**meta, "region": "ap-northeast-2", "tasks": [], "cluster": cluster})
-        details = ecs.describe_tasks(cluster=cluster, tasks=tasks).get('tasks', [])
+        details, meta = _described_list(ecs.describe_tasks(cluster=cluster, tasks=tasks),
+                                        "tasks", tasks, meta)
         return ok({**meta, "region": "ap-northeast-2", "cluster": cluster, "tasks": [{"taskId": t['taskArn'].split('/')[-1], "status": t.get('lastStatus', ''),
             "cpu": t.get('cpu', ''), "memory": t.get('memory', ''),
             "group": t.get('group', ''), "startedAt": str(t.get('startedAt', ''))}

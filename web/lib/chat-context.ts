@@ -53,11 +53,12 @@ function escapeTagBreakout(s: string): string {
 
 // Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512,000 BYTES with 413,
 // which a long thread used to hit as a generic "no answer" error. The budget is UTF-8 bytes, not
-// characters (Korean is 3 bytes/char): 300KB of history + a max 50k-char prompt (≤150KB) + JSON
-// framing stays under the cap. Keep the NEWEST turns that fit (older ones drop first), skip empty
+// characters. Reserve the actual encoded request fields too: control characters in a 50k-char
+// prompt can expand to 300KB after JSON escaping. Keep the NEWEST turns that fit, skip empty
 // placeholders (an in-flight or aborted answer), and never split a message.
 export const OUTGOING_HISTORY_MAX_MESSAGES = 40;
 export const OUTGOING_HISTORY_MAX_BYTES = 300_000;
+const CHAT_REQUEST_MAX_BYTES = 512_000;
 
 const utf8 = new TextEncoder();
 
@@ -65,14 +66,18 @@ export function boundOutgoingHistory(
   messages: HistoryMsg[],
   maxMessages = OUTGOING_HISTORY_MAX_MESSAGES,
   maxBytes = OUTGOING_HISTORY_MAX_BYTES,
+  requestFields: object = {},
 ): HistoryMsg[] {
+  const envelopeBytes = utf8.encode(JSON.stringify({ ...requestFields, messages: [] })).length;
+  maxBytes = Math.max(0, Math.min(maxBytes, CHAT_REQUEST_MAX_BYTES - envelopeBytes));
   const kept: HistoryMsg[] = [];
   let used = 0;
   for (let i = messages.length - 1; i >= 0 && kept.length < maxMessages; i--) {
     const m = messages[i];
     if (!m.content) continue;
     // JSON.stringify escapes quotes/newlines/control chars, so measure the encoded form.
-    const size = utf8.encode(JSON.stringify(m.content)).length;
+    // Include role/key framing and one separator (conservative for the first item).
+    const size = utf8.encode(JSON.stringify(m)).length + 1;
     if (used + size > maxBytes) break;
     kept.unshift(m);
     used += size;
