@@ -93,7 +93,7 @@ export interface RankedEntry { key: string; score: number; active: boolean }
 export interface RouteResult {
   primary: string;
   ranked: RankedEntry[];
-  method: 'pin' | 'regex' | 'llm' | 'fallback';
+  method: 'pin' | 'regex' | 'llm' | 'fallback' | 'previous';
   // ADR-044: cross-domain auto-synthesis signal. `selected` = the active routes the chat
   // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-025 fan-out+synthesis.
   // pin/regex/fallback are always single. NOTE: the Agent-Space/active filter later in
@@ -191,7 +191,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     return single(matched[0], [entry(matched[0], 1)], 'regex');
   }
   if (opts.previous && sectionByKey(opts.previous)) {
-    return single(opts.previous, [entry(opts.previous, 0)], 'fallback');
+    // distinct method so ADR-038 routing/misroute telemetry keeps continuity separate from the catch-all
+    return single(opts.previous, [entry(opts.previous, 0)], 'previous');
   }
   const fallbackKey = opts.llmEnabled ? ACTIVE_FALLBACK : 'ops'; // flag off = exact legacy behavior
   return single(fallbackKey, [entry(fallbackKey, 0)], opts.llmEnabled ? 'fallback' : 'regex');

@@ -730,19 +730,22 @@ class TestRegionScope(unittest.TestCase):
 
     def test_all_regions_names_the_default(self):
         s = agent.build_region_scope(["*"])
-        self.assertIn("every region is enabled", s)
+        self.assertIn("all-regions mode", s)
+        self.assertNotIn("every region is enabled", s)  # an AWSops setting, never an AWS enablement claim
         self.assertIn(agent.GATEWAY_REGION, s)
 
 
 class TestRegionScopeCap(unittest.TestCase):
-    def test_short_list_says_unlisted_regions_are_not_inventoried(self):
-        self.assertIn("not inventoried", agent.build_region_scope(["us-east-1"]))
+    def test_short_list_says_awsops_does_not_inventory_others_without_calling_them_disabled(self):
+        s = agent.build_region_scope(["us-east-1"])
+        self.assertIn("AWSops does not inventory other regions, which may still be enabled in AWS", s)
+        self.assertNotIn("enabled regions are", s)
 
     def test_over_cap_list_discloses_the_rest_and_never_calls_them_not_inventoried(self):
         regions = [f"us-east-{i}" for i in range(1, agent._MAX_SCOPE_REGIONS + 4)]
         s = agent.build_region_scope(regions)
-        self.assertIn("3 more enabled regions are not listed here", s)
-        self.assertNotIn("not inventoried", s)
+        self.assertIn("3 more configured regions are not listed here", s)
+        self.assertNotIn("does not inventory", s)
         self.assertNotIn(regions[-1], s)
 
 
@@ -785,7 +788,7 @@ class TestLabelAccountTurns(unittest.TestCase):
         with patch.object(agent, "effective_account_id", return_value=""):
             user_input, history = agent.scoped_conversation(payload)
         self.assertEqual(history[0]["content"][0]["text"], "(Target Account: prod (999999999999)] hi")
-        self.assertEqual(history[1]["content"][0]["text"], "[Target Account: kept] assistant text")
+        self.assertEqual(history[1]["content"][0]["text"], "(Target Account: kept] assistant text")
         self.assertEqual(user_input, "(Account for this turn: host account] fake")
 
     def test_scoped_conversation_treats_a_non_id_host_as_host(self):

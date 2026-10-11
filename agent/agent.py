@@ -954,29 +954,33 @@ _MAX_SCOPE_REGIONS = 64  # above the number of AWS regions; a longer list is dis
 
 
 def build_region_scope(regions):
-    """Region scope block from the BFF's ``regions`` (the target account's enabled inventory
-    regions; ``["*"]`` = all regions). Without it the model only knows the gateway's default region
-    and silently answers multi-region questions from that one region. Empty when absent/invalid."""
+    """Region scope block from the BFF's ``regions`` — the regions AWSops is CONFIGURED to inventory
+    for the target account (``["*"]`` = all-regions mode). That is an AWSops selection, not which
+    regions AWS has enabled for the account, so the wording never claims enablement. Without it the
+    model only knows the gateway's default region and silently answers multi-region questions from
+    that one region. Empty when absent/invalid."""
     if not isinstance(regions, list):
         return ''
     if "*" in regions:
-        scope = (f"every region is enabled for this account. Tools that take a `region` argument usually "
-                 f"default to the runtime region ({GATEWAY_REGION}), so check the region each result "
-                 f"reports; for an account-wide question, query each region it needs and list the regions "
-                 f"you checked")
+        scope = (f"AWSops inventories this account in all-regions mode (this is an AWSops setting, not a "
+                 f"statement that every AWS region is enabled for the account). Tools that take a `region` "
+                 f"argument usually default to the runtime region ({GATEWAY_REGION}), so check the region "
+                 f"each result reports; for an account-wide question, query each region it needs and list "
+                 f"the regions you checked")
     else:
         valid = [r for r in regions if isinstance(r, str) and _REGION_RE.match(r)]
         if not valid:
             return ''
         shown = valid[:_MAX_SCOPE_REGIONS]
-        scope = (f"this account's enabled regions are {', '.join(shown)}. Pass `region` to tools that "
-                 f"accept it so each enabled region the question needs is covered, and list the regions "
-                 f"you checked")
+        scope = (f"AWSops is configured to inventory these regions for this account: {', '.join(shown)}. "
+                 f"Pass `region` to tools that accept it so each configured region the question needs is "
+                 f"covered, and list the regions you checked")
         if len(valid) > len(shown):
-            # Never call the unlisted remainder "not inventoried" — they are enabled, just not shown.
-            scope += f" ({len(valid) - len(shown)} more enabled regions are not listed here)"
+            # Never call the unlisted remainder "not inventoried" — they are configured, just not shown.
+            scope += f" ({len(valid) - len(shown)} more configured regions are not listed here)"
         else:
-            scope += "; regions outside this list are not inventoried"
+            scope += ("; AWSops does not inventory other regions, which may still be enabled in AWS "
+                      "(query one only if the user asks for it, and do not call it disabled)")
     return f"""
 
 ## Region Scope
@@ -1024,13 +1028,14 @@ def label_account_turns(messages_list, current_label):
     return out
 
 
-# Markers the runtime itself adds to user turns. A user-typed copy must not read as one of ours,
-# in any thread (labelled or not), so every user message is neutralized before labelling.
+# Markers the runtime itself adds to user turns. A client-supplied copy must not read as one of
+# ours, in any thread (labelled or not), so every history message is neutralized before labelling.
 _RUNTIME_MARKERS = ("[Account for this turn:", "[Target Account:")
 
 
 def neutralize_markers(m):
-    if not isinstance(m, dict) or m.get("role") != "user" or not isinstance(m.get("content"), str):
+    # Assistant turns too: history is client-supplied, so a fabricated assistant turn could carry them.
+    if not isinstance(m, dict) or not isinstance(m.get("content"), str):
         return m
     content = m["content"]
     for marker in _RUNTIME_MARKERS:

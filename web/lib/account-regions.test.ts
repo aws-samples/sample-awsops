@@ -74,20 +74,24 @@ describe('listScanScope', () => {
 });
 
 describe('chatRegionScope', () => {
-  const rows = [
-    { account_id: '110000000000', all_regions: false, is_host: true, regions: [] },
-    { account_id: '210987654321', all_regions: false, is_host: false, regions: ['us-east-1', 'bad;region', 'eu-west-1'] },
-  ];
-  it('returns ["*"] for the host and the valid enabled regions for a member', async () => {
-    query.mockResolvedValue({ rows });
+  it('reads only the requested account and maps host/all-regions to ["*"]', async () => {
+    query.mockResolvedValueOnce({ rows: [{ all_regions: false, is_host: true, regions: [] }] });
     const { chatRegionScope } = await import('./account-regions');
     expect(await chatRegionScope('110000000000')).toEqual(['*']);
+    expect(String(query.mock.calls[0][0])).toContain('a.account_id = $1');
+    expect(query.mock.calls[0][1]).toEqual(['110000000000']);
+  });
+  it('returns the valid configured regions for a member account', async () => {
+    query.mockResolvedValueOnce({ rows: [{ all_regions: false, is_host: false, regions: ['us-east-1', 'bad;region', 'eu-west-1'] }] });
+    const { chatRegionScope } = await import('./account-regions');
     expect(await chatRegionScope('210987654321')).toEqual(['us-east-1', 'eu-west-1']);
   });
-  it('is undefined for an unknown account or a failed read (never throws)', async () => {
-    query.mockResolvedValueOnce({ rows });
+  it('is undefined for an unknown account, an empty selection or a failed read (never throws)', async () => {
     const { chatRegionScope } = await import('./account-regions');
+    query.mockResolvedValueOnce({ rows: [] });
     expect(await chatRegionScope('999999999999')).toBeUndefined();
+    query.mockResolvedValueOnce({ rows: [{ all_regions: false, is_host: false, regions: [] }] });
+    expect(await chatRegionScope('310987654321')).toBeUndefined();
     query.mockRejectedValueOnce(new Error('db down'));
     expect(await chatRegionScope('210987654321')).toBeUndefined();
   });

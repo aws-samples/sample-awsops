@@ -43,6 +43,23 @@ completed 2026-08-02. Note the runtime nuance (matches the customer deck's slide
 the BFF-local live-Steampipe path is closed by design (ADR-001/010, `steampipeAvailable()`
 hard-`false`); the 9 gateway-routed keys answer via their own agents.
 
+**Chat context the BFF passes to the agent** (`web/app/api/chat/route.ts` → `agent/agent.py`):
+- *Follow-up continuity.* The client sends `previousSection`, the last answering gateway. The BFF
+  accepts it only for an active, gateway-backed built-in section; aws-data and collectors are
+  excluded. The routing order is pin > keyword > previous section > default (`ops`, or
+  `ACTIVE_FALLBACK` with hybrid routing, where the classifier also decides before the previous
+  section and the result carries `method: 'previous'`).
+- *Region scope.* `chatRegionScope()` sends the regions AWSops is configured to inventory for the
+  target account (`['*']` for the host and all-regions accounts). This is an AWSops selection, not
+  AWS region enablement, and the `## Region Scope` prompt block says so. A failed read sends nothing
+  and logs `chat_region_scope_unavailable`.
+- *Per-turn account labels.* Answers carry `account` (`host` or a 12-digit id) on the meta frame and
+  in the stored exchange meta, and the client echoes it per history message. When a thread spans
+  accounts, `scoped_conversation()` prefixes user turns with `[Account for this turn: …]`. The labels
+  are client-echoed: they are narrative context, not authorization, since the current target is
+  still resolved server-side. Client-supplied copies of the runtime markers are neutralized first.
+  The Strands handler and the flag-gated `anthropic_loop` path share both helpers.
+
 **2026-08-31 rollout note (ADR-021):** Phase 1's quota guard, structured terminal state,
 and freshness threshold are implemented in the repository. The agent making this change did not
 run apply; controller deployment status must be verified separately. **Current truth is
