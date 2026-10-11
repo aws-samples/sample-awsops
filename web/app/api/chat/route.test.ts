@@ -1219,3 +1219,17 @@ describe('follow-up continuity, account labels and region scope', () => {
     expect(chatRegionScope).not.toHaveBeenCalled();
   });
 });
+
+describe('follow-up continuity on the hybrid path', () => {
+  it('passes the validated previousSection to classifyRoute', async () => {
+    process.env.HYBRID_ROUTING_ENABLED = 'true';
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: '더 자세히', previousSection: 'cost', sessionId: 's'.repeat(36) })));
+    expect((classifyRoute.mock.calls[0][2] as { previous?: string }).previous).toBe('cost');
+    classifyRoute.mockClear();
+    await readStream(await POST(req({ prompt: '더 자세히', previousSection: 'aws-data', sessionId: 's'.repeat(36) })));
+    expect((classifyRoute.mock.calls[0][2] as { previous?: string }).previous).toBeUndefined();
+  });
+});

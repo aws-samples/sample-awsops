@@ -106,6 +106,9 @@ export interface ClassifyOpts {
   classify?: (prompt: string) => Promise<{ key: string; score: number }[]>;
   /** ADR-044: min classifier score for a route to join the multi-domain fan-out set. */
   minScore?: number;
+  /** Follow-up continuity: the section that answered the previous turn (caller-validated). Used
+   *  only when neither a keyword nor the classifier picked a route, instead of the default. */
+  previous?: string;
 }
 
 /** ADR-044 default multi-route inclusion threshold (env-overridable, golden-set-tuned). */
@@ -186,6 +189,9 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // LLM off/empty/failed: legacy first-match if any rule hit, else fallback.
   if (matched.length > 0) {
     return single(matched[0], [entry(matched[0], 1)], 'regex');
+  }
+  if (opts.previous && sectionByKey(opts.previous)) {
+    return single(opts.previous, [entry(opts.previous, 0)], 'fallback');
   }
   const fallbackKey = opts.llmEnabled ? ACTIVE_FALLBACK : 'ops'; // flag off = exact legacy behavior
   return single(fallbackKey, [entry(fallbackKey, 0)], opts.llmEnabled ? 'fallback' : 'regex');

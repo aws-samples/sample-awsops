@@ -367,3 +367,16 @@ describe('pickGateway follow-up continuity', () => {
     expect(pickGateway('더 자세히', undefined, 'nope')).toBe('ops');
   });
 });
+
+describe('classifyRoute follow-up continuity (hybrid)', () => {
+  it('uses the previous section when neither a keyword nor the classifier picks a route', async () => {
+    const r = await classifyRoute('더 자세히', undefined, { llmEnabled: true, classify: async () => [], previous: 'cost' });
+    expect(r.primary).toBe('cost');
+    expect(r.method).toBe('fallback');
+  });
+  it('a classifier answer still wins over the previous section', async () => {
+    const r = await classifyRoute('더 자세히', undefined, {
+      llmEnabled: true, classify: async () => [{ key: 'security', score: 0.9 }], previous: 'cost' });
+    expect(r.primary).toBe('security');
+  });
+});

@@ -426,6 +426,11 @@ export async function POST(request: Request) {
   if (hybridOn && typeof body.switchedFrom === 'string' && body.switchedFrom) {
     console.warn(JSON.stringify({ evt: 'misroute', from: body.switchedFrom, to: body.section ?? null, user: user.sub, promptLen: prompt.length }));
   }
+  // Follow-up continuity: a keyword-less follow-up stays on the section that answered the
+  // previous turn instead of the default catch-all. Only an active, gateway-backed built-in section
+  // qualifies — aws-data/collectors are local handlers that would just fail open to ops again.
+  const prev = typeof body.previousSection === 'string' ? body.previousSection : '';
+  const previous = prev && sectionByKey(prev)?.active && prev !== 'aws-data' && !collectorByKey(prev) ? prev : undefined;
   let route: RouteResult | null = null;
   let gateway: string;
   if (hybridOn) {
@@ -436,14 +441,10 @@ export async function POST(request: Request) {
     route = await classifyRoute(prompt, body.section, {
       llmEnabled: true,
       classify: (p) => classifyPrompt(buildClassifierContext(history, p)),
+      previous,
     });
     gateway = route.primary;
   } else {
-    // Follow-up continuity: a keyword-less follow-up stays on the section that answered the
-    // previous turn instead of the 'ops' catch-all. Only an active, gateway-backed built-in section
-    // qualifies — aws-data/collectors are local handlers that would just fail open to ops again.
-    const prev = typeof body.previousSection === 'string' ? body.previousSection : '';
-    const previous = prev && sectionByKey(prev)?.active && prev !== 'aws-data' && !collectorByKey(prev) ? prev : undefined;
     gateway = pickGateway(prompt, body.section, previous);
   }
   // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2).

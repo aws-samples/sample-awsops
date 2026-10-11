@@ -936,7 +936,7 @@ This is a non-negotiable requirement for cross-account access."""
 
 
 _REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
-_MAX_SCOPE_REGIONS = 30
+_MAX_SCOPE_REGIONS = 64  # above the number of AWS regions; a longer list is disclosed, never cut silently
 
 
 def build_region_scope(regions):
@@ -946,16 +946,23 @@ def build_region_scope(regions):
     if not isinstance(regions, list):
         return ''
     if "*" in regions:
-        scope = (f"every region is enabled for this account. Tools that take a `region` argument default "
-                 f"to {GATEWAY_REGION}; for an account-wide question, query each region it needs and list "
-                 f"the regions you checked")
+        scope = (f"every region is enabled for this account. Tools that take a `region` argument usually "
+                 f"default to the runtime region ({GATEWAY_REGION}), so check the region each result "
+                 f"reports; for an account-wide question, query each region it needs and list the regions "
+                 f"you checked")
     else:
-        valid = [r for r in regions if isinstance(r, str) and _REGION_RE.match(r)][:_MAX_SCOPE_REGIONS]
+        valid = [r for r in regions if isinstance(r, str) and _REGION_RE.match(r)]
         if not valid:
             return ''
-        scope = (f"this account's enabled regions are {', '.join(valid)}. Pass `region` to tools that "
+        shown = valid[:_MAX_SCOPE_REGIONS]
+        scope = (f"this account's enabled regions are {', '.join(shown)}. Pass `region` to tools that "
                  f"accept it so each enabled region the question needs is covered, and list the regions "
-                 f"you checked; regions outside this list are not inventoried")
+                 f"you checked")
+        if len(valid) > len(shown):
+            # Never call the unlisted remainder "not inventoried" — they are enabled, just not shown.
+            scope += f" ({len(valid) - len(shown)} more enabled regions are not listed here)"
+        else:
+            scope += "; regions outside this list are not inventoried"
     return f"""
 
 ## Region Scope
@@ -999,8 +1006,20 @@ def label_account_turns(messages_list, current_label):
             label = current_label
         else:
             label = label_of(m)
-        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {m['content']}"})
+        # A user-typed copy of the marker must not read as a label we added.
+        content = m["content"].replace("[Account for this turn:", "(Account for this turn:")
+        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {content}"})
     return out
+
+
+def scoped_conversation(payload):
+    """build_conversation with per-turn account labels — shared by the Strands handler and the
+    anthropic_loop dark path so both see which account each earlier turn was about. The current
+    label is the effective target, or 'host' (blanked host / __all__, or a non-id such as 'self'
+    when HOST_ACCOUNT_ID is unset — the BFF labels those turns 'host' too)."""
+    current = effective_account_id(payload.get('accountId', ''))
+    label = current if isinstance(current, str) and _ACCOUNT_LABEL_RE.match(current) else 'host'
+    return build_conversation({**payload, "messages": label_account_turns(payload.get("messages", []), label)})
 
 
 async def _stream_text(agent, user_input):
@@ -1148,11 +1167,8 @@ async def handler(payload):
             yield chunk
         return
 
-    # Label earlier turns by account when the thread spans accounts (the target is blanked to ''
-    # for the host by effective_account_id, so '' ⇒ 'host').
-    current_account_label = effective_account_id(payload.get('accountId', '')) or 'host'
-    user_input, history = build_conversation({
-        **payload, "messages": label_account_turns(payload.get("messages", []), current_account_label)})
+    # Label earlier turns by account when the thread spans accounts.
+    user_input, history = scoped_conversation(payload)
     if not user_input:
         yield {"delta": "No input provided."}
         return

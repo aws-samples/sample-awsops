@@ -82,7 +82,8 @@ export async function listScanScope(): Promise<AccountScanScope[]> {
   return out;
 }
 
-const MAX_CHAT_REGIONS = 30;
+// Above the number of AWS regions; agent.py discloses (never silently drops) anything past its own cap.
+const MAX_CHAT_REGIONS = 100;
 
 /**
  * The regions the chat agent should treat as in scope for one account: the same scan scope the
