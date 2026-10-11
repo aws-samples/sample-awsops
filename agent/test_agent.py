@@ -724,6 +724,12 @@ class RuntimeContextTest(unittest.TestCase):
         self.assertIn(agent.GATEWAY_REGION, ctx)
         self.assertIn('truncated=true', ctx)
 
+    def test_evidence_rule_separates_certified_empty_from_unknown(self):
+        ctx = agent.build_runtime_context('', '')
+        self.assertIn('complete only when the tool says so with truncated=false', ctx)
+        self.assertIn('real empty result', ctx)
+        self.assertIn('may be capped: do not call it complete', ctx)
+
     def test_target_scope_warns_inventory_is_host_only(self):
         ctx = agent.build_runtime_context('111122223333', 'prod')
         self.assertIn('prod (111122223333)', ctx)

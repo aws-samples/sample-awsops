@@ -991,7 +991,7 @@ def build_runtime_context(account_id, account_alias, requested_account_id=""):
 - Current time: given in the [Current time: …] tag on the latest user message. Resolve "today", "last N hours" and "this month" against it.
 - Account scope: {scope}.
 - Region: live AWS reads cover {GATEWAY_REGION} unless a tool result names another region. State the region when you report resources; never claim another region is empty.
-- Evidence limits: if a result has truncated=true or returned < total, say the list is partial and give the total. If it also has more_pages=true, the AWS API had more pages, so total is only a lower bound — say "at least <total>". A tool error, a failed or empty call, or a stale/degraded/unavailable freshness block means "unknown" — never "no issues" or "does not exist".
+- Evidence limits: a list is complete only when the tool says so with truncated=false (also in a *Meta block or the breakdown* keys). If truncated=true or returned < total, say the list is partial and give the total; with more_pages=true the AWS API had more pages, so total is only a lower bound — say "at least <total>". A list without these fields may be capped: do not call it complete. A successful call with truncated=false and nothing returned is a real empty result for that account and region — say so. A tool error, a failed call, or a stale/degraded/unavailable freshness block means "unknown", never "no issues" or "does not exist".
 - Root-cause answers: name the evidence (tool + field/value) behind each conclusion, separate confirmed facts from hypotheses, and give read-only verification steps before any change the operator might make."""
 
 

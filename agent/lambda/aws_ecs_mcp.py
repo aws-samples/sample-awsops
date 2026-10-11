@@ -101,7 +101,9 @@ def handle_resource(args, role_arn=None):
             "taskDefinition": details.get('taskDefinition', '').split('/')[-1],
             "launchType": details.get('launchType'), "events": [
                 {"createdAt": str(e.get('createdAt', '')), "message": e.get('message', '')}
-                for e in details.get('events', [])[:10]]})
+                for e in details.get('events', [])[:10]],
+            # newest-first service events; older ones exist beyond the first 10
+            "eventsMeta": cap_list(details.get('events', []), 10)[1]})
 
     # List active task definition families / 활성 태스크 정의 패밀리 목록 조회
     elif op == "list_task_definitions":

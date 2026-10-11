@@ -118,7 +118,7 @@ def lambda_handler(event, context):
                 "currentPeriod": "{} ~ {}".format(cur_start, cur_end),
                 "previousTotal": round(sum(prev_costs.values()), 2),
                 "currentTotal": round(sum(cur_costs.values()), 2),
-                "comparison": comparison[:20]})
+                "comparison": comparison[:20], "comparisonMeta": cap_list(comparison, 20)[1]})
 
         # Identify top cost change drivers between months / 월간 비용 변동 주요 원인 분석
         elif t == "get_cost_comparison_drivers":
@@ -151,7 +151,7 @@ def lambda_handler(event, context):
                     drivers.append({"driver": k, "previous": round(prev.get(k, 0), 2),
                         "current": round(cur.get(k, 0), 2), "impact": round(diff, 2)})
             drivers.sort(key=lambda x: abs(x["impact"]), reverse=True)
-            return ok({"topDrivers": drivers[:10],
+            return ok({"topDrivers": drivers[:10], "topDriversMeta": cap_list(drivers, 10)[1],
                 "period": "{} ~ {} vs {} ~ {}".format(prev_start, prev_end, cur_start, cur_end)})
 
         # Forecast future costs / 향후 비용 예측
@@ -186,7 +186,8 @@ def lambda_handler(event, context):
             resp = ce.get_dimension_values(
                 TimePeriod={"Start": start, "End": end}, Dimension=dimension)
             values = [v["Value"] for v in resp.get("DimensionValues", [])]
-            return ok({"dimension": dimension, "values": values[:50], "count": len(values)})
+            return ok({**cap_list(values, 50, bool(resp.get("NextPageToken")))[1],
+                       "dimension": dimension, "values": values[:50], "count": len(values)})
 
         # Get tag values for cost allocation / 비용 할당용 태그 값 조회
         elif t == "get_tag_values":
@@ -196,7 +197,8 @@ def lambda_handler(event, context):
             end = now.strftime("%Y-%m-%d")
             tag_key = args.get("tag_key", "")
             resp = ce.get_tags(TimePeriod={"Start": start, "End": end}, TagKey=tag_key if tag_key else None)
-            return ok({"tagKey": tag_key, "values": resp.get("Tags", [])[:50]})
+            return ok({**cap_list(resp.get("Tags", []), 50, bool(resp.get("NextPageToken")))[1],
+                       "tagKey": tag_key, "values": resp.get("Tags", [])[:50]})
 
         # Get AWS service pricing information / AWS 서비스 요금 정보 조회
         elif t == "get_pricing":

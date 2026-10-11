@@ -64,9 +64,10 @@ def lambda_handler(event, context):
                 return ok({"name": resp.get("Name"), "arn": arn, "state": resp.get("State"),
                     "latestRevision": resp.get("LatestRevision", {}).get("Revision"),
                     "description": resp.get("Description", "")})
-            configs = kafka.list_configurations().get("Configurations", [])
-            return ok({"configurations": [{"name": c.get("Name"), "arn": c.get("Arn"),
-                "state": c.get("State")} for c in configs[:20]]})
+            resp = kafka.list_configurations()
+            configs, meta = cap_list(resp.get("Configurations", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "configurations": [{"name": c.get("Name"), "arn": c.get("Arn"),
+                "state": c.get("State")} for c in configs]})
 
         # Get bootstrap broker connection string / 부트스트랩 브로커 연결 문자열 조회
         elif t == "get_bootstrap_brokers":
@@ -75,12 +76,13 @@ def lambda_handler(event, context):
         # List broker nodes in the cluster / 클러스터 내 브로커 노드 목록 조회
         elif t == "list_nodes":
             arn = args["cluster_arn"]
-            nodes = kafka.list_nodes(ClusterArn=arn).get("NodeInfoList", [])
-            return ok({"nodes": [{"nodeType": n.get("NodeType"), "nodeARN": n.get("NodeARN"),
+            resp = kafka.list_nodes(ClusterArn=arn)
+            nodes, meta = cap_list(resp.get("NodeInfoList", []), 30, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "nodes": [{"nodeType": n.get("NodeType"), "nodeARN": n.get("NodeARN"),
                 "instanceType": n.get("InstanceType"),
                 "brokerId": n.get("BrokerNodeInfo", {}).get("BrokerId"),
                 "endpoints": n.get("BrokerNodeInfo", {}).get("Endpoints", [])}
-                for n in nodes[:30]]})
+                for n in nodes]})
 
         # Return MSK/Kafka best practices / MSK/Kafka 모범 사례 반환
         elif t == "msk_best_practices":

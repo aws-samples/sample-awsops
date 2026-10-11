@@ -353,7 +353,8 @@ def lambda_handler(event, context):
                 "routeTables": len(rts), "securityGroups": len(sgs),
                 "internetGateways": [i["InternetGatewayId"] for i in igws],
                 "natGateways": [{"id": n["NatGatewayId"], "state": n["State"], "subnetId": n.get("SubnetId")} for n in nats],
-                "vpcEndpoints": [{"id": e["VpcEndpointId"], "service": e["ServiceName"], "type": e["VpcEndpointType"]} for e in endpoints[:10]]})
+                "vpcEndpoints": [{"id": e["VpcEndpointId"], "service": e["ServiceName"], "type": e["VpcEndpointType"]} for e in endpoints[:10]],
+                "vpcEndpointsMeta": cap_list(endpoints, 10)[1]})
 
         # Retrieve VPC Flow Logs from CloudWatch Logs / CloudWatch Logs에서 VPC Flow Logs 조회
         elif t == "get_vpc_flow_logs":

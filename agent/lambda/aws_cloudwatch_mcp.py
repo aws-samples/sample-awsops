@@ -135,10 +135,11 @@ def lambda_handler(event, context):
             resp = cw.describe_alarm_history(
                 AlarmName=alarm_name, StartDate=start, EndDate=end,
                 HistoryItemType="StateUpdate", MaxRecords=20)
+            items, meta = cap_list(resp.get("AlarmHistoryItems", []), 20, bool(resp.get("NextToken")))
             history = [{"timestamp": str(h.get("Timestamp", "")),
                 "summary": h.get("HistorySummary", ""), "type": h.get("HistoryItemType", "")}
-                for h in resp.get("AlarmHistoryItems", [])]
-            return ok({"alarmName": alarm_name, "history": history})
+                for h in items]
+            return ok({**meta, "region": region, "alarmName": alarm_name, "history": history})
 
         # ========== Logs / 로그 ==========
         # List CloudWatch log groups / CloudWatch 로그 그룹 목록 조회
@@ -147,11 +148,13 @@ def lambda_handler(event, context):
             kwargs = {"limit": 20}
             if prefix: kwargs["logGroupNamePrefix"] = prefix
             resp = logs.describe_log_groups(**kwargs)
+            # The cap is API-side (limit=20), so only nextToken can say more groups exist.
+            kept, meta = cap_list(resp.get("logGroups", []), 20, bool(resp.get("nextToken")))
             groups = [{"name": g["logGroupName"], "storedBytes": g.get("storedBytes", 0),
                 "retentionDays": g.get("retentionInDays", "Never expires"),
                 "createdAt": str(datetime.fromtimestamp(g.get("creationTime", 0) / 1000))}
-                for g in resp.get("logGroups", [])]
-            return ok({"logGroups": groups, "count": len(groups)})
+                for g in kept]
+            return ok({**meta, "region": region, "logGroups": groups, "count": len(groups)})
 
         # Filter and analyze log events by pattern / 패턴으로 로그 이벤트 필터링 및 분석
         elif t == "analyze_log_group":
@@ -164,10 +167,11 @@ def lambda_handler(event, context):
             resp = logs.filter_log_events(
                 logGroupName=log_group, startTime=start_time,
                 filterPattern=filter_pattern, limit=50)
+            kept, meta = cap_list(resp.get("events", []), 50, bool(resp.get("nextToken")))
             events = [{"timestamp": str(datetime.fromtimestamp(e.get("timestamp", 0) / 1000)),
                 "message": e.get("message", "")[:300]}
-                for e in resp.get("events", [])]
-            return ok({"logGroup": log_group, "filterPattern": filter_pattern,
+                for e in kept]
+            return ok({**meta, "region": region, "logGroup": log_group, "filterPattern": filter_pattern,
                 "timeRange": "{} minutes".format(minutes),
                 "matchingEvents": len(events), "events": events})
 
@@ -193,10 +197,9 @@ def lambda_handler(event, context):
             query_id = args.get("query_id", "")
             resp = logs.get_query_results(queryId=query_id)
             status = resp.get("status", "")
-            results = []
-            for row in resp.get("results", [])[:50]:
-                results.append({f["field"]: f["value"] for f in row})
-            return ok({"queryId": query_id, "status": status,
+            rows, meta = cap_list(resp.get("results", []), 50)
+            results = [{f["field"]: f["value"] for f in row} for row in rows]
+            return ok({**meta, "region": region, "queryId": query_id, "status": status,
                 "results": results, "count": len(results),
                 "stats": resp.get("statistics", {})})
 
