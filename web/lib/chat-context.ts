@@ -51,11 +51,9 @@ function escapeTagBreakout(s: string): string {
   return s.replace(/<\/?(?:awsops_chat_history|user_query|query)>/gi, (m) => m.replace('<', '&lt;').replace('>', '&gt;'));
 }
 
-// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512,000 BYTES with 413,
-// which a long thread used to hit as a generic "no answer" error. The budget is UTF-8 bytes, not
-// characters. Reserve the actual encoded request fields too: control characters in a 50k-char
-// prompt can expand to 300KB after JSON escaping. Keep the NEWEST turns that fit, skip empty
-// placeholders (an in-flight or aborted answer), and never split a message.
+// Outgoing history bound (client → /api/chat). The BFF rejects bodies over 512,000 BYTES (413). Budget
+// UTF-8 bytes, reserving the encoded request fields too (a 50k-char prompt can reach 300KB once JSON-
+// escaped). Keep the NEWEST turns that fit, skip empty placeholders, never split a message.
 export const OUTGOING_HISTORY_MAX_MESSAGES = 40;
 export const OUTGOING_HISTORY_MAX_BYTES = 300_000;
 const CHAT_REQUEST_MAX_BYTES = 512_000;

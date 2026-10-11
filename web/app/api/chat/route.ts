@@ -32,8 +32,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
 
 const MAX_PROMPT = 50_000;
-// A requested account the chat cannot use must be said out loud: answering from the host account
-// while the user believes they are looking at another account is the worst kind of wrong answer.
+// A requested account the chat cannot use must be said aloud, not silently answered from the host.
 const ACCOUNT_SCOPE_NOTICE: Record<ChatLang, (id: string, reason: 'unavailable' | 'lookup_failed') => string> = {
   ko: (id, r) => r === 'lookup_failed'
     ? `계정 ${id} 정보를 확인하지 못해 이번 답변은 호스트 계정 기준입니다.`
@@ -470,8 +469,7 @@ export async function POST(request: Request) {
       accountId = target.accountId;
       accountAlias = target.alias || undefined;
     } else {
-      // Interpolating the client-supplied id is safe only because the enclosing branch required
-      // validateAccountId (/^\d{12}$/) — keep that guard if this condition is ever reworked.
+      // The id is interpolated safely only because the enclosing branch required validateAccountId.
       accountScopeNotice = `${ACCOUNT_SCOPE_NOTICE[lang](body.accountId, target === null ? 'lookup_failed' : 'unavailable')}\n\n`;
     }
   }

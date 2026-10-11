@@ -53,8 +53,7 @@ def lambda_handler(event, context):
                 Dimensions=dim_list, StartTime=start, EndTime=end,
                 Period=period, Statistics=[stat])
             datapoints = sorted(resp.get("Datapoints", []), key=lambda x: x.get("Timestamp", ""))
-            # Keep the LATEST 30 points (newest are the evidence for "now"), and say when older
-            # points in the window were dropped so a trimmed series is never read as the full range.
+            # Keep the LATEST 30 points and say when older ones were dropped.
             latest, meta = cap_list(list(reversed(datapoints)), 30)
             latest.reverse()
             return ok({**meta, "kept": "latest", "region": region, "namespace": namespace,
@@ -120,18 +119,16 @@ def lambda_handler(event, context):
         # Get all currently active (ALARM state) alarms / 현재 활성(ALARM 상태) 알람 전체 조회
         elif t == "get_active_alarms":
             # Describe alarms in ALARM state / ALARM 상태의 알람 조회
-            # Request composite alarms too: without AlarmTypes the API returns metric alarms only, and
-            # an account whose firing alarms are composite would be certified "no active alarms".
+            # AlarmTypes: without it only metric alarms come back, so composite-only incidents read as none.
             resp = cw.describe_alarms(StateValue="ALARM", AlarmTypes=["CompositeAlarm", "MetricAlarm"])
             firing = ([dict(a, _type="metric") for a in resp.get("MetricAlarms", [])]
                       + [dict(a, _type="composite") for a in resp.get("CompositeAlarms", [])])
             composite = [a for a in firing if a["_type"] == "composite"]
             metric = [a for a in firing if a["_type"] == "metric"]
-            # Composite alarms (incident summaries) first, then metric alarms fill the remaining slots
-            # — so composites are never crowded out within this one API page.
+            # Composite alarms first; metric alarms fill the remaining slots (within this one API page).
             kept = composite[:20]
             kept += metric[:20 - len(kept)]
-            # Metadata reflects what was actually shown, so dropping composite alarms is never "complete".
+            # Metadata reflects what was shown.
             _, meta = cap_list(firing, len(kept), bool(resp.get("NextToken")))
             alarms = [{"name": a["AlarmName"], "type": a["_type"], "metric": a.get("MetricName", ""),
                 "namespace": a.get("Namespace", ""), "state": a["StateValue"],
@@ -215,9 +212,8 @@ def lambda_handler(event, context):
             status = resp.get("status", "")
             rows, meta = cap_list(resp.get("results", []), 50)
             if status != "Complete":
-                # Not a pagination signal: Running/Scheduled results are interim, and Failed/Cancelled/
-                # Timeout are terminal with no remainder to fetch. Either way never certify them
-                # complete (or empty) — mark the result incomplete and name the status.
+                # Not pagination: Running/Scheduled are interim; Failed/Cancelled/Timeout have no remainder.
+                # Never certify either as complete or empty; name the status.
                 meta.update(truncated=True, complete=False, query_status=status or "Unknown")
                 if status in ("Failed", "Cancelled", "Timeout"):
                     meta["query_failed"] = True

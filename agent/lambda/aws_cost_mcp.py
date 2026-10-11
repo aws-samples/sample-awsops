@@ -7,9 +7,8 @@ import time
 from datetime import datetime, timedelta
 from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
-# Cost Explorer pagination is bounded: the Lambda times out at 60 s, and an unbounded loop over a
-# high-cardinality SERVICE x USAGE_TYPE result (or a token that never advances) turns an answerable
-# query into a hard timeout. Reading stops at a page cap or time budget and the response says so.
+# Cost Explorer paging is bounded (the Lambda times out at 60 s): stop at a page cap, a time budget or a
+# token that does not advance, and say so.
 CE_MAX_PAGES = 5
 CE_BUDGET_S = 40
 

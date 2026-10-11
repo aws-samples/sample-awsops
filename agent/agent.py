@@ -902,9 +902,7 @@ LANG_TOOL_REMINDER = {
 }
 
 
-# History bounds: the BFF caps the request body, but the runtime must not trust that alone —
-# an unbounded history crowds out tool results (the evidence) and raises per-turn cost. Keep the
-# most recent turns; trim each prior message so one long pasted log cannot dominate.
+# History bounds: keep recent turns and trim long messages so history cannot crowd out tool results.
 HISTORY_MAX_MESSAGES = 40
 HISTORY_MAX_CHARS_PER_MESSAGE = 12000
 
@@ -1003,10 +1001,8 @@ def build_time_prefix(now=None):
             f"{now.astimezone(_KST).strftime('%Y-%m-%d %H:%M')} KST] ")
 
 
-# Fallback without tools: the base SKILL prompts insist on "ALWAYS call tools", which a tool-less
-# model cannot do — left alone it answers from memory while sounding live. This directive follows
-# every skill/footer/context block (only the response-language directive comes after it), so it
-# overrides those rules for this one request.
+# Tool-less fallback: the skill prompts say "ALWAYS call tools", which a tool-less model would obey by
+# answering from memory. This directive follows every other block (except language), so it overrides them.
 TOOLS_UNAVAILABLE_DIRECTIVE = """
 
 ## CRITICAL: Tools unavailable for this request
@@ -1241,8 +1237,7 @@ async def handler(payload):
     account_id = effective_account_id(payload.get('accountId', ''))
     account_alias = payload.get('accountAlias', '')
     account_directive = build_account_directive(account_id, account_alias)
-    # Runtime facts ride with the account directive so every prompt branch (built-in skill, custom
-    # agent override, tool-less fallback) carries them.
+    # Runtime facts ride with the account directive so every prompt branch carries them.
     account_directive += build_runtime_context(account_id, account_alias, payload.get('accountId', ''))
 
     # Prefix user input with account context / 사용자 입력에 어카운트 컨텍스트 접두사 추가
@@ -1338,10 +1333,8 @@ async def handler(payload):
     if extra_context:
         base_prompt = base_prompt + "\n\n" + _bounded_extra_context(extra_context)
     base_prompt = lang_directive_top + base_prompt + TOOLS_UNAVAILABLE_DIRECTIVE + lang_directive
-    # Tell the reader too — a prompt-only guard still leaves the user unable to tell a grounded
-    # answer from a memory answer. The notice rides on the FIRST model delta: if the fallback model
-    # itself fails before answering, nothing was streamed and the BFF's Bedrock-direct ladder
-    # (which only fires on an empty answer) still recovers.
+    # The notice rides on the FIRST model delta: if this model fails before answering, nothing was
+    # streamed, so the BFF's Bedrock-direct ladder (empty-answer only) still recovers.
     notice = TOOLS_UNAVAILABLE_NOTICE.get(response_language, TOOLS_UNAVAILABLE_NOTICE["ko"])
     agent = Agent(
         model=model,

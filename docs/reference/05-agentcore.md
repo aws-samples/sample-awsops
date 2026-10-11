@@ -67,30 +67,26 @@ A miss includes a fixed note directing readers to freshness/direct reads, not an
 
 ### Tool result completeness contract
 
-Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model
-never reads the first N items as the whole set. `cap_list(items, limit, more_pages)`
-(`agent/lambda/cross_account.py`) produces the base fields, and the agent's Runtime Context
-(`build_runtime_context` in `agent/agent.py`) tells the model how to read them.
+Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never
+reads the first N items as the whole set. `cap_list(items, limit, more_pages)`
+(`agent/lambda/cross_account.py`) produces the base fields; the Runtime Context
+(`build_runtime_context`, `agent/agent.py`) tells the model how to read them.
 
 | Field | Meaning |
 |---|---|
-| `returned` | Items in this response. Where a tool also emits `count`, it equals `returned`. |
-| `total` | Items the API returned before the tool's cap. It is a lower bound when `more_pages` or `api_result_capped` is set. |
-| `truncated` | `false` is the only completeness certificate. `true` means partial: capped, more pages, or not finished. |
-| `more_pages` | The AWS API returned a pagination token (`NextToken`/`Marker`/`NextPageToken`). More items can be fetched. |
-| `api_result_capped` | AWS capped the result server-side and offers no next page (`SearchTransitGatewayRoutes` `AdditionalRoutesAvailable`). Only a narrower filter reaches the rest. |
-| `complete=false`, `query_status`, `query_failed` | A Logs Insights result that is interim (`Running`/`Scheduled`), or terminal without results (`query_failed=true` for `Failed`/`Cancelled`/`Timeout`). This is not a pagination signal. |
-| `kept` | Which end of a series was kept when capped (`latest` for `get_metric_data`). |
-| `*Meta` blocks, `breakdown*` keys | The same fields for a nested list when the top-level `total` already means something else, for example a cost sum (`comparisonMeta`, `topDriversMeta`, `eventsMeta`, `breakdownReturned`/`breakdownTotal`/`breakdownTruncated`). |
-| `details_incomplete` | ECS describe calls failed or omitted resources. Only a failure count is reported, never AWS failure text. |
-| `readFailed` | The read itself failed, for example serverless caches. The result is unknown, not empty. |
-| `costPagesCut`, `costPagesCutReason` | Cost Explorer paging stopped early (`page_cap`, `time_budget`, or `repeated_token`). Totals and rankings cover only the pages read. |
+| `returned`, `total` | Items in this response, and items the API returned before the cap. `total` is a lower bound when `more_pages` or `api_result_capped` is set. |
+| `truncated` | `false` is the only completeness certificate; `true` means partial. A successful call with `truncated=false` and no items is a real empty result for that account and region. |
+| `more_pages` | The API returned a pagination token, so more items can be fetched. |
+| `api_result_capped` | AWS capped the result and offers no next page (`SearchTransitGatewayRoutes`); only a narrower filter reaches the rest. |
+| `complete=false`, `query_status`, `query_failed` | A Logs Insights result that is interim (`Running`/`Scheduled`) or ended without results (`Failed`/`Cancelled`/`Timeout`). This is not a pagination signal. |
+| `kept` | Which end of a capped series was kept (`latest` for `get_metric_data`). |
+| `*Meta`, `breakdown*` | The same fields for a nested list when the top-level `total` means something else, such as a cost sum. |
+| `details_incomplete`, `readFailed` | ECS describe calls failed or omitted resources, or the read itself failed (serverless caches): the result is unknown, not empty. |
+| `costPagesCut`, `costPagesCutReason` | Cost Explorer paging stopped early (`page_cap`, `time_budget`, `repeated_token`); totals and rankings cover only the pages read. |
 
-A successful call with `truncated=false` and no items is a real empty result for that account and
-region. A list without these fields may still be capped, so it is never presented as complete.
-Synced-inventory tools (`query_inventory`, `inventory_summary`, `find_unused_resources`,
-`get_topology`) add a separate `scope` block stating that they read the host account only (see
-[graph read contract — model-facing topology reader](../runbooks/graph-read-contract.md#model-facing-topology-reader)).
+A list without these fields may still be capped, so it is never presented as complete. The
+synced-inventory tools add a separate `scope` block stating that they read the host account only (see
+[graph read contract](../runbooks/graph-read-contract.md#model-facing-topology-reader)).
 
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py, provision_report.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
