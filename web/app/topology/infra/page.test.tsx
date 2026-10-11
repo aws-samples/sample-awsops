@@ -16,6 +16,19 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('offers canonical regional choices for an ambiguous legacy resource link', async () => {
+  const candidates = ['rds:@self:us-east-1:app-db', 'rds:@self:ap-northeast-2:app-db'];
+  vi.stubGlobal('fetch', async () => Response.json({
+    nodes: [], edges: [], captured_at: null,
+    selection: { status: 'ambiguous', requested_id: 'rds:app-db', candidate_ids: candidates },
+    collection: { status: 'unknown', stale: true, sources: [] },
+  }));
+  await act(async () => { render(<ResourcePage params={Promise.resolve({ id: 'rds:app-db' })} />); });
+  expect((await screen.findByText(/리소스 선택이 모호합니다/)).closest('[role="alert"]')).toBeTruthy();
+  for (const id of candidates) expect(screen.getByRole('link', { name: id }).getAttribute('href'))
+    .toBe(`/topology/resource/${encodeURIComponent(id)}`);
+});
+
 it.each(['infra', 'resource'])('shows retained collection warnings in the %s graph', async page => {
   vi.stubGlobal('fetch', async () => Response.json({
     nodes: [], edges: [], captured_at: '2026-09-14T10:00:00Z',

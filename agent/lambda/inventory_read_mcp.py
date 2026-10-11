@@ -197,8 +197,9 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
       nodes = [{id, kind, label, meta}]
       edges = [{source, target, rel, confidence, meta?}] (trace meta: spanCount/metricCount)
 
-    Resolve an exact canonical ID first, then an exact raw ID (everything after the first
-    colon). The sanitized reader view deliberately omits meta.resourceId. Ambiguous raw IDs
+    Resolve an exact canonical ID first, then a legacy kind-prefixed or raw ID.
+    Scoped placement IDs carry @account:region before the raw ID. The sanitized
+    reader view deliberately omits meta.resourceId. Ambiguous compatibility IDs
     never select a graph. Select the root and its one-hop neighbours BEFORE limiting nodes.
     Return (nodes, edges, selection/truncation metadata); collection evidence belongs to
     the caller. Limits describe this response, not source collection completeness.
@@ -221,7 +222,9 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
         if not matches:
             matches = _execute(
                 "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
-                "AND strpos(id, ':') > 0 AND substring(id FROM strpos(id, ':') + 1) = :rid "
+                "AND strpos(id, ':') > 0 AND (substring(id FROM strpos(id, ':') + 1) = :rid "
+                "OR regexp_replace(id, '^[^:]+:@(self|[0-9]{12}):[a-z0-9-]+:', '') = :rid "
+                "OR regexp_replace(id, '^([^:]+):@(self|[0-9]{12}):[a-z0-9-]+:', '\\1:') = :rid) "
                 "ORDER BY id LIMIT :match_limit",
                 params=resolve_params + [{"name": "match_limit", "value": {"longValue": 3}}])
             matched_by = "raw"

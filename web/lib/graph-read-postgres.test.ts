@@ -65,6 +65,59 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
   });
   afterAll(async () => { await pool?.end(); });
 
+  it('keeps legacy account-union IDs distinct and excludes cross-account dangling edges', async () => {
+    await pool.query('TRUNCATE topology_nodes, topology_edges, topology_graph_state');
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,class,run_id) VALUES
+      ('self','rds:app-db','rds','Host DB','infra','scope-test'),
+      ('self','vpc:host','vpc','Host VPC','infra','scope-test'),
+      ('222233334444','rds:app-db','rds','Member DB','infra','scope-test'),
+      ('222233334444','vpc:member','vpc','Member VPC','infra','scope-test');
+      INSERT INTO topology_edges(account_id,source,target,rel,class,run_id) VALUES
+      ('self','rds:app-db','vpc:host','infra:in_vpc','infra','scope-test'),
+      ('222233334444','rds:app-db','vpc:member','infra:in_vpc','infra','scope-test'),
+      ('self','rds:app-db','vpc:member','dangling','infra','scope-test');`);
+    const read = async (from?: string) => (await GET(new Request(`http://fixture/api/graph?class=infra&account=__all__${from ? `&from=${encodeURIComponent(from)}` : ''}`))).json();
+    const union = await read();
+    expect(union.nodes).toHaveLength(4);
+    expect(union.edges).toHaveLength(2);
+    expect(new Set(union.nodes.map((n: { id: string }) => n.id)).size).toBe(4);
+    expect(union.edges.every((e: { source: string; target: string }) => e.source.split('/')[0] === e.target.split('/')[0])).toBe(true);
+    const ambiguous = await read('rds:app-db');
+    expect(ambiguous.selection).toMatchObject({ status: 'ambiguous' });
+    expect(ambiguous.nodes).toEqual([]);
+    const member = await read('@222233334444/rds:app-db');
+    expect(member.selection.resolved_id).toBe('@222233334444/rds:app-db');
+    expect(member.nodes.map((n: { label: string }) => n.label).sort()).toEqual(['Member DB', 'Member VPC']);
+  });
+
+  it('resolves unique legacy placement links and discloses regional ambiguity', async () => {
+    await pool.query('TRUNCATE topology_nodes, topology_edges, topology_graph_state');
+    const resources = ['us-east-1', 'ap-northeast-2'].map(region => ({
+      account_id: 'self', region, resource_type: 'rds', resource_id: 'app-db',
+      data: { vpc_id: `vpc-${region}`, endpoint_address: `app-db.${region}.example.test` },
+    }));
+    const graph = buildInfraGraph({ resources, vpcs: [], subnets: [], securityGroups: [] });
+    for (const node of graph.nodes) await pool.query(
+      "INSERT INTO topology_nodes(account_id,id,kind,label,meta,class,run_id) VALUES ('self',$1,$2,$3,$4,'infra','scope-test')",
+      [node.id, node.kind, node.label, node.meta]);
+    for (const edge of graph.edges) await pool.query(
+      "INSERT INTO topology_edges(account_id,source,target,rel,class,run_id) VALUES ('self',$1,$2,$3,'infra','scope-test')",
+      [edge.source, edge.target, edge.rel]);
+    const read = async (from: string) => (await GET(new Request(`http://fixture/api/graph?class=infra&from=${encodeURIComponent(from)}`))).json();
+    const ambiguous = await read('rds:app-db');
+    expect(ambiguous.selection.status).toBe('ambiguous');
+    expect(ambiguous.selection.candidate_ids).toHaveLength(2);
+    expect(ambiguous.nodes).toEqual([]);
+    const canonical = await read('rds:@self:us-east-1:app-db');
+    expect(canonical.nodes).toHaveLength(2);
+    expect(canonical.nodes.every((n: { meta: { region: string } }) => n.meta.region === 'us-east-1')).toBe(true);
+    await pool.query("DELETE FROM topology_edges WHERE source LIKE '%ap-northeast-2%'; DELETE FROM topology_nodes WHERE id LIKE '%ap-northeast-2%';");
+    const unique = await read('rds:app-db');
+    expect(unique.selection).toMatchObject({ status: 'resolved', resolved_id: 'rds:@self:us-east-1:app-db' });
+    expect(unique.nodes).toHaveLength(2);
+    expect((await read('rds:absent')).selection.status).toBe('not_found');
+  });
+
   it.each(['all-empty', 'mixed'])('retains saved trace rows for %s child coverage', async mode => {
     await rebuildTraceGraph(pool, [], undefined, [{
       available: async () => true,

@@ -49,6 +49,29 @@ VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclud
 500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
 
+Placement nodes with a known inventory region use
+`<kind>:@<storage-account>:<region>:<resource-id>` identities. Storage account is
+the inventory query scope (`self` or a member ID), not telemetry ownership.
+This separates same-named regional resources and reused network IDs. Regionless
+legacy records retain their old IDs; do not infer a missing region. Account-union
+responses additionally wrap every saved node ID as `@<storage-account>/<saved-id>`
+and constrain each edge's endpoints to visible nodes in that same account.
+The read wrapper also isolates legacy publications before a normal rebuild.
+
+Focused HTTP reads first resolve the canonical ID, then a uniquely matching
+`meta.legacyId`. `selection.status` is `resolved`, `not_found` or `ambiguous`;
+ambiguity returns no graph and at most two canonical choices with
+`candidates_truncated` disclosing additional candidates. A resolved selection
+includes `selection.account_id` and `resolved_id`. Focused union reads use that
+one account's graph/state; this is not whole-fleet collection proof. A wrapped
+root cannot override an explicitly different selected account.
+
+Placement VPC navigation preserves its full account/region/raw-ID selection key.
+The resource page supports existing uniquely resolvable links and displays
+account/region beside scoped node labels. Previously collapsed records require
+the next separately authorized normal rebuild; reader changes cannot reconstruct
+inventory records that an old publication already merged.
+
 The reader supports flow, infra and trace metadata. Missing state remains unknown;
 an account union does not borrow the host's publication clock. Inventory publication is implemented in `web/lib/graph-store.ts`; it requires the separately
 authorized schedule/manual invocation. The reader does not activate that schedule. Source integration does not execute migration,
@@ -411,8 +434,10 @@ repeatable-read transaction.
 
 Omitted or null `resource_id` selects the whole class. A supplied string is trimmed
 before lookup and echo; empty, non-string or over-4096-character values return 400.
-Exact canonical IDs take precedence. The raw-ID fallback matches only the suffix
-after the first kind prefix, so use canonical IDs for composite/multi-segment nodes.
+Exact canonical IDs take precedence. The raw-ID fallback matches the suffix after
+the first kind prefix, and additionally recognizes raw and legacy kind-prefixed
+IDs for scoped placement identities. Duplicate regional candidates remain ambiguous.
+Use canonical IDs for other composite/multi-segment nodes.
 The root and its incoming/outgoing one-hop neighbours are selected before the node cap.
 
 | Field | Reader meaning |
