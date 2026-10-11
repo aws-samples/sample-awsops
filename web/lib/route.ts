@@ -70,12 +70,20 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
-/** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; else 'ops'. */
-export function pickGateway(prompt: string, pinned?: string): string {
+/** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
+ *  conversation's previous section (when the caller vouches for it); else 'ops'.
+ *
+ *  Follow-up continuity: on the regex-only path (hybrid routing off, the default) a follow-up such
+ *  as "그럼 그건 왜 그래?" or "더 자세히" carries no domain keyword. It used to land on the 'ops'
+ *  catch-all, which dropped the domain prompt and tools the previous answer was built with. A
+ *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
+ *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
+export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
   if (pinned && sectionByKey(pinned)) return pinned;
   for (const r of RULES) {
     if (r.re.test(prompt)) return r.key;
   }
+  if (previous && sectionByKey(previous)) return previous;
   return 'ops';
 }
 
@@ -85,7 +93,7 @@ export interface RankedEntry { key: string; score: number; active: boolean }
 export interface RouteResult {
   primary: string;
   ranked: RankedEntry[];
-  method: 'pin' | 'regex' | 'llm' | 'fallback';
+  method: 'pin' | 'regex' | 'llm' | 'fallback' | 'previous';
   // ADR-044: cross-domain auto-synthesis signal. `selected` = the active routes the chat
   // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-025 fan-out+synthesis.
   // pin/regex/fallback are always single. NOTE: the Agent-Space/active filter later in
@@ -98,6 +106,9 @@ export interface ClassifyOpts {
   classify?: (prompt: string) => Promise<{ key: string; score: number }[]>;
   /** ADR-044: min classifier score for a route to join the multi-domain fan-out set. */
   minScore?: number;
+  /** Follow-up continuity: the section that answered the previous turn (caller-validated). Used
+   *  only when neither a keyword nor the classifier picked a route, instead of the default. */
+  previous?: string;
 }
 
 /** ADR-044 default multi-route inclusion threshold (env-overridable, golden-set-tuned). */
@@ -178,6 +189,10 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // LLM off/empty/failed: legacy first-match if any rule hit, else fallback.
   if (matched.length > 0) {
     return single(matched[0], [entry(matched[0], 1)], 'regex');
+  }
+  if (opts.previous && sectionByKey(opts.previous)) {
+    // distinct method so ADR-038 routing/misroute telemetry keeps continuity separate from the catch-all
+    return single(opts.previous, [entry(opts.previous, 0)], 'previous');
   }
   const fallbackKey = opts.llmEnabled ? ACTIVE_FALLBACK : 'ops'; // flag off = exact legacy behavior
   return single(fallbackKey, [entry(fallbackKey, 0)], opts.llmEnabled ? 'fallback' : 'regex');

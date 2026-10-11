@@ -51,6 +51,9 @@ export interface Msg {
   // report usage AND a priced model), and the generated queries surfaced during the run.
   usage?: { inputTokens: number; outputTokens: number }; costUsd?: number;
   queries?: QueryPreview[];
+  // Account the turn was answered for ('host' | 12-digit id), from the server meta frame — sent back
+  // with history so the agent can tell earlier answers about another account apart.
+  account?: string;
 }
 
 function fmtCost(usd: number): string {

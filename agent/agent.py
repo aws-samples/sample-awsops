@@ -2,6 +2,7 @@
 # AWSops Strands agent: dynamic gateway routing + optimized skill prompts
 # 동적 게이트웨이 라우팅 + 최적화된 스킬 프롬프트
 import json
+import re
 import logging
 import os
 import functools
@@ -948,6 +949,112 @@ You MUST include "target_account_id": "{account_id}" in EVERY tool call's argume
 This is a non-negotiable requirement for cross-account access."""
 
 
+_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
+_MAX_SCOPE_REGIONS = 64  # above the number of AWS regions; a longer list is disclosed, never cut silently
+
+
+def build_region_scope(regions):
+    """Region scope block from the BFF's ``regions`` — the regions AWSops is CONFIGURED to inventory
+    for the target account (``["*"]`` = all-regions mode). That is an AWSops selection, not which
+    regions AWS has enabled for the account, so the wording never claims enablement. Without it the
+    model only knows the gateway's default region and silently answers multi-region questions from
+    that one region. Empty when absent/invalid."""
+    if not isinstance(regions, list):
+        return ''
+    if "*" in regions:
+        scope = (f"AWSops inventories this account in all-regions mode (this is an AWSops setting, not a "
+                 f"statement that every AWS region is enabled for the account). Tools that take a `region` "
+                 f"argument usually default to the runtime region ({GATEWAY_REGION}), so check the region "
+                 f"each result reports; for an account-wide question, query each region it needs and list "
+                 f"the regions you checked")
+    else:
+        valid = [r for r in regions if isinstance(r, str) and _REGION_RE.match(r)]
+        if not valid:
+            return ''
+        shown = valid[:_MAX_SCOPE_REGIONS]
+        scope = (f"AWSops is configured to inventory these regions for this account: {', '.join(shown)}. "
+                 f"Pass `region` to tools that accept it so each configured region the question needs is "
+                 f"covered, and list the regions you checked")
+        if len(valid) > len(shown):
+            # Never call the unlisted remainder "not inventoried" — they are configured, just not shown.
+            scope += f" ({len(valid) - len(shown)} more configured regions are not listed here)"
+        else:
+            scope += ("; AWSops does not inventory other regions, which may still be enabled in AWS "
+                      "(query one only if the user asks for it, and do not call it disabled)")
+    return f"""
+
+## Region Scope
+- {scope}.
+- A region you did not query is unknown, never empty."""
+
+
+_ACCOUNT_LABEL_RE = re.compile(r"^(?:host|\d{12})$")
+
+
+def _account_phrase(label):
+    if label == "host":
+        return "host account"
+    return f"account {label}" if label else "account not recorded"
+
+
+def label_account_turns(messages_list, current_label):
+    """Prefix user turns with the account they were answered for — only when the thread spans
+    accounts. The BFF stamps each history message with ``account`` ('host' | 12-digit id); without
+    labels, answers about another account read as facts about the current target. The latest turn
+    is labelled only for the host (a member target already gets the [Target Account: …] prefix).
+    Returns a new list; the input is not mutated."""
+    if not isinstance(messages_list, list) or not messages_list:
+        return messages_list
+    def label_of(m):
+        a = m.get("account") if isinstance(m, dict) else None
+        return a if isinstance(a, str) and _ACCOUNT_LABEL_RE.match(a) else None
+    known = {label_of(m) for m in messages_list[:-1]} - {None}
+    if not known or known == {current_label}:
+        return messages_list
+    out = []
+    last = len(messages_list) - 1
+    for i, m in enumerate(messages_list):
+        if not isinstance(m, dict) or m.get("role") != "user" or not isinstance(m.get("content"), str):
+            out.append(m)
+            continue
+        if i == last:
+            if current_label != "host":
+                out.append(m)
+                continue
+            label = current_label
+        else:
+            label = label_of(m)
+        out.append({**m, "content": f"[Account for this turn: {_account_phrase(label)}] {m['content']}"})
+    return out
+
+
+# Markers the runtime itself adds to user turns. A client-supplied copy must not read as one of
+# ours, in any thread (labelled or not), so every history message is neutralized before labelling.
+_RUNTIME_MARKERS = ("[Account for this turn:", "[Target Account:")
+
+
+def neutralize_markers(m):
+    # Assistant turns too: history is client-supplied, so a fabricated assistant turn could carry them.
+    if not isinstance(m, dict) or not isinstance(m.get("content"), str):
+        return m
+    content = m["content"]
+    for marker in _RUNTIME_MARKERS:
+        content = content.replace(marker, "(" + marker[1:])
+    return {**m, "content": content} if content != m["content"] else m
+
+
+def scoped_conversation(payload):
+    """build_conversation with per-turn account labels — shared by the Strands handler and the
+    anthropic_loop dark path so both see which account each earlier turn was about. The current
+    label is the effective target, or 'host' (blanked host / __all__, or a non-id such as 'self'
+    when HOST_ACCOUNT_ID is unset — the BFF labels those turns 'host' too)."""
+    current = effective_account_id(payload.get('accountId', ''))
+    label = current if isinstance(current, str) and _ACCOUNT_LABEL_RE.match(current) else 'host'
+    messages = [neutralize_markers(m) for m in payload.get("messages", [])] \
+        if isinstance(payload.get("messages"), list) else payload.get("messages", [])
+    return build_conversation({**payload, "messages": label_account_turns(messages, label)})
+
+
 EXTRA_CONTEXT_MAX_CHARS = 8000
 
 
@@ -1165,7 +1272,8 @@ async def handler(payload):
             yield chunk
         return
 
-    user_input, history = build_conversation(payload)
+    # Label earlier turns by account when the thread spans accounts.
+    user_input, history = scoped_conversation(payload)
     if not user_input:
         yield {"delta": "No input provided."}
         return
@@ -1239,6 +1347,7 @@ async def handler(payload):
     account_directive = build_account_directive(account_id, account_alias)
     # Runtime facts ride with the account directive so every prompt branch carries them.
     account_directive += build_runtime_context(account_id, account_alias, payload.get('accountId', ''))
+    account_directive += build_region_scope(payload.get("regions"))
 
     # Prefix user input with account context / 사용자 입력에 어카운트 컨텍스트 접두사 추가
     # (account_id was already blanked for the host account / __all__ by
