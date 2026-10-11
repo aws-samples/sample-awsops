@@ -68,7 +68,7 @@ is an allowlist, not a denylist of mutating verbs (which always misses some, suc
 passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
 `query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `detect`, and the
 like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of six
-read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, and the three IAM `generate-…` report builders; the `generate` verb itself is not read-only). Line continuations are joined before parsing, and the first adjacent (service, operation)-shaped pair after any leading options and their values is the command, so an option value cannot hide the operation. Athena
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, and the three IAM `generate-…` report builders; the `generate` verb itself is not read-only). Line continuations are joined before parsing. Options and their values are skipped wherever they appear, before the service or between the service and the operation (`aws s3 --region x rm`), so an option value cannot pose as the service or hide the operation. A matrix test wraps every mutating and read-only example in each of those positions, with and without `=`, continuations and quoting. Athena
 `start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
 `presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are

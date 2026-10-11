@@ -1237,3 +1237,66 @@ def test_rules_name_enable_and_disable_among_the_forbidden_command_verbs():
     for verb in ("enable", "disable", "register", "deploy"):
         assert verb in S._RULES
     assert report._has_mutating_cli("aws ec2 enable-ebs-encryption-by-default")
+
+
+# ── review: the CLI backstop is tested as a matrix, not one bypass at a time ────────────────────────
+# Every (service, operation) is wrapped in every position an option, continuation or quote can take.
+
+_MUTATING_PAIRS = (("ec2", "terminate-instances --instance-ids i-1"), ("s3", "rm s3://b/k --recursive"),
+                   ("s3", "sync . s3://b"), ("iam", "delete-user --user-name u"),
+                   ("route53", "change-resource-record-sets --hosted-zone-id Z"),
+                   ("lambda", "invoke --function-name f out.json"), ("sns", "publish --topic-arn t"),
+                   ("deploy", "push --application-name a"), ("ssm", "start-session --target i-1"))
+_READ_PAIRS = (("ec2", "describe-instances --instance-ids i-1"), ("s3", "ls s3://b"),
+               ("iam", "list-users"), ("logs", "start-query --log-group-name g"),
+               ("dynamodb", "scan --table-name t"), ("sts", "get-caller-identity"))
+_OPTION_FORMS = ("", "--region ap-northeast-2", "--region=ap-northeast-2", "--profile prod", "--debug",
+                 "--output json", "--cli-input-yaml f.yaml", "--unknown-opt value", "--endpoint-url https://e.example",
+                 "--region us-east-1 --profile p")
+_WRAPPERS = ("{c}", "`{c}`", "$ {c}", "run {c} now", "| {c} |", "({c})")
+
+
+def _variants(service, operation):
+    for opts in _OPTION_FORMS:
+        for place in ("before", "between", "both"):
+            before = opts if place in ("before", "both") else ""
+            between = opts if place in ("between", "both") else ""
+            command = " ".join(p for p in ("aws", before, service, between, operation) if p)
+            yield command
+            yield command.replace(" ", " \\\n   ", 2)       # shell line continuations after aws / the options
+            yield command.replace(" ", " \\\r\n  ", 1)
+
+
+def test_cli_guard_matrix_flags_every_mutating_command_in_every_form():
+    misses = []
+    for service, operation in _MUTATING_PAIRS:
+        for command in _variants(service, operation):
+            for wrap in _WRAPPERS:
+                text = wrap.format(c=command)
+                if not report._has_mutating_cli(text):
+                    misses.append(text)
+    assert not misses, f"{len(misses)} bypasses, e.g. {misses[:3]!r}"
+
+
+def test_cli_guard_matrix_never_flags_a_read_only_command_in_any_form():
+    false_positives = []
+    for service, operation in _READ_PAIRS:
+        for command in _variants(service, operation):
+            for wrap in _WRAPPERS:
+                text = wrap.format(c=command)
+                if report._has_mutating_cli(text):
+                    false_positives.append(text)
+    assert not false_positives, f"{len(false_positives)} false positives, e.g. {false_positives[:3]!r}"
+
+
+
+def test_title_call_receives_only_the_head_of_the_report(monkeypatch):
+    seen = {}
+
+    def fake(prompt, context, model_id, max_tokens):
+        seen["len"] = len(context)
+        return '{"title": "t", "tags": ["a"]}'
+    monkeypatch.setattr(report, "_bedrock_render", fake)
+    assert report.make_title_and_tags("x" * 500_000)["title"] == "t"
+    assert seen["len"] == report._TITLE_INPUT_CHARS
+    assert report.make_title_and_tags("short")["title"] == "t" and seen["len"] == len("short")

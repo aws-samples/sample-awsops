@@ -85,11 +85,17 @@ def _resolve_tier(tier, model):
     return catalog, model_id, TIER_MAX_TOKENS.get(tier, TIER_MAX_TOKENS["mid"])
 
 
+# The title and tags need the report's headline, not all of it: the whole markdown grew roughly 4x with
+# the larger section budgets (a deep report approaches 120k tokens), which would make this "cheap" call
+# the most expensive input of the run.
+_TITLE_INPUT_CHARS = 12000
+
+
 def make_title_and_tags(md, lang="ko"):
     """One cheap LLM call → {'title': str|None, 'tags': [str]}. Best-effort: ANY failure → None/[]
     (the title is decorative; it must never affect report success)."""
     try:
-        raw = _bedrock_render(_title_prompt(lang), md, _TITLE_MODEL, 300)
+        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL, 300)
         snippet = raw[raw.find("{"): raw.rfind("}") + 1]  # tolerate ```json fences / filler text
         data = json.loads(snippet)
         title = data.get("title")
@@ -430,28 +436,54 @@ _SINGLE_WORD_OPERATIONS = frozenset((
 _HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
 
-def _looks_like_command(service, operation):
-    """A (service, operation) pair shaped like a real CLI invocation: a plain service name followed by
-    a hyphenated operation, one of the few un-hyphenated operations, or an `aws s3` command."""
-    if not _SERVICE_SHAPED.fullmatch(service):
-        return False
-    return bool(_HYPHENATED.fullmatch(operation) or operation in _SINGLE_WORD_OPERATIONS
-                or (service == "s3" and operation in _S3_COMMANDS))
+_GLOBAL_FLAGS = frozenset((
+    "--debug", "--no-verify-ssl", "--no-paginate", "--no-sign-request", "--no-cli-pager",
+    "--no-cli-auto-prompt", "--cli-auto-prompt"))
+_SERVICE_WINDOW = 6  # a service name sits among the first few tokens, after any global options
+
+
+def _operation_shaped(token, service):
+    """A token shaped like an operation of `service`: hyphenated, one of the few un-hyphenated
+    operations, or an `aws s3` command."""
+    return bool(_HYPHENATED.fullmatch(token) or token in _SINGLE_WORD_OPERATIONS
+                or (service == "s3" and token in _S3_COMMANDS))
+
+
+def _operation_after(tokens, index, service):
+    """The operation of `service` (tokens[index - 1]), skipping options and their values — also
+    between the service and the operation (`aws s3 --region x rm`). A known value-taking option always
+    consumes its value; for an unknown option the next token is its value unless it is operation-shaped."""
+    j = index
+    while j < len(tokens):
+        token = tokens[j]
+        if token.startswith("-"):
+            j += 1
+            if "=" in token or token in _GLOBAL_FLAGS or j >= len(tokens) or tokens[j].startswith("-"):
+                continue
+            if token in _GLOBAL_OPTIONS_WITH_VALUE or not _operation_shaped(tokens[j], service):
+                j += 1  # its value
+            continue
+        return token if _operation_shaped(token, service) else None
+    return None
 
 
 def _cli_commands(text):
     """Yield (service, operation) for each `aws ...` invocation.
 
-    Line continuations are joined first (`aws ec2 \\` + newline + `terminate-instances`). Leading
-    options and their values — known or not (`--region x`, `--cli-input-yaml f.yaml`, `--debug`) —
-    are skipped by taking the first adjacent (service, operation)-shaped pair, so an option value can
-    never be mistaken for the service and hide the real operation."""
+    Line continuations are joined first (`aws ec2 \\` + newline + `terminate-instances`). Options and
+    their values are skipped wherever they appear before the operation (`aws --region x ec2 ...`,
+    `aws s3 --profile p rm ...`), known or not. The first service-shaped token among the leading tokens
+    that is followed by an operation is the command, so an option value can neither pose as the service
+    nor hide the operation."""
     text = _LINE_CONTINUATION.sub(" ", text)
     for start in _CLI_START.finditer(text):
         tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 300])
-        for i in range(len(tokens) - 1):
-            if not tokens[i].startswith("-") and _looks_like_command(tokens[i], tokens[i + 1]):
-                yield tokens[i], tokens[i + 1]
+        for i, token in enumerate(tokens[:_SERVICE_WINDOW]):
+            if token.startswith("-") or not _SERVICE_SHAPED.fullmatch(token):
+                continue
+            operation = _operation_after(tokens, i + 1, token)
+            if operation is not None:
+                yield token, operation
                 break
 
 
