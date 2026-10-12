@@ -40,11 +40,23 @@ _RULES = (
 # [Info] and P1/P2/P3 markers must stay verbatim (the UI/severity heuristics key on them).
 # NOTE: a manual i18n lockstep site — alongside agent/agent.py's language map and
 # bedrock-direct.ts (see web/lib/CLAUDE.md); adding a language starts at web SUPPORTED_LANGS.
+# The root-cause table heading per report lang. report.py checks that a section with a
+# [Critical]/[Warning] finding ends with one of these headings followed by a table, so the heading
+# is named explicitly in each language rule instead of being left to translation.
+RCA_HEADINGS = {
+    "ko": "원인 분석 및 조치",
+    "en": "Root Cause and Remediation",
+    "zh": "原因分析与处置",
+    "ja": "原因分析と対処",
+}
 LANG_RULES = {
     "ko": "모든 출력은 한국어로 작성하라.",
-    "en": "Write ALL output in English (keep the [Critical]/[Warning]/[Info] and P1/P2/P3 markers verbatim).",
-    "zh": "全部输出使用简体中文（[Critical]/[Warning]/[Info] 与 P1/P2/P3 标记保持原样）。",
-    "ja": "出力全体を日本語で書け（[Critical]/[Warning]/[Info] と P1/P2/P3 の表記はそのまま維持すること）。",
+    "en": "Write ALL output in English (keep the [Critical]/[Warning]/[Info] and P1/P2/P3 markers verbatim). "
+          f"Title the '### 원인 분석 및 조치' table '### {RCA_HEADINGS['en']}'.",
+    "zh": "全部输出使用简体中文（[Critical]/[Warning]/[Info] 与 P1/P2/P3 标记保持原样）。"
+          f"'### 원인 분석 및 조치' 表的标题写作 '### {RCA_HEADINGS['zh']}'。",
+    "ja": "出力全体を日本語で書け（[Critical]/[Warning]/[Info] と P1/P2/P3 の表記はそのまま維持すること）。"
+          f"'### 원인 분석 및 조치' の表の見出しは '### {RCA_HEADINGS['ja']}' とすること。",
 }
 
 # Localized titles for the sections whose catalog titles are Korean literals (the 7 deep-only

@@ -60,7 +60,15 @@ read failed, a failed Security Hub detail query) and failed collectors are liste
 Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
-and apply through their own change process, and a confidence level. The prompt forbids
+and apply through their own change process, and a confidence level. Non-Korean reports
+title the table in their language (`RCA_HEADINGS` in `sections.py`: `Root Cause and Remediation`,
+`原因分析与处置`, `原因分析と対処`). The contract is checked, not only prompted: a section that tags a
+`[Critical]` or `[Warning]` finding but has no such heading followed by a table with a header row, a
+separator row and at least one data row gets a visible marker and counts as degraded
+(`rca_missing`). Mentions of the scale itself (`[Critical]/[Warning] 발견 없음`, or a marker inside
+inline code) are not findings. The check confirms the table exists; it does not check that every
+finding has a row. A section that already stopped at `max_tokens` carries only the truncation
+marker. The prompt forbids
 resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
 command that is not provably read-only gets a visible warning and counts as degraded. The check
 is an allowlist, not a denylist of mutating verbs (which always misses some, such as
@@ -72,7 +80,8 @@ read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, the
 `start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
 `presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
-skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
+skipped. The `aws` itself must be lowercase (so "AWS Lambda update" stays prose), while the service
+and operation are compared lowercased, as the CLI accepts `EC2 Delete-Volume`. A new read verb the model invents is flagged until it is
 added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
 
 The detector is a best-effort text heuristic, not a shell parser. It does not recognize commands built
@@ -80,8 +89,9 @@ through shell variables or command substitution, passed through wrappers such as
 `ssh`, or written for other tools (`terraform apply`, `kubectl apply`). The prompt rule is the primary
 control; the detector catches a model that disregards it in the common forms and makes that visible.
 
-A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
-listed in `summary.render_degraded`.
+A section that fails, returns no non-whitespace text, stops at `max_tokens`, contains a
+resource-changing command, or tags findings without the root-cause table is listed in
+`summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same
 status a degraded collector produces. Failed sections show a fixed localized message, without
 provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
@@ -102,6 +112,15 @@ Throttling, 5xx and transient connection failures (a reset or refused connection
 budget is spent, the remaining sections fail fast with the localized degraded body and the report
 completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
 bound.
+
+A retry backoff is skipped, and the section fails fast, when a call could no longer finish after
+the sleep, so throttling never sleeps past the render budget. Every section budget is capped by
+`DIAGNOSIS_MAX_OUTPUT_TOKENS` (default 32000). The default models accept more; if you point
+`DIAGNOSIS_MODEL_*` at a model with a smaller output limit, set this variable to that limit so
+sections are not rejected. The coverage note names the gap behind a `partial` source (failed reads,
+the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
+detail query reports a bounded error code rather than provider text, and that page is sorted by
+normalized severity, so it holds the highest-severity findings.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the
 model and reader only. The evaluator still reads `to`, which stays unresolved, so the

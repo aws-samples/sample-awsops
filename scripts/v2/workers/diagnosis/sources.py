@@ -394,8 +394,9 @@ def collect_service_map():
 
 def _posture_top_findings(sh):
     """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter) by title+severity+control.
-    The first 100 matches are an arbitrary page (no SortCriteria), so the group counts are sample
-    frequencies, not account totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
+    The page is sorted by normalized severity (highest first), so CRITICAL findings fill it before
+    HIGH; it is still the first 100 matches, so the group counts are sample frequencies, not account
+    totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
     title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
     labelled by product + finding type instead. No resource identifiers are kept."""
     r = sh.get_findings(
@@ -403,6 +404,7 @@ def _posture_top_findings(sh):
                  "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}],
                  "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"},
                                    {"Value": "HIGH", "Comparison": "EQUALS"}]},
+        SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}],
         MaxResults=100,
     )
     groups = {}
@@ -449,7 +451,9 @@ def collect_posture():
         try:  # best-effort detail; the severity rollup above stands on its own
             data.update(_posture_top_findings(sh))
         except Exception as e:  # noqa: BLE001
-            data["top_findings_unavailable"] = str(e)[:200]
+            # A bounded code, not provider text (section bodies never carry provider error strings).
+            code = (e.response.get("Error") or {}).get("Code") if isinstance(e, ClientError) else None
+            data["top_findings_unavailable"] = str(code or type(e).__name__)[:80]
         return _result("posture", data=data)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "InvalidAccessException":
