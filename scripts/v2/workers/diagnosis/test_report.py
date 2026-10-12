@@ -1672,3 +1672,25 @@ def test_failed_inventory_read_is_not_labelled_a_sample_cap():
 
 def test_context_rules_disclose_the_severity_ordered_detail_page():
     assert "top_findings_order" in report._CONTEXT_RULES
+
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("zh", "- [Critical] 未发现问题"), ("zh", "- [Warning] 没有发现异常"), ("zh", "| [Critical] 无 |"),
+    ("ja", "- [Warning] 該当なし"), ("ja", "- [Critical] 問題なし"), ("ja", "**[Warning]** なし"),
+    ("en", "- [Warning] not found in this window"),
+])
+def test_negation_tags_in_every_report_language_are_not_findings(monkeypatch, lang, body):
+    assert "rca_missing" not in _render(monkeypatch, body, lang)
+
+
+def test_negation_table_covers_every_supported_language():
+    from diagnosis.sections import LANG_RULES
+    assert set(report._NEGATIONS) == set(LANG_RULES)
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("zh", "- [Critical] 安全组对 0.0.0.0/0 开放 22 端口"), ("ja", "- [Warning] 単一 AZ の RDS"),
+])
+def test_real_zh_ja_findings_still_require_the_table(monkeypatch, lang, body):
+    assert _render(monkeypatch, body, lang)["rca_missing"] is True

@@ -599,11 +599,20 @@ _MUTATING_MARK = {
 # scale never sits there ("No [Critical] or [Warning] findings were identified"), and a marker paired
 # with the next one ("[Critical]/[Warning] 발견 없음", seen in live output) names the scale, so it is
 # excluded — while a real "[Critical]/P1 …" tag still counts. Code (fenced and inline) is ignored.
+# A tag that is itself a negation is not a finding — one entry per report language (SUPPORTED_LANGS
+# lockstep, like RCA_HEADINGS): "- [Critical] 발견 없음", "**[Warning]** none", "- [Critical] 未发现问题",
+# "- [Warning] 該当なし".
+_NEGATIONS = {
+    "ko": (r"발견[ \t]*없음", r"해당[ \t]*없음", r"없음"),
+    "en": (r"none\b", r"no findings", r"n/a\b", r"not found\b"),
+    "zh": (r"未发现", r"没有发现", r"无发现", r"无问题", r"无\b", r"不适用"),
+    "ja": (r"該当なし", r"問題なし", r"検出なし", r"なし"),
+}
 _FINDING_TAG = re.compile(
     r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)(?:\*\*|__|\*|_)?"
     r"\[(?:Critical|Warning)\](?!/\[)"
-    # ...and a tag that is itself a negation ("- [Critical] 발견 없음", "**[Warning]** 해당 없음") is not one.
-    r"(?![ \t]*(?:\*\*|__|\*|_)?[ \t]*(?:[:：\-–—][ \t]*)?(?:발견[ \t]*없음|해당[ \t]*없음|없음|none\b|no findings|n/a\b))",
+    r"(?![ \t]*(?:\*\*|__|\*|_)?[ \t]*(?:[:：\-–—][ \t]*)?(?:"
+    + "|".join(p for ps in _NEGATIONS.values() for p in ps) + r"))",
     re.M | re.I)
 _FENCED_CODE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
