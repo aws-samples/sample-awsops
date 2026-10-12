@@ -68,8 +68,10 @@ separator row and at least one data row gets a visible marker and counts as degr
 (`rca_missing`). A marker counts as a finding only in tag position: at the start of a line or list
 item (optionally a heading or bold) or of a table cell. Prose about the scale ("No [Critical] or
 [Warning] findings"), a marker paired with the next one (`[Critical]/[Warning] 발견 없음`) and code
-(fenced or inline) are not findings, while `[Critical]/P1 …` still is; a tag that is itself a
-negation (`- [Critical] 발견 없음`, `**[Warning]** none`) is not one either. Any root-cause heading followed
+(``` or ~~~ fences, and inline code) are not findings, while `[Critical]/P1 …` still is. A tag
+whose whole remaining line or cell is a negation in the report's language or English (`- [Critical]
+발견 없음`, `**[Warning]** none`, `| [Critical] 未发现问题 |`) is not one either, but a finding that only
+starts with such a word (`- [Warning] None of the buckets are encrypted`) still is. Any root-cause heading followed
 by a table satisfies the check. It confirms the table exists; it does not check that every finding
 has a row, and a table inside a code fence does not count. The note itself carries no bracketed
 marker, so the UI does not raise the section's severity because of it. The UI's section-severity

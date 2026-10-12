@@ -435,8 +435,8 @@ _CONTEXT_RULES = (
     "수집 상태(ok/empty/partial/failed/not_collected)·수집 범위(window)·사유(notes)다. partial은 반환된 근거만 "
     "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
     "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라. "
-    "posture.top_findings_order가 severity_desc이면 상세 그룹은 심각도순 상위 100건 표본이라 HIGH 그룹이 "
-    "빠질 수 있다 — 상세에 HIGH 그룹이 없어도 findings_by_severity의 HIGH 건수를 기준으로 판단하라."
+    "posture.top_findings는 심각도순(CRITICAL 우선) 표본이므로, 상세 그룹에 HIGH가 없다는 사실은 HIGH 발견이 "
+    "없다는 근거가 아니다."
 )
 
 _TRUNCATED_MARK = {
@@ -599,30 +599,44 @@ _MUTATING_MARK = {
 # scale never sits there ("No [Critical] or [Warning] findings were identified"), and a marker paired
 # with the next one ("[Critical]/[Warning] 발견 없음", seen in live output) names the scale, so it is
 # excluded — while a real "[Critical]/P1 …" tag still counts. Code (fenced and inline) is ignored.
-# A tag that is itself a negation is not a finding — one entry per report language (SUPPORTED_LANGS
-# lockstep, like RCA_HEADINGS): "- [Critical] 발견 없음", "**[Warning]** none", "- [Critical] 未发现问题",
-# "- [Warning] 該当なし".
+# A tag that is itself a negation is not a finding — but only when the negation is the WHOLE rest
+# of the line or table cell ("- [Critical] 발견 없음", "**[Warning]** none", "- [Critical] 未发现问题",
+# "| [Warning] 該当なし |"). A finding that merely starts with such a word ("- [Warning] None of the
+# buckets are encrypted", "- [Critical] Not found: CloudTrail trail") still counts. Each report
+# language checks its own phrases plus English (the markers themselves stay English); one entry per
+# SUPPORTED_LANGS language, pinned against LANG_RULES by a test.
 _NEGATIONS = {
-    "ko": (r"발견[ \t]*없음", r"해당[ \t]*없음", r"없음"),
-    "en": (r"none\b", r"no findings", r"n/a\b", r"not found\b"),
-    "zh": (r"未发现", r"没有发现", r"无发现", r"无问题", r"无\b", r"不适用"),
-    "ja": (r"該当なし", r"問題なし", r"検出なし", r"なし"),
+    "ko": (r"(?:발견|해당|문제)?[ \t]*없음",),
+    "en": (r"none", r"no findings?", r"n/a", r"not found", r"not applicable"),
+    "zh": (r"(?:未|没有|无)发现(?:问题|异常|风险)?", r"无问题", r"无", r"不适用"),
+    "ja": (r"(?:該当|問題|検出)?なし",),
 }
-_FINDING_TAG = re.compile(
-    r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)(?:\*\*|__|\*|_)?"
-    r"\[(?:Critical|Warning)\](?!/\[)"
-    r"(?![ \t]*(?:\*\*|__|\*|_)?[ \t]*(?:[:：\-–—][ \t]*)?(?:"
-    + "|".join(p for ps in _NEGATIONS.values() for p in ps) + r"))",
-    re.M | re.I)
-_FENCED_CODE = re.compile(r"```.*?```", re.S)
+_EMPH = r"(?:\*\*|__|\*|_)?"
+_TAG_START = r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)" + _EMPH
+# A marker paired with the next one names the scale ("[Critical]/[Warning]", "**[Critical]**/**[Warning]**").
+_MARKER = r"\[(?:Critical|Warning)\]" + r"(?!" + _EMPH + r"[ \t]*/[ \t]*" + _EMPH + r"\[)"
+_FINDING_TAGS = {}
+
+
+def _finding_tag(lang):
+    """The finding-tag pattern for one report language (compiled once)."""
+    if lang not in _FINDING_TAGS:
+        alts = "|".join(_NEGATIONS.get(lang, ()) + _NEGATIONS["en"])
+        whole_negation = (r"(?![ \t]*" + _EMPH + r"[ \t]*(?:[:：\-–—][ \t]*)?(?:" + alts + r")[ \t]*"
+                          + _EMPH + r"[ \t.。．!！)）]*(?:\||$))")
+        _FINDING_TAGS[lang] = re.compile(_TAG_START + _MARKER + whole_negation, re.M | re.I)
+    return _FINDING_TAGS[lang]
+
+
+_FENCED_CODE = re.compile(r"(```|~~~).*?\1", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _RCA_HEADING = re.compile(
     r"^#{2,4}[ \t]+(?:" + "|".join(re.escape(h) for h in RCA_HEADINGS.values()) + r")", re.M | re.I)
 _TABLE_SEPARATOR = re.compile(r"^\|\s*:?-+:?\s*\|")
 
 
-def _has_finding(body):
-    return bool(_FINDING_TAG.search(_INLINE_CODE.sub("", _FENCED_CODE.sub("", body))))
+def _has_finding(body, lang="ko"):
+    return bool(_finding_tag(lang).search(_INLINE_CODE.sub("", _FENCED_CODE.sub("", body))))
 
 
 def _table_after(body, heading):
@@ -638,8 +652,8 @@ def _table_after(body, heading):
     return len(rows) >= 3 and bool(_TABLE_SEPARATOR.match(rows[1]))
 
 
-def _rca_table_missing(body):
-    if not _has_finding(body):
+def _rca_table_missing(body, lang="ko"):
+    if not _has_finding(body, lang):
         return False
     # Same code stripping on both halves: a heading + table inside a code fence is not the table.
     visible = _FENCED_CODE.sub("", body)
@@ -677,7 +691,7 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if getattr(raw, "stop_reason", None) == "max_tokens":
         out["body"] += _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
         out["truncated"] = True
-    elif _rca_table_missing(body):  # a cut-off section is already marked; don't stack two notes
+    elif _rca_table_missing(body, lang):  # a cut-off section is already marked; don't stack two notes
         out["body"] += _RCA_MISSING_MARK.get(lang, _RCA_MISSING_MARK["ko"])
         out["rca_missing"] = True
     if _has_mutating_cli(body):

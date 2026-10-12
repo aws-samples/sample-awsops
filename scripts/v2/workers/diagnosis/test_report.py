@@ -1671,14 +1671,16 @@ def test_failed_inventory_read_is_not_labelled_a_sample_cap():
 
 
 def test_context_rules_disclose_the_severity_ordered_detail_page():
-    assert "top_findings_order" in report._CONTEXT_RULES
+    # a negative-inference ban, not an instruction to trust another (also sampled) count
+    assert "posture.top_findings" in report._CONTEXT_RULES
+    assert "HIGH 발견이 없다는 근거가 아니다" in report._CONTEXT_RULES
 
 
 
 @pytest.mark.parametrize("lang,body", [
     ("zh", "- [Critical] 未发现问题"), ("zh", "- [Warning] 没有发现异常"), ("zh", "| [Critical] 无 |"),
     ("ja", "- [Warning] 該当なし"), ("ja", "- [Critical] 問題なし"), ("ja", "**[Warning]** なし"),
-    ("en", "- [Warning] not found in this window"),
+    ("en", "- [Warning] Not found."), ("ko", "| [Critical] 문제 없음 |"),
 ])
 def test_negation_tags_in_every_report_language_are_not_findings(monkeypatch, lang, body):
     assert "rca_missing" not in _render(monkeypatch, body, lang)
@@ -1694,3 +1696,31 @@ def test_negation_table_covers_every_supported_language():
 ])
 def test_real_zh_ja_findings_still_require_the_table(monkeypatch, lang, body):
     assert _render(monkeypatch, body, lang)["rca_missing"] is True
+
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("en", "- [Warning] None of the S3 buckets have default encryption enabled"),
+    ("en", "- [Critical] Not found: CloudTrail trail in ap-northeast-2"),
+    ("zh", "- [Critical] 未发现关键审计日志配置（审计缺失）"),
+    ("ko", "- [Warning] 없음에도 불구하고 백업이 구성되지 않음"),
+    ("ja", "- [Warning] なしの状態で 30 日経過した EBS スナップショット"),
+])
+def test_a_finding_that_starts_with_a_negation_word_still_requires_the_table(monkeypatch, lang, body):
+    assert _render(monkeypatch, body, lang)["rca_missing"] is True
+
+
+def test_bold_paired_scale_markers_and_tilde_fences_are_not_findings(monkeypatch):
+    assert "rca_missing" not in _render(monkeypatch, "**[Critical]**/**[Warning]** 발견 없음")
+    assert "rca_missing" not in _render(monkeypatch, "~~~\n- [Critical] example\n~~~\n- [Info] ok")
+
+
+def test_negations_are_scoped_to_the_report_language(monkeypatch):
+    # a Japanese negation does not silence a Korean report's finding
+    assert _render(monkeypatch, "- [Warning] なし", "ko")["rca_missing"] is True
+    assert "rca_missing" not in _render(monkeypatch, "- [Warning] なし", "ja")
+
+
+def test_posture_window_matches_the_severity_sorted_detail_page():
+    w = sources.COLLECTION_WINDOWS["posture"]
+    assert "sorted by severity" in w and "unsorted page" not in w

@@ -44,7 +44,10 @@ COLLECTION_WINDOWS = {
                f"(more_findings=true means more exist); top_findings keeps at most {POSTURE_TOP_FINDINGS} groups from the "
                "first 100 CRITICAL/HIGH findings (top_groups_total/more_top_groups give the group count, "
                "more_top_findings=true means more findings exist). The severity counts and top_findings are two "
-               "independent samples, and a group count is a frequency within an unsorted page, not an account total",
+               "independent samples: top_findings comes from a page sorted by severity, CRITICAL first "
+               "(top_findings_order=severity_desc; 'unsorted' if the sort was rejected), so when CRITICAL "
+               "findings fill it HIGH groups are absent; a group count is a frequency within that page, not an "
+               "account total",
     "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
 }
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
