@@ -1000,5 +1000,59 @@ class ToolLessFallbackTest(unittest.TestCase):
         self.assertIn(agent.TOOLS_UNAVAILABLE_NOTICE["ko"], "".join(e.get("delta", "") for e in events))
 
 
+class PartialAnswerNoticeTest(unittest.TestCase):
+    class MaxTokensReachedException(Exception):
+        pass
+
+    def test_length_stop_is_not_reported_as_a_lost_connection(self):
+        n = agent.partial_answer_notice(self.MaxTokensReachedException("max_tokens"), "ko")
+        self.assertIn("출력 길이 한도", n)
+        self.assertNotIn("연결이 중단", n)
+        self.assertIn("output length limit", agent.partial_answer_notice(self.MaxTokensReachedException(), "en"))
+
+    def test_other_errors_keep_the_interrupted_notice_and_default_to_korean(self):
+        self.assertIn("연결이 중단", agent.partial_answer_notice(RuntimeError("reset"), None))
+        self.assertIn("connection was interrupted", agent.partial_answer_notice(RuntimeError(), "en"))
+
+    def test_explicit_output_ceiling(self):
+        self.assertEqual(agent.AGENT_MAX_TOKENS, 16000)
+
+    def test_handler_appends_the_length_notice_after_a_partial_stream(self):
+        sys.modules.setdefault("anthropic_loop", types.ModuleType("anthropic_loop"))
+        saved = sys.modules["anthropic_loop"]
+        al = types.ModuleType("anthropic_loop")
+        al.should_use_anthropic_loop = lambda payload: False
+        sys.modules["anthropic_loop"] = al
+
+        class FakeMCP:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        exc_cls = self.MaxTokensReachedException
+
+        async def stream(_agent, _user_input):
+            yield {"delta": "partial answer"}
+            raise exc_cls("Agent has reached an unrecoverable state due to max_tokens limit")
+
+        async def drain():
+            return [x async for x in agent.handler(
+                {"gateway": "ops", "responseLanguage": "en", "messages": [{"role": "user", "content": "q"}]})]
+        try:
+            with patch.object(agent, "MCPClient", return_value=FakeMCP()), \
+                    patch.object(agent, "get_all_tools", return_value=[]), \
+                    patch.object(agent, "apply_official_mcp_gates", side_effect=lambda t, k, s: (t, [], None)), \
+                    patch.object(agent, "gather_integration_tools", return_value=[]), \
+                    patch.object(agent, "Agent", return_value=object()), \
+                    patch.object(agent, "_stream_text", stream):
+                out = asyncio.run(drain())
+        finally:
+            sys.modules["anthropic_loop"] = saved
+        self.assertEqual(out[0], {"delta": "partial answer"})
+        self.assertIn("output length limit", out[-1]["delta"])
+
+
 if __name__ == '__main__':
     unittest.main()
