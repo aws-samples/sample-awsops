@@ -147,3 +147,11 @@ class TestInventoryDetail:
         for leaked in ("Environment", "UserData", "db_pass", "adminPwd", "apiKey", "AccessKey", "sessionToken"):
             assert leaked not in data, f"{leaked} not stripped"
         assert data["instance_state"] == "running"  # benign field preserved
+
+
+def test_member_scope_gap_notes_say_scope_not_iam():
+    """A host-only collector under a member scope must not read as a missing-permission failure."""
+    for out in (src.collect_cw_metrics(None, scope="member"), src._host_only("cost")):
+        assert out["degraded"] is True
+        assert "계정 스코프 미지원" in out["notes"]
+        assert "IAM 권한 문제 아님" in out["notes"]

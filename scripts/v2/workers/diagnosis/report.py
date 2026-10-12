@@ -72,7 +72,7 @@ TIER_MAX_TOKENS = {"light": 6000, "mid": 6000, "deep": 7000}
 # Sections whose prescribed tables are inherently long (pricing tables, the cross-section roadmap)
 # still hit 5000 on live data; they get a floor instead of raising every section's cost.
 SECTION_MIN_TOKENS = {"executive_summary": 8000, "cost_overview": 8000, "cost_optimization": 8000,
-                      "recommendations": 8000}
+                      "recommendations": 8000, "compute_infrastructure": 8000}
 
 
 def _section_budget(section, tier_budget):
@@ -434,7 +434,9 @@ _CONTEXT_RULES = (
     "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
     "수집 상태(ok/empty/partial/failed/not_collected)·수집 범위(window)·사유(notes)다. partial은 반환된 근거만 "
     "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
-    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라. "
+    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라. 수집 실패의 원인은 notes에 "
+    "적힌 것만 '확인됨'으로 쓰고, notes에 없는 원인(예: IAM 권한 부족)을 추정해 단정하거나 권한 추가를 처방하지 마라. "
+    "notes가 '계정 스코프 미지원'이면 원인은 도구의 스코프 한계이며 권한 추가로 해결되지 않는다(해당 계정의 직접 조회·콘솔 확인만 제시). "
     "posture.top_findings는 심각도순(CRITICAL 우선) 표본이므로, 상세 그룹에 HIGH가 없다는 사실은 HIGH 발견이 "
     "없다는 근거가 아니다."
 )

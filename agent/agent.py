@@ -113,6 +113,10 @@ GATEWAYS = _discover_gateways()
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
 MODEL_ID = "global.anthropic.claude-sonnet-5"
+# Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
+# live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
+# Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.
+AGENT_MAX_TOKENS = max(1024, int(os.environ.get("AGENT_MAX_TOKENS", "16000")))
 try:
     if CacheConfig is None:
         raise TypeError("CacheConfig unavailable")
@@ -128,6 +132,7 @@ try:
         # determinism is suspended only while the model rejects the param, not repealed.
         cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
         cache_tools="default",                      # toolConfig cachePoint, 5m TTL
+        max_tokens=AGENT_MAX_TOKENS,
     )
 except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConfig missing; or CacheConfig(strategy="auto") rejected (ValueError/pydantic ValidationError)
     # NOTE: this fires once per cold start only. The production cache-degradation detector is
@@ -136,6 +141,7 @@ except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConf
     model = BedrockModel(
         model_id=MODEL_ID,
         region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
+        max_tokens=AGENT_MAX_TOKENS,
     )
 
 # ============================================================================
@@ -908,6 +914,31 @@ HISTORY_MAX_MESSAGES = 40
 HISTORY_MAX_CHARS_PER_MESSAGE = 12000
 
 
+PARTIAL_ANSWER_NOTICE = {
+    "length": {
+        "ko": "\n\n_[답변이 출력 길이 한도에 도달해 여기서 끊겼습니다. 범위를 좁혀(특정 서비스·리소스) 다시 질문해 주세요.]_",
+        "en": "\n\n_[The answer reached the output length limit and stops here. Ask again with a narrower scope (one service or resource).]_",
+        "zh": "\n\n_[回答已达到输出长度上限，在此中断。请缩小范围（特定服务或资源）后再次提问。]_",
+        "ja": "\n\n_[回答が出力長の上限に達したため、ここで途切れました。範囲（特定のサービスやリソース）を絞って再度質問してください。]_",
+    },
+    "interrupted": {
+        "ko": "\n\n_[연결이 중단되어 응답이 일부만 전달되었습니다.]_",
+        "en": "\n\n_[The connection was interrupted, so only part of the answer was delivered.]_",
+        "zh": "\n\n_[连接中断，仅传送了部分回答。]_",
+        "ja": "\n\n_[接続が中断されたため、回答の一部のみが届きました。]_",
+    },
+}
+
+
+def partial_answer_notice(exc, response_language=None):
+    """Notice appended to an answer that stopped after streaming began. Strands raises
+    MaxTokensReachedException when the model hits the output limit — that is a length cut, not a
+    lost connection, and the reader should be told which one happened."""
+    kind = "length" if type(exc).__name__ == "MaxTokensReachedException" else "interrupted"
+    notices = PARTIAL_ANSWER_NOTICE[kind]
+    return notices.get(response_language, notices["ko"])
+
+
 def build_conversation(payload):
     """Extract user input and conversation history from payload. / 페이로드에서 사용자 입력과 대화 히스토리 추출."""
     messages_list = payload.get("messages", [])
@@ -1432,8 +1463,9 @@ async def handler(payload):
     except Exception as e:
         logging.error(f"Gateway MCP error [{gateway_role}]: {e}")
         if started:
-            # We already streamed a partial answer; re-running would duplicate it. End gracefully.
-            yield {"delta": "\n\n_[연결이 중단되어 응답이 일부만 전달되었습니다.]_"}
+            # We already streamed a partial answer; re-running would duplicate it. End gracefully,
+            # and say WHY it is partial — an output-limit stop is not a broken connection.
+            yield {"delta": partial_answer_notice(e, response_language)}
             return
 
     # Fallback: Bedrock direct with base prompt only (reached only on a pre-stream gateway failure).
