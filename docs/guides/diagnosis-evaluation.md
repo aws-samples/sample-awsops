@@ -50,7 +50,7 @@ Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier)
 plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
 prompt treats empty, failed and uncollected sources as unavailable evidence, never as a healthy
 result. A `partial` source keeps the evidence it returned while the missing portion stays unknown.
-Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
+The inventory sample also drops secret-bearing fields (policy documents, inline and assume-role policies, user data, environment variables, anything named like a password, secret, token or credential) before the report; `redacted_keys` names what was removed, the collection window says its absence is not evidence, and the deep IAM section must report policy analysis as unavailable rather than conclude a policy is missing or safe. Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
 Hub page, the 24 KB inventory sample and the datasource payload cap, are disclosed to the model and
 listed in `summary.incomplete`, but they do not change the report status (the fixed 15-rows-per-type inventory sample is stated in the collection window and is not listed): an account with Security
 Hub standards enabled exceeds 100 findings routinely, and a status that always read `partial` would
@@ -98,7 +98,7 @@ rather than per call. The render phase has one wall-clock budget, `DIAGNOSIS_REN
 (20 tokens/s plus 60 s, about 460 s for 8000 tokens, with `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`,
 default 90 s, as the floor) and capped by the budget that remains. botocore retries are off, because
 a legacy retry would multiply a read timeout threefold for every section in every wave of four.
-Throttling and 5xx errors are retried up to three attempts in total inside the budget. Once the
+Throttling, 5xx and transient connection failures (a reset or refused connection, but not a read timeout, which already spent the whole call budget) are retried up to three attempts in total inside the budget. Once the
 budget is spent, the remaining sections fail fast with the localized degraded body and the report
 completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
 bound.

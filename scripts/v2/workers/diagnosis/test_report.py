@@ -1368,3 +1368,65 @@ def test_untouched_collection_keeps_the_full_render_budget(monkeypatch):
     monkeypatch.setattr(report, "render_section", fake_render)
     report.generate(object(), account="1", tier="mid")
     assert all(d == 5.0 + report._RENDER_BUDGET_S for d in seen)
+
+
+
+# ── review: connection resets are retried; stripped secret fields are disclosed ──────────────────────
+
+def test_connection_failures_are_retried_inside_the_budget_but_read_timeouts_are_not(monkeypatch):
+    from botocore.exceptions import ConnectionClosedError, EndpointConnectionError, ReadTimeoutError
+    monkeypatch.setattr(report.time, "sleep", lambda s: None)
+    calls = []
+
+    class _Client:
+        def __init__(self, errors):
+            self.errors = list(errors)
+
+        def invoke_model(self, modelId, body):
+            calls.append(1)
+            if self.errors:
+                raise self.errors.pop(0)
+
+            class _R:
+                def read(self):
+                    return json.dumps({"content": [{"text": "ok"}], "stop_reason": "end_turn"}).encode()
+            return {"body": _R()}
+
+    def run(errors):
+        calls.clear()
+        client = _Client(errors)
+        monkeypatch.setattr(report, "_bedrock_clients", {})
+        monkeypatch.setattr(report.boto3, "client", lambda *a, **k: client)
+        return report._bedrock_render("p", "{}", report.MODEL_ID, 100)
+    assert run([EndpointConnectionError(endpoint_url="u"), ConnectionClosedError(endpoint_url="u")]) == "ok"
+    assert len(calls) == 3
+    with pytest.raises(ReadTimeoutError):
+        run([ReadTimeoutError(endpoint_url="u")])
+    assert len(calls) == 1                                  # a read timeout already used the whole call budget
+    with pytest.raises(EndpointConnectionError):
+        run([EndpointConnectionError(endpoint_url="u")] * 5)
+    assert len(calls) == report._CALL_ATTEMPTS               # bounded
+    assert "ModelNotReadyException" in report._RETRYABLE_ERROR_CODES
+
+
+def test_inventory_names_the_secret_fields_it_removed():
+    class _Conn:
+        def run(self, sql, **kw):
+            if "GROUP BY" in sql:
+                return [("iam_role", 1)]
+            if "min(captured_at)" in sql:
+                return [(None, None)]
+            return [("r1", "global", {"name": "r1", "AssumeRolePolicy": {"Statement": "*"},
+                                        "inline_policies": ["x"], "user_data": "secret", "arn": "a"})]
+    data = sources.collect_inventory(_Conn())["data"]
+    row = data["resources"]["iam_role"][0]["data"]
+    assert row == {"name": "r1", "arn": "a"}                       # the secret fields are gone from the row
+    assert set(data["redacted_keys"]) == {"AssumeRolePolicy", "inline_policies", "user_data"}
+    assert "redacted_keys" in sources.COLLECTION_WINDOWS["inventory"]
+    assert "NOT evidence" in sources.COLLECTION_WINDOWS["inventory"]
+
+
+def test_identity_section_is_told_that_policy_bodies_are_not_collected():
+    from diagnosis import sections as S
+    prompt = next(s for s in S.DEEP_SECTIONS if s["key"] == "identity_access")["prompt"]
+    assert "redacted_keys" in prompt and "정책이 없다·안전하다고 결론내리지 마라" in prompt

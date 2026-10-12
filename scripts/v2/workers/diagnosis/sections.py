@@ -186,7 +186,10 @@ _DEEP_ONLY = [
      "prompt": (
          "당신은 IAM 최소권한·자격 증명 위생에 정통한 수석 보안 엔지니어다. 인벤토리(IAM 사용자/역할/정책)·Security Hub posture로 진단하라.\n"
          "### IAM 평가\n표(| 발견 | 수 | 심각도 | 우선순위 |): 루트 키·MFA 미설정·90일+ 액세스키·과다권한(Admin/PowerUser 역할·인라인 정책·와일드카드 Action)·미사용 자격(90일+). "
-         "posture 미구독이면 인벤토리 신호만으로 한정 보고하고 명시하라. " + _RULES)},
+         "posture 미구독이면 인벤토리 신호만으로 한정 보고하고 명시하라. "
+         "인벤토리는 수집 단계에서 정책 본문·인라인 정책·AssumeRole 정책 등 비밀 포함 필드를 제거한다(`redacted_keys`). "
+         "그래서 인라인 정책/와일드카드 Action/신뢰 정책 분석은 '데이터 불가(정책 본문 비수집)'로 쓰고 "
+         "정책이 없다·안전하다고 결론내리지 마라. " + _RULES)},
 
     {"key": "data_protection", "title": "데이터 보호 & 암호화",
      "sources": ["inventory", "posture"],

@@ -29,7 +29,10 @@ POSTURE_TOP_FINDINGS = 15
 COLLECTION_WINDOWS = {
     "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
                  f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types = types with rows but no "
-                 f"sample, partial_types = types whose sample was cut by the cap; rows reflect the last inventory sync "
+                 f"sample, partial_types = types whose sample was cut by the cap; secret-bearing fields (policy documents, "
+                 f"inline and assume-role policies, user data, environment variables, anything named like a password, "
+                 f"secret, token or credential) are removed from every row and redacted_keys names them: their absence "
+                 f"is NOT evidence that a policy is missing, empty or restrictive; rows reflect the last inventory sync "
                  f"(synced_at.oldest/newest captured_at), not this instant; each row carries its own region)",
     "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
     "cost": "Cost Explorer: month-to-date by service, monthly totals from about two months back (current month partial), top 15 usage types",
@@ -59,9 +62,10 @@ def _norm_key(k):
     return re.sub(r"[\s_\-]", "", str(k).lower())
 
 
-def _safe_data(v):
+def _safe_data(v, stripped=None):
     """Recursively drop secret-bearing keys + truncate long strings/lists. Defense-in-depth BEFORE
-    report._redact (which only catches ARNs/emails/IPs/keys, not custom secrets)."""
+    report._redact (which only catches ARNs/emails/IPs/keys, not custom secrets). When `stripped` is a
+    set, the NAMES of the dropped keys are added to it, so the report can say what it could not see."""
     if isinstance(v, str):
         return v[:_MAX_STR] + "…(truncated)" if len(v) > _MAX_STR else v
     if isinstance(v, dict):
@@ -69,11 +73,13 @@ def _safe_data(v):
         for k, val in v.items():
             kn = _norm_key(k)
             if kn in _SENSITIVE_KEYS or _SENSITIVE_RE.search(kn):
+                if stripped is not None:
+                    stripped.add(str(k)[:60])
                 continue
-            out[k] = _safe_data(val)
+            out[k] = _safe_data(val, stripped)
         return out
     if isinstance(v, list):
-        return [_safe_data(x) for x in v[:20]]  # bound list length too
+        return [_safe_data(x, stripped) for x in v[:20]]  # bound list length too
     return v
 
 # Datasource (external observability) collector bounds — schema-driven, credential-blind, read-only.
@@ -151,6 +157,7 @@ def collect_inventory(conn, scope="self"):
     resources, truncated, size = {}, False, 0
     unsampled = []  # types with rows but no sample (cap hit / read failed / no rows) — named, so absence is not read as "none"
     read_failed = []  # the subset of unsampled whose sample query raised — an unexpected gap, not a cap
+    redacted = set()  # names of secret-bearing keys removed from the sampled rows (policies, user data, ...)
     partial = []    # the type being sampled when the byte cap hit (some rows kept, the rest dropped)
     for rtype in by_type:
         if truncated:
@@ -175,7 +182,7 @@ def collect_inventory(conn, scope="self"):
                     data = json.loads(data)
                 except (ValueError, TypeError):
                     data = {"raw": data[:_MAX_STR]}
-            entry = {"resource_id": rid, "region": region, "data": _safe_data(data)}
+            entry = {"resource_id": rid, "region": region, "data": _safe_data(data, redacted)}
             esz = len(json.dumps(entry, ensure_ascii=False, default=str))
             if size + esz > DIAG_INV_MAX_BYTES:
                 truncated = True
@@ -190,6 +197,7 @@ def collect_inventory(conn, scope="self"):
             unsampled.append(rtype)
     return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
                                       "unsampled_types": unsampled, "partial_types": partial, "read_failed_types": read_failed,
+                                      "redacted_keys": sorted(redacted)[:40],
                                       "synced_at": _inventory_synced_at(conn, scope)})
 
 

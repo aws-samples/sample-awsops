@@ -11,7 +11,7 @@ import threading
 import time
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ConnectionClosedError, EndpointConnectionError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # KST as a fixed +9 offset — Korea has no DST, so this needs no `tzdata` package in the slim image.
@@ -130,7 +130,10 @@ _CALL_TIMEOUT_STEP_S = 30   # quantize remaining time so the client cache stays 
 _CALL_ATTEMPTS = 3          # initial call + throttling/5xx retries
 _RETRYABLE_ERROR_CODES = frozenset((
     "ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException",
-    "InternalServerException"))
+    "InternalServerException", "ModelNotReadyException"))
+# Connection-level failures the botocore retries used to absorb (one TCP reset must not lose a section).
+# A READ timeout is deliberately absent: it already spent the full budget for that call.
+_RETRYABLE_CONNECTION_ERRORS = (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError)
 _render_deadline = None     # time.monotonic() deadline of the generate() in flight (one report per task)
 # Worst-case generation speed assumed when sizing the read timeout from the token budget (Opus is
 # the slowest), plus a fixed allowance for time-to-first-token.
@@ -223,6 +226,10 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
         except ClientError as e:
             code = (e.response.get("Error") or {}).get("Code", "")
             if code not in _RETRYABLE_ERROR_CODES or attempt == _CALL_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** attempt, 10) + random.random())
+        except _RETRYABLE_CONNECTION_ERRORS:
+            if attempt == _CALL_ATTEMPTS:
                 raise
             time.sleep(min(2 ** attempt, 10) + random.random())
     payload = json.loads(r["body"].read())
