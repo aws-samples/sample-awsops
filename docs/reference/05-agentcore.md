@@ -287,6 +287,11 @@ runtime ARN + memory id in SSM (not `PENDING`) and an initial 2-slice `lambda_ar
 
 ## Learnings & gotchas
 
+- **Explicit model output ceiling** — the Strands `BedrockModel` in `agent/agent.py` sets
+  `max_tokens=AGENT_MAX_TOKENS` (default 16000, env-overridable). Without it ConverseStream used
+  the model's default output limit, and a live dev root-cause answer stopped mid-sentence with
+  `MaxTokensReachedException`. An answer that still stops after streaming began ends with a
+  localized notice saying whether it hit the length limit or lost the connection.
 - **SSM reserved prefix** — SSM rejects any parameter path starting with `aws…`
   (reserved). Use `/ops/${project}/…` (hence `/ops/awsops-v2/agentcore/*`).
 - **Gateway not yet READY** — a just-created gateway can make the first
