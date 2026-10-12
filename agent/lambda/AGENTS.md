@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f56e60cfe7f8 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0264efc3d6e0 · generated-at: 2026-10-12 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -45,6 +45,10 @@ that's the source of truth for tool counts, not this doc.
 - Raw provider rows remain sensitive. Web inventory/graph reads and new graph writes redact
   recognized origin-header/OIDC secret fields, not arbitrary secrets; never expose raw `row`
   through SQL-reader views. Old stored values are not automatically rewritten.
+- `sql_reader.inventory_resources` is currently owned by
+  `01M4QQE72GVQWNAC9D1F6S6XZZ_inventory_ec2_power_state.sql`: it recreates the baseline view (frozen)
+  with the EC2 identity/power-state keys added to the shared named-key `data` allowlist. Edit the view
+  in a new migration and keep the contract test pointed at the current owner.
 - SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
   `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
   carry ownership_evidence/targetCapturedAt and applicable VPC/subnet/ambiguity data, excluded
@@ -62,8 +66,9 @@ that's the source of truth for tool counts, not this doc.
   `sql_reader.topology_graph_state` for flow/infra/trace status, source clocks and retained
   evidence; trace adds query windows. Missing state remains unknown. Current collection-state
   projection: `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`.
-- `test_inventory_view_contract.py` reads the original reader-role migration for topology
-  assertions, not the current projection owner. Do not claim it enforces that owner; inspect
+- `test_inventory_view_contract.py` checks the `inventory_resources` leak guards against both the
+  baseline and its current owner, but reads the original reader-role migration for topology
+  assertions, not the current `topology_nodes` owner. Do not claim it enforces that owner; inspect
   the current migration and `scripts/v2/workers/test_graph_collection.py` separately.
 - `execute_sql` is host-account AND single-cluster only — any other target fails closed (400).
 - The agent Lambda's IAM role has no `GetSecretValue` on the master secret, so bypassing the
