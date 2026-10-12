@@ -1430,3 +1430,10 @@ def test_identity_section_is_told_that_policy_bodies_are_not_collected():
     from diagnosis import sections as S
     prompt = next(s for s in S.DEEP_SECTIONS if s["key"] == "identity_access")["prompt"]
     assert "redacted_keys" in prompt and "정책이 없다·안전하다고 결론내리지 마라" in prompt
+
+
+
+def test_rules_give_a_console_path_alternative_to_change_commands():
+    from diagnosis import sections as S
+    assert "콘솔 경로" in S._RULES and "'확인 방법' 칸에만" in S._RULES
+    assert "어디에도(코드·백틱·괄호·본문 문장 포함) 쓰지 마라" in S._RULES  # unconditional, not scoped to formatted text
