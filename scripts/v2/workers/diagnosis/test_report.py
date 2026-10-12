@@ -1473,6 +1473,21 @@ def test_finding_with_rca_table_in_any_report_language_passes(monkeypatch, lang,
     assert "rca_missing" not in out and out["body"] == body
 
 
+@pytest.mark.parametrize("heading", [
+    "## [Critical]/[Warning] 발견 — 원인 분석 및 조치",   # seen live on the Recommendations section
+    "### 1. 원인 분석 및 조치 (요약)",
+])
+def test_decorated_rca_heading_with_a_table_passes(monkeypatch, heading):
+    body = "- [Warning] x\n\n" + _RCA_TABLE_KO.replace("### 원인 분석 및 조치", heading)
+    assert heading in body
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+def test_decorated_rca_heading_without_a_table_is_still_missing(monkeypatch):
+    body = "- [Critical] x\n\n## [Critical]/[Warning] 발견 — 원인 분석 및 조치\n원인 미확정"
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
 @pytest.mark.parametrize("body", [
     "- [Critical] x\n\n### 원인 분석 및 조치\n원인 미확정",                       # heading, no table
     "- [Critical] x\n\n### 원인 분석 및 조치\n| 발견 | 대상 |\n|---|---|\n",   # header only, no data row
