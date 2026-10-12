@@ -11,7 +11,7 @@ import logging
 import math
 import time as _time
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 import db as wdb  # noqa: F401 — worker db (parent dir, flat /app layout); reserved for future DB seams
 
@@ -22,6 +22,34 @@ PROJECT = os.environ.get("PROJECT", "awsops-v2")
 DIAG_INV_PER_TYPE = int(os.environ.get("DIAG_INV_PER_TYPE", "15"))   # max resources sampled per type
 DIAG_INV_MAX_BYTES = int(os.environ.get("DIAG_INV_MAX_BYTES", "24000"))  # global cap on serialized detail
 _MAX_STR = 500  # truncate any string value longer than this
+POSTURE_TOP_FINDINGS = 15
+
+# What each collector covers — handed to the model with every section so it states the window and
+# never reads a capped or windowed sample as the whole account (report.render_section).
+COLLECTION_WINDOWS = {
+    "inventory": f"synced Aurora inventory: counts by type + up to {DIAG_INV_PER_TYPE} sample rows per type "
+                 f"(strings ≤500 chars, lists ≤20, total ≤{DIAG_INV_MAX_BYTES} bytes; unsampled_types = types with rows but no "
+                 f"sample, partial_types = types whose sample was cut by the cap; secret-bearing fields (policy documents, "
+                 f"inline and assume-role policies, user data, environment variables, anything named like a password, "
+                 f"secret, token or credential) are removed from every row and redacted_keys names them: their absence "
+                 f"is NOT evidence that a policy is missing, empty or restrictive; rows reflect the last inventory sync "
+                 f"(synced_at.oldest/newest captured_at), not this instant; each row carries its own region)",
+    "cw_metrics": "CloudWatch AWS/EC2 CPUUtilization hourly average, last 3h, up to 50 instances (host scope only)",
+    "cost": "Cost Explorer: month-to-date by service, monthly totals from about two months back (current month partial), top 15 usage types",
+    "idle": "inventory-derived: unattached EBS volumes and stopped EC2 (EIP/snapshots not synced)",
+    "commitment": "RI / Savings Plans coverage %, last 30 days (null = unavailable, not 0%)",
+    "service_map": "X-Ray service graph, last 3h, first page only (untraced or paginated traffic is absent, not proof of no traffic)",
+    "datasources_obs": "external observability datasources (default instance per kind): signal counts and label names only, no sample values",
+    "posture": f"Security Hub ACTIVE+NEW findings: severity counts are a sampled distribution of the first 100 "
+               f"(more_findings=true means more exist); top_findings keeps at most {POSTURE_TOP_FINDINGS} groups from the "
+               "first 100 CRITICAL/HIGH findings (top_groups_total/more_top_groups give the group count, "
+               "more_top_findings=true means more findings exist). The severity counts and top_findings are two "
+               "independent samples: top_findings comes from a page sorted by severity, CRITICAL first "
+               "(top_findings_order=severity_desc; 'unsorted' if the sort was rejected), so when CRITICAL "
+               "findings fill it HIGH groups are absent; a group count is a frequency within that page, not an "
+               "account total",
+    "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
+}
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
 # the generic report._redact would NOT catch (Lambda env vars, user-data scripts, IAM policy docs).
 # Compared against a NORMALIZED key (lowercased, separators stripped) so 'UserData'/'user_data'/
@@ -37,9 +65,10 @@ def _norm_key(k):
     return re.sub(r"[\s_\-]", "", str(k).lower())
 
 
-def _safe_data(v):
+def _safe_data(v, stripped=None):
     """Recursively drop secret-bearing keys + truncate long strings/lists. Defense-in-depth BEFORE
-    report._redact (which only catches ARNs/emails/IPs/keys, not custom secrets)."""
+    report._redact (which only catches ARNs/emails/IPs/keys, not custom secrets). When `stripped` is a
+    set, the NAMES of the dropped keys are added to it, so the report can say what it could not see."""
     if isinstance(v, str):
         return v[:_MAX_STR] + "…(truncated)" if len(v) > _MAX_STR else v
     if isinstance(v, dict):
@@ -47,11 +76,13 @@ def _safe_data(v):
         for k, val in v.items():
             kn = _norm_key(k)
             if kn in _SENSITIVE_KEYS or _SENSITIVE_RE.search(kn):
+                if stripped is not None:
+                    stripped.add(str(k)[:60])
                 continue
-            out[k] = _safe_data(val)
+            out[k] = _safe_data(val, stripped)
         return out
     if isinstance(v, list):
-        return [_safe_data(x) for x in v[:20]]  # bound list length too
+        return [_safe_data(x, stripped) for x in v[:20]]  # bound list length too
     return v
 
 # Datasource (external observability) collector bounds — schema-driven, credential-blind, read-only.
@@ -127,7 +158,14 @@ def collect_inventory(conn, scope="self"):
         return _classify("inventory", e)
 
     resources, truncated, size = {}, False, 0
+    unsampled = []  # types with rows but no sample (cap hit / read failed / no rows) — named, so absence is not read as "none"
+    read_failed = []  # the subset of unsampled whose sample query raised — an unexpected gap, not a cap
+    redacted = set()  # names of secret-bearing keys removed from the sampled rows (policies, user data, ...)
+    partial = []    # the type being sampled when the byte cap hit (some rows kept, the rest dropped)
     for rtype in by_type:
+        if truncated:
+            unsampled.append(rtype)
+            continue
         try:
             drows = conn.run(
                 "SELECT resource_id, region, data FROM inventory_resources "
@@ -136,6 +174,8 @@ def collect_inventory(conn, scope="self"):
                 rtype=rtype, scope=scope,
             )
         except Exception:  # noqa: BLE001 — one type degrading must not lose the rest
+            unsampled.append(rtype)  # named, so a failed sample is not read as "no resources"
+            read_failed.append(rtype)
             continue
         items = []
         for r in drows:
@@ -145,7 +185,7 @@ def collect_inventory(conn, scope="self"):
                     data = json.loads(data)
                 except (ValueError, TypeError):
                     data = {"raw": data[:_MAX_STR]}
-            entry = {"resource_id": rid, "region": region, "data": _safe_data(data)}
+            entry = {"resource_id": rid, "region": region, "data": _safe_data(data, redacted)}
             esz = len(json.dumps(entry, ensure_ascii=False, default=str))
             if size + esz > DIAG_INV_MAX_BYTES:
                 truncated = True
@@ -154,9 +194,27 @@ def collect_inventory(conn, scope="self"):
             size += esz
         if items:
             resources[rtype] = items
-        if truncated:
-            break
-    return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated})
+            if truncated:
+                partial.append(rtype)
+        else:
+            unsampled.append(rtype)
+    return _result("inventory", data={"by_type": by_type, "resources": resources, "truncated": truncated,
+                                      "unsampled_types": unsampled, "partial_types": partial, "read_failed_types": read_failed,
+                                      "redacted_keys": sorted(redacted)[:40],
+                                      "synced_at": _inventory_synced_at(conn, scope)})
+
+
+def _inventory_synced_at(conn, scope):
+    """Oldest and newest captured_at for the scope, so the model can judge staleness instead of
+    hedging abstractly. Best-effort: None when unavailable."""
+    try:
+        row = conn.run("SELECT min(captured_at), max(captured_at) FROM inventory_resources "
+                       "WHERE account_id = :scope", scope=scope)[0]
+        if not row[0] and not row[1]:
+            return None  # no rows: keep the source classifiable as empty, not "ok"
+        return {"oldest": str(row[0]) if row[0] else None, "newest": str(row[1]) if row[1] else None}
+    except Exception:  # noqa: BLE001 — freshness is informative, never fatal
+        return None
 
 
 def collect_cw_metrics(conn, scope="self"):
@@ -164,7 +222,7 @@ def collect_cw_metrics(conn, scope="self"):
     No raw log lines — aggregated metric statistics only. Degrades gracefully."""
     if scope != "self":
         return _result("cw_metrics", degraded=True,
-                       notes="계정 스코프 미지원 — CloudWatch는 host 자격으로만 조회 (데이터 불가)")
+                       notes="계정 스코프 미지원 — CloudWatch는 host 자격으로만 조회 (데이터 불가; IAM 권한 문제 아님, 권한 추가로 해결되지 않음)")
     try:
         import datetime as dt
         # Instance ids from the already-synced inventory (no live describe needed).
@@ -318,13 +376,16 @@ def collect_service_map():
         end = dt.datetime.utcnow()
         start = end - dt.timedelta(hours=3)
         g = xr.get_service_graph(StartTime=start, EndTime=end)
+        # Display-only target names (`to_name`): the invariant evaluator reads `to`, which stays
+        # unresolved on purpose — a 3h trace sample must not certify expected/forbidden edges.
+        names = {s["ReferenceId"]: s.get("Name") for s in g.get("Services", []) if s.get("ReferenceId") is not None}
         edges = []
         for svc in g.get("Services", []):
             name = svc.get("Name")
             for e in svc.get("Edges", []):
                 s = e.get("SummaryStatistics", {})
                 edges.append({
-                    "from": name, "to_ref": e.get("ReferenceId"),
+                    "from": name, "to_ref": e.get("ReferenceId"), "to_name": names.get(e.get("ReferenceId")),
                     "calls": s.get("TotalCount", 0),
                     "error_rate": round((s.get("ErrorStatistics", {}).get("TotalCount", 0)
                                          / s["TotalCount"]) if s.get("TotalCount") else 0, 4),
@@ -332,6 +393,57 @@ def collect_service_map():
         return _result("service_map", data={"edges": edges, "service_count": len(g.get("Services", []))})
     except Exception as e:  # noqa: BLE001
         return _classify("service_map", e)
+
+
+_SORT_REJECTED_CODES = frozenset(("InvalidInputException", "ValidationException"))
+
+
+def _posture_top_findings(sh):
+    """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter) by title+severity+control.
+    The page is sorted by normalized severity (highest first), so CRITICAL findings fill it before
+    HIGH; it is still the first 100 matches, so the group counts are sample frequencies, not account
+    totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
+    title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
+    labelled by product + finding type instead. No resource identifiers are kept."""
+    query = dict(
+        Filters={"RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+                 "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}],
+                 "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"},
+                                   {"Value": "HIGH", "Comparison": "EQUALS"}]},
+        MaxResults=100,
+    )
+    order = "severity_desc"
+    try:
+        r = sh.get_findings(SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
+    except (ClientError, ParamValidationError) as e:
+        # A rejected sort must not cost the whole detail block: fall back to the unsorted page and say so.
+        # Security Hub reports bad input as InvalidInputException (GetFindings declares no
+        # ValidationException); a client-side shape rejection is a ParamValidationError.
+        if isinstance(e, ClientError) and (e.response.get("Error") or {}).get("Code") not in _SORT_REJECTED_CODES:
+            raise
+        r = sh.get_findings(**query)
+        order = "unsorted"
+    groups = {}
+    for f in r.get("Findings", []):
+        sev = f.get("Severity", {}).get("Label", "UNKNOWN")
+        control = (f.get("Compliance") or {}).get("SecurityControlId")
+        if control:
+            label = (f.get("Title") or control)[:200]
+        else:
+            types = f.get("Types") or []
+            label = f"{f.get('ProductName') or 'finding'}: {types[0] if types else 'unspecified type'}"[:200]
+        agg = groups.setdefault((label, sev, control), {
+            "title": label, "severity": sev, "control_id": control, "resource_types": set(), "count": 0})
+        agg["count"] += 1
+        agg["resource_types"].update(x.get("Type") for x in f.get("Resources", []) if x.get("Type"))
+    top = sorted(groups.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
+    for a in top:
+        a["resource_types"] = sorted(a["resource_types"])
+    # top_findings_order: the detail page is severity-ordered (CRITICAL first), unlike the
+    # findings_by_severity rollup's page, so HIGH groups can be absent while HIGH counts exist.
+    return {"top_findings": top, "top_findings_order": order, "top_findings_sampled": len(r.get("Findings", [])),
+            "top_groups_total": len(groups), "more_top_groups": len(groups) > POSTURE_TOP_FINDINGS,
+            "more_top_findings": bool(r.get("NextToken"))}
 
 
 def collect_posture():
@@ -352,7 +464,15 @@ def collect_posture():
         for f in r.get("Findings", []):
             sev = f.get("Severity", {}).get("Label", "UNKNOWN")
             by_sev[sev] = by_sev.get(sev, 0) + 1
-        return _result("posture", data={"enabled": True, "findings_by_severity": by_sev})
+        data = {"enabled": True, "findings_by_severity": by_sev,
+                "sampled_findings": len(r.get("Findings", [])), "more_findings": bool(r.get("NextToken"))}
+        try:  # best-effort detail; the severity rollup above stands on its own
+            data.update(_posture_top_findings(sh))
+        except Exception as e:  # noqa: BLE001
+            # A bounded code, not provider text (section bodies never carry provider error strings).
+            code = (e.response.get("Error") or {}).get("Code") if isinstance(e, ClientError) else None
+            data["top_findings_unavailable"] = str(code or type(e).__name__)[:80]
+        return _result("posture", data=data)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "InvalidAccessException":
             return _result("posture", ok=True, degraded=False,
@@ -744,7 +864,7 @@ def _host_only(key):
     """Honest degrade for member-account scope: these collectors read LIVE host-credentialed AWS
     APIs (CE/X-Ray/Security Hub/CloudTrail) — showing host data under a member report would lie."""
     return _result(key, degraded=True,
-                   notes="계정 스코프 미지원 — host 자격 전용 소스 (데이터 불가)")
+                   notes="계정 스코프 미지원 — host 자격 전용 소스 (데이터 불가; IAM 권한 문제 아님, 권한 추가로 해결되지 않음)")
 
 
 def collect_all(conn, scope="self"):

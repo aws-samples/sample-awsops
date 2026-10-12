@@ -98,7 +98,8 @@ def _report(payload, dry_run):
                 meta = rpt.make_title_and_tags(md, lang)
             except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
                 meta = {"title": None, "tags": []}
-            status = "partial" if summary.get("degraded") else "succeeded"
+            # A failed/cut-off section degrades the report just like a failed collector.
+            status = "partial" if summary.get("degraded") or summary.get("render_degraded") else "succeeded"
             ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
                               summary=summary, artifact_uri=artifact_uri,
                               title=meta["title"], tags=meta["tags"])

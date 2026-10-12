@@ -66,7 +66,7 @@ def test_propose_validates_drops_and_decorates(monkeypatch):
         {"kind": "DROP TABLE", "params": {}},                          # invalid → dropped
         {"kind": "forbidden_edge", "params": {"from": "a"}},          # missing param → dropped
     ])
-    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx: llm_out)
+    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx, model_id, max_tokens: llm_out)
     out = propose.propose(actual, model="x")
     assert len(out) == 2
     by_kind = {c["kind"]: c for c in out}
@@ -78,19 +78,35 @@ def test_propose_validates_drops_and_decorates(monkeypatch):
 
 
 def test_propose_tolerates_non_json_llm_output(monkeypatch):
-    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx: "sorry I cannot")
+    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx, model_id, max_tokens: "sorry I cannot")
     assert propose.propose({"service_map": {"edges": []}}, model="x") == []
 
 
 def test_propose_extracts_json_array_from_prose(monkeypatch):
     wrapped = 'Here are the candidates:\n[{"kind":"private_only","target":"rds","params":{}}]\nDone.'
-    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx: wrapped)
+    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx, model_id, max_tokens: wrapped)
     out = propose.propose({"service_map": {"edges": []}}, model="x")
     assert len(out) == 1 and out[0]["kind"] == "private_only"
 
 
 def test_propose_never_sets_active(monkeypatch):
     llm_out = json.dumps([{"kind": "private_only", "target": "rds", "params": {}, "status": "active"}])
-    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx: llm_out)
+    monkeypatch.setattr(propose, "_bedrock_render", lambda prompt, ctx, model_id, max_tokens: llm_out)
     out = propose.propose({"service_map": {"edges": []}}, model="x")
     assert out[0]["status"] == "draft"  # LLM cannot smuggle in an active status
+
+
+def test_propose_passes_model_and_token_budget(monkeypatch):
+    # Regression: propose() called _bedrock_render with 2 of its 4 required arguments, so any real
+    # call raised TypeError; the 2-arg test doubles above hid it.
+    seen = {}
+
+    def render(prompt, ctx, model_id, max_tokens):
+        seen.update(model_id=model_id, max_tokens=max_tokens)
+        return "[]"
+    monkeypatch.setattr(propose, "_bedrock_render", render)
+    propose.propose({"service_map": {"edges": []}}, model="opus")
+    assert seen == {"model_id": propose._MODEL_OPUS, "max_tokens": propose.PROPOSE_MAX_TOKENS}
+    for alias in (None, "sonnet", "x"):
+        propose.propose({"service_map": {"edges": []}}, model=alias)
+        assert seen["model_id"] == propose._MODEL_SONNET

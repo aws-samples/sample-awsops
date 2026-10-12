@@ -82,6 +82,40 @@ export async function listScanScope(): Promise<AccountScanScope[]> {
   return out;
 }
 
+// More than the number of AWS regions, so it never truncates in practice; agent.py discloses
+// (never silently drops) anything past its own, smaller prompt cap.
+const MAX_CHAT_REGIONS = 100;
+
+/**
+ * The regions AWSops is configured to inventory for one account — the same rule as listScanScope()
+ * (`['*']` for the host / all-regions accounts), read for that one account only (once per chat turn).
+ * This is an AWSops selection, not which regions AWS has enabled. `undefined` when the account has no
+ * enabled scope row or the read fails — the agent then states only its default region. Never throws.
+ */
+export async function chatRegionScope(accountId: string): Promise<string[] | undefined> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT a.all_regions,
+              a.is_host,
+              COALESCE(array_agg(r.region ORDER BY r.region) FILTER (WHERE r.enabled), '{}') AS regions
+         FROM accounts a
+         LEFT JOIN account_regions r ON r.account_id = a.account_id
+        WHERE a.enabled = true AND a.account_id = $1
+        GROUP BY a.all_regions, a.is_host`,
+      [accountId],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    if (row.all_regions || row.is_host) return ['*'];
+    const regions = ((row.regions as string[]) || []).filter(validateRegion).slice(0, MAX_CHAT_REGIONS);
+    return regions.length ? regions : undefined;
+  } catch (e) {
+    // Degrades to the agent's default-region wording; log so a missing scope is diagnosable.
+    console.warn(JSON.stringify({ evt: 'chat_region_scope_unavailable', error: e instanceof Error ? e.name : 'unknown' }));
+    return undefined;
+  }
+}
+
 export async function disableAccountRegion(accountId: string, region: string): Promise<void> {
   await getPool().query(
     'UPDATE account_regions SET enabled = false, updated_at = now() WHERE account_id = $1 AND region = $2',

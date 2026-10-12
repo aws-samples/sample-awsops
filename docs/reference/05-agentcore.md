@@ -43,6 +43,23 @@ completed 2026-08-02. Note the runtime nuance (matches the customer deck's slide
 the BFF-local live-Steampipe path is closed by design (ADR-001/010, `steampipeAvailable()`
 hard-`false`); the 9 gateway-routed keys answer via their own agents.
 
+**Chat context the BFF passes to the agent** (`web/app/api/chat/route.ts` → `agent/agent.py`):
+- *Follow-up continuity.* The client sends `previousSection`, the last answering gateway. The BFF
+  accepts it only for an active, gateway-backed built-in section; aws-data and collectors are
+  excluded. The routing order is pin > keyword > previous section > default (`ops`, or
+  `ACTIVE_FALLBACK` with hybrid routing, where the classifier also decides before the previous
+  section and the result carries `method: 'previous'`).
+- *Region scope.* `chatRegionScope()` sends the regions AWSops is configured to inventory for the
+  target account (`['*']` for the host and all-regions accounts). This is an AWSops selection, not
+  AWS region enablement, and the `## Region Scope` prompt block says so. A failed read sends nothing
+  and logs `chat_region_scope_unavailable`.
+- *Per-turn account labels.* Answers carry `account` (`host` or a 12-digit id) on the meta frame and
+  in the stored exchange meta, and the client echoes it per history message. When a thread spans
+  accounts, `scoped_conversation()` prefixes user turns with `[Account for this turn: …]`. The labels
+  are client-echoed: they are narrative context, not authorization, since the current target is
+  still resolved server-side. Client-supplied copies of the runtime markers are neutralized first.
+  The Strands handler and the flag-gated `anthropic_loop` path share both helpers.
+
 **2026-08-31 rollout note (ADR-021):** Phase 1's quota guard, structured terminal state,
 and freshness threshold are implemented in the repository. The agent making this change did not
 run apply; controller deployment status must be verified separately. **Current truth is
@@ -64,6 +81,29 @@ the old Lambda ignore the ID and return an unmarked bulk list. Consumers must re
 `projection=identity_only` and a matching echoed ID; missing/mismatched metadata means unverified,
 never an exact result or absence proof. Existing sql_reader views/grants suffice; no mutation or migration is added.
 A miss includes a fixed note directing readers to freshness/direct reads, not an AWS-absence verdict.
+
+### Tool result completeness contract
+
+Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never
+reads the first N items as the whole set. `cap_list(items, limit, more_pages)`
+(`agent/lambda/cross_account.py`) produces the base fields; the Runtime Context
+(`build_runtime_context`, `agent/agent.py`) tells the model how to read them.
+
+| Field | Meaning |
+|---|---|
+| `returned`, `total` | Items in this response, and items the API returned before the cap. `total` is a lower bound when `more_pages` or `api_result_capped` is set. |
+| `truncated` | `false` is the only completeness certificate; `true` means partial. A successful call with `truncated=false` and no items is a real empty result for that account and region. |
+| `more_pages` | The API returned a pagination token, so more items can be fetched. |
+| `api_result_capped` | AWS capped the result and offers no next page (`SearchTransitGatewayRoutes`); only a narrower filter reaches the rest. |
+| `complete=false`, `query_status`, `query_failed` | A Logs Insights result that is interim (`Running`/`Scheduled`) or ended without results (`Failed`/`Cancelled`/`Timeout`). This is not a pagination signal. |
+| `kept` | Which end of a capped series was kept (`latest` for `get_metric_data`). |
+| `*Meta`, `breakdown*` | The same fields for a nested list when the top-level `total` means something else, such as a cost sum. |
+| `details_incomplete`, `readFailed` | ECS describe calls failed or omitted resources, or the read itself failed (serverless caches): the result is unknown, not empty. |
+| `costPagesCut`, `costPagesCutReason` | Cost Explorer paging stopped early (`page_cap`, `time_budget`, `repeated_token`); totals and rankings cover only the pages read. |
+
+A list without these fields may still be capped, so it is never presented as complete. The
+synced-inventory tools add a separate `scope` block stating that they read the host account only (see
+[graph read contract](../runbooks/graph-read-contract.md#model-facing-topology-reader)).
 
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py, provision_report.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
@@ -247,6 +287,11 @@ runtime ARN + memory id in SSM (not `PENDING`) and an initial 2-slice `lambda_ar
 
 ## Learnings & gotchas
 
+- **Explicit model output ceiling** — the Strands `BedrockModel` in `agent/agent.py` sets
+  `max_tokens=AGENT_MAX_TOKENS` (default 16000, env-overridable). Without it ConverseStream used
+  the model's default output limit, and a live dev root-cause answer stopped mid-sentence with
+  `MaxTokensReachedException`. An answer that still stops after streaming began ends with a
+  localized notice saying whether it hit the length limit or lost the connection.
 - **SSM reserved prefix** — SSM rejects any parameter path starting with `aws…`
   (reserved). Use `/ops/${project}/…` (hence `/ops/awsops-v2/agentcore/*`).
 - **Gateway not yet READY** — a just-created gateway can make the first

@@ -12,7 +12,8 @@ import { chatMsg, normalizeChatLang, type ChatLang } from '@/lib/chat-i18n';
 import { getAccount, validateAccountId } from '@/lib/accounts';
 import { pickGateway, classifyRoute, type RouteResult } from '@/lib/route';
 import { classifyPrompt, buildClassifierContext } from '@/lib/classifier';
-import { sanitizeHistory } from '@/lib/chat-context';
+import { sanitizeHistory, accountLabel } from '@/lib/chat-context';
+import { chatRegionScope } from '@/lib/account-regions';
 import { synthesizeStream } from '@/lib/synthesize';
 import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
@@ -32,6 +33,21 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
 
 const MAX_PROMPT = 50_000;
+// A requested account the chat cannot use must be said aloud, not silently answered from the host.
+const ACCOUNT_SCOPE_NOTICE: Record<ChatLang, (id: string, reason: 'unavailable' | 'lookup_failed') => string> = {
+  ko: (id, r) => r === 'lookup_failed'
+    ? `계정 ${id} 정보를 확인하지 못해 이번 답변은 호스트 계정 기준입니다.`
+    : `계정 ${id}은(는) 등록되지 않았거나 비활성화되어 이번 답변은 호스트 계정 기준입니다.`,
+  en: (id, r) => r === 'lookup_failed'
+    ? `Account ${id} could not be verified, so this answer covers the host account.`
+    : `Account ${id} is not registered or is disabled, so this answer covers the host account.`,
+  zh: (id, r) => r === 'lookup_failed'
+    ? `无法验证账户 ${id}，本次回答基于主机账户。`
+    : `账户 ${id} 未注册或已禁用，本次回答基于主机账户。`,
+  ja: (id, r) => r === 'lookup_failed'
+    ? `アカウント ${id} を確認できなかったため、この回答はホストアカウントが対象です。`
+    : `アカウント ${id} は未登録または無効のため、この回答はホストアカウントが対象です。`,
+};
 const CUSTOM_POLICY_FAILURE_NOTICE: Record<ChatLang, { fallback: string; pin: string }> = {
   ko: {
     fallback: '커스텀 에이전트를 사용할 수 없어 이번 답변은 기본 에이전트로 라우팅합니다.',
@@ -304,7 +320,7 @@ export async function POST(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
 
-  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
+  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; previousSection?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
   try {
     // bound BEFORE parse (App-Router has no default body cap → OOM guard); 512KB covers prompt + thread history
     body = (await readJsonBounded(request, 512_000)) as typeof body;
@@ -425,6 +441,11 @@ export async function POST(request: Request) {
   if (hybridOn && typeof body.switchedFrom === 'string' && body.switchedFrom) {
     console.warn(JSON.stringify({ evt: 'misroute', from: body.switchedFrom, to: body.section ?? null, user: user.sub, promptLen: prompt.length }));
   }
+  // Follow-up continuity: a keyword-less follow-up stays on the section that answered the
+  // previous turn instead of the default catch-all. Only an active, gateway-backed built-in section
+  // qualifies — aws-data/collectors are local handlers that would just fail open to ops again.
+  const prev = typeof body.previousSection === 'string' ? body.previousSection : '';
+  const previous = prev && sectionByKey(prev)?.active && prev !== 'aws-data' && !collectorByKey(prev) ? prev : undefined;
   let route: RouteResult | null = null;
   let gateway: string;
   if (hybridOn) {
@@ -435,25 +456,34 @@ export async function POST(request: Request) {
     route = await classifyRoute(prompt, body.section, {
       llmEnabled: true,
       classify: (p) => classifyPrompt(buildClassifierContext(history, p)),
+      previous,
     });
     gateway = route.primary;
   } else {
-    gateway = pickGateway(prompt, body.section);
+    gateway = pickGateway(prompt, body.section, previous);
   }
-  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2).
+  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2),
+  // then the previous answering section (follow-up continuity) before the default catch-all.
   // ADR-031 Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
   // v1-parity multi-account target (v1 route.ts:926-930): an explicit body.accountId targets a
   // REGISTERED+ENABLED account (accounts table); anything else keeps the host default. The value
   // only ever reaches the agent payload/Agent-Space keying — never IAM decisions.
   let accountId = currentAccountId();
   let accountAlias = currentAccountAlias();
+  let accountScopeNotice = '';
   if (typeof body.accountId === 'string' && validateAccountId(body.accountId) && body.accountId !== accountId) {
-    const target = await getAccount(body.accountId).catch(() => undefined);
+    const target = await getAccount(body.accountId).catch(() => null); // null = lookup failed
     if (target?.enabled) {
       accountId = target.accountId;
       accountAlias = target.alias || undefined;
+    } else {
+      // The id is interpolated safely only because the enclosing branch required validateAccountId.
+      accountScopeNotice = `${ACCOUNT_SCOPE_NOTICE[lang](body.accountId, target === null ? 'lookup_failed' : 'unavailable')}\n\n`;
     }
   }
+  // Echoed on the meta frame and stored with the exchange so later turns can say which account
+  // each earlier answer was about (agent.py labels turns only when a thread spans accounts).
+  const turnAccount = accountLabel(accountId, currentAccountId());
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
   const productHelpIntent = hybridOn && !body.section && isProductHelpIntent(prompt);
   // Builtin pins and product help do not consult or inherit custom policy.
@@ -495,6 +525,8 @@ export async function POST(request: Request) {
   // instead of an AgentCore gateway. Fail-open like the code route: Steampipe unreachable /
   // secret missing ⇒ one 'sql-unavailable' status line + normal routing below (ops home).
   let sqlUnavailable = false;
+  // NOTE: the aws-data/collector early returns below are dark (steampipeAvailable() is always false)
+  // and do not stream fallbackNotice/accountScopeNotice — wire them in if those paths ever return.
   if (routeKey === 'aws-data') {
     if (await steampipeAvailable()) {
       const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
@@ -561,8 +593,8 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = !explicitPin && !productHelpIntent && finalPolicyUnavailable
-    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '';
+  const fallbackNotice = accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
+    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
   // enforced at write time by chat-store's owner-guarded upsert (forged ids just drop).
@@ -581,9 +613,11 @@ export async function POST(request: Request) {
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
       userContent: prompt, assistantContent: fallbackNotice + assistantContent,
-      gateway: recordGateway, meta: extras ? { ...(exchangeMeta ?? {}), ...extras } : exchangeMeta,
+      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), account: turnAccount },
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
+  // Region scope for the agent's live reads — skipped on paths that never invoke an agent.
+  const regions = useAssistant || unavailablePin || inactiveSection ? undefined : await chatRegionScope(accountId);
 
   // Inject cached datasource schemas (the agent reads the cache) for the observability gateways —
   // for the single-route spec AND any matching gateway in a fan-out. 'observability' owns the
@@ -613,7 +647,7 @@ export async function POST(request: Request) {
       const meta = {
         gateway: useAssistant ? 'assistant' : spec.gateway,
         agentName: useAssistant ? 'AWSops Assistant' : spec.agentName,
-        tier: spec.tier, skillHashes: spec.skillHashes, threadId,
+        tier: spec.tier, skillHashes: spec.skillHashes, threadId, account: turnAccount,
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
@@ -627,6 +661,8 @@ export async function POST(request: Request) {
       if (sqlUnavailable) {
         controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({ phase: 'sql-unavailable' }) + '\n\n'));
       }
+      // Notices go out before every branch below (record() stores them with each answer).
+      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // ADR-044 §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
       // HONEST message — never a silent fallback to keyword/classifier routing.
       if (unavailablePin) {
@@ -639,7 +675,6 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // AWSops Assistant: product/how-to answer grounded in the KB (Bedrock-direct), OR the graceful
       // fallback for an auto-routed inactive section — instead of the 🔒 dead-end.
       if (useAssistant) {
@@ -663,7 +698,7 @@ export async function POST(request: Request) {
         // gate CRITICAL: each gateway gets its OWN built-in invoke input (no shared primary spec).
         const settled = await Promise.allSettled(
           fanGateways.map((g) => invokeAgent({
-            gateway: g, messages, sessionId, accountId, accountAlias,
+            gateway: g, messages, sessionId, accountId, accountAlias, regions,
             extraContext: obs(g) ? datasourceSchemaContext : undefined, // cached schema reaches fanned monitoring/data agents too
             responseLanguage: lang,
           })),
@@ -732,7 +767,7 @@ export async function POST(request: Request) {
           systemPromptOverride: spec.systemPromptOverride,
           toolAllowlist: spec.toolAllowlist,
           agentName: spec.agentName, agentVersion: spec.agentVersion, skillHashes: spec.skillHashes,
-          accountId, accountAlias,
+          accountId, accountAlias, regions,
           integrations: spec.integrations, // ADR-039 P2-infra inc2: live egress-READ MCP connections
           extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing

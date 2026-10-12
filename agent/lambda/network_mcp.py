@@ -8,7 +8,7 @@ AWS 네트워크 MCP Lambda - VPC, TGW, VPN, ENI, Network Firewall, Flow Logs
 import json
 import time
 from botocore.exceptions import BotoCoreError, ClientError
-from cross_account import get_client, get_role_arn, resolve_tool_name
+from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
 
 _ENI_ERROR_CODES = frozenset((
     "InvalidNetworkInterfaceID.NotFound", "InvalidNetworkInterfaceID.Malformed",
@@ -255,6 +255,17 @@ def _get_eni_details(ec2, eni_id):
                "routeSelection": selection, "partial": bool(unknown), "unknown": unknown})
 
 
+def _tgw_route_cap(resp, limit):
+    """Cap a SearchTransitGatewayRoutes result. That API has NO pagination token: when
+    AdditionalRoutesAvailable is set, AWS capped the result server-side and the remainder cannot be
+    fetched by paging (only a narrower filter reaches it). Flag that as ``api_result_capped`` — not
+    ``more_pages``, which promises a fetchable next page. ``total`` is then a lower bound."""
+    kept, meta = cap_list(resp.get("Routes", []), limit)
+    if resp.get("AdditionalRoutesAvailable"):
+        meta.update(truncated=True, api_result_capped=True)
+    return kept, meta
+
+
 def lambda_handler(event, context):
     # Parse event and extract tool name and arguments / 이벤트를 파싱하고 도구 이름과 인자를 추출
     params = event if isinstance(event, dict) else json.loads(event)
@@ -312,14 +323,15 @@ def lambda_handler(event, context):
                     enis = resp.get("NetworkInterfaces", [])
             else:
                 return err("ip_address required")
+            enis, meta = cap_list(enis, 10, bool(resp.get("NextToken")))
             results = [{"eniId": e["NetworkInterfaceId"], "privateIp": e.get("PrivateIpAddress"),
                 "publicIp": e.get("Association", {}).get("PublicIp"),
                 "vpcId": e.get("VpcId"), "subnetId": e.get("SubnetId"),
                 "az": e.get("AvailabilityZone"), "status": e.get("Status"),
                 "description": e.get("Description", "")[:100],
                 "attachedTo": e.get("Attachment", {}).get("InstanceId", "")}
-                for e in enis[:10]]
-            return ok({"ip": ip, "enis": results, "count": len(results)})
+                for e in enis]
+            return ok({**meta, "region": region, "ip": ip, "enis": results, "count": len(results)})
 
         # Get full ENI details including SG, NACL, and route table / ENI 상세 정보 조회 (SG, NACL, 라우트 테이블 포함)
         elif t == "get_eni_details":
@@ -328,10 +340,11 @@ def lambda_handler(event, context):
         # ========== VPC / VPC 관련 ==========
         # List all VPCs with name and CIDR / 모든 VPC를 이름과 CIDR과 함께 목록 조회
         elif t == "list_vpcs":
-            vpcs = ec2.describe_vpcs().get("Vpcs", [])
-            return ok({"vpcs": [{"vpcId": v["VpcId"], "cidr": v.get("CidrBlock"),
+            resp = ec2.describe_vpcs()
+            vpcs, meta = cap_list(resp.get("Vpcs", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "vpcs": [{"vpcId": v["VpcId"], "cidr": v.get("CidrBlock"),
                 "state": v.get("State"), "name": next((t["Value"] for t in v.get("Tags", []) if t["Key"] == "Name"), "")}
-                for v in vpcs[:20]]})
+                for v in vpcs]})
 
         # Get comprehensive VPC network details (subnets, route tables, SGs, IGW, NAT, endpoints)
         # VPC 네트워크 상세 조회 (서브넷, 라우트 테이블, 보안 그룹, IGW, NAT, 엔드포인트)
@@ -351,7 +364,8 @@ def lambda_handler(event, context):
                 "routeTables": len(rts), "securityGroups": len(sgs),
                 "internetGateways": [i["InternetGatewayId"] for i in igws],
                 "natGateways": [{"id": n["NatGatewayId"], "state": n["State"], "subnetId": n.get("SubnetId")} for n in nats],
-                "vpcEndpoints": [{"id": e["VpcEndpointId"], "service": e["ServiceName"], "type": e["VpcEndpointType"]} for e in endpoints[:10]]})
+                "vpcEndpoints": [{"id": e["VpcEndpointId"], "service": e["ServiceName"], "type": e["VpcEndpointType"]} for e in endpoints[:10]],
+                "vpcEndpointsMeta": cap_list(endpoints, 10)[1]})
 
         # Retrieve VPC Flow Logs from CloudWatch Logs / CloudWatch Logs에서 VPC Flow Logs 조회
         elif t == "get_vpc_flow_logs":
@@ -412,11 +426,12 @@ def lambda_handler(event, context):
         # ========== Transit Gateway / Transit Gateway 관련 ==========
         # List all Transit Gateways / 모든 Transit Gateway 목록 조회
         elif t == "list_transit_gateways":
-            tgws = ec2.describe_transit_gateways().get("TransitGateways", [])
-            return ok({"transitGateways": [{"id": g["TransitGatewayId"], "state": g["State"],
+            resp = ec2.describe_transit_gateways()
+            tgws, meta = cap_list(resp.get("TransitGateways", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "transitGateways": [{"id": g["TransitGatewayId"], "state": g["State"],
                 "ownerId": g.get("OwnerId"), "asn": g.get("Options", {}).get("AmazonSideAsn"),
                 "name": next((t["Value"] for t in g.get("Tags", []) if t["Key"] == "Name"), "")}
-                for g in tgws[:20]]})
+                for g in tgws]})
 
         # Get TGW details with attachments and route tables / TGW 상세 정보, 어태치먼트, 라우트 테이블 조회
         elif t == "get_tgw_details":
@@ -435,52 +450,60 @@ def lambda_handler(event, context):
         # Search TGW route table for active/blackhole routes / TGW 라우트 테이블에서 활성/블랙홀 경로 검색
         elif t == "get_tgw_routes":
             rt_id = args.get("route_table_id", "")
-            routes = ec2.search_transit_gateway_routes(
+            resp = ec2.search_transit_gateway_routes(
                 TransitGatewayRouteTableId=rt_id,
-                Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])["Routes"]
-            return ok({"routeTableId": rt_id, "routes": [{"dest": r.get("DestinationCidrBlock", ""),
+                Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
+            kept_routes, meta = _tgw_route_cap(resp, 50)
+            return ok({**meta, "routeTableId": rt_id, "routes": [{"dest": r.get("DestinationCidrBlock", ""),
                 "type": r.get("Type", ""), "state": r.get("State", ""),
                 "attachmentId": r.get("TransitGatewayAttachments", [{}])[0].get("TransitGatewayAttachmentId", "") if r.get("TransitGatewayAttachments") else ""}
-                for r in routes[:50]]})
+                for r in kept_routes]})
 
         # Get routes from all route tables of a TGW / TGW의 모든 라우트 테이블에서 경로 조회
         elif t == "get_all_tgw_routes":
             tgw_id = args.get("tgw_id", "")
-            rts = ec2.describe_transit_gateway_route_tables(Filters=[{"Name": "transit-gateway-id", "Values": [tgw_id]}])["TransitGatewayRouteTables"]
+            rt_resp = ec2.describe_transit_gateway_route_tables(Filters=[{"Name": "transit-gateway-id", "Values": [tgw_id]}])
+            rts = rt_resp["TransitGatewayRouteTables"]
             all_routes = []
             for rt in rts:
                 rt_id = rt["TransitGatewayRouteTableId"]
-                routes = ec2.search_transit_gateway_routes(TransitGatewayRouteTableId=rt_id,
-                    Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])["Routes"]
-                all_routes.append({"routeTableId": rt_id, "routeCount": len(routes),
-                    "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in routes[:20]]})
-            return ok({"tgwId": tgw_id, "routeTables": all_routes})
+                resp = ec2.search_transit_gateway_routes(TransitGatewayRouteTableId=rt_id,
+                    Filters=[{"Name": "state", "Values": ["active", "blackhole"]}])
+                kept_routes, meta = _tgw_route_cap(resp, 20)
+                all_routes.append({"routeTableId": rt_id, "routeCount": len(resp["Routes"]), **meta,
+                    "routes": [{"dest": r.get("DestinationCidrBlock", ""), "state": r.get("State")} for r in kept_routes]})
+            more_tables = bool(rt_resp.get("NextToken"))
+            return ok({"tgwId": tgw_id, "routeTables": all_routes, "routeTablesMorePages": more_tables,
+                       # top-level certificate: complete only if every table and the table list are
+                       "truncated": more_tables or any(r["truncated"] for r in all_routes)})
 
         # List TGW peering attachments / TGW 피어링 어태치먼트 목록 조회
         elif t == "list_tgw_peerings":
             tgw_id = args.get("tgw_id", "")
-            attachments = ec2.describe_transit_gateway_attachments(
-                Filters=[{"Name": "transit-gateway-id", "Values": [tgw_id]}, {"Name": "resource-type", "Values": ["peering"]}])["TransitGatewayAttachments"]
-            return ok({"tgwId": tgw_id, "peerings": [{"id": a["TransitGatewayAttachmentId"],
-                "state": a["State"], "resourceId": a.get("ResourceId", "")} for a in attachments]})
+            att_resp = ec2.describe_transit_gateway_attachments(
+                Filters=[{"Name": "transit-gateway-id", "Values": [tgw_id]}, {"Name": "resource-type", "Values": ["peering"]}])
+            peerings, meta = cap_list(att_resp["TransitGatewayAttachments"], 50, bool(att_resp.get("NextToken")))
+            return ok({**meta, "tgwId": tgw_id, "peerings": [{"id": a["TransitGatewayAttachmentId"],
+                "state": a["State"], "resourceId": a.get("ResourceId", "")} for a in peerings]})
 
         # ========== VPN / VPN 관련 ==========
         # List VPN connections with tunnel status / VPN 연결 목록 및 터널 상태 조회
         elif t == "list_vpn_connections":
-            vpns = ec2.describe_vpn_connections().get("VpnConnections", [])
-            return ok({"vpnConnections": [{"id": v["VpnConnectionId"], "state": v["State"],
+            vpns, meta = cap_list(ec2.describe_vpn_connections().get("VpnConnections", []), 20)
+            return ok({**meta, "region": region, "vpnConnections": [{"id": v["VpnConnectionId"], "state": v["State"],
                 "type": v.get("Type", ""), "tgwId": v.get("TransitGatewayId", ""),
                 "vgwId": v.get("VpnGatewayId", ""), "customerGw": v.get("CustomerGatewayId", ""),
                 "tunnels": [{"status": t.get("Status"), "outsideIp": t.get("OutsideIpAddress")}
                     for t in v.get("VgwTelemetry", [])]}
-                for v in vpns[:20]]})
+                for v in vpns]})
 
         # ========== Network Firewall / 네트워크 방화벽 관련 ==========
         # List AWS Network Firewalls / AWS Network Firewall 목록 조회
         elif t == "list_network_firewalls":
             nfw = get_client('network-firewall', region, role_arn)
-            fws = nfw.list_firewalls().get("Firewalls", [])
-            return ok({"firewalls": [{"name": f.get("FirewallName"), "arn": f.get("FirewallArn")} for f in fws[:20]]})
+            resp = nfw.list_firewalls()
+            fws, meta = cap_list(resp.get("Firewalls", []), 20, bool(resp.get("NextToken")))
+            return ok({**meta, "region": region, "firewalls": [{"name": f.get("FirewallName"), "arn": f.get("FirewallArn")} for f in fws]})
 
         # Get firewall policy rules (stateless + stateful) / 방화벽 정책 규칙 조회 (스테이트리스 + 스테이트풀)
         elif t == "get_firewall_rules":
