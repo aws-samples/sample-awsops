@@ -530,7 +530,10 @@ def _fetch_one_type(rtype, limit, resource_id=None):
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
     params = [{"name": "rt", "value": {"stringValue": rtype}}]
-    predicate, projection = "", _projected_select(rtype)
+    # The row's own region column rides along so a model can filter by region instead of guessing
+    # from name prefixes; it wins over any same-named payload key (CloudFront reports "global").
+    predicate = ""
+    projection = "COALESCE(" + _projected_select(rtype) + ", '{}'::jsonb) || jsonb_build_object('region', region)"
     if resource_id is not None:
         predicate = " AND resource_id = :rid"
         params.append({"name": "rid", "value": {"stringValue": resource_id}})

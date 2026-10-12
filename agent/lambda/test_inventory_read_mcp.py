@@ -147,7 +147,7 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         self.assertEqual(out["statusCode"], 200)
         # user input must be a bound Data API parameter, never inlined into SQL
         inventory_sql, inventory_params = next(
-            call for call in calls if "SELECT jsonb_build_object" in call[0]
+            call for call in calls if "FROM inventory_resources" in call[0] and "SELECT COALESCE" in call[0]
         )
         self.assertEqual(inventory_params, [{"name": "rt", "value": {"stringValue": "alb"}}])
         self.assertNotIn("alb", inventory_sql)
@@ -670,6 +670,18 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         inv._execute_override = lambda sql, params=None: calls.append(sql) or []
         inv._fetch_one_type("cloudfront", 500)
         self.assertIn("ORDER BY captured_at DESC, account_id, region, resource_id LIMIT 500", calls[0])
+
+    def test_query_inventory_rows_carry_region_column(self):
+        calls = []
+        inv._execute_override = lambda sql, params=None: calls.append(sql) or []
+        inv._fetch_one_type("ec2", 10)
+        inv._fetch_one_type("alb", 10)
+        for sql in calls:
+            self.assertIn("jsonb_build_object('region', region)", sql)
+        # the identity-only lookup keeps its minimal projection
+        calls.clear()
+        inv._fetch_one_type("ec2", 10, resource_id="i-1")
+        self.assertNotIn("'region', region", calls[0])
 
     def test_get_topology_reads_topology_tables_not_inventory(self):
         """get_topology must query topology_nodes/edges, returning the /api/graph node+edge contract."""
