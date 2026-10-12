@@ -32,7 +32,7 @@ _RULES = (
     "근거 필드가 없는 발견은 쓰지 마라. "
     "수집 상태 표를 따로 만들지 말고 해당 항목에 '데이터 불가(사유)'로만 표시하라(리포트 끝에 커버리지 목록이 있다). "
     "진단은 읽기 전용이다 — 어떤 변경도 실행·자동화하지 말고, 변경을 수행하는 CLI 명령"
-    "(create/modify/put/update/delete/copy/start/stop/attach/revoke/enable/disable/register/deploy 등)은 코드·백틱·괄호 안 어디에도 쓰지 마라. "
+    "(create/modify/put/update/delete/copy/start/stop/attach/revoke/enable/disable/register/deploy 등)은 어디에도(코드·백틱·괄호·본문 문장 포함) 쓰지 마라. "
     "해결 절차에는 'aws' 명령 대신 콘솔 경로나 설정 이름(예: 'EC2 콘솔 → 설정 → EBS 암호화 → 기본 암호화 관리')과 "
     "무엇을 어떻게 바꿀지 문장만 쓴다(권고만). `aws ... describe/get/list` 같은 읽기 명령은 '확인 방법' 칸에만 쓴다."
 )
