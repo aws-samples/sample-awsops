@@ -3,8 +3,9 @@
 -- reader view's named-key projection of inventory_resources.data did not include the instance
 -- power-state keys, so a "which instances are stopped?" question could only be answered with
 -- "unknown". Add exactly the non-sensitive identity/state keys the connector now projects for
--- ec2 (instance_id, instance_type, instance_state, state_transition_time). Everything else in the
--- raw payload (user data, tags, IPs, profiles, ...) stays absent; the list is still an allowlist.
+-- ec2 (instance_id, instance_type, instance_state, state_transition_time). The allowlist is one key list
+-- shared by every resource type, so a future producer alias reusing one of these names would widen
+-- that type too. Everything else in the raw ec2 payload (user data, tags, IPs, profiles, ...) is absent.
 -- The `origins` element projection and the previously named keys are unchanged.
 DROP VIEW IF EXISTS sql_reader.inventory_resources;
 

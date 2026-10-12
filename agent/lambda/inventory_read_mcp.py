@@ -482,7 +482,9 @@ PROJECTIONS = {
     "cloudfront": ["id", "domain_name", "enabled", "origins", "aliases"],
     "ebs": ["volume_id", "state", "size", "volume_type"],
     # Power state lets the model answer "which instances are stopped"; the view (migration
-    # 01M4QQE7…) names exactly these keys, so nothing else of the raw ec2 payload is reachable.
+    # 01M4QQE7…) names exactly these keys; the view allowlist is one list shared by every type, so a
+    # future producer alias matching one of its names would widen that type too. state_transition_time
+    # is null for running instances (EC2 sets it for stopped/terminated ones).
     "ec2": ["instance_id", "name", "instance_type", "instance_state", "state_transition_time"],
 }
 
