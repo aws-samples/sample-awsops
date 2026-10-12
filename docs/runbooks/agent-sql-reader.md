@@ -315,6 +315,18 @@ The origins case is the one worth re-running after any edit to that projection: 
 `DomainName` (the "CloudFront (empty origin)" finding reads it) while dropping
 `CustomHeaders[].HeaderValue` (an origin secret). Both halves failed at some point during review.
 
+### Current inventory resources contract
+
+The current owner of `sql_reader.inventory_resources` is
+[`01M4QQE72GVQWNAC9D1F6S6XZZ_inventory_ec2_power_state.sql`](../../terraform/foundation/migrations/01M4QQE72GVQWNAC9D1F6S6XZZ_inventory_ec2_power_state.sql).
+It recreates the baseline view (the baseline migration is frozen) with a 20-key `data`
+allowlist shared by every resource type: the baseline keys plus `instance_id`,
+`instance_type`, `instance_state` and `state_transition_time`. `origins` is still rebuilt
+per element down to `DomainName`, and `data` is never selected raw.
+`state_transition_time` is empty for running instances. The contract test
+`agent/lambda/test_inventory_view_contract.py` checks the leak guards against both the
+baseline and this owner; audit the allowlist from this file, not the baseline.
+
 ### Current topology evidence contract
 
 The current owner of `sql_reader.topology_nodes.meta` is
