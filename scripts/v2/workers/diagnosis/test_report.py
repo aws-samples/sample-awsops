@@ -1437,3 +1437,8 @@ def test_rules_give_a_console_path_alternative_to_change_commands():
     from diagnosis import sections as S
     assert "콘솔 경로" in S._RULES and "'확인 방법' 칸에만" in S._RULES
     assert "어디에도(코드·백틱·괄호·본문 문장 포함) 쓰지 마라" in S._RULES  # unconditional, not scoped to formatted text
+
+
+def test_context_rules_forbid_inferring_iam_cause():
+    assert "notes에" in report._CONTEXT_RULES and "IAM 권한 부족" in report._CONTEXT_RULES
+    assert "권한 추가로 해결되지 않는다" in report._CONTEXT_RULES

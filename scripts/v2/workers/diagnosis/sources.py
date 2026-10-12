@@ -219,7 +219,7 @@ def collect_cw_metrics(conn, scope="self"):
     No raw log lines — aggregated metric statistics only. Degrades gracefully."""
     if scope != "self":
         return _result("cw_metrics", degraded=True,
-                       notes="계정 스코프 미지원 — CloudWatch는 host 자격으로만 조회 (데이터 불가)")
+                       notes="계정 스코프 미지원 — CloudWatch는 host 자격으로만 조회 (데이터 불가; IAM 권한 문제 아님, 권한 추가로 해결되지 않음)")
     try:
         import datetime as dt
         # Instance ids from the already-synced inventory (no live describe needed).
@@ -842,7 +842,7 @@ def _host_only(key):
     """Honest degrade for member-account scope: these collectors read LIVE host-credentialed AWS
     APIs (CE/X-Ray/Security Hub/CloudTrail) — showing host data under a member report would lie."""
     return _result(key, degraded=True,
-                   notes="계정 스코프 미지원 — host 자격 전용 소스 (데이터 불가)")
+                   notes="계정 스코프 미지원 — host 자격 전용 소스 (데이터 불가; IAM 권한 문제 아님, 권한 추가로 해결되지 않음)")
 
 
 def collect_all(conn, scope="self"):
