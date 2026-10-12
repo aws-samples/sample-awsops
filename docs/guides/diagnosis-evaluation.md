@@ -65,9 +65,13 @@ title the table in their language (`RCA_HEADINGS` in `sections.py`: `Root Cause 
 `原因分析与处置`, `原因分析と対処`). The contract is checked, not only prompted: a section that tags a
 `[Critical]` or `[Warning]` finding but has no such heading followed by a table with a header row, a
 separator row and at least one data row gets a visible marker and counts as degraded
-(`rca_missing`). Mentions of the scale itself (`[Critical]/[Warning] 발견 없음`, or a marker inside
-inline code) are not findings. The check confirms the table exists; it does not check that every
-finding has a row. A section that already stopped at `max_tokens` carries only the truncation
+(`rca_missing`). A marker counts as a finding only in tag position: at the start of a line or list
+item (optionally a heading or bold) or of a table cell. Prose about the scale ("No [Critical] or
+[Warning] findings"), a marker paired with the next one (`[Critical]/[Warning] 발견 없음`) and code
+(fenced or inline) are not findings, while `[Critical]/P1 …` still is. Any root-cause heading followed
+by a table satisfies the check. It confirms the table exists; it does not check that every finding
+has a row. The note itself carries no bracketed marker, so the UI does not raise the section's
+severity because of it. A section that already stopped at `max_tokens` carries only the truncation
 marker. The prompt forbids
 resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
 command that is not provably read-only gets a visible warning and counts as degraded. The check
@@ -120,7 +124,10 @@ the sleep, so throttling never sleeps past the render budget. Every section budg
 sections are not rejected. The coverage note names the gap behind a `partial` source (failed reads,
 the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
 detail query reports a bounded error code rather than provider text, and that page is sorted by
-normalized severity, so it holds the highest-severity findings.
+normalized severity, so it holds the highest-severity findings (`top_findings_order: severity_desc`;
+if Security Hub rejects the sort, the unsorted page is used and tagged `unsorted`). The severity
+rollup reads a separate, unsorted page, so HIGH groups can be absent from the detail while HIGH
+counts exist.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the
 model and reader only. The evaluator still reads `to`, which stays unresolved, so the
