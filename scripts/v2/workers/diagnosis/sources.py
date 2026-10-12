@@ -399,14 +399,22 @@ def _posture_top_findings(sh):
     totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
     title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
     labelled by product + finding type instead. No resource identifiers are kept."""
-    r = sh.get_findings(
+    query = dict(
         Filters={"RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
                  "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}],
                  "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"},
                                    {"Value": "HIGH", "Comparison": "EQUALS"}]},
-        SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}],
         MaxResults=100,
     )
+    order = "severity_desc"
+    try:
+        r = sh.get_findings(SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
+    except ClientError as e:
+        # A rejected sort must not cost the whole detail block: fall back to the unsorted page and say so.
+        if (e.response.get("Error") or {}).get("Code") != "ValidationException":
+            raise
+        r = sh.get_findings(**query)
+        order = "unsorted"
     groups = {}
     for f in r.get("Findings", []):
         sev = f.get("Severity", {}).get("Label", "UNKNOWN")
@@ -423,7 +431,9 @@ def _posture_top_findings(sh):
     top = sorted(groups.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
     for a in top:
         a["resource_types"] = sorted(a["resource_types"])
-    return {"top_findings": top, "top_findings_sampled": len(r.get("Findings", [])),
+    # top_findings_order: the detail page is severity-ordered (CRITICAL first), unlike the
+    # findings_by_severity rollup's page, so HIGH groups can be absent while HIGH counts exist.
+    return {"top_findings": top, "top_findings_order": order, "top_findings_sampled": len(r.get("Findings", [])),
             "top_groups_total": len(groups), "more_top_groups": len(groups) > POSTURE_TOP_FINDINGS,
             "more_top_findings": bool(r.get("NextToken"))}
 

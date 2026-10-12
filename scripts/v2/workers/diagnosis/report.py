@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _KST = timezone(timedelta(hours=9))
 
 # ADR-045: render sections concurrently (bounded) so deep-tier wall-clock ≈ slowest section, not the
-# sum of ~15 sequential Bedrock calls. Bounded to stay under Bedrock per-model TPM/RPM (botocore retry
+# sum of ~15 sequential Bedrock calls. Bounded to stay under Bedrock per-model TPM/RPM (botocore
 # retries are off; _bedrock_render backs off on throttling within the render budget); env-overridable.
 _RENDER_CONCURRENCY = max(1, int(os.environ.get("DIAGNOSIS_RENDER_CONCURRENCY", "4")))
 
@@ -154,8 +154,8 @@ def _call_timeout(max_tokens):
     remaining = int(_render_deadline - time.monotonic())
     if remaining < _MIN_CALL_S:
         raise TimeoutError("diagnosis render budget exhausted")
-    # remaining >= _MIN_CALL_S == _CALL_TIMEOUT_STEP_S, so the quantized value is at least one step.
-    return min(want, remaining - remaining % _CALL_TIMEOUT_STEP_S)
+    # Quantized down to the step (small client cache), never below the minimum call time.
+    return min(want, max(_MIN_CALL_S, remaining - remaining % _CALL_TIMEOUT_STEP_S))
 
 
 def _backoff(attempt):
@@ -589,40 +589,52 @@ _MUTATING_MARK = {
 # at the end of the section, by the root-cause table (heading in any report language + header row,
 # separator row and at least one data row). Without it the report names a problem but no evidence-
 # backed cause or remediation, so the section is marked degraded (report `partial`) instead of passing.
-# A finding's severity tag, not a mention of the scale: "[Critical]/[Warning] 발견 없음" (slash-joined)
-# and "`[Warning]` 이상" (inline code) are prose, seen in live output that had no such finding.
-_FINDING_MARK = re.compile(r"(?<!/)\[(?:Critical|Warning)\](?!/)")
+#
+# A marker counts as a finding only in TAG position — where the prompt's finding shape puts it: the
+# start of a line or list item (optionally a heading and/or bold) or of a table cell. Prose about the
+# scale never sits there ("No [Critical] or [Warning] findings were identified"), and a marker paired
+# with the next one ("[Critical]/[Warning] 발견 없음", seen in live output) names the scale, so it is
+# excluded — while a real "[Critical]/P1 …" tag still counts. Code (fenced and inline) is ignored.
+_FINDING_TAG = re.compile(
+    r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)(?:\*\*|__|\*|_)?"
+    r"\[(?:Critical|Warning)\](?!/\[)", re.M)
+_FENCED_CODE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _RCA_HEADING = re.compile(
     r"^#{2,4}[ \t]+(?:" + "|".join(re.escape(h) for h in RCA_HEADINGS.values()) + r")", re.M | re.I)
-_TABLE_SEPARATOR = re.compile(r"^\|\s*:?-{3,}")
+_TABLE_SEPARATOR = re.compile(r"^\|\s*:?-+:?\s*\|")
 
 
 def _has_finding(body):
-    return bool(_FINDING_MARK.search(_INLINE_CODE.sub("", body)))
+    return bool(_FINDING_TAG.search(_INLINE_CODE.sub("", _FENCED_CODE.sub("", body))))
 
 
-def _rca_table_missing(body):
-    if not _has_finding(body):
-        return False
-    headings = list(_RCA_HEADING.finditer(body))
-    if not headings:
-        return True
+def _table_after(body, heading):
+    """True when a markdown table (header, separator, >=1 data row) follows the heading line,
+    before the next heading; blank lines and prose before the table are allowed."""
     rows = []
-    for line in body[headings[-1].end():].splitlines()[1:]:
+    for line in body[heading.end():].splitlines()[1:]:
         line = line.strip()
         if line.startswith("|"):
             rows.append(line)
         elif rows or line.startswith("#"):
             break
-    return len(rows) < 3 or not _TABLE_SEPARATOR.match(rows[1])
+    return len(rows) >= 3 and bool(_TABLE_SEPARATOR.match(rows[1]))
 
 
+def _rca_table_missing(body):
+    if not _has_finding(body):
+        return False
+    return not any(_table_after(body, h) for h in _RCA_HEADING.finditer(body))
+
+
+# No bracketed severity markers here: the UI's section-severity heuristic keys on "[Critical]"
+# anywhere in the body, and a note about a missing table must not raise a Warning section to Critical.
 _RCA_MISSING_MARK = {
-    "ko": "\n\n_[[Critical]/[Warning] 발견에 대한 원인 분석 및 조치 표가 없어 원인과 해결 절차가 확정되지 않았습니다 (degraded)]_",
-    "en": "\n\n_[The [Critical]/[Warning] findings have no root-cause and remediation table, so their cause and fix are not established (degraded)]_",
-    "zh": "\n\n_[[Critical]/[Warning] 发现缺少原因分析与处置表，原因和解决步骤尚未确定 (degraded)]_",
-    "ja": "\n\n_[[Critical]/[Warning] の発見に原因分析と対処の表がなく、原因と解決手順が確定していません (degraded)]_",
+    "ko": "\n\n_[Critical·Warning 발견에 대한 원인 분석 및 조치 표가 없어 원인과 해결 절차가 확정되지 않았습니다 (degraded)]_",
+    "en": "\n\n_[The Critical/Warning findings have no root-cause and remediation table, so their cause and fix are not established (degraded)]_",
+    "zh": "\n\n_[Critical/Warning 发现缺少原因分析与处置表，原因和解决步骤尚未确定 (degraded)]_",
+    "ja": "\n\n_[Critical/Warning の発見に原因分析と対処の表がなく、原因と解決手順が確定していません (degraded)]_",
 }
 
 

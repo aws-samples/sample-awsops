@@ -1557,3 +1557,83 @@ def test_marker_mentions_without_a_finding_are_not_findings(monkeypatch):
     assert "rca_missing" not in _render(monkeypatch, body)
     # a real tagged finding still requires the table, even next to such prose
     assert _render(monkeypatch, body.replace("- 보안", "- [Warning] P2 공개 SG 추가\n- 보안"))["rca_missing"] is True
+
+
+@pytest.mark.parametrize("body", [
+    "### 요약\nNo [Critical] or [Warning] findings were identified in this window.",
+    "### 요약\n`[Critical]` 또는 `[Warning]` 발견 없음",
+    "- [Critical]/[Warning] 발견 없음 — 해당 표 생략",
+    "### 예시\n```\n- [Critical] example only\n```\n- [Info] 정상",
+])
+def test_scale_mentions_and_code_are_not_findings(monkeypatch, body):
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+@pytest.mark.parametrize("body", [
+    "- [Critical]/P1 / Low 공개 SG",                 # a real tag followed by a slash and the priority
+    "1. **[Warning]** P2 단일 AZ",                   # numbered + bold
+    "| 리소스 | 심각도 |\n|---|---|\n| sg-1 | [Critical] |",  # table-cell tag
+    "#### [Warning] 백업 부재",                        # heading tag
+])
+def test_tagged_findings_in_every_prompt_shape_require_the_table(monkeypatch, body):
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
+def test_any_rca_heading_with_a_table_satisfies_the_contract(monkeypatch):
+    body = ("- [Critical] x\n\n### 원인 분석 및 조치\n원인 미확정\n\n### 원인 분석 및 조치\n"
+            "| 발견 | 대상 |\n|:-:|:-|\n| x | y |\n\n### 원인 분석 및 조치\n추가 메모")
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+def test_rca_missing_note_carries_no_bracketed_severity_marker(monkeypatch):
+    out = _render(monkeypatch, "- [Warning] P2 단일 AZ")
+    note = out["body"][len("- [Warning] P2 단일 AZ"):]
+    assert "[Critical]" not in note and "[Warning]" not in note
+    for mark in report._RCA_MISSING_MARK.values():
+        assert "[Critical]" not in mark and "[Warning]" not in mark
+
+
+def test_coverage_note_never_republishes_provider_text(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            if "SeverityLabel" in kw["Filters"]:
+                raise ClientError({"Error": {"Code": "AccessDeniedException",
+                                             "Message": "User arn:aws:iam::123456789012:role/secret is not authorized"}},
+                                  "GetFindings")
+            return {"Findings": [{"Severity": {"Label": "HIGH"}}]}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    note = report._coverage_note({"posture": sources.collect_posture()})
+    assert "AccessDeniedException" in note and "secret" not in note and "123456789012" not in note
+
+
+def test_rejected_sort_falls_back_to_the_unsorted_page_and_says_so(monkeypatch):
+    from botocore.exceptions import ClientError
+    calls = []
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            calls.append(kw)
+            if "SortCriteria" in kw:
+                raise ClientError({"Error": {"Code": "ValidationException"}}, "GetFindings")
+            return {"Findings": [{"Severity": {"Label": "CRITICAL"}, "Title": "t",
+                                  "Compliance": {"SecurityControlId": "EC2.1"}}]}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    data = sources.collect_posture()["data"]
+    assert data["top_findings_order"] == "unsorted" and data["top_findings"]
+    assert "top_findings_unavailable" not in data
+
+
+def test_sorted_detail_page_is_tagged(monkeypatch):
+    class _FakeSh:
+        def get_findings(self, **kw):
+            return {"Findings": []}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    assert sources.collect_posture()["data"]["top_findings_order"] == "severity_desc"
+
+
+def test_call_timeout_never_drops_below_the_minimum_call_time(monkeypatch):
+    monkeypatch.setattr(report.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(report, "_render_deadline", 1000.0 + 59)
+    assert report._call_timeout(8000) >= report._MIN_CALL_S
