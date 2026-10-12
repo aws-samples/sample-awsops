@@ -1608,15 +1608,18 @@ def test_coverage_note_never_republishes_provider_text(monkeypatch):
     assert "AccessDeniedException" in note and "secret" not in note and "123456789012" not in note
 
 
-def test_rejected_sort_falls_back_to_the_unsorted_page_and_says_so(monkeypatch):
-    from botocore.exceptions import ClientError
+@pytest.mark.parametrize("rejection_kind", ["InvalidInputException", "ValidationException", "param"])
+def test_rejected_sort_falls_back_to_the_unsorted_page_and_says_so(monkeypatch, rejection_kind):
+    from botocore.exceptions import ClientError, ParamValidationError
+    rejection = (ParamValidationError(report="SortCriteria") if rejection_kind == "param"
+                 else ClientError({"Error": {"Code": rejection_kind}}, "GetFindings"))
     calls = []
 
     class _FakeSh:
         def get_findings(self, **kw):
             calls.append(kw)
             if "SortCriteria" in kw:
-                raise ClientError({"Error": {"Code": "ValidationException"}}, "GetFindings")
+                raise rejection
             return {"Findings": [{"Severity": {"Label": "CRITICAL"}, "Title": "t",
                                   "Compliance": {"SecurityControlId": "EC2.1"}}]}
     monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
@@ -1637,3 +1640,35 @@ def test_call_timeout_never_drops_below_the_minimum_call_time(monkeypatch):
     monkeypatch.setattr(report.time, "monotonic", lambda: 1000.0)
     monkeypatch.setattr(report, "_render_deadline", 1000.0 + 59)
     assert report._call_timeout(8000) >= report._MIN_CALL_S
+
+
+def test_other_detail_errors_still_surface_as_unavailable(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            if "SortCriteria" in kw:
+                raise ClientError({"Error": {"Code": "AccessDeniedException"}}, "GetFindings")
+            return {"Findings": []}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    assert sources.collect_posture()["data"]["top_findings_unavailable"] == "AccessDeniedException"
+
+
+@pytest.mark.parametrize("body", ["- [Critical] 발견 없음", "**[Warning]** 해당 없음", "- [Warning]: none", "| [Critical] N/A |"])
+def test_negation_in_tag_position_is_not_a_finding(monkeypatch, body):
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+def test_rca_table_inside_a_code_fence_does_not_satisfy_the_contract(monkeypatch):
+    body = "- [Critical] x\n\n```\n### 원인 분석 및 조치\n| a | b |\n|---|---|\n| c | d |\n```"
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
+def test_failed_inventory_read_is_not_labelled_a_sample_cap():
+    data = {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"], "read_failed_types": ["ec2"]}
+    reason = report._gap_reason(data)
+    assert "read failed: ec2" in reason and "sample size cap" not in reason
+
+
+def test_context_rules_disclose_the_severity_ordered_detail_page():
+    assert "top_findings_order" in report._CONTEXT_RULES

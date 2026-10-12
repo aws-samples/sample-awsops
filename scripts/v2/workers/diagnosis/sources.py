@@ -11,7 +11,7 @@ import logging
 import math
 import time as _time
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 import db as wdb  # noqa: F401 — worker db (parent dir, flat /app layout); reserved for future DB seams
 
@@ -392,6 +392,9 @@ def collect_service_map():
         return _classify("service_map", e)
 
 
+_SORT_REJECTED_CODES = frozenset(("InvalidInputException", "ValidationException"))
+
+
 def _posture_top_findings(sh):
     """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter) by title+severity+control.
     The page is sorted by normalized severity (highest first), so CRITICAL findings fill it before
@@ -409,9 +412,11 @@ def _posture_top_findings(sh):
     order = "severity_desc"
     try:
         r = sh.get_findings(SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
-    except ClientError as e:
+    except (ClientError, ParamValidationError) as e:
         # A rejected sort must not cost the whole detail block: fall back to the unsorted page and say so.
-        if (e.response.get("Error") or {}).get("Code") != "ValidationException":
+        # Security Hub reports bad input as InvalidInputException (GetFindings declares no
+        # ValidationException); a client-side shape rejection is a ParamValidationError.
+        if isinstance(e, ClientError) and (e.response.get("Error") or {}).get("Code") not in _SORT_REJECTED_CODES:
             raise
         r = sh.get_findings(**query)
         order = "unsorted"

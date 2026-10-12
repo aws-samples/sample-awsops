@@ -57,7 +57,7 @@ Hub standards enabled exceeds 100 findings routinely, and a status that always r
 no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
 read failed, a failed Security Hub detail query) and failed collectors are listed in
 `summary.degraded` and make the report `partial`.
-Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
+Critical and Warning findings are collected in one `### 원인 분석 및 조치` table, normally at the end of the section:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
 and apply through their own change process, and a confidence level. Non-Korean reports
@@ -68,10 +68,13 @@ separator row and at least one data row gets a visible marker and counts as degr
 (`rca_missing`). A marker counts as a finding only in tag position: at the start of a line or list
 item (optionally a heading or bold) or of a table cell. Prose about the scale ("No [Critical] or
 [Warning] findings"), a marker paired with the next one (`[Critical]/[Warning] 발견 없음`) and code
-(fenced or inline) are not findings, while `[Critical]/P1 …` still is. Any root-cause heading followed
+(fenced or inline) are not findings, while `[Critical]/P1 …` still is; a tag that is itself a
+negation (`- [Critical] 발견 없음`, `**[Warning]** none`) is not one either. Any root-cause heading followed
 by a table satisfies the check. It confirms the table exists; it does not check that every finding
-has a row. The note itself carries no bracketed marker, so the UI does not raise the section's
-severity because of it. A section that already stopped at `max_tokens` carries only the truncation
+has a row, and a table inside a code fence does not count. The note itself carries no bracketed
+marker, so the UI does not raise the section's severity because of it. The UI's section-severity
+icon still keys on a bracketed marker anywhere in the body, so a section can show a Critical icon
+for a mention the check does not count as a finding. A section that already stopped at `max_tokens` carries only the truncation
 marker. The prompt forbids
 resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
 command that is not provably read-only gets a visible warning and counts as degraded. The check
@@ -125,7 +128,9 @@ sections are not rejected. The coverage note names the gap behind a `partial` so
 the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
 detail query reports a bounded error code rather than provider text, and that page is sorted by
 normalized severity, so it holds the highest-severity findings (`top_findings_order: severity_desc`;
-if Security Hub rejects the sort, the unsorted page is used and tagged `unsorted`). The severity
+if Security Hub rejects the sort with `InvalidInputException` or the client rejects the
+parameter, the unsorted page is used and tagged `unsorted`), and the section prompt tells the model
+not to read missing HIGH groups as no HIGH findings. The severity
 rollup reads a separate, unsorted page, so HIGH groups can be absent from the detail while HIGH
 counts exist.
 

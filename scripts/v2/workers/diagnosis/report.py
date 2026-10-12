@@ -395,7 +395,9 @@ def _gap_reason(data):
         reasons.append("read failed: " + ", ".join(map(str, data["read_failed_types"]))[:120])
     if data.get("top_findings_unavailable"):
         reasons.append(f"finding detail unavailable ({str(data['top_findings_unavailable'])[:60]})")
-    if data.get("partial_types") or data.get("unsampled_types"):
+    # A failed read is also listed in unsampled_types; only the rest are the by-design sample cap.
+    capped = set(data.get("unsampled_types") or []) - set(data.get("read_failed_types") or [])
+    if data.get("partial_types") or capped:
         reasons.append("inventory sample size cap")
     if data.get("more_findings") is True or data.get("more_top_findings") is True:
         reasons.append("first 100 findings only")
@@ -432,7 +434,9 @@ _CONTEXT_RULES = (
     "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
     "수집 상태(ok/empty/partial/failed/not_collected)·수집 범위(window)·사유(notes)다. partial은 반환된 근거만 "
     "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
-    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
+    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라. "
+    "posture.top_findings_order가 severity_desc이면 상세 그룹은 심각도순 상위 100건 표본이라 HIGH 그룹이 "
+    "빠질 수 있다 — 상세에 HIGH 그룹이 없어도 findings_by_severity의 HIGH 건수를 기준으로 판단하라."
 )
 
 _TRUNCATED_MARK = {
@@ -597,7 +601,10 @@ _MUTATING_MARK = {
 # excluded — while a real "[Critical]/P1 …" tag still counts. Code (fenced and inline) is ignored.
 _FINDING_TAG = re.compile(
     r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)(?:\*\*|__|\*|_)?"
-    r"\[(?:Critical|Warning)\](?!/\[)", re.M)
+    r"\[(?:Critical|Warning)\](?!/\[)"
+    # ...and a tag that is itself a negation ("- [Critical] 발견 없음", "**[Warning]** 해당 없음") is not one.
+    r"(?![ \t]*(?:\*\*|__|\*|_)?[ \t]*(?:[:：\-–—][ \t]*)?(?:발견[ \t]*없음|해당[ \t]*없음|없음|none\b|no findings|n/a\b))",
+    re.M | re.I)
 _FENCED_CODE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _RCA_HEADING = re.compile(
@@ -625,7 +632,9 @@ def _table_after(body, heading):
 def _rca_table_missing(body):
     if not _has_finding(body):
         return False
-    return not any(_table_after(body, h) for h in _RCA_HEADING.finditer(body))
+    # Same code stripping on both halves: a heading + table inside a code fence is not the table.
+    visible = _FENCED_CODE.sub("", body)
+    return not any(_table_after(visible, h) for h in _RCA_HEADING.finditer(visible))
 
 
 # No bracketed severity markers here: the UI's section-severity heuristic keys on "[Critical]"
