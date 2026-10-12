@@ -57,10 +57,27 @@ Hub standards enabled exceeds 100 findings routinely, and a status that always r
 no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
 read failed, a failed Security Hub detail query) and failed collectors are listed in
 `summary.degraded` and make the report `partial`.
-Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
+Critical and Warning findings are collected in one `### 원인 분석 및 조치` table, normally at the end of the section:
 the target, the evidence field and value, a confirmed or suspected cause (or the missing
 data), a read-only verification command, remediation steps for the operator to review
-and apply through their own change process, and a confidence level. The prompt forbids
+and apply through their own change process, and a confidence level. Non-Korean reports
+title the table in their language (`RCA_HEADINGS` in `sections.py`: `Root Cause and Remediation`,
+`原因分析与处置`, `原因分析と対処`). The contract is checked, not only prompted: a section that tags a
+`[Critical]` or `[Warning]` finding but has no such heading followed by a table with a header row, a
+separator row and at least one data row gets a visible marker and counts as degraded
+(`rca_missing`). A marker counts as a finding only in tag position: at the start of a line or list
+item (optionally a heading or bold) or of a table cell. Prose about the scale ("No [Critical] or
+[Warning] findings"), a marker paired with the next one (`[Critical]/[Warning] 발견 없음`) and code
+(``` or ~~~ fences, and inline code) are not findings, while `[Critical]/P1 …` still is. A tag
+whose whole remaining line or cell is a negation in the report's language or English (`- [Critical]
+발견 없음`, `**[Warning]** none`, `| [Critical] 未发现问题 |`) is not one either, but a finding that only
+starts with such a word (`- [Warning] None of the buckets are encrypted`) still is. Any root-cause heading followed
+by a table satisfies the check. It confirms the table exists; it does not check that every finding
+has a row, and a table inside a code fence does not count. The note itself carries no bracketed
+marker, so the UI does not raise the section's severity because of it. The UI's section-severity
+icon still keys on a bracketed marker anywhere in the body, so a section can show a Critical icon
+for a mention the check does not count as a finding. A section that already stopped at `max_tokens` carries only the truncation
+marker. The prompt forbids
 resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
 command that is not provably read-only gets a visible warning and counts as degraded. The check
 is an allowlist, not a denylist of mutating verbs (which always misses some, such as
@@ -72,7 +89,8 @@ read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, the
 `start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
 `presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
-skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
+skipped. The `aws` itself must be lowercase (so "AWS Lambda update" stays prose), while the service
+and operation are compared lowercased, as the CLI accepts `EC2 Delete-Volume`. A new read verb the model invents is flagged until it is
 added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
 
 The detector is a best-effort text heuristic, not a shell parser. It does not recognize commands built
@@ -80,8 +98,9 @@ through shell variables or command substitution, passed through wrappers such as
 `ssh`, or written for other tools (`terraform apply`, `kubectl apply`). The prompt rule is the primary
 control; the detector catches a model that disregards it in the common forms and makes that visible.
 
-A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
-listed in `summary.render_degraded`.
+A section that fails, returns no non-whitespace text, stops at `max_tokens`, contains a
+resource-changing command, or tags findings without the root-cause table is listed in
+`summary.render_degraded`.
 Its body carries a visible marker, and the report status becomes `partial`, the same
 status a degraded collector produces. Failed sections show a fixed localized message, without
 provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
@@ -102,6 +121,20 @@ Throttling, 5xx and transient connection failures (a reset or refused connection
 budget is spent, the remaining sections fail fast with the localized degraded body and the report
 completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
 bound.
+
+A retry backoff is skipped, and the section fails fast, when a call could no longer finish after
+the sleep, so throttling never sleeps past the render budget. Every section budget is capped by
+`DIAGNOSIS_MAX_OUTPUT_TOKENS` (default 32000). The default models accept more; if you point
+`DIAGNOSIS_MODEL_*` at a model with a smaller output limit, set this variable to that limit so
+sections are not rejected. The coverage note names the gap behind a `partial` source (failed reads,
+the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
+detail query reports a bounded error code rather than provider text, and that page is sorted by
+normalized severity, so it holds the highest-severity findings (`top_findings_order: severity_desc`;
+if Security Hub rejects the sort with `InvalidInputException` or the client rejects the
+parameter, the unsorted page is used and tagged `unsorted`), and the section prompt tells the model
+not to read missing HIGH groups as no HIGH findings. The severity
+rollup reads a separate, unsorted page, so HIGH groups can be absent from the detail while HIGH
+counts exist.
 
 The service-map collector adds `to_name`, the resolved X-Ray target name, for the
 model and reader only. The evaluator still reads `to`, which stays unresolved, so the

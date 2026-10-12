@@ -18,14 +18,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _KST = timezone(timedelta(hours=9))
 
 # ADR-045: render sections concurrently (bounded) so deep-tier wall-clock ≈ slowest section, not the
-# sum of ~15 sequential Bedrock calls. Bounded to stay under Bedrock per-model TPM/RPM (botocore retry
-# in _BEDROCK_CONFIG already backs off on throttling); env-overridable.
+# sum of ~15 sequential Bedrock calls. Bounded to stay under Bedrock per-model TPM/RPM (botocore
+# retries are off; _bedrock_render backs off on throttling within the render budget); env-overridable.
 _RENDER_CONCURRENCY = max(1, int(os.environ.get("DIAGNOSIS_RENDER_CONCURRENCY", "4")))
 
 from . import sources as src
 from . import invariants as inv
 from . import db as ddb
-from .sections import SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION, LANG_RULES, localized_title
+from .sections import (SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION, LANG_RULES, RCA_HEADINGS,
+                       localized_title)
 
 # Inference-profile id — a BARE id ("anthropic.claude-...") throws ValidationException on
 # Claude 4.x invoke_model. Uses global.* profiles invoked from ap-northeast-2 (matches agent/agent.py)
@@ -153,14 +154,32 @@ def _call_timeout(max_tokens):
     remaining = int(_render_deadline - time.monotonic())
     if remaining < _MIN_CALL_S:
         raise TimeoutError("diagnosis render budget exhausted")
-    return min(want, remaining - remaining % _CALL_TIMEOUT_STEP_S or _MIN_CALL_S)
+    # Quantized down to the step (small client cache), never below the minimum call time.
+    return min(want, max(_MIN_CALL_S, remaining - remaining % _CALL_TIMEOUT_STEP_S))
+
+
+def _backoff(attempt):
+    """Sleep before a retry — or fail fast when a call could no longer finish after the sleep, so
+    a throttled section never overruns the render budget."""
+    delay = min(2 ** attempt, 10) + random.random()
+    if _render_deadline is not None and _render_deadline - time.monotonic() - delay < _MIN_CALL_S:
+        raise TimeoutError("diagnosis render budget exhausted")
+    time.sleep(delay)
+
+
+# Ceiling for every section budget. The default models accept far more output; an operator who
+# points DIAGNOSIS_MODEL_* at a smaller-output model sets this to that model's limit so sections are
+# not rejected with ValidationException (which would degrade every section).
+_MAX_OUTPUT_TOKENS = max(1, int(os.environ.get("DIAGNOSIS_MAX_OUTPUT_TOKENS", "32000")))
+
+
+def _capped_budget(section, tier_budget):
+    return min(_section_budget(section, tier_budget), _MAX_OUTPUT_TOKENS)
 
 
 def _bedrock_config(read_timeout):
     return Config(connect_timeout=10, read_timeout=read_timeout, retries={"max_attempts": 0})
 
-
-_BEDROCK_CONFIG = _bedrock_config(_BEDROCK_READ_TIMEOUT_S)
 
 # [GATE-FIX CRITICAL] PII/secret redaction BEFORE any Bedrock call (spec §9 mandatory).
 # Patterns live in the top-level redact.py so every LLM caller in this worker tier (finops/llm.py
@@ -227,11 +246,11 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
             code = (e.response.get("Error") or {}).get("Code", "")
             if code not in _RETRYABLE_ERROR_CODES or attempt == _CALL_ATTEMPTS:
                 raise
-            time.sleep(min(2 ** attempt, 10) + random.random())
+            _backoff(attempt)
         except _RETRYABLE_CONNECTION_ERRORS:
             if attempt == _CALL_ATTEMPTS:
                 raise
-            time.sleep(min(2 ** attempt, 10) + random.random())
+            _backoff(attempt)
     payload = json.loads(r["body"].read())
     text = _RenderedText("".join(b.get("text", "") for b in payload.get("content", [])))
     text.stop_reason = payload.get("stop_reason")
@@ -369,6 +388,26 @@ def _collection_gaps(data):
     return by_design, unexpected
 
 
+def _gap_reason(data):
+    """Short operator-facing reason for a `partial` source (which gap keys are set)."""
+    reasons = []
+    if data.get("read_failed_types"):
+        reasons.append("read failed: " + ", ".join(map(str, data["read_failed_types"]))[:120])
+    if data.get("top_findings_unavailable"):
+        reasons.append(f"finding detail unavailable ({str(data['top_findings_unavailable'])[:60]})")
+    # A failed read is also listed in unsampled_types; only the rest are the by-design sample cap.
+    capped = set(data.get("unsampled_types") or []) - set(data.get("read_failed_types") or [])
+    if data.get("partial_types") or capped:
+        reasons.append("inventory sample size cap")
+    if data.get("more_findings") is True or data.get("more_top_findings") is True:
+        reasons.append("first 100 findings only")
+    if data.get("more_top_groups") is True:
+        reasons.append("top finding groups capped")
+    if data.get("truncated") is True or data.get("_truncated") is True:
+        reasons.append("payload size cap")
+    return "; ".join(reasons) or "incomplete source coverage"
+
+
 def _collection_status(key, source):
     """What the model must know about a source besides its data: did collection work, and is the
     data complete? An empty or failed source is 'no evidence', never 'no problems'."""
@@ -397,7 +436,9 @@ _CONTEXT_RULES = (
     "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
     "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라. 수집 실패의 원인은 notes에 "
     "적힌 것만 '확인됨'으로 쓰고, notes에 없는 원인(예: IAM 권한 부족)을 추정해 단정하거나 권한 추가를 처방하지 마라. "
-    "notes가 '계정 스코프 미지원'이면 원인은 도구의 스코프 한계이며 권한 추가로 해결되지 않는다(해당 계정의 직접 조회·콘솔 확인만 제시)."
+    "notes가 '계정 스코프 미지원'이면 원인은 도구의 스코프 한계이며 권한 추가로 해결되지 않는다(해당 계정의 직접 조회·콘솔 확인만 제시). "
+    "posture.top_findings는 심각도순(CRITICAL 우선) 표본이므로, 상세 그룹에 HIGH가 없다는 사실은 HIGH 발견이 "
+    "없다는 근거가 아니다."
 )
 
 _TRUNCATED_MARK = {
@@ -507,7 +548,9 @@ def _cli_commands(text):
     option value can neither pose as the service nor hide the operation."""
     text = _LINE_CONTINUATION.sub(" ", text)
     for start in _CLI_START.finditer(text):
-        tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 400])
+        # The `aws` start stays case-sensitive (prose "AWS Lambda update"), but the CLI accepts
+        # `EC2 Delete-Volume`, so the tokens after it are compared lowercased.
+        tokens = [t.lower() for t in _CLI_TOKEN.findall(text[start.end():start.end() + 400])]
         i = positional = 0
         while i < len(tokens) and positional < _SERVICE_POSITIONS:
             if tokens[i].startswith("-"):
@@ -548,6 +591,87 @@ _MUTATING_MARK = {
 }
 
 
+# Deterministic check of the prompt's RCA contract: a [Critical]/[Warning] finding must be followed,
+# at the end of the section, by the root-cause table (heading in any report language + header row,
+# separator row and at least one data row). Without it the report names a problem but no evidence-
+# backed cause or remediation, so the section is marked degraded (report `partial`) instead of passing.
+#
+# A marker counts as a finding only in TAG position — where the prompt's finding shape puts it: the
+# start of a line or list item (optionally a heading and/or bold) or of a table cell. Prose about the
+# scale never sits there ("No [Critical] or [Warning] findings were identified"), and a marker paired
+# with the next one ("[Critical]/[Warning] 발견 없음", seen in live output) names the scale, so it is
+# excluded — while a real "[Critical]/P1 …" tag still counts. Code (fenced and inline) is ignored.
+# A tag that is itself a negation is not a finding — but only when the negation is the WHOLE rest
+# of the line or table cell ("- [Critical] 발견 없음", "**[Warning]** none", "- [Critical] 未发现问题",
+# "| [Warning] 該当なし |"). A finding that merely starts with such a word ("- [Warning] None of the
+# buckets are encrypted", "- [Critical] Not found: CloudTrail trail") still counts. Each report
+# language checks its own phrases plus English (the markers themselves stay English); one entry per
+# SUPPORTED_LANGS language, pinned against LANG_RULES by a test.
+_NEGATIONS = {
+    "ko": (r"(?:발견|해당|문제)?[ \t]*없음",),
+    "en": (r"none", r"no findings?", r"n/a", r"not found", r"not applicable"),
+    "zh": (r"(?:未|没有|无)发现(?:问题|异常|风险)?", r"无问题", r"无", r"不适用"),
+    "ja": (r"(?:該当|問題|検出)?なし",),
+}
+_EMPH = r"(?:\*\*|__|\*|_)?"
+_TAG_START = r"(?:^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:#{1,6}[ \t]+)?|\|[ \t]*)" + _EMPH
+# A marker paired with the next one names the scale ("[Critical]/[Warning]", "**[Critical]**/**[Warning]**").
+_MARKER = r"\[(?:Critical|Warning)\]" + r"(?!" + _EMPH + r"[ \t]*/[ \t]*" + _EMPH + r"\[)"
+_FINDING_TAGS = {}
+
+
+def _finding_tag(lang):
+    """The finding-tag pattern for one report language (compiled once)."""
+    if lang not in _FINDING_TAGS:
+        alts = "|".join(_NEGATIONS.get(lang, ()) + _NEGATIONS["en"])
+        whole_negation = (r"(?![ \t]*" + _EMPH + r"[ \t]*(?:[:：\-–—][ \t]*)?(?:" + alts + r")[ \t]*"
+                          + _EMPH + r"[ \t.。．!！)）]*(?:\||$))")
+        _FINDING_TAGS[lang] = re.compile(_TAG_START + _MARKER + whole_negation, re.M | re.I)
+    return _FINDING_TAGS[lang]
+
+
+_FENCED_CODE = re.compile(r"(```|~~~).*?\1", re.S)
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+_RCA_HEADING = re.compile(
+    r"^#{2,4}[ \t]+(?:" + "|".join(re.escape(h) for h in RCA_HEADINGS.values()) + r")", re.M | re.I)
+_TABLE_SEPARATOR = re.compile(r"^\|\s*:?-+:?\s*\|")
+
+
+def _has_finding(body, lang="ko"):
+    return bool(_finding_tag(lang).search(_INLINE_CODE.sub("", _FENCED_CODE.sub("", body))))
+
+
+def _table_after(body, heading):
+    """True when a markdown table (header, separator, >=1 data row) follows the heading line,
+    before the next heading; blank lines and prose before the table are allowed."""
+    rows = []
+    for line in body[heading.end():].splitlines()[1:]:
+        line = line.strip()
+        if line.startswith("|"):
+            rows.append(line)
+        elif rows or line.startswith("#"):
+            break
+    return len(rows) >= 3 and bool(_TABLE_SEPARATOR.match(rows[1]))
+
+
+def _rca_table_missing(body, lang="ko"):
+    if not _has_finding(body, lang):
+        return False
+    # Same code stripping on both halves: a heading + table inside a code fence is not the table.
+    visible = _FENCED_CODE.sub("", body)
+    return not any(_table_after(visible, h) for h in _RCA_HEADING.finditer(visible))
+
+
+# No bracketed severity markers here: the UI's section-severity heuristic keys on "[Critical]"
+# anywhere in the body, and a note about a missing table must not raise a Warning section to Critical.
+_RCA_MISSING_MARK = {
+    "ko": "\n\n_[Critical·Warning 발견에 대한 원인 분석 및 조치 표가 없어 원인과 해결 절차가 확정되지 않았습니다 (degraded)]_",
+    "en": "\n\n_[The Critical/Warning findings have no root-cause and remediation table, so their cause and fix are not established (degraded)]_",
+    "zh": "\n\n_[Critical/Warning 发现缺少原因分析与处置表，原因和解决步骤尚未确定 (degraded)]_",
+    "ja": "\n\n_[Critical/Warning の発見に原因分析と対処の表がなく、原因と解決手順が確定していません (degraded)]_",
+}
+
+
 def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if section["key"] == INTENDED_VS_ACTUAL_SECTION["key"]:
         verdicts = collected.get("intended_vs_actual", {}).get("data", {}).get("verdicts", [])
@@ -569,6 +693,9 @@ def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if getattr(raw, "stop_reason", None) == "max_tokens":
         out["body"] += _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
         out["truncated"] = True
+    elif _rca_table_missing(body, lang):  # a cut-off section is already marked; don't stack two notes
+        out["body"] += _RCA_MISSING_MARK.get(lang, _RCA_MISSING_MARK["ko"])
+        out["rca_missing"] = True
     if _has_mutating_cli(body):
         out["body"] += _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"])
         out["mutating_command"] = True
@@ -595,7 +722,7 @@ def _coverage_note(collected, lang="ko"):
         elif _collection_status(key, r)["status"] == "failed":
             status = f"degraded — {r.get('notes') or 'collection failed'}"
         elif _collection_status(key, r)["status"] == "partial":
-            status = "partial — incomplete source coverage; missing evidence remains unknown"
+            status = f"partial — {_gap_reason(r.get('data') or {})}; missing evidence remains unknown"
         elif _is_empty(r.get("data")):
             status = "empty (no data returned)"
         else:
@@ -744,7 +871,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     def _render_one(i, sec):
         try:
             return i, render_section(dict(sec, _run=run_ctx), collected, model_id,
-                                     _section_budget(sec, max_tokens), lang)
+                                     _capped_budget(sec, max_tokens), lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.
@@ -775,9 +902,11 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
     md = build_markdown(rendered, account, tier, collected, lang, generated_at=now)
-    # A section that failed or was cut off is a degraded report even when every collector worked.
+    # A section that failed, was cut off, broke the read-only rule or left findings without a
+    # root-cause table is a degraded report even when every collector worked.
     render_degraded = [s["key"] for s in rendered
-                       if s.get("render_failed") or s.get("truncated") or s.get("mutating_command")]
+                       if s.get("render_failed") or s.get("truncated") or s.get("mutating_command")
+                       or s.get("rca_missing")]
     summary = {"sections": len(rendered), "sources_used": sources_used,
                "degraded": degraded, "incomplete": incomplete, "render_degraded": render_degraded, "drift": drift,
                "unassessed": unassessed, "invariant_coverage": invariant_coverage}

@@ -11,7 +11,7 @@ import logging
 import math
 import time as _time
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 import db as wdb  # noqa: F401 — worker db (parent dir, flat /app layout); reserved for future DB seams
 
@@ -44,7 +44,10 @@ COLLECTION_WINDOWS = {
                f"(more_findings=true means more exist); top_findings keeps at most {POSTURE_TOP_FINDINGS} groups from the "
                "first 100 CRITICAL/HIGH findings (top_groups_total/more_top_groups give the group count, "
                "more_top_findings=true means more findings exist). The severity counts and top_findings are two "
-               "independent samples, and a group count is a frequency within an unsorted page, not an account total",
+               "independent samples: top_findings comes from a page sorted by severity, CRITICAL first "
+               "(top_findings_order=severity_desc; 'unsorted' if the sort was rejected), so when CRITICAL "
+               "findings fill it HIGH groups are absent; a group count is a frequency within that page, not an "
+               "account total",
     "what_changed": "CloudTrail write management events, last 24h, first 50 (name/source/time only)",
 }
 # Drop these from resource `data` BEFORE it reaches the report — they can carry plaintext secrets that
@@ -392,19 +395,34 @@ def collect_service_map():
         return _classify("service_map", e)
 
 
+_SORT_REJECTED_CODES = frozenset(("InvalidInputException", "ValidationException"))
+
+
 def _posture_top_findings(sh):
     """Group ACTIVE+NEW CRITICAL/HIGH findings (queried with a severity filter) by title+severity+control.
-    The first 100 matches are an arbitrary page (no SortCriteria), so the group counts are sample
-    frequencies, not account totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
+    The page is sorted by normalized severity (highest first), so CRITICAL findings fill it before
+    HIGH; it is still the first 100 matches, so the group counts are sample frequencies, not account
+    totals; `more_top_findings`/`more_top_groups` say when more exist. Control findings keep their generic control
     title; product findings (GuardDuty/Inspector/Macie) embed resource names in Title, so they are
     labelled by product + finding type instead. No resource identifiers are kept."""
-    r = sh.get_findings(
+    query = dict(
         Filters={"RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
                  "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}],
                  "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"},
                                    {"Value": "HIGH", "Comparison": "EQUALS"}]},
         MaxResults=100,
     )
+    order = "severity_desc"
+    try:
+        r = sh.get_findings(SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
+    except (ClientError, ParamValidationError) as e:
+        # A rejected sort must not cost the whole detail block: fall back to the unsorted page and say so.
+        # Security Hub reports bad input as InvalidInputException (GetFindings declares no
+        # ValidationException); a client-side shape rejection is a ParamValidationError.
+        if isinstance(e, ClientError) and (e.response.get("Error") or {}).get("Code") not in _SORT_REJECTED_CODES:
+            raise
+        r = sh.get_findings(**query)
+        order = "unsorted"
     groups = {}
     for f in r.get("Findings", []):
         sev = f.get("Severity", {}).get("Label", "UNKNOWN")
@@ -421,7 +439,9 @@ def _posture_top_findings(sh):
     top = sorted(groups.values(), key=lambda a: (a["severity"] != "CRITICAL", -a["count"]))[:POSTURE_TOP_FINDINGS]
     for a in top:
         a["resource_types"] = sorted(a["resource_types"])
-    return {"top_findings": top, "top_findings_sampled": len(r.get("Findings", [])),
+    # top_findings_order: the detail page is severity-ordered (CRITICAL first), unlike the
+    # findings_by_severity rollup's page, so HIGH groups can be absent while HIGH counts exist.
+    return {"top_findings": top, "top_findings_order": order, "top_findings_sampled": len(r.get("Findings", [])),
             "top_groups_total": len(groups), "more_top_groups": len(groups) > POSTURE_TOP_FINDINGS,
             "more_top_findings": bool(r.get("NextToken"))}
 
@@ -449,7 +469,9 @@ def collect_posture():
         try:  # best-effort detail; the severity rollup above stands on its own
             data.update(_posture_top_findings(sh))
         except Exception as e:  # noqa: BLE001
-            data["top_findings_unavailable"] = str(e)[:200]
+            # A bounded code, not provider text (section bodies never carry provider error strings).
+            code = (e.response.get("Error") or {}).get("Code") if isinstance(e, ClientError) else None
+            data["top_findings_unavailable"] = str(code or type(e).__name__)[:80]
         return _result("posture", data=data)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "InvalidAccessException":

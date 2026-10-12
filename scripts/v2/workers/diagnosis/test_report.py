@@ -707,17 +707,19 @@ def test_render_section_empty_source_is_reported_as_empty():
     assert report._collection_status("posture", {"key": "posture", "degraded": False, "data": {}})["status"] == "empty"
 
 
-@pytest.mark.parametrize("key,data", [
-    ("inventory", {"by_type": {"ec2": 2}, "truncated": True}),
-    ("inventory", {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"]}),
-    ("posture", {"findings_by_severity": {"HIGH": 1}, "top_findings_unavailable": "unavailable"}),
-    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_findings": True}),
-    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_top_groups": True}),
+@pytest.mark.parametrize("key,data,reason", [
+    ("inventory", {"by_type": {"ec2": 2}, "truncated": True}, "payload size cap"),
+    ("inventory", {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"]}, "inventory sample size cap"),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "top_findings_unavailable": "unavailable"},
+     "finding detail unavailable (unavailable)"),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_findings": True}, "first 100 findings only"),
+    ("posture", {"findings_by_severity": {"HIGH": 1}, "more_top_groups": True}, "top finding groups capped"),
 ])
-def test_incomplete_collection_is_partial_without_discarding_available_evidence(key, data):
+def test_incomplete_collection_is_partial_without_discarding_available_evidence(key, data, reason):
     source = {"key": key, "ok": True, "degraded": False, "notes": "", "data": data}
     assert report._collection_status(key, source)["status"] == "partial"
-    assert "partial — incomplete source coverage" in report._coverage_note({key: source})
+    # the coverage line says WHICH gap made the source partial
+    assert f"partial — {reason}; missing evidence remains unknown" in report._coverage_note({key: source})
 
 
 def test_explicit_failed_collection_cannot_be_certified_ok():
@@ -857,15 +859,21 @@ def test_posture_top_findings_come_from_a_severity_filtered_query(monkeypatch):
 
 
 def test_posture_top_findings_failure_keeps_the_severity_rollup(monkeypatch):
+    from botocore.exceptions import ClientError
+
     class _FakeSh:
         def get_findings(self, **kw):
             if "SeverityLabel" in kw["Filters"]:
-                raise RuntimeError("throttled")
+                raise ClientError({"Error": {"Code": "ThrottlingException",
+                                             "Message": "Rate exceeded for arn:aws:securityhub:secret"}},
+                                  "GetFindings")
             return {"Findings": [{"Severity": {"Label": "HIGH"}}]}
     monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
     res = sources.collect_posture()
     assert res["ok"] is True and res["data"]["findings_by_severity"] == {"HIGH": 1}
-    assert "throttled" in res["data"]["top_findings_unavailable"]
+    # a bounded error code reaches model context, never the provider message text
+    assert res["data"]["top_findings_unavailable"] == "ThrottlingException"
+    assert "secret" not in json.dumps(res["data"])
 
 
 def test_service_map_resolves_target_names(monkeypatch):
@@ -1432,6 +1440,290 @@ def test_identity_section_is_told_that_policy_bodies_are_not_collected():
     assert "redacted_keys" in prompt and "정책이 없다·안전하다고 결론내리지 마라" in prompt
 
 
+# ── RCA table contract: findings must end with an evidence-backed cause/remediation table ─────────
+
+_RCA_TABLE_KO = ("### 원인 분석 및 조치\n\n| 발견 | 대상 | 근거 | 원인 | 확인 방법 | 해결 절차 | 신뢰도 |\n"
+                 "|---|---|---|---|---|---|---|\n"
+                 "| [Critical] 공개 SG | sg-1 | network.sg_open=0.0.0.0/0 | 확인됨: 22 개방 | "
+                 "aws ec2 describe-security-groups --group-ids sg-1 | 인바운드를 사내 CIDR로 제한 | High |")
+
+
+def _render(monkeypatch, body, lang="ko", stop_reason=None):
+    def fake(*a, **k):
+        t = report._RenderedText(body)
+        t.stop_reason = stop_reason
+        return t
+    monkeypatch.setattr(report, "_bedrock_render", fake)
+    return report.render_section({"key": "x", "title": "X", "sources": [], "prompt": "p"}, {},
+                                 report.MODEL_ID, 100, lang)
+
+
+def test_finding_without_rca_table_is_marked_and_degrades_the_report(monkeypatch):
+    out = _render(monkeypatch, "### 노출면\n- [Critical] 0.0.0.0/0 SSH 개방 (근거: network.sg)")
+    assert out["rca_missing"] is True and "원인 분석 및 조치 표가 없어" in out["body"]
+
+
+@pytest.mark.parametrize("lang,heading", [
+    ("ko", "원인 분석 및 조치"), ("en", "Root Cause and Remediation"),
+    ("zh", "原因分析与处置"), ("ja", "原因分析と対処"),
+])
+def test_finding_with_rca_table_in_any_report_language_passes(monkeypatch, lang, heading):
+    body = "- [Warning] x\n\n" + _RCA_TABLE_KO.replace("원인 분석 및 조치", heading)
+    out = _render(monkeypatch, body, lang)
+    assert "rca_missing" not in out and out["body"] == body
+
+
+@pytest.mark.parametrize("body", [
+    "- [Critical] x\n\n### 원인 분석 및 조치\n원인 미확정",                       # heading, no table
+    "- [Critical] x\n\n### 원인 분석 및 조치\n| 발견 | 대상 |\n|---|---|\n",   # header only, no data row
+    "- [Critical] x\n\n### 원인 분석 및 조치\n| a | b |\n| c | d |\n| e | f |",  # no separator row
+])
+def test_rca_heading_without_a_real_table_is_missing(monkeypatch, body):
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
+def test_info_only_or_truncated_sections_are_not_marked_rca_missing(monkeypatch):
+    assert "rca_missing" not in _render(monkeypatch, "- [Info] 특이사항 없음 (근거: inventory)")
+    cut = _render(monkeypatch, "- [Critical] x 그리고 표를 쓰다가", stop_reason="max_tokens")
+    assert cut["truncated"] is True and "rca_missing" not in cut  # one note for one cause
+
+
+def test_rca_missing_section_makes_the_report_render_degraded(monkeypatch):
+    monkeypatch.setattr(report.src, "collect_all",
+                        lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a, **k: "- [Critical] 근거 없는 결론")
+    summary = report.generate(object(), account="1", tier="light")[1]
+    assert summary["render_degraded"]  # → handlers.py marks the report `partial`
+
+
+def test_lang_rules_name_the_localized_rca_heading():
+    from diagnosis.sections import LANG_RULES, RCA_HEADINGS
+    for lang in ("en", "zh", "ja"):
+        assert RCA_HEADINGS[lang] in LANG_RULES[lang]
+
+
+def test_mutating_cli_guard_review_gaps_are_closed():
+    # case-insensitive operations, codedeploy push, EMR put/ssh
+    for cmd in ("aws ec2 Delete-Volume --volume-id v", "aws EC2 TERMINATE-INSTANCES --instance-ids i",
+                "aws deploy push --application-name a --s3-location s3://b/k",
+                "aws emr put --cluster-id j --src f", "aws emr ssh --cluster-id j --key-pair-file k"):
+        assert report._has_mutating_cli(cmd), cmd
+    # `aws s3 <word>` that is not one of the nine real s3 commands is prose, not a command
+    for cmd in ("aws s3 bucket policies should block public access", "aws s3 LS s3://b"):
+        assert not report._has_mutating_cli(cmd), cmd
+
+
+def test_section_budget_is_clamped_to_the_model_output_ceiling(monkeypatch):
+    monkeypatch.setattr(report, "_MAX_OUTPUT_TOKENS", 4096)
+    assert report._capped_budget({"key": "recommendations"}, 6000) == 4096
+    assert report._capped_budget({"key": "security_posture"}, 3000) == 3000
+
+
+def test_throttling_backoff_never_sleeps_past_the_render_budget(monkeypatch):
+    from botocore.exceptions import ClientError
+    slept = []
+    monkeypatch.setattr(report.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(report.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(report, "_render_deadline", 1000.0 + 31)  # one call fits (>=30 s), backoff (>=2 s) + call does not
+
+    class _Throttled:
+        def invoke_model(self, **kw):
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "InvokeModel")
+    monkeypatch.setattr(report, "_get_bedrock_client", lambda *a, **k: _Throttled())
+    with pytest.raises(TimeoutError):
+        report._bedrock_render("p", "{}", report.MODEL_ID, 100)
+    assert slept == []
+
+
+def test_posture_top_findings_are_sorted_by_severity(monkeypatch):
+    calls = []
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            calls.append(kw)
+            return {"Findings": []}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    sources.collect_posture()
+    top = [c for c in calls if "SeverityLabel" in c["Filters"]][0]
+    assert top["SortCriteria"] == [{"Field": "SeverityNormalized", "SortOrder": "desc"}]
+
+
+def test_marker_mentions_without_a_finding_are_not_findings(monkeypatch):
+    # live recent_changes output (2026-10-11): only [Info] items, the scale mentioned in prose
+    body = ("### 이벤트 분류 표\n\n| 이벤트 | 리스크 |\n|---|---|\n| `CreateLogGroup` | [Info] |\n\n"
+            "- 보안·네트워크·IAM 영향 변경(`[Warning]` 이상): **해당 없음**\n\n"
+            "### 원인 분석 및 조치\n\n[Critical]/[Warning] 발견 없음 — 해당 표 생략")
+    assert "rca_missing" not in _render(monkeypatch, body)
+    # a real tagged finding still requires the table, even next to such prose
+    assert _render(monkeypatch, body.replace("- 보안", "- [Warning] P2 공개 SG 추가\n- 보안"))["rca_missing"] is True
+
+
+@pytest.mark.parametrize("body", [
+    "### 요약\nNo [Critical] or [Warning] findings were identified in this window.",
+    "### 요약\n`[Critical]` 또는 `[Warning]` 발견 없음",
+    "- [Critical]/[Warning] 발견 없음 — 해당 표 생략",
+    "### 예시\n```\n- [Critical] example only\n```\n- [Info] 정상",
+])
+def test_scale_mentions_and_code_are_not_findings(monkeypatch, body):
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+@pytest.mark.parametrize("body", [
+    "- [Critical]/P1 / Low 공개 SG",                 # a real tag followed by a slash and the priority
+    "1. **[Warning]** P2 단일 AZ",                   # numbered + bold
+    "| 리소스 | 심각도 |\n|---|---|\n| sg-1 | [Critical] |",  # table-cell tag
+    "#### [Warning] 백업 부재",                        # heading tag
+])
+def test_tagged_findings_in_every_prompt_shape_require_the_table(monkeypatch, body):
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
+def test_any_rca_heading_with_a_table_satisfies_the_contract(monkeypatch):
+    body = ("- [Critical] x\n\n### 원인 분석 및 조치\n원인 미확정\n\n### 원인 분석 및 조치\n"
+            "| 발견 | 대상 |\n|:-:|:-|\n| x | y |\n\n### 원인 분석 및 조치\n추가 메모")
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+def test_rca_missing_note_carries_no_bracketed_severity_marker(monkeypatch):
+    out = _render(monkeypatch, "- [Warning] P2 단일 AZ")
+    note = out["body"][len("- [Warning] P2 단일 AZ"):]
+    assert "[Critical]" not in note and "[Warning]" not in note
+    for mark in report._RCA_MISSING_MARK.values():
+        assert "[Critical]" not in mark and "[Warning]" not in mark
+
+
+def test_coverage_note_never_republishes_provider_text(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            if "SeverityLabel" in kw["Filters"]:
+                raise ClientError({"Error": {"Code": "AccessDeniedException",
+                                             "Message": "User arn:aws:iam::123456789012:role/secret is not authorized"}},
+                                  "GetFindings")
+            return {"Findings": [{"Severity": {"Label": "HIGH"}}]}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    note = report._coverage_note({"posture": sources.collect_posture()})
+    assert "AccessDeniedException" in note and "secret" not in note and "123456789012" not in note
+
+
+@pytest.mark.parametrize("rejection_kind", ["InvalidInputException", "ValidationException", "param"])
+def test_rejected_sort_falls_back_to_the_unsorted_page_and_says_so(monkeypatch, rejection_kind):
+    from botocore.exceptions import ClientError, ParamValidationError
+    rejection = (ParamValidationError(report="SortCriteria") if rejection_kind == "param"
+                 else ClientError({"Error": {"Code": rejection_kind}}, "GetFindings"))
+    calls = []
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            calls.append(kw)
+            if "SortCriteria" in kw:
+                raise rejection
+            return {"Findings": [{"Severity": {"Label": "CRITICAL"}, "Title": "t",
+                                  "Compliance": {"SecurityControlId": "EC2.1"}}]}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    data = sources.collect_posture()["data"]
+    assert data["top_findings_order"] == "unsorted" and data["top_findings"]
+    assert "top_findings_unavailable" not in data
+
+
+def test_sorted_detail_page_is_tagged(monkeypatch):
+    class _FakeSh:
+        def get_findings(self, **kw):
+            return {"Findings": []}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    assert sources.collect_posture()["data"]["top_findings_order"] == "severity_desc"
+
+
+def test_call_timeout_never_drops_below_the_minimum_call_time(monkeypatch):
+    monkeypatch.setattr(report.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(report, "_render_deadline", 1000.0 + 59)
+    assert report._call_timeout(8000) >= report._MIN_CALL_S
+
+
+def test_other_detail_errors_still_surface_as_unavailable(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _FakeSh:
+        def get_findings(self, **kw):
+            if "SortCriteria" in kw:
+                raise ClientError({"Error": {"Code": "AccessDeniedException"}}, "GetFindings")
+            return {"Findings": []}
+    monkeypatch.setattr(sources, "_sh_client", lambda: _FakeSh())
+    assert sources.collect_posture()["data"]["top_findings_unavailable"] == "AccessDeniedException"
+
+
+@pytest.mark.parametrize("body", ["- [Critical] 발견 없음", "**[Warning]** 해당 없음", "- [Warning]: none", "| [Critical] N/A |"])
+def test_negation_in_tag_position_is_not_a_finding(monkeypatch, body):
+    assert "rca_missing" not in _render(monkeypatch, body)
+
+
+def test_rca_table_inside_a_code_fence_does_not_satisfy_the_contract(monkeypatch):
+    body = "- [Critical] x\n\n```\n### 원인 분석 및 조치\n| a | b |\n|---|---|\n| c | d |\n```"
+    assert _render(monkeypatch, body)["rca_missing"] is True
+
+
+def test_failed_inventory_read_is_not_labelled_a_sample_cap():
+    data = {"by_type": {"ec2": 2}, "unsampled_types": ["ec2"], "read_failed_types": ["ec2"]}
+    reason = report._gap_reason(data)
+    assert "read failed: ec2" in reason and "sample size cap" not in reason
+
+
+def test_context_rules_disclose_the_severity_ordered_detail_page():
+    # a negative-inference ban, not an instruction to trust another (also sampled) count
+    assert "posture.top_findings" in report._CONTEXT_RULES
+    assert "HIGH 발견이 없다는 근거가 아니다" in report._CONTEXT_RULES
+
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("zh", "- [Critical] 未发现问题"), ("zh", "- [Warning] 没有发现异常"), ("zh", "| [Critical] 无 |"),
+    ("ja", "- [Warning] 該当なし"), ("ja", "- [Critical] 問題なし"), ("ja", "**[Warning]** なし"),
+    ("en", "- [Warning] Not found."), ("ko", "| [Critical] 문제 없음 |"),
+])
+def test_negation_tags_in_every_report_language_are_not_findings(monkeypatch, lang, body):
+    assert "rca_missing" not in _render(monkeypatch, body, lang)
+
+
+def test_negation_table_covers_every_supported_language():
+    from diagnosis.sections import LANG_RULES
+    assert set(report._NEGATIONS) == set(LANG_RULES)
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("zh", "- [Critical] 安全组对 0.0.0.0/0 开放 22 端口"), ("ja", "- [Warning] 単一 AZ の RDS"),
+])
+def test_real_zh_ja_findings_still_require_the_table(monkeypatch, lang, body):
+    assert _render(monkeypatch, body, lang)["rca_missing"] is True
+
+
+
+@pytest.mark.parametrize("lang,body", [
+    ("en", "- [Warning] None of the S3 buckets have default encryption enabled"),
+    ("en", "- [Critical] Not found: CloudTrail trail in ap-northeast-2"),
+    ("zh", "- [Critical] 未发现关键审计日志配置（审计缺失）"),
+    ("ko", "- [Warning] 없음에도 불구하고 백업이 구성되지 않음"),
+    ("ja", "- [Warning] なしの状態で 30 日経過した EBS スナップショット"),
+])
+def test_a_finding_that_starts_with_a_negation_word_still_requires_the_table(monkeypatch, lang, body):
+    assert _render(monkeypatch, body, lang)["rca_missing"] is True
+
+
+def test_bold_paired_scale_markers_and_tilde_fences_are_not_findings(monkeypatch):
+    assert "rca_missing" not in _render(monkeypatch, "**[Critical]**/**[Warning]** 발견 없음")
+    assert "rca_missing" not in _render(monkeypatch, "~~~\n- [Critical] example\n~~~\n- [Info] ok")
+
+
+def test_negations_are_scoped_to_the_report_language(monkeypatch):
+    # a Japanese negation does not silence a Korean report's finding
+    assert _render(monkeypatch, "- [Warning] なし", "ko")["rca_missing"] is True
+    assert "rca_missing" not in _render(monkeypatch, "- [Warning] なし", "ja")
+
+
+def test_posture_window_matches_the_severity_sorted_detail_page():
+    w = sources.COLLECTION_WINDOWS["posture"]
+    assert "sorted by severity" in w and "unsorted page" not in w
 
 def test_rules_give_a_console_path_alternative_to_change_commands():
     from diagnosis import sections as S
