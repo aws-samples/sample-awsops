@@ -81,8 +81,26 @@ def _sql_literal_is_intact(raw_src, table):
     return m.group(1) is not None or "ARRAY[" not in _view_columns(table)
 
 
+# The CURRENT owner of sql_reader.inventory_resources: it recreates the baseline view with the ec2
+# power-state keys added. The baseline migration is frozen, so a key added later lives here.
+POWER_STATE_MIGRATION_GLOB = os.path.join(
+    os.path.dirname(__file__), "..", "..", "terraform", "foundation", "migrations",
+    "*_inventory_ec2_power_state.sql")
+
+
+def _current_inventory_keys():
+    matches = glob(POWER_STATE_MIGRATION_GLOB)
+    assert len(matches) == 1, "expected one inventory_ec2_power_state migration"
+    src = open(matches[0], encoding="utf-8").read()
+    m = re.search(r"k = ANY\(ARRAY\[(.*?)\]\)", src, re.S)
+    assert m, "power-state migration lost its allowlist"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
 def _allowlisted_keys(table):
     """Keys named in the view's jsonb_object_agg ... k = ANY(ARRAY[...]) projection."""
+    if table == "inventory_resources":
+        return _current_inventory_keys()
     cols = _view_columns(table)
     m = re.search(r"k = ANY\(ARRAY\[(.*?)\]\)", cols, re.S)
     if not m:
@@ -242,6 +260,17 @@ class TestInventoryViewContract(unittest.TestCase):
                     body, r"END\s*;?\s*$",
                     "a DO $$ … $$ block does not end at its own END — a bare $$ inside it closed "
                     "it early; use a tagged quote like $cols$")
+
+    def test_power_state_view_widens_only_the_named_ec2_keys(self):
+        baseline = set(re.findall(r"'([^']+)'", re.search(
+            r"k = ANY\(ARRAY\[(.*?)\]\)", _view_columns("inventory_resources"), re.S).group(1)))
+        added = _current_inventory_keys() - baseline
+        self.assertEqual(added, {"instance_id", "instance_type", "instance_state", "state_transition_time"})
+        self.assertFalse(baseline - _current_inventory_keys(), "the recreated view dropped a named key")
+        src = open(glob(POWER_STATE_MIGRATION_GLOB)[0], encoding="utf-8").read()
+        self.assertIn("security_invoker = false", src)
+        self.assertIn("GRANT SELECT ON sql_reader.inventory_resources TO awsops_sql_reader", src)
+        self.assertFalse(_current_inventory_keys() & {"user_data", "tags", "public_ip_address", "iam_instance_profile_arn"})
 
 
 if __name__ == "__main__":

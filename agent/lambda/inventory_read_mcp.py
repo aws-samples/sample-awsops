@@ -481,6 +481,9 @@ PROJECTIONS = {
     # the leak, so the key belongs back on this list.
     "cloudfront": ["id", "domain_name", "enabled", "origins", "aliases"],
     "ebs": ["volume_id", "state", "size", "volume_type"],
+    # Power state lets the model answer "which instances are stopped"; the view (migration
+    # 01M4QQE7…) names exactly these keys, so nothing else of the raw ec2 payload is reachable.
+    "ec2": ["instance_id", "name", "instance_type", "instance_state", "state_transition_time"],
 }
 
 
