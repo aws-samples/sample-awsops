@@ -111,6 +111,10 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
+    `sql_reader.inventory_resources` is currently owned by
+    `01M4QQE72GVQWNAC9D1F6S6XZZ_inventory_ec2_power_state.sql` (it recreates the baseline view with
+    the EC2 identity/power-state keys added; the baseline file is frozen). Edit the view in a new
+    migration and keep the contract test pointed at the current owner.
   - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
     `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
     carry `ownership_evidence` and `targetCapturedAt`, with VPC/subnet/ambiguity data where applicable.

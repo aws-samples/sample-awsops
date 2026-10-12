@@ -473,7 +473,7 @@ PROJECTIONS = {
     "target_group": ["target_group_arn", "target_group_name", "load_balancer_arns", "target_health_descriptions"],
     "alb": ["name", "dns_name", "arn"],
     "nlb": ["name", "dns_name", "arn"],
-    # `origins` IS present, but the sql_reader view (migration 01KYVY9J…) projects each element down
+    # `origins` IS present, but the sql_reader view (created by 01KYVY9J…, now owned by 01M4QQE7…) projects each element down
     # to `{DomainName}` only — detect_unused()/build_topology_chain() read nothing else off an origin
     # object (grepped). A prior revision dropped the key entirely to keep CustomHeaders[].HeaderValue
     # (an origin secret) out, which silently disabled the "CloudFront (empty origin)" high-severity
@@ -481,6 +481,11 @@ PROJECTIONS = {
     # the leak, so the key belongs back on this list.
     "cloudfront": ["id", "domain_name", "enabled", "origins", "aliases"],
     "ebs": ["volume_id", "state", "size", "volume_type"],
+    # Power state lets the model answer "which instances are stopped"; the view (migration
+    # 01M4QQE7…) names exactly these keys; the view allowlist is one list shared by every type, so a
+    # future producer alias matching one of its names would widen that type too. state_transition_time
+    # is null for running instances (EC2 sets it for stopped/terminated ones).
+    "ec2": ["instance_id", "name", "instance_type", "instance_state", "state_transition_time"],
 }
 
 
@@ -488,7 +493,7 @@ def _projected_select(rtype):
     """Column expression for a type's inventory payload.
 
     Reads run as `awsops_sql_reader`, whose sql_reader.inventory_resources view exposes `data` as a
-    NAMED-KEY PROJECTION (migration 01KYVY9J…, INVARIANT rule 5) — raw provider payloads are not
+    NAMED-KEY PROJECTION (created by migration 01KYVY9J…, now owned by 01M4QQE7…; INVARIANT rule 5) — raw provider payloads are not
     reachable, so any key not on that allowlist comes back absent, not denied. Selecting `data`
     unqualified is therefore safe here AND under the exec role, and asking for a specific key that
     the view drops simply yields null rather than an error.
