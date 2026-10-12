@@ -48,7 +48,10 @@ web POST /api/jobs (noop/noop-heavy only), POST /api/diagnosis, POST /api/compli
 `compliance`: those trust a client-supplied `report_id`/`run_id`/`requested_by` with no ownership
 check — pentest-remediation, PR #195). Diagnosis reports go through `POST /api/diagnosis` and
 compliance scans through `POST /api/compliance/run`, both of which call the same `lib/jobs.ts`
-`enqueueJob()` used by `/api/jobs`, computing `requestedBy` server-side. Whichever route calls it,
+`enqueueJob()` used by `/api/jobs`, computing `requestedBy` server-side. (The report's per-section
+evidence contract and `partial` rules are in
+[Diagnosis evaluation](../guides/diagnosis-evaluation.md#section-evidence-and-root-cause-contract).)
+Whichever route calls it,
 `enqueueJob()` writes the durable ledger row first (source of truth), then best-effort
 SQS send. The dispatcher Lambda runs outside the VPC (reaches SQS/SFN APIs directly), validates
 the job type against the `handlers.py` registry (read/compute only — mutate/unknown rejected per

@@ -43,6 +43,70 @@ LLM 없이 해당 결과를 렌더링하므로 Markdown·내보내기에도 미�
 화면은 같은 건수·사유를 표시하며 과거 보고서의 평가 기록이 없으면 평가 정보 없음으로
 표시한다. 활성 불변식이 없는 상태와 실제로 평가해 통과한 상태도 구분한다.
 
+### Section evidence and root-cause contract
+
+Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier) and a
+`_collection` entry per declared source: `ok`, `empty`, `partial`, `failed` or `not_collected`,
+plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
+prompt treats empty, failed and uncollected sources as unavailable evidence, never as a healthy
+result. A `partial` source keeps the evidence it returned while the missing portion stays unknown.
+The inventory sample also drops secret-bearing fields (policy documents, inline and assume-role policies, user data, environment variables, anything named like a password, secret, token or credential) before the report; `redacted_keys` names what was removed, the collection window says its absence is not evidence, and the deep IAM section must report policy analysis as unavailable rather than conclude a policy is missing or safe. Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
+Hub page, the 24 KB inventory sample and the datasource payload cap, are disclosed to the model and
+listed in `summary.incomplete`, but they do not change the report status (the fixed 15-rows-per-type inventory sample is stated in the collection window and is not listed): an account with Security
+Hub standards enabled exceeds 100 findings routinely, and a status that always read `partial` would
+no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
+read failed, a failed Security Hub detail query) and failed collectors are listed in
+`summary.degraded` and make the report `partial`.
+Critical and Warning findings end the section in one `### 원인 분석 및 조치` table:
+the target, the evidence field and value, a confirmed or suspected cause (or the missing
+data), a read-only verification command, remediation steps for the operator to review
+and apply through their own change process, and a confidence level. The prompt forbids
+resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
+command that is not provably read-only gets a visible warning and counts as degraded. The check
+is an allowlist, not a denylist of mutating verbs (which always misses some, such as
+`route53 change-resource-record-sets` or `sns subscribe`): each `aws <service> <operation>`
+passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
+`query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `detect`, and the
+like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of nine
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, the three IAM `generate-…` report builders, and the pure `test-event-pattern`, `test-metric-filter` and `test-dns-answer`; the `generate` and `test` verbs themselves are not read-only, because `apigateway test-invoke-method` runs the method and its backend). Line continuations are joined before parsing. Options and their values are skipped wherever they appear, before the service or between the service and the operation (`aws s3 --region x rm`), so an option value cannot pose as the service or hide the operation. A matrix test wraps every mutating and read-only example in each of those positions, with and without `=`, continuations and quoting. Athena
+`start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
+`presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
+ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
+skipped, and matching is case-sensitive. A new read verb the model invents is flagged until it is
+added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
+
+The detector is a best-effort text heuristic, not a shell parser. It does not recognize commands built
+through shell variables or command substitution, passed through wrappers such as `xargs`, `bash -c` or
+`ssh`, or written for other tools (`terraform apply`, `kubectl apply`). The prompt rule is the primary
+control; the detector catches a model that disregards it in the common forms and makes that visible.
+
+A section that fails, returns no non-whitespace text, stops at `max_tokens`, or contains a resource-changing command is
+listed in `summary.render_degraded`.
+Its body carries a visible marker, and the report status becomes `partial`, the same
+status a degraded collector produces. Failed sections show a fixed localized message, without
+provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
+live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
+the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
+(deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`
+get at least 8000 (`SECTION_MIN_TOKENS`). Per-report output-token cost rises accordingly.
+
+The report job is one Step Functions task with a 3600 s limit, and killing the task loses the
+whole report, because `finish_report` never runs. Waits on Bedrock are therefore bounded together
+rather than per call. The render phase has one wall-clock budget, `DIAGNOSIS_RENDER_BUDGET_S`
+(default 2400 s). It is also capped against the start of the whole `generate()` call: the render deadline never passes `DIAGNOSIS_TASK_BUDGET_S` (default 3300 s, the 3600 s limit minus start-up margin) less `DIAGNOSIS_POST_RENDER_RESERVE_S` (default 600 s, for assembly, upload, export and the title call), so a slow collection phase shortens rendering instead of pushing the task past the limit. Each
+`invoke_model` call is not streamed, so its read timeout is sized from the section's token budget
+(20 tokens/s plus 60 s, about 460 s for 8000 tokens, with `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`,
+default 90 s, as the floor) and capped by the budget that remains. botocore retries are off, because
+a legacy retry would multiply a read timeout threefold for every section in every wave of four.
+Throttling, 5xx and transient connection failures (a reset or refused connection, but not a read timeout, which already spent the whole call budget) are retried up to three attempts in total inside the budget. Once the
+budget is spent, the remaining sections fail fast with the localized degraded body and the report
+completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
+bound.
+
+The service-map collector adds `to_name`, the resolved X-Ray target name, for the
+model and reader only. The evaluator still reads `to`, which stays unresolved, so the
+invariant boundary above is unchanged.
+
 ## Offline use / 오프라인 실행
 
 Run from the repository root. Offline scoring uses only Python's standard library;

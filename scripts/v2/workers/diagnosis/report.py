@@ -6,9 +6,12 @@ import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
+import random
 import threading
+import time
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError, ConnectTimeoutError, ConnectionClosedError, EndpointConnectionError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # KST as a fixed +9 offset — Korea has no DST, so this needs no `tzdata` package in the slim image.
@@ -59,21 +62,40 @@ _CHROME = {
     "ja": {"title": "AWS 診断レポート", "generated": "生成日時", "toc": "目次", "coverage": "データカバレッジ (Data coverage)"},
 }
 TIER_CATALOG = {"light": SECTIONS, "mid": SECTIONS, "deep": DEEP_SECTIONS}
-TIER_MAX_TOKENS = {"light": 1500, "mid": 1500, "deep": 2200}
+# Budgets leave room for the per-finding RCA table (_RULES) after the prescribed tables. Measured on a
+# live mid-tier generate() against real collectors: at 2500 tokens 8 of 9 sections stopped at
+# max_tokens (Korean sections ran 4-8k chars), so the old 1500/2200 budgets were silently cutting
+# most sections before the truncation marker existed; lengths also vary run to run, hence the
+# headroom. The report job runs on Fargate (3600 s).
+TIER_MAX_TOKENS = {"light": 6000, "mid": 6000, "deep": 7000}
+# Sections whose prescribed tables are inherently long (pricing tables, the cross-section roadmap)
+# still hit 5000 on live data; they get a floor instead of raising every section's cost.
+SECTION_MIN_TOKENS = {"executive_summary": 8000, "cost_overview": 8000, "cost_optimization": 8000,
+                      "recommendations": 8000}
+
+
+def _section_budget(section, tier_budget):
+    return max(tier_budget, SECTION_MIN_TOKENS.get(section.get("key"), 0))
 
 
 def _resolve_tier(tier, model):
     """(catalog, model_id, max_tokens) for a tier. Only deep may use Opus; others pin Sonnet."""
     catalog = TIER_CATALOG.get(tier, SECTIONS)
     model_id = _MODEL_OPUS if (tier == "deep" and model == "opus") else _MODEL_SONNET
-    return catalog, model_id, TIER_MAX_TOKENS.get(tier, 1500)
+    return catalog, model_id, TIER_MAX_TOKENS.get(tier, TIER_MAX_TOKENS["mid"])
+
+
+# The title and tags need the report's headline, not all of it: the whole markdown grew roughly 4x with
+# the larger section budgets (a deep report approaches 120k tokens), which would make this "cheap" call
+# the most expensive input of the run.
+_TITLE_INPUT_CHARS = 12000
 
 
 def make_title_and_tags(md, lang="ko"):
     """One cheap LLM call → {'title': str|None, 'tags': [str]}. Best-effort: ANY failure → None/[]
     (the title is decorative; it must never affect report success)."""
     try:
-        raw = _bedrock_render(_title_prompt(lang), md, _TITLE_MODEL, 300)
+        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL, 300)
         snippet = raw[raw.find("{"): raw.rfind("}") + 1]  # tolerate ```json fences / filler text
         data = json.loads(snippet)
         title = data.get("title")
@@ -87,12 +109,58 @@ def make_title_and_tags(md, lang="ko"):
         return {"title": None, "tags": []}
 
 # A3 (V1 parity): per-section Bedrock idle/read timeout so one hung section can't stall the whole
-# job indefinitely (V1 aborted after 60s with no token). On timeout invoke_model raises →
-# _report's except → finish_report(failed) → the report surfaces as failed, never eternal "running".
+# job indefinitely (V1 aborted after 60s with no token). invoke_model is not streamed: the read waits
+# for the whole answer, so the timeout is sized from the section's token budget (below). The floor
+# keeps the original 90 s for small calls.
+#
+# The report job runs as ONE Step Functions task with TimeoutSeconds 3600, and a task kill loses the
+# whole report (finish_report never runs). So the render phase has a shared wall-clock budget:
+# botocore retries are OFF (a legacy retry would multiply a read timeout x3 per section per wave),
+# throttling/5xx are retried here within the budget, and once the budget is spent the remaining
+# sections fail fast (visible `degraded` bodies, report `partial`) instead of the task being killed.
 _BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "90"))
-_BEDROCK_CONFIG = Config(
-    connect_timeout=10, read_timeout=_BEDROCK_READ_TIMEOUT_S, retries={"max_attempts": 2},
-)
+_RENDER_BUDGET_S = int(os.environ.get("DIAGNOSIS_RENDER_BUDGET_S", "2400"))
+# The 3600 s Step Functions limit covers the WHOLE task, so the render deadline is also capped against
+# the start of generate() (collection included), leaving room for assembly, upload, export and the
+# title call. A slow collection phase shortens the render phase instead of pushing the task past the limit.
+_TASK_BUDGET_S = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))  # 3600 minus process start-up margin
+_POST_RENDER_RESERVE_S = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
+_MIN_CALL_S = 30            # a call with less than this left in the budget cannot finish a section
+_CALL_TIMEOUT_STEP_S = 30   # quantize remaining time so the client cache stays small
+_CALL_ATTEMPTS = 3          # initial call + throttling/5xx retries
+_RETRYABLE_ERROR_CODES = frozenset((
+    "ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException",
+    "InternalServerException", "ModelNotReadyException"))
+# Connection-level failures the botocore retries used to absorb (one TCP reset must not lose a section).
+# A READ timeout is deliberately absent: it already spent the full budget for that call.
+_RETRYABLE_CONNECTION_ERRORS = (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError)
+_render_deadline = None     # time.monotonic() deadline of the generate() in flight (one report per task)
+# Worst-case generation speed assumed when sizing the read timeout from the token budget (Opus is
+# the slowest), plus a fixed allowance for time-to-first-token.
+_SLOWEST_TOKENS_PER_S = 20
+
+
+def _read_timeout_for(max_tokens):
+    """The read must outlast a full generation of `max_tokens`; the env value stays the floor."""
+    return max(_BEDROCK_READ_TIMEOUT_S, int(max_tokens / _SLOWEST_TOKENS_PER_S) + 60)
+
+
+def _call_timeout(max_tokens):
+    """Read timeout for one call: the token-budget estimate, capped by the render budget left."""
+    want = _read_timeout_for(max_tokens)
+    if _render_deadline is None:
+        return want
+    remaining = int(_render_deadline - time.monotonic())
+    if remaining < _MIN_CALL_S:
+        raise TimeoutError("diagnosis render budget exhausted")
+    return min(want, remaining - remaining % _CALL_TIMEOUT_STEP_S or _MIN_CALL_S)
+
+
+def _bedrock_config(read_timeout):
+    return Config(connect_timeout=10, read_timeout=read_timeout, retries={"max_attempts": 0})
+
+
+_BEDROCK_CONFIG = _bedrock_config(_BEDROCK_READ_TIMEOUT_S)
 
 # [GATE-FIX CRITICAL] PII/secret redaction BEFORE any Bedrock call (spec §9 mandatory).
 # Patterns live in the top-level redact.py so every LLM caller in this worker tier (finops/llm.py
@@ -110,20 +178,28 @@ _SYSTEM = (
 
 # Bedrock clients are thread-safe for invoke calls, but creating one through boto3's shared default
 # Session is NOT — concurrent section rendering (ADR-045) could race during creation. Create one client
-# per region under a lock (double-checked) and reuse it across threads.
+# per (region, read timeout) under a lock (double-checked) and reuse it across threads.
 _bedrock_lock = threading.Lock()
 _bedrock_clients: dict = {}
 
 
-def _get_bedrock_client(region):
-    client = _bedrock_clients.get(region)
+def _get_bedrock_client(region, read_timeout=_BEDROCK_READ_TIMEOUT_S):
+    key = (region, read_timeout)
+    client = _bedrock_clients.get(key)
     if client is None:
         with _bedrock_lock:
-            client = _bedrock_clients.get(region)
+            client = _bedrock_clients.get(key)
             if client is None:
-                client = boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG)
-                _bedrock_clients[region] = client
+                client = boto3.client("bedrock-runtime", region_name=region,
+                                      config=_bedrock_config(read_timeout))
+                _bedrock_clients[key] = client
     return client
+
+
+class _RenderedText(str):
+    """Model text that remembers why generation stopped. A plain ``str`` everywhere it is used, so
+    callers and test doubles returning bare strings keep working (``stop_reason`` is then None)."""
+    stop_reason = None
 
 
 def _bedrock_render(prompt, context_json, model_id, max_tokens):
@@ -132,7 +208,6 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # /aws/bedrock/invocation-logs and are attributable to awsops (caller-role filter) for cost.
     # model_id + max_tokens are resolved per-tier by generate() (deep may select Opus + a larger cap).
     bedrock_region = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
-    client = _get_bedrock_client(bedrock_region)  # thread-safe shared client (ADR-045 concurrent render)
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
@@ -141,9 +216,26 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
             {"type": "text", "text": f"{prompt}\n\n<untrusted>\n{context_json}\n</untrusted>"}
         ]}],
     }
-    r = client.invoke_model(modelId=model_id, body=json.dumps(body))
+    for attempt in range(1, _CALL_ATTEMPTS + 1):
+        # thread-safe shared client (ADR-045 concurrent render); read timeout sized to this budget
+        # and capped by what is left of the render budget (raises once it is spent)
+        client = _get_bedrock_client(bedrock_region, _call_timeout(max_tokens))
+        try:
+            r = client.invoke_model(modelId=model_id, body=json.dumps(body))
+            break
+        except ClientError as e:
+            code = (e.response.get("Error") or {}).get("Code", "")
+            if code not in _RETRYABLE_ERROR_CODES or attempt == _CALL_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** attempt, 10) + random.random())
+        except _RETRYABLE_CONNECTION_ERRORS:
+            if attempt == _CALL_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** attempt, 10) + random.random())
     payload = json.loads(r["body"].read())
-    return "".join(b.get("text", "") for b in payload.get("content", []))
+    text = _RenderedText("".join(b.get("text", "") for b in payload.get("content", [])))
+    text.stop_reason = payload.get("stop_reason")
+    return text
 
 
 def _balance_code_fences(text):
@@ -263,17 +355,222 @@ def _render_intended_vs_actual(verdicts, lang):
     return "\n".join(lines)
 
 
+def _collection_gaps(data):
+    """(by_design, unexpected) coverage gaps of a collector's data.
+
+    by_design: caps the collector always applies (100-finding Security Hub page, 24 KB inventory
+    sample, datasource payload cap) — disclosed to the model, but not a failure of the run.
+    unexpected: reads that failed (a type's sample query, the Security Hub detail query)."""
+    by_design = bool(data.get("truncated") is True or data.get("_truncated") is True
+                     or data.get("partial_types") or data.get("unsampled_types")
+                     or data.get("more_findings") is True or data.get("more_top_findings") is True
+                     or data.get("more_top_groups") is True)
+    unexpected = bool(data.get("read_failed_types") or data.get("top_findings_unavailable"))
+    return by_design, unexpected
+
+
+def _collection_status(key, source):
+    """What the model must know about a source besides its data: did collection work, and is the
+    data complete? An empty or failed source is 'no evidence', never 'no problems'."""
+    window = src.COLLECTION_WINDOWS.get(key, "")
+    if source is None:
+        return {"status": "not_collected", "window": window}
+    data = source.get("data") or {}
+    if source.get("degraded") or source.get("ok") is False:
+        status = "failed"  # not "degraded": the UI flags that word in a section body as a render failure
+    elif any(_collection_gaps(data)):
+        status = "partial"
+    elif _is_empty(data):
+        status = "empty"
+    else:
+        status = "ok"
+    out = {"status": status, "window": window}
+    if source.get("notes"):
+        out["notes"] = str(source["notes"])[:300]
+    return out
+
+
+# Appended to every LLM section prompt: how to read the `_run` / `_collection` blocks.
+_CONTEXT_RULES = (
+    "<untrusted> 데이터의 `_run`은 진단 실행 시각(UTC/KST)·스코프·리전이고, `_collection.<소스>`는 각 소스의 "
+    "수집 상태(ok/empty/partial/failed/not_collected)·수집 범위(window)·사유(notes)다. partial은 반환된 근거만 "
+    "사용하고 누락·실패한 부분은 미확정으로 명시하라. empty/failed/not_collected는 '데이터 불가(사유)'로 쓰고 "
+    "정상·문제 없음으로 판단하지 마라. 수집 범위(기간·상한)를 넘는 결론을 내리지 마라."
+)
+
+_TRUNCATED_MARK = {
+    "ko": "\n\n_[출력 길이 한도로 이 섹션이 중간에 잘렸습니다 (degraded)]_",
+    "en": "\n\n_[This section was cut off at the output length limit (degraded)]_",
+    "zh": "\n\n_[此章节因输出长度上限被截断 (degraded)]_",
+    "ja": "\n\n_[出力長の上限によりこのセクションは途中で切れました (degraded)]_",
+}
+
+
+# Deterministic backstop for the prompt rule: a mutating AWS CLI command in a section body (e.g. in
+# the remediation column) degrades the section visibly. Reports stay advice only (ADR-005).
+# Each `aws <service> <operation>` is classified by its leading verb (hyphenated or bare, e.g.
+# `lambda invoke`, `sns publish`) and the high-level `aws s3` commands; only provably read-only
+# operations pass.
+# Case-sensitive on purpose: real CLI invocations are lowercase, while prose like "AWS Lambda update"
+# must not match. Global options before the service are skipped token by token.
+_CLI_START = re.compile(r"(?<![A-Za-z0-9_-])aws\s+")
+_CLI_TOKEN = re.compile(r"[^\s`'\"|;)\\]+")  # a bare line-continuation backslash is not a token
+_LINE_CONTINUATION = re.compile(r"\\\r?\n\s*")
+_SERVICE_SHAPED = re.compile(r"[a-z0-9][a-z0-9-]*")
+_GLOBAL_OPTIONS_WITH_VALUE = frozenset((
+    "--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle",
+    "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
+# A command is accepted only when its operation is provably read-only; everything else that looks
+# like a CLI operation is flagged. (A denylist of mutating verbs always misses some — `route53
+# change-…`, `sns subscribe`, `ssm start-session` — and Athena `start-query-execution` runs DDL/CTAS.)
+_READ_ONLY_VERBS = frozenset((
+    "describe list get lookup search query scan select check validate simulate estimate preview "
+    "wait filter find read fetch retrieve show view head tail analyze evaluate detect "
+    "compare inspect count help").split())
+# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail),
+# `generate` (apigateway generate-client-certificate creates one) and `test` (apigateway
+# test-invoke-method runs the method including its backend); the harmless ones are listed by name in
+# _READ_ONLY_OPERATIONS instead.
+# Operations that look mutating by name but only read, or only touch local config / a Logs query.
+_READ_ONLY_OPERATIONS = frozenset((
+    "start-query", "start-live-tail", "update-kubeconfig",
+    "generate-credential-report", "generate-service-last-accessed-details",
+    "generate-organizations-access-report",
+    # pure evaluations that run no backend: events, logs metric filters, Route 53 DNS answers
+    "test-event-pattern", "test-metric-filter", "test-dns-answer"))
+_S3_READ_ONLY = frozenset(("ls", "presign"))
+_S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb", "website"))
+# Real operations are hyphenated; these are the un-hyphenated ones worth classifying (sns, lambda,
+# kms, dynamodb, cloudformation, `wait`, `configure set`). Anything else un-hyphenated is treated as
+# prose ("aws cloudwatch dashboards") and ignored.
+_SINGLE_WORD_OPERATIONS = frozenset((
+    "invoke", "publish", "subscribe", "unsubscribe", "deploy", "package", "scan", "query", "tail",
+    "wait", "help", "encrypt", "decrypt", "sign", "verify", "set",
+    # codedeploy / emr / codeartifact customizations
+    "push", "register", "deregister", "install", "uninstall", "put", "get", "ssh", "socks", "login"))
+_HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+
+
+_GLOBAL_FLAGS = frozenset((
+    "--debug", "--no-verify-ssl", "--no-paginate", "--no-sign-request", "--no-cli-pager",
+    "--no-cli-auto-prompt", "--cli-auto-prompt"))
+_SERVICE_POSITIONS = 3  # the service is one of the first few POSITIONAL tokens; options never count
+
+
+def _operation_shaped(token, service):
+    """A token shaped like an operation of `service`: hyphenated, one of the few un-hyphenated
+    operations, or an `aws s3` command."""
+    return bool(_HYPHENATED.fullmatch(token) or token in _SINGLE_WORD_OPERATIONS
+                or (service == "s3" and token in _S3_COMMANDS))
+
+
+def _operation_after(tokens, index, service):
+    """The operation of `service` (tokens[index - 1]), skipping options and their values — also
+    between the service and the operation (`aws s3 --region x rm`). A known value-taking option always
+    consumes its value; for an unknown option the next token is its value unless it is operation-shaped."""
+    j = index
+    while j < len(tokens):
+        token = tokens[j]
+        if token.startswith("-"):
+            j += 1
+            if "=" in token or token in _GLOBAL_FLAGS or j >= len(tokens) or tokens[j].startswith("-"):
+                continue
+            if token in _GLOBAL_OPTIONS_WITH_VALUE or not _operation_shaped(tokens[j], service):
+                j += 1  # its value
+            continue
+        return token if _operation_shaped(token, service) else None
+    return None
+
+
+def _skip_option(tokens, index):
+    """Index just past the option at tokens[index] and its value. A known value-taking option always
+    consumes its value; for an unknown option the next token is its value unless it is operation-shaped
+    or another option."""
+    token = tokens[index]
+    index += 1
+    if "=" in token or token in _GLOBAL_FLAGS or index >= len(tokens) or tokens[index].startswith("-"):
+        return index
+    if token in _GLOBAL_OPTIONS_WITH_VALUE or not _operation_shaped(tokens[index], None):
+        index += 1
+    return index
+
+
+def _cli_commands(text):
+    """Yield (service, operation) for each `aws ...` invocation.
+
+    Line continuations are joined first (`aws ec2 \\` + newline + `terminate-instances`). Options and
+    their values are skipped wherever they appear before the operation, however many there are
+    (`aws --profile p --region r --output json ec2 ...`, `aws s3 --profile p rm ...`), known or not.
+    The service is the first of the leading POSITIONAL tokens that is followed by an operation, so an
+    option value can neither pose as the service nor hide the operation."""
+    text = _LINE_CONTINUATION.sub(" ", text)
+    for start in _CLI_START.finditer(text):
+        tokens = _CLI_TOKEN.findall(text[start.end():start.end() + 400])
+        i = positional = 0
+        while i < len(tokens) and positional < _SERVICE_POSITIONS:
+            if tokens[i].startswith("-"):
+                i = _skip_option(tokens, i)
+                continue
+            positional += 1
+            if _SERVICE_SHAPED.fullmatch(tokens[i]):
+                operation = _operation_after(tokens, i + 1, tokens[i])
+                if operation is not None:
+                    yield tokens[i], operation
+                    break
+            i += 1
+
+
+def _has_mutating_cli(text):
+    """True when the text contains an `aws` command not provably read-only."""
+    for service, operation in _cli_commands(text):
+        if service == "s3":
+            if operation in _S3_COMMANDS and operation not in _S3_READ_ONLY:
+                return True
+            continue
+        if operation in _READ_ONLY_OPERATIONS:
+            continue
+        if not (_HYPHENATED.fullmatch(operation) or operation in _SINGLE_WORD_OPERATIONS):
+            continue  # not shaped like a CLI operation: prose, a flag value, a path
+        parts = operation.split("-")
+        verb = parts[1] if parts[0] == "batch" and len(parts) > 1 else parts[0]  # batch-get-item
+        if verb not in _READ_ONLY_VERBS:
+            return True
+    return False
+
+
+_MUTATING_MARK = {
+    "ko": "\n\n_[이 섹션에 리소스를 변경하는 AWS CLI 명령이 포함되어 있습니다. 실행하지 말고 변경 관리 절차로 검토하세요 (degraded)]_",
+    "en": "\n\n_[This section contains an AWS CLI command that changes resources. Do not run it; review it through your change process (degraded)]_",
+    "zh": "\n\n_[此章节包含会更改资源的 AWS CLI 命令。请勿直接执行，请通过变更流程审核 (degraded)]_",
+    "ja": "\n\n_[このセクションにはリソースを変更する AWS CLI コマンドが含まれます。実行せず、変更管理手順で確認してください (degraded)]_",
+}
+
+
 def render_section(section, collected, model_id, max_tokens, lang="ko"):
     if section["key"] == INTENDED_VS_ACTUAL_SECTION["key"]:
         verdicts = collected.get("intended_vs_actual", {}).get("data", {}).get("verdicts", [])
         return {"key": section["key"], "title": localized_title(section, lang),
                 "body": _render_intended_vs_actual(verdicts, lang)}
-    # Section sees ONLY the sources it declares (least-context).
+    # Section sees ONLY the sources it declares (least-context), plus their collection status and
+    # the run context, so missing evidence is never mistaken for a healthy account.
     ctx = {k: collected[k]["data"] for k in section["sources"] if k in collected}
+    ctx["_collection"] = {k: _collection_status(k, collected.get(k)) for k in section["sources"]}
+    if section.get("_run"):
+        ctx["_run"] = section["_run"]
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM
-    prompt = section["prompt"] + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
-    body = _normalize_headings(_balance_code_fences(_bedrock_render(prompt, ctx_json, model_id, max_tokens)))
-    return {"key": section["key"], "title": localized_title(section, lang), "body": body}
+    prompt = section["prompt"] + " " + _CONTEXT_RULES + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
+    raw = _bedrock_render(prompt, ctx_json, model_id, max_tokens)
+    if not raw.strip():
+        raise ValueError("Model returned no section text")
+    body = _normalize_headings(_balance_code_fences(raw))
+    out = {"key": section["key"], "title": localized_title(section, lang), "body": body}
+    if getattr(raw, "stop_reason", None) == "max_tokens":
+        out["body"] += _TRUNCATED_MARK.get(lang, _TRUNCATED_MARK["ko"])
+        out["truncated"] = True
+    if _has_mutating_cli(body):
+        out["body"] += _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"])
+        out["mutating_command"] = True
+    return out
 
 
 def _is_empty(data):
@@ -293,8 +590,10 @@ def _coverage_note(collected, lang="ko"):
             continue  # Synthetic assessment has its own coverage section; it is not a collector.
         if key == "datasources_obs":
             status = _datasource_utilization(r)            # 외부 datasource 활용 여부 (사용/비활성/없음/unavailable)
-        elif r.get("degraded"):
+        elif _collection_status(key, r)["status"] == "failed":
             status = f"degraded — {r.get('notes') or 'collection failed'}"
+        elif _collection_status(key, r)["status"] == "partial":
+            status = "partial — incomplete source coverage; missing evidence remains unknown"
         elif _is_empty(r.get("data")):
             status = "empty (no data returned)"
         else:
@@ -326,12 +625,13 @@ def _datasource_utilization(r):
     return f"사용 — {used}/{queried}개 인스턴스 신호 실행({names}){extra}"
 
 
-def build_markdown(rendered, account, tier, collected=None, lang="ko"):
+def build_markdown(rendered, account, tier, collected=None, lang="ko", generated_at=None):
     chrome = _CHROME.get(lang, _CHROME["ko"])
     toc = "\n".join(f"- [{s['title']}](#{s['key']})" for s in rendered)
     # TOC sits ABOVE the first `## ` section heading (bold label, not a heading) so a
     # reader — and `md.split("##", 1)[0]` — sees the full table of contents first.
-    generated = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
+    # One clock per report: generate() passes the same instant it gave the sections in _run.
+    generated = (generated_at or datetime.now(timezone.utc)).astimezone(_KST).strftime("%Y-%m-%d %H:%M")
     parts = [f"# {chrome['title']} — 계정 {account} ({tier})" if lang == "ko"
              else f"# {chrome['title']} — {account} ({tier})", "",
              f"> {chrome['generated']}: {generated} (KST)", "",
@@ -388,6 +688,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     `tier` picks the catalog (mid/light=8, deep=15; +intended-vs-actual appended → 9/16 rendered) and `model` ('sonnet'|'opus', deep-only) the
     Bedrock model + token budget. `on_progress(current, total, section, phase)` (optional, A3 / V1
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
+    job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
@@ -402,7 +703,16 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     _emit(0, "데이터 수집", "collect")
     collected = {r["key"]: r for r in src.collect_all(conn, scope)}
     sources_used = [k for k, r in collected.items() if r["ok"]]
-    degraded = [k for k, r in collected.items() if r["degraded"]]
+    # degraded = failed collectors and unexpected gaps (they make the report `partial`). incomplete =
+    # by-design caps: disclosed to the model and in the coverage note, but a normal 100-finding
+    # Security Hub page or a 24 KB inventory sample must not leave every real report `partial`.
+    degraded, incomplete = [], []
+    for k, r in collected.items():
+        status = _collection_status(k, r)["status"]
+        if status == "failed" or _collection_gaps(r.get("data") or {})[1]:
+            degraded.append(k)
+        elif status == "partial":
+            incomplete.append(k)
 
     # --- Plan 2: intended-vs-actual (active invariants only; deterministic; verdict-only) ---
     actual = _build_actual(collected)
@@ -420,13 +730,19 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     }
 
     catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
+    now = datetime.now(timezone.utc)
+    run_ctx = {"generated_at_utc": now.strftime("%Y-%m-%d %H:%M"),
+               "generated_at_kst": now.astimezone(_KST).strftime("%Y-%m-%d %H:%M"),
+               "scope": "host account" if scope == "self" else "member account",
+               "region": src.REGION, "tier": tier}
 
     # ADR-045: render sections concurrently (bounded). Each section keeps its own Bedrock read/connect
     # timeout; a single section that fails degrades to a visible error body (loud, not silent) WITHOUT
     # sinking the whole report; results reassembled in catalog order. Progress is emitted on completion.
     def _render_one(i, sec):
         try:
-            return i, render_section(sec, collected, model_id, max_tokens, lang)
+            return i, render_section(dict(sec, _run=run_ctx), collected, model_id,
+                                     _section_budget(sec, max_tokens), lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.
@@ -435,25 +751,34 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
                     "zh": "此章节生成失败 (degraded)",
                     "ja": "このセクションの生成に失敗しました (degraded)"}
             return i, {"key": sec.get("key"), "title": localized_title(sec, lang),
-                       "body": f"_{fail.get(lang, fail['ko'])}: {e}_"}
+                       "body": f"_{fail.get(lang, fail['ko'])}_", "render_failed": True}
 
+    global _render_deadline
     rendered_by_idx, done, completed_titles = {}, 0, []
-    with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
-        futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
-        for fut in as_completed(futures):
-            i, result = fut.result()
-            rendered_by_idx[i] = result
-            done += 1
-            # gap L177: accumulate finished-section titles (completion order — render is
-            # concurrent, so this is NOT catalog order) for the UI checklist grid.
-            completed_titles.append(result["title"])
-            _emit(done, result["title"], "render", list(completed_titles))
+    _render_deadline = min(time.monotonic() + _RENDER_BUDGET_S,
+                           job_start + _TASK_BUDGET_S - _POST_RENDER_RESERVE_S)
+    try:
+        with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
+            futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
+            for fut in as_completed(futures):
+                i, result = fut.result()
+                rendered_by_idx[i] = result
+                done += 1
+                # gap L177: accumulate finished-section titles (completion order — render is
+                # concurrent, so this is NOT catalog order) for the UI checklist grid.
+                completed_titles.append(result["title"])
+                _emit(done, result["title"], "render", list(completed_titles))
+    finally:
+        _render_deadline = None
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
-    md = build_markdown(rendered, account, tier, collected, lang)
+    md = build_markdown(rendered, account, tier, collected, lang, generated_at=now)
+    # A section that failed or was cut off is a degraded report even when every collector worked.
+    render_degraded = [s["key"] for s in rendered
+                       if s.get("render_failed") or s.get("truncated") or s.get("mutating_command")]
     summary = {"sections": len(rendered), "sources_used": sources_used,
-               "degraded": degraded, "drift": drift, "unassessed": unassessed,
-               "invariant_coverage": invariant_coverage}
+               "degraded": degraded, "incomplete": incomplete, "render_degraded": render_degraded, "drift": drift,
+               "unassessed": unassessed, "invariant_coverage": invariant_coverage}
 
     # --- Plan 2: report diff vs the parent report (only if this report has a parent) ---
     if report_id is not None:
