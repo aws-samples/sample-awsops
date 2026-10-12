@@ -52,7 +52,7 @@ prompt treats empty, failed and uncollected sources as unavailable evidence, nev
 result. A `partial` source keeps the evidence it returned while the missing portion stays unknown.
 Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
 Hub page, the 24 KB inventory sample and the datasource payload cap, are disclosed to the model and
-listed in `summary.incomplete`, but they do not change the report status: an account with Security
+listed in `summary.incomplete`, but they do not change the report status (the fixed 15-rows-per-type inventory sample is stated in the collection window and is not listed): an account with Security
 Hub standards enabled exceeds 100 findings routinely, and a status that always read `partial` would
 no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
 read failed, a failed Security Hub detail query) and failed collectors are listed in
@@ -67,8 +67,8 @@ is an allowlist, not a denylist of mutating verbs (which always misses some, suc
 `route53 change-resource-record-sets` or `sns subscribe`): each `aws <service> <operation>`
 passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
 `query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `detect`, and the
-like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of six
-read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, and the three IAM `generate-…` report builders; the `generate` verb itself is not read-only). Line continuations are joined before parsing. Options and their values are skipped wherever they appear, before the service or between the service and the operation (`aws s3 --region x rm`), so an option value cannot pose as the service or hide the operation. A matrix test wraps every mutating and read-only example in each of those positions, with and without `=`, continuations and quoting. Athena
+like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of nine
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, the three IAM `generate-…` report builders, and the pure `test-event-pattern`, `test-metric-filter` and `test-dns-answer`; the `generate` and `test` verbs themselves are not read-only, because `apigateway test-invoke-method` runs the method and its backend). Line continuations are joined before parsing. Options and their values are skipped wherever they appear, before the service or between the service and the operation (`aws s3 --region x rm`), so an option value cannot pose as the service or hide the operation. A matrix test wraps every mutating and read-only example in each of those positions, with and without `=`, continuations and quoting. Athena
 `start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
 `presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
 ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
@@ -93,7 +93,7 @@ get at least 8000 (`SECTION_MIN_TOKENS`). Per-report output-token cost rises acc
 The report job is one Step Functions task with a 3600 s limit, and killing the task loses the
 whole report, because `finish_report` never runs. Waits on Bedrock are therefore bounded together
 rather than per call. The render phase has one wall-clock budget, `DIAGNOSIS_RENDER_BUDGET_S`
-(default 2400 s), which leaves the rest for collection, assembly, export and the title call. Each
+(default 2400 s). It is also capped against the start of the whole `generate()` call: the render deadline never passes `DIAGNOSIS_TASK_BUDGET_S` (default 3300 s, the 3600 s limit minus start-up margin) less `DIAGNOSIS_POST_RENDER_RESERVE_S` (default 600 s, for assembly, upload, export and the title call), so a slow collection phase shortens rendering instead of pushing the task past the limit. Each
 `invoke_model` call is not streamed, so its read timeout is sized from the section's token budget
 (20 tokens/s plus 60 s, about 460 s for 8000 tokens, with `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`,
 default 90 s, as the floor) and capped by the budget that remains. botocore retries are off, because

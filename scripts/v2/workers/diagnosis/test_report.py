@@ -1314,3 +1314,57 @@ def test_many_leading_options_never_hide_the_command():
     many = "aws " + " ".join(f"--opt{n} v{n}" for n in range(12)) + " s3 rm s3://b/k"
     assert report._has_mutating_cli(many)
     assert not report._has_mutating_cli("aws " + " ".join(f"--opt{n} v{n}" for n in range(12)) + " ec2 describe-instances")
+
+
+
+# ── review: `test` is not a read verb; the render budget is anchored to the job start ───────────────
+
+def test_test_verb_is_not_read_only_but_pure_evaluations_are_allowlisted():
+    for cmd in ("aws apigateway test-invoke-method --rest-api-id a --resource-id r --http-method GET",
+                "aws apigateway test-invoke-authorizer --rest-api-id a --authorizer-id z",
+                "aws lambda test-something --x"):
+        assert report._has_mutating_cli(cmd), cmd
+    for cmd in ("aws events test-event-pattern --event-pattern p --event e",
+                "aws logs test-metric-filter --filter-pattern p --log-event-messages m",
+                "aws route53 test-dns-answer --hosted-zone-id Z --record-name r --record-type A"):
+        assert not report._has_mutating_cli(cmd), cmd
+
+
+def test_slow_collection_shortens_the_render_budget_instead_of_exceeding_the_task_limit(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(report.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(report, "_RENDER_BUDGET_S", 2400)
+    monkeypatch.setattr(report, "_TASK_BUDGET_S", 3300)
+    monkeypatch.setattr(report, "_POST_RENDER_RESERVE_S", 600)
+
+    def slow_collect(conn, scope="self"):
+        clock["now"] += 2600          # collection alone ate 2600 s of the 3300 s task budget
+        return [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}]
+    monkeypatch.setattr(report.src, "collect_all", slow_collect)
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    deadlines = []
+
+    def fake_render(section, collected, model_id, max_tokens, lang="ko"):
+        deadlines.append(report._render_deadline)
+        return {"key": section["key"], "title": section["title"], "body": "b"}
+    monkeypatch.setattr(report, "render_section", fake_render)
+    report.generate(object(), account="1", tier="mid")
+    # job_start + 3300 - 600 = 3700 < now(3600) + 2400: the task cap wins over the render budget
+    assert deadlines and all(d == 1000.0 + 3300 - 600 for d in deadlines)
+    assert report._render_deadline is None
+
+
+def test_untouched_collection_keeps_the_full_render_budget(monkeypatch):
+    clock = {"now": 5.0}
+    monkeypatch.setattr(report.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(report.src, "collect_all",
+                        lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {"x": 1}}])
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    seen = []
+
+    def fake_render(section, collected, model_id, max_tokens, lang="ko"):
+        seen.append(report._render_deadline)
+        return {"key": section["key"], "title": section["title"], "body": "b"}
+    monkeypatch.setattr(report, "render_section", fake_render)
+    report.generate(object(), account="1", tier="mid")
+    assert all(d == 5.0 + report._RENDER_BUDGET_S for d in seen)

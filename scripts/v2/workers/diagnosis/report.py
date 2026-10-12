@@ -120,6 +120,11 @@ def make_title_and_tags(md, lang="ko"):
 # sections fail fast (visible `degraded` bodies, report `partial`) instead of the task being killed.
 _BEDROCK_READ_TIMEOUT_S = int(os.environ.get("DIAGNOSIS_BEDROCK_READ_TIMEOUT_S", "90"))
 _RENDER_BUDGET_S = int(os.environ.get("DIAGNOSIS_RENDER_BUDGET_S", "2400"))
+# The 3600 s Step Functions limit covers the WHOLE task, so the render deadline is also capped against
+# the start of generate() (collection included), leaving room for assembly, upload, export and the
+# title call. A slow collection phase shortens the render phase instead of pushing the task past the limit.
+_TASK_BUDGET_S = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))  # 3600 minus process start-up margin
+_POST_RENDER_RESERVE_S = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
 _MIN_CALL_S = 30            # a call with less than this left in the budget cannot finish a section
 _CALL_TIMEOUT_STEP_S = 30   # quantize remaining time so the client cache stays small
 _CALL_ATTEMPTS = 3          # initial call + throttling/5xx retries
@@ -412,17 +417,20 @@ _GLOBAL_OPTIONS_WITH_VALUE = frozenset((
 # like a CLI operation is flagged. (A denylist of mutating verbs always misses some — `route53
 # change-…`, `sns subscribe`, `ssm start-session` — and Athena `start-query-execution` runs DDL/CTAS.)
 _READ_ONLY_VERBS = frozenset((
-    "describe list get lookup search query scan select check validate simulate estimate preview test "
+    "describe list get lookup search query scan select check validate simulate estimate preview "
     "wait filter find read fetch retrieve show view head tail analyze evaluate detect "
     "compare inspect count help").split())
-# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail) and
-# `generate` (apigateway generate-client-certificate creates one); the harmless IAM report builders are
-# listed by name in _READ_ONLY_OPERATIONS instead.
+# Deliberately NOT read verbs: `verify` (ses verify-email-identity creates an identity and sends mail),
+# `generate` (apigateway generate-client-certificate creates one) and `test` (apigateway
+# test-invoke-method runs the method including its backend); the harmless ones are listed by name in
+# _READ_ONLY_OPERATIONS instead.
 # Operations that look mutating by name but only read, or only touch local config / a Logs query.
 _READ_ONLY_OPERATIONS = frozenset((
     "start-query", "start-live-tail", "update-kubeconfig",
     "generate-credential-report", "generate-service-last-accessed-details",
-    "generate-organizations-access-report"))
+    "generate-organizations-access-report",
+    # pure evaluations that run no backend: events, logs metric filters, Route 53 DNS answers
+    "test-event-pattern", "test-metric-filter", "test-dns-answer"))
 _S3_READ_ONLY = frozenset(("ls", "presign"))
 _S3_COMMANDS = frozenset(("ls", "presign", "cp", "mv", "rm", "sync", "rb", "mb", "website"))
 # Real operations are hyphenated; these are the un-hyphenated ones worth classifying (sns, lambda,
@@ -673,6 +681,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     `tier` picks the catalog (mid/light=8, deep=15; +intended-vs-actual appended → 9/16 rendered) and `model` ('sonnet'|'opus', deep-only) the
     Bedrock model + token budget. `on_progress(current, total, section, phase)` (optional, A3 / V1
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
+    job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
@@ -739,7 +748,8 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
 
     global _render_deadline
     rendered_by_idx, done, completed_titles = {}, 0, []
-    _render_deadline = time.monotonic() + _RENDER_BUDGET_S
+    _render_deadline = min(time.monotonic() + _RENDER_BUDGET_S,
+                           job_start + _TASK_BUDGET_S - _POST_RENDER_RESERVE_S)
     try:
         with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
             futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
