@@ -87,7 +87,7 @@ status a degraded collector produces. Failed sections show a fixed localized mes
 provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
 live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
 the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
-(deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization` and `recommendations`
+(deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization`, `recommendations` and `compute_infrastructure`
 get at least 8000 (`SECTION_MIN_TOKENS`). Per-report output-token cost rises accordingly.
 
 The report job is one Step Functions task with a 3600 s limit, and killing the task loses the

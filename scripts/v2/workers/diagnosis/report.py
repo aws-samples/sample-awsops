@@ -71,7 +71,7 @@ TIER_MAX_TOKENS = {"light": 6000, "mid": 6000, "deep": 7000}
 # Sections whose prescribed tables are inherently long (pricing tables, the cross-section roadmap)
 # still hit 5000 on live data; they get a floor instead of raising every section's cost.
 SECTION_MIN_TOKENS = {"executive_summary": 8000, "cost_overview": 8000, "cost_optimization": 8000,
-                      "recommendations": 8000}
+                      "recommendations": 8000, "compute_infrastructure": 8000}
 
 
 def _section_budget(section, tier_budget):
