@@ -632,8 +632,10 @@ def _finding_tag(lang):
 
 _FENCED_CODE = re.compile(r"(```|~~~).*?\1", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
+# The heading line may carry text around the phrase (live output titled the table
+# "## [Critical]/[Warning] 발견 — 원인 분석 및 조치"); the table below it is still required.
 _RCA_HEADING = re.compile(
-    r"^#{2,4}[ \t]+(?:" + "|".join(re.escape(h) for h in RCA_HEADINGS.values()) + r")", re.M | re.I)
+    r"^#{2,4}[ \t]+[^\n]*?(?:" + "|".join(re.escape(h) for h in RCA_HEADINGS.values()) + r")", re.M | re.I)
 _TABLE_SEPARATOR = re.compile(r"^\|\s*:?-+:?\s*\|")
 
 
