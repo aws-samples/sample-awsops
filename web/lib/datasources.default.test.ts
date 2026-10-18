@@ -40,7 +40,7 @@ describe('setDefaultDatasource', () => {
     expect(stmts.some((s) => /is_default\s*=\s*true/i.test(s) && /id\s*=\s*\$1/.test(s))).toBe(true);
     expect(stmts.some((s) => /COMMIT/i.test(s))).toBe(true);
     expect(clientRelease).toHaveBeenCalled();
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' });
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined, 12);
   });
 
   it('rolls back and throws when the datasource does not exist', async () => {

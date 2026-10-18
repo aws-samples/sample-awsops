@@ -58,7 +58,7 @@ describe('deleteDatasource', () => {
       .mockResolvedValueOnce({ rows: [] });  // UPDATE set new default
     getCredentialById.mockResolvedValueOnce({ endpoint: 'http://p8', authType: 'none' });
     await deleteDatasource(5);
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p8', authType: 'none' });
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p8', authType: 'none' }, undefined, expect.any(Number));
   });
 
   it('clears the kind mirror when no instances of the kind remain', async () => {
