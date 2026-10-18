@@ -422,7 +422,7 @@ reachability.
 | `/api/overview` | GET | App-level jobs/compliance plus singleton EKS/cost reads; `clusterScope` records actual EKS account/region, names, and truncation for safe consumer comparisons | verifyUser |
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
-| `/api/stream` | GET | SSE 스트림 | 없음 |
+| `/api/stream` | GET | SSE 스트림 | verifyUser |
 
 
 ## Chat custom-policy availability
