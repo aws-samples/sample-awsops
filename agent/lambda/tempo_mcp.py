@@ -19,7 +19,7 @@ from urllib.parse import quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    set_request_conn, request_timeout,
 )
 
 SLUG = "tempo"
@@ -78,7 +78,7 @@ def _ds():
 
 def _get(creds, path, params=None, *, timeout=None, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    request_options = {"timeout": timeout} if timeout is not None else {}
+    request_options = {"timeout": min(timeout, request_timeout(creds)) if timeout is not None else request_timeout(creds)}
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
@@ -542,8 +542,18 @@ _TOOLS = {
 
 
 def tempo_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ready."""
-    return ok(health(load_datasource(SLUG), "/ready"))
+    """Verify query access using a one-minute, one-trace search, not process readiness."""
+    try:
+        end = int(time.time())
+        result = json.loads(tempo_search({
+            "query": '{ resource.service.name = "awsops-connection-probe" }',
+            "start": str(end - 60), "end": str(end), "limit": "1",
+        })["body"])
+        verified = result.get("collectionStatus") in ("ok", "empty", "partial")
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "Tempo tenant query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "Tempo tenant query access could not be verified"})
 
 
 _TOOLS["tempo_health"] = tempo_health

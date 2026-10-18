@@ -15,6 +15,7 @@ from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
     set_request_conn,
+    execution_timeout, request_timeout,
 )
 
 SLUG = "mimir"
@@ -61,8 +62,18 @@ def _ds():
 
 
 def _get(creds, path, params, http_timeout=None, *, with_status=False):
+    if path.startswith(BASE):
+        prefix = creds.get("apiPrefix", "/prometheus")
+        if not isinstance(prefix, str) or len(prefix) > 128 or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", prefix):
+            raise _ApiError("invalid Mimir API prefix")
+        # An API base already ending in the configured prefix must not duplicate it.
+        from urllib.parse import urlparse
+        endpoint_path = urlparse(creds["endpoint"]).path.rstrip("/")
+        if prefix and endpoint_path.endswith(prefix):
+            prefix = ""
+        path = prefix + "/api/v1" + path[len(BASE):]
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    kwargs = {"headers": _headers(creds)}
+    kwargs = {"headers": _headers(creds), "timeout": min(12, request_timeout(creds))}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)
@@ -204,10 +215,10 @@ def mimir_query(args):
     if not query:
         return err("query (PromQL) required")
     params = {"query": query, "time": _parse_time(args.get("time"))}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), f"{BASE}/query", params, with_status=True), allow_scalar=True)
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, f"{BASE}/query", params, http_timeout=timeout + 3, with_status=True), allow_scalar=True)
 
 
 def mimir_query_range(args):
@@ -216,10 +227,10 @@ def mimir_query_range(args):
         return err("query (PromQL) required")
     params = {"query": query, "start": _parse_time(args.get("start"), 3600),
               "end": _parse_time(args.get("end")), "step": str(args.get("step") or "60")}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), f"{BASE}/query_range", params, with_status=True))
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, f"{BASE}/query_range", params, http_timeout=timeout + 3, with_status=True))
 
 
 def _list_result(observed, field, limit, kind):
@@ -346,8 +357,14 @@ _TOOLS = {"mimir_query": mimir_query, "mimir_query_range": mimir_query_range,
 
 
 def mimir_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ready."""
-    return ok(health(load_datasource(SLUG), "/ready"))
+    """Verify tenant-scoped query access, independently of process readiness."""
+    try:
+        result = json.loads(mimir_query({"query": "vector(1)", "timeout": "1s"})["body"])
+        verified = result.get("collectionStatus") == "ok"
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "Mimir tenant query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "Mimir tenant query access could not be verified"})
 
 
 _TOOLS["mimir_health"] = mimir_health

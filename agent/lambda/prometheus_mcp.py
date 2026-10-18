@@ -25,6 +25,8 @@ from datasource_http import (
     http_json,
     load_datasource,
     set_request_conn,
+    execution_timeout,
+    request_timeout,
 )
 
 SLUG = "prometheus"
@@ -67,7 +69,7 @@ def _ds():
 
 def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    kwargs = {"headers": auth_headers(creds)}
+    kwargs = {"headers": auth_headers(creds), "timeout": min(12, request_timeout(creds))}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)
@@ -212,10 +214,10 @@ def prometheus_query(args):
     if not query:
         return err("query (PromQL) required")
     params = {"query": query, "time": _parse_time(args.get("time"))}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, "/api/v1/query", params, http_timeout=timeout + 3, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):
@@ -226,10 +228,10 @@ def prometheus_query_range(args):
     end = _parse_time(args.get("end"))
     step = str(args.get("step") or "60").strip()
     params = {"query": query, "start": start, "end": end, "step": step}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query_range", params, with_status=True))
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, "/api/v1/query_range", params, http_timeout=timeout + 3, with_status=True))
 
 
 def _list_result(observed, field, limit, kind):
@@ -297,8 +299,14 @@ def prometheus_schema(args):
 
 
 def prometheus_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /-/healthy."""
-    return ok(health(_ds(), "/-/healthy"))
+    """Verify the actual authenticated query API using a bounded scalar query."""
+    try:
+        result = json.loads(prometheus_query({"query": "vector(1)", "timeout": "1s"})["body"])
+        verified = result.get("collectionStatus") == "ok"
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "Prometheus query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "Prometheus query access could not be verified"})
 
 
 def prometheus_metric_meta(args):
