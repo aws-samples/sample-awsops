@@ -194,8 +194,8 @@ API 문서:
 OpenAPI(Swagger) YAML/JSON 파일이 있으면 더 정확한 코드를 생성할 수 있습니다. Kiro는 스펙 파일을 프로젝트에 두면 자동 참조하고, Claude Code는 프롬프트에 파일 경로를 포함하면 됩니다.
 :::
 
-:::caution 커넥터는 큐레이션 전용 (ADR-040/041)
-외부 커넥터는 **거버넌스된 큐레이션 커넥터**만 허용됩니다 — 임의 형태의 BYO-MCP는 제외입니다. 새 종류는 SSRF 가드·Secrets Manager 자격증명·읽기 전용 도구·DLP/리댁션·`KNOWN_CONNECTOR_SLUGS` 허용목록 안에서만 추가하세요. 자세한 거버넌스는 `docs/decisions/ADR-040-governed-external-knowledge-comms-writes.md`, `ADR-041-read-only-means-resource-not-data.md` 참조.
+:::caution 커넥터는 거버넌스 필수 (ADR-040/041)
+외부 커넥터는 **거버넌스된 커넥터**만 허용됩니다 — 임의 형태의 BYO-MCP는 제외입니다. 관리자가 등록하는 `custom_mcp` 연동은 관리자 전용 등록·계정별 활성화·노출 도구 상한을 갖춘 별도 경로이며, 이 가이드는 내장 커넥터 종류를 새로 추가하는 경우를 다룹니다. 새 종류는 SSRF 가드·Secrets Manager 자격증명·읽기 전용 도구·DLP/리댁션·`KNOWN_CONNECTOR_SLUGS` 허용목록 안에서만 추가하세요. 자세한 거버넌스는 `docs/decisions/ADR-040-governed-external-knowledge-comms-writes.md`, `ADR-041-read-only-means-resource-not-data.md` 참조.
 :::
 
 ## 추가 후 검증 체크리스트
