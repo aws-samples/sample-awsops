@@ -42,7 +42,7 @@ Query a connected datasource directly in the language native to its kind. Every 
 ### Result display
 - Time-series (matrix/range) results render as a **time-series area chart**.
 - Instant, log, trace, and SQL results render as a sortable **table**.
-- When a result hits its cap, a **result truncated** warning is shown; when there is no data, an **empty result** notice is shown clearly.
+- Actually truncated results show a **result truncated** warning. Search-limit saturation is marked **partial** because completeness is unproven; verified empty responses show an **empty result** notice.
 - Unknown or partial responses cannot establish an empty dataset. Reaching Jaeger's search limit does not establish a complete trace inventory.
 
 ### Generate a query with AI
