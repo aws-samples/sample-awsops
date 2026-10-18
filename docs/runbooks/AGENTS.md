@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: dd43b5cdce3c · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cf8b164c55e3 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -13,6 +13,8 @@
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
+`datasource-credential-isolation.md` requires native-default credential backfill before stricter
+explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007/039).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
 (legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a

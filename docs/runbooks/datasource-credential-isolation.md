@@ -1,5 +1,15 @@
 # Datasource credential identity and rollout
 
+This runbook covers native datasource isolation under ADR-007 external-data governance
+and ADR-039 integration identity. It does not approve deployment or activate any gate.
+
+## Symptoms
+
+After a stricter connector rollout, a migrated default with only an unstamped kind
+credential fails an explicit-ID read. A sibling without its own credentials must fail.
+
+## Diagnosis
+
 Native datasource connectors store one credential blob per integration ID.
 Their plain kind key is a managed mirror for the current default. The mirror
 includes `instanceId`; an explicit-ID producer read accepts only its own ID key
@@ -7,6 +17,8 @@ or a mirror bearing that exact ID. Missing credentials fail closed. Calls withou
 an explicit ID retain the existing kind-default lookup.
 
 An old unstamped mirror cannot prove which instance owns its credentials.
+## Action
+
 Before deploying the stricter connector producer, operators must backfill every
 migrated default through the existing authenticated administrator save flow:
 

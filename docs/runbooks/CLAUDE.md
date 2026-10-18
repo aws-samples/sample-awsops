@@ -24,6 +24,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [k8sgpt-operator-install.md](k8sgpt-operator-install.md) | Out-of-band K8sGPT operator install (manual operator work, ADR-005 precedent) |
 | [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
 | [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
+| [datasource-credential-isolation.md](datasource-credential-isolation.md) | Native datasource credential identity and mandatory default backfill before rollout (ADR-007/039) |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
 | [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |

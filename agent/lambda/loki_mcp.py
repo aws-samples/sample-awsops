@@ -123,8 +123,10 @@ def _query_response(data, requested=None):
     valid = valid and len(rows) == len(retained)
     bounded, truncated = _bound({"resultType": kind, "result": rows})
     truncated = truncated or len(source_rows) > MAX_STREAMS
-    returned = sum(len(row.get("values") or []) for row in rows if isinstance(row, dict)) if kind == "streams" else len(rows)
-    saturated = bool(requested) and returned >= requested
+    upstream_lines = sum(len(row.get("values") or []) for row in rows) if kind == "streams" else 0
+    emitted = bounded.get("result", []) if isinstance(bounded, dict) else []
+    returned = sum(len(row.get("values") or []) for row in emitted) if kind == "streams" else len(emitted)
+    saturated = kind == "streams" and bool(requested) and upstream_lines >= requested
     status = getattr(data, "http_status", 200)
     state = ("unknown" if not valid or status not in (200, 206) else
              "partial" if truncated or saturated or status == 206 or getattr(data, "source_partial", False) else

@@ -105,7 +105,7 @@ def jaeger_search(args):
     invalid = False
     for t in traces[:MAX_TRACES]:
         if (not isinstance(t, dict) or not isinstance(t.get("traceID"), str)
-                or len(t["traceID"]) not in (16, 32) or not _HEX.fullmatch(t["traceID"])
+                or not 1 <= len(t["traceID"]) <= 32 or not _HEX.fullmatch(t["traceID"])
                 or not isinstance(t.get("spans"), list) or not t["spans"]
                 or not isinstance(t.get("processes"), dict)):
             invalid = True
@@ -131,16 +131,17 @@ def jaeger_search(args):
             "startTime": root.get("startTime", 0),
         })
     # Reaching the requested limit is saturation, not loss: Jaeger returns no marker, so more traces
-    # may exist and the result is `partial`, but only a real drop (byte bound) sets `truncated`.
+    # may exist and the result is `partial`; a local row/byte drop sets `truncated`.
     saturated = len(traces) >= requested
     http_status = getattr(data, "http_status", 200)
-    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or http_status == 206 else "ok" if rows else "empty"
+    dropped = len(traces) > MAX_TRACES
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or dropped or http_status == 206 else "ok" if rows else "empty"
     payload, btr = _byte_bound({"traces": rows})
     if btr:
         payload.pop("preview", None)  # never echo provider content, even as a bounded preview
-    return ok({**payload, "truncated": btr, "limitSaturated": saturated,
+    return ok({**payload, "truncated": btr or dropped, "limitSaturated": saturated,
                "collectionStatus": "unknown" if invalid else "partial" if btr else state,
-               "requestedLimit": requested, "returnedCount": len(rows)})
+               "requestedLimit": requested, "returnedCount": len(payload.get("traces", []))})
 
 
 def jaeger_get_trace(args):

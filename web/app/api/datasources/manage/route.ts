@@ -184,6 +184,7 @@ export async function PATCH(request: Request) {
     // PATCH must not carry a historical stale timeoutS/database forward either).
     delete existing.timeoutS;
     delete existing.database;
+    delete existing.instanceId;
     // ORIGIN compare (scheme+host+port — an https→http downgrade must count as a change, or
     // Basic material would transmit in cleartext); a malformed URL counts as changed.
     const originOf = (u: string | null | undefined): string | null => { try { return new URL(u ?? '').origin; } catch { return null; } };

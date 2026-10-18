@@ -186,7 +186,7 @@ export async function resolveConnConfig(ds: DatasourceRow): Promise<ConnConfig> 
     ...(ds.authType ? { authType: ds.authType } : {}),
     // gap L203: settings ride the conn config so the Explore route, the service-graph sources and
     // the credential-blind agent/worker path (which reads the same keys from the secret blob) all get
-    // ONE bound from one mechanism. database (identifier-validated on write AND read) is
+    // Saved provider ceiling; Explore may tighten it further to 10s. database (identifier-validated on write AND read) is
     // ClickHouse-only; timeoutS goes to every kind — Prometheus/Mimir/ClickHouse apply it as the
     // provider execution ceiling, the other kinds as the transport deadline.
     ...(ds.kind === 'clickhouse' && ds.settings?.database ? { database: ds.settings.database } : {}),

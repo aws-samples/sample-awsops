@@ -4,7 +4,10 @@ Shared datasource-connector helper for the v2 external-observability datasource 
 endpoint + credential queried in a query language. This module
 centralizes: reading the per-slug credential from the single integrations secret, SSRF host guarding
 (always-block metadata/loopback/...; private allowed — in-cluster datasources are the target),
-auth headers (Basic/Bearer), and a no-redirect HTTP fetch. Stdlib + boto3 only.
+auth headers (Basic/Bearer), and a no-redirect HTTP fetch. Explicit instance IDs require an
+ID-bound credential; kind-only reads retain the default mirror. Responses are byte-bounded before
+parsing and body reads share the request's monotonic deadline. Connection tests execute bounded
+queries instead of trusting public health endpoints. Stdlib + boto3 only.
 
 SECURITY: never log credential material. The endpoint is user-supplied → assert_host_allowed before
 every request; redirects are NOT auto-followed (a malicious endpoint can't 30x to metadata/internal).
@@ -231,6 +234,8 @@ def query_probe(run, error, accepted=("ok", "empty", "partial")):
         state = run()
     except SsrfBlocked:
         state, error = None, "endpoint rejected by the private-network policy"
+    except NotConnected:
+        state, error = None, "datasource not connected"
     except Exception:
         state = None
     latency = int((time.monotonic() - t0) * 1000)
@@ -416,6 +421,20 @@ def _parse(raw):
         return {"raw": raw.decode("utf-8", "replace")[:4000]}
 
 
+def _response_socket(response):
+    """Find urllib's HTTPResponse socket, including HTTPError's extra fp wrapper."""
+    stream = response
+    for _ in range(4):
+        raw = getattr(stream, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            return sock
+        stream = getattr(stream, "fp", None)
+        if stream is None:
+            break
+    return None
+
+
 def _read_bounded(response, max_bytes, deadline):
     """Read at most budget+1 bytes before the absolute monotonic `deadline`; never trust
     Content-Length or parse before the bound. The deadline is the request's — connect, headers
@@ -425,9 +444,18 @@ def _read_bounded(response, max_bytes, deadline):
     read = getattr(response, "read1", response.read)
     try:
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("datasource response read deadline exceeded")
+            sock = _response_socket(response)
+            if sock is not None:
+                sock.settimeout(remaining)
+            try:
+                chunk = read(min(65536, max_bytes - total + 1))
+            except socket.timeout as exc:
+                raise TimeoutError("datasource response read deadline exceeded") from exc
             if time.monotonic() >= deadline:
                 raise TimeoutError("datasource response read deadline exceeded")
-            chunk = read(min(65536, max_bytes - total + 1))
             if not chunk:
                 return b"".join(chunks)
             total += len(chunk)
@@ -461,4 +489,6 @@ def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_by
             return e.code, {"error": f"error body exceeded {MAX_ERROR_BYTES} bytes"}
         except TimeoutError:
             return e.code, {"error": "error body read deadline exceeded"}
+        except (OSError, http.client.HTTPException):
+            return e.code, {"error": "error body could not be read"}
         return e.code, _parse(raw)

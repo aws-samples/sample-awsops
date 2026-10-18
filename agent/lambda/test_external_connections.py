@@ -1,8 +1,11 @@
 """Connection identity, bounded I/O, query proof and result-completion regressions."""
 import importlib
+import http.client
 import io
 import json
+import socket
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -273,6 +276,83 @@ def test_connect_headers_and_body_share_one_request_deadline():
     with patch.object(dh.time, "monotonic", side_effect=lambda: clock["now"]), \
             patch.object(dh._opener, "open", side_effect=slow_open), pytest.raises(TimeoutError):
         dh.http_json("GET", CREDS["endpoint"], timeout=10)
+
+
+@pytest.mark.parametrize("status", [200, 403])
+def test_blocking_socket_read_uses_only_budget_remaining_after_headers(status):
+    client, peer = socket.socketpair()
+    client.settimeout(1.5)
+    peer.sendall(f"HTTP/1.1 {status} Synthetic\r\nContent-Length: 2\r\n\r\n".encode())
+    response = http.client.HTTPResponse(client)
+    response.begin()
+
+    def delayed_open(req, timeout=None):
+        time.sleep(1.0)  # Header/connect phase has already spent most of the total budget.
+        if status == 403:
+            raise urllib.error.HTTPError(CREDS["endpoint"], status, "denied", {}, response)
+        return response
+
+    start = time.monotonic()
+    try:
+        with patch.object(dh._opener, "open", side_effect=delayed_open):
+            if status == 200:
+                with pytest.raises(TimeoutError):
+                    dh.http_json("GET", CREDS["endpoint"], timeout=1.5)
+            else:
+                assert dh.http_json("GET", CREDS["endpoint"], timeout=1.5) == (
+                    403, {"error": "error body read deadline exceeded"})
+        # The original 1.5s socket timeout would take 2.5s including delayed headers.
+        assert time.monotonic() - start < 2.0
+        assert response.isclosed()
+    finally:
+        response.close()
+        client.close()
+        peer.close()
+
+
+@pytest.mark.parametrize("failure", [ConnectionResetError(), http.client.IncompleteRead(b"synthetic-private")])
+def test_broken_error_body_keeps_status_and_never_echoes_partial_content(failure):
+    class Broken(Response):
+        def read1(self, n=-1):
+            raise failure
+
+    stream = Broken()
+    error = urllib.error.HTTPError(CREDS["endpoint"], 403, "denied", {}, stream)
+    with patch.object(dh._opener, "open", side_effect=error):
+        assert dh.http_json("GET", CREDS["endpoint"]) == (
+            403, {"error": "error body could not be read"})
+    assert stream.closed
+
+
+@pytest.mark.parametrize("tid,valid", [("1", True), ("abc123", True), ("a" * 16, True),
+                                      ("B" * 32, True), ("", False), ("a" * 33, False),
+                                      ("xyz", False), ("1\n", False)])
+def test_jaeger_search_accepts_unpadded_ids_without_accepting_malformed_ids(tid, valid):
+    module = importlib.import_module("jaeger_mcp")
+    trace = {"traceID": tid, "spans": [{"startTime": 1, "duration": 1, "operationName": "op"}], "processes": {}}
+    with patch.object(module, "_ds", return_value=CREDS), patch.object(module, "_get", return_value={"data": [trace]}):
+        result = json.loads(module.jaeger_search({"query": "svc"})["body"])
+    assert result["collectionStatus"] == ("ok" if valid else "unknown")
+    assert result["returnedCount"] == int(valid)
+    if valid:
+        assert result["traces"][0]["traceID"] == tid
+
+
+def test_loki_metric_series_do_not_saturate_the_log_line_limit():
+    module = importlib.import_module("loki_mcp")
+    data = {"resultType": "vector", "result": [{"metric": {}, "value": [1, "2"]}]}
+    result = json.loads(module._query_response(data, requested=1)["body"])
+    assert result["collectionStatus"] == "ok"
+    assert result["limitSaturated"] is False
+
+
+def test_loki_returned_count_describes_retained_lines_after_local_bound():
+    module = importlib.import_module("loki_mcp")
+    data = {"resultType": "streams", "result": [{"stream": {}, "values": [["1", "a"], ["2", "b"]]}]}
+    with patch.object(module, "MAX_TOTAL_LINES", 1):
+        result = json.loads(module._query_response(data, requested=10)["body"])
+    assert result["truncated"] is True
+    assert result["returnedCount"] == len(result["result"][0]["values"]) == 1
 
 
 def test_loki_limit_saturation_is_disclosed_as_partial():

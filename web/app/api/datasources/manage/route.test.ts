@@ -124,6 +124,16 @@ describe('POST create', () => {
   });
 });
 
+it('backfills a stamped mirror without persisting its identity stamp in the ID credential', async () => {
+  getDatasource.mockResolvedValue({ id: 7, kind: 'prometheus', endpoint: 'http://old:9090', authType: 'basic', isDefault: true, settings: {} });
+  getCredentialById.mockResolvedValue({ endpoint: 'http://old:9090', authType: 'basic', username: 'u', password: 'pw', instanceId: '7' });
+  const { PATCH } = await import('./route');
+  const res = await PATCH(req({ id: 7, settings: { timeoutS: 15 } }, 'PATCH'));
+  expect(res.status).toBe(200);
+  expect(setIntegrationCredentialById.mock.calls.at(-1)![1]).toMatchObject({ username: 'u', password: 'pw' });
+  expect(setIntegrationCredentialById.mock.calls.at(-1)![1].instanceId).toBeUndefined();
+});
+
 describe('PATCH update', () => {
   it('404 when not found', async () => {
     getDatasource.mockResolvedValue(null);
