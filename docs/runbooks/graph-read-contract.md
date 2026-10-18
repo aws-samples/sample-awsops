@@ -28,9 +28,10 @@ disabled timer from legacy/missing state. A successful live connectivity read
 does not prove that a materialized graph rebuild ran. The placement view's
 **Open VPC connection graph** empty-state action opens the VPC tab, which loads
 inventory choices only until an explicit connection query. Clicking a placement
-VPC node passes its raw ID; the tab queries only after resolving exactly one
-current-scoped inventory choice. Qualified links from the VPC section preserve
-the account/region/VPC selection key. See the
+VPC node passes its account/region/VPC selection key when that scope is known;
+regionless legacy nodes pass their raw ID. The tab queries only after resolving
+exactly one current-scoped inventory choice. Qualified links from the VPC section
+also preserve the selection key. See the
 [VPC connectivity reference](../reference/vpc-connectivity.md) for identity,
 lifecycle, display caps and partial-result semantics.
 
@@ -58,8 +59,11 @@ responses additionally wrap every saved node ID as `@<storage-account>/<saved-id
 and constrain each edge's endpoints to visible nodes in that same account.
 The read wrapper also isolates legacy publications before a normal rebuild.
 
-Focused HTTP reads first resolve the canonical ID, then a uniquely matching
-`meta.legacyId`. `selection.status` is `resolved`, `not_found` or `ambiguous`;
+Focused HTTP reads combine exact-ID and `meta.legacyId` matches, deduplicated
+by storage account and saved node ID, before resolving a selection. This also
+discloses ambiguity when a retained legacy publication coexists with a rebuilt
+scoped publication or a regionless node has a regional sibling.
+`selection.status` is `resolved`, `not_found` or `ambiguous`;
 ambiguity returns no graph and at most two canonical choices with
 `candidates_truncated` disclosing additional candidates. A resolved selection
 includes `selection.account_id` and `resolved_id`. Focused union reads use that
@@ -71,6 +75,12 @@ The resource page supports existing uniquely resolvable links and displays
 account/region beside scoped node labels. Previously collapsed records require
 the next separately authorized normal rebuild; reader changes cannot reconstruct
 inventory records that an old publication already merged.
+
+Consumers of saved graph identities, including gated RCA queries and network-path
+validation artifacts, must treat scoped IDs as opaque graph keys. Existing external
+labels or saved queries using legacy IDs need explicit mapping; the graph does not
+rewrite external labels. A name matching multiple regional resources cannot establish
+one network-path endpoint and remains a hypothesis until scope disambiguates it.
 
 The reader supports flow, infra and trace metadata. Missing state remains unknown;
 an account union does not borrow the host's publication clock. Inventory publication is implemented in `web/lib/graph-store.ts`; it requires the separately

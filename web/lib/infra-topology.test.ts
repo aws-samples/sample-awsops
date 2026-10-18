@@ -59,18 +59,23 @@ describe('buildInfraGraph', () => {
   });
 
   it('preserves ElastiCache placement from the actual producer SecurityGroupId shape', () => {
-    const g = buildInfraGraph({ resources: [{ resource_type: 'elasticache', resource_id: 'cache',
+    const region = 'ap-northeast-2';
+    const source = infraNodeId('elasticache', 'cache', 'self', region);
+    const target = infraNodeId('sg', 'sg-1', 'self', region);
+    const g = buildInfraGraph({ resources: [{ account_id: 'self', region, resource_type: 'elasticache', resource_id: 'cache',
       data: { security_groups: [{ SecurityGroupId: 'sg-1', Status: 'active' }] } }],
     vpcs: [], subnets: [], securityGroups });
-    expect(g.nodes.find(node => node.id === 'elasticache:cache')?.kind).toBe('elasticache');
-    expect(g.edges).toContainEqual({ id: 'infra:uses_sg:elasticache:cache->sg:sg-1',
-      source: 'elasticache:cache', target: 'sg:sg-1', rel: 'infra:uses_sg' });
+    expect(g.nodes.find(node => node.id === source)?.kind).toBe('elasticache');
+    expect(g.edges).toContainEqual({ id: `infra:uses_sg:${source}->${target}`,
+      source, target, rel: 'infra:uses_sg' });
   });
 
   it('preserves RDS security-group relationships from the inventory producer shape', () => {
+    const region = 'ap-northeast-2';
+    const source = infraNodeId('rds', 'orders-db', 'self', region);
     const g = buildInfraGraph({
       resources: [{
-        resource_type: 'rds', resource_id: 'orders-db',
+        account_id: 'self', region, resource_type: 'rds', resource_id: 'orders-db',
         data: {
           db_instance_identifier: 'orders-db', vpc_id: 'vpc-1',
           endpoint_address: 'orders-db.example.rds.amazonaws.com',
@@ -82,11 +87,11 @@ describe('buildInfraGraph', () => {
       }],
       vpcs, subnets, securityGroups,
     });
-    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg')).toEqual([
-      { id: 'infra:uses_sg:rds:orders-db->sg:sg-1', source: 'rds:orders-db', target: 'sg:sg-1', rel: 'infra:uses_sg' },
-      { id: 'infra:uses_sg:rds:orders-db->sg:sg-def', source: 'rds:orders-db', target: 'sg:sg-def', rel: 'infra:uses_sg' },
-    ]);
-    expect(g.nodes.find((n) => n.id === 'rds:orders-db')?.meta?.host).toBe('orders-db.example.rds.amazonaws.com');
+    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg')).toEqual(['sg-1', 'sg-def'].map(id => {
+      const target = infraNodeId('sg', id, 'self', region);
+      return { id: `infra:uses_sg:${source}->${target}`, source, target, rel: 'infra:uses_sg' };
+    }));
+    expect(g.nodes.find((n) => n.id === source)?.meta?.host).toBe('orders-db.example.rds.amazonaws.com');
   });
 
   it('preserves every Lambda vpc_subnet_ids relationship and deduplicates overlapping fields', () => {

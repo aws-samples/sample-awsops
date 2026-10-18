@@ -504,6 +504,15 @@ Missing collection metadata stays unknown rather than implying collector failure
 
 ## Graph collection metadata
 
+Focused `GET /api/graph?from=<node-id>` responses include `selection.status`
+(`resolved`, `not_found`, or `ambiguous`) and the requested ID. A resolved result
+includes `resolved_id` and `account_id`; ambiguity returns no graph and at most
+two `candidate_ids`, with `candidates_truncated` disclosing further matches.
+Placement IDs use `<kind>:@<account>:<region>:<resource-id>` when region is known,
+and account-union IDs wrap saved IDs as `@<account>/<saved-node-id>`.
+Exact and legacy-alias matches are considered together, including retained
+publications. See the [graph read contract](runbooks/graph-read-contract.md).
+
 `GET /api/graph` returns `collection` for flow, infra and trace. Older responses without it remain compatible as unknown evidence. The shared TypeScript
 contract is `GraphCollection` / `GraphCollectionSource` in
 `web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown

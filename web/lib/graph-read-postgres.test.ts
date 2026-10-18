@@ -90,6 +90,36 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect(member.nodes.map((n: { label: string }) => n.label).sort()).toEqual(['Member DB', 'Member VPC']);
   });
 
+  it.each([
+    { scope: '__all__', siblingAccount: '222233334444' },
+    { scope: 'self', siblingAccount: 'self' },
+  ])('discloses mixed legacy/scoped ambiguity in $scope scope', async ({ scope, siblingAccount }) => {
+    await pool.query('TRUNCATE topology_nodes, topology_edges, topology_graph_state');
+    // The retained row matches both predicates and must count as one candidate.
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,class,run_id)
+      VALUES ('self','rds:app-db','rds','Retained DB','{"legacyId":"rds:app-db"}','infra','retained');
+      INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      VALUES ('self','infra','partial',now(),'{"retainedPrevious":true}')`);
+    const read = async (from: string) => (await GET(new Request(
+      `http://fixture/api/graph?class=infra&account=${scope}&from=${encodeURIComponent(from)}`))).json();
+    const only = await read('rds:app-db');
+    expect(only.selection.status).toBe('resolved');
+    const siblingId = `rds:@${siblingAccount}:us-east-1:app-db`;
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,class,run_id)
+      VALUES ($1,$2,'rds','Rebuilt DB','{"legacyId":"rds:app-db","region":"us-east-1"}','infra','rebuilt')`,
+      [siblingAccount, siblingId]);
+    const ambiguous = await read('rds:app-db');
+    expect(ambiguous.selection).toMatchObject({ status: 'ambiguous', candidates_truncated: false });
+    expect(ambiguous.selection.candidate_ids.slice().sort()).toEqual(
+      (scope === '__all__' ? [`@self/rds:app-db`, `@${siblingAccount}/${siblingId}`]
+        : ['rds:app-db', siblingId]).sort());
+    expect(ambiguous.nodes).toEqual([]);
+    expect(ambiguous.edges).toEqual([]);
+    const exact = await read(scope === '__all__' ? `@${siblingAccount}/${siblingId}` : siblingId);
+    expect(exact.selection).toMatchObject({ status: 'resolved', account_id: siblingAccount });
+    expect(exact.nodes.map((node: { label: string }) => node.label)).toEqual(['Rebuilt DB']);
+  });
+
   it('resolves unique legacy placement links and discloses regional ambiguity', async () => {
     await pool.query('TRUNCATE topology_nodes, topology_edges, topology_graph_state');
     const resources = ['us-east-1', 'ap-northeast-2'].map(region => ({

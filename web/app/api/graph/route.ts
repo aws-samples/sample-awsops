@@ -57,6 +57,7 @@ async function graphRows(client: Parameters<Parameters<typeof graphReadTransacti
   const visible = nodes.rows.slice(0, NODE_LIMIT);
   const edges = await client.query(`SELECT account_id, source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1
+      AND source = ANY($3::text[]) AND target = ANY($3::text[])
       AND EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) n(id,account_id)
         WHERE n.account_id=e.account_id AND n.id=e.source)
       AND EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) n(id,account_id)
@@ -74,12 +75,10 @@ async function graphRoot(client: Parameters<Parameters<typeof graphReadTransacti
   const scope = wrapped?.account ?? account, id = wrapped?.id ?? requested;
   const parameters = [cls, scope, id];
   const predicate = `WHERE class=$1 AND ($2='__all__' OR account_id=$2)`;
-  let matches = await client.query(`SELECT account_id,id FROM topology_nodes ${predicate}
-    AND id=$3 ORDER BY account_id,id LIMIT 3`, parameters);
-  if (!matches.rows.length) {
-    matches = await client.query(`SELECT account_id,id FROM topology_nodes ${predicate}
-      AND meta->>'legacyId'=$3 ORDER BY account_id,id LIMIT 3`, parameters);
-  }
+  // Retained legacy publications can coexist with rebuilt scoped nodes. An exact
+  // legacy ID must not hide another account/region's matching scoped identity.
+  const matches = await client.query(`SELECT DISTINCT account_id,id FROM topology_nodes ${predicate}
+    AND (id=$3 OR meta->>'legacyId'=$3) ORDER BY account_id,id LIMIT 3`, parameters);
   const selection: GraphSelection = { status: matches.rows.length > 1 ? 'ambiguous'
     : matches.rows.length ? 'resolved' : 'not_found', requested_id: requested };
   const displayId = (row: Record<string, any>) => account === '__all__'

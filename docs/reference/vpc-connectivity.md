@@ -31,7 +31,9 @@ Changing account/region scope clears the prior choices and results.
 
 `/topology/infra` still defaults to the **Placement graph** from persisted
 `GET /api/graph?class=infra` data. Clicking a VPC node opens
-`/topology/infra?view=vpc&vpc=<rawVpcId>` through the scoped resolution above.
+`/topology/infra?view=vpc&vpc=<encoded account/region/vpcId>` when the node has
+that scope. Regionless legacy nodes pass a raw VPC ID, which must resolve to
+exactly one choice in the current scope before any connection query.
 An empty placement graph also offers **Open VPC connection graph**.
 Live connectivity results are not written as persisted graph nodes or edges.
 Enabling materialized graph collection builds resource placement relationships;
@@ -40,7 +42,11 @@ it does not add these TGW or peering lines to the default placement view. See th
 for collection diagnosis and the separate optional dev timer.
 
 Individual resource graphs use
-`/topology/resource/<encoded type:id>` (encode the whole `type:id` path segment).
+`/topology/resource/<encoded saved-node-id>` (encode the entire path segment).
+Known-region placement IDs are `<kind>:@<account>:<region>:<resource-id>`;
+account-union IDs additionally use `@<account>/<saved-node-id>`. Existing
+`<kind>:<resource-id>` links resolve only when the combined exact/legacy matches
+identify one resource; ambiguous links show bounded canonical choices.
 The existing VPC row detail **Open resource map** action remains available.
 **Open network path check** links to `/network-paths`; its feature and live-query
 gates still apply.
