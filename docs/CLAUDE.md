@@ -11,6 +11,7 @@ Project documentation organized by purpose. Read applicable scoped CLAUDE.md ins
 | [reference/](reference/) | Current v2 design, one file per component (single source per component) |
 | [runbooks/](runbooks/) | Operational playbooks by scenario |
 | [diagrams/](diagrams/) | Interactive archify diagrams (spec `.json` + delivered standalone `.html`) — regenerate via the archify skill, never hand-edit the HTML |
+| [assets/diagrams/](assets/diagrams/) | Hand-authored English SVG figures embedded in `architecture.md` (both language sections) and `reference/README.md` — the SVG is the source; edit it directly and keep labels English-only |
 | [guides/](guides/) | AI test question sets (`ai-test-questions.md`, `ai-testing.md`), test coverage plan (`test-coverage-plan.md`), install/onboarding/troubleshooting guides |
 | [api-reference.md](api-reference.md) | API route reference |
 

@@ -15,8 +15,8 @@
   <path d="M 608,204 L 632,204" fill="none" stroke="#EC7211" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
   <path d="M 776,204 L 800,204" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
   <path d="M 680,228 L 680,340" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
-  <path d="M 734,228 V 276 Q 734,284 742,284 H 814 Q 822,284 822,292 V 340" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
-  <path d="M 840,228 L 840,340" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <path d="M 734,228 V 276 Q 734,284 742,284 H 792 Q 800,284 800,292 V 340" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <path d="M 856,228 V 276 Q 856,284 864,284 H 904 Q 912,284 912,292 V 340" fill="none" stroke="#545B64" stroke-width="1.2" marker-end="url(#arrow)"/>
   <rect x="660" y="250" width="40" height="12" rx="2" fill="#FFFFFF"/>
   <text x="680" y="259" fill="#545B64" font-size="8" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">SQL</text>
   <rect x="756" y="250" width="44" height="12" rx="2" fill="#FFFFFF"/>
@@ -59,15 +59,15 @@
   <ellipse cx="680" cy="348" rx="48" ry="8" fill="rgba(35,47,62,0.05)" stroke="#545B64" stroke-width="1"/>
   <text x="680" y="362" fill="#232F3E" font-size="12" font-weight="600" font-family="'Amazon Ember', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">Aurora</text>
   <text x="680" y="378" fill="#545B64" font-size="9" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle">node-pg</text>
-  <rect x="752" y="340" width="140" height="48" rx="6" fill="#FFFFFF"/>
-  <rect x="752" y="340" width="140" height="48" rx="6" fill="#FFFFFF" stroke="#232F3E" stroke-width="1"/>
-  <rect x="760" y="346" width="28" height="12" rx="2" fill="transparent" stroke="#232F3E" stroke-width="0.8" opacity="0.6"/>
-  <text x="774" y="355" fill="#232F3E" font-size="7" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">AI</text>
-  <text x="822" y="358" fill="#232F3E" font-size="12" font-weight="600" font-family="'Amazon Ember', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">AgentCore</text>
-  <text x="822" y="374" fill="#545B64" font-size="9" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle">chat / diagnosis</text>
-  <rect x="800" y="340" width="80" height="48" rx="6" fill="#FFFFFF"/>
-  <rect x="800" y="340" width="80" height="48" rx="6" fill="rgba(35,47,62,0.02)" stroke="rgba(35,47,62,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
-  <text x="840" y="368" fill="#232F3E" font-size="11" font-weight="600" font-family="'Amazon Ember', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">Workers</text>
+  <rect x="740" y="340" width="120" height="48" rx="6" fill="#FFFFFF"/>
+  <rect x="740" y="340" width="120" height="48" rx="6" fill="#FFFFFF" stroke="#232F3E" stroke-width="1"/>
+  <rect x="748" y="346" width="28" height="12" rx="2" fill="transparent" stroke="#232F3E" stroke-width="0.8" opacity="0.6"/>
+  <text x="762" y="355" fill="#232F3E" font-size="7" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">AI</text>
+  <text x="806" y="358" fill="#232F3E" font-size="12" font-weight="600" font-family="'Amazon Ember', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">AgentCore</text>
+  <text x="806" y="374" fill="#545B64" font-size="9" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" text-anchor="middle">chat / diagnosis</text>
+  <rect x="872" y="340" width="80" height="48" rx="6" fill="#FFFFFF"/>
+  <rect x="872" y="340" width="80" height="48" rx="6" fill="rgba(35,47,62,0.02)" stroke="rgba(35,47,62,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="912" y="368" fill="#232F3E" font-size="11" font-weight="600" font-family="'Amazon Ember', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">Workers</text>
   <line x1="40" y1="532" x2="920" y2="532" stroke="rgba(35,47,62,0.10)" stroke-width="0.8"/>
   <text x="40" y="548" fill="#545B64" font-size="8" font-family="'Geist Mono', 'Amazon Ember Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
   <rect x="140" y="542" width="14" height="10" rx="2" fill="rgba(236,114,17,0.08)" stroke="#EC7211" stroke-width="1"/>
