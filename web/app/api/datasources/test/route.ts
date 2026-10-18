@@ -1,7 +1,10 @@
 // POST /api/datasources/test — probe a datasource connection BEFORE saving (v1 "Test connection").
 // Admin-gated. Takes an UNSAVED candidate {kind, endpoint, authType, creds}, SSRF-guards the endpoint,
 // and invokes the connector's `${kind}_health` tool with an INLINE conn-config (nothing is stored).
-// SECURITY: the credential value is never logged or echoed — only {ok, latency_ms, error?} is returned.
+// The health tool runs ONE real bounded query (not a readiness endpoint — an unauthenticated /ready
+// used to pass), so `verified: ['query']` is query-access proof.
+// SECURITY: the credential value is never logged or echoed — only {ok, latencyMs, verified, error?}
+// is returned, with fixed connector sentences and never upstream text.
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
 import { invokeMcpLambdaTool, KNOWN_MCP_LAMBDA_KINDS } from '@/lib/mcp-lambda-invoke';

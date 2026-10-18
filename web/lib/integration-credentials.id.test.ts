@@ -186,6 +186,18 @@ describe('datasource configuration evidence', () => {
   });
 });
 
+describe('getConfiguredDatasourceIds — legacy Datadog key pair', () => {
+  it('counts a Datadog instance whose blob holds the legacy apiKey/appKey pair as configured', async () => {
+    smSend.mockImplementation((cmd: any) => (cmd.kind === 'get'
+      ? getReturn({ '9': { endpoint: 'https://api.datadoghq.com', authType: 'custom_header', apiKey: 'synthetic-api', appKey: 'synthetic-app' } })
+      : {}));
+    const rows = [{ id: 9, endpoint: 'https://api.datadoghq.com', authType: 'custom_header', kind: 'datadog' },
+                  { id: 10, endpoint: 'https://api.datadoghq.com', authType: 'custom_header', kind: 'prometheus' }];
+    // the same blob shape on a non-Datadog kind is still unconfigured (no header value)
+    expect(await getConfiguredDatasourceIds(rows)).toEqual(['9']);
+  });
+});
+
 describe('deleteCredentialKeys', () => {
   it('removes the given keys and preserves the rest', async () => {
     smSend.mockImplementation((cmd: any) =>

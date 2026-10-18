@@ -229,7 +229,7 @@ export async function getConfiguredIds(): Promise<string[]> {
 /** Instance-specific configuration evidence only; never a provider connectivity claim.
  * Kind mirrors belong to the agent default path and are not borrowed by Explore. */
 export async function getConfiguredDatasourceIds(rows: {
-  id: number; endpoint: string | null; authType: string | null;
+  id: number; endpoint: string | null; authType: string | null; kind?: string;
 }[]): Promise<string[]> {
   let map: Record<string, unknown> = {};
   if (rows.some(row => row.authType !== 'none')) {
@@ -243,6 +243,9 @@ export async function getConfiguredDatasourceIds(rows: {
     const blob = map[String(row.id)];
     if (!blob || typeof blob !== 'object' || Array.isArray(blob)) return false;
     const cred = blob as Record<string, unknown>;
+    // Legacy server-side Datadog blobs authenticate with a dedicated key pair that the manage route
+    // deliberately preserves; the badge must agree with that scrub instead of calling them unconfigured.
+    if (row.kind === 'datadog' && typeof cred.apiKey === 'string' && cred.apiKey.trim()) return true;
     const auth = row.authType ?? cred.authType;
     if (!['none', 'basic', 'bearer', 'custom_header'].includes(String(auth))) return false;
     const fields: DatasourceCreds = {};
