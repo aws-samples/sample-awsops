@@ -134,6 +134,12 @@ describe('graph collection evidence API', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('rejects an account-wrapped root outside an explicitly selected account before SQL', async () => {
+    const response = await GET(new Request('http://localhost/api/graph?class=infra&account=self&from=%40222233334444%2Frds%3Aapp-db'));
+    expect(response.status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('does not expose legacy traffic-volume normalization as confidence', async () => {
     query.mockImplementation(async (sql: string) => ({
       rows: sql.includes('FROM topology_edges')

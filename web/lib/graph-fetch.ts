@@ -1,4 +1,5 @@
 import type { GraphCollection } from '@/components/topology/GraphCollectionStatus';
+import type { GraphSelection } from './graph-identity';
 
 export type GraphFetchFailure = 'unauthenticated' | 'forbidden' | 'rejected';
 export class GraphFetchError extends Error {
@@ -10,6 +11,7 @@ interface GraphData {
   edges: { source: string; target: string; rel: string }[];
   captured_at: string | null;
   capped?: boolean;
+  selection?: GraphSelection;
   collection?: GraphCollection;
 }
 

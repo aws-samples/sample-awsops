@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildInfraGraph, idsFrom } from './infra-topology';
+import { infraNodeId } from './graph-identity';
 
 describe('idsFrom', () => {
   it('handles string | {GroupId} | {SubnetId} | availability_zones[].SubnetId arrays', () => {
@@ -58,18 +59,23 @@ describe('buildInfraGraph', () => {
   });
 
   it('preserves ElastiCache placement from the actual producer SecurityGroupId shape', () => {
-    const g = buildInfraGraph({ resources: [{ resource_type: 'elasticache', resource_id: 'cache',
+    const region = 'ap-northeast-2';
+    const source = infraNodeId('elasticache', 'cache', 'self', region);
+    const target = infraNodeId('sg', 'sg-1', 'self', region);
+    const g = buildInfraGraph({ resources: [{ account_id: 'self', region, resource_type: 'elasticache', resource_id: 'cache',
       data: { security_groups: [{ SecurityGroupId: 'sg-1', Status: 'active' }] } }],
     vpcs: [], subnets: [], securityGroups });
-    expect(g.nodes.find(node => node.id === 'elasticache:cache')?.kind).toBe('elasticache');
-    expect(g.edges).toContainEqual({ id: 'infra:uses_sg:elasticache:cache->sg:sg-1',
-      source: 'elasticache:cache', target: 'sg:sg-1', rel: 'infra:uses_sg' });
+    expect(g.nodes.find(node => node.id === source)?.kind).toBe('elasticache');
+    expect(g.edges).toContainEqual({ id: `infra:uses_sg:${source}->${target}`,
+      source, target, rel: 'infra:uses_sg' });
   });
 
   it('preserves RDS security-group relationships from the inventory producer shape', () => {
+    const region = 'ap-northeast-2';
+    const source = infraNodeId('rds', 'orders-db', 'self', region);
     const g = buildInfraGraph({
       resources: [{
-        resource_type: 'rds', resource_id: 'orders-db', region: 'ap-northeast-2',
+        account_id: 'self', region, resource_type: 'rds', resource_id: 'orders-db',
         data: {
           db_instance_identifier: 'orders-db', vpc_id: 'vpc-1',
           endpoint_address: 'orders-db.example.rds.amazonaws.com',
@@ -81,17 +87,17 @@ describe('buildInfraGraph', () => {
       }],
       vpcs, subnets, securityGroups,
     });
-    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg')).toEqual([
-      { id: 'infra:uses_sg:rds:orders-db->sg:sg-1', source: 'rds:orders-db', target: 'sg:sg-1', rel: 'infra:uses_sg' },
-      { id: 'infra:uses_sg:rds:orders-db->sg:sg-def', source: 'rds:orders-db', target: 'sg:sg-def', rel: 'infra:uses_sg' },
-    ]);
-    expect(g.nodes.find((n) => n.id === 'rds:orders-db')?.meta?.host).toBe('orders-db.example.rds.amazonaws.com');
+    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg')).toEqual(['sg-1', 'sg-def'].map(id => {
+      const target = infraNodeId('sg', id, 'self', region);
+      return { id: `infra:uses_sg:${source}->${target}`, source, target, rel: 'infra:uses_sg' };
+    }));
+    expect(g.nodes.find((n) => n.id === source)?.meta?.host).toBe('orders-db.example.rds.amazonaws.com');
   });
 
   it('preserves every Lambda vpc_subnet_ids relationship and deduplicates overlapping fields', () => {
     const g = buildInfraGraph({
       resources: [{
-        resource_type: 'lambda', resource_id: 'orders-handler', region: 'ap-northeast-2',
+        resource_type: 'lambda', resource_id: 'orders-handler',
         data: {
           name: 'orders-handler', vpc_id: 'vpc-1',
           vpc_subnet_ids: ['subnet-a', 'subnet-b', 'subnet-b'],
@@ -129,5 +135,51 @@ describe('buildInfraGraph', () => {
     const resources = [{ resource_type: 'alb', resource_id: 'my-lb', data: { vpc_id: 'vpc-1' } }];
     const g = buildInfraGraph({ resources, vpcs, subnets: [], securityGroups: [] });
     expect(g.nodes.find((n) => n.id === 'alb:my-lb')?.meta).not.toHaveProperty('host');
+  });
+
+  it('keeps same-named regional RDS instances and their VPCs separate', () => {
+    const resources = ['us-east-1', 'ap-northeast-2'].map((region, i) => ({
+      account_id: 'self', resource_type: 'rds', resource_id: 'app-db', region,
+      data: { vpc_id: `vpc-${i}`, endpoint_address: `app-db.${region}.example.test` },
+    }));
+    const graph = buildInfraGraph({ resources, vpcs: [], subnets: [], securityGroups: [] });
+    expect(graph.nodes.filter(n => n.kind === 'rds')).toHaveLength(2);
+    for (const [i, row] of resources.entries()) {
+      const id = infraNodeId('rds', 'app-db', 'self', row.region);
+      expect(graph.nodes.find(n => n.id === id)?.meta).toMatchObject({
+        host: row.data.endpoint_address, region: row.region, legacyId: 'rds:app-db',
+      });
+      expect(graph.edges.filter(e => e.source === id)).toEqual([{
+        id: `infra:in_vpc:${id}->${infraNodeId('vpc', `vpc-${i}`, 'self', row.region)}`,
+        source: id, target: infraNodeId('vpc', `vpc-${i}`, 'self', row.region), rel: 'infra:in_vpc',
+      }]);
+    }
+  });
+
+  it('keeps reused network IDs and same-named Lambda functions separate by account and region', () => {
+    const resources = ['111122223333', '222233334444'].flatMap(account_id =>
+      ['us-east-1', 'ap-northeast-2'].map(region => ({
+        account_id, region, resource_type: 'lambda', resource_id: 'handler',
+        data: { vpc_id: 'vpc-shared', vpc_subnet_ids: ['subnet-shared'], vpc_security_group_ids: ['sg-shared'] },
+      })));
+    const graph = buildInfraGraph({ resources, vpcs: [], subnets: [], securityGroups: [] });
+    expect(graph.nodes.filter(n => n.kind === 'lambda')).toHaveLength(4);
+    expect(graph.nodes.filter(n => n.kind === 'vpc')).toHaveLength(4);
+    const byId = new Map(graph.nodes.map(n => [n.id, n]));
+    for (const edge of graph.edges) {
+      expect(byId.get(edge.source)?.meta?.inventoryAccount).toBe(byId.get(edge.target)?.meta?.inventoryAccount);
+      expect(byId.get(edge.source)?.meta?.region).toBe(byId.get(edge.target)?.meta?.region);
+    }
+  });
+
+  it('preserves scoped inventory labels and the default-SG expansion marker', () => {
+    const network = { account_id: 'self', region: 'us-east-1' };
+    const graph = buildInfraGraph({
+      resources: [{ ...network, resource_type: 'rds', resource_id: 'db', data: { vpc_id: 'vpc-1', security_group_ids: ['sg-def'] } }],
+      vpcs: vpcs.map(v => ({ ...v, ...network })), subnets: [],
+      securityGroups: securityGroups.map(g => ({ ...g, ...network })),
+    });
+    expect(graph.nodes.find(n => n.id === infraNodeId('vpc', 'vpc-1', 'self', network.region))?.label).toBe('mgmt-vpc');
+    expect(graph.nodes.find(n => n.id === infraNodeId('sg', 'sg-def', 'self', network.region))?.meta?.default).toBe(true);
   });
 });

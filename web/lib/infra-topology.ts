@@ -2,6 +2,7 @@
 // Pure TS (no I/O), mirroring how flow-topology.ts is the single source for the traffic-flow graph.
 // Emits resource -> vpc/subnet/sg placement edges from synced inventory. The materializer
 // (graph-store.rebuildInfraGraph) and any future consumer reuse this — no rule duplication.
+import { infraNodeId } from './graph-identity';
 
 export type Row = Record<string, unknown>;
 export interface InfraNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
@@ -31,9 +32,22 @@ function nameOf(row: Row): string {
   return str(tags.Name ?? d.group_name ?? d.title ?? d.name ?? row.resource_id);
 }
 
-export function buildInfraGraph(input: InfraInput): InfraGraph {
+export function buildInfraGraph(input: InfraInput, account = 'self'): InfraGraph {
   const nodes = new Map<string, InfraNode>();
   const edges = new Map<string, InfraEdge>();
+  const scope = (row: Row) => ({
+    account: str(row.account_id) || account,
+    region: str(row.region) || undefined,
+  });
+  const identity = (kind: string, id: string, row: Row) => {
+    const s = scope(row);
+    return infraNodeId(kind, id, s.account, s.region);
+  };
+  const metadata = (kind: string, id: string, row: Row) => {
+    const s = scope(row);
+    return { invType: kind === 'sg' ? 'security_group' : kind, resourceId: id,
+      legacyId: `${kind}:${id}`, inventoryAccount: s.account, ...(s.region ? { region: s.region } : {}) };
+  };
   const addNode = (id: string, kind: string, label: string, meta?: Record<string, unknown>) => {
     if (!nodes.has(id)) nodes.set(id, { id, kind, label, meta });
   };
@@ -43,12 +57,15 @@ export function buildInfraGraph(input: InfraInput): InfraGraph {
   };
 
   // 1) network nodes from inventory first, so their real names + default-SG flag win over id fallbacks.
-  for (const v of input.vpcs) addNode(`vpc:${str(v.resource_id)}`, 'vpc', nameOf(v));
-  for (const s of input.subnets) addNode(`subnet:${str(s.resource_id)}`, 'subnet', nameOf(s), {
+  for (const v of input.vpcs) addNode(identity('vpc', str(v.resource_id), v), 'vpc', nameOf(v),
+    metadata('vpc', str(v.resource_id), v));
+  for (const s of input.subnets) addNode(identity('subnet', str(s.resource_id), s), 'subnet', nameOf(s), {
+    ...metadata('subnet', str(s.resource_id), s),
     vpc: str((s.data as Row)?.vpc_id) || undefined,
   });
   for (const g of input.securityGroups) {
-    addNode(`sg:${str(g.resource_id)}`, 'sg', nameOf(g), {
+    addNode(identity('sg', str(g.resource_id), g), 'sg', nameOf(g), {
+      ...metadata('sg', str(g.resource_id), g),
       default: str((g.data as Row)?.group_name) === 'default',
     });
   }
@@ -63,17 +80,23 @@ export function buildInfraGraph(input: InfraInput): InfraGraph {
     const subnetIds = [...new Set([...idsFrom(d.subnet_id), ...idsFrom(d.subnet_ids), ...idsFrom(d.vpc_subnet_ids), ...idsFrom(d.subnets), ...lbSubnets])];
     const sgIds = [...new Set([...idsFrom(d.security_groups), ...idsFrom(d.security_group_ids), ...idsFrom(d.vpc_security_group_ids), ...idsFrom(d.vpc_security_groups)])];
     if (!vpcId && subnetIds.length === 0 && sgIds.length === 0) continue;
-    const rid = `${str(r.resource_type)}:${str(r.resource_id)}`;
+    const kind = str(r.resource_type), rawId = str(r.resource_id);
+    const rid = identity(kind, rawId, r);
     // meta.host bridges this node to the trace-topology layer's db-node infra_ref (graph-store.ts
     // resolveInfraRef): only rds rows carry endpoint_address today, so this is a no-op for other types.
     const host = str(d.endpoint_address);
-    addNode(rid, str(r.resource_type), nameOf(r), {
-      invType: str(r.resource_type), resourceId: str(r.resource_id),
+    addNode(rid, kind, nameOf(r), {
+      ...metadata(kind, rawId, r),
       ...(host ? { host } : {}),
     });
-    if (vpcId) { addNode(`vpc:${vpcId}`, 'vpc', vpcId); addEdge(rid, `vpc:${vpcId}`, 'infra:in_vpc'); }
-    for (const sid of subnetIds) { addNode(`subnet:${sid}`, 'subnet', sid); addEdge(rid, `subnet:${sid}`, 'infra:in_subnet'); }
-    for (const gid of sgIds) { addNode(`sg:${gid}`, 'sg', gid); addEdge(rid, `sg:${gid}`, 'infra:uses_sg'); }
+    const placement = (kind: string, id: string, rel: string) => {
+      const target = identity(kind, id, r);
+      addNode(target, kind, id, metadata(kind, id, r));
+      addEdge(rid, target, rel);
+    };
+    if (vpcId) placement('vpc', vpcId, 'infra:in_vpc');
+    for (const sid of subnetIds) placement('subnet', sid, 'infra:in_subnet');
+    for (const gid of sgIds) placement('sg', gid, 'infra:uses_sg');
   }
 
   return { nodes: [...nodes.values()], edges: [...edges.values()] };

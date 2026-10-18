@@ -300,6 +300,16 @@ describe('resolveInfraRef (bridge-ref matcher, pure)', () => {
     expect(resolveInfraRef('aurora', [])).toBeUndefined();
   });
 
+  it('withholds an ambiguous regional database prefix and prefers one exact host', () => {
+    const nodes = [
+      { id: 'rds:@self:us-east-1:orders', kind: 'rds', meta: { host: 'orders.east.example.test' } },
+      { id: 'rds:@self:ap-northeast-2:orders', kind: 'rds', meta: { host: 'orders.seoul.example.test' } },
+    ];
+    expect(resolveInfraRef('orders', nodes)).toBeUndefined();
+    expect(resolveInfraRef('orders.seoul.example.test', nodes)).toBe(nodes[1].id);
+    expect(resolveInfraRef('orders', [...nodes, { id: 'rds:exact', kind: 'rds', meta: { host: 'orders' } }])).toBe('rds:exact');
+  });
+
   it('does NOT match a production-shaped infra node with no host (nothing to match against)', () => {
     // A node lacking meta.host (e.g. a resource type infra-topology never stamps a host for) still
     // can't bridge — this is the general "unmatched" case, not a dormant-feature gap: infra-topology

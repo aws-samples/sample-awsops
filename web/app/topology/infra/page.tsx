@@ -16,6 +16,7 @@ import { layoutFlow } from '@/lib/flow-layout';
 import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
 import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySection';
+import { splitUnionNodeId } from '@/lib/graph-identity';
 
 // ReactFlow touches the DOM on mount — client-only.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -83,10 +84,12 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
 
   const { nodes, edges } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
+    const scopedNodes = new Set(graph.nodes.filter(n => typeof n.meta?.region === 'string').map(n => n.id));
     const pos = Object.fromEntries(
       layoutFlow(
         { nodes: graph.nodes as never, edges: graph.edges.map((e) => ({ id: `${e.source}->${e.target}`, source: e.source, target: e.target, confidence: 'observed' })) as never },
-        { rankdir: 'TB' },
+        { rankdir: 'TB', nodeSize: id => ({ width: 200,
+          height: scopedNodes.has(id) ? 54 : 44 }) },
       ).map((p) => [p.id, p]),
     );
     const dim = matches.size > 0;
@@ -97,19 +100,25 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
       return {
         id: n.id,
         position: { x: p.x, y: p.y },
-        data: { label: `${n.kind in COLORS ? `${n.kind}: ` : ''}${n.label}`, kind: n.kind },
+        data: { label: <div>
+          <div className="truncate" title={n.label}>{`${n.kind in COLORS ? `${n.kind}: ` : ''}${n.label}`}</div>
+          {typeof n.meta?.region === 'string' && <div className="truncate text-[10px] opacity-70">
+            {[n.meta.inventoryAccount, n.meta.region].filter(Boolean).join(' · ')}
+          </div>}
+        </div>, kind: n.kind, meta: n.meta },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         style: {
           background: bg,
           border: `${hit ? `2px solid ${HILITE}` : `1px solid ${border}`}`,
-          borderRadius: 8, fontSize: 11, padding: 6, width: 200, color: '#16202A',
+          borderRadius: 8, fontSize: 11, padding: 6, width: 200,
+          height: typeof n.meta?.region === 'string' ? 54 : 44, color: '#16202A',
           opacity: dim && !hit ? 0.25 : 1,
         },
       };
     });
     const edges: Edge[] = graph.edges.map((e) => ({
-      id: `${e.source}->${e.target}`, source: e.source, target: e.target,
+      id: `${e.source}->${e.target}:${e.rel}`, source: e.source, target: e.target,
       label: relLabel[e.rel] ?? e.rel, animated: false,
       style: { stroke: '#9AA6B2', opacity: dim ? 0.3 : 1 }, labelStyle: { fontSize: 9, fill: '#586773' },
     }));
@@ -146,7 +155,16 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
       </div>}
       <div className="min-h-[240px] flex-1">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.05}
-          onNodeClick={(_, node) => { if (node.data.kind === 'vpc' && node.id.startsWith('vpc:')) onVpc(node.id.slice(4)); }}
+          onNodeClick={(_, node) => {
+            if (node.data.kind !== 'vpc') return;
+            const meta = node.data.meta as GNode['meta'];
+            const savedId = splitUnionNodeId(node.id)?.id ?? node.id;
+            const id = typeof meta?.resourceId === 'string' ? meta.resourceId
+              : savedId.startsWith('vpc:') && !savedId.startsWith('vpc:@') ? savedId.slice(4) : '';
+            if (!id) return;
+            onVpc(typeof meta?.inventoryAccount === 'string' && typeof meta?.region === 'string'
+              ? `${meta.inventoryAccount}/${meta.region}/${id}` : id);
+          }}
           proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls />

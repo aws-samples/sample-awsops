@@ -7,6 +7,12 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '설정 미확인': { en: 'Configuration unconfirmed', zh: '配置未确认', ja: '設定未確認' },
+  '추가 후보가 있습니다. 계정 범위를 좁혀 확인하세요.': { en: 'More candidates exist. Narrow the account scope to inspect them.', zh: '还有其他候选资源。请缩小账户范围后查看。', ja: 'ほかの候補があります。アカウントの範囲を絞って確認してください。' },
+  '설정됨': { en: 'Configured', zh: '已配置', ja: '設定済み' },
+  '설정 상태는 실제 연결 성공을 의미하지 않습니다.': { en: 'Configuration status does not confirm a successful connection.', zh: '配置状态不代表连接已成功。', ja: '設定状態は接続成功を保証するものではありません。' },
+  '리소스 선택이 모호합니다. 계정·리전별 리소스를 선택하세요.': { en: 'Resource selection is ambiguous. Choose a resource by account and region.', zh: '资源选择不明确。请选择指定账户和区域的资源。', ja: 'リソースの選択が曖昧です。アカウントとリージョンでリソースを選択してください。' },
+  '선택한 리소스를 저장된 그래프에서 찾지 못했습니다.': { en: 'The selected resource was not found in the saved graph.', zh: '在已保存的图中找不到所选资源。', ja: '保存されたグラフに選択したリソースが見つかりません。' },
   'VPC 연결 그래프': { en: 'VPC connection graph', zh: 'VPC 连接图', ja: 'VPC 接続グラフ' },
   'VPC 연결 그래프 열기': { en: 'Open VPC connection graph', zh: '打开 VPC 连接图', ja: 'VPC 接続グラフを開く' },
   'VPC 연결': { en: 'VPC connections', zh: 'VPC 连接', ja: 'VPC 接続' },

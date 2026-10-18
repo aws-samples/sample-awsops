@@ -17,6 +17,7 @@ import { fetchEksIpMap, inventoryEvidence, type EksIpResolution, type InventoryE
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { infraNodeId } from '@/lib/graph-identity';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -676,8 +677,12 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const NET_CAPABLE = new Set(['alb', 'nlb', 'target_group', 'ec2', 'lambda', 'ecs_task']);
   const sm = (selected?.meta ?? {}) as Record<string, unknown>;
   const smRow = (sm.row ?? {}) as Record<string, unknown>;
+  const resourceAccount = typeof smRow.account_id === 'string' && /^(self|\d{12})$/.test(smRow.account_id)
+    ? smRow.account_id : null;
   const rgId = sm.invType && NET_CAPABLE.has(String(sm.invType)) && smRow.resource_id
-    ? `${sm.invType}:${smRow.resource_id}` : null;
+    ? resourceAccount && typeof smRow.region === 'string' && smRow.region
+      ? infraNodeId(String(sm.invType), String(smRow.resource_id), resourceAccount, smRow.region)
+      : `${sm.invType}:${smRow.resource_id}` : null;
   const detailActions = selected ? (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">

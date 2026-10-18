@@ -34,11 +34,10 @@ function spanKey(sourceId: string | undefined, traceId: string, spanId: string):
 export function resolveInfraRef(dbHost: string | undefined, infraNodes: InfraNodeLike[]): string | undefined {
   if (!dbHost) return undefined;
   const host = dbHost.toLowerCase();
-  for (const node of infraNodes) {
-    const candidate = String(node.meta?.host ?? '').toLowerCase();
-    if (candidate && (candidate === host || candidate.startsWith(`${host}.`))) return node.id;
-  }
-  return undefined;
+  const exact = infraNodes.filter(node => String(node.meta?.host ?? '').toLowerCase() === host);
+  if (exact.length) return exact.length === 1 ? exact[0].id : undefined;
+  const prefixes = infraNodes.filter(node => String(node.meta?.host ?? '').toLowerCase().startsWith(`${host}.`));
+  return prefixes.length === 1 ? prefixes[0].id : undefined;
 }
 
 /** A sampled dependency graph. Counts describe evidence, never a probability of correctness. */
