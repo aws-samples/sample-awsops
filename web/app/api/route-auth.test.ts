@@ -26,6 +26,7 @@ const TOP_FN = /^(export )?(?:async )?function (\w+)/gm;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 // Blank out comments and string/template literal contents, preserving newlines and offsets.
+// Limitation: nested template literals (`${`...`}` inside a template) are not tokenised, so keep handler declarations and auth calls out of nested templates.
 function code(src: string): string {
   return src.replace(
     /\/\*[\s\S]*?\*\/|\/\/[^\n]*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g,
@@ -47,15 +48,20 @@ const all = routes(api).map((file) => ({
   src: code(readFileSync(file, 'utf8')),
 }));
 
-// Public exact-match entries of `def is_public` in the edge Lambda template.
-function edgePublic(): Set<string> {
+// Public exact-match entries and `startswith` prefixes of `def is_public` in the edge Lambda template.
+function edgePublic(): { exact: Set<string>; prefixes: string[] } {
   const src = readFileSync(
     join(api, '..', '..', '..', 'terraform', 'foundation', 'edge-lambda', 'cognito_edge.py.tftpl'),
     'utf8',
   );
-  const fn = src.slice(src.indexOf('def is_public'));
+  const rest = src.slice(src.indexOf('def is_public'));
+  const end = rest.indexOf('\ndef ', 1);
+  const fn = end === -1 ? rest : rest.slice(0, end);
   const tuple = /\buri in \(([\s\S]*?)\)/.exec(fn)?.[1] ?? '';
-  return new Set([...tuple.matchAll(/'([^']*)'/g)].map((m) => m[1]));
+  return {
+    exact: new Set([...tuple.matchAll(/'([^']*)'/g)].map((m) => m[1])),
+    prefixes: [...fn.matchAll(/startswith\('([^']*)'\)/g)].map((m) => m[1]),
+  };
 }
 
 // Top-level functions in a route file, each sliced up to the next top-level function.
@@ -81,7 +87,7 @@ function unauthenticated(src: string, auth: RegExp): string[] {
 
 describe('API route auth contract', () => {
   it('finds the route tree', () => {
-    expect(all.length).toBeGreaterThan(50);
+    expect(all.length).toBeGreaterThanOrEqual(100);
   });
 
   it('every exported handler outside the documented exceptions calls verifyUser', () => {
@@ -98,7 +104,7 @@ describe('API route auth contract', () => {
   });
 
   it('every public route exists and is also public at the edge', () => {
-    const edge = edgePublic();
+    const edge = edgePublic().exact;
     expect(edge.size).toBeGreaterThan(0);
     for (const p of Object.keys(PUBLIC)) {
       expect(all.some((r) => r.path === p), `${p} has no route.ts`).toBe(true);
@@ -107,7 +113,7 @@ describe('API route auth contract', () => {
   });
 
   it('every edge-only route exists and is not public at the edge', () => {
-    const edge = edgePublic();
+    const edge = edgePublic().exact;
     expect(edge.size).toBeGreaterThan(0);
     for (const p of Object.keys(EDGE_ONLY)) {
       expect(all.some((r) => r.path === p), `${p} has no route.ts`).toBe(true);
@@ -116,11 +122,12 @@ describe('API route auth contract', () => {
   });
 
   it('every API path public at the edge is declared in PUBLIC', () => {
-    const edge = edgePublic();
+    const { exact: edge, prefixes } = edgePublic();
     expect(edge.size).toBeGreaterThan(0);
     for (const p of edge) {
       if (!p.startsWith('/api/')) continue;
       expect(p in PUBLIC || p === SIGNOUT, `${p} is public at the edge but not declared in PUBLIC`).toBe(true);
     }
+    expect(prefixes.filter((p) => p.startsWith('/api')), 'edge public prefix under /api').toEqual([]);
   });
 });
