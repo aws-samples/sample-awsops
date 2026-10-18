@@ -58,6 +58,28 @@ variable "mimir_vpc_enabled" {
   default     = false
 }
 
+variable "jaeger_vpc_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Attach the Jaeger query Lambda to private subnets. Requires agentcore_enabled and integrations_enabled; routing, DNS and target ingress must be operator-configured."
+  validation {
+    condition     = !var.jaeger_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
+    error_message = "jaeger_vpc_enabled requires agentcore_enabled and integrations_enabled."
+  }
+}
+
+variable "dynatrace_vpc_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Attach the Dynatrace environment API Lambda to private subnets for a private ActiveGate endpoint. Requires agentcore_enabled and integrations_enabled. Does not affect the official hosted MCP preset."
+  validation {
+    condition     = !var.dynatrace_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
+    error_message = "dynatrace_vpc_enabled requires agentcore_enabled and integrations_enabled."
+  }
+}
+
 variable "istio_vpc_enabled" {
   type        = bool
   description = "Attach the istio-read Lambda to the private subnets so it can reach a PRIVATE-ONLY EKS API endpoint. Requires agentcore_enabled. Default false → no-op ($0); off = non-VPC (reaches a public/public+private cluster endpoint). PERSIST in live terraform.tfvars."
@@ -509,10 +531,10 @@ resource "aws_iam_role_policy" "agent_lambda_opensearch" {
   })
 }
 
-# ENI perms for the opensearch-mcp Lambda ONLY when it is VPC-attached (opensearch_vpc_enabled).
+# ENI permissions exist only while a managed Lambda VPC option is enabled.
 # Compound-gated: references agent_lambda[0], which exists only when agentcore_enabled → guard both.
 resource "aws_iam_role_policy" "agent_lambda_vpc_eni" {
-  count = var.agentcore_enabled && (var.opensearch_vpc_enabled || var.clickhouse_vpc_enabled || var.prometheus_vpc_enabled || var.loki_vpc_enabled || var.tempo_vpc_enabled || var.mimir_vpc_enabled || var.istio_vpc_enabled) ? 1 : 0
+  count = var.agentcore_enabled && (var.opensearch_vpc_enabled || var.clickhouse_vpc_enabled || var.prometheus_vpc_enabled || var.loki_vpc_enabled || var.tempo_vpc_enabled || var.mimir_vpc_enabled || var.jaeger_vpc_enabled || var.dynatrace_vpc_enabled || var.istio_vpc_enabled) ? 1 : 0
   name  = "${var.project}-agent-lambda-vpc-eni"
   role  = aws_iam_role.agent_lambda[0].id
   policy = jsonencode({
@@ -967,10 +989,10 @@ resource "aws_lambda_function" "agent" {
   }
 
   # Per-Lambda VPC opt-in: attach a connector to the private subnets ONLY when its <name>_vpc_enabled
-  # flag is set (opensearch/clickhouse/prometheus/loki/tempo/mimir for VPC-only datasources;
+  # flag is set (opensearch/clickhouse/prometheus/loki/tempo/mimir/jaeger/dynatrace for private datasources;
   # istio-read for a private-only EKS API endpoint). Off (default) → no vpc_config → non-VPC.
   dynamic "vpc_config" {
-    for_each = ((each.key == "opensearch-mcp" && var.opensearch_vpc_enabled) || (each.key == "clickhouse-mcp" && var.clickhouse_vpc_enabled) || (each.key == "prometheus-mcp" && var.prometheus_vpc_enabled) || (each.key == "loki-mcp" && var.loki_vpc_enabled) || (each.key == "tempo-mcp" && var.tempo_vpc_enabled) || (each.key == "mimir-mcp" && var.mimir_vpc_enabled) || (each.key == "istio-read" && var.istio_vpc_enabled)) ? [1] : []
+    for_each = ((each.key == "opensearch-mcp" && var.opensearch_vpc_enabled) || (each.key == "clickhouse-mcp" && var.clickhouse_vpc_enabled) || (each.key == "prometheus-mcp" && var.prometheus_vpc_enabled) || (each.key == "loki-mcp" && var.loki_vpc_enabled) || (each.key == "tempo-mcp" && var.tempo_vpc_enabled) || (each.key == "mimir-mcp" && var.mimir_vpc_enabled) || (each.key == "jaeger-mcp" && var.jaeger_vpc_enabled) || (each.key == "dynatrace-mcp" && var.dynatrace_vpc_enabled) || (each.key == "istio-read" && var.istio_vpc_enabled)) ? [1] : []
     content {
       subnet_ids         = local.private_subnet_ids
       security_group_ids = [aws_security_group.service.id]

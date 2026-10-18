@@ -96,6 +96,12 @@ export async function PUT(request: Request) {
   try { body = (await readJsonBounded(request)) as Record<string, unknown>; }
   catch (e) { if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413); return json({ error: 'invalid JSON' }, 400); }
   if (body.op === 'enable' || body.op === 'disable') {
+    if (body.op === 'enable') {
+      const integration = (await listIntegrations()).find(row => Number(row.id) === Number(body.id));
+      if (integration?.direction === 'egress' && integration.transport === 'oauth_3lo') {
+        return json({ error: 'oauth_3lo is not supported by the runtime' }, 400);
+      }
+    }
     await setIntegrationEnabled(Number(body.id), body.op === 'enable'); // custom-only at the SQL level
     await writeAudit({ actor: g.user!.email ?? g.user!.sub, action: String(body.op), objectType: 'integration', objectId: String(body.id) });
     return json({ ok: true }, 200);

@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    set_request_conn, request_timeout, observed_payload,
 )
 
 SLUG = "jaeger"
@@ -54,10 +54,10 @@ def _ds():
 
 def _get(creds, path, params=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=auth_headers(creds))
+    status, data = http_json("GET", url, headers=auth_headers(creds), timeout=request_timeout(creds))
     if status >= 400:  # Jaeger errors carry {"errors":[...]} — success = HTTP 2xx
         raise _ApiError(f"Jaeger HTTP {status}: {str(data.get('errors') or data.get('raw') or data)[:300]}")
-    return data
+    return observed_payload(data, status)
 
 
 def _byte_bound(obj):
@@ -88,16 +88,34 @@ def jaeger_search(args):
     except _ApiError as e:
         return err(str(e))
     params.setdefault("limit", "20")
-    params["limit"] = str(min(int(params["limit"]), MAX_TRACES))
+    if not re.fullmatch(r"\d{1,9}", str(params["limit"])):
+        return err("limit must be a positive integer")
+    requested = max(1, min(int(params["limit"]), MAX_TRACES))
+    params["limit"] = str(requested)
     params["start"] = _parse_time_us(args.get("start"), 3600)
     params["end"] = _parse_time_us(args.get("end"))
     data = _get(_ds(), "/api/traces", params)
-    traces = data.get("data", []) if isinstance(data, dict) else []
+    if isinstance(data, dict) and data.get("errors"):
+        return ok({"traces": [], "truncated": False, "collectionStatus": "error"})
+    traces = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(traces, list):
+        return ok({"traces": [], "truncated": False, "collectionStatus": "unknown"})
     # Compact rows for the console/agent: full span trees are huge — summarize per trace.
     rows = []
+    invalid = False
     for t in traces[:MAX_TRACES]:
-        spans = t.get("spans", []) if isinstance(t, dict) else []
-        procs = t.get("processes", {}) if isinstance(t, dict) else {}
+        if (not isinstance(t, dict) or not isinstance(t.get("traceID"), str)
+                or len(t["traceID"]) not in (16, 32) or not _HEX.fullmatch(t["traceID"])
+                or not isinstance(t.get("spans"), list) or not t["spans"]
+                or not isinstance(t.get("processes"), dict)):
+            invalid = True
+            continue
+        spans, procs = t["spans"], t["processes"]
+        if not all(isinstance(s, dict) and type(s.get("startTime")) is int and 0 <= s["startTime"] <= 8640000000000000000
+                   and type(s.get("duration")) is int and 0 <= s["duration"] <= 8640000000000000000
+                   and isinstance(s.get("operationName"), str) for s in spans):
+            invalid = True
+            continue
         root = min(spans, key=lambda s: s.get("startTime", 0)) if spans else {}
         dur_us = max((s.get("startTime", 0) + s.get("duration", 0)) for s in spans) - root.get("startTime", 0) if spans else 0
         svc = ""
@@ -112,8 +130,13 @@ def jaeger_search(args):
             "durationMs": round(dur_us / 1000, 1),
             "startTime": root.get("startTime", 0),
         })
+    truncated = len(traces) >= requested
+    http_status = getattr(data, "http_status", 200)
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or http_status == 206 else "ok" if rows else "empty"
     payload, btr = _byte_bound({"traces": rows})
-    return ok(payload if btr else {"truncated": len(traces) > MAX_TRACES, **payload})
+    return ok({**payload, "truncated": truncated or btr,
+               "collectionStatus": "unknown" if invalid else "partial" if btr else state,
+               "requestedLimit": requested, "returnedCount": len(rows)})
 
 
 def jaeger_get_trace(args):
@@ -149,8 +172,18 @@ def jaeger_schema(args):
 
 
 def jaeger_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /api/services."""
-    return ok(health(load_datasource(SLUG), "/api/services"))
+    """Verify a recognizable query response, not an arbitrary HTTP 200."""
+    try:
+        end = int(time.time())
+        result = json.loads(jaeger_search({
+            "query": "service=awsops-connection-probe&limit=1",
+            "start": str(end - 60), "end": str(end),
+        })["body"])
+        verified = result.get("collectionStatus") in ("ok", "empty", "partial")
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "Jaeger query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "Jaeger query access could not be verified"})
 
 
 _TOOLS = {

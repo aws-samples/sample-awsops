@@ -37,9 +37,16 @@ beforeEach(() => {
   validateIntegration.mockReturnValue({ ok: true, errors: [] });
   query.mockResolvedValue({ rows: [] });          // no agent_spaces opt-in row ⇒ allowPrivate false
   upsertIntegration.mockResolvedValue(9);
+  listIntegrations.mockResolvedValue([]);
 });
 
 describe('/api/integrations gate', () => {
+  it('does not enable an existing unsupported OAuth connection', async () => {
+    listIntegrations.mockResolvedValue([{ id: 9, direction: 'egress', transport: 'oauth_3lo' }]);
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'enable', id: 9 }, 'PUT'))).status).toBe(400);
+    expect(setIntegrationEnabled).not.toHaveBeenCalled();
+  });
   it('401 unauthenticated', async () => {
     verifyUser.mockResolvedValue(null);
     const { POST } = await import('./route');

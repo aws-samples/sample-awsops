@@ -4,6 +4,7 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import IntegrationIcon from '@/components/datasources/IntegrationIcon';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { EXECUTION_TIMEOUT_KINDS, EFFECTIVE_TIMEOUT_CAP } from '@/lib/datasource-query-tools';
 
 // v1-parity Add/Edit form: multiple instances per type, a name, an explicit auth method (optional auth),
 // and a Test-before-save probe. POSTs (create) / PATCHes (update) /api/datasources/manage.
@@ -39,7 +40,7 @@ export interface DatasourceFormValue {
   authType: string;
   isDefault?: boolean;
   // gap L203: per-datasource connection settings (server-side sanitized; see lib/datasources.ts)
-  settings?: { timeoutS?: number; database?: string };
+  settings?: { timeoutS?: number; database?: string; apiPrefix?: string };
 }
 
 export default function DatasourceForm({
@@ -55,6 +56,7 @@ export default function DatasourceForm({
   // gap L203: settings kept as strings for the inputs; settingsPayload() validates/coerces
   const [timeoutS, setTimeoutS] = useState(initial?.settings?.timeoutS != null ? String(initial.settings.timeoutS) : '');
   const [database, setDatabase] = useState(initial?.settings?.database ?? '');
+  const [apiPrefix, setApiPrefix] = useState(initial?.settings?.apiPrefix ?? '/prometheus');
   const [test, setTest] = useState<{ ok: boolean; ms?: number; error?: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -77,11 +79,15 @@ export default function DatasourceForm({
   const databaseInvalid = kind === 'clickhouse' && dbTrim !== ''
     && (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(dbTrim) || dbTrim.length > 128
         || ['system', 'information_schema'].includes(dbTrim.toLowerCase()));
+  const prefixInvalid = kind === 'mimir' && (apiPrefix.length > 128 || !/^(?:\/[A-Za-z0-9_-]+)*$/.test(apiPrefix));
+  const executionTimeout = EXECUTION_TIMEOUT_KINDS.has(kind);
+  const effectiveTimeout = Math.min(timeoutS.trim() && !timeoutInvalid ? Number(timeoutS) : executionTimeout ? 10 : 12, EFFECTIVE_TIMEOUT_CAP);
   const settingsPayload = () => {
-    const out: { timeoutS?: number; database?: string } = {};
+    const out: { timeoutS?: number; database?: string; apiPrefix?: string } = {};
     const t = Number(timeoutS);
     if (timeoutS.trim() !== '' && Number.isInteger(t) && t >= 1 && t <= 60) out.timeoutS = t;
     if (kind === 'clickhouse' && database.trim()) out.database = database.trim();
+    if (kind === 'mimir') out.apiPrefix = apiPrefix;
     return out;
   };
 
@@ -90,7 +96,7 @@ export default function DatasourceForm({
     try {
       const r = await fetch('/api/datasources/test', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kind, endpoint, authType, creds: credPayload() }),
+        body: JSON.stringify({ kind, endpoint, authType, creds: credPayload(), settings: settingsPayload() }),
       });
       const b = await r.json();
       if (!r.ok) { setErr(b.error || tt(`오류 ${r.status}`)); return; }
@@ -138,6 +144,7 @@ export default function DatasourceForm({
       <div>
         <label className={labelCls}>Endpoint URL</label>
         <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={ENDPOINT_PH[kind] ?? 'http://prometheus.internal:9090'} />
+        <p className="mt-1 text-[12px] text-ink-400">{tt('사설 주소는 운영자가 네트워크 연결과 DNS를 구성해야 사용할 수 있습니다.')}</p>
       </div>
 
       <div>
@@ -178,8 +185,9 @@ export default function DatasourceForm({
           result-cache TTL is deliberately not ported: the v2 query path is uncached by design) */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className={labelCls}>{tt('Timeout (초, 1–60 · 선택)')}</label>
-          <Input value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)} placeholder={tt('기본 10')} inputMode="numeric" />
+          <label className={labelCls}>{tt(executionTimeout ? '서버 실행 제한 (초, 1–60 · 선택)' : 'HTTP 응답 제한 (초, 1–60 · 선택)')}</label>
+          <Input value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)} placeholder={tt(executionTimeout ? '기본 10' : '기본 12')} inputMode="numeric" />
+          <p className="mt-1 text-[11px] text-ink-400">{tt('적용 제한')}: {effectiveTimeout}s{!executionTimeout && ` · ${tt('서버 쿼리 중단을 보장하지 않습니다.')}`}</p>
           {timeoutInvalid && <p className="mt-1 text-[11px] text-rose-600">{tt('1–60 사이의 정수를 입력하세요.')}</p>}
         </div>
         {kind === 'clickhouse' && (
@@ -189,10 +197,18 @@ export default function DatasourceForm({
             {databaseInvalid && <p className="mt-1 text-[11px] text-rose-600">{tt('영문/숫자/밑줄 식별자만 가능하며 system 계열은 사용할 수 없습니다.')}</p>}
           </div>
         )}
+        {kind === 'mimir' && (
+          <div>
+            <label className={labelCls}>Prometheus API prefix</label>
+            <Input value={apiPrefix} onChange={e => setApiPrefix(e.target.value)} placeholder="/prometheus" />
+            <p className="mt-1 text-[11px] text-ink-400">{tt('기본 /prometheus · API가 루트에 있으면 비워 두세요.')}</p>
+            {prefixInvalid && <p className="text-[11px] text-rose-600">{tt('슬래시와 영문/숫자/밑줄/하이픈 경로만 사용할 수 있습니다.')}</p>}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <Button variant="secondary" onClick={runTest} disabled={testing || !endpoint.trim()}>
+        <Button variant="secondary" onClick={runTest} disabled={testing || !endpoint.trim() || timeoutInvalid || prefixInvalid}>
           {testing ? tt('테스트 중…') : `🧪 ${tt('연결 테스트')}`}
         </Button>
         {test && (
@@ -205,7 +221,7 @@ export default function DatasourceForm({
       {err && <p className="text-[13px] text-rose-600">{err}</p>}
 
       <div className="flex gap-2 pt-1">
-        <Button onClick={save} disabled={saving || !name.trim() || !endpoint.trim() || timeoutInvalid || databaseInvalid}>{saving ? tt('저장 중…') : tt('저장')}</Button>
+        <Button onClick={save} disabled={saving || !name.trim() || !endpoint.trim() || timeoutInvalid || databaseInvalid || prefixInvalid}>{saving ? tt('저장 중…') : tt('저장')}</Button>
         <Button variant="secondary" onClick={onCancel}>{tt('취소')}</Button>
       </div>
     </div>

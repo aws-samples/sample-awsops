@@ -42,7 +42,7 @@ describe('GET /api/datasources (list instances)', () => {
     expect(datasources).toHaveLength(2);
     // admin (default mock): the registered URL is included (v1 parity for managers)
     expect(datasources[0]).toEqual({ id: 1, name: 'prod-prom', kind: 'prometheus', endpoint: 'http://p', authType: 'none', isDefault: true,
-      connected: true, configured: true, connectionStatus: 'not_checked' });
+      connected: true, configured: true, connectionStatus: 'not_checked', scope: 'shared' });
     expect(datasources[1].connected).toBe(true); // id '2' has a credential
   });
 

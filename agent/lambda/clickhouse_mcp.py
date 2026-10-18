@@ -273,8 +273,15 @@ def clickhouse_schema(args):
 
 
 def clickhouse_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ping."""
-    return ok(health(load_datasource(SLUG), "/ping"))
+    """Verify read-only SQL access using one constant row and a one-second ceiling."""
+    try:
+        result = _run_sql("SELECT 1 AS probe", 1, max_execution_time=1)
+        payload = json.loads(result["body"])
+        verified = result["statusCode"] == 200 and payload.get("collectionStatus") in ("ok", "partial")
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "ClickHouse query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "ClickHouse query access could not be verified"})
 
 
 _TOOLS = {

@@ -24,9 +24,8 @@ IP in the list already passed assert_host_allowed's checks. Every real call site
 calls assert_host_allowed(endpoint) immediately before http_json(same endpoint) — that invariant is
 what makes the cache safe; it is reset every invocation by set_request_conn() (called at the top of
 every lambda_handler) so a warm container never reuses a stale pinned IP across invocations.
-(A structurally identical resolve-and-recheck gap exists in agent/agent.py's `_assert_host_allowed`
-for the separate egress-integrations transport — untouched here; that's a different call path not
-exercised by the pentest's datasource/schema-fetch findings, and needs its own fix.)
+The separate custom-MCP transport pins its request-local validated address set through
+agent/pinned_http.py; the two transports retain their different private-network contracts.
 """
 import base64
 import functools
@@ -36,11 +35,14 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
 HTTP_TIMEOUT = 12
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
 
 _SM = None
 _SECRET_CACHE = None
@@ -60,6 +62,46 @@ class NotConnected(Exception):
 
 class SsrfBlocked(Exception):
     """Raised when an endpoint host/scheme is disallowed."""
+
+
+class ResponseTooLarge(ValueError):
+    """The upstream body exceeded the read budget; this is never an empty result."""
+
+
+def _seconds(value, default, ceiling=55):
+    if isinstance(value, bool):
+        return default
+    text = str(value).strip()
+    if not re.fullmatch(r"\d+s?", text):
+        return default
+    return max(1, min(ceiling, int(text.removesuffix("s"))))
+
+
+def request_timeout(creds):
+    """Saved transport deadline for APIs without a provider execution-time parameter."""
+    return _seconds(creds.get("timeoutS"), HTTP_TIMEOUT)
+
+
+def execution_timeout(creds, requested=None):
+    """Provider execution ceiling, with a caller allowed only to tighten it."""
+    configured = _seconds(creds.get("timeoutS"), 10)
+    return min(configured, _seconds(requested, configured))
+
+
+def finite_number(value, bound=1.7976931348623157e308):
+    """JSON chart numbers exclude booleans, non-finite values and oversized integers."""
+    return type(value) in (int, float) and abs(value) <= bound
+
+
+class ObservedPayload(dict):
+    """Transport evidence is an attribute, so upstream JSON cannot impersonate it."""
+    def __init__(self, data, status):
+        super().__init__(data)
+        self.http_status = status
+
+
+def observed_payload(data, status):
+    return ObservedPayload(data, status) if isinstance(data, dict) else data
 
 
 # Cloud instance-metadata endpoints blocked even though private is otherwise allowed (mirror agent.py).
@@ -230,15 +272,18 @@ def load_datasource(slug, instance_id=None):
        1. the request-scoped inline conn-config (`_REQUEST_CONN`) — the trusted BFF path only;
        2. the per-instance secret key `map[str(instance_id)]` — the credential-blind worker path,
           where the caller sends ONLY an instance_id and the connector reads the secret server-side;
-       3. the `map[slug]` kind-mirror (the default instance) as the fallback.
+       3. the `map[slug]` kind-mirror, only when no explicit instance was requested.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
     if _REQUEST_CONN is not None:
         return _REQUEST_CONN
     m = _load_secret_map()
     creds = m.get(str(instance_id)) if instance_id is not None else None
-    if not (isinstance(creds, dict) and creds.get("endpoint")):
-        creds = m.get(slug)  # kind-mirror (default instance) fallback
+    if instance_id is not None:
+        if not isinstance(creds, dict) or not creds.get("endpoint"):
+            raise NotConnected("requested datasource instance is not configured")
+    else:
+        creds = m.get(slug)
     if not isinstance(creds, dict) or not creds.get("endpoint"):
         raise NotConnected(f"{slug} not connected (no endpoint configured in the Connectors UI)")
     return creds
@@ -341,7 +386,28 @@ def _parse(raw):
         return {"raw": raw.decode("utf-8", "replace")[:4000]}
 
 
-def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT):
+def _read_bounded(response, max_bytes, timeout):
+    """Read at most budget+1 bytes; never trust Content-Length or parse before the bound."""
+    chunks = []
+    total = 0
+    deadline = time.monotonic() + timeout
+    read = getattr(response, "read1", response.read)
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("datasource response read deadline exceeded")
+            chunk = read(min(65536, max_bytes - total + 1))
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ResponseTooLarge(f"datasource response exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+    finally:
+        response.close()
+
+
+def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_bytes=MAX_RESPONSE_BYTES):
     """Send a request (no auto-redirect). Returns (status, parsed_dict). Non-2xx → (status, body).
     Pinned to the IPs assert_host_allowed(url) most recently validated for this host, if any (tried
     in order with fallback) — see module docstring (IP-pinning)."""
@@ -349,10 +415,7 @@ def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT):
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
         resp = _opener_for(urlparse(url).hostname).open(req, timeout=timeout)
-        return resp.getcode(), _parse(resp.read())
+        return resp.getcode(), _parse(_read_bounded(resp, max_bytes, timeout))
     except urllib.error.HTTPError as e:
-        try:
-            raw = e.read()
-        except Exception:  # noqa: BLE001
-            raw = b""
+        raw = _read_bounded(e, min(max_bytes, MAX_ERROR_BYTES), timeout)
         return e.code, _parse(raw)

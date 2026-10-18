@@ -33,6 +33,7 @@ export async function GET(request: Request) {
       configured: idSet.has(String(r.id)),
       connected: idSet.has(String(r.id)), // compatibility alias; not a live connection test
       connectionStatus: 'not_checked',
+      scope: 'shared',
     }));
     return json({ datasources }, 200);
   } catch {

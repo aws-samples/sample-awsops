@@ -138,7 +138,7 @@ describe('resolveConnConfig', () => {
     expect(getCredentialById).not.toHaveBeenCalledWith(1, 'prometheus'); // never the kind fallback
   });
 
-  it('clickhouse settings ride the conn config (database + timeoutS); other kinds never set them', async () => {
+  it('database is ClickHouse-only; timeoutS follows every instance into its connector', async () => {
     getCredentialById.mockResolvedValueOnce(null);
     const ch = { ...row, kind: 'clickhouse', settings: { database: 'metrics_db', timeoutS: 30 } };
     expect(await resolveConnConfig(ch)).toMatchObject({ database: 'metrics_db', timeoutS: 30 });
@@ -146,7 +146,7 @@ describe('resolveConnConfig', () => {
     const prom = { ...row, settings: { database: 'metrics_db', timeoutS: 30 } }; // kind: prometheus
     const cc = await resolveConnConfig(prom);
     expect(cc).not.toHaveProperty('database');
-    expect(cc).not.toHaveProperty('timeoutS');
+    expect(cc.timeoutS).toBe(30);
   });
 
   it('a stale blob database/timeoutS never leaks through — the ROW settings are authoritative', async () => {

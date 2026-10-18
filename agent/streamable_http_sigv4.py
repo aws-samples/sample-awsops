@@ -11,6 +11,7 @@ from datetime import timedelta
 from typing import Generator
 
 import httpx
+from pinned_http import pinned_client_factory
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
@@ -132,6 +133,7 @@ async def streamablehttp_client_with_sigv4(
     sse_read_timeout: float | timedelta = 60 * 5,
     terminate_on_close: bool = True,
     httpx_client_factory: McpHttpClientFactory = create_mcp_http_client,
+    pinned_ips: tuple[str, ...] | None = None,
 ) -> AsyncGenerator[
     tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
@@ -149,7 +151,7 @@ async def streamablehttp_client_with_sigv4(
         timeout=timeout,
         sse_read_timeout=sse_read_timeout,
         terminate_on_close=terminate_on_close,
-        httpx_client_factory=_no_redirect_http_client_factory,
+        httpx_client_factory=pinned_client_factory(url, pinned_ips) if pinned_ips is not None else _no_redirect_http_client_factory,
         auth=SigV4HTTPXAuth(credentials, service, region),
     ) as result:
         yield result
@@ -162,6 +164,7 @@ async def streamablehttp_client_with_headers(
     timeout: float | timedelta = 30,
     sse_read_timeout: float | timedelta = 60 * 5,
     terminate_on_close: bool = True,
+    pinned_ips: tuple[str, ...] | None = None,
 ) -> AsyncGenerator[
     tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
@@ -179,6 +182,6 @@ async def streamablehttp_client_with_headers(
         timeout=timeout,
         sse_read_timeout=sse_read_timeout,
         terminate_on_close=terminate_on_close,
-        httpx_client_factory=_no_redirect_http_client_factory,
+        httpx_client_factory=pinned_client_factory(url, pinned_ips) if pinned_ips is not None else _no_redirect_http_client_factory,
     ) as result:
         yield result

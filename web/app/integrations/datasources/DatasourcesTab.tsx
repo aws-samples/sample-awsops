@@ -10,7 +10,7 @@ import DatasourceForm, { type DatasourceFormValue } from './DatasourceForm';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface Instance {
-  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean; configured?: boolean; settings?: { timeoutS?: number; database?: string };
+  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean; configured?: boolean; settings?: { timeoutS?: number; database?: string; apiPrefix?: string };
 }
 
 // Chat section per datasource kind (the deep-link prompt pins it with a leading /section —
@@ -94,6 +94,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
           {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ {tt('데이터소스 추가')}</Button>}
         </div>
       </div>
+      <p className="text-[12px] text-ink-400">{tt('기본 데이터소스는 타입별 공유 연결이며 AWS 계정 선택으로 바뀌지 않습니다.')}</p>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatTile label={tt('총 데이터소스')} value={list.length} />

@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    set_request_conn,
+    set_request_conn, request_timeout, finite_number, observed_payload,
 )
 
 SLUG = "datadog"
@@ -45,9 +45,9 @@ def _headers(creds):
     """DD dual-key headers: dedicated apiKey/appKey fields win; else the generic custom-header pair
     (headerName/headerValue [+2]) from auth_headers covers users who configured them directly."""
     h = dict(auth_headers(creds))
-    if creds.get("apiKey"):
+    if creds.get("authType") in (None, "custom_header") and creds.get("apiKey"):
         h["DD-API-KEY"] = str(creds["apiKey"])
-    if creds.get("appKey"):
+    if creds.get("authType") in (None, "custom_header") and creds.get("appKey"):
         h["DD-APPLICATION-KEY"] = str(creds["appKey"])
     return h
 
@@ -60,11 +60,11 @@ def _ds():
 
 def _get(creds, path, params=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds))
+    status, data = http_json("GET", url, headers=_headers(creds), timeout=request_timeout(creds))
     if status >= 400:
         errs = data.get("errors") if isinstance(data, dict) else None
         raise _ApiError(f"Datadog HTTP {status}: {str(errs or (data.get('raw') if isinstance(data, dict) else data))[:300]}")
-    return data
+    return observed_payload(data, status)
 
 
 def datadog_query(args):
@@ -77,21 +77,38 @@ def datadog_query(args):
         "to": _parse_time_s(args.get("end")),
     }
     data = _get(_ds(), "/api/v1/query", params)
-    series = data.get("series", []) if isinstance(data, dict) else []
+    if isinstance(data, dict) and (data.get("status") == "error" or data.get("errors") or data.get("error")):
+        return ok({"series": [], "truncated": False, "collectionStatus": "error"})
+    series = data.get("series") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or data.get("status") != "ok" or not isinstance(series, list):
+        return ok({"series": [], "truncated": False, "collectionStatus": "unknown"})
     out = []
     truncated = len(series) > MAX_SERIES
+    invalid = False
     for s in series[:MAX_SERIES]:
-        if not isinstance(s, dict):
+        if not isinstance(s, dict) or not isinstance(s.get("metric"), str) or not isinstance(s.get("pointlist"), list):
+            invalid = True
             continue
-        pts = s.get("pointlist") or []
+        pts = s["pointlist"]
         truncated = truncated or len(pts) > MAX_POINTS
+        points = []
+        for point in pts[:MAX_POINTS]:
+            if (not isinstance(point, list) or len(point) != 2
+                    or not finite_number(point[0], 8640000000000000)
+                    or point[1] is not None and not finite_number(point[1])):
+                invalid = True
+                continue
+            points.append(point)
+        units = s.get("unit")
+        unit = units[0].get("name") if isinstance(units, list) and units and isinstance(units[0], dict) else None
         out.append({
             "metric": s.get("metric", ""), "scope": s.get("scope", ""),
-            "unit": (s.get("unit") or [{}])[0].get("name") if isinstance(s.get("unit"), list) and s.get("unit") else None,
-            "pointlist": pts[:MAX_POINTS],
+            "unit": unit, "pointlist": points,
         })
+    http_status = getattr(data, "http_status", 200)
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or http_status == 206 else "ok" if out else "empty"
     return ok({"series": out, "truncated": truncated,
-               **({"collectionStatus": "partial"} if truncated else {}),
+               "collectionStatus": state,
                "status": data.get("status") if isinstance(data, dict) else None})
 
 

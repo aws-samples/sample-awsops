@@ -69,6 +69,28 @@ class FakeTool:
         self.tool_name = name
 
 
+class IntegrationCredentialValidationTest(unittest.TestCase):
+    def test_transport_headers_and_control_characters_fail_without_echoing_secrets(self):
+        cases = [
+            ("api_key", {"header": "Host", "value": "synthetic-secret"}),
+            ("api_key", {"header": "Content-Length", "value": "synthetic-secret"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\nvalue"}),
+            ("oauth_client_credentials", {"token": "synthetic-secret\nvalue"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\u200b"}),
+        ]
+        for transport, secret in cases:
+            with self.subTest(transport=transport, header=secret.get("header")):
+                with self.assertRaises(ValueError) as error:
+                    agent.auth_headers(transport, secret)
+                self.assertNotIn("synthetic-secret", str(error.exception))
+
+    def test_supported_authorization_headers_are_preserved(self):
+        self.assertEqual(agent.auth_headers("api_key", {"value": "Bearer synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+        self.assertEqual(agent.auth_headers("oauth_client_credentials", {"token": "synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+
+
 def names(tools):
     return [t.tool_name for t in tools]
 

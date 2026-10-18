@@ -16,7 +16,7 @@ from urllib.parse import quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    set_request_conn, request_timeout, observed_payload, finite_number,
 )
 
 SLUG = "loki"
@@ -64,12 +64,68 @@ def _ds():
 
 def _get(creds, path, params):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds))
+    status, data = http_json("GET", url, headers=_headers(creds), timeout=request_timeout(creds))
     if status >= 400:
         raise _ApiError(f"Loki HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Loki query failed: {data.get('error', 'unknown')}")
-    return data.get("data") if isinstance(data, dict) else data
+    if not isinstance(data, dict) or data.get("status") != "success" or "data" not in data:
+        raise _ApiError("Loki response could not be verified")
+    result = observed_payload(data["data"], status)
+    if isinstance(result, dict):
+        result.source_partial = bool(data.get("warnings") or data.get("partial") or data.get("truncated"))
+        result.source_unverified = (
+            "warnings" in data and (not isinstance(data["warnings"], list)
+                                   or not all(isinstance(value, str) for value in data["warnings"]))
+            or any(key in data and type(data[key]) is not bool for key in ("partial", "truncated"))
+        )
+    return result
+
+
+def _valid_row(row, kind):
+    if not isinstance(row, dict):
+        return False
+    labels = row.get("stream" if kind == "streams" else "metric")
+    if not isinstance(labels, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in labels.items()):
+        return False
+    samples = row.get("values") if kind != "vector" else [row.get("value")]
+    if not isinstance(samples, list):
+        return False
+    for pair in samples[:MAX_LINES_PER_STREAM]:
+        if not isinstance(pair, list) or len(pair) != 2 or type(pair[0]) not in (str, int, float):
+            return False
+        try:
+            if not finite_number(float(pair[0]), 8640000000000000000000 if kind == "streams" else 8640000000000):
+                return False
+        except (ValueError, OverflowError):
+            return False
+        if kind == "streams":
+            if not isinstance(pair[1], str):
+                return False
+        elif (type(pair[1]) not in (str, int, float)
+              or isinstance(pair[1], str) and not re.fullmatch(r"(?:NaN|[+-]?Inf|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)", pair[1])
+              or not isinstance(pair[1], str) and not finite_number(pair[1])):
+            return False
+    return True
+
+
+def _query_response(data):
+    valid = (isinstance(data, dict) and data.get("resultType") in ("streams", "matrix", "vector")
+             and isinstance(data.get("result"), list) and not getattr(data, "source_unverified", False))
+    kind = data.get("resultType") if isinstance(data, dict) else None
+    source_rows = data.get("result") if isinstance(data, dict) else None
+    source_rows = source_rows if isinstance(source_rows, list) else []
+    retained = source_rows[:MAX_STREAMS]
+    rows = [row for row in retained if _valid_row(row, kind)] if kind in ("streams", "matrix", "vector") else []
+    valid = valid and len(rows) == len(retained)
+    bounded, truncated = _bound({"resultType": kind, "result": rows})
+    truncated = truncated or len(source_rows) > MAX_STREAMS
+    status = getattr(data, "http_status", 200)
+    state = ("unknown" if not valid or status not in (200, 206) else
+             "partial" if truncated or status == 206 or getattr(data, "source_partial", False) else
+             "ok" if data["result"] else "empty")
+    return ok({"truncated": truncated, **(bounded if isinstance(bounded, dict) else {"result": None}),
+               "collectionStatus": state})
 
 
 def _bound(data):
@@ -116,8 +172,7 @@ def loki_query_range(args):
     if args.get("step"):
         params["step"] = str(args["step"])
     data = _get(_ds(), "/loki/api/v1/query_range", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_response(data)
 
 
 def loki_query(args):
@@ -128,8 +183,7 @@ def loki_query(args):
     if args.get("time"):
         params["time"] = _parse_time_ns(args.get("time"))
     data = _get(_ds(), "/loki/api/v1/query", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_response(data)
 
 
 def loki_labels(args):
@@ -173,8 +227,22 @@ _TOOLS = {
 
 
 def loki_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ready."""
-    return ok(health(load_datasource(SLUG), "/ready"))
+    """Verify the tenant-scoped query endpoint with a one-minute, one-line search."""
+    try:
+        end = int(time.time())
+        result = _get(_ds(), "/loki/api/v1/query_range", {
+            "query": '{service_name="awsops-connection-probe"}',
+            "start": str((end - 60) * 1_000_000_000), "end": str(end * 1_000_000_000),
+            "limit": "1",
+        })
+        verified = (isinstance(result, dict) and result.get("resultType") == "streams"
+                    and isinstance(result.get("result"), list)
+                    and all(isinstance(row, dict) and isinstance(row.get("values"), list)
+                            for row in result["result"]))
+        return ok({"ok": verified, "verified": ["query"] if verified else [],
+                   **({} if verified else {"error": "Loki tenant query access could not be verified"})})
+    except Exception:
+        return ok({"ok": False, "error": "Loki tenant query access could not be verified"})
 
 
 _TOOLS["loki_health"] = loki_health
