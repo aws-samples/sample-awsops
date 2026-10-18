@@ -78,6 +78,14 @@ describe('integrations catalog', () => {
     expect(out[0].exposedTools).toEqual(['grafana_query']);
   });
 
+  it('getEnabledIntegrations never returns retired custom_mcp rows', async () => {
+    process.env.AURORA_ENDPOINT = 'aurora.example';
+    query.mockResolvedValueOnce({ rows: [] });
+    await getEnabledIntegrations('self');
+    const [sql] = query.mock.calls[0];
+    expect(sql).toMatch(/i\.kind <> 'custom_mcp'/);
+  });
+
   it('getEnabledIntegrations degrades to [] on query error', async () => {
     process.env.AURORA_ENDPOINT = 'aurora.example';
     query.mockRejectedValueOnce(new Error('db down'));

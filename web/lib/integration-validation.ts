@@ -8,6 +8,9 @@
 // integrations-category.ts DATASOURCE_KINDS (see integration-validation.test.ts).
 export const INTEGRATION_KINDS_EGRESS = ['grafana', 'datadog', 'splunk', 'prometheus', 'newrelic', 'notion', 'confluence', 'jira', 'servicenow', 'slack', 'github', 'gitlab', 'custom_mcp', 'clickhouse', 'mimir', 'loki', 'tempo', 'jaeger', 'dynatrace'] as const;
 export const INTEGRATION_KINDS_INGRESS = ['cloudwatch_sns', 'alertmanager', 'grafana_alert', 'pagerduty', 'datadog_monitor', 'generic_webhook'] as const;
+// custom_mcp stays in the kind set for historical rows and the DB CHECK, but ADR-005/007 retire new
+// arbitrary MCP registrations; the registration form offers only these.
+export const REGISTRABLE_KINDS_EGRESS = INTEGRATION_KINDS_EGRESS.filter((k) => k !== 'custom_mcp');
 export const INTEGRATION_TRANSPORTS = ['sigv4', 'oauth_client_credentials', 'oauth_3lo', 'api_key'] as const;
 export const INTEGRATION_DIRECTIONS = ['egress', 'ingress'] as const;
 export const INTEGRATION_CAPABILITIES = ['read', 'read_write'] as const;
@@ -26,6 +29,7 @@ export function validateIntegration(i: {
   transport?: string; authMode?: string; credentialsRef?: string; triggerTarget?: string;
 }): ValidationResult {
   const errors: string[] = [];
+  if (i.kind === 'custom_mcp') errors.push('custom_mcp is retired; use a curated integration');
   if (!i.name || !NAME_RE.test(i.name)) errors.push('name must be kebab-case, 2-64 chars');
   if (!(INTEGRATION_DIRECTIONS as readonly string[]).includes(i.direction ?? '')) {
     errors.push(`direction must be one of ${INTEGRATION_DIRECTIONS.join(', ')}`);

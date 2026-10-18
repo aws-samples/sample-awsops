@@ -145,6 +145,7 @@ export async function getEnabledIntegrations(accountId = 'self'): Promise<Integr
               i.auth_mode, i.receive_path, i.inbound_auth_ref, i.source_allowlist, i.trigger_target, i.tier, i.enabled
        FROM integrations i
        WHERE i.enabled = true
+         AND i.kind <> 'custom_mcp'
          AND (
            NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1)
            OR i.id IN (

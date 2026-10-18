@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Lang } from '@/lib/i18n';
 import PageHeader from '@/components/ui/PageHeader';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { INTEGRATION_KINDS_EGRESS, INTEGRATION_KINDS_INGRESS, INTEGRATION_TRANSPORTS } from '@/lib/integration-validation';
+import { REGISTRABLE_KINDS_EGRESS, INTEGRATION_KINDS_INGRESS, INTEGRATION_TRANSPORTS } from '@/lib/integration-validation';
 
 interface AgentRow { id: number; name: string; description: string; gateway: string; tier: string; enabled: boolean; version: number; skills: Array<{ name: string }>; agentType?: string; gateways?: string[]; }
 interface SkillRow { id: number; name: string; description: string; tier: string; enabled: boolean; version: number; agentTypes?: string[]; }
@@ -16,7 +16,7 @@ const AGENT_TYPES = ['generic', 'on_demand', 'triage', 'rca', 'mitigation', 'eva
 // ADR-039 P2 — integration kinds. Imported (not re-hardcoded) so this dropdown can't drift from the
 // migration's integrations_kind_check like it did before (missing clickhouse/mimir/loki/tempo/
 // jaeger/dynatrace) — see web/lib/integration-validation.ts for the source of truth.
-const INTEG_KINDS_EGRESS = INTEGRATION_KINDS_EGRESS;
+const INTEG_KINDS_EGRESS = REGISTRABLE_KINDS_EGRESS;
 const INTEG_KINDS_INGRESS = INTEGRATION_KINDS_INGRESS;
 const INTEG_TRANSPORTS = INTEGRATION_TRANSPORTS;
 // NOTE: curated read connectors (Prometheus/Loki/…/Notion credential cards) moved to the Integrations

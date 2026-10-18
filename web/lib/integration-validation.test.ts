@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   validateIntegration, INTEGRATION_KINDS_EGRESS, INTEGRATION_KINDS_INGRESS, INTEGRATION_TRANSPORTS,
+  REGISTRABLE_KINDS_EGRESS,
 } from './integration-validation';
 import { DATASOURCE_KINDS } from './integrations-category';
 
@@ -19,6 +20,17 @@ describe('integration-validation', () => {
   it('accepts a well-formed egress and ingress integration', () => {
     expect(validateIntegration(egress).ok).toBe(true);
     expect(validateIntegration(ingress).ok).toBe(true);
+  });
+
+  it('rejects new custom_mcp registrations (ADR-005/007 retire arbitrary MCP servers)', () => {
+    const r = validateIntegration({ ...egress, name: 'my-mcp', kind: 'custom_mcp' });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toContain('custom_mcp is retired; use a curated integration');
+  });
+
+  it('offers every egress kind except custom_mcp for registration', () => {
+    expect(REGISTRABLE_KINDS_EGRESS).not.toContain('custom_mcp');
+    expect([...REGISTRABLE_KINDS_EGRESS, 'custom_mcp'].sort()).toEqual([...INTEGRATION_KINDS_EGRESS].sort());
   });
 
   it('rejects an egress row carrying an ingress kind (direction-conditional kind)', () => {
