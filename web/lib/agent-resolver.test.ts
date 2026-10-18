@@ -1,11 +1,13 @@
 // web/lib/agent-resolver.test.ts
-import { describe, it, expect, beforeEach } from 'vitest';
-import { resolveAgent, pickCustomAgent, qualifyToolNames, SAFEGUARD_LINE, MAX_PROVIDED_CONTEXT_CHARS } from './agent-resolver';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { resolveAgent, pickCustomAgent, qualifyToolNames, SAFEGUARD_LINE, MAX_PROVIDED_CONTEXT_CHARS, type EgressReadIntegration } from './agent-resolver';
 import type { AgentWithSkills } from './catalog';
 import type { AgentSpace } from './agent-space';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import gatewayCatalog from './gateway-tool-catalog.json';
+
+afterEach(() => vi.unstubAllEnvs());
 
 const custom: AgentWithSkills = {
   id: 1, name: 'compliance', description: 'CIS expert', persona: 'You are a CIS auditor.',
@@ -228,7 +230,7 @@ describe('resolveAgent — ADR-039 egress-READ integration injection', () => {
 });
 
 describe('resolveAgent — ADR-039 P2-infra inc2 connection details (spec.integrations)', () => {
-  beforeEach(() => { process.env.CUSTOM_MCP_ENABLED = 'true'; });
+  beforeEach(() => vi.stubEnv('CUSTOM_MCP_ENABLED', 'true'));
   const conn = {
     id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read',
     name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1, _customMcpAttestation: {
@@ -253,10 +255,20 @@ describe('resolveAgent — ADR-039 P2-infra inc2 connection details (spec.integr
     }]);
   });
   it('does not connect or fall back to unrestricted gateway reads before activation', () => {
-    delete process.env.CUSTOM_MCP_ENABLED;
+    vi.stubEnv('CUSTOM_MCP_ENABLED', undefined);
     const spec = resolveAgent('compliance', [{ ...custom, skills: [] }], space, [conn]);
     expect(spec.integrations).toBeUndefined();
     expect(spec.toolAllowlist).toEqual([]);
+  });
+  it.each(['false', 'true'])('native datasource keeps legacy gateway reads and context when gate=%s', (gate) => {
+    vi.stubEnv('CUSTOM_MCP_ENABLED', gate);
+    const native = { id: 9, name: 'native', kind: 'prometheus', direction: 'egress', capability: 'read',
+      endpoint: 'https://metrics.example.test', transport: null, credentialsRef: null,
+      exposedTools: [], providedContext: { scope: 'native-query' } };
+    const spec = resolveAgent('compliance', [{ ...custom, skills: [] }], null, [native as unknown as EgressReadIntegration]);
+    expect(spec.toolAllowlist).toBeUndefined();
+    expect(spec.integrations).toBeUndefined();
+    expect(spec.systemPromptOverride).toContain('native-query');
   });
   it('binds the spec to the selected member space, rather than a client account hint', () => {
     const spec = resolveAgent('compliance', [custom], { ...space, accountId: '123456789012' }, [conn]);

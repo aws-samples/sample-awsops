@@ -757,7 +757,7 @@ def _connect_integration(spec, stack, account_context=None):
     """Open ONE egress-READ integration MCP session (kept live via ``stack`` for the agent run) and
     return its exposed tools. Raises on SSRF/unknown-transport/connect/list error → the caller
     (gather_integration_tools) isolates it. Credentials are fetched at runtime from Secrets Manager
-    by reference (the payload carries only the ARN, never plaintext — ADR-039 Q3=B)."""
+    by server-bound name (the payload contains no plaintext credential — ADR-039 Q3=B)."""
     # Deny before DNS, secret fetch, connection and tool listing. Applies to every vendor label.
     version = validate_custom_mcp_spec(spec, account_context)
     endpoint = spec.get("endpoint")

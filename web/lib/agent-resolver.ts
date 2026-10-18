@@ -5,7 +5,7 @@
 import type { AgentWithSkills } from '@/lib/catalog';
 import type { AgentSpace } from '@/lib/agent-space';
 import { isReservedAgentName, gatewayToolIdentities, qualifyToolNames } from './skill-validation';
-import { CUSTOM_MCP_ATTESTATION, type McpAttestation, customMcpEnabled, validMcpAttestation } from './custom-mcp-policy';
+import { CUSTOM_MCP_ATTESTATION, type McpAttestation, customMcpEnabled, isMcpRegistration, validMcpAttestation } from './custom-mcp-policy';
 export { qualifyToolNames } from './skill-validation';
 
 // Immutable, non-overridable safety boundary prepended to every custom prompt (Addendum #5).
@@ -139,11 +139,11 @@ export function resolveAgent(
 ): ResolvedAgentSpec {
   const custom = candidates.find((a) => a.name === routeKey && a.enabled && a.tier === 'custom' && !isReservedAgentName(a.name));
   if (custom) {
-    const mcpRequested = egressReadIntegrations.some((i) => i.endpoint || i.kind === 'custom_mcp');
+    const mcpRequested = egressReadIntegrations.some(isMcpRegistration);
     // All live MCP endpoints require server-recorded attestation and explicit account membership.
     // A vendor-kind label cannot turn an administrator's endpoint into an official preset.
     egressReadIntegrations = egressReadIntegrations.filter((i) =>
-      !i.endpoint && i.kind !== 'custom_mcp' ||
+      !isMcpRegistration(i) ||
       customMcpEnabled() && !!space?.enabledIntegrationIds?.includes(i.id!) && validMcpAttestation(i));
     const ordered = [...custom.skills].sort((a, b) => a.ord - b.ord);
     const skillBlock = ordered.map((s) => s.instructions).filter(Boolean).join('\n\n');
@@ -177,7 +177,7 @@ export function resolveAgent(
     // agent.py to live-connect. Tool/context injection above is independent — a context-only integration
     // (no endpoint) still contributes tools/context but is not in this connect list.
     const connectable: ResolvedIntegration[] = egressReadIntegrations
-      .filter((i) => i.endpoint && i.transport)
+      .filter((i) => isMcpRegistration(i) && i.endpoint && i.transport)
       .map((i) => ({
         id: i.id!,
         kind: i.kind!,

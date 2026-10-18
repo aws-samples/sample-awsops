@@ -23,7 +23,7 @@ export function isMcpRegistration(i: McpRegistration): boolean {
   if (isDatasourceKind(i.kind ?? '') && i.direction === 'egress' &&
       (i.capability ?? 'read') === 'read' && !i.transport && !i.credentialsRef &&
       !i.invalidToolShape && Array.isArray(tools) && tools.length === 0) return false;
-  return i.kind === 'custom_mcp' || (i.direction === 'egress' &&
+  return (!!i.endpoint && !i.direction) || i.kind === 'custom_mcp' || (i.direction === 'egress' &&
     ((!!i.endpoint && (i.capability ?? 'read') === 'read') ||
       i.invalidToolShape || !Array.isArray(tools) || tools.length > 0));
 }
