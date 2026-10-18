@@ -7,14 +7,18 @@
 #   - docker w/ buildx    (image build, later phases)
 #
 # Usage:
+#   make test        # offline test suite (same as CI Merge Verify)
 #   make configure   # interactive: pick VPC/domain → terraform.tfvars + backend.hcl
 #   make help        # list targets
 
 .DEFAULT_GOAL := help
-.PHONY: help configure deps migrate migrate-status backfill-owner-sub deploy upgrade agentcore workers
+.PHONY: help test configure deps migrate migrate-status backfill-owner-sub deploy upgrade agentcore workers
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+test: ## Offline test suite CI runs on merge (pytest for scripts/v2 + agent, web vitest, deploy smoke). No AWS calls.
+	@bash scripts/v2/merge-verify.sh
 
 deps: ## Install node deps required by the configurator (idempotent; first run only)
 	@[ -d scripts/v2/node_modules/@inquirer/prompts ] || npm ci --prefix scripts/v2
