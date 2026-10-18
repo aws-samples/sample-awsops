@@ -46,6 +46,7 @@ export function validateIntegration(i: {
   if (i.direction === 'egress') {
     if (!i.endpoint || !isHttpsUrl(i.endpoint)) errors.push('egress requires a valid https endpoint URL');
     if (!(INTEGRATION_TRANSPORTS as readonly string[]).includes(i.transport ?? '')) errors.push(`egress transport must be one of ${INTEGRATION_TRANSPORTS.join(', ')}`);
+    if (i.transport === 'oauth_3lo') errors.push('oauth_3lo is not supported by the runtime; use a supported stored-token transport');
   }
   if (i.direction === 'ingress') {
     if (!i.authMode || !i.authMode.trim()) errors.push('ingress requires an auth_mode');

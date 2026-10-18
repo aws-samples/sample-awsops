@@ -83,6 +83,12 @@ scoped registered-fleet coverage from incomplete wildcard discovery.
 
 **E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
 
+**External connections — [external-connections.md](external-connections.md).** The eight datasource
+HTTP adapters and the administrator-managed custom MCP path: shared datasource scope,
+explicit instance identity, bounded responses, query-level connection tests, completion
+states and pinned custom-MCP transport. Registration, verification and deployment are
+distinct states.
+
 **VPC connectivity — [vpc-connectivity.md](vpc-connectivity.md).** On-demand peering
 and TGW attachment observations on `/inventory/vpc` and the
 `/topology/infra?view=vpc` tab, scoped to an enabled collecting account, region and

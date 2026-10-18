@@ -27,6 +27,7 @@ import {
   getCredentialById,
   mirrorDefaultCredential,
   getConfiguredIds,
+  getConfiguredDatasourceIds,
   deleteCredentialKeys,
 } from './integration-credentials';
 
@@ -139,6 +140,49 @@ describe('getConfiguredIds', () => {
   it('degrades to [] on a Secrets Manager read failure', async () => {
     smSend.mockImplementation(() => { const e: any = new Error('denied'); e.name = 'AccessDeniedException'; throw e; });
     expect(await getConfiguredIds()).toEqual([]);
+  });
+});
+
+describe('datasource configuration evidence', () => {
+  it('supports no-auth endpoints and never treats a kind mirror as another instance credential', async () => {
+    smSend.mockImplementation(() => getReturn({
+      prometheus: { authType: 'bearer', token: 'synthetic-default' },
+      '12': { token: 'synthetic-instance' },
+    }));
+    expect(await getConfiguredDatasourceIds([
+      { id: 11, endpoint: 'https://no-auth.example.test', authType: 'none' },
+      { id: 12, endpoint: 'https://auth.example.test', authType: 'bearer' },
+      { id: 13, endpoint: 'https://other.example.test', authType: 'bearer' },
+    ])).toEqual(['11', '12']);
+  });
+
+  it('rejects absent auth material, invalid endpoints and malformed custom headers', async () => {
+    smSend.mockImplementation(() => getReturn({
+      '11': {}, '12': { token: '' }, '13': { headerName: 'Host', headerValue: 'synthetic' },
+      '14': { username: 'configured-user', password: 'synthetic' },
+      '15': { headerName: 'X-API-Key', headerValue: 'synthetic' },
+      '18': { headerName: 'X-API-Key' },
+    }));
+    expect(await getConfiguredDatasourceIds([
+      { id: 11, endpoint: 'https://a.example.test', authType: 'basic' },
+      { id: 12, endpoint: 'https://a.example.test', authType: 'bearer' },
+      { id: 13, endpoint: 'https://a.example.test', authType: 'custom_header' },
+      { id: 14, endpoint: 'https://a.example.test', authType: 'basic' },
+      { id: 15, endpoint: 'https://a.example.test', authType: 'custom_header' },
+      { id: 16, endpoint: null, authType: 'none' },
+      { id: 17, endpoint: 'http://169.254.169.254', authType: 'none' },
+      { id: 18, endpoint: 'https://a.example.test', authType: 'custom_header' },
+    ])).toEqual(['14', '15']);
+  });
+
+  it('keeps no-auth configuration but withholds authenticated configuration when secret reads fail', async () => {
+    smSend.mockRejectedValue(Object.assign(new Error('PRIVATE'), { name: 'AccessDeniedException' }));
+    const result = await getConfiguredDatasourceIds([
+      { id: 11, endpoint: 'https://a.example.test', authType: 'none' },
+      { id: 12, endpoint: 'https://b.example.test', authType: 'bearer' },
+    ]);
+    expect(result).toEqual(['11']);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
   });
 });
 

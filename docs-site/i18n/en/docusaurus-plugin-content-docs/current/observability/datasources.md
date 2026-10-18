@@ -23,20 +23,27 @@ Query a connected datasource directly in the language native to its kind. Every 
 | **Mimir** | **PromQL** | `up` |
 | **Loki** | **LogQL** | `{job="varlogs"} \|= "error"` |
 | **Tempo** | **TraceQL** | `{ duration > 500ms }` |
-| **ClickHouse** | **SQL** (read-only) | `SELECT count() FROM system.tables` |
+| **ClickHouse** | **SQL** (read-only) | `SHOW TABLES` |
+| **Jaeger** | Service-anchored search | `service=frontend&limit=20` |
+| **Dynatrace** | Metrics v2 metricSelector | `builtin:host.cpu.usage:avg` |
+| **Datadog** | Metric query | `avg:system.cpu.user{*}` |
 
 ### Picking a datasource
-- Choose the datasource to query from the dropdown. Each entry shows its **slug** and **kind**.
-- A datasource whose schema has been collected is flagged **schema cached**. This cache helps the **Generate with AI** feature use real names.
+- Choose the datasource from the dropdown. Each entry shows its **instance name** and **kind**.
+- AI drafting uses separately collected schema caches. Datasources and per-kind defaults are shared; selecting an AWS account does not change their scope.
+- Only administrators configure and test connections. Private endpoints require operator-managed networking and DNS; configured and query-verified are separate states.
+- Timeout distinguishes server execution limits for Prometheus/Mimir/ClickHouse (default 10s) from HTTP response limits for other kinds (default 12s). Stored values are 1–60s; the form shows the effective maximum of 55s. Mimir's API prefix defaults to `/prometheus`; leave it empty for an API at the root.
 
 ### Time range toggle
-- For range-capable kinds — **Prometheus**, **Mimir**, **Loki** — a **time range (range)** checkbox appears.
-- Off runs an instant (single-point) query; on runs a time-series (range) query.
+- The window selector offers instant or up to 30 days for **Prometheus/Mimir**, and instant or up to seven days for **Loki**.
+- **Tempo/Jaeger** default to one hour and support up to seven days; **Dynatrace/Datadog** default to one hour and support up to 30 days. The selected bounds are forwarded to the search request.
+- **ClickHouse** time predicates belong to SQL. AI query drafting does not change the selected request window.
 
 ### Result display
 - Time-series (matrix/range) results render as a **time-series area chart**.
 - Instant, log, trace, and SQL results render as a sortable **table**.
 - When a result hits its cap, a **result truncated** warning is shown; when there is no data, an **empty result** notice is shown clearly.
+- Unknown or partial responses cannot establish an empty dataset. Reaching Jaeger's search limit does not establish a complete trace inventory.
 
 ### Generate a query with AI
 - Describe what you want in natural language and press **Generate with AI**; it turns your request into a query in the right language — using the cached schema — and fills it into the input box.
@@ -45,7 +52,7 @@ Query a connected datasource directly in the language native to its kind. Every 
 ## How to use
 1. In the sidebar, click **Observability > Datasource Explore**
 2. Select the **datasource** to query from the top dropdown
-3. (Optional) For a range-capable datasource, turn on **time range (range)**
+3. (Optional) Choose the query window from the selector when the datasource supports it
 4. Type a query in the native language, or describe it in natural language and use **Generate with AI** to fill the query
 5. Review the query, then press **Run** (or **Enter** in the input) to execute
 6. Read the result as a chart or a table
