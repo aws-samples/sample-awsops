@@ -22,10 +22,9 @@ Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP proto
 - `lambda/` — Lambda source files (see `agent/lambda/CLAUDE.md` for the current provisioner and
   tool-inventory sources)
 
-## Gateways and routes — don't hand-count them here
-The gateway count, per-gateway tool counts, and the chat routing-key list have drifted stale in
-this file before (9 domain gateways incl. `external-obs`; 16 chat-section keys). Rather than
-re-introduce a hand-maintained table that goes stale again, read the actual source:
+## Gateways and routes
+Don't keep gateway counts, per-gateway tool counts or the chat routing-key list in this file;
+read them from the source:
 - Gateway/tool inventory: `scripts/v2/agentcore/catalog.py` (the live v2 provisioner catalog)
   and `ai.tf`'s `local.agent_lambdas`.
 - Chat routing keys: `web/lib/route.ts`'s `RULES` (regex fast-path, first-match-wins) — the

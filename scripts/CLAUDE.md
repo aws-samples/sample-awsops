@@ -327,10 +327,10 @@ secrets-manager) — installed by `make deps`.
   declaration can recover. Explicit/malformed failures and panel failures remain sticky.
   Omitted-path diagnostics use safe labels; gate reasons are quoted environment data.
   `v2/ci_review_access.py` produces the protected-environment/IAM trust plan without API writes.
-  - **Every Claude panel/chair call MUST pass `--strict-mcp-config`.** A user-scope MCP server (e.g. github)
+  - **Pass `--strict-mcp-config` on every Claude panel/chair call.** A user-scope MCP server (e.g. github)
     loads at session init; if its auth is broken, `claude -p` waits silently for the tool until
-    `CHAIR_TIMEOUT` (currently 900s) with no error — killing both primary and fallback chairs
-    and failing the gate regardless of the diff (observed: PR #194/#197/#202/#203).
+    `CHAIR_TIMEOUT` with no error — killing both primary and fallback chairs and failing the
+    gate regardless of the diff.
     `--allowedTools` is a permission allowlist and does not stop MCP loading, so it is not a
     substitute.
 
@@ -462,7 +462,7 @@ Catalog/per-type timeouts:
 `remaining_prerequisites: "not_assessed"` preserves separate workflow/plan/promotion gates.
 Use the canonical [fixed-code operator table](../docs/runbooks/runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
-The owner requires all current types, superseding the earlier CloudFront-only proposal.
+The owner requires all current types.
 Four lanes are a concurrency ceiling, not a throughput guarantee; the active schedule
 and shared limiter can cause throttling or incomplete data. Budgets fail closed rather
 than promise every workload fits. Preserve the recorded feasibility sample and its

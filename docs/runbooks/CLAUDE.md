@@ -100,7 +100,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
 - `runtime-foundation.md` covers activation and the strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
-- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
+- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate, and a dev apply never authorizes a production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
   Prepare invalidates markers and removes stale regular ZIPs, rejecting ZIP symlinks.
   Pack requires known planned ZIPs and binds plan/SHA/scope, paths, modes and hashes with
@@ -260,7 +260,7 @@ The release controller synchronously collects every code-checked catalog type th
 
 ## Adding a Runbook
 1. Add it to this index.
-2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
+2. Use a v2 symptom-organized runbook as a template (`cognito-auth-issues.md`, `alert-pipeline-troubleshoot.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
 
