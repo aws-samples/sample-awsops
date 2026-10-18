@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f3cd690374b3 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eb11950f5d91 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -313,7 +313,7 @@ Catalog/per-type timeouts: `docs/runbooks/runtime-verifier-sessions.md#collectio
 `remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
 use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
-The dated owner requirement supersedes the earlier CloudFront-only proposal.
+The dated owner requirement covers all current types.
 Four lanes do not promise fourfold throughput or completion for every workload.
 Keep the schedule active and fail closed on budget/permission/contention failures;
 the runbook records one feasible measured workload, not a latency guarantee.
