@@ -59,7 +59,7 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 
 ### Paths / Web
 - **Serves at the root path (`/`) — no basePath.** v2 uses a dedicated domain. The v1 `/awsops/api/*` prefix rule **does not apply** → fetch uses `/api/*`.
-- web is a **thin-BFF**: heavy/long/OOM-risk work must be enqueued to the worker queue, never executed directly. The generic `POST /api/jobs` accepts **only allowlisted job types** (the `noop` family) — domain jobs like `report`/`compliance` must go through their dedicated ownership-checking routes (`/api/diagnosis`, `/api/compliance/run`) instead (IDOR prevention, PR #195/ADR-009).
+- web is a **thin-BFF**: heavy/long/OOM-risk work must be enqueued to the worker queue, never executed directly. The generic `POST /api/jobs` accepts **only allowlisted job types** (the `noop` family) — domain jobs like `report`/`compliance` must go through their dedicated ownership-checking routes (`/api/diagnosis`, `/api/compliance/run`) instead (IDOR prevention, ADR-009).
 - All components use `export default`, targeting a production (standalone) build.
 
 ### Terraform Discipline

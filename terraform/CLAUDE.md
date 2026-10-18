@@ -47,8 +47,7 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   file.
 - Per-domain `*.tf` files (edge/auth/data/workload/ai/workers/eks/steampipe, etc.) — see the
   per-layer docs under `docs/reference/` (01 Edge · 02 Auth · 03 Data · 04 Web BFF ·
-  05 AgentCore · 06 Workers · 07 EKS), not root CLAUDE.md — it dropped its own Key Files
-  section.
+  05 AgentCore · 06 Workers · 07 EKS).
 
 ## Flag Gates
 - Optional `CI_STEAMPIPE_AWS_FILL_RATE_DEV` sets existing `steampipe_aws_fill_rate` only in full dev plans with the verified runtime profile. Empty preserves tfvars/defaults; finite 0.1–20 is required. Apply replays the saved plan and DNS/CORE guards still apply.

@@ -371,6 +371,15 @@ class TestDatasourceGuidance(unittest.TestCase):
     def test_observability_aliases_to_external_obs_gateway(self):
         self.assertEqual(agent._GATEWAY_ALIAS.get("observability"), "external-obs")
 
+    def test_gateways_from_env_reports_malformed_values(self):
+        self.assertEqual(agent._gateways_from_env(""), {})
+        self.assertEqual(agent._gateways_from_env('{"ops": "https://x"}'), {"ops": "https://x"})
+        with patch("builtins.print") as p:
+            self.assertEqual(agent._gateways_from_env("{not json"), {})
+            self.assertEqual(agent._gateways_from_env('["https://x"]'), {})
+            self.assertEqual(agent._gateways_from_env('{"ops": 1}'), {})
+        self.assertEqual(sum("ERROR: GATEWAYS_JSON" in c.args[0] for c in p.call_args_list), 3)
+
     def test_resolve_gateway_key_handles_discovery_and_env_spellings(self):
         # Discovery path: v2 gateway `awsops-v2-external-obs-gateway` → key `v2-external-obs`.
         disc = {"network": "u", "ops": "u", "v2-external-obs": "u"}
