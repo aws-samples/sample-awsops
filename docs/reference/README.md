@@ -31,16 +31,7 @@ decision baseline is [`../decisions/BASELINE.md`](../decisions/BASELINE.md); ADR
 
 ## Request flow / 요청 흐름
 
-```mermaid
-flowchart LR
-  U[User] --> CF[CloudFront TLS]
-  CF --> VO[VPC Origin https-only:443]
-  VO --> ALB[internal ALB HTTPS:443]
-  ALB --> W[Fargate web :3000]
-  W --> A[(Aurora node-pg)]
-  W --> Q[SQS] --> WK[async workers: SFN + Lambda/Fargate]
-  W --> AC[AgentCore SSM-configured]
-```
+![AWSops v2 request flow](../assets/diagrams/reqflow.svg)
 
 ## Components / 컴포넌트
 
