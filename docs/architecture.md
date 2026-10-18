@@ -24,91 +24,11 @@ AWSops v2 is a read-only AWS/Kubernetes operations dashboard with AI diagnosis, 
 
 ## Architecture Diagram
 
-```mermaid
-flowchart TB
-  U["User / Browser"]
-
-  subgraph AUTH["Auth"]
-    LE["Lambda@Edge (viewer-request, RS256 JWKS)"]
-    COG["Cognito User Pool (PKCE public client)"]
-  end
-
-  subgraph EDGE["Edge (private path)"]
-    CF["CloudFront (TLS)"]
-    VO["VPC Origin (https-only:443)"]
-    ALB["Internal ALB (HTTPS:443, regional ACM)"]
-  end
-
-  subgraph WEB["Presentation (web BFF)"]
-    W["ECS Fargate awsops-v2-web:3000 (Next.js 15 thin-BFF, arm64)"]
-  end
-
-  subgraph DATA["Data"]
-    AUR[("Aurora Serverless v2 (PG 17.9, 0.5-4 ACU)")]
-    SP["Steampipe Fargate (FDW) + quota-safe inventory sync (rate-limited, freshness ledger)"]
-  end
-
-  subgraph AI["AI (AgentCore)"]
-    RT["AgentCore Runtime (Strands agent)"]
-    GW["9 section gateways (read-only MCP tools)"]
-    MCP["MCP tool Lambdas"]
-    MEM["Memory + Code Interpreter"]
-    BR["Bedrock (Sonnet 5 / Opus 4.8 / Haiku 4.5)"]
-  end
-
-  subgraph WK["Async Workers"]
-    SQS["SQS + ESM (kill-switch)"]
-    DSP["Dispatcher Lambda (idempotent)"]
-    SFN["Step Functions (Standard)"]
-    WL["Worker Lambda (short jobs)"]
-    WF["Fargate worker (long / OOM-risk)"]
-  end
-
-  AWSAPI["Live AWS APIs (read-only)"]
-
-  U --> CF
-  CF -. "verify awsops_token" .-> LE
-  LE -. "JWKS / login redirect" .-> COG
-  CF --> VO
-  VO --> ALB
-  ALB --> W
-  W --> AUR
-  W -->|"chat / diagnosis"| RT
-  RT --> GW
-  GW --> MCP
-  MCP --> AWSAPI
-  RT --> BR
-  RT --> MEM
-  W -->|"POST /api/jobs"| SQS
-  SQS --> DSP
-  DSP --> SFN
-  SFN --> WL
-  SFN --> WF
-  WL --> AUR
-  WF --> AUR
-  SP --> AUR
-  SP -->|"aws-data: live SQL"| W
-```
+![AWSops v2 full architecture](assets/diagrams/fullarch-en.svg)
 
 ## Data Flow
 
-```mermaid
-flowchart LR
-  U["Viewer"] --> CF["CloudFront + Lambda@Edge auth"]
-  CF --> VO["VPC Origin"]
-  VO --> ALB["Internal ALB"]
-  ALB --> W["Fargate web (thin-BFF)"]
-  W -->|"state read/write (node-pg)"| AUR[("Aurora")]
-  W -->|"heavy job: POST /api/jobs"| Q["worker_jobs + SQS"]
-  Q --> D["dispatcher Lambda"]
-  D --> S["Step Functions"]
-  S --> WK["Lambda / Fargate worker"]
-  WK -->|"running / succeeded"| AUR
-  W -->|"AI chat"| RT["AgentCore Runtime"]
-  RT --> GW["section gateway"]
-  GW --> T["MCP Lambda tool"]
-  T --> API["AWS APIs (read-only)"]
-```
+![AWSops v2 private-edge data flow](assets/diagrams/dataflow-en.svg)
 
 ## Infrastructure
 
@@ -194,91 +114,11 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 
 ## Architecture Diagram
 
-```mermaid
-flowchart TB
-  U["사용자 / 브라우저"]
-
-  subgraph AUTH["Auth / 인증"]
-    LE["Lambda@Edge (viewer-request, RS256 JWKS)"]
-    COG["Cognito User Pool (PKCE public client)"]
-  end
-
-  subgraph EDGE["Edge (비공개 경로)"]
-    CF["CloudFront (TLS)"]
-    VO["VPC Origin (https-only:443)"]
-    ALB["내부 ALB (HTTPS:443, 리전 ACM)"]
-  end
-
-  subgraph WEB["Presentation (web BFF)"]
-    W["ECS Fargate awsops-v2-web:3000 (Next.js 15 thin-BFF, arm64)"]
-  end
-
-  subgraph DATA["Data / 데이터"]
-    AUR[("Aurora Serverless v2 (PG 17.9, 0.5-4 ACU)")]
-    SP["Steampipe Fargate (FDW) + 인벤토리 sync (flag-gated)"]
-  end
-
-  subgraph AI["AI (AgentCore)"]
-    RT["AgentCore Runtime (Strands 에이전트)"]
-    GW["9 섹션 게이트웨이 (read-only MCP 도구)"]
-    MCP["MCP 도구 Lambda"]
-    MEM["Memory + Code Interpreter"]
-    BR["Bedrock (Sonnet 5 / Opus 4.8 / Haiku 4.5)"]
-  end
-
-  subgraph WK["Async Workers / 비동기 워커"]
-    SQS["SQS + ESM (킬스위치)"]
-    DSP["dispatcher Lambda (멱등)"]
-    SFN["Step Functions (Standard)"]
-    WL["worker Lambda (짧은 작업)"]
-    WF["Fargate 워커 (긴 작업 / OOM 위험)"]
-  end
-
-  AWSAPI["라이브 AWS API (read-only)"]
-
-  U --> CF
-  CF -. "awsops_token 검증" .-> LE
-  LE -. "JWKS / 로그인 리다이렉트" .-> COG
-  CF --> VO
-  VO --> ALB
-  ALB --> W
-  W --> AUR
-  W -->|"챗 / 진단"| RT
-  RT --> GW
-  GW --> MCP
-  MCP --> AWSAPI
-  RT --> BR
-  RT --> MEM
-  W -->|"POST /api/jobs"| SQS
-  SQS --> DSP
-  DSP --> SFN
-  SFN --> WL
-  SFN --> WF
-  WL --> AUR
-  WF --> AUR
-  SP --> AUR
-  SP -->|"aws-data: 라이브 SQL"| W
-```
+![AWSops v2 전체 아키텍처](assets/diagrams/fullarch-en.svg)
 
 ## Data Flow
 
-```mermaid
-flowchart LR
-  U["뷰어"] --> CF["CloudFront + Lambda@Edge 인증"]
-  CF --> VO["VPC Origin"]
-  VO --> ALB["내부 ALB"]
-  ALB --> W["Fargate web (thin-BFF)"]
-  W -->|"상태 read/write (node-pg)"| AUR[("Aurora")]
-  W -->|"무거운 작업: POST /api/jobs"| Q["worker_jobs + SQS"]
-  Q --> D["dispatcher Lambda"]
-  D --> S["Step Functions"]
-  S --> WK["Lambda / Fargate 워커"]
-  WK -->|"running / succeeded"| AUR
-  W -->|"AI 챗"| RT["AgentCore Runtime"]
-  RT --> GW["섹션 게이트웨이"]
-  GW --> T["MCP Lambda 도구"]
-  T --> API["AWS API (read-only)"]
-```
+![AWSops v2 비공개 엣지 데이터 흐름](assets/diagrams/dataflow-en.svg)
 
 ## Infrastructure
 
