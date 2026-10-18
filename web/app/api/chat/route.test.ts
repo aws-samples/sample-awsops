@@ -449,7 +449,7 @@ describe('hybrid routing (ADR-038)', () => {
     getEnabledIntegrations.mockResolvedValue([
       { id: 7, kind: 'custom_mcp', name: 'dd', direction: 'egress', capability: 'read', exposedTools: ['datadog_query'], providedContext: { d: 1 },
         endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd' },
-      { name: 'notion', direction: 'egress', capability: 'read_write', exposedTools: ['notion_write'], providedContext: {}, writeActionRefs: ['notion.create_page'] }, // write → propose-only (5th arg), NOT tool-injected (4th)
+      { name: 'notion', direction: 'egress', capability: 'read_write', exposedTools: [], providedContext: {}, writeActionRefs: ['notion.create_page'] }, // empty live-tool list → propose-only (5th arg), NOT tool-injected (4th)
       { name: 'pd', direction: 'ingress', capability: 'read', exposedTools: [], providedContext: {} },                       // ingress → excluded
     ]);
     invokeAgent.mockResolvedValue('ok');

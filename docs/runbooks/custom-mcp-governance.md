@@ -39,7 +39,8 @@ Web unit verification:
 cd web
 npx vitest run lib/custom-mcp-policy.test.ts lib/custom-mcp-secret.test.ts \
   lib/custom-mcp-catalog.test.ts lib/integration-validation.test.ts \
-  lib/integrations.test.ts lib/agent-resolver.test.ts app/api/integrations/route.test.ts
+  lib/integrations.test.ts lib/agent-resolver.test.ts app/api/integrations/route.test.ts \
+  app/api/chat/route.test.ts
 ```
 
 The additional `web/lib/custom-mcp-postgres.test.ts` suite requires an operator-prepared,
@@ -74,10 +75,29 @@ credentials and renewed confirmation; they receive no legacy fallback. The confi
 name in web and runtime, not its ARN. Registration owner identity is now Cognito `sub`.
 Runtime IAM still covers the integration namespace: per-row binding is an application
 check, not a separate IAM role per registration. The runtime trusts the authenticated
-BFF invocation; its account check verifies consistency within that payload rather than
-independently authorizing a client-selected account. The BFF validates a registered,
-enabled member target and reads its account Space before constructing the invocation.
+BFF invocation for the endpoint, attestation, credential version and account. These
+fields are unsigned and the runtime does not independently compare them with Aurora.
+Its checks verify consistency within the payload. The BFF validates a registered,
+enabled member target and reads its account Space before constructing that payload.
 
+Before owner acceptance, record the effective `InvokeAgentRuntime` callers, their
+identity and resource policies, and their role trust relationships. Include the web
+role and any approved operator or worker callers; resolve unbounded or untrusted
+direct access. A direct caller that knows a registration's current Secret version
+could forge a matching endpoint and attestation and send that credential to its own
+endpoint. A version ID is metadata, not a secret or an authorization token. The
+owner must explicitly assess this residual risk; payload consistency is not proof
+of an independently authorized endpoint.
+
+Existing vendor-labelled `read_write` registrations with nonempty `exposedTools`
+are quarantined: they are omitted from the enabled catalog and cannot be enabled
+through the generic helper. They receive no legacy proposal fallback. To retain
+proposal metadata, an operator must review the vendor registration, clear
+`exposedTools`, retain the reviewed `writeActionRefs` and `providedContext`, and
+enable the edited row again. Edits disable the row. Such metadata never opens an
+MCP connection or executes a write; ADR-007's external-write gate still applies.
+A `custom_mcp` row remains governed even with an empty tool list, so this procedure
+cannot enable a custom write connection.
 
 1. Register an HTTPS egress/read connection and its exact exposed tool names.
    Administrator-supplied endpoints with vendor kind labels follow the same MCP

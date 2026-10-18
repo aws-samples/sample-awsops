@@ -3,7 +3,7 @@ const db = vi.hoisted(() => ({ query: vi.fn(), release: vi.fn(), connect: vi.fn(
 const secret = vi.hoisted(() => ({ current: vi.fn() }));
 vi.mock('@/lib/db', () => ({ getPool: () => db }));
 vi.mock('./custom-mcp-secret', () => ({ currentCustomMcpSecretVersion: secret.current }));
-import { attestAndEnableMcp, upsertIntegration } from './integrations';
+import { attestAndEnableMcp, getEnabledIntegrations, upsertIntegration } from './integrations';
 const row = { id: '7', kind: 'custom_mcp', tier: 'custom', direction: 'egress', capability: 'read',
   endpoint: 'https://example.com/mcp', transport: 'api_key', credentials_ref: 'ops/awsops-v2/integrations/custom/7',
   exposed_tools: ['query'], provided_context: {} };
@@ -16,6 +16,33 @@ beforeEach(() => {
   secret.current.mockResolvedValue('a'.repeat(32));
 });
 describe('MCP catalog controls', () => {
+  it.each(['false', 'true'])('quarantines legacy write tools but retains proposal metadata when activation is %s', async (activation) => {
+    vi.stubEnv('AURORA_ENDPOINT', 'test.invalid');
+    vi.stubEnv('CUSTOM_MCP_ENABLED', activation);
+    const proposal = {
+      id: 8, name: 'notion', kind: 'notion', tier: 'custom', enabled: true,
+      direction: 'egress', capability: 'read_write', endpoint: 'https://example.com/mcp',
+      exposed_tools: [], provided_context: { purpose: 'proposal' },
+      write_action_refs: ['notion.create_page'],
+    };
+    db.query.mockResolvedValue({ rows: [
+      { ...proposal, id: 9, name: 'legacy-write-tools', exposed_tools: ['notion_write'] },
+      proposal,
+      { ...proposal, id: 10, name: 'custom-write', kind: 'custom_mcp' },
+    ] });
+    try {
+      const enabled = await getEnabledIntegrations('111111111111');
+      expect(enabled).toHaveLength(1);
+      expect(enabled[0]).toMatchObject({
+        id: 8, exposedTools: [], capability: 'read_write',
+        providedContext: { purpose: 'proposal' }, writeActionRefs: ['notion.create_page'],
+      });
+      expect(secret.current).not.toHaveBeenCalled();
+      expect(db.connect).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('blocks enablement before any database or secret access while activation is off', async () => {
     delete process.env.CUSTOM_MCP_ENABLED;
     await expect(attestAndEnableMcp(7, 'sub', true, shown)).rejects.toThrow('activation');
