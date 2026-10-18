@@ -125,6 +125,9 @@ AWS-mutation freeze and per-account exposed-tool ceilings are unchanged.
 
 ## Rollout order
 
+Before strict credential-blind producers roll out, complete administrator backfill
+and verification for migrated defaults using
+[Datasource credential identity and rollout](../runbooks/datasource-credential-isolation.md).
 Deploy the helper and Lambda producers before the Web reader/UI. Roll out the
 AgentCore image containing the pinned transport separately. Review a saved
 Terraform plan before applying optional private-network settings. No source merge

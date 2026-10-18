@@ -23,27 +23,20 @@ import Screenshot from '@site/src/components/Screenshot';
 | **Mimir** | **PromQL** | `up` |
 | **Loki** | **LogQL** | `{job="varlogs"} \|= "error"` |
 | **Tempo** | **TraceQL** | `{ duration > 500ms }` |
-| **ClickHouse** | **SQL**（只读） | `SHOW TABLES` |
-| **Jaeger** | 按服务搜索 | `service=frontend&limit=20` |
-| **Dynatrace** | Metrics v2 metricSelector | `builtin:host.cpu.usage:avg` |
-| **Datadog** | 指标查询 | `avg:system.cpu.user{*}` |
+| **ClickHouse** | **SQL**（只读） | `SELECT count() FROM system.tables` |
 
 ### 选择数据源
-- 在下拉菜单中选择数据源。每项显示**实例名称**和**类型（kind）**。
-- AI 生成使用单独采集的 schema 缓存。数据源及各类型的默认连接为共享连接，选择 AWS 账户不会改变其数据范围。
-- 只有管理员可配置和测试连接。私有端点需要运维人员配置网络和 DNS；已配置与已验证查询访问是不同状态。
-- Timeout 区分 Prometheus/Mimir/ClickHouse 的服务器执行限制（默认 10 秒）和其他类型的 HTTP 响应限制（默认 12 秒）。保存值为 1–60 秒，表单显示实际最大 55 秒。Mimir API 前缀默认为 `/prometheus`，根路径 API 使用空值。
+- 在下拉菜单中选择要查询的数据源。每个条目会同时显示 **slug** 和**类型（kind）**。
+- 已预先采集 schema 的数据源会带有 **schema 已缓存**标记。该缓存可帮助 **AI 生成**功能使用真实的名称。
 
 ### 时间范围（range）开关
-- 时间选择器为 **Prometheus/Mimir** 提供即时查询或最长 30 天，为 **Loki** 提供即时查询或最长 7 天。
-- **Tempo/Jaeger** 默认查询 1 小时，最长 7 天；**Dynatrace/Datadog** 默认 1 小时，最长 30 天。所选时间范围会传递到实际搜索请求。
-- **ClickHouse** 的时间条件需写入 SQL。AI 查询生成不会改变所选请求时间范围。
+- 选择 **Prometheus**、**Mimir**、**Loki** 等支持范围查询的类型时，会出现**时间范围 (range)** 复选框。
+- 关闭时为单一时间点（instant）查询，开启时为时间序列（range）查询。
 
 ### 结果展示
 - 时间序列（matrix/range）结果会绘制为**时间序列面积图**。
 - 单一时间点、日志、跟踪、SQL 结果以可排序的**表格**显示。
-- 实际被截断的结果会显示**结果已截断**警告。搜索达到上限而无法确认完整性的结果标为**部分结果**；已确认的空响应会显示**无结果**提示。
-- 未确认或部分响应不能证明数据为空。Jaeger 搜索达到上限时，也不能证明已返回全部跟踪。
+- 结果达到上限时会明确显示**结果已截断**警告，无数据时会显示**无结果**提示。
 
 ### 用 AI 生成查询
 - 用自然语言描述所需内容并点击 **AI 生成**，系统会参考缓存的 schema 将其转换为对应语言的查询并填入输入框。
@@ -52,7 +45,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 使用方法
 1. 在侧边栏点击**集成**，然后在**数据源**标签页中打开要查询的数据源的 **浏览 →**
 2. 在顶部下拉菜单中选择要查询的**数据源**
-3. （可选）若数据源支持时间范围，在选择器中选择查询期间
+3. （可选）如果数据源支持范围查询，开启**时间范围 (range)**
 4. 在输入框中直接输入对应语言的查询，或先用自然语言描述再通过 **AI 生成**填充查询
 5. 检查查询后点击**执行**（或在输入框中按 **Enter**）进行查询
 6. 查看以图表或表格形式呈现的结果

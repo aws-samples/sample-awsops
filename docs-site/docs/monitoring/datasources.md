@@ -58,7 +58,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 | **Type** | O | 데이터소스 유형 (8종 중 선택) |
 | **URL** | O | 엔드포인트 URL (예: `http://prometheus:9090`) |
 | **Authentication** | - | 인증 방식 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 저장 범위 1–60초(기본 10초), 유효 최대 55초(56–60초는 55초로 단축). Prometheus/Mimir/ClickHouse는 모든 경로(Explore·서비스 그래프·에이전트)에서 서버 실행 제한으로 적용하고 커넥터 HTTP 타임아웃을 그 위로 정렬합니다. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 HTTP 응답 제한(기본 12초)으로 적용하며 서버 쿼리 중단은 보장하지 않습니다 |
+| **Timeout** | - | 저장 범위 1–60초(기본 10초). ClickHouse는 모든 경로에서 `max_execution_time` 상한으로 적용하며 유효 최대는 55초(56–60초는 55초로 단축). Prometheus/Mimir는 Explore 경로에서만 API `timeout`으로 적용하며 최대 10초. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 저장만 되고 현재 적용되지 않음 |
 | **Database** | - | 기본 데이터베이스 이름 (ClickHouse 전용, 식별자만 허용) |
 
 :::note v1과의 차이
@@ -203,7 +203,7 @@ AI 어시스턴트는 등록된 데이터소스를 활용하여 분석을 수행
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
-| **Timeout** | 10초 | 업스트림 쿼리 실행 제한(초, 1–60). ClickHouse는 모든 경로(Explore·서비스 그래프·에이전트)의 상한(ceiling)으로 적용되고(호출자는 더 짧게만 조정 가능) 커넥터가 자체 HTTP 타임아웃을 그 위로 정렬합니다(유효 최댓값 55초 — Lambda 60초 한도 아래 정렬을 위해 56–60초 설정은 55초로 단축됩니다). Prometheus/Mimir도 모든 경로에서 API `timeout` 파라미터로 같은 상한을 적용하며(기본 10초, 유효 최대 55초) 커넥터가 HTTP 타임아웃을 그 위로 정렬합니다. 그 외 kind는 HTTP 응답 제한(기본 12초)으로만 적용됩니다 |
+| **Timeout** | 10초 | 업스트림 쿼리 실행 제한(초, 1–60). ClickHouse는 모든 경로(Explore·서비스 그래프·에이전트)의 상한(ceiling)으로 적용되고(호출자는 더 짧게만 조정 가능) 커넥터가 자체 HTTP 타임아웃을 그 위로 정렬합니다(유효 최댓값 55초 — Lambda 60초 한도 아래 정렬을 위해 56–60초 설정은 55초로 단축됩니다). Prometheus/Mimir는 Explore 경로의 API `timeout` 파라미터로 적용되며 커넥터 HTTP 타임아웃(12초) 아래로 10초에 캡됩니다 |
 
 ### ClickHouse 전용
 
