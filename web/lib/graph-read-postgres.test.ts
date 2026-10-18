@@ -111,10 +111,15 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const ambiguous = await read('rds:app-db');
     expect(ambiguous.selection).toMatchObject({ status: 'ambiguous', candidates_truncated: false });
     expect(ambiguous.selection.candidate_ids.slice().sort()).toEqual(
-      (scope === '__all__' ? [`@self/rds:app-db`, `@${siblingAccount}/${siblingId}`]
-        : ['rds:app-db', siblingId]).sort());
+      [`@self/rds:app-db`, `@${siblingAccount}/${siblingId}`].sort());
     expect(ambiguous.nodes).toEqual([]);
     expect(ambiguous.edges).toEqual([]);
+    for (const candidate of ambiguous.selection.candidate_ids) {
+      const selected = await read(candidate);
+      expect(selected.selection.status).toBe('resolved');
+      expect(selected.nodes.map((node: { label: string }) => node.label)).toEqual(
+        [candidate === '@self/rds:app-db' ? 'Retained DB' : 'Rebuilt DB']);
+    }
     const exact = await read(scope === '__all__' ? `@${siblingAccount}/${siblingId}` : siblingId);
     expect(exact.selection).toMatchObject({ status: 'resolved', account_id: siblingAccount });
     expect(exact.nodes.map((node: { label: string }) => node.label)).toEqual(['Rebuilt DB']);
@@ -145,6 +150,9 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const unique = await read('rds:app-db');
     expect(unique.selection).toMatchObject({ status: 'resolved', resolved_id: 'rds:@self:us-east-1:app-db' });
     expect(unique.nodes).toHaveLength(2);
+    const oldWrapped = await read('@self/rds:app-db');
+    expect(oldWrapped.selection).toMatchObject({ status: 'resolved', resolved_id: 'rds:@self:us-east-1:app-db' });
+    expect(oldWrapped.nodes).toHaveLength(2);
     expect((await read('rds:absent')).selection.status).toBe('not_found');
   });
 

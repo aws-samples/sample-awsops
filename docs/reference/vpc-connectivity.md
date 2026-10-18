@@ -47,6 +47,9 @@ Known-region placement IDs are `<kind>:@<account>:<region>:<resource-id>`;
 account-union IDs additionally use `@<account>/<saved-node-id>`. Existing
 `<kind>:<resource-id>` links resolve only when the combined exact/legacy matches
 identify one resource; ambiguous links show bounded canonical choices.
+Those choices always use the account-wrapped saved ID, including within a single
+account. Wrapped links select an existing saved row exactly and use legacy-alias
+matching only when that row is absent after a rebuild.
 The existing VPC row detail **Open resource map** action remains available.
 **Open network path check** links to `/network-paths`; its feature and live-query
 gates still apply.

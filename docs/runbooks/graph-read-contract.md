@@ -59,7 +59,7 @@ responses additionally wrap every saved node ID as `@<storage-account>/<saved-id
 and constrain each edge's endpoints to visible nodes in that same account.
 The read wrapper also isolates legacy publications before a normal rebuild.
 
-Focused HTTP reads combine exact-ID and `meta.legacyId` matches, deduplicated
+Unwrapped focused HTTP reads combine exact-ID and `meta.legacyId` matches, deduplicated
 by storage account and saved node ID, before resolving a selection. This also
 discloses ambiguity when a retained legacy publication coexists with a rebuilt
 scoped publication or a regionless node has a regional sibling.
@@ -69,6 +69,12 @@ ambiguity returns no graph and at most two canonical choices with
 includes `selection.account_id` and `resolved_id`. Focused union reads use that
 one account's graph/state; this is not whole-fleet collection proof. A wrapped
 root cannot override an explicitly different selected account.
+
+Canonical choices always wrap their saved ID with the storage account, even in
+a single-account response. An explicit wrapped ID selects its exact saved row;
+only an absent exact row falls back to legacy aliases for compatibility after a
+rebuild. This lets a regionless saved row be selected independently of its
+regional siblings instead of returning the same ambiguity again.
 
 Placement VPC navigation preserves its full account/region/raw-ID selection key.
 The resource page supports existing uniquely resolvable links and displays

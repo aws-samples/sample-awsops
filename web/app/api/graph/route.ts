@@ -77,14 +77,19 @@ async function graphRoot(client: Parameters<Parameters<typeof graphReadTransacti
   const predicate = `WHERE class=$1 AND ($2='__all__' OR account_id=$2)`;
   // Retained legacy publications can coexist with rebuilt scoped nodes. An exact
   // legacy ID must not hide another account/region's matching scoped identity.
-  const matches = await client.query(`SELECT DISTINCT account_id,id FROM topology_nodes ${predicate}
-    AND (id=$3 OR meta->>'legacyId'=$3) ORDER BY account_id,id LIMIT 3`, parameters);
+  // Wrapped candidate links explicitly name a saved row, including regionless rows.
+  // Preserve old wrapped links after rebuild only when that exact row is absent.
+  const exact = wrapped ? await client.query(`SELECT DISTINCT account_id,id FROM topology_nodes ${predicate}
+    AND id=$3 ORDER BY account_id,id LIMIT 3`, parameters) : undefined;
+  const matches = exact?.rows.length ? exact : await client.query(
+    `SELECT DISTINCT account_id,id FROM topology_nodes ${predicate}
+      AND (id=$3 OR meta->>'legacyId'=$3) ORDER BY account_id,id LIMIT 3`, parameters);
   const selection: GraphSelection = { status: matches.rows.length > 1 ? 'ambiguous'
     : matches.rows.length ? 'resolved' : 'not_found', requested_id: requested };
   const displayId = (row: Record<string, any>) => account === '__all__'
     ? unionNodeId(row.account_id, row.id) : row.id;
   if (matches.rows.length > 1) {
-    selection.candidate_ids = matches.rows.slice(0, 2).map(displayId);
+    selection.candidate_ids = matches.rows.slice(0, 2).map(row => unionNodeId(row.account_id, row.id));
     selection.candidates_truncated = matches.rows.length > 2;
   }
   if (matches.rows.length === 1) {
