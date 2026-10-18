@@ -22,6 +22,9 @@ const AUTH_TYPES = ['none', 'basic', 'bearer', 'custom_header'];
 // through the creds spread (round-5: creds.endpoint would otherwise override the validated
 // endpoint in the blob without tripping the host-change guard).
 const CRED_KEYS = ['username', 'password', 'token', 'headerName', 'headerValue', 'headerName2', 'headerValue2', 'org_id'] as const;
+// Legacy server-side Datadog blobs can contain a dedicated key pair. They are not client
+// writable here, but must participate in the same origin/auth-change scrub.
+const STORED_AUTH_KEYS = [...CRED_KEYS, 'apiKey', 'appKey'] as const;
 /** True when a present `settings` value is not a plain object — 400, never a silent clear
  *  (round-8: null/array/string/number shapes bypassed the round-6 empty-sanitize guard). */
 function settingsShapeInvalid(body: Record<string, unknown>): boolean {
@@ -87,6 +90,7 @@ export async function POST(request: Request) {
   // database is ClickHouse-only config — never persist it on the row for other kinds either
   // (round-12: the blob-side delete alone left stale, admin-visible row config).
   if (kind !== 'clickhouse') delete settings.database;
+  if (kind !== 'mimir') delete settings.apiPrefix;
   if (body.settings && typeof body.settings === 'object' && !Array.isArray(body.settings)
       && Object.keys(body.settings as object).length > 0 && Object.keys(settings).length === 0) {
     return json({ error: 'invalid settings (timeoutS 1–60 integer; database identifier, non-system)' }, 400);
@@ -139,6 +143,7 @@ export async function PATCH(request: Request) {
   if (settingsShapeInvalid(body)) return json({ error: 'settings must be an object' }, 400);
   const settings = body.settings !== undefined ? sanitizeDsSettings(body.settings) : undefined;
   if (settings !== undefined && ds.kind !== 'clickhouse') delete settings.database;
+  if (settings !== undefined && ds.kind !== 'mimir') delete settings.apiPrefix;
   if (body.settings && typeof body.settings === 'object' && !Array.isArray(body.settings)
       && Object.keys(body.settings as object).length > 0 && settings !== undefined && Object.keys(settings).length === 0) {
     return json({ error: 'invalid settings (timeoutS 1–60 integer; database identifier, non-system)' }, 400);
@@ -185,6 +190,7 @@ export async function PATCH(request: Request) {
     delete existing.timeoutS;
     delete existing.database;
     delete existing.instanceId;
+    delete existing.apiPrefix;
     // ORIGIN compare (scheme+host+port — an https→http downgrade must count as a change, or
     // Basic material would transmit in cleartext); a malformed URL counts as changed.
     const originOf = (u: string | null | undefined): string | null => { try { return new URL(u ?? '').origin; } catch { return null; } };
@@ -192,21 +198,21 @@ export async function PATCH(request: Request) {
     // instance's blob — trust it as a merge base only when its endpoint origin matches THIS
     // row's; otherwise drop the auth keys rather than bind foreign creds to this endpoint.
     if (ds.isDefault && existing.endpoint && originOf(String(existing.endpoint)) !== originOf(ds.endpoint)) {
-      for (const k of CRED_KEYS) delete existing[k];
+      for (const k of STORED_AUTH_KEYS) delete existing[k];
     }
     const hostChanged = endpoint !== undefined && originOf(endpoint) !== originOf(ds.endpoint);
     // On a host change, stored auth material is dropped UNCONDITIONALLY (round-5: a partial
     // creds object like {username} must not carry the stored password to the new origin) —
     // whatever the client genuinely re-supplied is reinstated by the creds spread below.
     if (hostChanged) {
-      for (const k of CRED_KEYS) delete existing[k]; // org_id included — tenant id is host-scoped
+      for (const k of STORED_AUTH_KEYS) delete existing[k]; // tenant and legacy keys are origin-scoped
     }
     const effAuth = authType ?? ds.authType ?? 'none';
     const KEEP_BY_AUTH: Record<string, readonly string[]> = {
       none: [], basic: ['username', 'password'], bearer: ['token'],
-      custom_header: ['headerName', 'headerValue', 'headerName2', 'headerValue2'],
+      custom_header: ['headerName', 'headerValue', 'headerName2', 'headerValue2', 'apiKey', 'appKey'],
     };
-    for (const k of CRED_KEYS) if (k !== 'org_id' && !(KEEP_BY_AUTH[effAuth] ?? []).includes(k)) delete existing[k];
+    for (const k of STORED_AUTH_KEYS) if (k !== 'org_id' && !(KEEP_BY_AUTH[effAuth] ?? []).includes(k)) delete existing[k];
     // creds is key-allowlisted (pickCredKeys) so nothing here can override the validated
     // endpoint/authType/settings fields regardless of spread order.
     const blob: Record<string, unknown> = {

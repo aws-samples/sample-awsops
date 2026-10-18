@@ -11,19 +11,22 @@ export interface ToolSpec {
   range?: string;
   arg: 'query' | 'sql';
   extra?: Record<string, unknown>;
+  timeWindow?: boolean;
 }
 
 export const TOOL: Record<string, ToolSpec> = {
   prometheus: { instant: 'prometheus_query', range: 'prometheus_query_range', arg: 'query' },
   mimir: { instant: 'mimir_query', range: 'mimir_query_range', arg: 'query' },
   loki: { instant: 'loki_query', range: 'loki_query_range', arg: 'query' },
-  tempo: { instant: 'tempo_search', arg: 'query' },
+  tempo: { instant: 'tempo_search', arg: 'query', timeWindow: true },
   clickhouse: { instant: 'clickhouse_query', arg: 'sql', extra: { max_rows: CLICKHOUSE_MAX_ROWS } },
-  // v1 datasource-family completion (2026-07-21): trace search / metricSelector / metric query —
-  // all instant-style (the connector applies its own 1h lookback default; no *_query_range tool).
-  jaeger: { instant: 'jaeger_search', arg: 'query' },
-  dynatrace: { instant: 'dynatrace_query', arg: 'query' },
-  datadog: { instant: 'datadog_query', arg: 'query' },
+  // Search/metrics APIs accept start/end even though they use one tool for every window.
+  jaeger: { instant: 'jaeger_search', arg: 'query', timeWindow: true },
+  dynatrace: { instant: 'dynatrace_query', arg: 'query', timeWindow: true },
+  datadog: { instant: 'datadog_query', arg: 'query', timeWindow: true },
 };
 
 export const QUERYABLE_KINDS = Object.keys(TOOL);
+export const TIME_WINDOW_KINDS = Object.entries(TOOL).filter(([, spec]) => spec.range || spec.timeWindow).map(([kind]) => kind);
+export const EXECUTION_TIMEOUT_KINDS = new Set(['prometheus', 'mimir', 'clickhouse']);
+export const EFFECTIVE_TIMEOUT_CAP = 55;
