@@ -25,6 +25,17 @@ beforeEach(() => {
 });
 
 describe('deleteDatasource', () => {
+  it('clears the deleted default mirror when its successor has no bound credential', async () => {
+    query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('SELECT id, name') ? [row({ id: 5, is_default: true })] :
+        sql.includes('SELECT id FROM') ? [{ id: 8 }] : [],
+    }));
+    getCredentialById.mockResolvedValueOnce(null);
+    await deleteDatasource(5);
+    expect(getCredentialById).toHaveBeenCalledWith(8, 'prometheus');
+    expect(mirrorDefaultCredential).not.toHaveBeenCalled();
+    expect(deleteCredentialKeys).toHaveBeenCalledWith(['prometheus']);
+  });
   it('is a no-op when the id does not exist', async () => {
     query.mockResolvedValueOnce({ rows: [] }); // getDatasource → none
     await deleteDatasource(404);

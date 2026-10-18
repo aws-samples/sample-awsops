@@ -236,6 +236,7 @@ describe('PATCH update', () => {
     getDatasource.mockResolvedValue({ id: 7, kind: 'prometheus', endpoint: 'http://p:9090', authType: 'bearer', isDefault: true, settings: {} });
     const { PATCH } = await import('./route');
     await PATCH(req({ id: 7, settings: { timeoutS: 15 } }, 'PATCH'));
+    expect(getCredentialById).toHaveBeenCalledWith(7, 'prometheus', 'http://p:9090');
     const blob = setIntegrationCredentialById.mock.calls.at(-1)![1];
     expect(blob.token).toBe('tok');       // NOT de-authenticated
     expect(blob.timeoutS).toBe(15);
@@ -244,6 +245,7 @@ describe('PATCH update', () => {
     expect(mirrored[0]).toBe('prometheus');
     expect(mirrored[1].token).toBe('tok');
     expect(mirrored[1].timeoutS).toBe(15);
+    expect(mirrored[3]).toBe(7);
   });
 
   it('a backslash endpoint is rejected on PATCH (URL-parser differential, round-6)', async () => {

@@ -255,6 +255,7 @@ export async function setDefaultDatasource(id: number): Promise<void> {
   // Secrets Manager write happens on its own connection/lock — after the DB commit.
   const cred = await getCredentialById(id, kind);
   if (cred) await mirrorDefaultCredential(kind, cred, undefined, id);
+  else await deleteCredentialKeys([kind]); // never retain the previous default's credentials
 }
 
 /** Delete a datasource instance. Cascade order: schema-cache rows → credential id key →
@@ -288,6 +289,7 @@ export async function deleteDatasource(id: number): Promise<void> {
       await getPool().query('UPDATE integrations SET is_default = true, updated_at = NOW() WHERE id = $1', [newId]);
       const cred = await getCredentialById(newId, row.kind);
       if (cred) await mirrorDefaultCredential(row.kind, cred, undefined, newId);
+      else await deleteCredentialKeys([row.kind]); // the removed default cannot authenticate its successor
     } else {
       try {
         await deleteCredentialKeys([row.kind]); // no instances left → clear the managed mirror

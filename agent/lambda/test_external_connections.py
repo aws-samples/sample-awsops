@@ -67,12 +67,19 @@ def test_explicit_default_instance_resolves_its_own_stamped_mirror():
         assert dh.load_datasource("prometheus", instance_id="3") == mirror
 
 
-def test_unstamped_legacy_mirror_keeps_a_migrated_default_working_with_a_warning(capsys):
-    # A mirror written before the instanceId stamp (migrated default whose id key was never
-    # written) is the compat window; it closes on that default's next save.
+def test_unstamped_legacy_mirror_cannot_authorize_an_explicit_instance():
     with patch.object(dh, "_load_secret_map", return_value={"prometheus": CREDS}):
+        with pytest.raises(dh.NotConnected, match="requested datasource instance"):
+            dh.load_datasource("prometheus", instance_id=7)
+        assert dh.load_datasource("prometheus") == CREDS
+
+
+def test_backfilled_legacy_default_remains_readable_without_lending_to_siblings():
+    mirror = {**CREDS, "instanceId": "7"}
+    with patch.object(dh, "_load_secret_map", return_value={"7": CREDS, "prometheus": mirror}):
         assert dh.load_datasource("prometheus", instance_id=7) == CREDS
-    assert "unstamped kind mirror" in capsys.readouterr().out
+        with pytest.raises(dh.NotConnected):
+            dh.load_datasource("prometheus", instance_id=8)
 
 
 @pytest.mark.parametrize("kind", ["prometheus", "mimir"])

@@ -293,10 +293,10 @@ def load_datasource(slug, instance_id=None):
           where the caller sends ONLY an instance_id and the connector reads the secret server-side;
        3. the `map[slug]` kind-mirror: when no explicit instance was requested, or when the
           requested id IS the default instance the mirror was written for (`instanceId` stamp).
-    An explicit id never inherits a mirror stamped for a different instance. A mirror without a
-    stamp predates the stamp (a migrated default whose id key was never written); it is accepted
-    for an explicit id with a warning so that default keeps working until its next save writes the
-    id key and the stamp.
+    An explicit id never inherits an unstamped mirror or one stamped for another instance.
+    Legacy defaults must be re-saved through the verified-current-default administrator path
+    before this credential-blind producer rolls out; that path writes the id key and stamp.
+    Calls without an explicit id retain the legacy kind-default lookup.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
     if _REQUEST_CONN is not None:
@@ -308,10 +308,7 @@ def load_datasource(slug, instance_id=None):
             mirror = m.get(slug)
             stamp = mirror.get("instanceId") if isinstance(mirror, dict) else None
             if isinstance(mirror, dict) and mirror.get("endpoint") and (
-                    stamp is None or str(stamp) == str(instance_id)):
-                if stamp is None:
-                    print(f"[datasource_http] WARNING: {slug} instance {instance_id} resolved via an "
-                          "unstamped kind mirror; re-save the default instance to write its id key")
+                    stamp is not None and str(stamp) == str(instance_id)):
                 creds = mirror
             else:
                 raise NotConnected("requested datasource instance is not configured")

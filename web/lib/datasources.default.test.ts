@@ -6,9 +6,11 @@ const poolConnect = vi.fn();
 vi.mock('@/lib/db', () => ({ getPool: () => ({ connect: poolConnect, query: clientQuery }) }));
 const getCredentialById = vi.fn();
 const mirrorDefaultCredential = vi.fn();
+const deleteCredentialKeys = vi.fn();
 vi.mock('@/lib/integration-credentials', () => ({
   getCredentialById: (...a: unknown[]) => getCredentialById(...a),
   mirrorDefaultCredential: (...a: unknown[]) => mirrorDefaultCredential(...a),
+  deleteCredentialKeys: (...a: unknown[]) => deleteCredentialKeys(...a),
 }));
 
 import { setDefaultDatasource } from './datasources';
@@ -19,9 +21,19 @@ beforeEach(() => {
   poolConnect.mockReset().mockResolvedValue({ query: clientQuery, release: clientRelease });
   getCredentialById.mockReset();
   mirrorDefaultCredential.mockReset();
+  deleteCredentialKeys.mockReset().mockResolvedValue(undefined);
 });
 
 describe('setDefaultDatasource', () => {
+  it('clears the former mirror when the chosen default has no bound credential', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ kind: 'prometheus' }] });
+    getCredentialById.mockResolvedValueOnce(null);
+    await setDefaultDatasource(12);
+    expect(getCredentialById).toHaveBeenCalledWith(12, 'prometheus');
+    expect(mirrorDefaultCredential).not.toHaveBeenCalled();
+    expect(deleteCredentialKeys).toHaveBeenCalledWith(['prometheus']);
+  });
   it('unsets other defaults of the kind then sets this one, in a transaction, and re-mirrors', async () => {
     // BEGIN, SELECT kind, UPDATE others false, UPDATE this true, COMMIT
     clientQuery
