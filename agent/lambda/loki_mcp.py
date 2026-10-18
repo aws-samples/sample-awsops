@@ -15,8 +15,8 @@ from urllib.parse import quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn, request_timeout, observed_payload, finite_number,
+    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
+    query_probe, set_request_conn, request_timeout, observed_payload, finite_number,
 )
 
 SLUG = "loki"
@@ -109,7 +109,10 @@ def _valid_row(row, kind):
     return True
 
 
-def _query_response(data):
+def _query_response(data, requested=None):
+    """Normalize a Loki query envelope. `requested` is the caller's `limit`: Loki returns at most
+    that many log lines with no marker, so reaching it is disclosed as `limitSaturated` and the
+    result is `partial` — more lines may exist (mirrors Jaeger's requested/returned contract)."""
     valid = (isinstance(data, dict) and data.get("resultType") in ("streams", "matrix", "vector")
              and isinstance(data.get("result"), list) and not getattr(data, "source_unverified", False))
     kind = data.get("resultType") if isinstance(data, dict) else None
@@ -120,12 +123,15 @@ def _query_response(data):
     valid = valid and len(rows) == len(retained)
     bounded, truncated = _bound({"resultType": kind, "result": rows})
     truncated = truncated or len(source_rows) > MAX_STREAMS
+    returned = sum(len(row.get("values") or []) for row in rows if isinstance(row, dict)) if kind == "streams" else len(rows)
+    saturated = bool(requested) and returned >= requested
     status = getattr(data, "http_status", 200)
     state = ("unknown" if not valid or status not in (200, 206) else
-             "partial" if truncated or status == 206 or getattr(data, "source_partial", False) else
+             "partial" if truncated or saturated or status == 206 or getattr(data, "source_partial", False) else
              "ok" if data["result"] else "empty")
     return ok({"truncated": truncated, **(bounded if isinstance(bounded, dict) else {"result": None}),
-               "collectionStatus": state})
+               "collectionStatus": state,
+               **({"requestedLimit": requested, "returnedCount": returned, "limitSaturated": saturated} if requested else {})})
 
 
 def _bound(data):
@@ -172,7 +178,7 @@ def loki_query_range(args):
     if args.get("step"):
         params["step"] = str(args["step"])
     data = _get(_ds(), "/loki/api/v1/query_range", params)
-    return _query_response(data)
+    return _query_response(data, _requested(params["limit"]))
 
 
 def loki_query(args):
@@ -183,7 +189,12 @@ def loki_query(args):
     if args.get("time"):
         params["time"] = _parse_time_ns(args.get("time"))
     data = _get(_ds(), "/loki/api/v1/query", params)
-    return _query_response(data)
+    return _query_response(data, _requested(params["limit"]))
+
+
+def _requested(limit):
+    """The positive integer limit actually sent to Loki, or None when it was not a usable number."""
+    return int(limit) if re.fullmatch(r"[1-9]\d{0,8}", str(limit)) else None
 
 
 def loki_labels(args):
@@ -227,22 +238,17 @@ _TOOLS = {
 
 
 def loki_health(args):
-    """Verify the tenant-scoped query endpoint with a one-minute, one-line search."""
-    try:
+    """Verify the tenant-scoped query endpoint with a one-minute, one-line search, judged by the
+    same `_query_response` verdict the query tools use."""
+    def run():
         end = int(time.time())
-        result = _get(_ds(), "/loki/api/v1/query_range", {
+        data = _get(_ds(), "/loki/api/v1/query_range", {
             "query": '{service_name="awsops-connection-probe"}',
             "start": str((end - 60) * 1_000_000_000), "end": str(end * 1_000_000_000),
             "limit": "1",
         })
-        verified = (isinstance(result, dict) and result.get("resultType") == "streams"
-                    and isinstance(result.get("result"), list)
-                    and all(isinstance(row, dict) and isinstance(row.get("values"), list)
-                            for row in result["result"]))
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Loki tenant query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Loki tenant query access could not be verified"})
+        return json.loads(_query_response(data, 1)["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Loki tenant query access could not be verified"))
 
 
 _TOOLS["loki_health"] = loki_health

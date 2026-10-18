@@ -94,6 +94,13 @@ describe('mirrorDefaultCredential', () => {
     expect(w['3']).toEqual({ endpoint: 'http://id3' });
     expect(w['loki']).toEqual({ endpoint: 'http://loki', authType: 'bearer', token: 't' });
   });
+
+  it('stamps the mirror with the default instance id when given one', async () => {
+    smSend.mockImplementation((cmd: any) => (cmd.kind === 'get' ? getReturn({}) : {}));
+    await mirrorDefaultCredential('loki', { endpoint: 'http://loki', authType: 'none' }, undefined, 3);
+    expect(writtenMap()['loki']).toEqual({ endpoint: 'http://loki', authType: 'none', instanceId: '3' });
+    await expect(mirrorDefaultCredential('loki', { endpoint: 'http://loki' }, undefined, 0)).rejects.toThrow(/invalid integration id/);
+  });
 });
 
 describe('getConfiguredIds', () => {

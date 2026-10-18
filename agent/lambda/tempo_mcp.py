@@ -18,8 +18,8 @@ from urllib.parse import quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn, request_timeout,
+    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
+    query_probe, set_request_conn, request_timeout,
 )
 
 SLUG = "tempo"
@@ -543,17 +543,13 @@ _TOOLS = {
 
 def tempo_health(args):
     """Verify query access using a one-minute, one-trace search, not process readiness."""
-    try:
+    def run():
         end = int(time.time())
-        result = json.loads(tempo_search({
+        return json.loads(tempo_search({
             "query": '{ resource.service.name = "awsops-connection-probe" }',
             "start": str(end - 60), "end": str(end), "limit": "1",
-        })["body"])
-        verified = result.get("collectionStatus") in ("ok", "empty", "partial")
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Tempo tenant query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Tempo tenant query access could not be verified"})
+        })["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Tempo tenant query access could not be verified"))
 
 
 _TOOLS["tempo_health"] = tempo_health

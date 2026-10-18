@@ -43,18 +43,36 @@ def test_byte_bound_precedes_parse_and_closes_success_stream(size):
 def test_error_body_is_bounded_and_closed_without_echoing_content():
     stream = io.BytesIO(b"synthetic-private" * 10000)
     error = urllib.error.HTTPError(CREDS["endpoint"], 403, "denied", {}, stream)
-    with patch.object(dh._opener, "open", side_effect=error), pytest.raises(dh.ResponseTooLarge) as exc:
-        dh.http_json("GET", CREDS["endpoint"])
+    with patch.object(dh._opener, "open", side_effect=error):
+        status, payload = dh.http_json("GET", CREDS["endpoint"])
+    # The real HTTP status survives; the oversized body is reported as such, never echoed.
+    assert status == 403 and payload == {"error": f"error body exceeded {dh.MAX_ERROR_BYTES} bytes"}
     assert stream.closed
-    assert "synthetic-private" not in str(exc.value)
+    assert "synthetic-private" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("entry", [None, {}, {"token": "synthetic"}, []])
-def test_explicit_missing_instance_cannot_borrow_default_credentials(entry):
-    with patch.object(dh, "_load_secret_map", return_value={"7": entry, "prometheus": CREDS}):
+def test_explicit_missing_instance_cannot_borrow_a_sibling_default_mirror(entry):
+    mirror = {**CREDS, "instanceId": "3"}  # the default is instance 3, not the requested 7
+    with patch.object(dh, "_load_secret_map", return_value={"7": entry, "prometheus": mirror}):
         with pytest.raises(dh.NotConnected):
             dh.load_datasource("prometheus", instance_id=7)
-        assert dh.load_datasource("prometheus") == CREDS
+        assert dh.load_datasource("prometheus") == mirror
+
+
+def test_explicit_default_instance_resolves_its_own_stamped_mirror():
+    mirror = {**CREDS, "instanceId": "3"}
+    with patch.object(dh, "_load_secret_map", return_value={"prometheus": mirror}):
+        assert dh.load_datasource("prometheus", instance_id=3) == mirror
+        assert dh.load_datasource("prometheus", instance_id="3") == mirror
+
+
+def test_unstamped_legacy_mirror_keeps_a_migrated_default_working_with_a_warning(capsys):
+    # A mirror written before the instanceId stamp (migrated default whose id key was never
+    # written) is the compat window; it closes on that default's next save.
+    with patch.object(dh, "_load_secret_map", return_value={"prometheus": CREDS}):
+        assert dh.load_datasource("prometheus", instance_id=7) == CREDS
+    assert "unstamped kind mirror" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("kind", ["prometheus", "mimir"])
@@ -227,3 +245,62 @@ def test_loki_malformed_siblings_preserve_valid_logs_as_unverified():
         result = json.loads(module.loki_query({"query": "synthetic"})["body"])
     assert result["result"] == [row]
     assert result["collectionStatus"] == "unknown"
+
+
+def test_connect_headers_and_body_share_one_request_deadline():
+    # Old behaviour granted the body read a fresh full `timeout` after headers arrived, so a
+    # slow-but-alive upstream could hold the connector for ~2x the aligned HTTP timeout and hit the
+    # Lambda wall. One monotonic deadline now spans open() and the body read.
+    clock = {"now": 1000.0}
+    body = iter([b"{", b"}", b""])
+
+    class Slow(Response):
+        def read1(self, n=-1):
+            clock["now"] += 4  # each chunk arrives 4s apart
+            return next(body)
+
+    def slow_open(req, timeout=None):
+        clock["now"] += timeout - 1  # connect + headers consumed almost the whole budget
+        return Slow()
+
+    with patch.object(dh.time, "monotonic", side_effect=lambda: clock["now"]), \
+            patch.object(dh._opener, "open", side_effect=slow_open), pytest.raises(TimeoutError):
+        dh.http_json("GET", CREDS["endpoint"], timeout=10)
+
+
+def test_loki_limit_saturation_is_disclosed_as_partial():
+    module = importlib.import_module("loki_mcp")
+    hit = {"status": "success", "data": {"resultType": "streams", "result": [{"stream": {"a": "b"}, "values": [["1", "line"]]}]}}
+    with patch.object(module, "load_datasource", return_value=CREDS), patch.object(module, "assert_host_allowed"), \
+            patch.object(module, "http_json", return_value=(200, hit)):
+        one = json.loads(module.loki_query_range({"query": '{a="b"}', "limit": 1})["body"])
+        many = json.loads(module.loki_query_range({"query": '{a="b"}', "limit": 100})["body"])
+    assert one["collectionStatus"] == "partial" and one["limitSaturated"] is True and one["truncated"] is False
+    assert (one["requestedLimit"], one["returnedCount"]) == (1, 1)
+    assert many["collectionStatus"] == "ok" and many["limitSaturated"] is False
+
+
+def test_jaeger_limit_saturation_is_partial_but_not_loss():
+    module = importlib.import_module("jaeger_mcp")
+    trace = {"traceID": "a" * 16, "spans": [{"startTime": 1, "duration": 1, "operationName": "op", "processID": "p1"}],
+             "processes": {"p1": {"serviceName": "svc"}}}
+    with patch.object(module, "load_datasource", return_value=CREDS), patch.object(module, "assert_host_allowed"), \
+            patch.object(module, "http_json", return_value=(200, {"data": [trace]})):
+        one = json.loads(module.jaeger_search({"query": "service=svc&limit=1"})["body"])
+        many = json.loads(module.jaeger_search({"query": "service=svc&limit=20"})["body"])
+    assert one["collectionStatus"] == "partial" and one["limitSaturated"] is True and one["truncated"] is False
+    assert many["collectionStatus"] == "ok" and many["limitSaturated"] is False
+    assert (many["requestedLimit"], many["returnedCount"]) == (20, 1)
+
+
+@pytest.mark.parametrize("kind", ["prometheus", "mimir", "loki", "tempo", "jaeger", "dynatrace", "datadog", "clickhouse"])
+def test_connection_probe_reports_latency_and_fixed_sentences(kind):
+    # The Test button contract is {ok, verified, latency_ms, error?}; a refused query must never echo
+    # upstream text, and an SSRF policy block keeps its own classification.
+    module = importlib.import_module(kind + "_mcp")
+    with patch.object(module, "load_datasource", return_value={**CREDS, "endpoint": "https://169.254.169.254"}), \
+            patch.object(module, "assert_host_allowed", side_effect=dh.SsrfBlocked("blocked")), \
+            patch.object(module, "http_json", side_effect=AssertionError("must not be called")):
+        probe = json.loads(getattr(module, kind + "_health")({})["body"])
+    assert probe["ok"] is False and probe["verified"] == [] and isinstance(probe["latency_ms"], int)
+    assert probe["error"] == "endpoint rejected by the private-network policy"

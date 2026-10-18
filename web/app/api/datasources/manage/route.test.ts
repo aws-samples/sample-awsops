@@ -72,7 +72,9 @@ describe('POST create', () => {
     expect(resp.status).toBe(201);
     expect(await resp.json()).toEqual({ id: 7 });
     expect(setIntegrationCredentialById).toHaveBeenCalledWith(7, { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
+    // the default mirror is stamped with the instance id so the connector can tell this default's
+    // id-keyed lookup apart from a sibling instance borrowing the mirror
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' }, undefined, 7);
   });
 
   it('fires a best-effort connect-time introspect (after the 201) and never lets it fail create', async () => {

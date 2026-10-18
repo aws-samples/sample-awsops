@@ -17,8 +17,8 @@ from urllib.parse import parse_qs, quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn, request_timeout, observed_payload,
+    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
+    query_probe, set_request_conn, request_timeout, observed_payload,
 )
 
 SLUG = "jaeger"
@@ -130,11 +130,15 @@ def jaeger_search(args):
             "durationMs": round(dur_us / 1000, 1),
             "startTime": root.get("startTime", 0),
         })
-    truncated = len(traces) >= requested
+    # Reaching the requested limit is saturation, not loss: Jaeger returns no marker, so more traces
+    # may exist and the result is `partial`, but only a real drop (byte bound) sets `truncated`.
+    saturated = len(traces) >= requested
     http_status = getattr(data, "http_status", 200)
-    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or http_status == 206 else "ok" if rows else "empty"
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or http_status == 206 else "ok" if rows else "empty"
     payload, btr = _byte_bound({"traces": rows})
-    return ok({**payload, "truncated": truncated or btr,
+    if btr:
+        payload.pop("preview", None)  # never echo provider content, even as a bounded preview
+    return ok({**payload, "truncated": btr, "limitSaturated": saturated,
                "collectionStatus": "unknown" if invalid else "partial" if btr else state,
                "requestedLimit": requested, "returnedCount": len(rows)})
 
@@ -173,17 +177,13 @@ def jaeger_schema(args):
 
 def jaeger_health(args):
     """Verify a recognizable query response, not an arbitrary HTTP 200."""
-    try:
+    def run():
         end = int(time.time())
-        result = json.loads(jaeger_search({
+        return json.loads(jaeger_search({
             "query": "service=awsops-connection-probe&limit=1",
             "start": str(end - 60), "end": str(end),
-        })["body"])
-        verified = result.get("collectionStatus") in ("ok", "empty", "partial")
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Jaeger query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Jaeger query access could not be verified"})
+        })["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Jaeger query access could not be verified"))
 
 
 _TOOLS = {

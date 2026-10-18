@@ -28,7 +28,8 @@ def test_health_accepts_a_successfully_queried_empty_probe_and_bounds_its_window
     with patch.object(dd, "load_datasource", return_value=CREDS), patch.object(dd, "assert_host_allowed"), \
             patch.object(dd.time, "time", return_value=1000), \
             patch.object(dd, "_get", side_effect=[{"valid": True}, {"status": "ok", "series": []}]) as request:
-        assert body(dd.datadog_health({})) == {"ok": True}
+        probe = body(dd.datadog_health({}))
+        assert probe["ok"] is True and probe["verified"] == ["query"] and isinstance(probe["latency_ms"], int)
     params = request.call_args_list[1].args[2]
     assert params["from"] == "940" and params["to"] == "1000"
     assert "{*}" not in params["query"]
@@ -51,7 +52,8 @@ def test_bearer_connection_tests_the_metric_operation_without_api_key_validation
     creds = {"endpoint": CREDS["endpoint"], "authType": "bearer", "token": "synthetic-bearer"}
     with patch.object(dd, "load_datasource", return_value=creds), patch.object(dd, "assert_host_allowed"), \
             patch.object(dd, "_get", return_value={"status": "ok", "series": []}) as request:
-        assert body(dd.datadog_health({})) == {"ok": True}
+        probe = body(dd.datadog_health({}))
+        assert probe["ok"] is True and probe["verified"] == ["query"] and isinstance(probe["latency_ms"], int)
     request.assert_called_once()
     assert request.call_args.args[1] == "/api/v1/query"
 

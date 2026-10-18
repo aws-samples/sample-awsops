@@ -167,15 +167,19 @@ export async function setIntegrationCredentialById(
   }, q);
 }
 
-/** Write the managed default-mirror under the plain `kind` key (agent gateway no-inline path). */
+/** Write the managed default-mirror under the plain `kind` key (agent gateway no-inline path).
+ *  The mirror is stamped with the default instance's id (`instanceId`) so the connector's
+ *  id-keyed lookup can accept the mirror for THAT instance only, never for a sibling. */
 export async function mirrorDefaultCredential(
   kind: string,
   secretObj: Record<string, unknown>,
   q?: { query: (text: string, values?: unknown[]) => Promise<unknown> },
+  instanceId?: number,
 ): Promise<void> {
   assertKnownSlug(kind);
+  if (instanceId !== undefined) assertPositiveId(instanceId);
   await mutateCredentialMap((map) => {
-    map[kind] = secretObj;
+    map[kind] = instanceId === undefined ? secretObj : { ...secretObj, instanceId: String(instanceId) };
   }, q);
 }
 

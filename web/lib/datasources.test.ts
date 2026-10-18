@@ -103,7 +103,7 @@ describe('updateDatasource', () => {
     query.mockResolvedValueOnce({ rows: [{ id: 9, name: 'n', kind: 'prometheus', endpoint: 'http://p', ds_auth_type: 'none', is_default: true, enabled: true }] }); // re-read
     getCredentialById.mockResolvedValueOnce({ endpoint: 'http://p', authType: 'none' });
     await updateDatasource(9, { endpoint: 'http://p' });
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined);
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined, expect.any(Number));
   });
 
   it('does NOT mirror when the updated row is not the default', async () => {
@@ -138,7 +138,7 @@ describe('resolveConnConfig', () => {
     expect(getCredentialById).not.toHaveBeenCalledWith(1, 'prometheus'); // never the kind fallback
   });
 
-  it('clickhouse settings ride the conn config (database + timeoutS); other kinds never set them', async () => {
+  it('timeoutS rides the conn config for every kind (one bound on every path); database stays ClickHouse-only', async () => {
     getCredentialById.mockResolvedValueOnce(null);
     const ch = { ...row, kind: 'clickhouse', settings: { database: 'metrics_db', timeoutS: 30 } };
     expect(await resolveConnConfig(ch)).toMatchObject({ database: 'metrics_db', timeoutS: 30 });
@@ -146,7 +146,9 @@ describe('resolveConnConfig', () => {
     const prom = { ...row, settings: { database: 'metrics_db', timeoutS: 30 } }; // kind: prometheus
     const cc = await resolveConnConfig(prom);
     expect(cc).not.toHaveProperty('database');
-    expect(cc).not.toHaveProperty('timeoutS');
+    // the credential-blind agent/worker path reads timeoutS from the secret blob; the console path
+    // must hand the connector the same bound instead of silently falling back to its default
+    expect(cc).toMatchObject({ timeoutS: 30 });
   });
 
   it('a stale blob database/timeoutS never leaks through — the ROW settings are authoritative', async () => {

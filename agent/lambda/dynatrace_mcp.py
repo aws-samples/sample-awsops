@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    set_request_conn, request_timeout, finite_number, observed_payload,
+    query_probe, set_request_conn, request_timeout, finite_number, observed_payload,
 )
 
 SLUG = "dynatrace"
@@ -149,18 +149,14 @@ def dynatrace_schema(args):
 
 def dynatrace_health(args):
     """Verify Metrics v2 query access with a one-minute, one-resolution query."""
-    creds = load_datasource(SLUG)
-    assert_host_allowed(creds["endpoint"])
-    try:
-        result = json.loads(dynatrace_query({
+    def run():
+        creds = load_datasource(SLUG)
+        assert_host_allowed(creds["endpoint"])
+        return json.loads(dynatrace_query({
             "query": "builtin:host.cpu.usage:avg", "start": "now-1m", "end": "now",
             "resolution": "1m",
-        })["body"])
-        verified = result.get("collectionStatus") in ("ok", "empty", "partial")
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Dynatrace metric-query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Dynatrace metric-query access could not be verified"})
+        })["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Dynatrace metric-query access could not be verified"))
 
 
 _TOOLS = {

@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    set_request_conn, request_timeout, finite_number, observed_payload,
+    query_probe, set_request_conn, request_timeout, finite_number, observed_payload,
 )
 
 SLUG = "datadog"
@@ -122,15 +122,15 @@ def datadog_schema(args):
 
 def datadog_health(args):
     """Validate configured API keys, then metric-query access (key pair or bearer)."""
-    creds = load_datasource(SLUG)
-    assert_host_allowed(creds["endpoint"])
-    try:
+    def run():
+        creds = load_datasource(SLUG)
+        assert_host_allowed(creds["endpoint"])
         # The API-key validator does not validate bearer access tokens. Those use
         # the supported metric-query operation itself as the authentication proof.
         if any(name.lower() == "dd-api-key" for name in _headers(creds)):
             v = _get(creds, "/api/v1/validate")
             if not isinstance(v, dict) or v.get("valid") is not True:
-                return ok({"ok": False, "error": "Datadog API key validation failed"})
+                return None
         end = int(time.time())
         # A one-minute, single-metric query with a probe-only host filter verifies
         # metric-query permission without fetching the fleet's real metric series.
@@ -138,10 +138,8 @@ def datadog_health(args):
             "query": "avg:system.cpu.user{host:awsops-connection-probe}",
             "from": str(end - 60), "to": str(end),
         })
-        verified = isinstance(probe, dict) and probe.get("status") == "ok" and isinstance(probe.get("series"), list)
-        return ok({"ok": verified, **({} if verified else {"error": "Datadog metric-query access could not be verified"})})
-    except _ApiError:
-        return ok({"ok": False, "error": "Datadog credentials or metric-query access could not be verified"})
+        return "ok" if isinstance(probe, dict) and probe.get("status") == "ok" and isinstance(probe.get("series"), list) else None
+    return ok(query_probe(run, "Datadog credentials or metric-query access could not be verified"))
 
 
 _TOOLS = {

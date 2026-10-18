@@ -21,9 +21,9 @@ from datasource_http import (
     SsrfBlocked,
     assert_host_allowed,
     auth_headers,
-    health,
     http_json,
     load_datasource,
+    query_probe,
     set_request_conn,
     execution_timeout,
     request_timeout,
@@ -196,19 +196,6 @@ def _query_result(observed, *, allow_scalar=False):
 
 
 
-def _timeout_param(v):
-    """Optional Prometheus API `timeout` (e.g. "5s"), clamped to 1..60s. The connector bounds response SIZE
-    but had no execution bound, which matters now that a caller can run model-written PromQL (review)."""
-    # No digit cap: `\d{1,3}` made "1000" or "3600s" fall through to None, i.e. NO bound — a clamp that
-    # fails open for exactly the values that need clamping (review MINOR). Only non-numeric input is None.
-    # `v or ""` turns numeric 0 into "" (falsy), which then fails the match and returns None —
-    # i.e. NO bound for exactly the value that most needs clamping. Only skip on a true absence.
-    if v is None or v == "":
-        return None
-    m = re.fullmatch(r"\s*(\d+)s?\s*", str(v))
-    return f"{max(1, min(60, int(m.group(1))))}s" if m else None
-
-
 def prometheus_query(args):
     query = (args.get("query") or "").strip()
     if not query:
@@ -299,14 +286,11 @@ def prometheus_schema(args):
 
 
 def prometheus_health(args):
-    """Verify the actual authenticated query API using a bounded scalar query."""
-    try:
-        result = json.loads(prometheus_query({"query": "vector(1)", "timeout": "1s"})["body"])
-        verified = result.get("collectionStatus") == "ok"
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Prometheus query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Prometheus query access could not be verified"})
+    """Verify the actual authenticated query API using a bounded scalar query. A successful query
+    whose result is empty or carries an upstream warning (`partial`) still proves access."""
+    return ok(query_probe(
+        lambda: json.loads(prometheus_query({"query": "vector(1)", "timeout": "1s"})["body"]).get("collectionStatus"),
+        "Prometheus query access could not be verified"))
 
 
 def prometheus_metric_meta(args):

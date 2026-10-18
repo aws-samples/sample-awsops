@@ -24,8 +24,9 @@ IP in the list already passed assert_host_allowed's checks. Every real call site
 calls assert_host_allowed(endpoint) immediately before http_json(same endpoint) — that invariant is
 what makes the cache safe; it is reset every invocation by set_request_conn() (called at the top of
 every lambda_handler) so a warm container never reuses a stale pinned IP across invocations.
-The separate custom-MCP transport pins its request-local validated address set through
-agent/pinned_http.py; the two transports retain their different private-network contracts.
+(A structurally identical resolve-and-recheck gap exists in agent/agent.py's `_assert_host_allowed`
+for the separate egress-integrations transport — untouched here; that's a different call path not
+exercised by the pentest's datasource/schema-fetch findings, and needs its own fix.)
 """
 import base64
 import functools
@@ -220,6 +221,24 @@ def set_request_conn(conn):
     _PINNED_IP_CACHE = {}
 
 
+def query_probe(run, error, accepted=("ok", "empty", "partial")):
+    """Time one real bounded query for the connection test. `run` executes the connector's own
+    query tool and returns its `collectionStatus` (None when the response was unrecognizable).
+    Returns {ok, verified, latency_ms, error?} — fixed sentences only, never upstream text; the
+    connector's own classification (SSRF policy vs. unverifiable) is kept because an admin needs it."""
+    t0 = time.monotonic()
+    try:
+        state = run()
+    except SsrfBlocked:
+        state, error = None, "endpoint rejected by the private-network policy"
+    except Exception:
+        state = None
+    latency = int((time.monotonic() - t0) * 1000)
+    verified = state in accepted
+    return {"ok": verified, "verified": ["query"] if verified else [], "latency_ms": latency,
+            **({} if verified else {"error": error})}
+
+
 def health(creds, path):
     """Lightweight connectivity probe: GET endpoint+path with auth, SSRF-guarded. {ok, latency_ms, error?}."""
     import time as _t
@@ -272,7 +291,12 @@ def load_datasource(slug, instance_id=None):
        1. the request-scoped inline conn-config (`_REQUEST_CONN`) — the trusted BFF path only;
        2. the per-instance secret key `map[str(instance_id)]` — the credential-blind worker path,
           where the caller sends ONLY an instance_id and the connector reads the secret server-side;
-       3. the `map[slug]` kind-mirror, only when no explicit instance was requested.
+       3. the `map[slug]` kind-mirror: when no explicit instance was requested, or when the
+          requested id IS the default instance the mirror was written for (`instanceId` stamp).
+    An explicit id never inherits a mirror stamped for a different instance. A mirror without a
+    stamp predates the stamp (a migrated default whose id key was never written); it is accepted
+    for an explicit id with a warning so that default keeps working until its next save writes the
+    id key and the stamp.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
     if _REQUEST_CONN is not None:
@@ -281,7 +305,16 @@ def load_datasource(slug, instance_id=None):
     creds = m.get(str(instance_id)) if instance_id is not None else None
     if instance_id is not None:
         if not isinstance(creds, dict) or not creds.get("endpoint"):
-            raise NotConnected("requested datasource instance is not configured")
+            mirror = m.get(slug)
+            stamp = mirror.get("instanceId") if isinstance(mirror, dict) else None
+            if isinstance(mirror, dict) and mirror.get("endpoint") and (
+                    stamp is None or str(stamp) == str(instance_id)):
+                if stamp is None:
+                    print(f"[datasource_http] WARNING: {slug} instance {instance_id} resolved via an "
+                          "unstamped kind mirror; re-save the default instance to write its id key")
+                creds = mirror
+            else:
+                raise NotConnected("requested datasource instance is not configured")
     else:
         creds = m.get(slug)
     if not isinstance(creds, dict) or not creds.get("endpoint"):
@@ -386,11 +419,12 @@ def _parse(raw):
         return {"raw": raw.decode("utf-8", "replace")[:4000]}
 
 
-def _read_bounded(response, max_bytes, timeout):
-    """Read at most budget+1 bytes; never trust Content-Length or parse before the bound."""
+def _read_bounded(response, max_bytes, deadline):
+    """Read at most budget+1 bytes before the absolute monotonic `deadline`; never trust
+    Content-Length or parse before the bound. The deadline is the request's — connect, headers
+    and body share one budget, so a slow-but-alive upstream cannot double it."""
     chunks = []
     total = 0
-    deadline = time.monotonic() + timeout
     read = getattr(response, "read1", response.read)
     try:
         while True:
@@ -413,9 +447,21 @@ def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_by
     in order with fallback) — see module docstring (IP-pinning)."""
     data = body if isinstance(body, (bytes, bytearray)) else (body.encode() if isinstance(body, str) else None)
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    # One wall-clock budget per request: the socket timeout bounds connect + headers, and the body
+    # read gets only what is left, so total time stays <= `timeout` (the connector Lambda's 60s wall
+    # assumes the aligned HTTP timeout, at most 55s + 3s, is the whole request).
+    deadline = time.monotonic() + timeout
     try:
         resp = _opener_for(urlparse(url).hostname).open(req, timeout=timeout)
-        return resp.getcode(), _parse(_read_bounded(resp, max_bytes, timeout))
+        return resp.getcode(), _parse(_read_bounded(resp, max_bytes, deadline))
     except urllib.error.HTTPError as e:
-        raw = _read_bounded(e, min(max_bytes, MAX_ERROR_BYTES), timeout)
+        # Keep the (status, body) contract for error responses: an oversized or slow error body is
+        # reported as such under its real HTTP status instead of replacing the status with a
+        # transport exception.
+        try:
+            raw = _read_bounded(e, min(max_bytes, MAX_ERROR_BYTES), deadline)
+        except ResponseTooLarge:
+            return e.code, {"error": f"error body exceeded {MAX_ERROR_BYTES} bytes"}
+        except TimeoutError:
+            return e.code, {"error": "error body read deadline exceeded"}
         return e.code, _parse(raw)

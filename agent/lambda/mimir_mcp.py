@@ -9,12 +9,12 @@ import json
 import math
 import re
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
+    query_probe, set_request_conn,
     execution_timeout, request_timeout,
 )
 
@@ -63,11 +63,12 @@ def _ds():
 
 def _get(creds, path, params, http_timeout=None, *, with_status=False):
     if path.startswith(BASE):
-        prefix = creds.get("apiPrefix", "/prometheus")
+        prefix = creds.get("apiPrefix")
+        if prefix is None:  # absent or stored null = default mount; an explicit "" = API at the root
+            prefix = "/prometheus"
         if not isinstance(prefix, str) or len(prefix) > 128 or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", prefix):
             raise _ApiError("invalid Mimir API prefix")
         # An API base already ending in the configured prefix must not duplicate it.
-        from urllib.parse import urlparse
         endpoint_path = urlparse(creds["endpoint"]).path.rstrip("/")
         if prefix and endpoint_path.endswith(prefix):
             prefix = ""
@@ -194,20 +195,6 @@ def _query_result(observed, *, allow_scalar=False):
     return _bounded_result({**(bounded if isinstance(bounded, dict) else {"result": None}),
                             "truncated": truncated, "collectionStatus": state})
 
-
-
-def _timeout_param(v):
-    """Optional Prometheus-API `timeout` (e.g. "5s"), clamped to 1..60s. Same knob prometheus_mcp.py grew:
-    the connector bounds response SIZE but had no execution bound, which matters now that a caller can run
-    model-written PromQL through it (review — the diag-signal dry run passes 5s for mimir too)."""
-    # No digit cap: `\d{1,3}` made "1000" or "3600s" fall through to None, i.e. NO bound — a clamp that
-    # fails open for exactly the values that need clamping (review MINOR). Only non-numeric input is None.
-    # `v or ""` turns numeric 0 into "" (falsy), which then fails the match and returns None —
-    # i.e. NO bound for exactly the value that most needs clamping. Only skip on a true absence.
-    if v is None or v == "":
-        return None
-    m = re.fullmatch(r"\s*(\d+)s?\s*", str(v))
-    return f"{max(1, min(60, int(m.group(1))))}s" if m else None
 
 
 def mimir_query(args):
@@ -357,14 +344,11 @@ _TOOLS = {"mimir_query": mimir_query, "mimir_query_range": mimir_query_range,
 
 
 def mimir_health(args):
-    """Verify tenant-scoped query access, independently of process readiness."""
-    try:
-        result = json.loads(mimir_query({"query": "vector(1)", "timeout": "1s"})["body"])
-        verified = result.get("collectionStatus") == "ok"
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "Mimir tenant query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "Mimir tenant query access could not be verified"})
+    """Verify tenant-scoped query access, independently of process readiness. An empty or
+    upstream-warned (`partial`) result still proves access."""
+    return ok(query_probe(
+        lambda: json.loads(mimir_query({"query": "vector(1)", "timeout": "1s"})["body"]).get("collectionStatus"),
+        "Mimir tenant query access could not be verified"))
 
 
 _TOOLS["mimir_health"] = mimir_health

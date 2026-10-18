@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     const id = await createDatasource({ name, kind, endpoint, authType: authType as 'none', settings });
     await setIntegrationCredentialById(id, blob);
     const ds = await getDatasource(id);
-    if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
+    if (ds?.isDefault) await mirrorDefaultCredential(kind, blob, undefined, id); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
     return json({ id }, 201);
   } catch (e) {
@@ -223,7 +223,7 @@ export async function PATCH(request: Request) {
     // updateDatasource (below) re-mirrors from the freshly written id blob for a default
     // instance; this explicit refresh keeps the mirror correct even when the row update has
     // nothing to change.
-    if (ds.isDefault) await mirrorDefaultCredential(ds.kind, blob, client);
+    if (ds.isDefault) await mirrorDefaultCredential(ds.kind, blob, client, id);
     // A database change (set OR clear) re-grounds AI query generation — mirror POST's
     // connect-time warm (best-effort; the 6h isSchemaStale refresh remains).
     if (settings !== undefined && (settings.database ?? null) !== (ds.settings?.database ?? null)) {

@@ -21,9 +21,9 @@ from datasource_http import (
     SsrfBlocked,
     assert_host_allowed,
     auth_headers,
-    health,
     http_json,
     load_datasource,
+    query_probe,
     set_request_conn,
 )
 from sql_readonly_guard import assert_read_only as _shared_assert_read_only
@@ -274,14 +274,10 @@ def clickhouse_schema(args):
 
 def clickhouse_health(args):
     """Verify read-only SQL access using one constant row and a one-second ceiling."""
-    try:
+    def run():
         result = _run_sql("SELECT 1 AS probe", 1, max_execution_time=1)
-        payload = json.loads(result["body"])
-        verified = result["statusCode"] == 200 and payload.get("collectionStatus") in ("ok", "partial")
-        return ok({"ok": verified, "verified": ["query"] if verified else [],
-                   **({} if verified else {"error": "ClickHouse query access could not be verified"})})
-    except Exception:
-        return ok({"ok": False, "error": "ClickHouse query access could not be verified"})
+        return json.loads(result["body"]).get("collectionStatus") if result["statusCode"] == 200 else None
+    return ok(query_probe(run, "ClickHouse query access could not be verified", accepted=("ok", "partial")))
 
 
 _TOOLS = {
