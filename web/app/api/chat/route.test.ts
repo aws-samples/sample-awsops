@@ -447,7 +447,7 @@ describe('hybrid routing (ADR-038)', () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
     getEnabledIntegrations.mockResolvedValue([
-      { name: 'dd', direction: 'egress', capability: 'read', exposedTools: ['datadog_query'], providedContext: { d: 1 },
+      { id: 7, kind: 'custom_mcp', name: 'dd', direction: 'egress', capability: 'read', exposedTools: ['datadog_query'], providedContext: { d: 1 },
         endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd' },
       { name: 'notion', direction: 'egress', capability: 'read_write', exposedTools: ['notion_write'], providedContext: {}, writeActionRefs: ['notion.create_page'] }, // write → propose-only (5th arg), NOT tool-injected (4th)
       { name: 'pd', direction: 'ingress', capability: 'read', exposedTools: [], providedContext: {} },                       // ingress → excluded
@@ -459,7 +459,7 @@ describe('hybrid routing (ADR-038)', () => {
     // 5th arg = the READ_WRITE integration as PROPOSE-ONLY (never tool-injected). ADR-040/041.
     expect(resolveAgent).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), null,
-      [{ name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
+      [{ id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read', name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
          endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd', allowPrivate: false }],
       [{ name: 'notion', writeActionRefs: ['notion.create_page'] }],
     );
@@ -550,6 +550,7 @@ describe('ADR-031 Phase 2 — per-account space wiring', () => {
     await readStream(await POST(req({ prompt: 'status', sessionId: 's'.repeat(36) })));
     // account resolves to the single-account default ('self') with no HOST_ACCOUNT_ID set.
     expect(getEnabledCustomAgents).toHaveBeenCalledWith('self');
+    expect(getEnabledIntegrations).toHaveBeenCalledWith('self');
     // no AURORA_ENDPOINT ⇒ getAgentSpace returns null ⇒ resolver gets null (Phase-1 behavior).
     expect(resolveAgent).toHaveBeenCalledWith('ops', expect.anything(), null, [], []);
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'self' }));
@@ -591,6 +592,8 @@ describe('ADR-031 Phase 2 — per-account space wiring', () => {
     const body = await readStream(await POST(req({ prompt: 'status', accountId: '222222222222', sessionId: 's'.repeat(36) })));
     expect(body).not.toContain('호스트 계정 기준');
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: '222222222222', accountAlias: 'prod' }));
+    expect(getEnabledCustomAgents).toHaveBeenCalledWith('222222222222');
+    expect(getEnabledIntegrations).toHaveBeenCalledWith('222222222222');
   });
 
   it('built-in path is unchanged: no spaceVersion in meta, PONG-style passthrough still streams', async () => {

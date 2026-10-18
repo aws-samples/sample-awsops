@@ -1,5 +1,5 @@
 // web/lib/agent-resolver.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { resolveAgent, pickCustomAgent, qualifyToolNames, SAFEGUARD_LINE, MAX_PROVIDED_CONTEXT_CHARS } from './agent-resolver';
 import type { AgentWithSkills } from './catalog';
 import type { AgentSpace } from './agent-space';
@@ -228,31 +228,58 @@ describe('resolveAgent — ADR-039 egress-READ integration injection', () => {
 });
 
 describe('resolveAgent — ADR-039 P2-infra inc2 connection details (spec.integrations)', () => {
+  beforeEach(() => { process.env.CUSTOM_MCP_ENABLED = 'true'; });
   const conn = {
-    name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
+    id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read',
+    name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1, _customMcpAttestation: {
+      actorSub: 'sub', attestedAt: '2026-10-18T12:00:00.000Z', tools: ['datadog_query'],
+      endpoint: 'https://mcp.datadoghq.com/mcp', transport: 'api_key',
+      credentialsRef: 'ops/awsops-v2/integrations/custom/7', credentialVersionId: 'a'.repeat(32),
+    } },
     endpoint: 'https://mcp.datadoghq.com/mcp', transport: 'api_key',
-    credentialsRef: 'arn:aws:secretsmanager:ap-northeast-2:1:secret:ops/awsops-v2/integrations/dd-xx',
+    credentialsRef: 'ops/awsops-v2/integrations/custom/7',
     allowPrivate: false,
   };
+  const space: AgentSpace = { accountId: 'self', enabledIntegrationIds: [7], enabledAgentIds: [],
+    enabledSkillIds: [], toolAllowlist: [], version: 1 };
 
   it('custom path surfaces connectable integrations with their connection details', () => {
-    const spec = resolveAgent('compliance', [custom], null, [conn]);
+    const spec = resolveAgent('compliance', [custom], space, [conn]);
     expect(spec.integrations).toEqual([{
+      id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read', accountId: 'self', accountSelected: true,
+      registeredTools: ['datadog_query'], readOnlyAttestation: conn.providedContext._customMcpAttestation,
       name: 'dd', endpoint: conn.endpoint, transport: 'api_key',
       credentialsRef: conn.credentialsRef, exposedTools: ['datadog_query'], allowPrivate: false,
     }]);
   });
+  it('does not connect or fall back to unrestricted gateway reads before activation', () => {
+    delete process.env.CUSTOM_MCP_ENABLED;
+    const spec = resolveAgent('compliance', [{ ...custom, skills: [] }], space, [conn]);
+    expect(spec.integrations).toBeUndefined();
+    expect(spec.toolAllowlist).toEqual([]);
+  });
+  it('binds the spec to the selected member space, rather than a client account hint', () => {
+    const spec = resolveAgent('compliance', [custom], { ...space, accountId: '123456789012' }, [conn]);
+    expect(spec.integrations?.[0].accountId).toBe('123456789012');
+  });
 
-  it('threads sigv4Service/sigv4Region + allowPrivate when present', () => {
+  it('rejects runtime-role SigV4 even for a vendor-labelled external MCP endpoint', () => {
     const sig = {
       name: 'apigw', exposedTools: ['q'], endpoint: 'https://x.execute-api.ap-northeast-2.amazonaws.com/mcp',
       transport: 'sigv4', sigv4Service: 'execute-api', sigv4Region: 'ap-northeast-2', allowPrivate: true,
     };
     const spec = resolveAgent('compliance', [custom], null, [sig]);
-    expect(spec.integrations).toEqual([{
-      name: 'apigw', endpoint: sig.endpoint, transport: 'sigv4', credentialsRef: undefined,
-      exposedTools: ['q'], allowPrivate: true, sigv4Service: 'execute-api', sigv4Region: 'ap-northeast-2',
-    }]);
+    expect(spec.integrations).toBeUndefined();
+  });
+  it('requires explicit account membership as well as a valid attestation', () => {
+    expect(resolveAgent('compliance', [custom], null, [conn]).integrations).toBeUndefined();
+    expect(resolveAgent('compliance', [custom], { ...space, enabledIntegrationIds: [] }, [conn]).integrations).toBeUndefined();
+  });
+  it('does not expose attestation metadata in model context', () => {
+    const prompt = resolveAgent('compliance', [custom], space, [conn]).systemPromptOverride!;
+    expect(prompt).toContain('"d":1');
+    expect(prompt).not.toContain('_customMcpAttestation');
+    expect(prompt).not.toContain('credentialVersionId');
   });
 
   it('an egress-READ integration WITHOUT endpoint/transport still injects tools+context but is NOT in the connect list', () => {
@@ -298,13 +325,13 @@ describe('resolveAgent — ADR-040/041 propose-only READ_WRITE', () => {
 });
 
 
-it('strips Gateway identities from connectable integration metadata as well as the grant', () => {
+it('rejects a connectable integration with Gateway identities or missing governance metadata', () => {
   const spec = resolveAgent(custom.name, [{ ...custom, skills: [], toolPolicyConfigured: true }], null, [{
     name: 'external', endpoint: 'https://example.com/mcp', transport: 'api_key',
     exposedTools: ['iam-mcp-target___list_users', 'external_query'],
   }]);
-  expect(spec.toolAllowlist).toEqual(['external_query']);
-  expect(spec.integrations?.[0].exposedTools).toEqual(['external_query']);
+  expect(spec.toolAllowlist).toEqual([]);
+  expect(spec.integrations).toBeUndefined();
 });
 
 

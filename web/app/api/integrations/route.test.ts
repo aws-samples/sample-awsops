@@ -9,6 +9,8 @@ const assertEgressEndpointAllowed = vi.fn();
 const upsertIntegration = vi.fn();
 const listIntegrations = vi.fn();
 const setIntegrationEnabled = vi.fn();
+const getIntegrationById = vi.fn();
+const attestAndEnableMcp = vi.fn();
 
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
@@ -21,6 +23,8 @@ vi.mock('@/lib/integrations', () => ({
   upsertIntegration: (...a: unknown[]) => upsertIntegration(...a),
   listIntegrations: (...a: unknown[]) => listIntegrations(...a),
   setIntegrationEnabled: (...a: unknown[]) => setIntegrationEnabled(...a),
+  getIntegrationById: (...a: unknown[]) => getIntegrationById(...a),
+  attestAndEnableMcp: (...a: unknown[]) => attestAndEnableMcp(...a),
 }));
 
 function req(body: unknown, method = 'POST') {
@@ -37,6 +41,8 @@ beforeEach(() => {
   validateIntegration.mockReturnValue({ ok: true, errors: [] });
   query.mockResolvedValue({ rows: [] });          // no agent_spaces opt-in row ⇒ allowPrivate false
   upsertIntegration.mockResolvedValue(9);
+  getIntegrationById.mockReset().mockResolvedValue({ id: 3, tier: 'custom', kind: 'grafana', exposedTools: [] });
+  attestAndEnableMcp.mockReset().mockResolvedValue(undefined);
 });
 
 describe('/api/integrations gate', () => {
@@ -113,5 +119,36 @@ describe('/api/integrations GET + PUT', () => {
     const res = await PUT(req({ op: 'enable', id: 3 }, 'PUT'));
     expect(res.status).toBe(200);
     expect(setIntegrationEnabled).toHaveBeenCalledWith(3, true);
+  });
+  it('PUT passes only the authenticated immutable identity and explicit confirmation to MCP enforcement', async () => {
+    getIntegrationById.mockResolvedValue({ id: 3, tier: 'custom', kind: 'custom_mcp' });
+    const { PUT } = await import('./route');
+    const snapshot = { endpoint: 'https://example.com/mcp', exposedTools: ['query'] };
+    expect((await PUT(req({ op: 'enable', id: 3, actorSub: 'spoof', attestReadOnly: true,
+      attestRegistration: snapshot }, 'PUT'))).status).toBe(200);
+    expect(attestAndEnableMcp).toHaveBeenCalledWith(3, 'u', true, snapshot);
+    expect(setIntegrationEnabled).not.toHaveBeenCalled();
+  });
+  it('PUT does not treat a vendor label as a preset exemption', async () => {
+    getIntegrationById.mockResolvedValue({ id: 3, tier: 'custom', kind: 'grafana', direction: 'egress', exposedTools: ['query'] });
+    attestAndEnableMcp.mockRejectedValue(new Error('attestation required'));
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'enable', id: 3 }, 'PUT'))).status).toBe(409);
+    expect(attestAndEnableMcp).toHaveBeenCalledWith(3, 'u', false, undefined);
+    expect(setIntegrationEnabled).not.toHaveBeenCalled();
+    expect(writeAudit).toHaveBeenCalledWith({ actor: 'u', action: 'enable_rejected',
+      objectType: 'integration', objectId: '3' });
+  });
+  it('PUT permits immediate disablement without attestation', async () => {
+    getIntegrationById.mockResolvedValue({ id: 3, tier: 'custom', kind: 'custom_mcp' });
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'disable', id: 3 }, 'PUT'))).status).toBe(200);
+    expect(setIntegrationEnabled).toHaveBeenCalledWith(3, false);
+    expect(attestAndEnableMcp).not.toHaveBeenCalled();
+  });
+  it.each([0, -1, 'other', 1.5])('PUT rejects invalid identifiers: %s', async id => {
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'enable', id }, 'PUT'))).status).toBe(400);
+    expect(getIntegrationById).not.toHaveBeenCalled();
   });
 });

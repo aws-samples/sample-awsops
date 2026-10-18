@@ -8,7 +8,7 @@ import { INTEGRATION_KINDS_EGRESS, INTEGRATION_KINDS_INGRESS, INTEGRATION_TRANSP
 interface AgentRow { id: number; name: string; description: string; gateway: string; tier: string; enabled: boolean; version: number; skills: Array<{ name: string }>; agentType?: string; gateways?: string[]; }
 interface SkillRow { id: number; name: string; description: string; tier: string; enabled: boolean; version: number; agentTypes?: string[]; }
 interface SpaceState { enabledAgentIds: number[]; enabledSkillIds: number[]; enabledIntegrationIds: number[]; toolAllowlist: string[]; version?: number }
-interface IntegrationRow { id: number; name: string; kind: string; direction: string; capability: string; enabled: boolean; tier: string; receivePath?: string | null; }
+interface IntegrationRow { id: number; name: string; kind: string; direction: string; capability: string; enabled: boolean; tier: string; receivePath?: string | null; exposedTools?: string[]; endpoint?: string; transport?: string; credentialsRef?: string; }
 
 const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops', 'observability'];
 // ADR-039 agent-type lifecycle roles (mirrors web/lib/skill-validation.ts AGENT_TYPES).
@@ -29,6 +29,12 @@ const POLICY_TEXT: Record<Lang, { loading: string; unavailable: string; retry: s
   ja: { loading: 'ポリシーを読み込み中です。', unavailable: 'ポリシーを読み込めません。再読み込みに成功するまで保存できません。以前の値は保持されます。', retry: 'ポリシーを再読み込み' },
   zh: { loading: '正在加载策略。', unavailable: '无法读取策略。重新加载成功前不能保存，之前的值会保留。', retry: '重新加载策略' },
 };
+const MCP_PENDING_TEXT: Record<Lang, string> = {
+  ko: '사용자 정의 MCP 연결 활성화는 정책 승인 대기 중입니다. 등록 준비와 연결 비활성화는 가능합니다.',
+  en: 'Custom MCP activation awaits policy approval. You can prepare registrations and disable connections.',
+  ja: 'カスタム MCP の有効化はポリシー承認待ちです。登録の準備と接続の無効化は可能です。',
+  zh: '自定义 MCP 的启用正在等待策略批准。您可以准备注册和禁用连接。',
+};
 
 export default function CustomizationPage() {
   const { tt, lang } = useI18n();
@@ -46,11 +52,14 @@ export default function CustomizationPage() {
   const [space, setSpace] = useState<SpaceState | null>(null);
   const [allowlistText, setAllowlistText] = useState('');
   const [integrations, setIntegrations] = useState<IntegrationRow[]>([]);
-  const [integForm, setIntegForm] = useState({ direction: 'egress', name: '', kind: 'grafana', endpoint: '', transport: 'api_key', capability: 'read', authMode: 'hmac', sourceAllowlist: '', triggerTarget: 'incident' });
+  const [integForm, setIntegForm] = useState({ direction: 'egress', name: '', kind: 'grafana', endpoint: '', transport: 'api_key', capability: 'read', authMode: 'hmac', sourceAllowlist: '', triggerTarget: 'incident', exposedTools: '' });
+  const [attestedIds, setAttestedIds] = useState<number[]>([]);
+  const [mcpEnablementAllowed, setMcpEnablementAllowed] = useState(false);
 
   async function load() {
     const generation = ++loadGeneration.current;
     setPolicyState('loading');
+    setMcpEnablementAllowed(false);
     try {
       const r = await fetch('/api/customization');
       if (generation !== loadGeneration.current) return;
@@ -75,7 +84,11 @@ export default function CustomizationPage() {
       const ir = await fetch('/api/integrations').catch(() => null);
       if (ir?.ok) {
         const data = await ir.json().catch(() => null);
-        if (generation === loadGeneration.current && Array.isArray(data?.integrations)) setIntegrations(data.integrations);
+        if (generation === loadGeneration.current && Array.isArray(data?.integrations)) {
+          setIntegrations(data.integrations);
+          setAttestedIds([]);
+          setMcpEnablementAllowed(data.mcpEnablementAllowed === true);
+        }
       }
     } catch {
       if (generation === loadGeneration.current) setPolicyState('unavailable');
@@ -85,7 +98,8 @@ export default function CustomizationPage() {
   async function createIntegration() {
     const isEgress = integForm.direction === 'egress';
     const body = isEgress
-      ? { name: integForm.name, kind: integForm.kind, direction: 'egress', endpoint: integForm.endpoint, transport: integForm.transport, capability: integForm.capability }
+      ? { name: integForm.name, kind: integForm.kind, direction: 'egress', endpoint: integForm.endpoint, transport: integForm.transport, capability: integForm.capability,
+          exposedTools: integForm.exposedTools.split(',').map((s) => s.trim()).filter(Boolean) }
       : { name: integForm.name, kind: integForm.kind, direction: 'ingress', authMode: integForm.authMode, triggerTarget: integForm.triggerTarget, sourceAllowlist: integForm.sourceAllowlist.split(',').map((s) => s.trim()).filter(Boolean) };
     const res = await fetch('/api/integrations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const d = await res.json();
@@ -93,8 +107,14 @@ export default function CustomizationPage() {
     if (res.ok) load();
   }
   async function toggleIntegration(id: number, enabled: boolean) {
-    await fetch('/api/integrations', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: enabled ? 'disable' : 'enable', id }) });
-    load();
+    const i = integrations.find((item) => item.id === id);
+    const res = await fetch('/api/integrations', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      op: enabled ? 'disable' : 'enable', id, attestReadOnly: attestedIds.includes(id),
+      attestRegistration: { endpoint: i?.endpoint, transport: i?.transport, credentialsRef: i?.credentialsRef, exposedTools: i?.exposedTools },
+    }) });
+    const d = await res.json();
+    setMsg(res.ok ? 'Integration updated.' : `Error: ${d.error}`);
+    if (res.ok) load();
   }
   useEffect(() => { load(); return () => { loadGeneration.current++; }; }, []);
 
@@ -261,18 +281,19 @@ export default function CustomizationPage() {
               ))}
             </div>
             <input className="w-full rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" placeholder="name (kebab-case)" value={integForm.name} onChange={(e) => setIntegForm({ ...integForm, name: e.target.value })} />
-            <select className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" value={integForm.kind} onChange={(e) => setIntegForm({ ...integForm, kind: e.target.value })}>
+            <select className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" value={integForm.kind} onChange={(e) => setIntegForm({ ...integForm, kind: e.target.value, ...(e.target.value === 'custom_mcp' ? { capability: 'read', transport: 'api_key' } : {}) })}>
               {(integForm.direction === 'egress' ? INTEG_KINDS_EGRESS : INTEG_KINDS_INGRESS).map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
             {integForm.direction === 'egress' ? (
               <div className="flex flex-wrap items-center gap-2">
                 <input className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" placeholder="https endpoint" value={integForm.endpoint} onChange={(e) => setIntegForm({ ...integForm, endpoint: e.target.value })} />
                 <select className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" value={integForm.transport} onChange={(e) => setIntegForm({ ...integForm, transport: e.target.value })}>
-                  {INTEG_TRANSPORTS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  {INTEG_TRANSPORTS.filter((t) => (integForm.kind !== 'custom_mcp' && integForm.capability !== 'read') || ['api_key', 'oauth_client_credentials'].includes(t)).map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <select className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" value={integForm.capability} onChange={(e) => setIntegForm({ ...integForm, capability: e.target.value })}>
-                  <option value="read">read</option><option value="read_write">read_write</option>
+                  <option value="read">read</option>{integForm.kind !== 'custom_mcp' && <option value="read_write">read_write</option>}
                 </select>
+                <input className="rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]" placeholder="exact MCP tool names (comma-separated)" value={integForm.exposedTools} onChange={(e) => setIntegForm({ ...integForm, exposedTools: e.target.value })} />
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-2">
@@ -282,15 +303,26 @@ export default function CustomizationPage() {
               </div>
             )}
             <button onClick={createIntegration} className="rounded border border-ink-200 px-3 py-1 text-[12px] font-medium">Register integration</button>
+            {!mcpEnablementAllowed && <p className="text-[12px] text-ink-500">{MCP_PENDING_TEXT[lang]}</p>}
             {integrations.map((i) => (
               <div key={i.id} className="flex items-center justify-between rounded border border-ink-100 bg-paper px-3 py-2 text-[12px]">
                 <div>
                   <span className="font-semibold">{i.name}</span>{' '}
                   <span className="text-ink-400">({i.tier}, {i.direction}, {i.kind}, {i.capability})</span>
                   {i.direction === 'ingress' && i.receivePath && <div className="text-ink-500">{i.receivePath}</div>}
+                  {(i.kind === 'custom_mcp' || (i.direction === 'egress' && i.capability === 'read' && !!i.endpoint) || !!i.exposedTools?.length) && <div className="space-y-1 text-ink-500">
+                    <div>{i.endpoint} · {i.transport}</div>
+                    <div>Tools: {(i.exposedTools ?? []).join(', ') || 'none — connections are blocked'}</div>
+                    <div>Operator-provisioned secret: {i.credentialsRef}</div>
+                    {!i.enabled && <label className="flex items-center gap-1">
+                      <input type="checkbox" checked={attestedIds.includes(i.id)} onChange={(e) => setAttestedIds((ids) => e.target.checked ? [...ids, i.id] : ids.filter((id) => id !== i.id))} />
+                      I have verified that every listed tool and this credential are read-only.
+                    </label>}
+                  </div>}
                 </div>
                 {i.tier === 'custom'
-                  ? <button onClick={() => toggleIntegration(i.id, i.enabled)} className={`rounded border px-2 py-1 text-[12px] ${i.enabled ? 'border-emerald-300 text-emerald-600' : 'border-ink-100 text-ink-400'}`}>{i.enabled ? 'Enabled' : 'Disabled'}</button>
+                  ? <button disabled={!i.enabled && (i.kind === 'custom_mcp' || (i.direction === 'egress' && i.capability === 'read' && !!i.endpoint) || !!i.exposedTools?.length) && (!mcpEnablementAllowed || !attestedIds.includes(i.id) || !i.exposedTools?.length)}
+                      onClick={() => toggleIntegration(i.id, i.enabled)} className={`rounded border px-2 py-1 text-[12px] ${i.enabled ? 'border-emerald-300 text-emerald-600' : 'border-ink-100 text-ink-400'}`}>{i.enabled ? 'Enabled' : 'Disabled'}</button>
                   : <span className="text-ink-400">built-in</span>}
               </div>
             ))}

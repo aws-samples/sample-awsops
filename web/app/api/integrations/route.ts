@@ -10,7 +10,9 @@ import { getPool } from '@/lib/db';
 import { writeAudit } from '@/lib/catalog';
 import { validateIntegration } from '@/lib/integration-validation';
 import { assertEgressEndpointAllowed } from '@/lib/ssrf-guard';
-import { upsertIntegration, listIntegrations, setIntegrationEnabled } from '@/lib/integrations';
+import { upsertIntegration, listIntegrations, setIntegrationEnabled, getIntegrationById,
+  attestAndEnableMcp } from '@/lib/integrations';
+import { customMcpEnabled, isMcpRegistration } from '@/lib/custom-mcp-policy';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 
 export const dynamic = 'force-dynamic';
@@ -38,7 +40,7 @@ async function getAllowPrivate(accountId: string): Promise<boolean> {
 export async function GET(request: Request) {
   const g = await gate(request);
   if (g.resp) return g.resp;
-  return json({ integrations: await listIntegrations() }, 200);
+  return json({ integrations: await listIntegrations(), mcpEnablementAllowed: customMcpEnabled() }, 200);
 }
 
 export async function POST(request: Request) {
@@ -48,6 +50,7 @@ export async function POST(request: Request) {
   try { body = (await readJsonBounded(request)) as Record<string, unknown>; }
   catch (e) { if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413); return json({ error: 'invalid JSON' }, 400); }
 
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'object required' }, 400);
   const v = validateIntegration(body as never);
   if (!v.ok) return json({ error: 'invalid integration', detail: v.errors }, 400);
 
@@ -80,7 +83,7 @@ export async function POST(request: Request) {
       inboundAuthRef: body.inboundAuthRef ? String(body.inboundAuthRef) : undefined,
       sourceAllowlist: (body.sourceAllowlist as string[]) ?? undefined,
       triggerTarget: body.triggerTarget ? String(body.triggerTarget) : undefined,
-      tier: 'custom', createdBy: g.user!.email,
+      tier: 'custom', createdBy: g.user!.sub,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'upsert failed' }, 409); // built-in name collision
@@ -95,9 +98,25 @@ export async function PUT(request: Request) {
   let body: Record<string, unknown>;
   try { body = (await readJsonBounded(request)) as Record<string, unknown>; }
   catch (e) { if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413); return json({ error: 'invalid JSON' }, 400); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'object required' }, 400);
   if (body.op === 'enable' || body.op === 'disable') {
-    await setIntegrationEnabled(Number(body.id), body.op === 'enable'); // custom-only at the SQL level
-    await writeAudit({ actor: g.user!.email ?? g.user!.sub, action: String(body.op), objectType: 'integration', objectId: String(body.id) });
+    const id = Number(body.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return json({ error: 'invalid integration id' }, 400);
+    const integration = await getIntegrationById(id);
+    if (!integration) return json({ error: 'integration not found' }, 404);
+    if (integration.tier !== 'custom') return json({ error: 'built-in integration cannot be toggled' }, 409);
+    try {
+      if (body.op === 'enable' && isMcpRegistration(integration)) {
+        await attestAndEnableMcp(id, g.user!.sub, body.attestReadOnly === true, body.attestRegistration);
+      } else {
+        await setIntegrationEnabled(id, body.op === 'enable');
+      }
+    } catch {
+      await writeAudit({ actor: g.user!.sub, action: `${body.op}_rejected`,
+        objectType: 'integration', objectId: String(id) });
+      return json({ error: 'Enablement requires accepted policy, read-only attestation and its provisioned current secret' }, 409);
+    }
+    await writeAudit({ actor: g.user!.sub, action: String(body.op), objectType: 'integration', objectId: String(id) });
     return json({ ok: true }, 200);
   }
   return json({ error: 'unknown op' }, 400);

@@ -12,6 +12,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 | Runbook | Topic |
 |---|---|
+| [custom-mcp-governance.md](custom-mcp-governance.md) | Administrator MCP read controls, per-row current Secret binding, account selection, attestation and pending policy acceptance |
 | [review-codec-sandbox.md](review-codec-sandbox.md) | Standalone Docker codec confinement, bounded byte transport and owned cleanup |
 | [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
 | [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |

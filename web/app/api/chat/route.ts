@@ -558,6 +558,7 @@ export async function POST(request: Request) {
   const egressReadIntegrations = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read')
     .map((i) => ({
+      id: Number(i.id), kind: i.kind, direction: i.direction, capability: i.capability,
       name: i.name, exposedTools: i.exposedTools, providedContext: i.providedContext,
       endpoint: i.endpoint ?? undefined, transport: i.transport ?? undefined,
       credentialsRef: i.credentialsRef ?? undefined, allowPrivate,
