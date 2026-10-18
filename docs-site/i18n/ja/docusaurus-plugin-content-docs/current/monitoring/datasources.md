@@ -58,7 +58,7 @@ AWSops のデータソース機能は、外部オブザーバビリティプラ�
 | **Type** | O | データソースのタイプ（8 種から選択） |
 | **URL** | O | エンドポイント URL（例: `http://prometheus:9090`） |
 | **Authentication** | - | 認証方式 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 保存範囲は 1–60 秒（デフォルト 10 秒）、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir/ClickHouse はすべての経路（Explore・サービスグラフ・エージェント）でサーバー実行上限として適用し、コネクタの HTTP タイムアウトをその上に揃えます。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）は HTTP 応答上限（デフォルト 12 秒）として適用され、サーバー側のクエリ停止は保証しません |
+| **Timeout** | - | 保存範囲は 1–60 秒（デフォルト 10 秒）。ClickHouse はすべての経路で `max_execution_time` の上限として適用し、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir は Explore 経路のみで API `timeout` として適用し、上限は 10 秒。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）は保存のみで現在は適用されません |
 | **Database** | - | デフォルトのデータベース名（ClickHouse 専用、識別子のみ） |
 
 :::note v1 との違い
@@ -203,7 +203,7 @@ AI アシスタントは、登録されたデータソースを活用して分�
 
 | 設定 | デフォルト | 説明 |
 |------|--------|------|
-| **Timeout** | 10 秒 | アップストリームのクエリ実行上限（秒、1–60）。ClickHouse はすべての経路（Explore・サービスグラフ・エージェント）の上限（ceiling）として適用され（呼び出し側は短くのみ調整可能）、コネクタは自身の HTTP タイムアウトをその上に揃えます（有効上限 55 秒 — Lambda の 60 秒制限内に収めるため 56–60 秒の設定は 55 秒に短縮されます）。Prometheus/Mimir もすべての経路で API `timeout` パラメータとして同じ上限を適用し（デフォルト 10 秒、有効上限 55 秒）、コネクタが HTTP タイムアウトをその上に揃えます。その他の種類は HTTP 応答上限（デフォルト 12 秒）としてのみ適用されます |
+| **Timeout** | 10 秒 | アップストリームのクエリ実行上限（秒、1–60）。ClickHouse はすべての経路（Explore・サービスグラフ・エージェント）の上限（ceiling）として適用され（呼び出し側は短くのみ調整可能）、コネクタは自身の HTTP タイムアウトをその上に揃えます（有効上限 55 秒 — Lambda の 60 秒制限内に収めるため 56–60 秒の設定は 55 秒に短縮されます）。Prometheus/Mimir は Explore 経路の API `timeout` パラメータとして適用され、コネクタの 12 秒 HTTP タイムアウトの下で 10 秒にキャップされます |
 
 ### ClickHouse 専用
 

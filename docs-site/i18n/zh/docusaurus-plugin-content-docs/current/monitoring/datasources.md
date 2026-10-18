@@ -58,7 +58,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 | **Type** | O | 数据源类型（从 8 种中选择） |
 | **URL** | O | 端点 URL（例：`http://prometheus:9090`） |
 | **Authentication** | - | 认证方式（None、Basic、Bearer Token、Custom Header） |
-| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径（Explore、服务图、代理）作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询 |
+| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒）。ClickHouse 在所有路径应用 `max_execution_time` 上限，有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir 仅在 Explore 路径应用 API `timeout`，上限为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）仅存储该值，目前不生效 |
 | **Database** | - | 默认数据库名称（仅 ClickHouse，仅允许标识符） |
 
 :::note 与 v1 的差异
@@ -203,7 +203,7 @@ AI 助手可以利用已注册的数据源执行分析。
 
 | 设置 | 默认值 | 说明 |
 |------|--------|------|
-| **Timeout** | 10 秒 | 上游查询执行上限（秒，1–60）。ClickHouse 在所有路径（Explore、服务图、代理）作为上限生效（调用方只能调得更短），连接器会将自身 HTTP 超时对齐到该上限之上（有效上限 55 秒 — 为保持在 Lambda 60 秒限制之下，56–60 秒的设置会缩短为 55 秒）；Prometheus/Mimir 也在所有路径通过 API `timeout` 参数应用同一上限（默认 10 秒，有效最大值 55 秒），连接器将 HTTP 超时对齐到其上；其他类型仅作为 HTTP 响应上限（默认 12 秒）生效 |
+| **Timeout** | 10 秒 | 上游查询执行上限（秒，1–60）。ClickHouse 在所有路径（Explore、服务图、代理）作为上限生效（调用方只能调得更短），连接器会将自身 HTTP 超时对齐到该上限之上（有效上限 55 秒 — 为保持在 Lambda 60 秒限制之下，56–60 秒的设置会缩短为 55 秒）；Prometheus/Mimir 通过 Explore 路径的 API `timeout` 参数生效，并在连接器 12 秒 HTTP 超时之下封顶为 10 秒 |
 
 ### 仅 ClickHouse
 

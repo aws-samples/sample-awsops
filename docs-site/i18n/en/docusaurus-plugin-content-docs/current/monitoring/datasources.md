@@ -54,7 +54,7 @@ Creating, editing, and deleting datasources requires an admin role. In v2, admin
 | **Type** | Yes | Datasource type (select from 8 types) |
 | **URL** | Yes | Endpoint URL (e.g., `http://prometheus:9090`) |
 | **Authentication** | No | Auth method (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | No | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path (Explore, service graph, agent) and align the connector HTTP timeout above it. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit (default 12s); it does not guarantee server-side query cancellation |
+| **Timeout** | No | Stored range 1–60 seconds (default 10). ClickHouse applies the `max_execution_time` ceiling on every path, with an effective maximum of 55s (56–60 is shortened to 55). Prometheus/Mimir apply the API `timeout` only on the Explore path, capped at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) store the value but do not apply it today |
 | **Database** | No | Default database name (ClickHouse only, identifier-only) |
 
 :::note Difference from v1
@@ -199,7 +199,7 @@ Datasource-related questions are processed through the `datasource` route. The A
 
 | Setting | Default | Description |
 |------|--------|------|
-| **Timeout** | 10s | Upstream query execution bound (seconds, 1–60). ClickHouse applies it as the CEILING on every path (Explore, service graph, agent — callers can only tighten it) with the connector aligning its own HTTP timeout above it (effective maximum 55s — values 56–60 are shortened to 55s to stay under the Lambda's 60s wall); Prometheus/Mimir apply the same ceiling as the API `timeout` param on every path (default 10s, effective maximum 55s) with the connector HTTP timeout aligned above it; the other kinds apply it only as the HTTP response limit (default 12s) |
+| **Timeout** | 10s | Upstream query execution bound (seconds, 1–60). ClickHouse applies it as the CEILING on every path (Explore, service graph, agent — callers can only tighten it) with the connector aligning its own HTTP timeout above it (effective maximum 55s — values 56–60 are shortened to 55s to stay under the Lambda's 60s wall); Prometheus/Mimir apply it as the Explore-path API `timeout` param, capped at 10s under the connector's 12s HTTP timeout |
 
 ### ClickHouse only
 
