@@ -19,7 +19,9 @@ const AGENT_TYPES = ['generic', 'on_demand', 'triage', 'rca', 'mitigation', 'eva
 // jaeger/dynatrace) — see web/lib/integration-validation.ts for the source of truth.
 const INTEG_KINDS_EGRESS = INTEGRATION_KINDS_EGRESS;
 const INTEG_KINDS_INGRESS = INTEGRATION_KINDS_INGRESS;
-const INTEG_TRANSPORTS = INTEGRATION_TRANSPORTS;
+// oauth_3lo stays in the source-of-truth constant for historical rows but is not executable by the
+// runtime and is rejected by validation, so the form never offers it.
+const INTEG_TRANSPORTS = INTEGRATION_TRANSPORTS.filter((t) => t !== 'oauth_3lo');
 // NOTE: curated read connectors (Prometheus/Loki/…/Notion credential cards) moved to the Integrations
 // hub (/integrations) — Datasources tab + Connectors tab. This page keeps Agents/Skills/Agent-Space +
 // the advanced custom-integration registration.

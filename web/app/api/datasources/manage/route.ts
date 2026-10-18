@@ -212,7 +212,10 @@ export async function PATCH(request: Request) {
       none: [], basic: ['username', 'password'], bearer: ['token'],
       custom_header: ['headerName', 'headerValue', 'headerName2', 'headerValue2', 'apiKey', 'appKey'],
     };
-    for (const k of STORED_AUTH_KEYS) if (k !== 'org_id' && !(KEEP_BY_AUTH[effAuth] ?? []).includes(k)) delete existing[k];
+    // A Datadog instance's legacy key pair is its credential whatever the row's authType says, so an
+    // unrelated settings-only PATCH never deletes it (only an origin change or an explicit re-auth does).
+    const keep = ds.kind === 'datadog' ? [...(KEEP_BY_AUTH[effAuth] ?? []), 'apiKey', 'appKey'] : (KEEP_BY_AUTH[effAuth] ?? []);
+    for (const k of STORED_AUTH_KEYS) if (k !== 'org_id' && !keep.includes(k)) delete existing[k];
     // creds is key-allowlisted (pickCredKeys) so nothing here can override the validated
     // endpoint/authType/settings fields regardless of spread order.
     const blob: Record<string, unknown> = {
@@ -224,7 +227,7 @@ export async function PATCH(request: Request) {
     };
     // Prune the FINAL blob too (round-10: {authType:'none', creds:{password}} re-added the
     // key AFTER the merge-base pruning) — keys outside the effective authType never persist.
-    for (const k of CRED_KEYS) if (k !== 'org_id' && !(KEEP_BY_AUTH[effAuth] ?? []).includes(k)) delete blob[k];
+    for (const k of STORED_AUTH_KEYS) if (k !== 'org_id' && !keep.includes(k)) delete blob[k];
     // database is ClickHouse-only config — never persist it for other kinds (inert but stale).
     if (ds.kind !== 'clickhouse') delete blob.database;
     await setIntegrationCredentialById(id, blob, client);

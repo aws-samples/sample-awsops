@@ -77,21 +77,25 @@ maximum is 55 seconds within the existing Lambda wall limit.
 - Prometheus/Mimir/ClickHouse apply a provider execution ceiling on query paths.
   Default is 10 seconds; callers can tighten the ceiling. Their query HTTP
   deadline is aligned above the execution bound.
-- Loki/Tempo/Jaeger/Dynatrace/Datadog apply an HTTP response timeout, defaulting to
-  12 seconds. This does not establish provider-side query cancellation.
+- Loki/Tempo/Jaeger/Dynatrace/Datadog apply the saved `timeoutS` as an HTTP response
+  timeout, defaulting to 12 seconds. This does not establish provider-side query
+  cancellation. Connect, headers and body share that one deadline.
 - Schema discovery may use shorter bounded operation deadlines.
 - Success bodies are limited to 4 MiB before parsing; error bodies to 64 KiB.
   Overflow fails explicitly and is never represented as an empty dataset.
 
 Connection tests use bounded reads against the actual supported query operation,
-with the configured auth and tenant. Verified query access does not establish
-access to every metric, trace, dataset or optional tool.
+with the configured auth and tenant, and report `{ok, verified, latencyMs, error?}`
+with fixed sentences (an SSRF policy rejection keeps its own classification).
+Verified query access does not establish access to every metric, trace, dataset or
+optional tool.
 
 Query producers distinguish verified complete `ok`/`empty` from `partial`,
 `unknown` and `error`. Malformed/unrecognized responses cannot establish absence;
-usable valid siblings may be retained with uncertainty. Jaeger discloses its
-requested limit and retained count; reaching the requested limit is potentially
-partial even when no additional trace is proven.
+usable valid siblings may be retained with uncertainty. Jaeger and Loki disclose
+the requested limit and returned count; reaching the requested limit is
+`limitSaturated` and potentially partial even when no additional record is proven,
+while `truncated` is reserved for records the connector actually dropped.
 Actual HTTP 206 evidence is retained independently of upstream JSON fields and
 cannot certify an empty dataset.
 
@@ -113,7 +117,8 @@ address fallback without replaying requests after read/write failures.
 HTTPX/HTTPcore versions implementing the tested SNI contract are pinned in the
 runtime dependencies.
 
-`oauth_3lo` is not executable and is rejected at registration/enablement.
+`oauth_3lo` is not executable: validation rejects it at registration, the enable path
+rejects it, the form does not offer it, and a historical row fails closed at connect.
 The existing `oauth_client_credentials` transport consumes a previously stored
 bearer token; it does not implement issuance or refresh. External write governance,
 AWS-mutation freeze and per-account exposed-tool ceilings are unchanged.
