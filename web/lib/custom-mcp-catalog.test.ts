@@ -15,6 +15,15 @@ beforeEach(() => {
   db.query.mockImplementation(async (sql: string) => ({ rows: sql.includes('SELECT *') ? [row] : sql.includes('RETURNING id') ? [{ id: '7' }] : [] }));
   secret.current.mockResolvedValue('a'.repeat(32));
 });
+it('isolates malformed legacy tools from a healthy selected catalog entry', async () => {
+  process.env.AURORA_ENDPOINT = 'fixture-only';
+  db.query.mockResolvedValue({ rows: [
+    { id: 8, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: [] },
+    { id: 9, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: { legacy: true } },
+    { id: 10, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: null },
+  ] });
+  expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([8]);
+});
 describe('MCP catalog controls', () => {
   it.each(['false', 'true'])('quarantines legacy write tools but retains proposal metadata when activation is %s', async (activation) => {
     vi.stubEnv('AURORA_ENDPOINT', 'test.invalid');

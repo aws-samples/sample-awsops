@@ -108,6 +108,21 @@ describe('/api/integrations POST', () => {
 });
 
 describe('/api/integrations GET + PUT', () => {
+  it.each([true, [3], '3', null])('rejects coercible non-number toggle ID %j before catalog access', async id => {
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'enable', id }, 'PUT'))).status).toBe(400);
+    expect(getIntegrationById).not.toHaveBeenCalled();
+    expect(setIntegrationEnabled).not.toHaveBeenCalled();
+  });
+  it('re-enables a native datasource without routing it through MCP attestation', async () => {
+    getIntegrationById.mockResolvedValue({ id: 3, tier: 'custom', kind: 'prometheus',
+      direction: 'egress', capability: 'read', endpoint: 'https://example.com/query',
+      transport: null, credentialsRef: null, exposedTools: [] });
+    const { PUT } = await import('./route');
+    expect((await PUT(req({ op: 'enable', id: 3 }, 'PUT'))).status).toBe(200);
+    expect(setIntegrationEnabled).toHaveBeenCalledWith(3, true);
+    expect(attestAndEnableMcp).not.toHaveBeenCalled();
+  });
   it('GET lists integrations', async () => {
     listIntegrations.mockResolvedValue([{ id: 1, name: 'g' }]);
     const { GET } = await import('./route');

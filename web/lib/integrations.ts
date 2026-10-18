@@ -8,6 +8,7 @@ import { type Tier } from '@/lib/catalog';
 import { CUSTOM_MCP_ATTESTATION, assertMcpReady, customMcpEnabled, customMcpSecretName, isMcpRegistration,
   mcpRegistrationErrors, validMcpAttestation } from './custom-mcp-policy';
 import { currentCustomMcpSecretVersion } from './custom-mcp-secret';
+import { DATASOURCE_KINDS } from './integrations-category';
 
 export type Direction = 'egress' | 'ingress';
 export type Capability = 'read' | 'read_write';
@@ -37,7 +38,7 @@ export interface IntegrationInput {
 export interface IntegrationRow {
   id: number; name: string; kind: string; direction: Direction; description: string;
   endpoint: string | null; transport: string | null; credentialsRef: string | null;
-  privateConnectionRef: string | null; capability: Capability; exposedTools: string[];
+  privateConnectionRef: string | null; capability: Capability; exposedTools: string[]; invalidToolShape?: boolean;
   providedContext: Record<string, unknown>; writeActionRefs: string[];
   authMode: string | null; receivePath: string | null; inboundAuthRef: string | null;
   sourceAllowlist: string[]; triggerTarget: string | null; tier: Tier; enabled: boolean;
@@ -51,7 +52,8 @@ function mapRow(r: Record<string, unknown>): IntegrationRow {
     credentialsRef: (r.credentials_ref as string) ?? null,
     privateConnectionRef: (r.private_connection_ref as string) ?? null,
     capability: (r.capability as Capability) ?? 'read',
-    exposedTools: (r.exposed_tools as string[]) ?? [],
+    exposedTools: Array.isArray(r.exposed_tools) ? r.exposed_tools : [],
+    ...(!Array.isArray(r.exposed_tools) && r.exposed_tools !== undefined ? { invalidToolShape: true } : {}),
     providedContext: (r.provided_context as Record<string, unknown>) ?? {},
     writeActionRefs: (r.write_action_refs as string[]) ?? [],
     authMode: (r.auth_mode as string) ?? null, receivePath: (r.receive_path as string) ?? null,
@@ -131,12 +133,25 @@ export async function setIntegrationEnabled(id: number, enabled: boolean): Promi
   // builtin rows are never togglable from the API (custom-only at the SQL level)
   const result = await getPool().query(
     `UPDATE integrations SET enabled = $1, updated_at = NOW() WHERE id = $2 AND tier = 'custom'
-       AND (NOT $1 OR (kind <> 'custom_mcp' AND
-         NOT (direction='egress' AND
-           ((COALESCE(endpoint,'')<>'' AND capability='read') OR jsonb_array_length(exposed_tools)>0))))`,
+       AND (NOT $1 OR NOT (${governedMcpSql()}))`,
     [enabled, id],
   );
   if (result.rowCount === 0) throw new Error('integration cannot be toggled through the generic helper');
+}
+
+/** Server-owned column aliases only. CASE prevents legacy non-array JSON from raising
+ *  jsonb_array_length errors, and such malformed egress rows remain governed/fail-closed.
+ *  Keep the native datasource exception aligned with isMcpRegistration. */
+function governedMcpSql(alias = ''): string {
+  const c = (name: string) => `${alias}${name}`;
+  const tools = `CASE WHEN jsonb_typeof(${c('exposed_tools')})='array'
+    THEN jsonb_array_length(${c('exposed_tools')}) ELSE 1 END`;
+  const native = `(${c('kind')} IN (${DATASOURCE_KINDS.map(k => `'${k}'`).join(',')})
+    AND ${c('direction')}='egress' AND ${c('capability')}='read'
+    AND COALESCE(${c('transport')},'')='' AND COALESCE(${c('credentials_ref')},'')=''
+    AND (${tools})=0)`;
+  return `(${c('kind')}='custom_mcp' OR (${c('direction')}='egress' AND NOT ${native}
+    AND ((COALESCE(${c('endpoint')},'')<>'' AND ${c('capability')}='read') OR (${tools})>0)))`;
 }
 
 export async function getIntegrationById(id: number): Promise<IntegrationRow | null> {
@@ -221,9 +236,7 @@ export async function getEnabledIntegrations(accountId = 'self'): Promise<Integr
        FROM integrations i
        WHERE i.enabled = true
          AND (
-           (i.kind <> 'custom_mcp' AND
-             NOT (i.direction='egress' AND
-               ((COALESCE(i.endpoint,'')<>'' AND i.capability='read') OR jsonb_array_length(i.exposed_tools)>0)) AND
+           (NOT (${governedMcpSql('i.')}) AND
              NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1))
            OR i.id IN (
              SELECT (e)::bigint FROM agent_spaces s, jsonb_array_elements_text(s.enabled_integration_ids) AS e

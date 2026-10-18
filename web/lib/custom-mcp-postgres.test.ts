@@ -6,6 +6,7 @@ const secret = vi.hoisted(() => ({ current: vi.fn() }));
 vi.mock('@/lib/db', () => ({ getPool: () => db.pool }));
 vi.mock('./custom-mcp-secret', () => ({ currentCustomMcpSecretVersion: secret.current }));
 import { attestAndEnableMcp, getEnabledIntegrations, getIntegrationById, setIntegrationEnabled, upsertIntegration } from './integrations';
+import { DATASOURCE_KINDS } from './integrations-category';
 const socket = process.env.CUSTOM_MCP_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
   let pool: Pool;
@@ -21,6 +22,7 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     for (const name of ['01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql',
       '01KV0JKFF7Q28CMKQ2JGM2D1NK_integrations_p2.sql',
+      '01KY1S49Q20DY16RM99Q1S73WR_datasource_kinds_jaeger_dynatrace.sql',
       '01M57KRRZG3CZ7YZ4M4N7KQH2N_custom_mcp_attestation_audit.sql']) {
       await pool.query(readFileSync(new URL(`../../terraform/foundation/migrations/${name}`, import.meta.url), 'utf8'));
     }
@@ -69,6 +71,36 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     const id = await upsertIntegration(input);
     await expect(setIntegrationEnabled(id, true)).rejects.toThrow('generic helper');
     expect((await getIntegrationById(id))?.enabled).toBe(false);
+  });
+  it.each(DATASOURCE_KINDS)('can disable and re-enable a native %s datasource without MCP credentials', async kind => {
+    // Same endpoint/read/custom shape as createDatasource; transport/reference are NULL.
+    const { rows } = await pool.query(
+      `INSERT INTO integrations(name,kind,direction,capability,endpoint,tier,enabled)
+       VALUES($1,$2,'egress','read','https://example.com/query','custom',true) RETURNING id`,
+      [`native-${kind}`, kind]);
+    const id = Number(rows[0].id);
+    delete process.env.CUSTOM_MCP_ENABLED;
+    await setIntegrationEnabled(id, false);
+    expect((await getIntegrationById(id))?.enabled).toBe(false);
+    await setIntegrationEnabled(id, true);
+    expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([id]);
+    await pool.query("UPDATE integrations SET transport='api_key' WHERE id=$1", [id]);
+    await setIntegrationEnabled(id, false);
+    await expect(setIntegrationEnabled(id, true)).rejects.toThrow('generic helper');
+  });
+  it.each([{}, 'legacy', 7, null])('isolates malformed legacy tool JSON %j without blanking healthy catalog rows', async tools => {
+    const healthy = await upsertIntegration({ ...input, name: 'context-only',
+      kind: 'grafana', endpoint: undefined, exposedTools: [] });
+    await setIntegrationEnabled(healthy, true);
+    const broken = await upsertIntegration({ ...input, name: 'legacy-broken', kind: 'grafana',
+      endpoint: undefined, exposedTools: [] });
+    await pool.query('UPDATE integrations SET exposed_tools=$1::jsonb,enabled=true WHERE id=$2',
+      [JSON.stringify(tools), broken]);
+    await selected('self', [healthy, broken]);
+    expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([healthy]);
+    await expect(setIntegrationEnabled(broken, true)).rejects.toThrow('generic helper');
+    await setIntegrationEnabled(broken, false);
+    expect((await getIntegrationById(broken))?.enabled).toBe(false);
   });
   it('every edit disables the row and clears the attestation, including attacker-supplied context', async () => {
     const id = await enabled();

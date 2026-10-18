@@ -1,9 +1,10 @@
 // Vendor labels do not exempt administrator-supplied MCP endpoints from these controls.
+import { isDatasourceKind } from './integrations-category';
 export const CUSTOM_MCP_ATTESTATION = '_customMcpAttestation';
 export interface McpRegistration {
   id?: number; kind?: string; direction?: string; capability?: string;
   endpoint?: string | null; transport?: string | null; credentialsRef?: string | null;
-  exposedTools?: unknown; providedContext?: Record<string, unknown>;
+  exposedTools?: unknown; invalidToolShape?: boolean; providedContext?: Record<string, unknown>;
 }
 export interface McpAttestation {
   actorSub: string; attestedAt: string; tools: string[]; endpoint: string;
@@ -16,9 +17,15 @@ export function customMcpEnabled(): boolean {
 }
 
 export function isMcpRegistration(i: McpRegistration): boolean {
+  const tools = i.exposedTools === undefined ? [] : i.exposedTools;
+  // Native query connectors have their own credential/SSRF path. A vendor-labelled MCP
+  // registration still carries transport, a credential reference or tools and remains governed.
+  if (isDatasourceKind(i.kind ?? '') && i.direction === 'egress' &&
+      (i.capability ?? 'read') === 'read' && !i.transport && !i.credentialsRef &&
+      !i.invalidToolShape && Array.isArray(tools) && tools.length === 0) return false;
   return i.kind === 'custom_mcp' || (i.direction === 'egress' &&
     ((!!i.endpoint && (i.capability ?? 'read') === 'read') ||
-      (Array.isArray(i.exposedTools) && i.exposedTools.length > 0)));
+      i.invalidToolShape || !Array.isArray(tools) || tools.length > 0));
 }
 
 export function customMcpSecretName(id: number): string {
@@ -37,7 +44,7 @@ export function mcpRegistrationErrors(i: McpRegistration): string[] {
   if (!['api_key', 'oauth_client_credentials'].includes(i.transport ?? '')) {
     errors.push('custom MCP requires scoped secret authentication; SigV4 is unavailable');
   }
-  if (!Array.isArray(i.exposedTools) || i.exposedTools.length > 128 ||
+  if (i.invalidToolShape || !Array.isArray(i.exposedTools) || i.exposedTools.length > 128 ||
       i.exposedTools.some((t) => typeof t !== 'string' ||
         !/^[A-Za-z0-9_.-]{1,128}$/.test(t) || t.includes('___')) ||
       new Set(i.exposedTools).size !== i.exposedTools.length) {

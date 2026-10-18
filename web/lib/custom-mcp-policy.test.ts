@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { DATASOURCE_KINDS } from './integrations-category';
 import { CUSTOM_MCP_ATTESTATION, assertMcpReady, customMcpSecretName, isMcpRegistration,
   customMcpEnabled, mcpRegistrationErrors, validMcpAttestation } from './custom-mcp-policy';
 const registration = { id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read',
@@ -43,6 +44,15 @@ describe('administrator MCP policy', () => {
     expect(isMcpRegistration({ kind: 'grafana', direction: 'egress', exposedTools: [] })).toBe(false);
     expect(isMcpRegistration({ ...registration, kind: 'grafana', exposedTools: [] })).toBe(true);
     expect(isMcpRegistration({ ...registration, kind: 'slack', capability: 'read_write', exposedTools: [] })).toBe(false);
+  });
+  it.each(DATASOURCE_KINDS)('keeps the native %s connector out of MCP enablement', kind => {
+    const native = { kind, direction: 'egress', capability: 'read',
+      endpoint: 'https://example.com/query', transport: null, credentialsRef: null, exposedTools: [] };
+    expect(isMcpRegistration(native)).toBe(false);
+    expect(isMcpRegistration({ ...native, transport: 'api_key' })).toBe(true);
+    expect(isMcpRegistration({ ...native, credentialsRef: 'assigned' })).toBe(true);
+    expect(isMcpRegistration({ ...native, exposedTools: ['query'] })).toBe(true);
+    expect(isMcpRegistration({ ...native, exposedTools: { legacy: true } })).toBe(true);
   });
   it('permits a disabled empty registration but never enables its connection', () => {
     expect(mcpRegistrationErrors({ ...registration, exposedTools: [] })).toEqual([]);

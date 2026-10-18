@@ -1,4 +1,5 @@
 'use client';
+import { isMcpRegistration } from '@/lib/custom-mcp-policy';
 import { useEffect, useRef, useState } from 'react';
 import type { Lang } from '@/lib/i18n';
 import PageHeader from '@/components/ui/PageHeader';
@@ -310,7 +311,7 @@ export default function CustomizationPage() {
                   <span className="font-semibold">{i.name}</span>{' '}
                   <span className="text-ink-400">({i.tier}, {i.direction}, {i.kind}, {i.capability})</span>
                   {i.direction === 'ingress' && i.receivePath && <div className="text-ink-500">{i.receivePath}</div>}
-                  {(i.kind === 'custom_mcp' || (i.direction === 'egress' && i.capability === 'read' && !!i.endpoint) || !!i.exposedTools?.length) && <div className="space-y-1 text-ink-500">
+                  {isMcpRegistration(i) && <div className="space-y-1 text-ink-500">
                     <div>{i.endpoint} · {i.transport}</div>
                     <div>Tools: {(i.exposedTools ?? []).join(', ') || 'none — connections are blocked'}</div>
                     <div>Operator-provisioned secret: {i.credentialsRef}</div>
@@ -321,7 +322,7 @@ export default function CustomizationPage() {
                   </div>}
                 </div>
                 {i.tier === 'custom'
-                  ? <button disabled={!i.enabled && (i.kind === 'custom_mcp' || (i.direction === 'egress' && i.capability === 'read' && !!i.endpoint) || !!i.exposedTools?.length) && (!mcpEnablementAllowed || !attestedIds.includes(i.id) || !i.exposedTools?.length)}
+                  ? <button disabled={!i.enabled && isMcpRegistration(i) && (!mcpEnablementAllowed || !attestedIds.includes(i.id) || !i.exposedTools?.length)}
                       onClick={() => toggleIntegration(i.id, i.enabled)} className={`rounded border px-2 py-1 text-[12px] ${i.enabled ? 'border-emerald-300 text-emerald-600' : 'border-ink-100 text-ink-400'}`}>{i.enabled ? 'Enabled' : 'Disabled'}</button>
                   : <span className="text-ink-400">built-in</span>}
               </div>

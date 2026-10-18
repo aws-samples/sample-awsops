@@ -85,7 +85,7 @@ identity and resource policies, and their role trust relationships. Include the 
 role and any approved operator or worker callers; resolve unbounded or untrusted
 direct access. A direct caller that knows a registration's current Secret version
 could forge a matching endpoint and attestation and send that credential to its own
-endpoint. A version ID is metadata, not a secret or an authorization token. The
+endpoint. A version ID is metadata rather than secret material, but it is a security-relevant trust input here. A principal with invocation authority and knowledge of the current version can forge the self-consistent payload described above; version secrecy is not an authorization boundary. The
 owner must explicitly assess this residual risk; payload consistency is not proof
 of an independently authorized endpoint.
 
@@ -154,3 +154,7 @@ that the separate pinned transport release has been deployed.
 - `agent/agent.py`, `agent/test_custom_mcp_policy.py`
 - `terraform/foundation/workload.tf`
 - ADR-005, ADR-007, ADR-015, ADR-017; private Proposed ADR-022.
+
+Activation environment plumbing is intentionally absent from Terraform, the web task definition and the AgentCore provisioner in this preparation change. A future separately reviewed activation release must supply it only after acceptance and the invocation-principal evidence above. Existing audit actors/creators may contain historical email identities; new MCP attestations bind the immutable Cognito `sub`, without backfilling those historical entries.
+
+Native bundled datasource query rows with no MCP transport/reference and an empty tools array retain their existing enable/disable path. A datasource vendor label with MCP transport, credential reference or tools remains governed. Malformed legacy egress tools are excluded individually and require operator correction; they cannot certify a read-only ceiling.

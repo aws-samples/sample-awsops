@@ -100,8 +100,8 @@ export async function PUT(request: Request) {
   catch (e) { if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413); return json({ error: 'invalid JSON' }, 400); }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'object required' }, 400);
   if (body.op === 'enable' || body.op === 'disable') {
-    const id = Number(body.id);
-    if (!Number.isSafeInteger(id) || id <= 0) return json({ error: 'invalid integration id' }, 400);
+    const id = body.id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return json({ error: 'invalid integration id' }, 400);
     const integration = await getIntegrationById(id);
     if (!integration) return json({ error: 'integration not found' }, 404);
     if (integration.tier !== 'custom') return json({ error: 'built-in integration cannot be toggled' }, 409);
