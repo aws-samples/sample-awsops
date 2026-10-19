@@ -301,11 +301,12 @@ def _load_secret_map():
 def load_datasource(slug, instance_id=None):
     """Resolve a datasource's connection blob. Precedence:
        1. the request-scoped inline conn-config (`_REQUEST_CONN`) — the trusted BFF path only;
-       2. for an explicit instance_id, the per-instance secret key `map[str(instance_id)]` only —
-          the credential-blind worker path, where the caller sends ONLY an instance_id and the
-          connector reads the secret server-side. It never falls back to the kind mirror: a sibling
-          must not inherit the default's credential, and a migrated default whose id key was never
-          written must be re-saved first (the administrator save writes it);
+       2. for an explicit instance_id, the per-instance secret key `map[str(instance_id)]` — the
+          credential-blind worker path, where the caller sends ONLY an instance_id and the connector
+          reads the secret server-side — or the kind mirror when it is stamped with that exact id
+          (`instanceId`, written by the web default-mirror writer). A sibling never inherits the
+          default's credential, and an unstamped legacy mirror never serves an explicit id: a migrated
+          default must be re-saved first (the administrator save writes the id key and the stamp);
        3. the `map[slug]` kind mirror, only when no explicit instance was requested.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
@@ -315,8 +316,13 @@ def load_datasource(slug, instance_id=None):
     if instance_id is not None:
         creds = m.get(str(instance_id))
         if not isinstance(creds, dict) or not creds.get("endpoint"):
-            print(f"[datasource_http] strict instance lookup failed: slug={slug} instance_id={instance_id}")
-            raise NotConnected("requested datasource instance is not configured")
+            mirror = m.get(slug)
+            stamp = mirror.get("instanceId") if isinstance(mirror, dict) else None
+            if isinstance(mirror, dict) and mirror.get("endpoint") and stamp is not None and str(stamp) == str(instance_id):
+                creds = mirror  # the default's own stamped mirror
+            else:
+                print(f"[datasource_http] strict instance lookup failed: slug={slug} instance_id={instance_id}")
+                raise NotConnected("requested datasource instance is not configured")
     else:
         creds = m.get(slug)
     if not isinstance(creds, dict) or not creds.get("endpoint"):

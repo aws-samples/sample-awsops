@@ -13,8 +13,10 @@ credentials must fail.
 
 Native datasource connectors store one credential blob per integration ID
 (`map[<id>]`). Their plain kind key is the managed mirror of the current default
-and serves only calls without an explicit ID. An explicit-ID read uses its own ID
-key only; it never falls back to the kind mirror. Missing credentials fail closed.
+and serves calls without an explicit ID. The web default-mirror writer stamps it with
+the default's `instanceId`; an explicit-ID read uses its own ID key, or the mirror only
+when the stamp is that exact ID. An unstamped legacy mirror never serves an explicit
+ID. Missing credentials fail closed.
 
 ## Action
 
@@ -34,10 +36,10 @@ migrated default through the existing authenticated administrator save flow:
    rollout, and verify a same-kind instance without its own credentials fails
    closed. Stop deployment until all migrated defaults pass.
 
-Default switching and deletion keep today's web behavior in this change: the
-successor's ID-bound credential is mirrored; otherwise the kind mirror is cleared.
-The stricter handling of legacy mirrors lands with the datasource web contract
-change. Secrets Manager and row writes are not one atomic cross-service
+Switching or deleting a default is refused (HTTP 409) while the kind mirror is an
+unstamped legacy mirror, so a migrated default's only credential is never deleted
+before the backfill; afterwards the successor's ID-bound credential is mirrored and
+stamped, or the kind mirror is cleared. Secrets Manager and row writes are not one atomic cross-service
 transaction; a failed save requires inspection and retry through the administrator
 flow before rollout.
 

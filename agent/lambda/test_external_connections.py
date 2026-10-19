@@ -63,6 +63,15 @@ def test_explicit_instance_without_its_own_key_never_borrows_the_kind_mirror(ent
         assert dh.load_datasource("prometheus") == CREDS
 
 
+def test_explicit_default_instance_resolves_its_own_stamped_mirror_only():
+    mirror = {**CREDS, "instanceId": "3"}
+    with patch.object(dh, "_load_secret_map", return_value={"prometheus": mirror}):
+        assert dh.load_datasource("prometheus", instance_id=3) == mirror
+        assert dh.load_datasource("prometheus", instance_id="3") == mirror
+        with pytest.raises(dh.NotConnected):
+            dh.load_datasource("prometheus", instance_id=7)  # stamped for another instance
+
+
 def test_backfilled_legacy_default_remains_readable_without_lending_to_siblings():
     with patch.object(dh, "_load_secret_map", return_value={"7": CREDS, "prometheus": CREDS}):
         assert dh.load_datasource("prometheus", instance_id=7) == CREDS

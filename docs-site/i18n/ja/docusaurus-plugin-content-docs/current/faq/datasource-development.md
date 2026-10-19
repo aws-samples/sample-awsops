@@ -71,7 +71,7 @@ flowchart TD
 | # | ファイル | 追加するもの | テンプレート参照 |
 |---|------|-----------|-------------|
 | 1 | `web/lib/integrations-category.ts` | `DATASOURCE_KINDS` 配列に種類の文字列を追加 | 既存の `'prometheus' \| 'mimir' \| ...` |
-| 2 | コネクタ Lambda(`scripts/v2/workers/*` MCP ソース) | 読み取り専用ツール(`<kind>_query` など)の実装 + ヘルスチェック。**SSRF ガード必須**(下記参照) | 既存の prometheus コネクタを模倣 |
+| 2 | コネクタ Lambda(`scripts/v2/workers/*` MCP ソース) | 読み取り専用ツール(`<kind>_query` など)の実装 + 制限付きクエリプローブ(`<kind>_health` が `<kind>_query` を実行)。**SSRF ガード必須**(下記参照) | 既存の prometheus コネクタを模倣 |
 | 3 | `web/app/api/datasources/query/route.ts` | `TOOL` マップに `{ instant, range?, arg }` エントリを追加(読み取りツールのみ) | prometheus/clickhouse のエントリをコピー |
 | 4 | `web/lib/integration-credentials.ts` | `KNOWN_CONNECTOR_SLUGS` にスラッグを追加(任意キー注入の遮断) | 既存のスラッグ配列 |
 | 5 | `web/lib/datasource-schema.ts` | スキーマイントロスペクション → Aurora `datasource_schemas` への upsert(`upsertSchema`) | `getSchema`/`upsertSchema` パターン |
@@ -204,7 +204,7 @@ OpenAPI(Swagger) YAML/JSON ファイルがあれば、より正確なコード�
 
 - [ ] TypeScript/プロダクションビルドの成功 (`npm run build`) — `*.test.ts` の型ノイズは非ブロッキング
 - [ ] Explore ページのタイプドロップダウンに新しい種類が表示される
-- [ ] 接続テストの成功(ヘルスエンドポイントの応答)
+- [ ] 接続テストの成功(制限付きクエリプローブが `verified` を返す)
 - [ ] クエリ実行が `QueryResult` 形式に正規化されて返却される
 - [ ] NL→クエリが正しい言語で有効なクエリを生成(スキーマキャッシュ注入の確認)
 - [ ] コネクタ入力に `readJsonBounded` + SSRF ガードを適用(メタデータ/IMDS/ループバック遮断のテスト)
