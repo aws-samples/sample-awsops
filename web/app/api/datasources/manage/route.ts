@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     const id = await createDatasource({ name, kind, endpoint, authType: authType as 'none', settings });
     await setIntegrationCredentialById(id, blob);
     const ds = await getDatasource(id);
-    if (ds?.isDefault) await mirrorDefaultCredential(kind, blob, undefined, id); // first of its kind → it is the default
+    if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
     return json({ id }, 201);
   } catch (e) {
@@ -178,13 +178,11 @@ export async function PATCH(request: Request) {
     // Merge base: for a migrated DEFAULT instance the credential can live only under the
     // kind mirror (round-4 gate) — an id-only read would come back empty and a settings-only
     // PATCH would de-authenticate the instance AND clobber the mirror the agent path reads.
-    const existing: Record<string, unknown> = { ...((await getCredentialById(id,
-      ds.isDefault ? ds.kind : undefined, ds.isDefault ? ds.endpoint ?? undefined : undefined)) ?? {}) };
+    const existing: Record<string, unknown> = { ...((await getCredentialById(id, ds.isDefault ? ds.kind : undefined)) ?? {}) };
     // Settings keys are stripped UNCONDITIONALLY (the row is authoritative; an endpoint-only
     // PATCH must not carry a historical stale timeoutS/database forward either).
     delete existing.timeoutS;
     delete existing.database;
-    delete existing.instanceId;
     // ORIGIN compare (scheme+host+port — an https→http downgrade must count as a change, or
     // Basic material would transmit in cleartext); a malformed URL counts as changed.
     const originOf = (u: string | null | undefined): string | null => { try { return new URL(u ?? '').origin; } catch { return null; } };
@@ -225,7 +223,7 @@ export async function PATCH(request: Request) {
     // updateDatasource (below) re-mirrors from the freshly written id blob for a default
     // instance; this explicit refresh keeps the mirror correct even when the row update has
     // nothing to change.
-    if (ds.isDefault) await mirrorDefaultCredential(ds.kind, blob, client, id);
+    if (ds.isDefault) await mirrorDefaultCredential(ds.kind, blob, client);
     // A database change (set OR clear) re-grounds AI query generation — mirror POST's
     // connect-time warm (best-effort; the 6h isSchemaStale refresh remains).
     if (settings !== undefined && (settings.database ?? null) !== (ds.settings?.database ?? null)) {

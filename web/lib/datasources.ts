@@ -184,13 +184,12 @@ export async function resolveConnConfig(ds: DatasourceRow): Promise<ConnConfig> 
     ...cred,
     ...(ds.endpoint ? { endpoint: ds.endpoint } : {}),
     ...(ds.authType ? { authType: ds.authType } : {}),
-    // gap L203: settings ride the conn config so the Explore route, the service-graph sources and
-    // the credential-blind agent/worker path (which reads the same keys from the secret blob) all get
-    // Saved provider ceiling; Explore may tighten it further to 10s. database (identifier-validated on write AND read) is
-    // ClickHouse-only; timeoutS goes to every kind — Prometheus/Mimir/ClickHouse apply it as the
-    // provider execution ceiling, the other kinds as the transport deadline.
+    // gap L203: the ClickHouse settings ride the conn config — database (identifier-validated
+    // on write AND read) becomes &database=, and timeoutS becomes the connector's DEFAULT
+    // max_execution_time, so the Explore route, the service-graph sources, and the agent
+    // path all get the same bound from one mechanism.
     ...(ds.kind === 'clickhouse' && ds.settings?.database ? { database: ds.settings.database } : {}),
-    ...(ds.settings?.timeoutS ? { timeoutS: ds.settings.timeoutS } : {}),
+    ...(ds.kind === 'clickhouse' && ds.settings?.timeoutS ? { timeoutS: ds.settings.timeoutS } : {}),
   } as ConnConfig;
 }
 
@@ -228,7 +227,7 @@ export async function updateDatasource(
   const row = await getDatasource(id, q);
   if (row?.isDefault) {
     const cred = await getCredentialById(id, row.kind);
-    if (cred) await mirrorDefaultCredential(row.kind, cred, q === getPool() ? undefined : q, id);
+    if (cred) await mirrorDefaultCredential(row.kind, cred, q === getPool() ? undefined : q);
   }
 }
 
@@ -254,8 +253,7 @@ export async function setDefaultDatasource(id: number): Promise<void> {
   }
   // Secrets Manager write happens on its own connection/lock — after the DB commit.
   const cred = await getCredentialById(id, kind);
-  if (cred) await mirrorDefaultCredential(kind, cred, undefined, id);
-  else await deleteCredentialKeys([kind]); // never retain the previous default's credentials
+  if (cred) await mirrorDefaultCredential(kind, cred);
 }
 
 /** Delete a datasource instance. Cascade order: schema-cache rows → credential id key →
@@ -288,8 +286,7 @@ export async function deleteDatasource(id: number): Promise<void> {
       const newId = rows[0].id as number;
       await getPool().query('UPDATE integrations SET is_default = true, updated_at = NOW() WHERE id = $1', [newId]);
       const cred = await getCredentialById(newId, row.kind);
-      if (cred) await mirrorDefaultCredential(row.kind, cred, undefined, newId);
-      else await deleteCredentialKeys([row.kind]); // the removed default cannot authenticate its successor
+      if (cred) await mirrorDefaultCredential(row.kind, cred);
     } else {
       try {
         await deleteCredentialKeys([row.kind]); // no instances left → clear the managed mirror

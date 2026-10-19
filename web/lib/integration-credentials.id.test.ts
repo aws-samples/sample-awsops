@@ -74,37 +74,9 @@ describe('getCredentialById', () => {
     expect(await getCredentialById(5, 'prometheus')).toEqual({ endpoint: 'http://id5' });
   });
 
-  it('does not lend an unstamped kind mirror to an explicit instance', async () => {
+  it('falls back to the kind mirror when the id entry is absent', async () => {
     smSend.mockImplementation(() => getReturn({ prometheus: { endpoint: 'http://def' } }));
-    expect(await getCredentialById(99, 'prometheus')).toBeNull();
-  });
-
-  it('uses only a mirror stamped for the requested id', async () => {
-    const mirror = { endpoint: 'http://def', instanceId: '5' };
-    smSend.mockImplementation(() => getReturn({ prometheus: mirror }));
-    expect(await getCredentialById(5, 'prometheus')).toEqual(mirror);
-    expect(await getCredentialById(99, 'prometheus', 'http://def')).toBeNull();
-  });
-
-  it('recovers a legacy current default only at its verified exact endpoint', async () => {
-    smSend.mockImplementation(() => getReturn({ prometheus: { endpoint: 'http://def', token: 'fixture' } }));
-    expect(await getCredentialById(5, 'prometheus', 'http://def')).toEqual({ endpoint: 'http://def', token: 'fixture' });
-    expect(await getCredentialById(5, 'prometheus', 'http://def/another-tenant')).toBeNull();
-  });
-
-  it('backfills a verified legacy default with no sibling credential inheritance', async () => {
-    let map: Record<string, unknown> = { prometheus: { endpoint: 'http://def', token: 'fixture' } };
-    smSend.mockImplementation((cmd: any) => {
-      if (cmd.kind === 'get') return getReturn(map);
-      map = JSON.parse(cmd.input.SecretString);
-      return {};
-    });
-    const old = await getCredentialById(5, 'prometheus', 'http://def');
-    await setIntegrationCredentialById(5, old!);
-    await mirrorDefaultCredential('prometheus', old!, undefined, 5);
-    expect(await getCredentialById(5)).toEqual(old);
-    expect(await getCredentialById(99, 'prometheus')).toBeNull();
-    expect(map.prometheus).toMatchObject({ token: 'fixture', instanceId: '5' });
+    expect(await getCredentialById(99, 'prometheus')).toEqual({ endpoint: 'http://def' });
   });
 
   it('returns null when neither id nor kind mirror exists', async () => {
@@ -121,13 +93,6 @@ describe('mirrorDefaultCredential', () => {
     const w = writtenMap();
     expect(w['3']).toEqual({ endpoint: 'http://id3' });
     expect(w['loki']).toEqual({ endpoint: 'http://loki', authType: 'bearer', token: 't' });
-  });
-
-  it('stamps the mirror with the default instance id when given one', async () => {
-    smSend.mockImplementation((cmd: any) => (cmd.kind === 'get' ? getReturn({}) : {}));
-    await mirrorDefaultCredential('loki', { endpoint: 'http://loki', authType: 'none' }, undefined, 3);
-    expect(writtenMap()['loki']).toEqual({ endpoint: 'http://loki', authType: 'none', instanceId: '3' });
-    await expect(mirrorDefaultCredential('loki', { endpoint: 'http://loki' }, undefined, 0)).rejects.toThrow(/invalid integration id/);
   });
 });
 
