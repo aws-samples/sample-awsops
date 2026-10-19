@@ -18,11 +18,13 @@ RUN pip install --no-cache-dir \
     # CLICKHOUSE_* env contract, or the exposed tool surface with no review signal.
     # Keep in sync with agent/requirements.txt.
     "mcp-clickhouse==0.4.1" \
-    httpx \
+    "httpx==0.28.1" \
+    "httpcore==1.0.9" \
     httpx-sse \
     aws-requests-auth
 
 COPY streamable_http_sigv4.py .
+COPY pinned_http.py .
 COPY account_utils.py .
 COPY agent.py .
 COPY readiness.py .

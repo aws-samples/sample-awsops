@@ -69,6 +69,36 @@ class FakeTool:
         self.tool_name = name
 
 
+class IntegrationCredentialValidationTest(unittest.TestCase):
+    def test_transport_headers_and_control_characters_fail_without_echoing_secrets(self):
+        cases = [
+            ("api_key", {"header": "Host", "value": "synthetic-secret"}),
+            ("api_key", {"header": "Content-Length", "value": "synthetic-secret"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\nvalue"}),
+            ("oauth_client_credentials", {"token": "synthetic-secret\nvalue"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\u200b"}),
+        ]
+        for transport, secret in cases:
+            with self.subTest(transport=transport, header=secret.get("header")):
+                with self.assertRaises(ValueError) as error:
+                    agent.auth_headers(transport, secret)
+                self.assertNotIn("synthetic-secret", str(error.exception))
+
+    def test_pasted_trailing_whitespace_is_stripped_not_rejected(self):
+        # A copied token often ends in a newline; that is not a control character inside the secret.
+        self.assertEqual(agent.auth_headers("api_key", {"header": "X-Key", "value": "synthetic-secret\n"}),
+                         {"X-Key": "synthetic-secret"})
+        with self.assertRaises(ValueError) as error:
+            agent.auth_headers("api_key", {"header": "X-Key", "value": "   \n"})  # whitespace only = missing
+        self.assertNotIn("synthetic", str(error.exception))
+
+    def test_supported_authorization_headers_are_preserved(self):
+        self.assertEqual(agent.auth_headers("api_key", {"value": "Bearer synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+        self.assertEqual(agent.auth_headers("oauth_client_credentials", {"token": "synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+
+
 def names(tools):
     return [t.tool_name for t in tools]
 
@@ -231,6 +261,26 @@ class SsrfGuardTest(unittest.TestCase):
         # NXDOMAIN
         with self.assertRaisesRegex(agent.SsrfBlocked, "could not resolve"):
             agent._assert_host_allowed("https://nxdomain.local", True, resolver=resolver)
+
+        # Translator-embedded forms of the metadata/loopback targets are classified by the IPv4 they
+        # carry: IPv4-mapped, 6to4, Teredo (client address) and NAT64 (well-known and local-use).
+        for embedded in ("::ffff:169.254.169.254", "2002:a9fe:a9fe::1", "2001::5601:5601",
+                         "64:ff9b::a9fe:a9fe", "64:ff9b:1::a9fe:a9fe", "64:ff9b::7f00:1"):
+            self.assertTrue(agent._ip_always_blocked(embedded), embedded)
+            self.assertFalse(agent._ip_is_private(embedded), embedded)
+        self.assertTrue(agent._ip_is_private("64:ff9b::a00:1"))      # NAT64 of 10.0.0.1 = private (opt-in)
+        self.assertFalse(agent._ip_always_blocked("64:ff9b::0808:0808"))  # NAT64 of 8.8.8.8 = public
+
+        # A malformed port is an SSRF-classified rejection, not an uncaught ValueError.
+        with self.assertRaisesRegex(agent.SsrfBlocked, "invalid port"):
+            agent._assert_host_allowed("https://public.com:abc/", False, resolver=resolver)
+
+    def test_integration_session_gets_separate_connect_and_read_budgets(self):
+        # Collapsing the read budget to the 8s connect budget made every tool whose upstream takes
+        # longer than 8s to start answering fail with ReadTimeout.
+        self.assertEqual(agent.INTEGRATION_CONNECT_TIMEOUT, 8)
+        self.assertGreater(agent.INTEGRATION_READ_TIMEOUT, agent.INTEGRATION_CONNECT_TIMEOUT)
+        self.assertLessEqual(agent.INTEGRATION_READ_TIMEOUT, 120)  # inside the chat request budget
 
 
 class IntegrationHelpersTest(unittest.TestCase):
