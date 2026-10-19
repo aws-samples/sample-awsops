@@ -71,7 +71,7 @@ flowchart TD
 | # | 파일 | 추가할 것 | 템플릿 참조 |
 |---|------|-----------|-------------|
 | 1 | `web/lib/integrations-category.ts` | `DATASOURCE_KINDS` 배열에 종류 문자열 추가 | 기존 `'prometheus' \| 'mimir' \| ...` |
-| 2 | 커넥터 Lambda(`scripts/v2/workers/*` MCP 소스) | 읽기 전용 도구(`<kind>_query` 등) 구현 + 제한된 쿼리 프로브(`<kind>_health`가 `<kind>_query` 실행). **SSRF 가드 필수**(아래 참조) | 기존 prometheus 커넥터 모방 |
+| 2 | 커넥터 Lambda(`scripts/v2/workers/*` MCP 소스) | 읽기 전용 도구(`<kind>_query` 등) 구현 + 헬스체크. **SSRF 가드 필수**(아래 참조) | 기존 prometheus 커넥터 모방 |
 | 3 | `web/app/api/datasources/query/route.ts` | `TOOL` 맵에 `{ instant, range?, arg }` 항목 추가(읽기 도구만) | prometheus/clickhouse 항목 복사 |
 | 4 | `web/lib/integration-credentials.ts` | `KNOWN_CONNECTOR_SLUGS`에 슬러그 추가(임의 키 주입 차단) | 기존 슬러그 배열 |
 | 5 | `web/lib/datasource-schema.ts` | 스키마 인트로스펙션 → Aurora `datasource_schemas` upsert(`upsertSchema`) | `getSchema`/`upsertSchema` 패턴 |
@@ -204,7 +204,7 @@ OpenAPI(Swagger) YAML/JSON 파일이 있으면 더 정확한 코드를 생성할
 
 - [ ] TypeScript/프로덕션 빌드 성공 (`npm run build`) — `*.test.ts` 타입 잡음은 비차단
 - [ ] Explore 페이지 타입 드롭다운에 새 종류 노출
-- [ ] 연결 테스트 성공(제한된 쿼리 프로브가 `verified` 반환)
+- [ ] 연결 테스트 성공(헬스 엔드포인트 응답)
 - [ ] 쿼리 실행이 `QueryResult` 형식으로 정규화되어 반환
 - [ ] NL→쿼리가 올바른 언어로 유효한 쿼리 생성(스키마 캐시 주입 확인)
 - [ ] 커넥터 입력에 `readJsonBounded` + SSRF 가드 적용(메타데이터/IMDS/루프백 차단 테스트)

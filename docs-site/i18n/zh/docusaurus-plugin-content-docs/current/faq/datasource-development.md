@@ -71,7 +71,7 @@ flowchart TD
 | # | 文件 | 需添加的内容 | 模板参考 |
 |---|------|-----------|-------------|
 | 1 | `web/lib/integrations-category.ts` | 向 `DATASOURCE_KINDS` 数组添加类型字符串 | 既有 `'prometheus' \| 'mimir' \| ...` |
-| 2 | 连接器 Lambda（`scripts/v2/workers/*` MCP 源码） | 实现只读工具（`<kind>_query` 等）+ 有界查询探测（`<kind>_health` 执行 `<kind>_query`）。**必须加 SSRF 防护**（见下文） | 仿照既有 prometheus 连接器 |
+| 2 | 连接器 Lambda（`scripts/v2/workers/*` MCP 源码） | 实现只读工具（`<kind>_query` 等）+ 健康检查。**必须加 SSRF 防护**（见下文） | 仿照既有 prometheus 连接器 |
 | 3 | `web/app/api/datasources/query/route.ts` | 向 `TOOL` 映射添加 `{ instant, range?, arg }` 条目（仅读取工具） | 复制 prometheus/clickhouse 条目 |
 | 4 | `web/lib/integration-credentials.ts` | 向 `KNOWN_CONNECTOR_SLUGS` 添加 slug（阻断任意键注入） | 既有 slug 数组 |
 | 5 | `web/lib/datasource-schema.ts` | schema 内省 → Aurora `datasource_schemas` upsert（`upsertSchema`） | `getSchema`/`upsertSchema` 模式 |
@@ -204,7 +204,7 @@ API 文档：
 
 - [ ] TypeScript/生产构建成功（`npm run build`）——`*.test.ts` 的类型噪音不阻断
 - [ ] Explore 页面的类型下拉框中显示新类型
-- [ ] 连接测试成功（有界查询探测返回 `verified`）
+- [ ] 连接测试成功（健康检查端点有响应）
 - [ ] 查询执行结果以 `QueryResult` 格式规范化返回
 - [ ] NL→查询以正确的语言生成有效查询（确认 schema 缓存注入）
 - [ ] 连接器输入已应用 `readJsonBounded` + SSRF 防护（测试 metadata/IMDS/环回阻断）

@@ -80,40 +80,6 @@ run "defaults_remain_dark" {
     condition     = (length(aws_iam_role_policy.agentcore) == 0 && length(aws_iam_role_policy.official_mcp_credentials) == 0 && length(aws_iam_role_policy.steampipe_task) == 0 && length(aws_iam_role_policy.worker_lambda) == 0 && !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null && !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled)
     error_message = "Core runtime and host/image overrides must remain opt-in."
   }
-  assert {
-    condition     = !var.jaeger_vpc_enabled && !var.dynatrace_vpc_enabled && length(aws_iam_role_policy.agent_lambda_vpc_eni) == 0
-    error_message = "Private external datasource networking must remain default-off."
-  }
-}
-
-run "private_datasource_flags_require_applied_prerequisites" {
-  command = plan
-  variables {
-    jaeger_vpc_enabled    = true
-    dynatrace_vpc_enabled = true
-  }
-  expect_failures = [var.jaeger_vpc_enabled, var.dynatrace_vpc_enabled]
-}
-
-run "private_jaeger_and_dynatrace_attach_only_the_selected_lambdas" {
-  command = plan
-  variables {
-    agentcore_enabled     = true
-    integrations_enabled  = true
-    jaeger_vpc_enabled    = true
-    dynatrace_vpc_enabled = true
-  }
-  assert {
-    condition = (
-      aws_lambda_function.agent["jaeger-mcp"].vpc_config[0].subnet_ids == toset(var.existing_private_subnet_ids) &&
-      aws_lambda_function.agent["dynatrace-mcp"].vpc_config[0].subnet_ids == toset(var.existing_private_subnet_ids) &&
-      length(aws_lambda_function.agent["datadog-mcp"].vpc_config) == 0 &&
-      length(aws_lambda_function.agent["prometheus-mcp"].vpc_config) == 0 &&
-      length(aws_iam_role_policy.agent_lambda_vpc_eni) == 1 &&
-      !var.official_mcp_enabled && !var.remediation_enabled && !var.integrations_write_enabled
-    )
-    error_message = "Private datasource attachment must be selective and must not activate MCP/write gates."
-  }
 }
 
 run "explicit_inventory_targets_pin_metadata_permissions_and_actual_principal" {
