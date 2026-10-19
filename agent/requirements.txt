@@ -3,6 +3,9 @@
 strands-agents==1.41.0
 strands-agents-tools
 boto3
+# Custom MCP pinning uses the tested HTTPX/HTTPcore SNI extension contract.
+httpx==0.28.1
+httpcore==1.0.9
 # Dark-path chat loop (ANTHROPIC_AGENT_LOOP_ENABLED, default OFF) — Bedrock client, no API key.
 # Keep the pin in sync with agent/Dockerfile. Validate at `make agentcore` build/smoke.
 anthropic[bedrock]==0.111.0

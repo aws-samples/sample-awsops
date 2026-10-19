@@ -27,9 +27,9 @@ IP in the list already passed assert_host_allowed's checks. Every real call site
 calls assert_host_allowed(endpoint) immediately before http_json(same endpoint) — that invariant is
 what makes the cache safe; it is reset every invocation by set_request_conn() (called at the top of
 every lambda_handler) so a warm container never reuses a stale pinned IP across invocations.
-(A structurally identical resolve-and-recheck gap exists in agent/agent.py's `_assert_host_allowed`
-for the separate egress-integrations transport — untouched here; that's a different call path not
-exercised by the pentest's datasource/schema-fetch findings, and needs its own fix.)
+The separate custom-MCP transport (agent/agent.py `_assert_host_allowed` + agent/pinned_http.py) pins
+its invocation-local validated address set the same way; registration-time checks (web/lib/ssrf-guard.ts)
+stay resolve-based, connection time is pinned on both transports.
 """
 import base64
 import functools
