@@ -127,11 +127,12 @@ network · container · data · security · cost · monitoring · iac · ops의 
 
 ### 내가 직접 에이전트나 도구를 추가 구성할 수 있나요?
 
-**큐레이션된 커넥터 한정으로 가능합니다** (ADR-039, ADR-031, ADR-041).
+**거버넌스된 커넥터로만 가능합니다** (ADR-039, ADR-031, ADR-041) — 큐레이션 커넥터, 공식 프리셋, 또는 관리자가 등록하는 `custom_mcp` 연동입니다.
 
 ADR-039 멀티 에이전트 플랫폼은 프런티어 에이전트(DevOps/Security/FinOps + N)와 Integrations 축을 도입했고, 관리자 구성 Agent Space(ADR-031 Phase 1/2)는 LIVE입니다. 다만:
 
-- **임의 형태의 BYO-MCP(ADR-031 Phase 3)는 폐기**되었습니다 (2026-06-11 번복). 커넥터는 **큐레이션된 형태**만 허용됩니다 (ADR-041).
+- **임의 형태의 BYO-MCP(ADR-031 Phase 3)는 폐기**되었습니다 (2026-06-11 번복). 거버넌스 통제가 없는 MCP 엔드포인트 경로는 허용되지 않습니다 (ADR-041).
+- 관리자 전용 `custom_mcp` 연동은 이 통제를 갖춘 거버넌스 경로입니다: 관리자만 등록, 계정별 활성화, 관리자가 지정한 노출 도구 상한(비어 있으면 도구를 노출하지 않음), 연결 시 Secrets Manager에서 읽는 자격 증명, 연결 시 SSRF 검사. 공식 프리셋의 호스트 고정은 그대로입니다.
 - **변경(mutating) 도구(ADR-031 Phase 4)** 중 비-AWS 외부 데이터 write만 ADR-040 거버넌스로 좁게 허용되며, AWS 리소스 변경은 폐기를 유지합니다.
 
 ### Kubernetes(EKS) 진단도 AI가 자동으로 하나요?

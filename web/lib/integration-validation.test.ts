@@ -37,16 +37,33 @@ describe('integration-validation', () => {
     expect(validateIntegration({ ...egress, endpoint: undefined }).ok).toBe(false);
     expect(validateIntegration({ ...egress, transport: 'telnet' }).ok).toBe(false);
   });
+  it('an empty tool list cannot disguise a vendor-labelled live MCP endpoint', () => {
+    expect(validateIntegration({ ...egress, exposedTools: [], transport: 'sigv4' }).ok).toBe(false);
+    expect(validateIntegration({ ...egress, exposedTools: [], credentialsRef: 'client-selected' }).ok).toBe(false);
+    expect(validateIntegration({ ...egress, exposedTools: [] }).ok).toBe(true);
+  });
 
   it('ingress requires auth_mode and a valid triggerTarget', () => {
     expect(validateIntegration({ ...ingress, authMode: undefined }).ok).toBe(false);
     expect(validateIntegration({ ...ingress, triggerTarget: 'nope' }).ok).toBe(false);
   });
 
-  it('credentialsRef (when present) must be a non-empty string', () => {
+  it('governed MCP refs are server-owned; propose-only metadata retains nonempty references', () => {
     expect(validateIntegration({ ...egress, credentialsRef: '' }).ok).toBe(false);
-    expect(validateIntegration({ ...egress, credentialsRef: 'arn:aws:secretsmanager:ap-northeast-2:1:secret:x' }).ok).toBe(true);
+    expect(validateIntegration({ ...egress, credentialsRef: 'arn:aws:secretsmanager:ap-northeast-2:1:secret:x' }).ok).toBe(false);
+    expect(validateIntegration({ ...egress, capability: 'read_write', exposedTools: [],
+      credentialsRef: 'arn:aws:secretsmanager:ap-northeast-2:1:secret:x' }).ok).toBe(true);
     expect(validateIntegration({ ...egress, credentialsRef: undefined }).ok).toBe(true); // optional
+  });
+  it('custom MCP is egress/read with server-owned credentials and scoped secret auth', () => {
+    const custom = { ...egress, kind: 'custom_mcp', exposedTools: ['query'] };
+    expect(validateIntegration(custom).ok).toBe(true);
+    for (const edit of [{ capability: 'read_write' }, { direction: 'ingress' },
+      { transport: 'sigv4' }, { transport: 'oauth_3lo' }, { credentialsRef: 'other' },
+      { exposedTools: ['gateway___mutate'] }, { exposedTools: '*' }]) {
+      expect(validateIntegration({ ...custom, ...edit }).ok).toBe(false);
+    }
+    expect(validateIntegration({ ...custom, kind: 'grafana', transport: 'sigv4' }).ok).toBe(false);
   });
 });
 

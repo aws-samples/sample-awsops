@@ -127,11 +127,12 @@ ADR-032 最初定义了事件触发的自主事故生命周期（多 Agent Lead/
 
 ### 我可以自行追加配置 Agent 或工具吗？
 
-**仅限经过策划（curated）的连接器**（ADR-039、ADR-031、ADR-041）。
+**仅限受治理的连接器**（ADR-039、ADR-031、ADR-041）：经过策划的连接器、官方预设，或管理员注册的 `custom_mcp` 集成。
 
 ADR-039 多 Agent 平台引入了前沿 Agent（DevOps/Security/FinOps + N）与 Integrations 轴，管理员配置的 Agent Space（ADR-031 Phase 1/2）已 LIVE。不过：
 
-- **任意形态的 BYO-MCP（ADR-031 Phase 3）已废弃**（2026-06-11 撤销）。连接器仅允许**经过策划的形态**（ADR-041）。
+- **任意形态的 BYO-MCP（ADR-031 Phase 3）已废弃**（2026-06-11 撤销）。不允许没有治理控制的 MCP 端点路径（ADR-041）。
+- 仅限管理员的 `custom_mcp` 集成是具备这些控制的受治理路径：仅管理员可注册、按账户启用、管理员设定的公开工具上限（为空则不公开任何工具）、连接时从 Secrets Manager 读取的凭证，以及连接时的 SSRF 检查。官方预设的主机固定保持不变。
 - **变更（mutating）工具（ADR-031 Phase 4）**中，仅非 AWS 外部数据 write 在 ADR-040 治理下被狭窄地允许，AWS 资源变更维持废弃。
 
 ### Kubernetes（EKS）诊断也由 AI 自动完成吗？

@@ -166,7 +166,7 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 }
 
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
-  types: string[], build: (rows: InventoryRow[]) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
+  types: string[], build: (rows: InventoryRow[], account: string) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
   const totals = emptyResult();
   if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
@@ -207,7 +207,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
           counts ??= await inventoryCounts(pool, types));
         attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
         if (snapshot.truncated) reason('snapshot_limit');
-        const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
+        const graph = attempt.publish ? build(snapshot.rows, account) : { nodes: [], edges: [] };
         if (graph.nodes.length > 4000 || graph.edges.length > 8000
           || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
           attempt.publish = false; attempt.status = 'partial';
@@ -264,13 +264,13 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
 }
 
 export async function rebuildInfraGraph(pool: Pool, runId: string = randomUUID()) {
-  return rebuildInventory(pool, 'infra', INFRA_LOCK, runId, INFRA_TYPES, rows => {
+  return rebuildInventory(pool, 'infra', INFRA_LOCK, runId, INFRA_TYPES, (rows, account) => {
     const graph = buildInfraGraph({
       resources: rows.filter(row => !NET_TYPES.includes(row.resource_type)),
       vpcs: rows.filter(row => row.resource_type === 'vpc'),
       subnets: rows.filter(row => row.resource_type === 'subnet'),
       securityGroups: rows.filter(row => row.resource_type === 'security_group'),
-    });
+    }, account);
     return { nodes: graph.nodes, edges: graph.edges.map(edge => ({ source: edge.source, target: edge.target,
       rel: edge.rel, confidence: 'observed' })) };
   });

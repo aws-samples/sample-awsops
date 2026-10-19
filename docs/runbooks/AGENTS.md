@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cf8b164c55e3 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3f5c25174d46 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -275,3 +275,5 @@ see `pr-review-head-images.md`. No new tool or IAM grants.
 `review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
 contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
 It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.
+
+`custom-mcp-governance.md` defines default-off MCP preparation, per-row secret/version attestation, durable audit and required invocation-principal evidence. Source presence is not ADR acceptance or activation. Native query datasource rows retain existing controls; vendor-labelled MCP connections do not bypass governance.

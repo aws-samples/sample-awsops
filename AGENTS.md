@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 12f3d07465ed · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 36f85104004e · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -13,8 +13,8 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **FROZEN (do-not-enable, ADR-005):** AWS-resource mutation + autonomy (remediation substrate, arbitrary BYO-MCP, mutating tools). Unfreezing is **not a doc cleanup** — it needs a NEW ADR + multi-AI panel + a dated owner-override, full stop. Frozen substrate is retained **dark code** (regression = *enabling* it, not its presence).
   - **One granted exception: ADR-015** (`secret_rotation_redeploy_enabled`, default-off, owner-override 2026-07-01) — exactly one call: `ecs:UpdateService(forceNewDeployment)` restarting the host's own web service on its own Aurora master-secret rotation event (same image/task-def — not a code deploy), IAM scoped to one service ARN, secret-id fail-closed (`terraform/foundation/secret-rotation.tf`). Do NOT flag this specific path; any OTHER mutating/autonomous path is still a FROZEN violation. (ADR-019's SG-rules Athena role is NOT an ADR-005 exception — ADR-019 §Decision concludes it sits inside the existing read-only invariant and needs no relaxation at all; `sg_rule_activity_enabled` is an ordinary GATED entry, not a FROZEN carve-out.)
 - **GATED analysis-only (ADR-006):** incident lifecycle / RCA write-back / K8sGPT — read-only triage/RCA, no autonomous mitigation; flags default OFF.
-- **External DATA is NOT the freeze (ADR-007, keystone):** external observability read + governed external write are allowed under governance; curated connectors only (arbitrary `custom_mcp` dropped). `diagnosis_notify_enabled` (SNS email) is the **one LIVE external write**; broad `integrations_write_enabled` stays GATED-OFF. Curated official MCP presets = ADR-017 (vendor-hosted 3 only, runtime fail-closed tool allowlist, GATED; ClickHouse stdio embed FROZEN).
-- **🚩 Flag any PR that enables mutation/autonomy/BYO-MCP** — flips a frozen flag or wires the dark substrate live.
+- **External DATA is NOT the freeze (ADR-007):** governed external reads/writes are allowed. Admin `custom_mcp` extensibility stays intentional (owner clarification, 2026-10-11). Controls preserve egress/read, per-account selection, exact tools, locked admin attestation/audit, current row-bound Secret credentials without runtime-role SigV4 and SSRF. ADR-022 stays **Proposed**; web/runtime `CUSTOM_MCP_ENABLED` defaults OFF pending panel, dated owner acceptance, invocation-trust proof and reviewed activation. See `docs/runbooks/custom-mcp-governance.md`. `diagnosis_notify_enabled` is the sole LIVE external write; `integrations_write_enabled` stays GATED-OFF. ADR-017 pins/gates and FROZEN ClickHouse stdio remain.
+- **Flag any PR that enables mutation/autonomy/BYO-MCP** by flipping a frozen flag or wiring dark substrate live. Hardening an already-shipped connection path does not grant a new policy exception. `CUSTOM_MCP_ENABLED` defaults OFF in web and runtime until dated acceptance and a separately reviewed release. Flag weakened administrator authorization, egress/read, explicit account membership, exact tool ceilings, locked confirmation, durable audit, current row-bound Secret versions or SSRF guards, and alternate live MCP endpoint paths that bypass them.
 
 ## Stack / runtime
 - **Web:** Next.js 15 / React 19 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, ADR-009).
@@ -40,7 +40,7 @@ node --test scripts/v2/ci/*.test.mjs
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py test_readiness.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py -q
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl
@@ -126,3 +126,4 @@ Apply [docs/CLAUDE.md](docs/CLAUDE.md) and [docs/runbooks/CLAUDE.md](docs/runboo
 - The frozen `remediation.tf` / mutating-tool substrate existing in the tree — presence is fine, only *enabling* it is a violation.
 - ADR-015's single `ecs:UpdateService(forceNewDeployment)` self-restart call — the one granted ADR-005 exception, not a mutation regression.
 - Legacy email-keyed ownership matching (`matchesIdentity()`, `legacy_email_owner_match`) — intentional while this default-true migration-window switch is live, not a sub-only-invariant violation.
+- Administrator-managed `custom_mcp` registration and its custom-agent connection path remain intentional (owner clarification, 2026-10-11). Their presence is not a policy violation; controls and pending activation prerequisites still apply.

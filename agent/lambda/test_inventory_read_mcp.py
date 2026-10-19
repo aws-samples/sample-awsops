@@ -1094,6 +1094,20 @@ class TestTopologySelectionSQL(unittest.TestCase):
         self.assertEqual(body["selection"]["candidate_ids"], ["lambda:shared", "rds:shared"])
         self.assertFalse(body["selection"]["candidates_truncated"])
 
+    def test_scoped_placement_ids_keep_raw_and_legacy_link_compatibility_without_guessing(self):
+        root = "rds:@self:us-east-1:app-db"
+        other = "rds:@self:ap-northeast-2:app-db"
+        self._seed([root])
+        for requested in ("app-db", "rds:app-db", root):
+            body = self._read(requested)
+            self.assertEqual(body["selection"]["resolved_id"], root)
+        self._seed([other])
+        for requested in ("app-db", "rds:app-db"):
+            body = self._read(requested)
+            self.assertEqual(body["selection"]["status"], "ambiguous")
+            self.assertEqual(body["nodes"], [])
+        self.assertEqual(self._read(root)["selection"]["resolved_id"], root)
+
     def test_unknown_and_sql_like_ids_never_return_unrelated_nodes(self):
         self._seed(["lambda:orders"])
         for requested in ("missing", "orders%", "orders' OR true --", "orders:extra"):
