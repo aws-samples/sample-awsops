@@ -15,16 +15,14 @@ import {
 
 // Gap L203 (v1 parity): per-datasource connection settings persisted on the row.
 // - timeoutS: upstream query execution bound in SECONDS (v1 used ms; v2 stores seconds to match
-//   the connectors' own clamps — Prometheus/Mimir/ClickHouse enforce provider execution ceilings
-//   with a longer HTTP deadline; other kinds apply a transport deadline).
+//   the connectors' own clamps — prometheus/mimir forward it as the API `timeout` param under the
+//   connector's 12s HTTP timeout, clickhouse as `max_execution_time`).
 // - database: ClickHouse default database (identifier-only; other kinds ignore it).
 // v1's result-cache TTL is deliberately NOT ported — the v2 thin-BFF query path is uncached by
 // design (disclosed deviation in the gap audit).
 export interface DsSettings {
   timeoutS?: number;
   database?: string;
-  /** Mimir Prometheus API mount, appended to the endpoint only once. Empty = API at root. */
-  apiPrefix?: string;
 }
 
 const DB_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -37,7 +35,6 @@ export function sanitizeDsSettings(input: unknown): DsSettings {
   const out: DsSettings = {};
   // strict type check — no coercion ('30'/true must NOT pass; out-of-contract is dropped)
   if (typeof o.timeoutS === 'number' && Number.isInteger(o.timeoutS) && o.timeoutS >= 1 && o.timeoutS <= 60) out.timeoutS = o.timeoutS;
-  if (typeof o.apiPrefix === 'string' && o.apiPrefix.length <= 128 && /^(?:\/[A-Za-z0-9_-]+)*$/.test(o.apiPrefix)) out.apiPrefix = o.apiPrefix;
   // identifier-only, and NEVER the system databases: the connector's read-only guard is
   // lexical over the SQL text — database=system would resolve an unqualified FROM tables to
   // system.tables (create_table_query can carry plaintext engine credentials). Re-checked in
@@ -180,7 +177,6 @@ export async function resolveConnConfig(ds: DatasourceRow): Promise<ConnConfig> 
   // cred-first spread (round-3 review).
   delete cred.database;
   delete cred.timeoutS;
-  delete cred.apiPrefix;
   // Spread the SM cred FIRST (auth material / org_id), then FORCE the row's endpoint + authType on top
   // so the ROW stays authoritative (a stale/partial secret blob can't redirect the query to a different
   // endpoint). The endpoint is re-checked by the SSRF guard at the call site regardless.
@@ -195,7 +191,6 @@ export async function resolveConnConfig(ds: DatasourceRow): Promise<ConnConfig> 
     // provider execution ceiling, the other kinds as the transport deadline.
     ...(ds.kind === 'clickhouse' && ds.settings?.database ? { database: ds.settings.database } : {}),
     ...(ds.settings?.timeoutS ? { timeoutS: ds.settings.timeoutS } : {}),
-    ...(ds.kind === 'mimir' && ds.settings?.apiPrefix !== undefined ? { apiPrefix: ds.settings.apiPrefix } : {}),
   } as ConnConfig;
 }
 

@@ -7,17 +7,6 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
-  'AI 쿼리 생성은 선택한 조회 기간을 변경하지 않습니다.': { en: 'AI query drafting does not change the selected time window.', zh: 'AI 查询生成不会改变所选时间范围。', ja: 'AI によるクエリ生成では選択した照会期間は変わりません。' },
-  '기본 12': { en: 'Default 12', zh: '默认 12', ja: 'デフォルト 12' },
-  '공유 데이터소스입니다. AWS 계정 선택은 이 연결의 데이터 범위를 변경하지 않습니다.': { en: 'This datasource is shared. Selecting an AWS account does not change its data scope.', zh: '此数据源为共享连接。选择 AWS 账户不会改变其数据范围。', ja: 'このデータソースは共有接続です。AWS アカウントの選択でデータ範囲は変わりません。' },
-  '기본 데이터소스는 타입별 공유 연결이며 AWS 계정 선택으로 바뀌지 않습니다.': { en: 'Each datasource type has a shared default connection that does not change with AWS account selection.', zh: '每种数据源类型的默认连接为共享连接，不随 AWS 账户选择变化。', ja: '各データソースのデフォルト接続は共有で、AWS アカウントの選択では変わりません。' },
-  '사설 주소는 운영자가 네트워크 연결과 DNS를 구성해야 사용할 수 있습니다.': { en: 'Private endpoints require operator-configured network connectivity and DNS.', zh: '私有端点需要运维人员配置网络连接和 DNS。', ja: 'プライベートエンドポイントには運用担当者によるネットワーク接続と DNS の設定が必要です。' },
-  '서버 실행 제한 (초, 1–60 · 선택)': { en: 'Server execution limit (seconds, 1–60 · optional)', zh: '服务器执行限制（秒，1–60 · 可选）', ja: 'サーバー実行上限（秒、1–60・任意）' },
-  'HTTP 응답 제한 (초, 1–60 · 선택)': { en: 'HTTP response limit (seconds, 1–60 · optional)', zh: 'HTTP 响应限制（秒，1–60 · 可选）', ja: 'HTTP 応答上限（秒、1–60・任意）' },
-  '적용 제한': { en: 'Effective limit', zh: '实际限制', ja: '適用上限' },
-  '서버 쿼리 중단을 보장하지 않습니다.': { en: 'This does not guarantee server-side query cancellation.', zh: '这不保证服务器端查询会被取消。', ja: 'サーバー側クエリの停止を保証するものではありません。' },
-  '기본 /prometheus · API가 루트에 있으면 비워 두세요.': { en: 'Default /prometheus · Leave empty when the API is at the root.', zh: '默认 /prometheus · API 位于根路径时留空。', ja: 'デフォルトは /prometheus。API がルートにある場合は空欄にしてください。' },
-  '슬래시와 영문/숫자/밑줄/하이픈 경로만 사용할 수 있습니다.': { en: 'Use path segments with slashes, letters, digits, underscores and hyphens only.', zh: '路径仅允许斜杠、字母、数字、下划线和连字符。', ja: 'パスにはスラッシュ、英数字、アンダースコア、ハイフンのみ使用できます。' },
   '설정 미확인': { en: 'Configuration unconfirmed', zh: '配置未确认', ja: '設定未確認' },
   '추가 후보가 있습니다. 계정 범위를 좁혀 확인하세요.': { en: 'More candidates exist. Narrow the account scope to inspect them.', zh: '还有其他候选资源。请缩小账户范围后查看。', ja: 'ほかの候補があります。アカウントの範囲を絞って確認してください。' },
   '설정됨': { en: 'Configured', zh: '已配置', ja: '設定済み' },

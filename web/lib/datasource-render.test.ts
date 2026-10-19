@@ -2,21 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { normalizeResult } from './datasource-render';
 
 describe('normalizeResult', () => {
-  it.each(['datadog', 'dynatrace'])('%s preserves connector cap disclosure beside its chart', kind => {
-    const timestamp = 1700000000000;
-    const body = kind === 'datadog' ? {
-      series: [{ metric: 'fixture.metric', scope: 'fixture', pointlist: [[timestamp, 1], [timestamp + 1000, 2]] }],
-    } : {
-      result: [{ metricId: 'fixture.metric', data: [{ dimensions: ['fixture'],
-        timestamps: [timestamp, timestamp + 1000], values: [1, 2] }] }],
-    };
-    const result = normalizeResult(kind, `${kind}_query`, { ...body, truncated: true, collectionStatus: 'partial' });
-    expect(result.shape).toBe('series');
-    expect(result.series).toHaveLength(2);
-    expect(result.truncated).toBe(true);
-    expect(result.collectionStatus).toBe('partial');
-    expect(result.collectionNote).toContain('부분 결과');
-  });
   it.each(['prometheus', 'mimir', 'loki'])('%s keeps valid metric siblings beside omitted markers', kind => {
     for (const resultType of ['vector', 'matrix']) {
       const valid = { metric: { __name__: 'up' },

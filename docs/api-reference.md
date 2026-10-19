@@ -379,11 +379,11 @@ reachability.
 | `/api/cost/detail` | GET | 서비스별 비용 상세 (`?service=` 필수, ≤100자) | verifyUser |
 | `/api/finops/findings` | GET | ADR-020 FinOps 기본 권장 엔진 — 미해결 findings + 최근 배치 실행(`finops_runs`) 조회, Aurora만 읽음(라이브 AWS 호출 없음). `finops_baseline_enabled=false`면 `{enabled:false, findings:[], lastRun:null}` | verifyUser |
 | `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; invalid tool policy → 400; unavailable validation/read → 503 (see below) | verifyUser |
-| `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출. 행마다 `configured`(인스턴스 자체의 설정 근거만, 연결 성공 주장 아님)·`connectionStatus`·`scope: 'shared'`(기본 인스턴스는 타입별 공유 연결) 포함 | verifyUser |
+| `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[모든 kind 유효 최대 55 — Prometheus/Mimir/ClickHouse는 서버 실행 제한, 그 외는 HTTP 응답 제한]·clickhouse `database`·mimir `apiPrefix`)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
-| `/api/datasources/test` | POST | 저장 전 연결 테스트 — 실제 bounded 쿼리 1회 실행(readiness 엔드포인트 아님), `{ok, latencyMs, verified, error?}` 반환, SSRF 가드 (admin) | verifyUser |
+| `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |

@@ -94,7 +94,7 @@ describe('POST /api/datasources/query', () => {
   });
 
   // gap L203: per-datasource timeout setting
-  it('an instance timeoutS rides prometheus args with the Lambda execution ceiling', async () => {
+  it('an instance timeoutS rides prometheus args (capped at 10s under the connector HTTP timeout)', async () => {
     getDatasource.mockResolvedValue({ id: 3, kind: 'prometheus', settings: { timeoutS: 5 } });
     resolveConnConfig.mockResolvedValue({ endpoint: 'http://prom.internal:9090' });
     invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [] });
@@ -103,7 +103,7 @@ describe('POST /api/datasources/query', () => {
     expect(invokeMcpLambdaTool.mock.calls.at(-1)![0].args.timeout).toBe('5s');
     getDatasource.mockResolvedValue({ id: 3, kind: 'prometheus', settings: { timeoutS: 60 } });
     await POST(req({ id: 3, query: 'up' }));
-    expect(invokeMcpLambdaTool.mock.calls.at(-1)![0].args.timeout).toBe('55s');
+    expect(invokeMcpLambdaTool.mock.calls.at(-1)![0].args.timeout).toBe('10s'); // capped
   });
 
   it('clickhouse sends NO timeout arg — the bound rides connConfig (the connector defaults/clamps it)', async () => {
@@ -201,12 +201,12 @@ describe('POST /api/datasources/query', () => {
     expect(invokeMcpLambdaTool.mock.calls.at(-1)![0].tool).toBe('prometheus_query');
   });
 
-  it('legacy range:true retains the one-hour window and default step', async () => {
+  it('legacy range:true → range tool with NO start/step args (1h connector default)', async () => {
     const { POST } = await import('./route');
     await POST(req({ slug: 'prometheus', query: 'up', range: true }));
     const call = invokeMcpLambdaTool.mock.calls.at(-1)![0];
     expect(call.tool).toBe('prometheus_query_range');
-    expect(Number(call.args.end) - Number(call.args.start)).toBe(3600);
+    expect(call.args.start).toBeUndefined();
     expect(call.args.step).toBeUndefined();
   });
 });
