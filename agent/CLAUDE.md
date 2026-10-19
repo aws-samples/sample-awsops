@@ -46,7 +46,7 @@ read them from the source:
 - Real-time response delivery via SSE streaming.
 
 ## Rules
-- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py test_pinned_http.py -q`.
 - `fixtures/*-contract.json` is shared with `web/lib/trace-source.test.ts` and
   `web/lib/graph-read-postgres.test.ts` (Tempo publication/retention cases).
   Lambda completion tests bind mocked HTTP payloads to those exact producer bodies;

@@ -69,6 +69,39 @@ class FakeTool:
         self.tool_name = name
 
 
+class IntegrationCredentialValidationTest(unittest.TestCase):
+    def test_transport_headers_and_control_characters_fail_without_echoing_secrets(self):
+        cases = [
+            ("api_key", {"header": "Host", "value": "synthetic-secret"}),
+            ("api_key", {"header": "Content-Length", "value": "synthetic-secret"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\nvalue"}),
+            ("oauth_client_credentials", {"token": "synthetic-secret\nvalue"}),
+            ("api_key", {"header": "X-Key", "value": "synthetic-secret\u200b"}),
+        ]
+        for transport, secret in cases:
+            with self.subTest(transport=transport, header=secret.get("header")):
+                with self.assertRaises(ValueError) as error:
+                    agent.auth_headers(transport, secret)
+                self.assertNotIn("synthetic-secret", str(error.exception))
+
+    def test_pasted_trailing_whitespace_is_stripped_not_rejected(self):
+        # A copied token often ends in a newline; that is not a control character inside the secret.
+        self.assertEqual(agent.auth_headers("api_key", {"header": "X-Key", "value": "synthetic-secret\n"}),
+                         {"X-Key": "synthetic-secret"})
+        with self.assertRaises(ValueError) as error:
+            agent.auth_headers("api_key", {"header": "X-Key", "value": "   \n"})  # whitespace only = missing
+        self.assertNotIn("synthetic", str(error.exception))
+        self.assertIn("missing value", str(error.exception))
+        self.assertEqual(agent.auth_headers("oauth_client_credentials", {"token": "synthetic\n"}),
+                         {"Authorization": "Bearer synthetic"})
+
+    def test_supported_authorization_headers_are_preserved(self):
+        self.assertEqual(agent.auth_headers("api_key", {"value": "Bearer synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+        self.assertEqual(agent.auth_headers("oauth_client_credentials", {"token": "synthetic"}),
+                         {"Authorization": "Bearer synthetic"})
+
+
 def names(tools):
     return [t.tool_name for t in tools]
 
@@ -231,6 +264,64 @@ class SsrfGuardTest(unittest.TestCase):
         # NXDOMAIN
         with self.assertRaisesRegex(agent.SsrfBlocked, "could not resolve"):
             agent._assert_host_allowed("https://nxdomain.local", True, resolver=resolver)
+
+        # Translator-embedded forms of the metadata/loopback targets are classified by the IPv4 they
+        # carry: IPv4-mapped, 6to4, Teredo (client address) and well-known NAT64.
+        for embedded in ("::ffff:169.254.169.254", "2002:a9fe:a9fe::1", "2001::5601:5601",
+                         "64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1"):
+            self.assertTrue(agent._ip_always_blocked(embedded), embedded)
+            self.assertFalse(agent._ip_is_private(embedded), embedded)
+        # Local-use NAT64 (64:ff9b:1::/48) embeds the IPv4 at a prefix-length-dependent offset, so it is
+        # always blocked regardless of encoding — e.g. a /64-encoded 10.0.0.1 must not decode as public.
+        for local_use in ("64:ff9b:1::a9fe:a9fe", "64:ff9b:1:1234:a:0:100:0", "64:ff9b:1::"):
+            self.assertTrue(agent._ip_always_blocked(local_use), local_use)
+        self.assertTrue(agent._ip_is_private("64:ff9b::a00:1"))      # NAT64 of 10.0.0.1 = private (opt-in)
+        self.assertFalse(agent._ip_always_blocked("64:ff9b::0808:0808"))  # NAT64 of 8.8.8.8 = public
+
+        # A malformed port is an SSRF-classified rejection, not an uncaught ValueError.
+        with self.assertRaisesRegex(agent.SsrfBlocked, "invalid port"):
+            agent._assert_host_allowed("https://public.com:abc/", False, resolver=resolver)
+
+    def test_assert_host_allowed_returns_every_validated_address(self):
+        def resolver(host, port, *a, **k):
+            return [(2, 1, 6, '', ("192.0.2.10", port)),
+                    (2, 1, 6, '', ("192.0.2.10", port)),  # duplicate A record
+                    (10, 1, 6, '', ("2001:db8::10", port, 0, 0))]
+        # Documentation ranges classify as private, so the opt-in is needed for them to validate.
+        self.assertEqual(agent._assert_host_allowed("https://multi.example.test", True, resolver=resolver),
+                         ("192.0.2.10", "2001:db8::10"))  # deduped, resolver order
+
+    def test_connect_integration_pins_the_validated_addresses(self):
+        from unittest.mock import Mock
+
+        class FakeMCPClient:
+            def __init__(self, factory):
+                factory()  # run the transport lambda once
+
+        spec = {"endpoint": "https://multi.example.test/mcp", "transport": "api_key",
+                "credentialsRef": "ops/x/integrations/custom/1", "exposedTools": [], "allowPrivate": False}
+        with patch.object(agent, "validate_custom_mcp_spec", return_value="a" * 32), \
+                patch.object(agent, "_get_secret", return_value='{"value": "synthetic"}'), \
+                patch.object(agent, "_assert_host_allowed", return_value=("192.0.2.10", "2001:db8::10")), \
+                patch.object(agent, "streamablehttp_client_with_headers", Mock()), \
+                patch.object(agent, "get_all_tools", return_value=[]), \
+                patch.object(agent, "MCPClient", FakeMCPClient):
+            agent._connect_integration(spec, Mock(), "self")
+            transport = agent.streamablehttp_client_with_headers
+            # Deleting `pinned_ips=pinned_ips` in _connect_integration must fail this test.
+            transport.assert_called_once()
+            kwargs = transport.call_args.kwargs
+            self.assertEqual(kwargs["url"], "https://multi.example.test/mcp")
+            self.assertEqual(kwargs["pinned_ips"], ("192.0.2.10", "2001:db8::10"))
+            self.assertEqual(kwargs["timeout"], agent.INTEGRATION_CONNECT_TIMEOUT)
+            self.assertEqual(kwargs["sse_read_timeout"], agent.INTEGRATION_READ_TIMEOUT)
+
+    def test_integration_session_gets_separate_connect_and_read_budgets(self):
+        # Collapsing the read budget to the 8s connect budget made every tool whose upstream takes
+        # longer than 8s to start answering fail with ReadTimeout.
+        self.assertEqual(agent.INTEGRATION_CONNECT_TIMEOUT, 8)
+        self.assertGreater(agent.INTEGRATION_READ_TIMEOUT, agent.INTEGRATION_CONNECT_TIMEOUT)
+        self.assertLessEqual(agent.INTEGRATION_READ_TIMEOUT, 120)  # inside the chat request budget
 
 
 class IntegrationHelpersTest(unittest.TestCase):

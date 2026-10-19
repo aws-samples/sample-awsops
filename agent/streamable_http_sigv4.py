@@ -11,6 +11,7 @@ from datetime import timedelta
 from typing import Generator
 
 import httpx
+from pinned_http import pinned_client_factory
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
@@ -158,6 +159,7 @@ async def streamablehttp_client_with_sigv4(
 @asynccontextmanager
 async def streamablehttp_client_with_headers(
     url: str,
+    pinned_ips: tuple[str, ...],
     headers: dict[str, str] | None = None,
     timeout: float | timedelta = 30,
     sse_read_timeout: float | timedelta = 60 * 5,
@@ -171,7 +173,8 @@ async def streamablehttp_client_with_headers(
     None,
 ]:
     """
-    Client transport for Streamable HTTP with static headers (API Key / Bearer) + redirect:'manual'.
+    Client transport for Streamable HTTP with static headers (API Key / Bearer), connections pinned
+    to the validated address set.
     """
     async with streamablehttp_client(
         url=url,
@@ -179,6 +182,6 @@ async def streamablehttp_client_with_headers(
         timeout=timeout,
         sse_read_timeout=sse_read_timeout,
         terminate_on_close=terminate_on_close,
-        httpx_client_factory=_no_redirect_http_client_factory,
+        httpx_client_factory=pinned_client_factory(url, pinned_ips),
     ) as result:
         yield result

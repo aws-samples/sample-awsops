@@ -90,8 +90,13 @@ legacy egress tools per row for correction.
 
 Preserve ADR-005 FROZEN mutation/autonomy, ADR-007 writes, ADR-015 sole exception and
 ADR-017 pins/gates/FROZEN ClickHouse stdio. Reassess server permissions/code after
-changes: ceilings/attestation cannot guarantee stable semantics. Keep registration/
-runtime SSRF/account allowPrivate opt-in; this proves no pinned-transport deployment.
+changes: ceilings/attestation cannot guarantee stable semantics. Keep registration/runtime
+SSRF and the per-account allowPrivate opt-in. The runtime connection is pinned to the
+address set validated at connect time (agent/pinned_http.py: original Host/SNI,
+certificate verification, no redirects, no proxy); this is deployed preparation and does
+not activate custom MCP, which stays behind the default-off gate. The pinned transport
+trusts only the bundled CA store (`trust_env=False`); a private-CA endpoint under
+allowPrivate fails verification by design.
 
 ## Verification
 
@@ -99,8 +104,10 @@ Run separately from repo root; no AWS calls:
 
 ```bash
 cd agent
-python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py -q
+python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py -q
 ```
+
+`test_pinned_http.py` needs Python 3.11+ and the `openssl` CLI (it starts a real local TLS server).
 
 ```bash
 cd web
@@ -121,5 +128,6 @@ a skip proves no PG verification.
   integration-validation.ts, agent-resolver.ts
 - web/app/api/integrations/route.ts, web/app/api/chat/route.ts,
   web/app/customization/page.tsx
-- agent/agent.py, agent/test_custom_mcp_policy.py, terraform/foundation/workload.tf
+- agent/agent.py, agent/test_custom_mcp_policy.py, agent/pinned_http.py,
+  agent/streamable_http_sigv4.py, agent/test_pinned_http.py, terraform/foundation/workload.tf
 - ADR-005/007/015/017; private Proposed ADR-022.

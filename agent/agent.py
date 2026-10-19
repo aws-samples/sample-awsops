@@ -22,6 +22,7 @@ except ImportError:  # pre-CacheConfig strands
 from strands.tools.mcp.mcp_client import MCPClient
 from botocore.credentials import Credentials
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+import pinned_http
 from streamable_http_sigv4 import streamablehttp_client_with_sigv4, streamablehttp_client_with_headers
 from account_utils import effective_account_id
 import boto3
@@ -520,11 +521,38 @@ _METADATA_IPS = frozenset({
 })
 
 
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
+
+
+def _embedded_ipv4(ip):
+    """Classify an IPv6 address by the IPv4 it embeds, so a translator cannot launder a blocked
+    target: IPv4-mapped (::ffff:a.b.c.d), 6to4 (2002::/16), Teredo (2001::/32, client address) and
+    well-known NAT64 (64:ff9b::/96 — low 32 bits). The local-use NAT64 prefix (64:ff9b:1::/48)
+    embeds the IPv4 at a prefix-length-dependent offset (RFC 6052) that cannot be known from the
+    address alone, so it is never decoded and is always blocked instead. Plain addresses are
+    returned unchanged."""
+    if ip.version != 6:
+        return ip
+    mapped = ip.ipv4_mapped or ip.sixtofour
+    if mapped is not None:
+        return mapped
+    teredo = ip.teredo
+    if teredo is not None:
+        return teredo[1]
+    if ip in _NAT64_WELL_KNOWN:
+        return ipaddress.ip_address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
 def _ip_always_blocked(ip_str):
     """Returns True if the IP is metadata, loopback, link-local, multicast, reserved, or unspecified —
     i.e. blocked REGARDLESS of the per-account allowPrivate opt-in."""
     try:
-        ip = ipaddress.ip_address(ip_str)
+        raw = ipaddress.ip_address(ip_str)
+        if raw in _NAT64_LOCAL_USE:
+            return True  # fail closed: the embedded target cannot be verified
+        ip = _embedded_ipv4(raw)
         if ip in _METADATA_IPS:
             return True
         return (ip.is_loopback or ip.is_link_local or ip.is_multicast or
@@ -536,7 +564,7 @@ def _ip_always_blocked(ip_str):
 def _ip_is_private(ip_str):
     """Returns True if the IP is in a private range (RFC1918/ULA) AND not always blocked."""
     try:
-        ip = ipaddress.ip_address(ip_str)
+        ip = _embedded_ipv4(ipaddress.ip_address(ip_str))
         # ipaddress.is_private includes link-local/loopback in some versions; we only want
         # the "opt-in" ranges (RFC1918 + RFC4193 ULA).
         return ip.is_private and not _ip_always_blocked(ip_str)
@@ -548,11 +576,10 @@ def _assert_host_allowed(url, allow_private, resolver=socket.getaddrinfo):
     """Assert the URL host is connectable: require https, resolve the host, and block any resolved IP
     that is always-blocked (metadata/loopback/link-local/...) or private-without-the-opt-in.
 
-    KNOWN LIMITATION (P4 gate, accepted — matches ADR-011 / web/lib/ssrf-guard.ts, both resolve-based):
-    this is resolve-and-recheck; the transport re-resolves at connect time, so a DNS-rebinding host
-    could return a safe IP here and a blocked IP at connect. The layered mitigations are redirect:'manual'
-    (set on both integration transports) + the registration-time literal-host guard (ssrf-guard.ts). True
-    IP-pinning (connect to the validated IP with SNI/Host preserved) is deferred to P3 hardening."""
+    Return all validated IPs for the integration transport, which pins connections while
+    preserving Host, TLS SNI and certificate verification."""
+    if "\\" in str(url):
+        raise SsrfBlocked("SSRF block: endpoint must not contain a backslash")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != 'https':
         raise SsrfBlocked(f"SSRF block: HTTPS required for integration endpoints, got {parsed.scheme}")
@@ -562,20 +589,28 @@ def _assert_host_allowed(url, allow_private, resolver=socket.getaddrinfo):
         raise SsrfBlocked(f"SSRF block: invalid or missing host in URL {url}")
 
     try:
+        port = parsed.port or 443  # ValueError on a malformed port such as https://host:abc/
+    except ValueError:
+        raise SsrfBlocked(f"SSRF block: invalid port in URL {url}")
+    try:
         # Resolve all IPs for the host (could be dual-stack or have multiple A records)
-        addr_info = resolver(host, 443, proto=socket.IPPROTO_TCP)
+        addr_info = resolver(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise SsrfBlocked(f"SSRF block: could not resolve host {host}: {e}")
 
     if not addr_info:
         raise SsrfBlocked(f"SSRF block: could not resolve host {host} (no addresses returned)")
 
+    addresses = []
     for family, type, proto, canonname, sockaddr in addr_info:
         ip_str = sockaddr[0]
         if _ip_always_blocked(ip_str):
             raise SsrfBlocked(f"SSRF block: host {host} resolved to always-blocked IP {ip_str}")
         if _ip_is_private(ip_str) and not allow_private:
             raise SsrfBlocked(f"SSRF block: host {host} resolved to private IP {ip_str} and private access disabled")
+        if ip_str not in addresses:
+            addresses.append(ip_str)
+    return tuple(addresses)
 
 
 def parse_secret(val):
@@ -597,14 +632,25 @@ def auth_headers(transport, secret):
         # {"header": "X-API-KEY", "value": "..."} or {"api_key": "..."} -> Authorization: ...
         header = secret.get("header", "Authorization")
         val = secret.get("value", secret.get("api_key", secret.get("_raw")))
+        val = val.strip() if isinstance(val, str) else val  # a pasted trailing newline is not a secret
         if not val:
             raise ValueError(f"Integration [api_key] missing value in secret")
+        # `authorization` is deliberately allowed here (unlike datasource_http's list): an api_key
+        # integration may legitimately carry its key in the Authorization header.
+        if (not isinstance(header, str) or not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", header)
+                or header.lower() in ("host", "content-length", "transfer-encoding", "connection")):
+            raise ValueError("Integration [api_key] header name is invalid")
+        if not isinstance(val, str) or not val or any(ord(ch) < 32 or ord(ch) > 126 for ch in val):
+            raise ValueError("Integration [api_key] header value contains unsupported characters")
         return {header: val}
     if transport == 'oauth_client_credentials':
         # Bearer-style for this increment: {"token": "..."} or raw
         val = secret.get("token", secret.get("_raw"))
+        val = val.strip() if isinstance(val, str) else val  # same as api_key: strip a pasted newline
         if not val:
             raise ValueError(f"Integration [oauth_client_credentials] missing token in secret")
+        if not isinstance(val, str) or any(ord(ch) < 32 or ord(ch) > 126 for ch in val):
+            raise ValueError("Integration stored bearer token is invalid")
         return {"Authorization": f"Bearer {val}"}
     if transport == 'sigv4':
         return {}
@@ -639,7 +685,8 @@ def sigv4_params(endpoint, service=None, region=None):
 
 # Short per-integration connect/read timeout — chat maxDuration is 120s; a slow or hung external
 # MCP must not dominate the budget (the default 30s transport timeout is too long for N integrations).
-INTEGRATION_CONNECT_TIMEOUT = 8
+INTEGRATION_CONNECT_TIMEOUT = pinned_http.CONNECT_TIMEOUT  # TCP+TLS per pinned address
+INTEGRATION_READ_TIMEOUT = pinned_http.READ_TIMEOUT        # time to headers / between SSE events
 
 _secrets_client = None
 
@@ -764,12 +811,15 @@ def _connect_integration(spec, stack, account_context=None):
     transport = spec.get("transport")
     allow_private = bool(spec.get("allowPrivate"))
     exposed = spec.get("exposedTools") or []
-    # Connection-time SSRF (https + DNS resolve-and-recheck + private opt-in) BEFORE any network call.
-    _assert_host_allowed(endpoint, allow_private)
+    # Connection-time SSRF (https + private opt-in) BEFORE any network call. The validated address
+    # set is invocation-local: resolved once here and pinned for this MCP session only (it may outlive
+    # the DNS TTL by design — the pin is the point); warm invocations never share DNS pins.
+    pinned_ips = _assert_host_allowed(endpoint, allow_private)
     secret = parse_secret(_get_secret(spec["credentialsRef"], expected_version=version))
     headers = auth_headers(transport, secret)
     client = MCPClient(lambda: streamablehttp_client_with_headers(
-        url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT))
+        url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT,
+        sse_read_timeout=INTEGRATION_READ_TIMEOUT, pinned_ips=pinned_ips))
     stack.enter_context(client)
     live = get_all_tools(client)
     selected = select_integration_tools(live, exposed)
