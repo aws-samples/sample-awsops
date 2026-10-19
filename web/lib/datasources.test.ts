@@ -103,7 +103,7 @@ describe('updateDatasource', () => {
     query.mockResolvedValueOnce({ rows: [{ id: 9, name: 'n', kind: 'prometheus', endpoint: 'http://p', ds_auth_type: 'none', is_default: true, enabled: true }] }); // re-read
     getCredentialById.mockResolvedValueOnce({ endpoint: 'http://p', authType: 'none' });
     await updateDatasource(9, { endpoint: 'http://p' });
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined);
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined, expect.any(Number));
   });
 
   it('does NOT mirror when the updated row is not the default', async () => {

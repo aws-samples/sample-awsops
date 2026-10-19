@@ -167,30 +167,45 @@ export async function setIntegrationCredentialById(
   }, q);
 }
 
-/** Write the managed default-mirror under the plain `kind` key (agent gateway no-inline path). */
+/** Write the managed default-mirror under the plain `kind` key (agent gateway no-inline path).
+ *  The mirror is stamped with the default instance's id (`instanceId`) so the connector's
+ *  id-keyed lookup can accept the mirror for THAT instance only, never for a sibling. */
 export async function mirrorDefaultCredential(
   kind: string,
   secretObj: Record<string, unknown>,
   q?: { query: (text: string, values?: unknown[]) => Promise<unknown> },
+  instanceId?: number,
 ): Promise<void> {
   assertKnownSlug(kind);
+  if (instanceId !== undefined) assertPositiveId(instanceId);
   await mutateCredentialMap((map) => {
-    map[kind] = secretObj;
+    map[kind] = instanceId === undefined ? secretObj : { ...secretObj, instanceId: String(instanceId) };
   }, q);
 }
 
-/** Resolve an instance's credential: the id entry, else the kind mirror (fallback), else null.
- *  Throws on a Secrets Manager read failure (the caller — query/test — surfaces it). */
+/** Resolve the id entry or a mirror stamped for this exact id. An unstamped legacy mirror
+ *  is recoverable only during an administrator save of the verified CURRENT default row,
+ *  with that row's exact endpoint passed by server code. Default switching/deletion cannot
+ *  establish this historical identity. Throws on Secrets Manager read failure. */
 export async function getCredentialById(
   id: number,
   fallbackKind?: string,
+  legacyDefaultEndpoint?: string,
 ): Promise<Record<string, unknown> | null> {
+  assertPositiveId(id);
   const map = await readMap();
   const byId = map[String(id)];
-  if (byId && typeof byId === 'object') return byId as Record<string, unknown>;
+  if (byId && typeof byId === 'object' && !Array.isArray(byId)) return byId as Record<string, unknown>;
   if (fallbackKind) {
     const byKind = map[fallbackKind];
-    if (byKind && typeof byKind === 'object') return byKind as Record<string, unknown>;
+    if (byKind && typeof byKind === 'object' && !Array.isArray(byKind)) {
+      const mirror = byKind as Record<string, unknown>;
+      if (mirror.instanceId !== undefined && mirror.instanceId !== null) {
+        if (String(mirror.instanceId) === String(id)) return mirror;
+      } else if (legacyDefaultEndpoint && mirror.endpoint === legacyDefaultEndpoint) {
+        return mirror;
+      }
+    }
   }
   return null;
 }

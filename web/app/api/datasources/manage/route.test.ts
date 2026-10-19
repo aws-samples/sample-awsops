@@ -72,7 +72,9 @@ describe('POST create', () => {
     expect(resp.status).toBe(201);
     expect(await resp.json()).toEqual({ id: 7 });
     expect(setIntegrationCredentialById).toHaveBeenCalledWith(7, { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
+    // the default mirror is stamped with the instance id so the connector can tell this default's
+    // id-keyed lookup apart from a sibling instance borrowing the mirror
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' }, undefined, 7);
   });
 
   it('fires a best-effort connect-time introspect (after the 201) and never lets it fail create', async () => {
@@ -120,6 +122,16 @@ describe('POST create', () => {
     expect(res.status).toBe(201);
     expect(createDatasource.mock.calls[0][0].settings).toEqual({ timeoutS: 30, database: 'metrics' });
   });
+});
+
+it('backfills a stamped mirror without persisting its identity stamp in the ID credential', async () => {
+  getDatasource.mockResolvedValue({ id: 7, kind: 'prometheus', endpoint: 'http://old:9090', authType: 'basic', isDefault: true, settings: {} });
+  getCredentialById.mockResolvedValue({ endpoint: 'http://old:9090', authType: 'basic', username: 'u', password: 'pw', instanceId: '7' });
+  const { PATCH } = await import('./route');
+  const res = await PATCH(req({ id: 7, settings: { timeoutS: 15 } }, 'PATCH'));
+  expect(res.status).toBe(200);
+  expect(setIntegrationCredentialById.mock.calls.at(-1)![1]).toMatchObject({ username: 'u', password: 'pw' });
+  expect(setIntegrationCredentialById.mock.calls.at(-1)![1].instanceId).toBeUndefined();
 });
 
 describe('PATCH update', () => {
@@ -234,6 +246,7 @@ describe('PATCH update', () => {
     getDatasource.mockResolvedValue({ id: 7, kind: 'prometheus', endpoint: 'http://p:9090', authType: 'bearer', isDefault: true, settings: {} });
     const { PATCH } = await import('./route');
     await PATCH(req({ id: 7, settings: { timeoutS: 15 } }, 'PATCH'));
+    expect(getCredentialById).toHaveBeenCalledWith(7, 'prometheus', 'http://p:9090');
     const blob = setIntegrationCredentialById.mock.calls.at(-1)![1];
     expect(blob.token).toBe('tok');       // NOT de-authenticated
     expect(blob.timeoutS).toBe(15);
@@ -242,6 +255,7 @@ describe('PATCH update', () => {
     expect(mirrored[0]).toBe('prometheus');
     expect(mirrored[1].token).toBe('tok');
     expect(mirrored[1].timeoutS).toBe(15);
+    expect(mirrored[3]).toBe(7);
   });
 
   it('a backslash endpoint is rejected on PATCH (URL-parser differential, round-6)', async () => {

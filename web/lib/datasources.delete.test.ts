@@ -25,6 +25,17 @@ beforeEach(() => {
 });
 
 describe('deleteDatasource', () => {
+  it('clears the deleted default mirror when its successor has no bound credential', async () => {
+    query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('SELECT id, name') ? [row({ id: 5, is_default: true })] :
+        sql.includes('SELECT id FROM') ? [{ id: 8 }] : [],
+    }));
+    getCredentialById.mockResolvedValueOnce(null);
+    await deleteDatasource(5);
+    expect(getCredentialById).toHaveBeenCalledWith(8, 'prometheus');
+    expect(mirrorDefaultCredential).not.toHaveBeenCalled();
+    expect(deleteCredentialKeys).toHaveBeenCalledWith(['prometheus']);
+  });
   it('is a no-op when the id does not exist', async () => {
     query.mockResolvedValueOnce({ rows: [] }); // getDatasource → none
     await deleteDatasource(404);
@@ -58,7 +69,7 @@ describe('deleteDatasource', () => {
       .mockResolvedValueOnce({ rows: [] });  // UPDATE set new default
     getCredentialById.mockResolvedValueOnce({ endpoint: 'http://p8', authType: 'none' });
     await deleteDatasource(5);
-    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p8', authType: 'none' });
+    expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p8', authType: 'none' }, undefined, expect.any(Number));
   });
 
   it('clears the kind mirror when no instances of the kind remain', async () => {
