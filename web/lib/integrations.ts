@@ -226,18 +226,27 @@ export async function getEgressWriteAllowlist(kind: string): Promise<string[]> {
   }
 }
 
-export async function getEnabledIntegrations(accountId = 'self'): Promise<IntegrationRow[]> {
-  if (!process.env.AURORA_ENDPOINT) return [];
+export interface EnabledIntegrationSelection {
+  integrations: IntegrationRow[];
+  mcpSelectionSuppressed: boolean;
+}
+
+/** Preserve a denied MCP declaration without exposing its tools, context or connection. */
+export async function getEnabledIntegrationSelection(accountId = 'self'): Promise<EnabledIntegrationSelection> {
+  if (!process.env.AURORA_ENDPOINT) return { integrations: [], mcpSelectionSuppressed: false };
   try {
     const { rows } = await getPool().query(
       `SELECT i.id, i.name, i.kind, i.direction, i.description, i.endpoint, i.transport, i.credentials_ref,
               i.private_connection_ref, i.capability, i.exposed_tools, i.provided_context, i.write_action_refs,
-              i.auth_mode, i.receive_path, i.inbound_auth_ref, i.source_allowlist, i.trigger_target, i.tier, i.enabled
+              i.auth_mode, i.receive_path, i.inbound_auth_ref, i.source_allowlist, i.trigger_target, i.tier, i.enabled,
+              i.id IN (
+                SELECT (e)::bigint FROM agent_spaces s, jsonb_array_elements_text(s.enabled_integration_ids) AS e
+                WHERE s.account_id = $1
+              ) AS account_selected
        FROM integrations i
        WHERE i.enabled = true
          AND (
-           (NOT (${governedMcpSql('i.')}) AND
-             NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1))
+           NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1)
            OR i.id IN (
              SELECT (e)::bigint FROM agent_spaces s, jsonb_array_elements_text(s.enabled_integration_ids) AS e
              WHERE s.account_id = $1
@@ -246,9 +255,26 @@ export async function getEnabledIntegrations(accountId = 'self'): Promise<Integr
        ORDER BY i.name`,
       [accountId],
     );
-    return rows.map(mapRow).filter((i) => !isMcpRegistration(i) ||
-      (customMcpEnabled() && validMcpAttestation({ ...i, id: Number(i.id) })));
+    const integrations: IntegrationRow[] = [];
+    let mcpSelectionSuppressed = false;
+    for (const raw of rows) {
+      const i = mapRow(raw);
+      if (!isMcpRegistration(i) ||
+          (raw.account_selected === true && customMcpEnabled() && validMcpAttestation({ ...i, id: Number(i.id) }))) {
+        integrations.push(i);
+      } else {
+        // Includes legacy globally enabled rows when the account has no space. They remain
+        // unusable without explicit membership, but removing them must never grant gateway reads.
+        mcpSelectionSuppressed = true;
+      }
+    }
+    return { integrations, mcpSelectionSuppressed };
   } catch {
-    return [];
+    // Policy lookup failure cannot establish the unrestricted legacy case for a custom agent.
+    return { integrations: [], mcpSelectionSuppressed: true };
   }
+}
+
+export async function getEnabledIntegrations(accountId = 'self'): Promise<IntegrationRow[]> {
+  return (await getEnabledIntegrationSelection(accountId)).integrations;
 }

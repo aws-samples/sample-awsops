@@ -79,8 +79,8 @@ vi.mock('@/lib/agent-resolver', () => ({
   resolveAgent: (...a: unknown[]) => resolveAgent(...a),
 }));
 vi.mock('@/lib/catalog', () => ({ isCustomAgentEnabled: (...a: unknown[]) => isCustomAgentEnabled(...a) }));
-const getEnabledIntegrations = vi.fn();
-vi.mock('@/lib/integrations', () => ({ getEnabledIntegrations: (...a: unknown[]) => getEnabledIntegrations(...a) }));
+const getEnabledIntegrationSelection = vi.fn();
+vi.mock('@/lib/integrations', () => ({ getEnabledIntegrationSelection: (...a: unknown[]) => getEnabledIntegrationSelection(...a) }));
 vi.mock('@/lib/trace', () => ({
   recordCustomAgentTrace: (...a: unknown[]) => recordCustomAgentTrace(...a),
   recordChatInvoke: vi.fn().mockResolvedValue(undefined), // fire-and-forget ops stat — not asserted here
@@ -147,13 +147,13 @@ beforeEach(() => {
   pickCustomAgent.mockReset();
   resolveAgent.mockReset();
   isCustomAgentEnabled.mockReset();
-  getEnabledIntegrations.mockReset();
+  getEnabledIntegrationSelection.mockReset();
   recordCustomAgentTrace.mockReset();
   // default to the built-in no-op shape
   getEnabledCustomAgents.mockResolvedValue([]);
   pickCustomAgent.mockReturnValue(null);
   isCustomAgentEnabled.mockResolvedValue(true); // ADR-039: authoritative re-check passes by default
-  getEnabledIntegrations.mockResolvedValue([]); // ADR-039 P2: no integrations by default
+  getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: false }); // ADR-039 P2: no integrations by default
 
   resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'ops', skill: 'ops', agentName: 'ops', skillHashes: [] });
   classifyRoute.mockReset();
@@ -397,7 +397,7 @@ describe('hybrid routing (ADR-038)', () => {
     await readStream(res);
     // ...but the pin wins: resolveAgent called with the pinned section, not the custom name.
     // Phase 2: third arg is the per-account space (null here — no AURORA_ENDPOINT ⇒ Phase-1).
-    expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], []);
+    expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], [], { mcpSelectionSuppressed: false });
   });
 
   it('logs a structured misroute candidate when the client reports a chip switch (spec §5)', async () => {
@@ -439,19 +439,19 @@ describe('hybrid routing (ADR-038)', () => {
     const { POST } = await import('./route');
     await readStream(await POST(req({ prompt: 'run a CIS benchmark', sessionId: 's'.repeat(36) })));
     expect(isCustomAgentEnabled).toHaveBeenCalledWith('compliance', { throwOnError: true });
-    expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], []); // gateway, not the revoked custom
+    expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], [], { mcpSelectionSuppressed: false }); // gateway, not the revoked custom
   });
 
   it('ADR-039: passes ONLY enabled egress-READ integrations to resolveAgent, WITH connection details (ingress + READ_WRITE excluded)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
-    getEnabledIntegrations.mockResolvedValue([
+    getEnabledIntegrationSelection.mockResolvedValue({ integrations: [
       { id: 7, kind: 'custom_mcp', name: 'dd', direction: 'egress', capability: 'read', exposedTools: ['datadog_query'], providedContext: { d: 1 },
         endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd' },
       { name: 'notion', direction: 'egress', capability: 'read_write', exposedTools: [], providedContext: {}, writeActionRefs: ['notion.create_page'] }, // empty live-tool list → propose-only (5th arg), NOT tool-injected (4th)
       { name: 'pd', direction: 'ingress', capability: 'read', exposedTools: [], providedContext: {} },                       // ingress → excluded
-    ]);
+    ], mcpSelectionSuppressed: false });
     invokeAgent.mockResolvedValue('ok');
     const { POST } = await import('./route');
     await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
@@ -462,6 +462,7 @@ describe('hybrid routing (ADR-038)', () => {
       [{ id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read', name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
          endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd', allowPrivate: false }],
       [{ name: 'notion', writeActionRefs: ['notion.create_page'] }],
+      { mcpSelectionSuppressed: false },
     );
   });
 
@@ -550,9 +551,9 @@ describe('ADR-031 Phase 2 — per-account space wiring', () => {
     await readStream(await POST(req({ prompt: 'status', sessionId: 's'.repeat(36) })));
     // account resolves to the single-account default ('self') with no HOST_ACCOUNT_ID set.
     expect(getEnabledCustomAgents).toHaveBeenCalledWith('self');
-    expect(getEnabledIntegrations).toHaveBeenCalledWith('self');
+    expect(getEnabledIntegrationSelection).toHaveBeenCalledWith('self');
     // no AURORA_ENDPOINT ⇒ getAgentSpace returns null ⇒ resolver gets null (Phase-1 behavior).
-    expect(resolveAgent).toHaveBeenCalledWith('ops', expect.anything(), null, [], []);
+    expect(resolveAgent).toHaveBeenCalledWith('ops', expect.anything(), null, [], [], { mcpSelectionSuppressed: false });
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'self' }));
   });
 
@@ -593,7 +594,7 @@ describe('ADR-031 Phase 2 — per-account space wiring', () => {
     expect(body).not.toContain('호스트 계정 기준');
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ accountId: '222222222222', accountAlias: 'prod' }));
     expect(getEnabledCustomAgents).toHaveBeenCalledWith('222222222222');
-    expect(getEnabledIntegrations).toHaveBeenCalledWith('222222222222');
+    expect(getEnabledIntegrationSelection).toHaveBeenCalledWith('222222222222');
   });
 
   it('built-in path is unchanged: no spaceVersion in meta, PONG-style passthrough still streams', async () => {
@@ -1273,4 +1274,17 @@ describe('follow-up continuity on the hybrid path', () => {
     await readStream(await POST(req({ prompt: '더 자세히', previousSection: 'aws-data', sessionId: 's'.repeat(36) })));
     expect((classifyRoute.mock.calls[0][2] as { previous?: string }).previous).toBeUndefined();
   });
+});
+
+
+it('carries catalog quarantine through chat without reconnecting a suppressed MCP row', async () => {
+  process.env.HYBRID_ROUTING_ENABLED = 'true';
+  verifyUser.mockResolvedValue({ sub: 'u' });
+  classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
+  getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: true });
+  invokeAgent.mockResolvedValue('ok');
+  const { POST } = await import('./route');
+  await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
+  expect(resolveAgent).toHaveBeenCalledWith(expect.anything(), expect.anything(), null, [], [],
+    { mcpSelectionSuppressed: true });
 });

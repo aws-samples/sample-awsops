@@ -19,7 +19,7 @@ import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
 import { getCustomAgentContext } from '@/lib/catalog-source';
 import { isCustomAgentEnabled } from '@/lib/catalog';
-import { getEnabledIntegrations } from '@/lib/integrations';
+import { getEnabledIntegrationSelection } from '@/lib/integrations';
 import { pickCustomAgent, resolveAgent } from '@/lib/agent-resolver';
 import { recordCustomAgentTrace, recordChatInvoke } from '@/lib/trace';
 import { recordExchange } from '@/lib/chat-store';
@@ -554,7 +554,8 @@ export async function POST(request: Request) {
   // allowPrivate = the per-account ADR-011 opt-in (no space ⇒ false). sigv4 service/region threading
   // (same-account sigv4 integrations) is deferred with the rest of Q3-sigv4=C — api_key/bearer is live.
   const allowPrivate = space?.allowPrivateDatasource ?? false;
-  const enabledIntegrations = await getEnabledIntegrations(accountId);
+  const integrationSelection = await getEnabledIntegrationSelection(accountId);
+  const enabledIntegrations = integrationSelection.integrations;
   const egressReadIntegrations = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read')
     .map((i) => ({
@@ -569,7 +570,8 @@ export async function POST(request: Request) {
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
     .map((i) => ({ name: i.name, writeActionRefs: i.writeActionRefs }));
   const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
-    space, egressReadIntegrations, proposableWrites); // server-side enforcement
+    space, egressReadIntegrations, proposableWrites,
+    { mcpSelectionSuppressed: integrationSelection.mcpSelectionSuppressed }); // server-side enforcement
   // ADR-044: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is

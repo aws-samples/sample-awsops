@@ -5,7 +5,7 @@ const db = vi.hoisted(() => ({ pool: null as unknown }));
 const secret = vi.hoisted(() => ({ current: vi.fn() }));
 vi.mock('@/lib/db', () => ({ getPool: () => db.pool }));
 vi.mock('./custom-mcp-secret', () => ({ currentCustomMcpSecretVersion: secret.current }));
-import { attestAndEnableMcp, getEnabledIntegrations, getIntegrationById, setIntegrationEnabled, upsertIntegration } from './integrations';
+import { attestAndEnableMcp, getEnabledIntegrationSelection, getEnabledIntegrations, getIntegrationById, setIntegrationEnabled, upsertIntegration } from './integrations';
 import { DATASOURCE_KINDS } from './integrations-category';
 const socket = process.env.CUSTOM_MCP_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
@@ -141,4 +141,20 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     expect((await getIntegrationById(id))?.enabled).toBe(false);
     expect((await getIntegrationById(id))?.providedContext._customMcpAttestation).toBeUndefined();
   });
+  it.each(['false', 'true'])('preserves suppressed selected MCP policy with gate=%s', async gate => {
+    const id = await upsertIntegration(input);
+    await selected('self', [id]);
+    await pool.query('UPDATE integrations SET enabled=true WHERE id=$1', [id]);
+    process.env.CUSTOM_MCP_ENABLED = gate;
+    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+  });
+  it('does not mistake a suppressed global legacy row for an absent declaration', async () => {
+    const id = await enabled();
+    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+    await selected('self', []);
+    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: false });
+    await pool.query('UPDATE agent_spaces SET enabled_integration_ids=$1::jsonb WHERE account_id=$2', [JSON.stringify([id]), 'self']);
+    expect((await getEnabledIntegrationSelection('self')).integrations.map(i => Number(i.id))).toEqual([id]);
+  });
+
 });
