@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout, finite_number, observed_payload,
+    query_probe, set_request_conn, request_timeout, finite_number, observed_payload, HTTP_TIMEOUT,
 )
 
 SLUG = "datadog"
@@ -58,9 +58,10 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds), timeout=request_timeout(creds))
+    status, data = http_json("GET", url, headers=_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds))
     if status >= 400:
         errs = data.get("errors") if isinstance(data, dict) else None
         raise _ApiError(f"Datadog HTTP {status}: {str(errs or (data.get('raw') if isinstance(data, dict) else data))[:300]}")
@@ -114,7 +115,7 @@ def datadog_query(args):
 
 def datadog_schema(args):
     """Actively-reporting metric names from the last hour (query-gen vocabulary)."""
-    data = _get(_ds(), "/api/v1/metrics", {"from": _parse_time_s(None, 3600)})
+    data = _get(_ds(), "/api/v1/metrics", {"from": _parse_time_s(None, 3600)}, timeout=HTTP_TIMEOUT)
     metrics = data.get("metrics", []) if isinstance(data, dict) else []
     metrics = metrics if isinstance(metrics, list) else []
     return ok({"metrics": metrics[:200], "truncated": len(metrics) > 200})

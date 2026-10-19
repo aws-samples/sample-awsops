@@ -26,7 +26,7 @@ from datasource_http import (
     query_probe,
     set_request_conn,
     execution_timeout,
-    request_timeout,
+    HTTP_TIMEOUT,
 )
 
 SLUG = "prometheus"
@@ -69,7 +69,7 @@ def _ds():
 
 def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    kwargs = {"headers": auth_headers(creds), "timeout": min(12, request_timeout(creds))}
+    kwargs = {"headers": auth_headers(creds), "timeout": HTTP_TIMEOUT}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)

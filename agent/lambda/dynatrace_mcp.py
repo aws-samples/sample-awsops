@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout, finite_number, observed_payload,
+    query_probe, set_request_conn, request_timeout, finite_number, observed_payload, HTTP_TIMEOUT,
 )
 
 SLUG = "dynatrace"
@@ -58,9 +58,10 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds), timeout=request_timeout(creds))
+    status, data = http_json("GET", url, headers=_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds))
     if status >= 400:
         detail = data.get("error") if isinstance(data, dict) else None
         msg = detail.get("message") if isinstance(detail, dict) else (detail or data.get("raw") if isinstance(data, dict) else data)
@@ -141,7 +142,7 @@ def dynatrace_problems(args):
 
 def dynatrace_schema(args):
     """Metric ids (query-gen vocabulary for metricSelector)."""
-    data = _get(_ds(), "/api/v2/metrics", {"pageSize": "200", "fields": "metricId"})
+    data = _get(_ds(), "/api/v2/metrics", {"pageSize": "200", "fields": "metricId"}, timeout=HTTP_TIMEOUT)
     metrics = [m.get("metricId", "") for m in (data.get("metrics") or []) if isinstance(m, dict)] if isinstance(data, dict) else []
     metrics = [m for m in metrics if m]
     return ok({"metrics": metrics[:200], "truncated": bool(isinstance(data, dict) and data.get("nextPageKey"))})

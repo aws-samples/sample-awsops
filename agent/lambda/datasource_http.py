@@ -33,6 +33,7 @@ decodes translator-embedded IPv4 forms — IPv4-mapped, 6to4, Teredo, well-known
 stay resolve-based, connection time is pinned on both transports.
 """
 import base64
+import concurrent.futures
 import functools
 import http.client
 import ipaddress
@@ -467,18 +468,36 @@ def _read_bounded(response, max_bytes, deadline):
         response.close()
 
 
+def _open_within(opener, req, timeout, deadline):
+    """Open the connection and read the response headers under the request's absolute deadline.
+    urllib's `timeout` is per socket operation, so a server dripping header bytes could hold
+    open() past the deadline; the open runs on a worker thread that is abandoned at the deadline
+    (its own per-operation socket timeout ends it) so the invocation returns on time."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("datasource request deadline exceeded before connect")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(opener.open, req, timeout=min(timeout, remaining))
+    pool.shutdown(wait=False)
+    try:
+        return future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError as exc:
+        future.add_done_callback(lambda f: f.exception() is None and f.result().close())
+        raise TimeoutError("datasource response header deadline exceeded") from exc
+
+
 def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_bytes=MAX_RESPONSE_BYTES):
     """Send a request (no auto-redirect). Returns (status, parsed_dict). Non-2xx → (status, body).
     Pinned to the IPs assert_host_allowed(url) most recently validated for this host, if any (tried
     in order with fallback) — see module docstring (IP-pinning)."""
     data = body if isinstance(body, (bytes, bytearray)) else (body.encode() if isinstance(body, str) else None)
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    # One wall-clock budget per request: the socket timeout bounds connect + headers, and the body
-    # read gets only what is left, so total time stays <= `timeout` (the connector Lambda's 60s wall
-    # assumes the aligned HTTP timeout, at most 55s + 3s, is the whole request).
+    # One absolute deadline covers connect, headers and body. The socket timeout is per operation, so
+    # the header phase is bounded by the worker wait in _open_within and the body by _read_bounded;
+    # the connector Lambda's 60s wall assumes the aligned HTTP timeout (at most 55s + 3s) is the whole request.
     deadline = time.monotonic() + timeout
     try:
-        resp = _opener_for(urlparse(url).hostname).open(req, timeout=timeout)
+        resp = _open_within(_opener_for(urlparse(url).hostname), req, timeout, deadline)
         return resp.getcode(), _parse(_read_bounded(resp, max_bytes, deadline))
     except urllib.error.HTTPError as e:
         # Keep the (status, body) contract for error responses: an oversized or slow error body is

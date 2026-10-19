@@ -78,7 +78,8 @@ def _ds():
 
 def _get(creds, path, params=None, *, timeout=None, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    request_options = {"timeout": min(timeout, request_timeout(creds)) if timeout is not None else request_timeout(creds)}
+    # An explicit discovery budget wins over the saved query bound (timeoutS).
+    request_options = {"timeout": timeout if timeout is not None else request_timeout(creds)}
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"

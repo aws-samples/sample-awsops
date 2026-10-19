@@ -391,3 +391,73 @@ def test_connection_probe_reports_latency_and_fixed_sentences(kind):
         probe = json.loads(getattr(module, kind + "_health")({})["body"])
     assert probe["ok"] is False and probe["verified"] == [] and isinstance(probe["latency_ms"], int)
     assert probe["error"] == "endpoint rejected by the private-network policy"
+
+
+def test_loki_buildinfo_and_legacy_label_envelopes_are_accepted():
+    module = importlib.import_module("loki_mcp")
+    reply = lambda method, url, **kw: (200, {"version": "3.1.0"}) if "/status/buildinfo" in url else (200, {"status": "success"})
+    with patch.object(module, "load_datasource", return_value=CREDS), patch.object(module, "assert_host_allowed"), \
+            patch.object(module, "http_json", side_effect=reply):
+        schema = json.loads(module.loki_schema({})["body"])
+        labels = json.loads(module.loki_labels({})["body"])
+    assert schema["version"] == "3.1.0" and schema["labels"] == [] and schema["truncated"] is False
+    assert labels["labels"] == []
+
+
+def test_loki_query_still_requires_the_envelope():
+    module = importlib.import_module("loki_mcp")
+    with patch.object(module, "load_datasource", return_value=CREDS), patch.object(module, "assert_host_allowed"), \
+            patch.object(module, "http_json", return_value=(200, {"status": "success"})), pytest.raises(module._ApiError):
+        module.loki_query_range({"query": '{a="b"}'})
+
+
+@pytest.mark.parametrize("kind,tool,reply", [
+    ("prometheus", "prometheus_schema", {"status": "success", "data": []}),
+    ("mimir", "mimir_schema", {"status": "success", "data": []}),
+    ("loki", "loki_schema", {"status": "success", "data": []}),
+    ("jaeger", "jaeger_schema", {"data": []}),
+    ("dynatrace", "dynatrace_schema", {"metrics": []}),
+    ("datadog", "datadog_schema", {"metrics": []}),
+    ("tempo", "tempo_schema", {"tagNames": []}),
+])
+def test_discovery_calls_keep_the_fixed_http_budget_under_a_tight_query_bound(kind, tool, reply):
+    module = importlib.import_module(kind + "_mcp")
+    calls = []
+
+    def record(method, url, **kw):
+        calls.append(kw["timeout"])
+        return 200, reply
+
+    with patch.object(module, "load_datasource", return_value={**CREDS, "timeoutS": 2}), \
+            patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", side_effect=record):
+        getattr(module, tool)({})
+    # Tempo's optional buildinfo/type evidence keeps its own shorter fixed budget.
+    allowed = {dh.HTTP_TIMEOUT, getattr(module, "_SCHEMA_TIMEOUT_S", dh.HTTP_TIMEOUT)}
+    assert calls and dh.HTTP_TIMEOUT in calls and set(calls) <= allowed and 2 not in calls
+
+
+def test_query_tools_still_apply_the_saved_query_bound():
+    module = importlib.import_module("prometheus_mcp")
+    calls = []
+
+    def record(method, url, **kw):
+        calls.append(kw["timeout"])
+        return 200, {"status": "success", "data": {"resultType": "vector", "result": []}}
+
+    with patch.object(module, "load_datasource", return_value={**CREDS, "timeoutS": 2}), \
+            patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", side_effect=record):
+        module.prometheus_query({"query": "up"})
+    assert calls == [5]  # 2s execution ceiling + 3s transport margin
+
+
+def test_header_phase_is_bounded_by_the_request_deadline():
+    import time as _time
+
+    def slow_open(req, timeout=None):
+        _time.sleep(0.6)
+        return Response(b"{}")
+
+    with patch.object(dh._opener, "open", side_effect=slow_open), pytest.raises(TimeoutError):
+        started = _time.monotonic()
+        dh.http_json("GET", CREDS["endpoint"], timeout=0.2)
+    assert _time.monotonic() - started < 0.5

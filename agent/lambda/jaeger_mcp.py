@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout, observed_payload,
+    query_probe, set_request_conn, request_timeout, observed_payload, HTTP_TIMEOUT,
 )
 
 SLUG = "jaeger"
@@ -52,9 +52,10 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=auth_headers(creds), timeout=request_timeout(creds))
+    status, data = http_json("GET", url, headers=auth_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds))
     if status >= 400:  # Jaeger errors carry {"errors":[...]} — success = HTTP 2xx
         raise _ApiError(f"Jaeger HTTP {status}: {str(data.get('errors') or data.get('raw') or data)[:300]}")
     return observed_payload(data, status)
@@ -154,7 +155,7 @@ def jaeger_get_trace(args):
 
 
 def jaeger_services(args):
-    data = _get(_ds(), "/api/services")
+    data = _get(_ds(), "/api/services", timeout=HTTP_TIMEOUT)
     services = data.get("data", []) if isinstance(data, dict) else []
     return ok({"services": services if isinstance(services, list) else []})
 
@@ -163,14 +164,14 @@ def jaeger_operations(args):
     svc = (args.get("service") or "").strip()
     if not svc:
         return err("service required")
-    data = _get(_ds(), f"/api/services/{quote(svc, safe='')}/operations")
+    data = _get(_ds(), f"/api/services/{quote(svc, safe='')}/operations", timeout=HTTP_TIMEOUT)
     ops = data.get("data", []) if isinstance(data, dict) else []
     return ok({"operations": ops if isinstance(ops, list) else []})
 
 
 def jaeger_schema(args):
     """Service names (the query-gen 'vocabulary' — a Jaeger search is service-anchored)."""
-    data = _get(_ds(), "/api/services")
+    data = _get(_ds(), "/api/services", timeout=HTTP_TIMEOUT)
     services = data.get("data", []) if isinstance(data, dict) else []
     services = services if isinstance(services, list) else []
     return ok({"services": services[:100], "truncated": len(services) > 100})

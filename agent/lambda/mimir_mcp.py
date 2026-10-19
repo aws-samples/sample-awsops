@@ -15,7 +15,7 @@ from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
     query_probe, set_request_conn,
-    execution_timeout, request_timeout,
+    execution_timeout, HTTP_TIMEOUT,
 )
 
 SLUG = "mimir"
@@ -74,7 +74,7 @@ def _get(creds, path, params, http_timeout=None, *, with_status=False):
             prefix = ""
         path = prefix + "/api/v1" + path[len(BASE):]
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    kwargs = {"headers": _headers(creds), "timeout": min(12, request_timeout(creds))}
+    kwargs = {"headers": _headers(creds), "timeout": HTTP_TIMEOUT}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)

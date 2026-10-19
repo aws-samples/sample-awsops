@@ -16,7 +16,7 @@ from urllib.parse import quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout, observed_payload, finite_number,
+    query_probe, set_request_conn, request_timeout, observed_payload, finite_number, HTTP_TIMEOUT,
 )
 
 SLUG = "loki"
@@ -62,13 +62,20 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params):
+def _get(creds, path, params, *, verify="query", timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds), timeout=request_timeout(creds))
+    status, data = http_json("GET", url, headers=_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds))
     if status >= 400:
         raise _ApiError(f"Loki HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
+    if verify == "raw":  # buildinfo has no status/data envelope
+        if isinstance(data, dict):
+            return observed_payload(data, status)
+        raise _ApiError("Loki response could not be verified")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Loki query failed: {data.get('error', 'unknown')}")
+    if verify == "list" and isinstance(data, dict) and data.get("status") == "success" and "data" not in data:
+        data = {**data, "data": []}  # older Loki omits `data` on empty label results
     if not isinstance(data, dict) or data.get("status") != "success" or "data" not in data:
         raise _ApiError("Loki response could not be verified")
     result = observed_payload(data["data"], status)
@@ -200,7 +207,7 @@ def _requested(limit):
 
 
 def loki_labels(args):
-    data = _get(_ds(), "/loki/api/v1/labels", {})
+    data = _get(_ds(), "/loki/api/v1/labels", {}, verify="list", timeout=HTTP_TIMEOUT)
     names = data if isinstance(data, list) else []
     return ok({"labels": names[:1000], "truncated": len(names) > 1000})
 
@@ -209,7 +216,7 @@ def loki_label_values(args):
     label = (args.get("label") or "").strip()
     if not label:
         return err("label required")
-    data = _get(_ds(), f"/loki/api/v1/label/{quote(label, safe='')}/values", {})
+    data = _get(_ds(), f"/loki/api/v1/label/{quote(label, safe='')}/values", {}, verify="list", timeout=HTTP_TIMEOUT)
     values = data if isinstance(data, list) else []
     return ok({"values": values[:1000], "truncated": len(values) > 1000})
 
@@ -217,12 +224,14 @@ def loki_label_values(args):
 def loki_schema(args):
     creds = _ds()
     try:  # best-effort server version for version-aware LogQL
-        bi = _get(creds, "/loki/api/v1/status/buildinfo", {})
-        version = bi.get("version") if isinstance(bi, dict) else None
+        bi = _get(creds, "/loki/api/v1/status/buildinfo", {}, verify="raw", timeout=HTTP_TIMEOUT)
+        # Loki itself serves buildinfo bare; a gateway may wrap it in a status/data envelope.
+        info = bi.get("data") if isinstance(bi, dict) and isinstance(bi.get("data"), dict) and "version" in bi["data"] else bi
+        version = info.get("version") if isinstance(info, dict) else None
     except _ApiError:
         version = None
     try:
-        labels = _get(creds, "/loki/api/v1/labels", {})
+        labels = _get(creds, "/loki/api/v1/labels", {}, verify="list", timeout=HTTP_TIMEOUT)
     except _ApiError:
         labels = None
     labels_ok = isinstance(labels, list)  # a FAILED label fetch is not an empty schema
