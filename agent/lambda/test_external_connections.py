@@ -54,32 +54,17 @@ def test_error_body_is_bounded_and_closed_without_echoing_content():
     assert "synthetic-private" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("entry", [None, {}, {"token": "synthetic"}, []])
-def test_explicit_missing_instance_cannot_borrow_a_sibling_default_mirror(entry):
-    mirror = {**CREDS, "instanceId": "3"}  # the default is instance 3, not the requested 7
-    with patch.object(dh, "_load_secret_map", return_value={"7": entry, "prometheus": mirror}):
-        with pytest.raises(dh.NotConnected):
-            dh.load_datasource("prometheus", instance_id=7)
-        assert dh.load_datasource("prometheus") == mirror
-
-
-def test_explicit_default_instance_resolves_its_own_stamped_mirror():
-    mirror = {**CREDS, "instanceId": "3"}
-    with patch.object(dh, "_load_secret_map", return_value={"prometheus": mirror}):
-        assert dh.load_datasource("prometheus", instance_id=3) == mirror
-        assert dh.load_datasource("prometheus", instance_id="3") == mirror
-
-
-def test_unstamped_legacy_mirror_cannot_authorize_an_explicit_instance():
-    with patch.object(dh, "_load_secret_map", return_value={"prometheus": CREDS}):
+@pytest.mark.parametrize("entry", ["absent", None, {}, {"token": "synthetic"}, []])
+def test_explicit_instance_without_its_own_key_never_borrows_the_kind_mirror(entry):
+    secrets = {"prometheus": CREDS, **({} if entry == "absent" else {"7": entry})}
+    with patch.object(dh, "_load_secret_map", return_value=secrets):
         with pytest.raises(dh.NotConnected, match="requested datasource instance"):
             dh.load_datasource("prometheus", instance_id=7)
         assert dh.load_datasource("prometheus") == CREDS
 
 
 def test_backfilled_legacy_default_remains_readable_without_lending_to_siblings():
-    mirror = {**CREDS, "instanceId": "7"}
-    with patch.object(dh, "_load_secret_map", return_value={"7": CREDS, "prometheus": mirror}):
+    with patch.object(dh, "_load_secret_map", return_value={"7": CREDS, "prometheus": CREDS}):
         assert dh.load_datasource("prometheus", instance_id=7) == CREDS
         with pytest.raises(dh.NotConnected):
             dh.load_datasource("prometheus", instance_id=8)
@@ -461,3 +446,41 @@ def test_header_phase_is_bounded_by_the_request_deadline():
         started = _time.monotonic()
         dh.http_json("GET", CREDS["endpoint"], timeout=0.2)
     assert _time.monotonic() - started < 0.5
+
+
+def test_header_deadline_closes_the_tracked_connection():
+    import time as _time
+
+    class FakeConn:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    held = {}
+
+    def slow_open(req, timeout=None):
+        held["conn"] = req._awsops_tracker.conn = FakeConn()
+        _time.sleep(0.6)
+        return Response(b"{}")
+
+    with patch.object(dh._opener, "open", side_effect=slow_open), pytest.raises(TimeoutError):
+        dh.http_json("GET", CREDS["endpoint"], timeout=0.2)
+    assert held["conn"].closed is True
+
+
+def test_late_http_error_body_is_closed_after_a_header_timeout():
+    import time as _time
+    stream = io.BytesIO(b"late")
+
+    def slow_error(req, timeout=None):
+        _time.sleep(0.4)
+        raise urllib.error.HTTPError(CREDS["endpoint"], 500, "late", {}, stream)
+
+    with patch.object(dh._opener, "open", side_effect=slow_error), pytest.raises(TimeoutError):
+        dh.http_json("GET", CREDS["endpoint"], timeout=0.15)
+    for _ in range(30):
+        if stream.closed:
+            break
+        _time.sleep(0.05)
+    assert stream.closed

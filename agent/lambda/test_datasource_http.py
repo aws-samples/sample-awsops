@@ -85,13 +85,11 @@ class TestLoad(unittest.TestCase):
                 dh.load_datasource("clickhouse")
 
     def test_load_datasource_instance_id_pure_arg(self):
-        # per-instance id key wins; the kind mirror serves the no-id path and the stamped default id,
-        # never a sibling id.
-        m = {"5": {"endpoint": "http://prom-a:9090"}, "prometheus": {"endpoint": "http://prom-default:9090", "instanceId": "1"}}
+        # an explicit id resolves only its own id key; the kind mirror serves only the no-id path.
+        m = {"5": {"endpoint": "http://prom-a:9090"}, "prometheus": {"endpoint": "http://prom-default:9090"}}
         with mock.patch.object(dh, "_load_secret_map", return_value=m):
             self.assertEqual(dh.load_datasource("prometheus", instance_id=5)["endpoint"], "http://prom-a:9090")
             self.assertEqual(dh.load_datasource("prometheus")["endpoint"], "http://prom-default:9090")  # kind mirror
-            self.assertEqual(dh.load_datasource("prometheus", instance_id=1)["endpoint"], "http://prom-default:9090")  # stamped default
             with self.assertRaises(dh.NotConnected):
                 dh.load_datasource("prometheus", instance_id=999)
 

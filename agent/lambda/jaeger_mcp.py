@@ -91,6 +91,8 @@ def jaeger_search(args):
     params.setdefault("limit", "20")
     if not re.fullmatch(r"\d{1,9}", str(params["limit"])):
         return err("limit must be a positive integer")
+    if int(params["limit"]) == 0:
+        return err("limit must be a positive integer")
     requested = max(1, min(int(params["limit"]), MAX_TRACES))
     params["limit"] = str(requested)
     params["start"] = _parse_time_us(args.get("start"), 3600)
@@ -107,11 +109,13 @@ def jaeger_search(args):
     for t in traces[:MAX_TRACES]:
         if (not isinstance(t, dict) or not isinstance(t.get("traceID"), str)
                 or not 1 <= len(t["traceID"]) <= 32 or not _HEX.fullmatch(t["traceID"])
-                or not isinstance(t.get("spans"), list) or not t["spans"]
+                or not isinstance(t.get("spans"), list)
                 or not isinstance(t.get("processes"), dict)):
             invalid = True
             continue
         spans, procs = t["spans"], t["processes"]
+        if not spans:
+            continue  # a trace with no spans is a skipped row, not a malformed page
         if not all(isinstance(s, dict) and type(s.get("startTime")) is int and 0 <= s["startTime"] <= 8640000000000000000
                    and type(s.get("duration")) is int and 0 <= s["duration"] <= 8640000000000000000
                    and isinstance(s.get("operationName"), str) for s in spans):

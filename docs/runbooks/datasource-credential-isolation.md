@@ -5,49 +5,47 @@ and ADR-039 integration identity. It does not approve deployment or activate any
 
 ## Symptoms
 
-After a stricter connector rollout, a migrated default with only an unstamped kind
-credential fails an explicit-ID read. A sibling without its own credentials must fail.
+After the stricter connector rollout, an explicit-ID read for a migrated default whose
+per-instance credential key was never written fails closed. A sibling without its own
+credentials must fail.
 
 ## Diagnosis
 
-Native datasource connectors store one credential blob per integration ID.
-Their plain kind key is a managed mirror for the current default. The mirror
-includes `instanceId`; an explicit-ID producer read accepts only its own ID key
-or a mirror bearing that exact ID. Missing credentials fail closed. Calls without
-an explicit ID retain the existing kind-default lookup.
+Native datasource connectors store one credential blob per integration ID
+(`map[<id>]`). Their plain kind key is the managed mirror of the current default
+and serves only calls without an explicit ID. An explicit-ID read uses its own ID
+key only; it never falls back to the kind mirror. Missing credentials fail closed.
 
-An old unstamped mirror cannot prove which instance owns its credentials.
 ## Action
 
-Before deploying the stricter connector producer, operators must backfill every
+Before deploying the stricter connector producer, operators must re-save every
 migrated default through the existing authenticated administrator save flow:
 
 1. Identify the current default datasource in the Integrations interface. Keep
    its endpoint and authentication type unchanged.
-2. Save that datasource's connection settings. The server re-reads the row under
-   its manage lock; only a current default may recover an unstamped kind mirror,
-   and its stored endpoint must exactly match that row. Do not print credentials.
-3. Confirm the save succeeded. It writes the instance ID credential and stamps
-   the kind mirror. A settings-only save preserves the matched authentication
-   material. A mismatched stamp or endpoint is rejected as a credential source;
-   resupply the intended instance's credentials through the same write-only form.
+2. Save that datasource's connection settings (Integrations → datasource → save
+   connection settings). Do not print credentials.
+3. Confirm the save succeeded. For a default, the save reads the ID key and falls
+   back to the kind mirror only when the mirror's endpoint origin matches the row;
+   otherwise stored authentication material is dropped and must be resupplied
+   through the same write-only form. It strips stale settings, writes the merged
+   blob under the instance ID and re-mirrors it to the kind key.
 4. Verify a credential-blind read for that exact instance ID before the connector
    rollout, and verify a same-kind instance without its own credentials fails
    closed. Stop deployment until all migrated defaults pass.
 
-Changing or deleting a default does not establish ownership of its old mirror.
-Only an ID-bound credential may be mirrored to the replacement; absent credentials
-clear the kind mirror instead of lending the previous default's authentication.
-Resave migrated defaults before switching them. Secrets Manager and row writes are
-not one atomic cross-service transaction; a failed save requires inspection and
-retry through the administrator flow before rollout.
+Default switching and deletion keep today's web behavior in this change: the
+successor's ID-bound credential is mirrored; otherwise the kind mirror is cleared.
+The stricter handling of legacy mirrors lands with the datasource web contract
+change. Secrets Manager and row writes are not one atomic cross-service
+transaction; a failed save requires inspection and retry through the administrator
+flow before rollout.
 
-The implementation is `web/lib/integration-credentials.ts`,
-`web/app/api/datasources/manage/route.ts`, `web/lib/datasources.ts` and
+The implementation is `web/app/api/datasources/manage/route.ts` and
 `agent/lambda/datasource_http.py`. Focused verification:
 
 ```bash
-cd web && npx vitest run lib/integration-credentials.id.test.ts lib/datasources.test.ts lib/datasources.default.test.ts lib/datasources.delete.test.ts app/api/datasources/manage/route.test.ts
+cd web && npx vitest run app/api/datasources/manage/route.test.ts
 cd agent/lambda && python3 -m pytest test_external_connections.py -q
 ```
 

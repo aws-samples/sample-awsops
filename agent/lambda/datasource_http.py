@@ -61,6 +61,10 @@ _SECRET_TTL = 60.0  # bound stale creds in a warm (long-lived worker) container
 # Reset every invocation by set_request_conn — see module docstring.
 _PINNED_IP_CACHE = {}
 
+# Shared (not per-call) pool for _open_within; 2 workers so one connection that ignores close()
+# cannot stall every later request.
+_OPEN_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="ds-open")
+
 
 class NotConnected(Exception):
     """Raised when a datasource slug has no stored credential/endpoint."""
@@ -238,7 +242,8 @@ def query_probe(run, error, accepted=("ok", "empty", "partial")):
         state, error = None, "endpoint rejected by the private-network policy"
     except NotConnected:
         state, error = None, "datasource not connected"
-    except Exception:
+    except Exception as exc:
+        print(f"[datasource_http] connection probe failed: {type(exc).__name__}")
         state = None
     latency = int((time.monotonic() - t0) * 1000)
     verified = state in accepted
@@ -296,29 +301,21 @@ def _load_secret_map():
 def load_datasource(slug, instance_id=None):
     """Resolve a datasource's connection blob. Precedence:
        1. the request-scoped inline conn-config (`_REQUEST_CONN`) — the trusted BFF path only;
-       2. the per-instance secret key `map[str(instance_id)]` — the credential-blind worker path,
-          where the caller sends ONLY an instance_id and the connector reads the secret server-side;
-       3. the `map[slug]` kind-mirror: when no explicit instance was requested, or when the
-          requested id IS the default instance the mirror was written for (`instanceId` stamp).
-    An explicit id never inherits an unstamped mirror or one stamped for another instance.
-    Legacy defaults must be re-saved through the verified-current-default administrator path
-    before this credential-blind producer rolls out; that path writes the id key and stamp.
-    Calls without an explicit id retain the legacy kind-default lookup.
+       2. for an explicit instance_id, the per-instance secret key `map[str(instance_id)]` only —
+          the credential-blind worker path, where the caller sends ONLY an instance_id and the
+          connector reads the secret server-side. It never falls back to the kind mirror: a sibling
+          must not inherit the default's credential, and a migrated default whose id key was never
+          written must be re-saved first (the administrator save writes it);
+       3. the `map[slug]` kind mirror, only when no explicit instance was requested.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
     if _REQUEST_CONN is not None:
         return _REQUEST_CONN
     m = _load_secret_map()
-    creds = m.get(str(instance_id)) if instance_id is not None else None
     if instance_id is not None:
+        creds = m.get(str(instance_id))
         if not isinstance(creds, dict) or not creds.get("endpoint"):
-            mirror = m.get(slug)
-            stamp = mirror.get("instanceId") if isinstance(mirror, dict) else None
-            if isinstance(mirror, dict) and mirror.get("endpoint") and (
-                    stamp is not None and str(stamp) == str(instance_id)):
-                creds = mirror
-            else:
-                raise NotConnected("requested datasource instance is not configured")
+            raise NotConnected("requested datasource instance is not configured")
     else:
         creds = m.get(slug)
     if not isinstance(creds, dict) or not creds.get("endpoint"):
@@ -334,7 +331,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 # ProxyHandler({}) disables HTTP_PROXY/HTTPS_PROXY env-var routing — pinning implies a direct
 # connection to the validated IP; honoring a proxy would route the request elsewhere and defeat
 # the point of pinning (and break it, since the socket wouldn't reach the pinned IP at all).
-_opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+class _ConnTracker:
+    """Per-request handle: the connection urllib opens for this request, so the deadline watchdog
+    in _open_within can close it (which unblocks the worker's recv) instead of abandoning it."""
+    conn = None
+
+
+def _tracked(conn_class, req):
+    def make(*args, **kwargs):
+        conn = conn_class(*args, **kwargs)
+        tracker = getattr(req, "_awsops_tracker", None)
+        if tracker is not None:
+            tracker.conn = conn
+        return conn
+    return make
+
+
+class _TrackingHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_tracked(http.client.HTTPConnection, req), req)
+
+
+class _TrackingHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_tracked(http.client.HTTPSConnection, req), req, context=self._context)
+
+
+_opener = urllib.request.build_opener(
+    _NoRedirect, urllib.request.ProxyHandler({}), _TrackingHTTPHandler, _TrackingHTTPSHandler)
 
 
 def _pin_create_connection(base_create, pinned_ips):
@@ -379,7 +403,8 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         self._pinned_ips = pinned_ips
 
     def http_open(self, req):
-        return self.do_open(functools.partial(_PinnedHTTPConnection, pinned_ips=self._pinned_ips), req)
+        return self.do_open(
+            _tracked(functools.partial(_PinnedHTTPConnection, pinned_ips=self._pinned_ips), req), req)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -395,7 +420,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         # inside HTTPSConnection, and self.host (unchanged — only the socket target is pinned) is
         # passed as server_hostname for SNI + the default context's built-in hostname/cert check.
         return self.do_open(
-            functools.partial(_PinnedHTTPSConnection, pinned_ips=self._pinned_ips),
+            _tracked(functools.partial(_PinnedHTTPSConnection, pinned_ips=self._pinned_ips), req),
             req,
             context=self._context,
         )
@@ -471,19 +496,35 @@ def _read_bounded(response, max_bytes, deadline):
 def _open_within(opener, req, timeout, deadline):
     """Open the connection and read the response headers under the request's absolute deadline.
     urllib's `timeout` is per socket operation, so a server dripping header bytes could hold
-    open() past the deadline; the open runs on a worker thread that is abandoned at the deadline
-    (its own per-operation socket timeout ends it) so the invocation returns on time."""
+    open() past the deadline. The open runs on the shared worker pool; at the deadline the
+    watchdog closes the request's connection (which ends the worker's blocked read) and any
+    response that still arrives later is closed by the completion callback."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("datasource request deadline exceeded before connect")
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(opener.open, req, timeout=min(timeout, remaining))
-    pool.shutdown(wait=False)
+    req._awsops_tracker = tracker = _ConnTracker()
+    future = _OPEN_POOL.submit(opener.open, req, timeout=min(timeout, remaining))
     try:
         return future.result(timeout=remaining)
     except concurrent.futures.TimeoutError as exc:
-        future.add_done_callback(lambda f: f.exception() is None and f.result().close())
+        if tracker.conn is not None:
+            try:
+                tracker.conn.close()
+            except OSError:
+                pass
+        future.add_done_callback(_close_late)
         raise TimeoutError("datasource response header deadline exceeded") from exc
+
+
+def _close_late(future):
+    """Close whatever a timed-out open eventually produced: a response, or an HTTPError's body."""
+    error = future.exception()
+    late = future.result() if error is None else getattr(error, "fp", None)
+    if late is not None:
+        try:
+            late.close()
+        except OSError:
+            pass
 
 
 def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_bytes=MAX_RESPONSE_BYTES):

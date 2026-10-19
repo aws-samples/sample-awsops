@@ -277,6 +277,7 @@ def clickhouse_health(args):
     def run():
         result = _run_sql("SELECT 1 AS probe", 1, max_execution_time=1)
         return json.loads(result["body"]).get("collectionStatus") if result["statusCode"] == 200 else None
+    # "empty" is impossible for SELECT 1; "partial" means the result cap applied, which still proves access.
     return ok(query_probe(run, "ClickHouse query access could not be verified", accepted=("ok", "partial")))
 
 
