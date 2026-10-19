@@ -24,7 +24,9 @@ it('isolates malformed legacy tools from a healthy selected catalog entry', asyn
     { id: 9, enabled: true, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: { legacy: true } },
     { id: 10, enabled: true, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: null },
   ] });
-  expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([8]);
+  const selection = await getEnabledIntegrationSelection('self');
+  expect(selection.integrations.map(i => Number(i.id))).toEqual([8]);
+  expect(selection.mcpSelectionSuppressed).toBe(false);
 });
 describe('MCP catalog controls', () => {
   it.each(['false', 'true'])('quarantines legacy write tools but retains proposal metadata when activation is %s', async (activation) => {
@@ -140,7 +142,7 @@ describe('catalog to resolver MCP ceiling', () => {
     db.query.mockResolvedValue({ rows: [{ ...row, account_selected: true }] });
     try {
       const selection = await getEnabledIntegrationSelection('self');
-      expect(selection).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+      expect(selection).toMatchObject({ integrations: [], mcpSelectionSuppressed: true });
       const spec = resolveAgent('custom-ro', [custom], null, [], [], selection);
       expect(spec.toolAllowlist).toEqual([]);
       expect(spec.integrations).toBeUndefined();
@@ -153,7 +155,7 @@ describe('catalog to resolver MCP ceiling', () => {
     db.query.mockResolvedValue({ rows: [{ ...row, enabled: false, account_selected: true }] });
     try {
       const selection = await getEnabledIntegrationSelection('self');
-      expect(selection).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+      expect(selection).toMatchObject({ integrations: [], mcpSelectionSuppressed: true });
       const spec = resolveAgent('custom-ro', [custom], null, [], [], selection);
       expect(spec.toolAllowlist).toEqual([]);
       expect(spec.integrations).toBeUndefined();
@@ -186,6 +188,40 @@ describe('catalog to resolver MCP ceiling', () => {
       const selection = await getEnabledIntegrationSelection('self');
       expect(selection.mcpSelectionSuppressed).toBe(false);
       expect(resolveAgent('custom-ro', [custom], null, [], [], selection).toolAllowlist).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+describe('suppression diagnostics and legacy isolation', () => {
+  it.each([
+    { direction: 'ingress', capability: 'read', exposed_tools: ['query'] },
+    { direction: 'egress', capability: 'read_write', exposed_tools: ['write'] },
+    { direction: 'egress', capability: 'read', exposed_tools: { legacy: true } },
+    { direction: 'egress', capability: 'read', exposed_tools: null },
+  ])('quarantines non-declarations per row: %j', async shape => {
+    vi.stubEnv('AURORA_ENDPOINT', 'fixture-only');
+    db.query.mockResolvedValue({ rows: [{ ...row, kind: 'grafana', ...shape }] });
+    try {
+      const selection = await getEnabledIntegrationSelection('self');
+      expect(selection.mcpSelectionSuppressed).toBe(false);
+      expect(selection.mcpSuppressionReasons).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it.each([
+    ['denied', { ...row, account_selected: true }],
+    ['disabled-selected', { ...row, enabled: false, account_selected: true }],
+  ])('records a non-secret %s reason', async (reason, raw) => {
+    vi.stubEnv('AURORA_ENDPOINT', 'fixture-only');
+    db.query.mockResolvedValue({ rows: [raw] });
+    try {
+      expect((await getEnabledIntegrationSelection('self')).mcpSuppressionReasons).toEqual([reason]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('distinguishes database lookup failure from policy denial', async () => {
+    vi.stubEnv('AURORA_ENDPOINT', 'fixture-only');
+    db.query.mockRejectedValueOnce(new Error('fixture failure'));
+    try {
+      expect((await getEnabledIntegrationSelection('self')).mcpSuppressionReasons).toEqual(['lookup-failed']);
     } finally { vi.unstubAllEnvs(); }
   });
 });

@@ -200,12 +200,6 @@ export async function attestAndEnableMcp(id: number, actorSub: string, confirmed
 }
 
 /**
- * Enabled integrations for an account, PER-ACCOUNT-SPACE scoped (mirrors getEnabledCustomAgents):
- * globally `enabled=true` AND (no agent_spaces row ⇒ Phase-1 global = all enabled; else only those in
- * that account's `enabled_integration_ids`). Returns BOTH directions — the caller (chat route) filters
- * to egress+read. Degrade-safe: [] when Aurora is off or on any error.
- */
-/**
  * ADR-040/041 — the egress-WRITE destination allowlist for a connector kind (e.g. 'slack' → allowed
  * Slack channels). Reuses the enabled READ_WRITE egress integration's `source_allowlist` as the
  * destination allowlist (documented egress-write reuse). [] when Aurora off / none / error → the caller's
@@ -229,9 +223,16 @@ export async function getEgressWriteAllowlist(kind: string): Promise<string[]> {
 export interface EnabledIntegrationSelection {
   integrations: IntegrationRow[];
   mcpSelectionSuppressed: boolean;
+  mcpSuppressionReasons?: Array<'denied' | 'disabled-selected' | 'lookup-failed'>;
 }
 
-/** Preserve a denied MCP declaration without exposing its tools, context or connection. */
+/**
+ * Account-scoped selection. Without a Space, enabled genuine MCP declarations
+ * remain denied without membership; an explicit Space (even empty) selects only
+ * its listed rows. Malformed vendor rows and ingress/write rows are quarantined
+ * per row, not declarations that revoke unrelated gateway reads.
+ * Lookup failures retain a fail-closed ceiling and a non-secret diagnostic reason.
+ */
 export async function getEnabledIntegrationSelection(accountId = 'self'): Promise<EnabledIntegrationSelection> {
   if (!process.env.AURORA_ENDPOINT) return { integrations: [], mcpSelectionSuppressed: false };
   try {
@@ -253,12 +254,15 @@ export async function getEnabledIntegrationSelection(accountId = 'self'): Promis
       [accountId],
     );
     const integrations: IntegrationRow[] = [];
-    let mcpSelectionSuppressed = false;
+    const reasons = new Set<'denied' | 'disabled-selected'>();
     for (const raw of rows) {
       const i = mapRow(raw);
+      const declaration = i.kind === 'custom_mcp' ||
+        (i.direction === 'egress' && i.capability === 'read' &&
+          !i.invalidToolShape && Array.isArray(i.exposedTools) && isMcpRegistration(i));
       if (i.enabled !== true) {
         // Explicit selection survives disablement/edit invalidation as a denial, never a connection.
-        if (isMcpRegistration(i)) mcpSelectionSuppressed = true;
+        if (declaration) reasons.add('disabled-selected');
         continue;
       }
       if (!isMcpRegistration(i) ||
@@ -267,16 +271,19 @@ export async function getEnabledIntegrationSelection(accountId = 'self'): Promis
       } else {
         // Includes legacy globally enabled rows when the account has no space. They remain
         // unusable without explicit membership, but removing them must never grant gateway reads.
-        mcpSelectionSuppressed = true;
+        if (declaration) reasons.add('denied');
       }
     }
-    return { integrations, mcpSelectionSuppressed };
+    return { integrations, mcpSelectionSuppressed: reasons.size > 0,
+      ...(reasons.size ? { mcpSuppressionReasons: [...reasons] } : {}) };
   } catch {
     // Policy lookup failure cannot establish the unrestricted legacy case for a custom agent.
-    return { integrations: [], mcpSelectionSuppressed: true };
+    return { integrations: [], mcpSelectionSuppressed: true,
+      mcpSuppressionReasons: ['lookup-failed'] };
   }
 }
 
+/** Compatibility/test projection; live chat must preserve selection diagnostics. */
 export async function getEnabledIntegrations(accountId = 'self'): Promise<IntegrationRow[]> {
   return (await getEnabledIntegrationSelection(accountId)).integrations;
 }

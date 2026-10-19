@@ -1277,7 +1277,7 @@ describe('follow-up continuity on the hybrid path', () => {
 });
 
 
-it('carries catalog quarantine through chat without reconnecting a suppressed MCP row', async () => {
+it('threads the suppressed MCP selection into the resolver', async () => {
   process.env.HYBRID_ROUTING_ENABLED = 'true';
   verifyUser.mockResolvedValue({ sub: 'u' });
   classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
@@ -1287,4 +1287,18 @@ it('carries catalog quarantine through chat without reconnecting a suppressed MC
   await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
   expect(resolveAgent).toHaveBeenCalledWith(expect.anything(), expect.anything(), null, [], [],
     { mcpSelectionSuppressed: true });
+});
+
+it.each(['denied', 'disabled-selected', 'lookup-failed'])('streams and persists custom MCP suppression reason %s', async reason => {
+  verifyUser.mockResolvedValue({ sub: 'u' });
+  resolveAgent.mockReturnValue({ tier: 'custom', gateway: 'ops', agentName: 'custom-ro', skillHashes: [], toolAllowlist: [] });
+  getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: true, mcpSuppressionReasons: [reason] });
+  invokeAgent.mockResolvedValue('ok');
+  const { POST } = await import('./route');
+  const body = await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
+  expect(body).toContain('integration-unavailable');
+  expect(body).toContain(reason);
+  expect(recordExchange).toHaveBeenCalledWith(expect.objectContaining({
+    meta: expect.objectContaining({ mcpSuppression: { reasons: [reason] } }),
+  }));
 });

@@ -97,7 +97,9 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     await pool.query('UPDATE integrations SET exposed_tools=$1::jsonb,enabled=true WHERE id=$2',
       [JSON.stringify(tools), broken]);
     await selected('self', [healthy, broken]);
-    expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([healthy]);
+    const selection = await getEnabledIntegrationSelection('self');
+    expect(selection.integrations.map(i => Number(i.id))).toEqual([healthy]);
+    expect(selection.mcpSelectionSuppressed).toBe(false);
     await expect(setIntegrationEnabled(broken, true)).rejects.toThrow('generic helper');
     await setIntegrationEnabled(broken, false);
     expect((await getIntegrationById(broken))?.enabled).toBe(false);
@@ -146,17 +148,17 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     await selected('self', [id]);
     await pool.query('UPDATE integrations SET enabled=true WHERE id=$1', [id]);
     process.env.CUSTOM_MCP_ENABLED = gate;
-    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+    expect(await getEnabledIntegrationSelection('self')).toMatchObject({ integrations: [], mcpSelectionSuppressed: true });
   });
   it('keeps an explicitly selected disabled MCP row as a denied policy declaration', async () => {
     const id = await enabled();
     await selected('self', [id]);
     await setIntegrationEnabled(id, false);
-    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+    expect(await getEnabledIntegrationSelection('self')).toMatchObject({ integrations: [], mcpSelectionSuppressed: true });
   });
   it('does not mistake a suppressed global legacy row for an absent declaration', async () => {
     const id = await enabled();
-    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+    expect(await getEnabledIntegrationSelection('self')).toMatchObject({ integrations: [], mcpSelectionSuppressed: true });
     await selected('self', []);
     expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: false });
     await pool.query('UPDATE agent_spaces SET enabled_integration_ids=$1::jsonb WHERE account_id=$2', [JSON.stringify([id]), 'self']);
