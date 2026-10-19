@@ -4,8 +4,8 @@
 // v2 runs in-VPC (mgmt-vpc, near 169.254.169.254 + the internal ALB), so an admin-registered egress
 // endpoint pointing at a private/link-local/metadata address is the SSRF risk this guards.
 // NOTE: there is NO v1 code to mirror (src/lib/datasource-client.ts does not implement this); the
-// CIDRs are taken from that ADR's decision. DNS-resolution-before-request + redirect:'manual' are the
-// CONNECTION-TIME defenses (P2-infra); this module is the registration-time literal-host/IP guard,
+// CIDRs are taken from that ADR's decision. connection-time defenses are the pinned transports (agent/pinned_http.py for custom MCP,
+// agent/lambda/datasource_http.py for datasources: validated-address pinning + redirect rejection); this module is the registration-time literal-host/IP guard,
 // now extended with a fixed-set literal-hostname-alias check (see isLoopbackHostname below) —
 // still not general DNS resolution, just a few known strings that are loopback without ever being
 // a literal IP.

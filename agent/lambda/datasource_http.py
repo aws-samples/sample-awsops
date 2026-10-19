@@ -25,7 +25,8 @@ calls assert_host_allowed(endpoint) immediately before http_json(same endpoint) 
 what makes the cache safe; it is reset every invocation by set_request_conn() (called at the top of
 every lambda_handler) so a warm container never reuses a stale pinned IP across invocations.
 The separate custom-MCP transport (agent/agent.py `_assert_host_allowed` + agent/pinned_http.py) pins
-its invocation-local validated address set the same way; registration-time checks (web/lib/ssrf-guard.ts)
+its invocation-local validated address set the same way (its address classification additionally
+decodes translator-embedded IPv4 forms — IPv4-mapped, 6to4, Teredo, well-known NAT64); registration-time checks (web/lib/ssrf-guard.ts)
 stay resolve-based, connection time is pinned on both transports.
 """
 import base64

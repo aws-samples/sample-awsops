@@ -133,7 +133,6 @@ async def streamablehttp_client_with_sigv4(
     sse_read_timeout: float | timedelta = 60 * 5,
     terminate_on_close: bool = True,
     httpx_client_factory: McpHttpClientFactory = create_mcp_http_client,
-    pinned_ips: tuple[str, ...] | None = None,
 ) -> AsyncGenerator[
     tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
@@ -151,7 +150,7 @@ async def streamablehttp_client_with_sigv4(
         timeout=timeout,
         sse_read_timeout=sse_read_timeout,
         terminate_on_close=terminate_on_close,
-        httpx_client_factory=pinned_client_factory(url, pinned_ips) if pinned_ips is not None else _no_redirect_http_client_factory,
+        httpx_client_factory=_no_redirect_http_client_factory,
         auth=SigV4HTTPXAuth(credentials, service, region),
     ) as result:
         yield result
@@ -160,11 +159,11 @@ async def streamablehttp_client_with_sigv4(
 @asynccontextmanager
 async def streamablehttp_client_with_headers(
     url: str,
+    pinned_ips: tuple[str, ...],
     headers: dict[str, str] | None = None,
     timeout: float | timedelta = 30,
     sse_read_timeout: float | timedelta = 60 * 5,
     terminate_on_close: bool = True,
-    pinned_ips: tuple[str, ...] | None = None,
 ) -> AsyncGenerator[
     tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
@@ -174,7 +173,8 @@ async def streamablehttp_client_with_headers(
     None,
 ]:
     """
-    Client transport for Streamable HTTP with static headers (API Key / Bearer) + redirect:'manual'.
+    Client transport for Streamable HTTP with static headers (API Key / Bearer), connections pinned
+    to the validated address set.
     """
     async with streamablehttp_client(
         url=url,
@@ -182,6 +182,6 @@ async def streamablehttp_client_with_headers(
         timeout=timeout,
         sse_read_timeout=sse_read_timeout,
         terminate_on_close=terminate_on_close,
-        httpx_client_factory=pinned_client_factory(url, pinned_ips) if pinned_ips is not None else _no_redirect_http_client_factory,
+        httpx_client_factory=pinned_client_factory(url, pinned_ips),
     ) as result:
         yield result

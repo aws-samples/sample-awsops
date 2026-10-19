@@ -89,7 +89,7 @@ def test_rejects_all_redirects_before_mcp_sdk_can_follow_them(location):
     async def run():
         transport = PinnedAsyncTransport(ORIGIN, ("192.0.2.10",), transport=httpx.MockTransport(upstream))
         async with httpx.AsyncClient(transport=transport, follow_redirects=True) as client:
-            with pytest.raises(httpx.HTTPStatusError, match="3xx response rejected"):
+            with pytest.raises(httpx.HTTPStatusError, match="307 response rejected"):
                 await client.post(ORIGIN, content=b"synthetic")
     asyncio.run(run())
     assert len(calls) == 1
