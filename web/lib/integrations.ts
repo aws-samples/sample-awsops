@@ -244,14 +244,11 @@ export async function getEnabledIntegrationSelection(accountId = 'self'): Promis
                 WHERE s.account_id = $1
               ) AS account_selected
        FROM integrations i
-       WHERE i.enabled = true
-         AND (
-           NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1)
-           OR i.id IN (
-             SELECT (e)::bigint FROM agent_spaces s, jsonb_array_elements_text(s.enabled_integration_ids) AS e
-             WHERE s.account_id = $1
-           )
-         )
+       WHERE (i.enabled = true AND NOT EXISTS (SELECT 1 FROM agent_spaces s WHERE s.account_id = $1))
+          OR i.id IN (
+            SELECT (e)::bigint FROM agent_spaces s, jsonb_array_elements_text(s.enabled_integration_ids) AS e
+            WHERE s.account_id = $1
+          )
        ORDER BY i.name`,
       [accountId],
     );
@@ -259,6 +256,11 @@ export async function getEnabledIntegrationSelection(accountId = 'self'): Promis
     let mcpSelectionSuppressed = false;
     for (const raw of rows) {
       const i = mapRow(raw);
+      if (i.enabled !== true) {
+        // Explicit selection survives disablement/edit invalidation as a denial, never a connection.
+        if (isMcpRegistration(i)) mcpSelectionSuppressed = true;
+        continue;
+      }
       if (!isMcpRegistration(i) ||
           (raw.account_selected === true && customMcpEnabled() && validMcpAttestation({ ...i, id: Number(i.id) }))) {
         integrations.push(i);

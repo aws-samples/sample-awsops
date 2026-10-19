@@ -148,6 +148,12 @@ describe.skipIf(!socket)('MCP governance on disposable PostgreSQL 17', () => {
     process.env.CUSTOM_MCP_ENABLED = gate;
     expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
   });
+  it('keeps an explicitly selected disabled MCP row as a denied policy declaration', async () => {
+    const id = await enabled();
+    await selected('self', [id]);
+    await setIntegrationEnabled(id, false);
+    expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+  });
   it('does not mistake a suppressed global legacy row for an absent declaration', async () => {
     const id = await enabled();
     expect(await getEnabledIntegrationSelection('self')).toEqual({ integrations: [], mcpSelectionSuppressed: true });

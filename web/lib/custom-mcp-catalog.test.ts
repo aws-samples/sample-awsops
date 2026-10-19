@@ -6,7 +6,7 @@ vi.mock('./custom-mcp-secret', () => ({ currentCustomMcpSecretVersion: secret.cu
 import { attestAndEnableMcp, getEnabledIntegrations, getEnabledIntegrationSelection, upsertIntegration } from './integrations';
 import { resolveAgent } from './agent-resolver';
 import type { AgentWithSkills } from './catalog';
-const row = { id: '7', kind: 'custom_mcp', tier: 'custom', direction: 'egress', capability: 'read',
+const row = { id: '7', enabled: true, kind: 'custom_mcp', tier: 'custom', direction: 'egress', capability: 'read',
   endpoint: 'https://example.com/mcp', transport: 'api_key', credentials_ref: 'ops/awsops-v2/integrations/custom/7',
   exposed_tools: ['query'], provided_context: {} };
 const shown = { endpoint: row.endpoint, transport: row.transport, credentialsRef: row.credentials_ref, exposedTools: row.exposed_tools };
@@ -20,9 +20,9 @@ beforeEach(() => {
 it('isolates malformed legacy tools from a healthy selected catalog entry', async () => {
   process.env.AURORA_ENDPOINT = 'fixture-only';
   db.query.mockResolvedValue({ rows: [
-    { id: 8, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: [] },
-    { id: 9, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: { legacy: true } },
-    { id: 10, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: null },
+    { id: 8, enabled: true, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: [] },
+    { id: 9, enabled: true, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: { legacy: true } },
+    { id: 10, enabled: true, kind: 'grafana', direction: 'egress', capability: 'read', exposed_tools: null },
   ] });
   expect((await getEnabledIntegrations('self')).map(i => Number(i.id))).toEqual([8]);
 });
@@ -146,6 +146,18 @@ describe('catalog to resolver MCP ceiling', () => {
       expect(spec.integrations).toBeUndefined();
       expect(spec.systemPromptOverride).not.toContain(row.endpoint);
       expect(secret.current).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('retains a disabled selected MCP declaration without exposing tools or context', async () => {
+    vi.stubEnv('AURORA_ENDPOINT', 'fixture-only');
+    db.query.mockResolvedValue({ rows: [{ ...row, enabled: false, account_selected: true }] });
+    try {
+      const selection = await getEnabledIntegrationSelection('self');
+      expect(selection).toEqual({ integrations: [], mcpSelectionSuppressed: true });
+      const spec = resolveAgent('custom-ro', [custom], null, [], [], selection);
+      expect(spec.toolAllowlist).toEqual([]);
+      expect(spec.integrations).toBeUndefined();
+      expect(spec.systemPromptOverride).not.toContain(row.endpoint);
     } finally { vi.unstubAllEnvs(); }
   });
   it('retains the denied declaration of a global legacy row without granting membership', async () => {
