@@ -26,6 +26,18 @@ beforeEach(() => {
 });
 
 describe('POST /api/datasources/test', () => {
+  it('candidate credentials cannot replace the validated endpoint or auth method', async () => {
+    const { POST } = await import('./route');
+    const response = await POST(req({
+      kind: 'mimir', endpoint: 'https://provider.example.test', authType: 'none',
+      creds: { endpoint: 'http://169.254.169.254/', authType: 'basic', timeoutS: 999 },
+      settings: { apiPrefix: '/metrics', timeoutS: 35 },
+    }));
+    expect(response.status).toBe(200);
+    expect(invokeMcpLambdaTool.mock.calls[0][0].connConfig).toEqual({
+      endpoint: 'https://provider.example.test', authType: 'none', apiPrefix: '/metrics', timeoutS: 35,
+    });
+  });
   it('401 unauthenticated / 403 non-admin', async () => {
     verifyUser.mockResolvedValueOnce(null);
     let { POST } = await import('./route');
@@ -41,7 +53,7 @@ describe('POST /api/datasources/test', () => {
     const { POST } = await import('./route');
     const resp = await POST(req({ kind: 'prometheus', endpoint: 'http://p:9090', authType: 'bearer', creds: { token: 't' } }));
     expect(resp.status).toBe(200);
-    expect(await resp.json()).toEqual({ ok: true, latencyMs: 42, error: undefined });
+    expect(await resp.json()).toEqual({ ok: true, latencyMs: 42, verified: [] });
     const call = invokeMcpLambdaTool.mock.calls[0][0];
     expect(call.tool).toBe('prometheus_health');
     expect(call.connConfig).toEqual({ endpoint: 'http://p:9090', authType: 'bearer', token: 't' });

@@ -10,6 +10,12 @@ const egress = { name: 'grafana-ro', kind: 'grafana', direction: 'egress', capab
 const ingress = { name: 'pd-in', kind: 'pagerduty', direction: 'ingress', authMode: 'vendor_sig', triggerTarget: 'incident' };
 
 describe('integration-validation', () => {
+  it('keeps stored bearer credentials executable and rejects unsupported three-legged OAuth', () => {
+    expect(validateIntegration({ ...egress, transport: 'oauth_client_credentials' }).ok).toBe(true);
+    const result = validateIntegration({ ...egress, transport: 'oauth_3lo' });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(' ')).toContain('not supported');
+  });
   it('exposes the kind/transport sets (source of truth shared with the migration)', () => {
     expect(INTEGRATION_KINDS_EGRESS).toContain('grafana');
     expect(INTEGRATION_KINDS_INGRESS).toContain('cloudwatch_sns');

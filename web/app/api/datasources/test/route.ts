@@ -1,13 +1,17 @@
 // POST /api/datasources/test — probe a datasource connection BEFORE saving (v1 "Test connection").
 // Admin-gated. Takes an UNSAVED candidate {kind, endpoint, authType, creds}, SSRF-guards the endpoint,
 // and invokes the connector's `${kind}_health` tool with an INLINE conn-config (nothing is stored).
-// SECURITY: the credential value is never logged or echoed — only {ok, latency_ms, error?} is returned.
+// The health tool runs ONE real bounded query (not a readiness endpoint — an unauthenticated /ready
+// used to pass), so `verified: ['query']` is query-access proof.
+// SECURITY: the credential value is never logged or echoed — only {ok, latencyMs, verified, error?}
+// is returned, with fixed connector sentences and never upstream text.
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
 import { invokeMcpLambdaTool, KNOWN_MCP_LAMBDA_KINDS } from '@/lib/mcp-lambda-invoke';
 import { isDatasourceKind } from '@/lib/integrations-category';
 import { assertDatasourceEndpointAllowed } from '@/lib/ssrf-guard';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
+import { sanitizeDsSettings } from '@/lib/datasources';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +24,7 @@ export async function POST(request: Request) {
   if (!user) return json({ error: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return json({ error: 'admin access required' }, 403);
 
-  let body: { kind?: unknown; endpoint?: unknown; authType?: unknown; creds?: unknown };
+  let body: { kind?: unknown; endpoint?: unknown; authType?: unknown; creds?: unknown; settings?: unknown };
   try { body = (await readJsonBounded(request)) as typeof body; }
   catch (e) {
     if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413);
@@ -37,15 +41,26 @@ export async function POST(request: Request) {
   catch (e) { return json({ error: (e as Error).message }, 400); }
 
   const authType = typeof body.authType === 'string' ? body.authType : 'none';
+  if (!['none', 'basic', 'bearer', 'custom_header'].includes(authType)) return json({ error: 'unknown auth method' }, 400);
   const creds = (body.creds && typeof body.creds === 'object' && !Array.isArray(body.creds))
     ? (body.creds as Record<string, unknown>) : {};
-  const connConfig = { endpoint, authType, ...creds }; // flat blob the connector Lambda understands
+  const credentialFields = Object.fromEntries(
+    ['username', 'password', 'token', 'headerName', 'headerValue', 'headerName2', 'headerValue2', 'org_id']
+      .filter(key => typeof creds[key] === 'string').map(key => [key, creds[key]]),
+  );
+  const settings = sanitizeDsSettings(body.settings);
+  if (kind !== 'clickhouse') delete settings.database;
+  if (kind !== 'mimir') delete settings.apiPrefix;
+  const connConfig = { ...credentialFields, ...settings, endpoint, authType };
 
   try {
+    const started = Date.now();
     const result = (await invokeMcpLambdaTool({
       kind, tool: `${kind}_health`, connConfig,
-    })) as { ok?: boolean; latency_ms?: number; error?: string };
-    return json({ ok: Boolean(result?.ok), latencyMs: result?.latency_ms, error: result?.error }, 200);
+    })) as { ok?: boolean; latency_ms?: number; error?: string; verified?: unknown };
+    return json({ ok: result?.ok === true, latencyMs: result?.latency_ms ?? Date.now() - started, error: result?.error,
+      verified: Array.isArray(result?.verified) ? result.verified.filter(value => value === 'query') : [],
+    }, 200);
   } catch (e) {
     // message only — connector errors never carry the credential value
     return json({ ok: false, error: e instanceof Error ? e.message : 'connection test failed' }, 200);

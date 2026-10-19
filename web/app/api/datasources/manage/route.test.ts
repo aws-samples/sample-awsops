@@ -59,6 +59,28 @@ beforeEach(() => {
 });
 
 describe('POST create', () => {
+  it('legacy Datadog credentials cannot follow a changed endpoint origin', async () => {
+    getDatasource.mockResolvedValue({ id: 7, name: 'dd', kind: 'datadog', endpoint: 'https://old.example.test',
+      authType: 'custom_header', isDefault: true, settings: {} });
+    getCredentialById.mockResolvedValue({ endpoint: 'https://old.example.test', authType: 'custom_header',
+      apiKey: 'synthetic-api', appKey: 'synthetic-app' });
+    const { PATCH } = await import('./route');
+    expect((await PATCH(req({ id: 7, endpoint: 'https://new.example.test' }, 'PATCH'))).status).toBe(200);
+    const blob = setIntegrationCredentialById.mock.calls.at(-1)![1];
+    expect(blob.endpoint).toBe('https://new.example.test');
+    expect(blob).not.toHaveProperty('apiKey');
+    expect(blob).not.toHaveProperty('appKey');
+  });
+  it('a settings-only PATCH keeps a Datadog legacy key pair whatever the row authType says', async () => {
+    getDatasource.mockResolvedValue({ id: 7, name: 'dd', kind: 'datadog', endpoint: 'https://api.datadoghq.com',
+      authType: 'none', isDefault: false, settings: {} });
+    getCredentialById.mockResolvedValue({ endpoint: 'https://api.datadoghq.com', authType: 'none',
+      apiKey: 'synthetic-api', appKey: 'synthetic-app' });
+    const { PATCH } = await import('./route');
+    expect((await PATCH(req({ id: 7, settings: { timeoutS: 20 } }, 'PATCH'))).status).toBe(200);
+    const blob = setIntegrationCredentialById.mock.calls.at(-1)![1];
+    expect(blob).toMatchObject({ apiKey: 'synthetic-api', appKey: 'synthetic-app', timeoutS: 20 });
+  });
   it('403 non-admin, no writes', async () => {
     isAdmin.mockResolvedValue(false);
     const { POST } = await import('./route');

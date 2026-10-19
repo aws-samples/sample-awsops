@@ -16,7 +16,7 @@ vi.mock('@/lib/datasources', () => ({
   createDatasource: vi.fn(), updateDatasource: vi.fn(),
 }));
 vi.mock('@/lib/integration-credentials', () => ({
-  getConfiguredIds: vi.fn(async () => []),
+  getConfiguredDatasourceIds: vi.fn(async () => []),
   setIntegrationCredentialById: vi.fn(), mirrorDefaultCredential: vi.fn(),
 }));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: vi.fn(), KNOWN_MCP_LAMBDA_KINDS: ['prometheus'] }));

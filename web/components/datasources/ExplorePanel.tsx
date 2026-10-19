@@ -15,6 +15,7 @@ import HBarList from '@/components/charts/HBarList';
 import type { NormalizedResult } from '@/lib/datasource-render';
 import { cn } from '@/lib/cn';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { TIME_WINDOW_KINDS, TOOL } from '@/lib/datasource-query-tools';
 
 // A datasource INSTANCE (the hub model): identified by bigint id, with a user-given name.
 export interface DatasourceInstance {
@@ -36,7 +37,7 @@ const PH: Record<string, string> = {
   dynatrace: 'metricSelector… 예: builtin:host.cpu.usage:avg',
   datadog: '메트릭 쿼리… 예: avg:system.cpu.user{*}',
 };
-const RANGE_KINDS = new Set(['prometheus', 'mimir', 'loki']); // kinds with a *_query_range tool
+const RANGE_KINDS = new Set(TIME_WINDOW_KINDS);
 const selectCls = 'rounded-md border border-ink-200 bg-card px-2.5 py-1.5 text-[13px] text-ink-700';
 
 // Explore range presets: label → window seconds (0 = instant snapshot). Step auto-derived for ~250 points.
@@ -76,7 +77,10 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
   const ds = list.find((d) => d.id === selId) ?? null;
   const canRange = ds ? RANGE_KINDS.has(ds.kind) : false;
   // Loki has no per-request upstream timeout — the API caps it at 7d, so don't offer 30d.
-  const presets = ds?.kind === 'loki' ? RANGE_PRESETS.filter(([, s]) => s <= 604800) : RANGE_PRESETS;
+  const searchWindow = ds ? TOOL[ds.kind]?.timeWindow === true : false;
+  const effectiveRangeWindow = searchWindow ? rangeWindow || 3600 : rangeWindow;
+  const presets = RANGE_PRESETS.filter(([, seconds]) =>
+    (!searchWindow || seconds > 0) && (!ds || !['loki', 'tempo', 'jaeger'].includes(ds.kind) || seconds <= 604800));
   const queryIsMultiline = ds?.kind === 'clickhouse';
 
   useEffect(() => {
@@ -98,7 +102,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
   const run = useCallback(async (windowOverride?: number, queryOverride?: string) => {
     const q = queryOverride ?? query;  // a quick-query chip can run its expr without waiting on setQuery
     if (selId === '' || !q.trim()) return;
-    const w = windowOverride ?? rangeWindow;
+    const w = windowOverride ?? effectiveRangeWindow;
     const kindNow = list.find((d) => d.id === selId)?.kind; // bind kind to THIS query, not the live selection
     const range = canRange && w > 0 ? { window: w, step: autoStep(w, kindNow) } : false;
     const queriedKind = kindNow;
@@ -116,7 +120,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
     } catch (e) {
       setErr(e instanceof Error ? e.message : tt('쿼리 실패'));
     } finally { setBusy(false); }
-  }, [selId, query, rangeWindow, canRange, list, tt]);
+  }, [selId, query, effectiveRangeWindow, canRange, list, tt]);
 
   // NL → query (AI drafts, user reviews, then runs). Never auto-runs.
   const generate = useCallback(async () => {
@@ -142,6 +146,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
   return (
     <div className="space-y-4">
       <Card className="p-4 space-y-3">
+        <p className="text-[12px] text-ink-500">{tt('공유 데이터소스입니다. AWS 계정 선택은 이 연결의 데이터 범위를 변경하지 않습니다.')}</p>
         {/* Always show the picker (preselected to the scoped instance) — never a dead-end if the
             scoped id isn't in the list yet. */}
         {(
@@ -157,7 +162,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
               <select
                 aria-label={tt('범위')}
                 className={selectCls}
-                value={String(rangeWindow)}
+                value={String(effectiveRangeWindow)}
                 disabled={busy}
                 onChange={(e) => { const w = Number(e.target.value); setRangeWindow(w); run(w); }}
               >
@@ -185,6 +190,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
             {tt('스키마 어휘 경고')}: {genWarn}
           </div>
         )}
+        {canRange && <p className="text-[11px] text-ink-400">{tt('AI 쿼리 생성은 선택한 조회 기간을 변경하지 않습니다.')}</p>}
         {ds && (AI_EXAMPLES[ds.kind] ?? []).length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {(AI_EXAMPLES[ds.kind] ?? []).map((p) => (

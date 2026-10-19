@@ -10,7 +10,7 @@ import { isDatasourceKind } from '@/lib/integrations-category';
 import { assertDatasourceEndpointAllowed } from '@/lib/ssrf-guard';
 import { normalizeResult } from '@/lib/datasource-render';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
-import { TOOL } from '@/lib/datasource-query-tools';
+import { TOOL, EFFECTIVE_TIMEOUT_CAP, EXECUTION_TIMEOUT_KINDS } from '@/lib/datasource-query-tools';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,12 +30,18 @@ export async function POST(request: Request) {
     if (e instanceof BodyTooLargeError) return json({ error: 'request body too large' }, 413);
     return json({ error: 'invalid JSON body' }, 400);
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'body must be an object' }, 400);
 
   // Resolve the kind + (for an instance id) the inline conn-config.
   let kind = '';
   let connConfig: ConnConfig | undefined;
   let dsTimeoutS: number | undefined; // gap L203: per-datasource upstream execution bound
   const id = Number(body.id);
+  if (body.id !== undefined && (
+    !['number', 'string'].includes(typeof body.id)
+    || typeof body.id === 'string' && !/^[1-9]\d*$/.test(body.id)
+    || !Number.isSafeInteger(id) || id <= 0
+  )) return json({ error: 'invalid datasource instance id' }, 400);
   if (Number.isInteger(id) && id > 0) {
     const ds = await getDatasource(id);
     if (!ds || !isDatasourceKind(ds.kind)) return json({ error: 'unknown datasource instance' }, 400);
@@ -60,22 +66,20 @@ export async function POST(request: Request) {
 
   const args: Record<string, unknown> = { [spec.arg]: query, ...(spec.extra ?? {}) };
 
-  // Upstream execution bound (review hardening + gap L203 per-datasource setting):
-  // prometheus/mimir accept a `timeout` API param — the effective value is the datasource's
-  // own timeoutS (validated 1..60) further capped at 10s so it stays UNDER the connector's
-  // 12s HTTP timeout (a longer upstream bound than the HTTP client's is dead config).
-  // clickhouse needs NO arg here: its timeoutS rides the conn config (resolveConnConfig) and
-  // the connector applies it as the default max_execution_time on EVERY path — Explore,
-  // service-graph sources, and the agent/worker secret path — aligning its own HTTP timeout
-  // above the bound. Other kinds see no unknown arg.
-  if (kind === 'prometheus' || kind === 'mimir') args.timeout = `${Math.min(dsTimeoutS ?? 10, 10)}s`;
+  // Provider execution ceilings belong to the connector, on every invocation path.
+  // Keep the argument as an additional ceiling for older deployed PromQL producers.
+  if (kind === 'prometheus' || kind === 'mimir') args.timeout = `${Math.min(dsTimeoutS ?? 10, EFFECTIVE_TIMEOUT_CAP)}s`;
 
-  // Range mode: absent/false = instant; true = legacy 1h range (connector default);
-  // { window, step } = explicit time range. An object range is validated regardless of kind (so a bad
-  // window/step is a 400, not a silent instant); start/end are computed from the request clock.
+  // Search windows are independent of whether the provider exposes a separate range tool.
   let tool = spec.instant;
   const r = body.range;
-  if (r && typeof r === 'object') {
+  let queriedWindow: { start: string; end: string } | null = null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (r !== undefined && r !== false && r !== true && (!r || typeof r !== 'object' || Array.isArray(r))) {
+    return json({ error: 'range must be false, true, or a window object' }, 400);
+  }
+  if (r && !spec.range && !spec.timeWindow) return json({ error: 'this datasource requires time filters in its query' }, 400);
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
     const window = Number((r as { window?: unknown }).window);
     const step = Number((r as { step?: unknown }).step);
     // Upper bound widened to 30d (gap-audit L86, v1 parity) — the point-density cap below still
@@ -83,10 +87,8 @@ export async function POST(request: Request) {
     // `timeout` param (range + instant) and, for Loki, by the tighter 7d window below (Loki accepts
     // no per-request timeout).
     // A 30d window at the UI's ~250-point autoStep is ~10368s steps.
-    // Per-kind upper bound (review): prometheus/mimir get 30d WITH a forwarded upstream `timeout`
-    // (their connectors clamp it 1..60s on BOTH instant and range paths); Loki has no per-request
-    // upstream timeout, so its widened bound stays at 7d.
-    const maxWindow = kind === 'loki' ? 604800 : 2592000;
+    // Metric queries permit 30d; log/trace searches retain the narrower 7d bound.
+    const maxWindow = ['loki', 'tempo', 'jaeger'].includes(kind) ? 604800 : 2592000;
     if (!Number.isInteger(window) || window < 60 || window > maxWindow) {
       return json({ error: `range.window must be an integer in [60, ${maxWindow}] seconds` }, 400);
     }
@@ -99,22 +101,30 @@ export async function POST(request: Request) {
     if (Math.ceil(window / step) > 5000) {
       return json({ error: 'range too dense: ceil(window / step) must be ≤ 5000 points' }, 400);
     }
-    if (spec.range) { // kind has a range tool; otherwise the validated window is ignored (instant)
-      const nowSec = Math.floor(Date.now() / 1000);
+    args.start = String(nowSec - window);
+    args.end = String(nowSec);
+    queriedWindow = { start: args.start as string, end: args.end as string };
+    if (spec.range) {
       tool = spec.range;
-      args.start = String(nowSec - window);
-      args.end = String(nowSec);
       args.step = String(step);
     }
-  } else if (r === true && spec.range) {
-    tool = spec.range; // back-compat: connector applies its 1h / 60s default
+  } else if (r === true || spec.timeWindow) {
+    if (spec.range) tool = spec.range;
+    args.start = String(nowSec - 3600);
+    args.end = String(nowSec);
+    queriedWindow = { start: args.start as string, end: args.end as string };
   }
 
   try {
     const t0 = Date.now();
     const result = await invokeMcpLambdaTool({ kind, tool, args, connConfig });
     // Additive metadata for the Explore result bar (gap-audit L88) — existing consumers read only `result`.
-    return json({ result: normalizeResult(kind, tool, result), metadata: { executionTimeMs: Date.now() - t0, tool } }, 200);
+    const timeoutMode = EXECUTION_TIMEOUT_KINDS.has(kind) ? 'execution' : 'transport';
+    return json({ result: normalizeResult(kind, tool, result), metadata: {
+      executionTimeMs: Date.now() - t0, tool, window: queriedWindow, scope: 'shared',
+      // A slug-only legacy call has no row settings available to the BFF.
+      ...(connConfig ? { timeoutMode, effectiveTimeoutS: Math.min(dsTimeoutS ?? (timeoutMode === 'execution' ? 10 : 12), EFFECTIVE_TIMEOUT_CAP) } : {}),
+    } }, 200);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'query failed' }, 502);
   }
