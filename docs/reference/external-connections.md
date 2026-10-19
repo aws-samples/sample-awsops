@@ -117,8 +117,9 @@ address fallback without replaying requests after read/write failures.
 HTTPX/HTTPcore versions implementing the tested SNI contract are pinned in the
 runtime dependencies.
 
-`oauth_3lo` is not executable: validation rejects it at registration, the enable path
-rejects it, the form does not offer it, and a historical row fails closed at connect.
+`oauth_3lo` is not executable: validation rejects it at registration, the form does not
+offer it, enablement requires the default-off custom MCP governance gate (which admits
+only `api_key`/`oauth_client_credentials`), and a historical row fails closed at connect.
 The existing `oauth_client_credentials` transport consumes a previously stored
 bearer token; it does not implement issuance or refresh. External write governance,
 AWS-mutation freeze and per-account exposed-tool ceilings are unchanged.
