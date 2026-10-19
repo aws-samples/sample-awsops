@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout, observed_payload, HTTP_TIMEOUT,
+    query_probe, set_request_conn, request_timeout, observed_payload, HTTP_TIMEOUT, MAX_TRACE_RESPONSE_BYTES,
 )
 
 SLUG = "jaeger"
@@ -52,10 +52,11 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None):
+def _get(creds, path, params=None, *, timeout=None, max_bytes=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
+    extra = {"max_bytes": max_bytes} if max_bytes is not None else {}
     status, data = http_json("GET", url, headers=auth_headers(creds),
-                             timeout=timeout if timeout is not None else request_timeout(creds))
+                             timeout=timeout if timeout is not None else request_timeout(creds), **extra)
     if status >= 400:  # Jaeger errors carry {"errors":[...]} — success = HTTP 2xx
         raise _ApiError(f"Jaeger HTTP {status}: {str(data.get('errors') or data.get('raw') or data)[:300]}")
     return observed_payload(data, status)
@@ -106,6 +107,7 @@ def jaeger_search(args):
     # Compact rows for the console/agent: full span trees are huge — summarize per trace.
     rows = []
     invalid = False
+    skipped = 0
     for t in traces[:MAX_TRACES]:
         if (not isinstance(t, dict) or not isinstance(t.get("traceID"), str)
                 or not 1 <= len(t["traceID"]) <= 32 or not _HEX.fullmatch(t["traceID"])
@@ -115,7 +117,8 @@ def jaeger_search(args):
             continue
         spans, procs = t["spans"], t["processes"]
         if not spans:
-            continue  # a trace with no spans is a skipped row, not a malformed page
+            skipped += 1
+            continue  # a trace with no spans is disclosed as a skipped row, never a missing one
         if not all(isinstance(s, dict) and type(s.get("startTime")) is int and 0 <= s["startTime"] <= 8640000000000000000
                    and type(s.get("duration")) is int and 0 <= s["duration"] <= 8640000000000000000
                    and isinstance(s.get("operationName"), str) for s in spans):
@@ -140,21 +143,21 @@ def jaeger_search(args):
     saturated = len(traces) >= requested
     http_status = getattr(data, "http_status", 200)
     dropped = len(traces) > MAX_TRACES
-    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or dropped or http_status == 206 else "ok" if rows else "empty"
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or dropped or skipped or http_status == 206 else "ok" if rows else "empty"
     payload, btr = _byte_bound({"traces": rows})
     if btr:
         payload.pop("preview", None)  # never echo provider content, even as a bounded preview
     return ok({**payload, "traces": payload.get("traces", []), "truncated": btr or dropped,
                "limitSaturated": saturated,
                "collectionStatus": "unknown" if invalid or http_status not in (200, 206) else "partial" if btr else state,
-               "requestedLimit": requested, "returnedCount": len(rows)})
+               "requestedLimit": requested, "returnedCount": len(rows), "skippedCount": skipped})
 
 
 def jaeger_get_trace(args):
     tid = (args.get("trace_id") or "").strip()
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
-    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}", max_bytes=MAX_TRACE_RESPONSE_BYTES)
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
     return ok(payload)
 

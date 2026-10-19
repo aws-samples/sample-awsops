@@ -509,3 +509,36 @@ def test_jaeger_byte_bound_keeps_the_traces_contract():
             patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", return_value=(503, {"data": [trace]})), \
             pytest.raises(module._ApiError):
         module.jaeger_search({"query": "svc"})
+
+
+@pytest.mark.parametrize("kind,tool,args,reply", [
+    ("tempo", "tempo_get_trace", {"trace_id": "a" * 32}, {"batches": []}),
+    ("jaeger", "jaeger_get_trace", {"trace_id": "a" * 16}, {"data": []}),
+    ("loki", "loki_query_range", {"query": '{a="b"}'},
+     {"status": "success", "data": {"resultType": "streams", "result": []}}),
+])
+def test_trace_and_log_fetches_raise_the_transport_cap_for_projection(kind, tool, args, reply):
+    module = importlib.import_module(kind + "_mcp")
+    calls = []
+
+    def record(method, url, **kw):
+        calls.append(kw)
+        return 200, reply
+
+    with patch.object(module, "load_datasource", return_value=CREDS), \
+            patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", side_effect=record):
+        getattr(module, tool)(args)
+        if kind == "jaeger":
+            module.jaeger_services({})
+    assert calls[0]["max_bytes"] == dh.MAX_TRACE_RESPONSE_BYTES
+    if kind == "jaeger":
+        assert "max_bytes" not in calls[1]  # discovery keeps the default cap
+
+
+def test_jaeger_zero_span_traces_are_disclosed_not_certified_empty():
+    module = importlib.import_module("jaeger_mcp")
+    reply = {"data": [{"traceID": "a" * 16, "spans": [], "processes": {}}]}
+    with patch.object(module, "load_datasource", return_value=CREDS), patch.object(module, "assert_host_allowed"), \
+            patch.object(module, "http_json", return_value=(200, reply)):
+        body = json.loads(module.jaeger_search({"query": "svc"})["body"])
+    assert body["collectionStatus"] == "partial" and body["skippedCount"] == 1 and body["traces"] == []

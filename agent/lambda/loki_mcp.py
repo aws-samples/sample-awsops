@@ -17,6 +17,7 @@ from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
     query_probe, set_request_conn, request_timeout, observed_payload, finite_number, HTTP_TIMEOUT,
+    MAX_TRACE_RESPONSE_BYTES,
 )
 
 SLUG = "loki"
@@ -62,10 +63,11 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params, *, verify="query", timeout=None):
+def _get(creds, path, params, *, verify="query", timeout=None, max_bytes=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
+    extra = {"max_bytes": max_bytes} if max_bytes is not None else {}
     status, data = http_json("GET", url, headers=_headers(creds),
-                             timeout=timeout if timeout is not None else request_timeout(creds))
+                             timeout=timeout if timeout is not None else request_timeout(creds), **extra)
     if status >= 400:
         raise _ApiError(f"Loki HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
     if verify == "raw":  # buildinfo has no status/data envelope
@@ -186,7 +188,7 @@ def loki_query_range(args):
               "limit": str(args.get("limit") or DEFAULT_LIMIT), "direction": args.get("direction") or "backward"}
     if args.get("step"):
         params["step"] = str(args["step"])
-    data = _get(_ds(), "/loki/api/v1/query_range", params)
+    data = _get(_ds(), "/loki/api/v1/query_range", params, max_bytes=MAX_TRACE_RESPONSE_BYTES)
     return _query_response(data, _requested(params["limit"]))
 
 
@@ -197,7 +199,7 @@ def loki_query(args):
     params = {"query": query, "limit": str(args.get("limit") or DEFAULT_LIMIT)}
     if args.get("time"):
         params["time"] = _parse_time_ns(args.get("time"))
-    data = _get(_ds(), "/loki/api/v1/query", params)
+    data = _get(_ds(), "/loki/api/v1/query", params, max_bytes=MAX_TRACE_RESPONSE_BYTES)
     return _query_response(data, _requested(params["limit"]))
 
 

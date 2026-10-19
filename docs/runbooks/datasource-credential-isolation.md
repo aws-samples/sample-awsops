@@ -34,10 +34,13 @@ migrated default through the existing authenticated administrator save flow:
    rollout, and verify a same-kind instance without its own credentials fails
    closed. Stop deployment until all migrated defaults pass.
 
-Default switching and deletion keep today's web behavior in this change: the
-successor's ID-bound credential is mirrored; otherwise the kind mirror is cleared.
-The stricter handling of legacy mirrors lands with the datasource web contract
-change. Secrets Manager and row writes are not one atomic cross-service
+Default switching and deletion keep today's web behavior in this change. The
+successor's credential is resolved by ID key with a fallback to the kind mirror —
+which at that moment still holds the removed default's blob — so a successor
+without its own ID key is re-mirrored with the previous default's credential (a
+known residual); the mirror is cleared only when no instance of the kind remains.
+The datasource web contract change replaces this with an ID-stamped mirror and a
+409 guard. Secrets Manager and row writes are not one atomic cross-service
 transaction; a failed save requires inspection and retry through the administrator
 flow before rollout.
 

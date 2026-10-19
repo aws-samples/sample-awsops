@@ -37,7 +37,7 @@ class TestSearch(_Base):
 class TestTrace(_Base):
     def test_get_trace_hex_path(self):
         cap={}
-        with mock.patch.object(tm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"batches":[]}))):
+        with mock.patch.object(tm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None,max_bytes=None:(cap.update(url=u) or (200,{"batches":[]}))):
             tm.lambda_handler({"tool_name":"tempo_get_trace","arguments":{"trace_id":"a1B2c3"}},None)
         self.assertTrue(cap["url"].endswith("/api/traces/a1B2c3"))
     def test_non_hex_trace_id_rejected_before_request(self):

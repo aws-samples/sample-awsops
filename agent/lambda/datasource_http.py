@@ -49,6 +49,8 @@ from urllib.parse import urlparse
 HTTP_TIMEOUT = 12
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+# single-trace and log-query responses may exceed the default cap; the connectors project/bound them to their own 1 MB budgets after parsing
+MAX_TRACE_RESPONSE_BYTES = 32 * 1024 * 1024
 
 _SM = None
 _SECRET_CACHE = None

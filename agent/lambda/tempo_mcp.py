@@ -18,8 +18,8 @@ from urllib.parse import quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    query_probe, set_request_conn, request_timeout,
+    MAX_TRACE_RESPONSE_BYTES, NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json,
+    load_datasource, query_probe, set_request_conn, request_timeout,
 )
 
 SLUG = "tempo"
@@ -76,10 +76,12 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None, with_status=False):
+def _get(creds, path, params=None, *, timeout=None, with_status=False, max_bytes=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     # An explicit discovery budget wins over the saved query bound (timeoutS).
     request_options = {"timeout": timeout if timeout is not None else request_timeout(creds)}
+    if max_bytes is not None:
+        request_options["max_bytes"] = max_bytes
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
@@ -315,7 +317,7 @@ def tempo_get_trace(args):
     tid = (args.get("trace_id") or "").strip()
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
-    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}", max_bytes=MAX_TRACE_RESPONSE_BYTES)
     if isinstance(data, dict) and (data.get("status") == "error"
             or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
         return err("Tempo trace fetch returned an error")
