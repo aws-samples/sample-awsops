@@ -17,6 +17,12 @@ export async function DELETE(request: Request, { params: pendingParams }: { para
   const params = await pendingParams;
   const id = Number(params?.id);
   if (!Number.isInteger(id) || id <= 0) return json({ error: 'valid id required' }, 400);
-  await deleteDatasource(id);
+  try {
+    await deleteDatasource(id);
+  } catch (e) {
+    const msg = (e as Error).message || 'delete failed';
+    // 409: deleting the default while its legacy mirror is unstamped would destroy the kind's only credential.
+    return json({ error: msg }, /needs backfill/i.test(msg) ? 409 : 400);
+  }
   return json({ ok: true }, 200);
 }

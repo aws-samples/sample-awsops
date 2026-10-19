@@ -9,14 +9,35 @@ import type { AuthType } from '@/lib/datasource-auth';
 import type { ConnConfig } from '@/lib/mcp-lambda-invoke';
 import {
   getCredentialById,
+  getKindMirror,
   mirrorDefaultCredential,
   deleteCredentialKeys,
 } from '@/lib/integration-credentials';
 
+/** Backfill guard: a legacy kind mirror without an `instanceId` stamp cannot prove which instance it
+ *  belongs to, so changing the kind's default must not delete it (that would destroy a migrated
+ *  default's only credential). Throws the operator-facing message the routes map to 409. */
+async function assertKindMirrorStamped(kind: string): Promise<void> {
+  const mirror = await getKindMirror(kind);
+  if (mirror && (mirror.instanceId === undefined || mirror.instanceId === null)) {
+    throw new Error(`${kind} default credential needs backfill: re-save the current default datasource's connection settings before changing the default`);
+  }
+}
+
+async function clearKindMirror(kind: string, why: string): Promise<void> {
+  try {
+    await deleteCredentialKeys([kind]);
+  } catch (e) {
+    // Secrets Manager delete failures are logged, not blocking (module contract; orphan reaped later).
+    console.warn(`[datasources] kind-mirror clear failed (${why}):`, (e as { name?: string })?.name || 'error');
+  }
+}
+
 // Gap L203 (v1 parity): per-datasource connection settings persisted on the row.
-// - timeoutS: upstream query execution bound in SECONDS (v1 used ms; v2 stores seconds to match
-//   the connectors' own clamps — Prometheus/Mimir/ClickHouse enforce provider execution ceilings
-//   with a longer HTTP deadline; other kinds apply a transport deadline).
+// - timeoutS: per-datasource QUERY bound in SECONDS (v1 used ms). Prometheus/Mimir/ClickHouse apply
+//   it as the provider execution ceiling (API `timeout` / `max_execution_time`) with the connector's
+//   HTTP deadline aligned above it; the other kinds apply it as the HTTP response deadline of their
+//   query tools. Schema/discovery calls keep each connector's fixed HTTP budget regardless.
 // - database: ClickHouse default database (identifier-only; other kinds ignore it).
 // v1's result-cache TTL is deliberately NOT ported — the v2 thin-BFF query path is uncached by
 // design (disclosed deviation in the gap audit).
@@ -242,11 +263,15 @@ export async function updateDatasource(
 export async function setDefaultDatasource(id: number): Promise<void> {
   const c = await getPool().connect();
   let kind: string;
+  let cred: Record<string, unknown> | null;
   try {
     await c.query('BEGIN');
     const { rows } = await c.query('SELECT kind FROM integrations WHERE id = $1', [id]);
     if (!rows.length) throw new Error('datasource not found');
     kind = rows[0].kind as string;
+    // Fail closed before any row changes: an unstamped legacy mirror must be backfilled first.
+    cred = await getCredentialById(id, kind);
+    if (!cred) await assertKindMirrorStamped(kind);
     await c.query('UPDATE integrations SET is_default = false WHERE kind = $1 AND is_default', [kind]);
     await c.query('UPDATE integrations SET is_default = true, updated_at = NOW() WHERE id = $1', [id]);
     await c.query('COMMIT');
@@ -257,9 +282,8 @@ export async function setDefaultDatasource(id: number): Promise<void> {
     c.release();
   }
   // Secrets Manager write happens on its own connection/lock — after the DB commit.
-  const cred = await getCredentialById(id, kind);
   if (cred) await mirrorDefaultCredential(kind, cred, undefined, id);
-  else await deleteCredentialKeys([kind]); // never retain the previous default's credentials
+  else await clearKindMirror(kind, 'set-default'); // never retain the previous default's credentials
 }
 
 /** Delete a datasource instance. Cascade order: schema-cache rows → credential id key →
@@ -269,6 +293,8 @@ export async function setDefaultDatasource(id: number): Promise<void> {
 export async function deleteDatasource(id: number): Promise<void> {
   const row = await getDatasource(id);
   if (!row) return;
+  // Deleting the default re-points the kind mirror; an unstamped legacy mirror must be backfilled first.
+  if (row.isDefault) await assertKindMirrorStamped(row.kind);
 
   await getPool().query('DELETE FROM datasource_schemas WHERE integration_id = $1', [id]);
   await getPool().query('DELETE FROM datasource_diag_signals WHERE integration_id = $1', [id]); // sweep pre-built signals
@@ -293,13 +319,9 @@ export async function deleteDatasource(id: number): Promise<void> {
       await getPool().query('UPDATE integrations SET is_default = true, updated_at = NOW() WHERE id = $1', [newId]);
       const cred = await getCredentialById(newId, row.kind);
       if (cred) await mirrorDefaultCredential(row.kind, cred, undefined, newId);
-      else await deleteCredentialKeys([row.kind]); // the removed default cannot authenticate its successor
+      else await clearKindMirror(row.kind, 'successor has no bound credential'); // the removed default cannot authenticate its successor
     } else {
-      try {
-        await deleteCredentialKeys([row.kind]); // no instances left → clear the managed mirror
-      } catch (e) {
-        console.warn('[datasources] kind-mirror clear failed:', (e as { name?: string })?.name || 'error');
-      }
+      await clearKindMirror(row.kind, 'no instances left'); // no instances left → clear the managed mirror
     }
   }
 }

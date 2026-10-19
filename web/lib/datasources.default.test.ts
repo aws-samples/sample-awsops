@@ -7,7 +7,9 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ connect: poolConnect, query: clie
 const getCredentialById = vi.fn();
 const mirrorDefaultCredential = vi.fn();
 const deleteCredentialKeys = vi.fn();
+const getKindMirror = vi.fn();
 vi.mock('@/lib/integration-credentials', () => ({
+  getKindMirror: (...a: unknown[]) => getKindMirror(...a),
   getCredentialById: (...a: unknown[]) => getCredentialById(...a),
   mirrorDefaultCredential: (...a: unknown[]) => mirrorDefaultCredential(...a),
   deleteCredentialKeys: (...a: unknown[]) => deleteCredentialKeys(...a),
@@ -22,6 +24,7 @@ beforeEach(() => {
   getCredentialById.mockReset();
   mirrorDefaultCredential.mockReset();
   deleteCredentialKeys.mockReset().mockResolvedValue(undefined);
+  getKindMirror.mockReset().mockResolvedValue(null);
 });
 
 describe('setDefaultDatasource', () => {
@@ -53,6 +56,27 @@ describe('setDefaultDatasource', () => {
     expect(stmts.some((s) => /COMMIT/i.test(s))).toBe(true);
     expect(clientRelease).toHaveBeenCalled();
     expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://p', authType: 'none' }, undefined, 12);
+  });
+
+  it('refuses to switch the default while the kind mirror is an unstamped legacy mirror', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ kind: 'prometheus' }] });
+    getCredentialById.mockResolvedValueOnce(null);
+    getKindMirror.mockResolvedValueOnce({ endpoint: 'http://legacy', authType: 'bearer', token: 't' }); // no instanceId
+    await expect(setDefaultDatasource(12)).rejects.toThrow(/needs backfill/);
+    expect(clientQuery.mock.calls.some((c) => /ROLLBACK/i.test(String(c[0])))).toBe(true);
+    expect(clientQuery.mock.calls.some((c) => /is_default\s*=\s*true/i.test(String(c[0])))).toBe(false);
+    expect(deleteCredentialKeys).not.toHaveBeenCalled(); // the legacy credential survives
+  });
+
+  it('does not block the default switch when the mirror clear fails in Secrets Manager', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ kind: 'prometheus' }] });
+    getCredentialById.mockResolvedValueOnce(null);
+    deleteCredentialKeys.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await setDefaultDatasource(12); // must not throw
+    warn.mockRestore();
   });
 
   it('rolls back and throws when the datasource does not exist', async () => {

@@ -212,6 +212,16 @@ export async function getCredentialById(
   return null;
 }
 
+/** The managed kind mirror as stored (or null). Callers use it to tell a legacy UNSTAMPED mirror
+ *  (no `instanceId`) apart from a stamped one before changing which instance the kind defaults to:
+ *  an unstamped mirror is the only credential a migrated default may still have, so default
+ *  switching/deletion must refuse to delete it until the backfill save has stamped it. */
+export async function getKindMirror(kind: string): Promise<Record<string, unknown> | null> {
+  assertKnownSlug(kind);
+  const mirror = (await readMap())[kind];
+  return mirror && typeof mirror === 'object' && !Array.isArray(mirror) ? (mirror as Record<string, unknown>) : null;
+}
+
 /** Configured instance id keys (numeric keys only — excludes kind-mirror keys). Best-effort: [] on a
  *  Secrets Manager read failure (mirrors getConfiguredSlugs degrade so the read-only list doesn't 500). */
 export async function getConfiguredIds(): Promise<string[]> {

@@ -5,7 +5,9 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
 const getCredentialById = vi.fn();
 const mirrorDefaultCredential = vi.fn();
 const deleteCredentialKeys = vi.fn();
+const getKindMirror = vi.fn();
 vi.mock('@/lib/integration-credentials', () => ({
+  getKindMirror: (...a: unknown[]) => getKindMirror(...a),
   getCredentialById: (...a: unknown[]) => getCredentialById(...a),
   mirrorDefaultCredential: (...a: unknown[]) => mirrorDefaultCredential(...a),
   deleteCredentialKeys: (...a: unknown[]) => deleteCredentialKeys(...a),
@@ -22,6 +24,7 @@ beforeEach(() => {
   getCredentialById.mockReset();
   mirrorDefaultCredential.mockReset();
   deleteCredentialKeys.mockReset().mockResolvedValue(undefined);
+  getKindMirror.mockReset().mockResolvedValue(null);
 });
 
 describe('deleteDatasource', () => {
@@ -57,6 +60,13 @@ describe('deleteDatasource', () => {
     expect(deleteCredentialKeys).toHaveBeenCalledWith(['5']); // id key only (not default)
   });
 
+  it('refuses to delete the default while the kind mirror is an unstamped legacy mirror', async () => {
+    query.mockResolvedValueOnce({ rows: [row({ id: 5, is_default: true })] }); // getDatasource
+    getKindMirror.mockResolvedValueOnce({ endpoint: 'http://legacy', authType: 'none' }); // no instanceId
+    await expect(deleteDatasource(5)).rejects.toThrow(/needs backfill/);
+    expect(query.mock.calls.some((c) => /DELETE FROM/i.test(String(c[0])))).toBe(false); // nothing deleted
+    expect(deleteCredentialKeys).not.toHaveBeenCalled();
+  });
   it('re-picks a new default of the kind and re-mirrors when deleting the default', async () => {
     query
       .mockResolvedValueOnce({ rows: [row({ id: 5, is_default: true })] }) // getDatasource

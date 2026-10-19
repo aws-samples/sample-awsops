@@ -26,6 +26,7 @@ import {
   setIntegrationCredentialById,
   getCredentialById,
   mirrorDefaultCredential,
+  getKindMirror,
   getConfiguredIds,
   getConfiguredDatasourceIds,
   deleteCredentialKeys,
@@ -195,6 +196,17 @@ describe('getConfiguredDatasourceIds — legacy Datadog key pair', () => {
                   { id: 10, endpoint: 'https://api.datadoghq.com', authType: 'custom_header', kind: 'prometheus' }];
     // the same blob shape on a non-Datadog kind is still unconfigured (no header value)
     expect(await getConfiguredDatasourceIds(rows)).toEqual(['9']);
+  });
+});
+
+describe('getKindMirror', () => {
+  it('returns the stored kind mirror object (stamped or not) and null when absent', async () => {
+    smSend.mockImplementation((cmd: any) => (cmd.kind === 'get'
+      ? getReturn({ loki: { endpoint: 'http://legacy', authType: 'none' }, prometheus: { endpoint: 'http://p', authType: 'none', instanceId: '3' } })
+      : {}));
+    expect(await getKindMirror('loki')).toEqual({ endpoint: 'http://legacy', authType: 'none' });
+    expect((await getKindMirror('prometheus'))?.instanceId).toBe('3');
+    expect(await getKindMirror('tempo')).toBeNull();
   });
 });
 

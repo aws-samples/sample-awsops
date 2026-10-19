@@ -23,6 +23,7 @@ export async function POST(request: Request, { params: pendingParams }: { params
     return json({ ok: true }, 200);
   } catch (e) {
     const msg = (e as Error).message || 'set-default failed';
-    return json({ error: msg }, /not found/i.test(msg) ? 404 : 400);
+    // 409: an unstamped legacy mirror must be backfilled (re-save the current default) before switching.
+    return json({ error: msg }, /not found/i.test(msg) ? 404 : /needs backfill/i.test(msg) ? 409 : 400);
   }
 }
