@@ -19,7 +19,7 @@ import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
 import { getCustomAgentContext } from '@/lib/catalog-source';
 import { isCustomAgentEnabled } from '@/lib/catalog';
-import { getEnabledIntegrations } from '@/lib/integrations';
+import { getEnabledIntegrationSelection } from '@/lib/integrations';
 import { pickCustomAgent, resolveAgent } from '@/lib/agent-resolver';
 import { recordCustomAgentTrace, recordChatInvoke } from '@/lib/trace';
 import { recordExchange } from '@/lib/chat-store';
@@ -554,7 +554,8 @@ export async function POST(request: Request) {
   // allowPrivate = the per-account ADR-011 opt-in (no space ⇒ false). sigv4 service/region threading
   // (same-account sigv4 integrations) is deferred with the rest of Q3-sigv4=C — api_key/bearer is live.
   const allowPrivate = space?.allowPrivateDatasource ?? false;
-  const enabledIntegrations = await getEnabledIntegrations(accountId);
+  const integrationSelection = await getEnabledIntegrationSelection(accountId);
+  const enabledIntegrations = integrationSelection.integrations;
   const egressReadIntegrations = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read')
     .map((i) => ({
@@ -569,7 +570,8 @@ export async function POST(request: Request) {
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
     .map((i) => ({ name: i.name, writeActionRefs: i.writeActionRefs }));
   const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
-    space, egressReadIntegrations, proposableWrites); // server-side enforcement
+    space, egressReadIntegrations, proposableWrites,
+    { mcpSelectionSuppressed: integrationSelection.mcpSelectionSuppressed }); // server-side enforcement
   // ADR-044: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is
@@ -594,7 +596,12 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
+  const mcpSuppression = spec.tier === 'custom' && !useAssistant && integrationSelection.mcpSelectionSuppressed
+    ? { reasons: integrationSelection.mcpSuppressionReasons ?? ['denied'] } : undefined;
+  const mcpNotice = mcpSuppression ? (lang === 'ko'
+    ? '일부 외부 연결을 사용할 수 없어 도구 접근을 제한했습니다. 연결 상태를 확인하세요.\n\n'
+    : 'Some external connections are unavailable; tool access remains restricted. Check the connection status.\n\n') : '';
+  const fallbackNotice = mcpNotice + accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
     ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
@@ -614,7 +621,7 @@ export async function POST(request: Request) {
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
       userContent: prompt, assistantContent: fallbackNotice + assistantContent,
-      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), account: turnAccount },
+      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), ...(mcpSuppression ? { mcpSuppression } : {}), account: turnAccount },
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
   // Region scope for the agent's live reads — skipped on paths that never invoke an agent.
@@ -649,6 +656,7 @@ export async function POST(request: Request) {
         gateway: useAssistant ? 'assistant' : spec.gateway,
         agentName: useAssistant ? 'AWSops Assistant' : spec.agentName,
         tier: spec.tier, skillHashes: spec.skillHashes, threadId, account: turnAccount,
+        ...(mcpSuppression ? { mcpSuppression } : {}),
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
@@ -661,6 +669,11 @@ export async function POST(request: Request) {
       // aws-data fail-open: one honest status line, then the normal (ops) routing below answers.
       if (sqlUnavailable) {
         controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({ phase: 'sql-unavailable' }) + '\n\n'));
+      }
+      if (mcpSuppression) {
+        controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({
+          phase: 'integration-unavailable', reasons: mcpSuppression.reasons,
+        }) + '\n\n'));
       }
       // Notices go out before every branch below (record() stores them with each answer).
       if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));

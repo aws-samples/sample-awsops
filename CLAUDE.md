@@ -120,5 +120,5 @@ Per-layer implementation references live under `docs/reference/` (index: [README
 Full overview: [docs/architecture.md](docs/architecture.md) (bilingual + SVG diagrams) · New joiners: [docs/onboarding.md](docs/onboarding.md) · Full API index (99 routes): [docs/api-reference.md](docs/api-reference.md) · Operations: [docs/runbooks/](docs/runbooks/).
 <!-- /AUTO-MANAGED:references -->
 
-Agent readiness changes require `cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py -q`.
+Agent readiness changes require `cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py -q`.
 Bounded operator permission probes wait for AgentCore; heavy domain work remains queued.

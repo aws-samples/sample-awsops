@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8dfe07cfaf30 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ae4edfa16150 · generated-at: 2026-10-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,7 +11,7 @@ parameter.
 
 ## Build · Test
 ```bash
-cd agent && python3 -m pytest test_agent.py test_readiness.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py test_pinned_http.py -q
 ```
 Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11-slim,
 port 8080.

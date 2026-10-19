@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 36f85104004e · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8510917389b2 · generated-at: 2026-10-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -40,7 +40,7 @@ node --test scripts/v2/ci/*.test.mjs
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py -q
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl

@@ -1,6 +1,7 @@
 """HTTPX transport for one administrator-approved MCP origin and validated IP set."""
 import ipaddress
 import asyncio
+import logging
 import time
 
 import httpx
@@ -52,22 +53,24 @@ class PinnedAsyncTransport(httpx.AsyncBaseTransport):
                     raise httpx.ReadTimeout("MCP connection request deadline exceeded", request=request)
                 async with asyncio.timeout(remaining):
                     response = await self.transport.handle_async_request(pinned)
-            except TimeoutError as exc:
-                # The timeout may occur after body delivery, so it must not be replayed.
-                raise httpx.ReadTimeout("MCP connection request deadline exceeded", request=request) from exc
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 # Connection failure occurs before a body is sent; never replay read/write failures.
                 # Each discarded attempt is logged so a certificate-verification failure on one
                 # address is not hidden behind the last address's error.
-                print(f"[pinned_http] {address} failed before any body was sent: {type(exc).__name__}: {exc}")
+                logging.warning("[pinned_http] %s failed before any body was sent: %s: %s",
+                                address, type(exc).__name__, exc)
                 last_error = exc
                 continue
+            except TimeoutError as exc:
+                # The timeout may occur after body delivery, so it must not be replayed.
+                raise httpx.ReadTimeout("MCP connection request deadline exceeded", request=request) from exc
             if 300 <= response.status_code < 400:
                 await response.aclose()
                 # 3xx without Location (e.g. 304) is still outside the MCP contract; the message is
                 # about the class of response, so it stays accurate for both.
-                raise httpx.HTTPStatusError("MCP 3xx response rejected (redirects are never followed)",
-                                            request=request, response=response)
+                raise httpx.HTTPStatusError(
+                    f"MCP {response.status_code} response rejected (redirects are never followed)",
+                    request=request, response=response)
             return response
         raise last_error
 
@@ -77,10 +80,10 @@ class PinnedAsyncTransport(httpx.AsyncBaseTransport):
 
 def pinned_client_factory(endpoint, addresses):
     """McpHttpClientFactory contract; no proxy, redirects, or second hostname lookup."""
-    def factory(headers=None, timeout=None, auth=None):
+    def factory(headers=None, timeout=None, auth=None, **kwargs):
         return httpx.AsyncClient(
             headers=headers, timeout=timeout or httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT),
             auth=auth, follow_redirects=False, max_redirects=0, trust_env=False,
-            transport=PinnedAsyncTransport(endpoint, addresses),
+            transport=PinnedAsyncTransport(endpoint, addresses), **kwargs,
         )
     return factory

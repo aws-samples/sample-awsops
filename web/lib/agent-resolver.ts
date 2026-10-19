@@ -136,10 +136,11 @@ export function resolveAgent(
   space?: AgentSpace | null,
   egressReadIntegrations: EgressReadIntegration[] = [],
   proposableWrites: ProposableWriteIntegration[] = [],
+  selection: { mcpSelectionSuppressed?: boolean } = {},
 ): ResolvedAgentSpec {
   const custom = candidates.find((a) => a.name === routeKey && a.enabled && a.tier === 'custom' && !isReservedAgentName(a.name));
   if (custom) {
-    const mcpRequested = egressReadIntegrations.some(isMcpRegistration);
+    const mcpRequested = selection.mcpSelectionSuppressed === true || egressReadIntegrations.some(isMcpRegistration);
     // All live MCP endpoints require server-recorded attestation and explicit account membership.
     // A vendor-kind label cannot turn an administrator's endpoint into an official preset.
     egressReadIntegrations = egressReadIntegrations.filter((i) =>

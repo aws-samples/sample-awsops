@@ -521,13 +521,17 @@ _METADATA_IPS = frozenset({
 })
 
 
-_NAT64_PREFIXES = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
 
 
 def _embedded_ipv4(ip):
     """Classify an IPv6 address by the IPv4 it embeds, so a translator cannot launder a blocked
     target: IPv4-mapped (::ffff:a.b.c.d), 6to4 (2002::/16), Teredo (2001::/32, client address) and
-    NAT64 (64:ff9b::/96, 64:ff9b:1::/48 — low 32 bits). Plain addresses are returned unchanged."""
+    well-known NAT64 (64:ff9b::/96 — low 32 bits). The local-use NAT64 prefix (64:ff9b:1::/48)
+    embeds the IPv4 at a prefix-length-dependent offset (RFC 6052) that cannot be known from the
+    address alone, so it is never decoded and is always blocked instead. Plain addresses are
+    returned unchanged."""
     if ip.version != 6:
         return ip
     mapped = ip.ipv4_mapped or ip.sixtofour
@@ -536,7 +540,7 @@ def _embedded_ipv4(ip):
     teredo = ip.teredo
     if teredo is not None:
         return teredo[1]
-    if any(ip in net for net in _NAT64_PREFIXES):
+    if ip in _NAT64_WELL_KNOWN:
         return ipaddress.ip_address(int(ip) & 0xFFFFFFFF)
     return ip
 
@@ -545,7 +549,10 @@ def _ip_always_blocked(ip_str):
     """Returns True if the IP is metadata, loopback, link-local, multicast, reserved, or unspecified —
     i.e. blocked REGARDLESS of the per-account allowPrivate opt-in."""
     try:
-        ip = _embedded_ipv4(ipaddress.ip_address(ip_str))
+        raw = ipaddress.ip_address(ip_str)
+        if raw in _NAT64_LOCAL_USE:
+            return True  # fail closed: the embedded target cannot be verified
+        ip = _embedded_ipv4(raw)
         if ip in _METADATA_IPS:
             return True
         return (ip.is_loopback or ip.is_link_local or ip.is_multicast or
@@ -625,11 +632,11 @@ def auth_headers(transport, secret):
         # {"header": "X-API-KEY", "value": "..."} or {"api_key": "..."} -> Authorization: ...
         header = secret.get("header", "Authorization")
         val = secret.get("value", secret.get("api_key", secret.get("_raw")))
+        val = val.strip() if isinstance(val, str) else val  # a pasted trailing newline is not a secret
         if not val:
             raise ValueError(f"Integration [api_key] missing value in secret")
         # `authorization` is deliberately allowed here (unlike datasource_http's list): an api_key
         # integration may legitimately carry its key in the Authorization header.
-        val = val.strip() if isinstance(val, str) else val  # a pasted trailing newline is not a secret
         if (not isinstance(header, str) or not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", header)
                 or header.lower() in ("host", "content-length", "transfer-encoding", "connection")):
             raise ValueError("Integration [api_key] header name is invalid")
@@ -639,6 +646,7 @@ def auth_headers(transport, secret):
     if transport == 'oauth_client_credentials':
         # Bearer-style for this increment: {"token": "..."} or raw
         val = secret.get("token", secret.get("_raw"))
+        val = val.strip() if isinstance(val, str) else val  # same as api_key: strip a pasted newline
         if not val:
             raise ValueError(f"Integration [oauth_client_credentials] missing token in secret")
         if not isinstance(val, str) or any(ord(ch) < 32 or ord(ch) > 126 for ch in val):

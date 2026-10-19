@@ -30,7 +30,23 @@ endpoints; default-off preparation leaves this activation blocker unresolved.
 ## Symptoms, diagnosis and action
 
 Absent/non-`true` gates block MCP catalog/resolver/runtime before credentials/DNS/network.
-Existing MCP rows may show Enabled but contribute no tools. Enable may be unavailable
+Existing MCP rows may show Enabled but contribute no tools. A denied MCP
+declaration also prevents a legacy custom agent without its own tool policy from
+inheriting unrestricted gateway reads, even with activation off. The agent may
+therefore suddenly have zero tools. Chat emits an `integration-unavailable`
+status and a notice; streamed and stored metadata carry `mcpSuppression.reasons`:
+
+- `denied`: an applicable MCP declaration lacks activation, account membership,
+  valid attestation or another required control. Complete the reviewed controls;
+  a gate remains off until acceptance and activation approval.
+- `disabled-selected`: the account still selects a disabled MCP registration.
+  Remove that selection if unintended, or correct and re-confirm it.
+- `lookup-failed`: Aurora selection lookup failed. Restore database availability
+  and retry; the failure never establishes unrestricted gateway access.
+
+Explicit skill tool policies remain separate ceilings. Malformed vendor tool JSON
+and legacy ingress/read_write rows are quarantined per row; they do not revoke
+unrelated gateway reads unless explicitly declared as `custom_mcp`. Enable may be unavailable
 or HTTP 409 after edits/rotation. Disabled preparation/immediate disablement remain
 available; do not bypass acceptance by turning gates on.
 
@@ -64,14 +80,23 @@ legacy egress tools per row for correction.
    Operator refreshes scoped tokens and re-attests current versions.
 3. Review endpoint/auth/credential/tools, confirm read-only in Customization, enable.
    Locked audit binds row/current version; concurrent edits invalidate confirmation.
-4. Select/save per account; missing policy never selects MCP globally. Edits/rotation
+4. Select/save per account; missing policy never selects MCP globally. With no
+   Agent Space, enabled genuine MCP declarations remain applicable but denied
+   without explicit membership. An explicit Space, including an empty one, limits
+   declarations to its selected IDs; unselected rows do not revoke legacy gateway
+   reads. An empty Space is not MCP authorization. Edits/rotation
    require disable/re-confirm/re-enable. Disable stops later turns; active sessions
    last until their run ends.
 
 Preserve ADR-005 FROZEN mutation/autonomy, ADR-007 writes, ADR-015 sole exception and
 ADR-017 pins/gates/FROZEN ClickHouse stdio. Reassess server permissions/code after
-changes: ceilings/attestation cannot guarantee stable semantics. Keep registration/
-runtime SSRF/account allowPrivate opt-in; this proves no pinned-transport deployment.
+changes: ceilings/attestation cannot guarantee stable semantics. Keep registration/runtime
+SSRF and the per-account allowPrivate opt-in. The runtime connection is pinned to the
+address set validated at connect time (agent/pinned_http.py: original Host/SNI,
+certificate verification, no redirects, no proxy); this is deployed preparation and does
+not activate custom MCP, which stays behind the default-off gate. The pinned transport
+trusts only the bundled CA store (`trust_env=False`); a private-CA endpoint under
+allowPrivate fails verification by design.
 
 ## Verification
 
@@ -79,8 +104,10 @@ Run separately from repo root; no AWS calls:
 
 ```bash
 cd agent
-python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py -q
+python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py -q
 ```
+
+`test_pinned_http.py` needs Python 3.11+ and the `openssl` CLI (it starts a real local TLS server).
 
 ```bash
 cd web
@@ -101,5 +128,6 @@ a skip proves no PG verification.
   integration-validation.ts, agent-resolver.ts
 - web/app/api/integrations/route.ts, web/app/api/chat/route.ts,
   web/app/customization/page.tsx
-- agent/agent.py, agent/test_custom_mcp_policy.py, terraform/foundation/workload.tf
+- agent/agent.py, agent/test_custom_mcp_policy.py, agent/pinned_http.py,
+  agent/streamable_http_sigv4.py, agent/test_pinned_http.py, terraform/foundation/workload.tf
 - ADR-005/007/015/017; private Proposed ADR-022.
