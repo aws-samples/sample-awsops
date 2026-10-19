@@ -13,6 +13,8 @@ export const INTEGRATION_DIRECTIONS = ['egress', 'ingress'] as const;
 export const INTEGRATION_CAPABILITIES = ['read', 'read_write'] as const;
 export const INGRESS_TRIGGER_TARGETS = ['incident'] as const;
 
+import { isMcpRegistration, mcpRegistrationErrors } from './custom-mcp-policy';
+
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 
 export interface ValidationResult { ok: boolean; errors: string[]; }
@@ -24,8 +26,10 @@ function isHttpsUrl(s: string): boolean {
 export function validateIntegration(i: {
   name?: string; kind?: string; direction?: string; capability?: string; endpoint?: string;
   transport?: string; authMode?: string; credentialsRef?: string; triggerTarget?: string;
+  exposedTools?: unknown;
 }): ValidationResult {
   const errors: string[] = [];
+  if (i.exposedTools !== undefined && !Array.isArray(i.exposedTools)) errors.push('exposedTools must be an array');
   if (!i.name || !NAME_RE.test(i.name)) errors.push('name must be kebab-case, 2-64 chars');
   if (!(INTEGRATION_DIRECTIONS as readonly string[]).includes(i.direction ?? '')) {
     errors.push(`direction must be one of ${INTEGRATION_DIRECTIONS.join(', ')}`);
@@ -53,6 +57,10 @@ export function validateIntegration(i: {
     const ok = typeof i.credentialsRef === 'string' && i.credentialsRef.trim().length > 0 &&
       (/^arn:aws:secretsmanager:/.test(i.credentialsRef) || i.credentialsRef.trim().length > 0);
     if (!ok) errors.push('credentialsRef must be a non-empty string (Secrets Manager ARN recommended)');
+  }
+  if (isMcpRegistration(i)) {
+    errors.push(...mcpRegistrationErrors({ ...i, exposedTools: i.exposedTools ?? [] }));
+    if (i.credentialsRef !== undefined) errors.push('custom MCP credential reference is assigned by the server');
   }
   return { ok: errors.length === 0, errors };
 }

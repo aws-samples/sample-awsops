@@ -281,7 +281,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
   - CIS compliance: run Powerpipe benchmarks as async Fargate `compliance` jobs with `compliance_runs`/`compliance_results` history and a static benchmark allowlist.
 - **Integrations**
   - External datasources (8 kinds): Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog — instance CRUD + credential storage (admin), SSRF-guarded connection test, per-kind default selection, read-only query execution, natural-language query drafting (review-only, never auto-executed), predefined diagnosis signals.
-  - Integration registry under ADR-007 governance: egress connectors + ingress webhook sources, single Secrets Manager secret keyed by kind slug, schema introspection/cache.
+  - Integration registry under ADR-007 governance: egress connectors + ingress webhook sources and schema introspection/cache; bundled connectors retain the shared Secrets Manager credential map, while administrator custom MCP uses per-row scoped secrets and version-bound read-only attestation behind a default-off activation gate.
   - Multi-account (ADR-011): account CRUD with `GetCallerIdentity` anti-spoof verification, per-account region enable/disable, STS AssumeRole read-only fan-out, account/scope selectors in the shell.
 - **Operations**
   - Async job queue UI: enqueue/list jobs with per-job status lookup.
@@ -938,7 +938,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
   - CIS 컴플라이언스: Powerpipe 벤치마크를 비동기 Fargate `compliance` job으로 실행 — `compliance_runs`/`compliance_results` 이력 + 정적 벤치마크 allowlist.
 - **통합**
   - 외부 데이터소스 8종: Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog — 인스턴스 CRUD + 크리덴셜 저장(admin), SSRF 가드 연결 테스트, kind별 기본 인스턴스 지정, read-only 쿼리 실행, 자연어 쿼리 초안 생성(리뷰 전용 — 절대 자동 실행 안 함), 사전 정의 진단 시그널.
-  - ADR-007 거버넌스 하의 통합 레지스트리: egress 커넥터 + ingress 웹훅 소스, kind slug 키의 단일 Secrets Manager secret, 스키마 introspect/캐시.
+  - ADR-007 거버넌스 하의 통합 레지스트리: egress 커넥터 + ingress 웹훅 소스 및 스키마 introspect/캐시. 기본 커넥터는 공유 Secrets Manager 자격증명 맵을 유지하며 관리자 custom MCP는 행별 범위의 secret과 버전 결합 읽기 전용 확인을 사용하고 활성화는 기본 비활성입니다.
   - 멀티 어카운트(ADR-011): `GetCallerIdentity` anti-spoof 검증 포함 계정 CRUD, 계정별 리전 활성/비활성, STS AssumeRole read-only fan-out, 셸의 계정/스코프 셀렉터.
 - **운영**
   - 비동기 작업 큐 UI: 작업 enqueue/목록 + 작업별 상태 조회.

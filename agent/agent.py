@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import os
+import datetime as mcp_datetime
 import functools
 import socket
 import ipaddress
@@ -643,13 +644,70 @@ INTEGRATION_CONNECT_TIMEOUT = 8
 _secrets_client = None
 
 
-def _get_secret(ref):
+def custom_secret_name(integration_id):
+    if isinstance(integration_id, bool) or not isinstance(integration_id, int) or not 0 < integration_id <= 2**53 - 1:
+        raise ValueError("invalid integration id")
+    shared = os.environ.get("INTEGRATIONS_SECRET_NAME", "ops/awsops-v2/integrations/credentials")
+    match = re.fullmatch(r"ops/([a-zA-Z0-9_-]+)/integrations/credentials", shared)
+    if not match:
+        raise ValueError("invalid integrations secret namespace")
+    return f"ops/{match[1]}/integrations/custom/{integration_id}"
+
+
+def validate_custom_mcp_spec(spec, account_id):
+    """Return the attested version. Validate before DNS, secret reads, or network access."""
+    if os.environ.get("CUSTOM_MCP_ENABLED") != "true":
+        raise ValueError("custom MCP policy activation is pending")
+    if not isinstance(spec, dict):
+        raise ValueError("invalid MCP spec")
+    if spec.get("direction") != "egress" or spec.get("capability") != "read":
+        raise ValueError("MCP requires egress/read")
+    if spec.get("transport") not in ("api_key", "oauth_client_credentials"):
+        raise ValueError("MCP requires scoped secret authentication")
+    if not isinstance(account_id, str) or not account_id or spec.get("accountSelected") is not True or spec.get("accountId") != account_id:
+        raise ValueError("MCP requires explicit account selection")
+    ref = custom_secret_name(spec.get("id"))
+    if spec.get("credentialsRef") != ref:
+        raise ValueError("MCP credential reference does not match its registration")
+    registered = spec.get("registeredTools")
+    exposed = spec.get("exposedTools")
+    if not isinstance(registered, list) or not 0 < len(registered) <= 128 or any(
+        not isinstance(t, str) or "___" in t or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", t) is None for t in registered
+    ) or len(set(registered)) != len(registered):
+        raise ValueError("MCP requires a nonempty exact registered tool ceiling")
+    if not isinstance(exposed, list) or not exposed or any(t not in registered for t in exposed):
+        raise ValueError("MCP requires a nonempty bounded effective tool ceiling")
+    a = spec.get("readOnlyAttestation")
+    if not isinstance(a, dict) or not isinstance(a.get("actorSub"), str) or not a["actorSub"].strip():
+        raise ValueError("MCP requires administrator read-only attestation")
+    try:
+        timestamp = mcp_datetime.datetime.fromisoformat(a.get("attestedAt", "").replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("invalid MCP attestation timestamp") from exc
+    if a.get("tools") != registered or any(a.get(k) != spec.get(k) for k in ("endpoint", "transport", "credentialsRef")):
+        raise ValueError("MCP attestation does not match current registration")
+    version = a.get("credentialVersionId")
+    if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9-]{32,64}", version):
+        raise ValueError("invalid MCP attested secret version")
+    return version
+
+
+def _get_secret(ref, expected_version=None):
     """Fetch a SecretString from Secrets Manager (lazy, reused client — boto3 auto-refreshes the
     runtime role creds across warm starts). / Secrets Manager에서 SecretString 조회(지연 생성·재사용)."""
     global _secrets_client
     if _secrets_client is None:
         _secrets_client = boto3.client('secretsmanager', region_name=GATEWAY_REGION)
-    return _secrets_client.get_secret_value(SecretId=ref).get('SecretString', '')
+    params = {"SecretId": ref}
+    if expected_version is not None:
+        # Both selectors must identify the same current version; rotation invalidates attestation.
+        params.update(VersionId=expected_version, VersionStage="AWSCURRENT")
+    result = _secrets_client.get_secret_value(**params)
+    if expected_version is not None and result.get("VersionId") != expected_version:
+        raise ValueError("MCP credential version no longer matches attestation")
+    return result.get('SecretString', '')
 
 
 def select_integration_tools(live_tools, exposed_tools):
@@ -695,30 +753,23 @@ def gather_integration_tools(specs, connect):
     return out
 
 
-def _connect_integration(spec, stack):
+def _connect_integration(spec, stack, account_context=None):
     """Open ONE egress-READ integration MCP session (kept live via ``stack`` for the agent run) and
     return its exposed tools. Raises on SSRF/unknown-transport/connect/list error → the caller
     (gather_integration_tools) isolates it. Credentials are fetched at runtime from Secrets Manager
-    by reference (the payload carries only the ARN, never plaintext — ADR-039 Q3=B)."""
+    by server-bound name (the payload contains no plaintext credential — ADR-039 Q3=B)."""
+    # Deny before DNS, secret fetch, connection and tool listing. Applies to every vendor label.
+    version = validate_custom_mcp_spec(spec, account_context)
     endpoint = spec.get("endpoint")
     transport = spec.get("transport")
     allow_private = bool(spec.get("allowPrivate"))
     exposed = spec.get("exposedTools") or []
     # Connection-time SSRF (https + DNS resolve-and-recheck + private opt-in) BEFORE any network call.
     _assert_host_allowed(endpoint, allow_private)
-    if transport == 'sigv4':
-        # service is REQUIRED (sigv4_params raises if absent) — never silently reuse the gateway signer.
-        service, region = sigv4_params(endpoint, spec.get("sigv4Service"), spec.get("sigv4Region"))
-        ak, sk, tok = get_aws_credentials()
-        creds = Credentials(access_key=ak, secret_key=sk, token=tok)
-        client = MCPClient(lambda: streamablehttp_client_with_sigv4(
-            url=endpoint, credentials=creds, service=service, region=region,
-            timeout=INTEGRATION_CONNECT_TIMEOUT))
-    else:
-        secret = parse_secret(_get_secret(spec["credentialsRef"])) if spec.get("credentialsRef") else {}
-        headers = auth_headers(transport, secret)  # ValueError on unknown transport
-        client = MCPClient(lambda: streamablehttp_client_with_headers(
-            url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT))
+    secret = parse_secret(_get_secret(spec["credentialsRef"], expected_version=version))
+    headers = auth_headers(transport, secret)
+    client = MCPClient(lambda: streamablehttp_client_with_headers(
+        url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT))
     stack.enter_context(client)
     live = get_all_tools(client)
     selected = select_integration_tools(live, exposed)
@@ -1424,7 +1475,7 @@ async def handler(payload):
             # ADR-039: live-connect each enabled egress-READ integration. Per-integration failures are
             # ISOLATED here (gateway tools always survive) — NOT escalated to the Bedrock-direct fallback.
             integration_tools = gather_integration_tools(
-                integrations, lambda spec: _connect_integration(spec, stack))
+                integrations, lambda spec: _connect_integration(spec, stack, payload.get("accountId")))
             # ADR-031/039: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
             # Filter before dedup: ambiguous identities must not silently pick the first source.
