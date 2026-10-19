@@ -79,15 +79,15 @@ v2 中没有 v1 的结果缓存 TTL 设置 — v2 查询路径刻意不做缓存
 
 | 数据源 | 测试端点 | 确认内容 |
 |-----------|-----------------|----------|
-| Prometheus | `/-/healthy` | 服务器状态、响应时间 |
-| Loki | `/ready` | 服务器就绪状态、响应时间 |
-| Tempo | `/ready` | 服务器就绪状态、响应时间 |
-| ClickHouse | `SELECT 1` | 查询是否可执行、响应时间 |
-| Jaeger | `/api/services` | 服务列表查询、响应时间 |
-| Dynatrace | `/api/v2/entities` | API 是否可访问、响应时间 |
-| Datadog | `/api/v1/validate` | API 密钥有效性、响应时间 |
+| Prometheus | `query?query=vector(1)`（服务器超时 1 秒） | 查询访问 |
+| Loki | `query_range`、1 分钟、`limit=1` | 租户范围的查询访问 |
+| Tempo | 单条 trace 搜索、1 分钟 | 查询访问 |
+| ClickHouse | `SELECT 1`、`readonly=1`、执行限制 1 秒 | 只读 SQL 访问 |
+| Jaeger | `/api/traces?limit=1`、1 分钟 | 查询访问 |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`、1 分钟 | 指标查询访问 |
+| Datadog | 密钥验证（仅密钥对）后 `/api/v1/query`、1 分钟 | 指标查询访问 |
 
-测试结果会显示连接成功/失败状态以及响应延迟时间 (ms)。
+测试结果会显示成功/失败、已验证的操作 (`verified`) 以及响应延迟时间 (ms)。
 
 ## 查询执行
 

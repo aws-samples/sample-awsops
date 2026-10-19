@@ -75,15 +75,15 @@ Clicking **Test Connection** performs the following checks per datasource type:
 
 | Datasource | Test Endpoint | Verification |
 |-----------|--------------|-------------|
-| Prometheus | `/-/healthy` | Server health, response time |
-| Loki | `/ready` | Server readiness, response time |
-| Tempo | `/ready` | Server readiness, response time |
-| ClickHouse | `SELECT 1` | Query execution capability, response time |
-| Jaeger | `/api/services` | Service list retrieval, response time |
-| Dynatrace | `/api/v2/entities` | API accessibility, response time |
-| Datadog | `/api/v1/validate` | API key validity, response time |
+| Prometheus | `query?query=vector(1)` (1s server timeout) | Query access |
+| Loki | `query_range`, 1 min, `limit=1` | Tenant-scoped query access |
+| Tempo | One-trace search, 1 min | Query access |
+| ClickHouse | `SELECT 1`, `readonly=1`, 1s limit | Read-only SQL access |
+| Jaeger | `/api/traces?limit=1`, 1 min | Query access |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`, 1 min | Metric-query access |
+| Datadog | Key validation (key pair only), then `/api/v1/query`, 1 min | Metric-query access |
 
-Test results display success/failure status and response latency in milliseconds.
+Test results display success/failure, the verified operation (`verified`) and latency in milliseconds.
 
 ## Query Execution
 

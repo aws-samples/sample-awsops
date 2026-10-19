@@ -451,8 +451,17 @@ def test_header_phase_is_bounded_by_the_request_deadline():
 def test_header_deadline_closes_the_tracked_connection():
     import time as _time
 
+    class FakeSock:
+        how = None
+
+        def shutdown(self, how):
+            self.how = how
+
     class FakeConn:
         closed = False
+
+        def __init__(self):
+            self.sock = FakeSock()
 
         def close(self):
             self.closed = True
@@ -467,6 +476,7 @@ def test_header_deadline_closes_the_tracked_connection():
     with patch.object(dh._opener, "open", side_effect=slow_open), pytest.raises(TimeoutError):
         dh.http_json("GET", CREDS["endpoint"], timeout=0.2)
     assert held["conn"].closed is True
+    assert held["conn"].sock.how == socket.SHUT_RDWR
 
 
 def test_late_http_error_body_is_closed_after_a_header_timeout():
@@ -484,3 +494,18 @@ def test_late_http_error_body_is_closed_after_a_header_timeout():
             break
         _time.sleep(0.05)
     assert stream.closed
+
+
+def test_jaeger_byte_bound_keeps_the_traces_contract():
+    module = importlib.import_module("jaeger_mcp")
+    trace = {"traceID": "a" * 16, "spans": [{"startTime": 1, "duration": 1, "operationName": "x" * 500}],
+             "processes": {}}
+    with patch.object(module, "MAX_TOTAL_BYTES", 200), patch.object(module, "load_datasource", return_value=CREDS), \
+            patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", return_value=(200, {"data": [trace]})):
+        body = json.loads(module.jaeger_search({"query": "svc"})["body"])
+    assert body["traces"] == [] and body["truncated"] is True
+    assert body["returnedCount"] == 1 and body["collectionStatus"] == "partial"
+    with patch.object(module, "MAX_TOTAL_BYTES", 200), patch.object(module, "load_datasource", return_value=CREDS), \
+            patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", return_value=(503, {"data": [trace]})), \
+            pytest.raises(module._ApiError):
+        module.jaeger_search({"query": "svc"})

@@ -61,9 +61,9 @@ _SECRET_TTL = 60.0  # bound stale creds in a warm (long-lived worker) container
 # Reset every invocation by set_request_conn — see module docstring.
 _PINNED_IP_CACHE = {}
 
-# Shared (not per-call) pool for _open_within; 2 workers so one connection that ignores close()
-# cannot stall every later request.
-_OPEN_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="ds-open")
+# Shared (not per-call) pool for _open_within; 4 workers: a connection that ignores shutdown()
+# must not stall every later request.
+_OPEN_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="ds-open")
 
 
 class NotConnected(Exception):
@@ -315,6 +315,7 @@ def load_datasource(slug, instance_id=None):
     if instance_id is not None:
         creds = m.get(str(instance_id))
         if not isinstance(creds, dict) or not creds.get("endpoint"):
+            print(f"[datasource_http] strict instance lookup failed: slug={slug} instance_id={instance_id}")
             raise NotConnected("requested datasource instance is not configured")
     else:
         creds = m.get(slug)
@@ -497,8 +498,9 @@ def _open_within(opener, req, timeout, deadline):
     """Open the connection and read the response headers under the request's absolute deadline.
     urllib's `timeout` is per socket operation, so a server dripping header bytes could hold
     open() past the deadline. The open runs on the shared worker pool; at the deadline the
-    watchdog closes the request's connection (which ends the worker's blocked read) and any
-    response that still arrives later is closed by the completion callback."""
+    watchdog shuts the request's socket down (close() alone is a no-op while the response is
+    being read, because the file wrapper holds an io ref) and cancels an open that never
+    started; any response that still arrives later is closed by the completion callback."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("datasource request deadline exceeded before connect")
@@ -507,6 +509,14 @@ def _open_within(opener, req, timeout, deadline):
     try:
         return future.result(timeout=remaining)
     except concurrent.futures.TimeoutError as exc:
+        if future.cancel():
+            raise TimeoutError("datasource request deadline exceeded before connect") from exc
+        sock = getattr(tracker.conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         if tracker.conn is not None:
             try:
                 tracker.conn.close()

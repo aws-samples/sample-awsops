@@ -71,7 +71,7 @@ flowchart TD
 | # | File | What to Add | Template Reference |
 |---|------|-------------|-------------------|
 | 1 | `web/lib/integrations-category.ts` | Add the kind string to the `DATASOURCE_KINDS` array | Existing: `'prometheus' \| 'mimir' \| ...` |
-| 2 | Connector Lambda (`scripts/v2/workers/*` MCP source) | Implement read-only tools (`<kind>_query`, etc.) + health check. **SSRF guard required** (see below) | Mirror the existing prometheus connector |
+| 2 | Connector Lambda (`scripts/v2/workers/*` MCP source) | Implement read-only tools (`<kind>_query`, etc.) + a bounded query probe (`<kind>_health` runs `<kind>_query`). **SSRF guard required** (see below) | Mirror the existing prometheus connector |
 | 3 | `web/app/api/datasources/query/route.ts` | Add a `{ instant, range?, arg }` entry to the `TOOL` map (read tools only) | Copy the prometheus/clickhouse entries |
 | 4 | `web/lib/integration-credentials.ts` | Add the slug to `KNOWN_CONNECTOR_SLUGS` (blocks arbitrary key injection) | Existing slug array |
 | 5 | `web/lib/datasource-schema.ts` | Introspect schema → upsert into Aurora `datasource_schemas` (`upsertSchema`) | `getSchema` / `upsertSchema` pattern |
@@ -204,7 +204,7 @@ After adding a new datasource kind, verify the following:
 
 - [ ] TypeScript/production build succeeds (`npm run build`) — `*.test.ts` type noise is non-blocking
 - [ ] The new kind appears in the type dropdown on the Explore page
-- [ ] Connection test succeeds (health endpoint responds)
+- [ ] Connection test succeeds (the bounded query probe returns `verified`)
 - [ ] Query execution returns results normalized to `QueryResult` format
 - [ ] NL→query produces valid queries in the correct language (schema-cache injection confirmed)
 - [ ] Connector input applies `readJsonBounded` + the SSRF guard (test metadata/IMDS/loopback blocking)

@@ -79,15 +79,15 @@ v1 の結果キャッシュ TTL 設定は v2 にはありません — v2 のク
 
 | データソース | テストエンドポイント | 確認内容 |
 |-----------|-----------------|----------|
-| Prometheus | `/-/healthy` | サーバー状態、応答時間 |
-| Loki | `/ready` | サーバー準備状態、応答時間 |
-| Tempo | `/ready` | サーバー準備状態、応答時間 |
-| ClickHouse | `SELECT 1` | クエリ実行の可否、応答時間 |
-| Jaeger | `/api/services` | サービス一覧の取得、応答時間 |
-| Dynatrace | `/api/v2/entities` | API アクセスの可否、応答時間 |
-| Datadog | `/api/v1/validate` | API キーの有効性、応答時間 |
+| Prometheus | `query?query=vector(1)` (サーバータイムアウト 1 秒) | クエリアクセス |
+| Loki | `query_range`、1 分、`limit=1` | テナント範囲のクエリアクセス |
+| Tempo | トレース 1 件の検索、1 分 | クエリアクセス |
+| ClickHouse | `SELECT 1`、`readonly=1`、実行制限 1 秒 | 読み取り専用 SQL アクセス |
+| Jaeger | `/api/traces?limit=1`、1 分 | クエリアクセス |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`、1 分 | メトリッククエリアクセス |
+| Datadog | キー検証 (キーペアのみ) 後に `/api/v1/query`、1 分 | メトリッククエリアクセス |
 
-テスト結果には、接続の成功/失敗ステータスと応答遅延時間 (ms) が表示されます。
+テスト結果には、成功/失敗、検証済みの操作 (`verified`)、応答遅延時間 (ms) が表示されます。
 
 ## クエリの実行
 

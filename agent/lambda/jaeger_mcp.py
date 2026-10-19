@@ -144,9 +144,10 @@ def jaeger_search(args):
     payload, btr = _byte_bound({"traces": rows})
     if btr:
         payload.pop("preview", None)  # never echo provider content, even as a bounded preview
-    return ok({**payload, "truncated": btr or dropped, "limitSaturated": saturated,
-               "collectionStatus": "unknown" if invalid else "partial" if btr else state,
-               "requestedLimit": requested, "returnedCount": len(payload.get("traces", []))})
+    return ok({**payload, "traces": payload.get("traces", []), "truncated": btr or dropped,
+               "limitSaturated": saturated,
+               "collectionStatus": "unknown" if invalid or http_status not in (200, 206) else "partial" if btr else state,
+               "requestedLimit": requested, "returnedCount": len(rows)})
 
 
 def jaeger_get_trace(args):

@@ -79,15 +79,15 @@ v1의 결과 캐시 TTL 설정은 v2에 없습니다 — v2의 질의 경로는 
 
 | 데이터소스 | 테스트 엔드포인트 | 확인 내용 |
 |-----------|-----------------|----------|
-| Prometheus | `/-/healthy` | 서버 상태, 응답 시간 |
-| Loki | `/ready` | 서버 준비 상태, 응답 시간 |
-| Tempo | `/ready` | 서버 준비 상태, 응답 시간 |
-| ClickHouse | `SELECT 1` | 쿼리 실행 가능 여부, 응답 시간 |
-| Jaeger | `/api/services` | 서비스 목록 조회, 응답 시간 |
-| Dynatrace | `/api/v2/entities` | API 접근 가능 여부, 응답 시간 |
-| Datadog | `/api/v1/validate` | API 키 유효성, 응답 시간 |
+| Prometheus | `query?query=vector(1)` (서버 타임아웃 1초) | 쿼리 접근 |
+| Loki | `query_range`, 1분, `limit=1` | 테넌트 범위 쿼리 접근 |
+| Tempo | 트레이스 1건 검색, 1분 | 쿼리 접근 |
+| ClickHouse | `SELECT 1`, `readonly=1`, 실행 제한 1초 | 읽기 전용 SQL 접근 |
+| Jaeger | `/api/traces?limit=1`, 1분 | 쿼리 접근 |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`, 1분 | 메트릭 쿼리 접근 |
+| Datadog | 키 검증(키 쌍만) 후 `/api/v1/query`, 1분 | 메트릭 쿼리 접근 |
 
-테스트 결과에는 연결 성공/실패 상태와 응답 지연 시간(ms)이 표시됩니다.
+테스트 결과에는 성공/실패, 검증된 작업(`verified`), 응답 지연 시간(ms)이 표시됩니다.
 
 ## 쿼리 실행
 
