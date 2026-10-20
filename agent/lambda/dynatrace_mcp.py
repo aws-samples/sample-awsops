@@ -118,7 +118,8 @@ def dynatrace_query(args):
             "metricId": metric["metricId"], "data": series,
         })
     http_status = getattr(data, "http_status", 200)
-    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or http_status == 206 else "ok" if out else "empty"
+    warned = bool(isinstance(data, dict) and data.get("warnings"))  # provider warnings (e.g. limited results) are not completeness proof
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or warned or http_status == 206 else "ok" if out else "empty"
     return ok({"result": out, "truncated": truncated,
                "collectionStatus": state,
                "resolution": data.get("resolution") if isinstance(data, dict) else None})

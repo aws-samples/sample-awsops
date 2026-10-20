@@ -81,3 +81,10 @@ def test_outer_series_limit_is_disclosed_and_an_exact_point_limit_is_not():
         "status": "ok", "series": [{"metric": "exact", "pointlist": [[1000, 1]] * dd.MAX_POINTS}],
     }):
         assert body(dd.datadog_query({"query": "avg:fixture.metric{*}"}))["truncated"] is False
+
+
+def test_custom_header_pair_is_not_overridden_by_stale_dedicated_keys():
+    creds = {**CREDS, "authType": "custom_header", "headerName": "DD-API-KEY", "headerValue": "fresh-api",
+             "headerName2": "DD-APPLICATION-KEY", "headerValue2": "fresh-app"}
+    headers = dd._headers(creds)
+    assert headers["DD-API-KEY"] == "fresh-api" and headers["DD-APPLICATION-KEY"] == "fresh-app"

@@ -44,3 +44,8 @@ def test_unconsumed_compatibility_page_is_partial_and_is_not_automatically_fetch
 def test_exact_dimension_cap_and_no_next_page_are_not_loss(page):
     result = query({"result": [{"metricId": "fixture.metric", "data": series(dt.MAX_SERIES)}], "nextPageKey": page})
     assert result["truncated"] is False
+
+
+def test_provider_warnings_demote_a_complete_looking_result_to_partial():
+    result = query({"result": [{"metricId": "fixture.metric", "data": series(1)}], "warnings": ["The result was limited."]})
+    assert result["truncated"] is False and result["collectionStatus"] == "partial"
