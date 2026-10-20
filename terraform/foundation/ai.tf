@@ -62,7 +62,7 @@ variable "jaeger_vpc_enabled" {
   type        = bool
   default     = false
   nullable    = false
-  description = "Attach the Jaeger query Lambda to private subnets. Requires agentcore_enabled and integrations_enabled; routing, DNS and target ingress must be operator-configured."
+  description = "Attach the Jaeger query Lambda to private subnets. Requires agentcore_enabled and integrations_enabled; routing, DNS and target ingress must be operator-configured. Default false → no-op ($0). PERSIST in live terraform.tfvars."
   validation {
     condition     = !var.jaeger_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
     error_message = "jaeger_vpc_enabled requires agentcore_enabled and integrations_enabled."
@@ -73,7 +73,7 @@ variable "dynatrace_vpc_enabled" {
   type        = bool
   default     = false
   nullable    = false
-  description = "Attach the Dynatrace environment API Lambda to private subnets for a private ActiveGate endpoint. Requires agentcore_enabled and integrations_enabled. Does not affect the official hosted MCP preset."
+  description = "Attach the Dynatrace environment API Lambda to private subnets for a private ActiveGate endpoint. Requires agentcore_enabled and integrations_enabled; routing, DNS and egress (including to hosted SaaS environments) must be operator-configured. Does not affect the official hosted MCP preset. Default false → no-op ($0). PERSIST in live terraform.tfvars."
   validation {
     condition     = !var.dynatrace_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
     error_message = "dynatrace_vpc_enabled requires agentcore_enabled and integrations_enabled."
