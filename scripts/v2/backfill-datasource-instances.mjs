@@ -59,6 +59,7 @@ async function main() {
   console.log(`connected: ${redactDsn(resolveDsn())}`);
   const c = await pool.connect();
   let created = 0, mirrored = 0;
+  const skipped = [];
   try {
     await c.query('BEGIN');
     await c.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
@@ -73,11 +74,13 @@ async function main() {
          RETURNING id`,
         [slug],
       );
-      const { rows } = await c.query('SELECT id FROM integrations WHERE name = $1', [slug]);
+      const { rows } = await c.query('SELECT id, is_default FROM integrations WHERE name = $1 AND kind = $1', [slug]);
       const id = rows[0]?.id;
       if (ins.rowCount > 0) created++;
-      // Copy the slug credential to the bigint id key if the id entry is missing (keep the kind mirror).
+      // The kind key mirrors the CURRENT default, so copy it only into the slug-named row when that row is the
+      // default; another row needs an administrator re-save (never bind a different instance's blob). Keep the kind mirror.
       if (id != null && map[String(id)] === undefined) {
+        if (!rows[0].is_default) { skipped.push(slug); continue; }
         if (!dryRun) { map[String(id)] = map[slug]; secretDirty = true; }
         mirrored++;
       }
@@ -94,7 +97,7 @@ async function main() {
     c.release();
     await pool.end();
   }
-  console.log(`${dryRun ? '[dry-run] ' : ''}rows created: ${created}, id-credentials backfilled: ${mirrored}`);
+  console.log(`${dryRun ? '[dry-run] ' : ''}rows created: ${created}, id-credentials backfilled: ${mirrored}, skipped non-default rows (re-save via the admin flow): ${skipped.join(', ') || 'none'}`);
 }
 
 main().catch((e) => die(e?.message || String(e)));
