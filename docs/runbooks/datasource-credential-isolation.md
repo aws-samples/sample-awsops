@@ -23,9 +23,10 @@ First run the idempotent instance backfill from the repository root:
 `--dry-run`. It covers all eight native kinds (prometheus, mimir, loki, tempo,
 clickhouse, jaeger, dynatrace, datadog): for each kind credential it ensures an
 `integrations` row named after the kind and copies the kind credential to that
-row's ID key when the ID key is missing and that row is the current default; a
-non-default row named after the kind is reported as skipped. It does not touch
-rows with any other name, so still re-save every migrated default as follows.
+row's ID key when the ID key is missing, that row is the current default and the
+row was just created or its endpoint origin matches the credential's; any other
+row named after the kind is reported as skipped. It does not touch rows with any
+other name, so still re-save every migrated default as follows.
 
 Before deploying the stricter connector producer, operators must re-save every
 migrated default through the existing authenticated administrator save flow:
