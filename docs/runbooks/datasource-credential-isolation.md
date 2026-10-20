@@ -18,6 +18,14 @@ key only; it never falls back to the kind mirror. Missing credentials fail close
 
 ## Action
 
+First run the idempotent instance backfill from the repository root:
+`node scripts/v2/backfill-datasource-instances.mjs --dry-run`, then again without
+`--dry-run`. It covers all eight native kinds (prometheus, mimir, loki, tempo,
+clickhouse, jaeger, dynatrace, datadog): for each kind credential it ensures an
+`integrations` row named after the kind and copies the kind credential to that
+row's ID key when the ID key is missing. It does not touch rows with any other
+name, so still re-save every migrated default as follows.
+
 Before deploying the stricter connector producer, operators must re-save every
 migrated default through the existing authenticated administrator save flow:
 
@@ -49,7 +57,7 @@ The implementation is `web/app/api/datasources/manage/route.ts` and
 
 ```bash
 cd web && npx vitest run app/api/datasources/manage/route.test.ts
-cd agent/lambda && python3 -m pytest test_external_connections.py -q
+cd agent/lambda && python3 -m pytest test_datasource_http.py test_collection_markers.py test_loki_mcp.py test_datadog_mcp.py test_dynatrace_mcp.py -q
 ```
 
 Run the two commands from the repository root independently. These local tests
