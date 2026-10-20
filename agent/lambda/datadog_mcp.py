@@ -43,11 +43,13 @@ def _parse_time_s(v, default_delta_s=None):
 
 def _headers(creds):
     """DD dual-key headers: dedicated apiKey/appKey fields win; else the generic custom-header pair
-    (headerName/headerValue [+2]) from auth_headers covers users who configured them directly."""
+    (headerName/headerValue [+2]) from auth_headers covers users who configured them directly.
+    Dedicated keys apply only to a blob with no authType; any explicit type (including custom_header
+    and none) uses its own headers."""
     h = dict(auth_headers(creds))
-    if creds.get("authType") in (None, "custom_header") and creds.get("apiKey"):
+    if creds.get("authType") is None and creds.get("apiKey"):
         h["DD-API-KEY"] = str(creds["apiKey"])
-    if creds.get("authType") in (None, "custom_header") and creds.get("appKey"):
+    if creds.get("authType") is None and creds.get("appKey"):
         h["DD-APPLICATION-KEY"] = str(creds["appKey"])
     return h
 

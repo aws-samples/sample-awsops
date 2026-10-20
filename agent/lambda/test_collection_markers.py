@@ -76,6 +76,10 @@ class CollectionMarkers(unittest.TestCase):
                 for marker in ("collectionStatus", "ok", "empty", "partial", "unknown", "error"):
                     self.assertIn(marker, descriptions[name])
 
+    def test_loki_errors_carry_the_error_marker(self):
+        body = json.loads(importlib.import_module("loki_mcp").err("synthetic failure")["body"])
+        self.assertEqual(body["collectionStatus"], "error")
+
     def test_native_histogram_output_is_explicitly_unsupported_and_never_echoed(self):
         for kind in ("prometheus", "mimir"):
             for result_type, field, tool in (("vector", "histogram", "query"), ("matrix", "histograms", "query_range")):
