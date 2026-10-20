@@ -58,7 +58,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 | **Type** | O | 数据源类型（从 8 种中选择） |
 | **URL** | O | 端点 URL（例：`http://prometheus:9090`） |
 | **Authentication** | - | 认证方式（None、Basic、Bearer Token、Custom Header） |
-| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
+| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。Explore 中的 Prometheus/Mimir 查询进一步限制为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
 | **Database** | - | 默认数据库名称（仅 ClickHouse，仅允许标识符） |
 
 :::note 与 v1 的差异
@@ -203,7 +203,7 @@ AI 助手可以利用已注册的数据源执行分析。
 
 | 设置 | 默认值 | 说明 |
 |------|--------|------|
-| **Timeout** | 10 秒 | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
+| **Timeout** | 10 秒 | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。Explore 中的 Prometheus/Mimir 查询进一步限制为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
 
 ### 仅 ClickHouse
 

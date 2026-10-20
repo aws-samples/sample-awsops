@@ -54,7 +54,7 @@ Creating, editing, and deleting datasources requires an admin role. In v2, admin
 | **Type** | Yes | Datasource type (select from 8 types) |
 | **URL** | Yes | Endpoint URL (e.g., `http://prometheus:9090`) |
 | **Authentication** | No | Auth method (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | No | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
+| **Timeout** | No | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Explore further caps Prometheus/Mimir queries at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
 | **Database** | No | Default database name (ClickHouse only, identifier-only) |
 
 :::note Difference from v1
@@ -199,7 +199,7 @@ Datasource-related questions are processed through the `datasource` route. The A
 
 | Setting | Default | Description |
 |------|--------|------|
-| **Timeout** | 10s | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
+| **Timeout** | 10s | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Explore further caps Prometheus/Mimir queries at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
 
 ### ClickHouse only
 

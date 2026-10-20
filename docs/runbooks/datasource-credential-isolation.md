@@ -23,8 +23,9 @@ First run the idempotent instance backfill from the repository root:
 `--dry-run`. It covers all eight native kinds (prometheus, mimir, loki, tempo,
 clickhouse, jaeger, dynatrace, datadog): for each kind credential it ensures an
 `integrations` row named after the kind and copies the kind credential to that
-row's ID key when the ID key is missing. It does not touch rows with any other
-name, so still re-save every migrated default as follows.
+row's ID key when the ID key is missing and that row is the current default; a
+non-default row named after the kind is reported as skipped. It does not touch
+rows with any other name, so still re-save every migrated default as follows.
 
 Before deploying the stricter connector producer, operators must re-save every
 migrated default through the existing authenticated administrator save flow:
@@ -41,6 +42,12 @@ migrated default through the existing authenticated administrator save flow:
 4. Verify a credential-blind read for that exact instance ID before the connector
    rollout, and verify a same-kind instance without its own credentials fails
    closed. Stop deployment until all migrated defaults pass.
+
+A Datadog blob configured directly in Secrets Manager with `apiKey`/`appKey` and
+no `authType` keeps sending those keys, but the administrator save stamps the
+authentication type it submits. An explicit `none` transmits no stored keys, so
+re-save such a datasource with Custom header authentication and enter
+`DD-API-KEY`/`DD-APPLICATION-KEY` as the two header pairs.
 
 Default switching and deletion keep today's web behavior in this change. The
 successor's credential is resolved by ID key with a fallback to the kind mirror —

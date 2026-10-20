@@ -58,7 +58,7 @@ AWSops のデータソース機能は、外部オブザーバビリティプラ�
 | **Type** | O | データソースのタイプ（8 種から選択） |
 | **URL** | O | エンドポイント URL（例: `http://prometheus:9090`） |
 | **Authentication** | - | 認証方式 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 保存範囲は 1–60 秒（デフォルト 10 秒）、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir/ClickHouse はすべての経路でサーバー実行上限として適用し、コネクタの HTTP タイムアウトをその上に揃えます。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）はクエリツールの HTTP 応答上限（デフォルト 12 秒）として適用され、サーバー側のクエリ停止は保証しません。スキーマ/ディスカバリ呼び出しはコネクタ固定の HTTP 予算を維持します |
+| **Timeout** | - | 保存範囲は 1–60 秒（デフォルト 10 秒）、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir/ClickHouse はすべての経路でサーバー実行上限として適用し、コネクタの HTTP タイムアウトをその上に揃えます。Explore の Prometheus/Mimir クエリはさらに 10 秒に制限します。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）はクエリツールの HTTP 応答上限（デフォルト 12 秒）として適用され、サーバー側のクエリ停止は保証しません。スキーマ/ディスカバリ呼び出しはコネクタ固定の HTTP 予算を維持します |
 | **Database** | - | デフォルトのデータベース名（ClickHouse 専用、識別子のみ） |
 
 :::note v1 との違い
@@ -203,7 +203,7 @@ AI アシスタントは、登録されたデータソースを活用して分�
 
 | 設定 | デフォルト | 説明 |
 |------|--------|------|
-| **Timeout** | 10 秒 | 保存範囲は 1–60 秒（デフォルト 10 秒）、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir/ClickHouse はすべての経路でサーバー実行上限として適用し、コネクタの HTTP タイムアウトをその上に揃えます。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）はクエリツールの HTTP 応答上限（デフォルト 12 秒）として適用され、サーバー側のクエリ停止は保証しません。スキーマ/ディスカバリ呼び出しはコネクタ固定の HTTP 予算を維持します |
+| **Timeout** | 10 秒 | 保存範囲は 1–60 秒（デフォルト 10 秒）、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir/ClickHouse はすべての経路でサーバー実行上限として適用し、コネクタの HTTP タイムアウトをその上に揃えます。Explore の Prometheus/Mimir クエリはさらに 10 秒に制限します。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）はクエリツールの HTTP 応答上限（デフォルト 12 秒）として適用され、サーバー側のクエリ停止は保証しません。スキーマ/ディスカバリ呼び出しはコネクタ固定の HTTP 予算を維持します |
 
 ### ClickHouse 専用
 
