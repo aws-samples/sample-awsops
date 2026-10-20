@@ -19,7 +19,7 @@ import {
   SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
 
-const DATASOURCE_KINDS = ['prometheus', 'mimir', 'loki', 'tempo', 'clickhouse'];
+const DATASOURCE_KINDS = ['prometheus', 'mimir', 'loki', 'tempo', 'clickhouse', 'jaeger', 'dynatrace', 'datadog']; // mirrors web/lib/integrations-category.ts DATASOURCE_KINDS
 const SECRET_NAME = process.env.INTEGRATIONS_SECRET_NAME || 'ops/awsops-v2/integrations/credentials';
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const LOCK_KEY = 472941143; // distinct from migrate.mjs / backfill-v1.mjs

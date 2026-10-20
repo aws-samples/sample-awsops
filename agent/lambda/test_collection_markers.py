@@ -70,7 +70,7 @@ class CollectionMarkers(unittest.TestCase):
                         for target in catalog.TARGETS.values() for tool in target["tools"]}
         names = {f"{kind}_{action}" for kind in ("prometheus", "mimir")
                  for action in ("query", "query_range", "labels", "series")}
-        names.update(("tempo_search", "clickhouse_query", "clickhouse_tables", "clickhouse_describe"))
+        names.update(("tempo_search", "clickhouse_query", "clickhouse_tables", "clickhouse_describe", "loki_query", "loki_query_range"))
         for name in names:
             with self.subTest(tool=name):
                 for marker in ("collectionStatus", "ok", "empty", "partial", "unknown", "error"):

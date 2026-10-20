@@ -49,8 +49,9 @@ from urllib.parse import urlparse
 HTTP_TIMEOUT = 12
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
-# single-trace and log-query responses may exceed the default cap; the connectors project/bound them to their own 1 MB budgets after parsing
-MAX_TRACE_RESPONSE_BYTES = 32 * 1024 * 1024
+# single-trace and log-query responses may exceed the default cap; the connectors project/bound them to their own 1 MB budgets after parsing.
+# 8 MiB keeps the buffered body plus parsed JSON inside the 256 MB connector Lambda.
+MAX_TRACE_RESPONSE_BYTES = 8 * 1024 * 1024
 
 _SM = None
 _SECRET_CACHE = None
@@ -84,7 +85,7 @@ def _seconds(value, default, ceiling=55):
     if isinstance(value, bool):
         return default
     text = str(value).strip()
-    if not re.fullmatch(r"\d+s?", text):
+    if not re.fullmatch(r"\d{1,6}s?", text):
         return default
     return max(1, min(ceiling, int(text.removesuffix("s"))))
 
