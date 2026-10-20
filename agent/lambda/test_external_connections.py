@@ -504,7 +504,7 @@ def test_jaeger_byte_bound_keeps_the_traces_contract():
             patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", return_value=(200, {"data": [trace]})):
         body = json.loads(module.jaeger_search({"query": "svc"})["body"])
     assert body["traces"] == [] and body["truncated"] is True
-    assert body["returnedCount"] == 1 and body["collectionStatus"] == "partial"
+    assert body["returnedCount"] == len(body["traces"]) == 0 and body["collectionStatus"] == "partial"
     with patch.object(module, "MAX_TOTAL_BYTES", 200), patch.object(module, "load_datasource", return_value=CREDS), \
             patch.object(module, "assert_host_allowed"), patch.object(module, "http_json", return_value=(503, {"data": [trace]})), \
             pytest.raises(module._ApiError):
