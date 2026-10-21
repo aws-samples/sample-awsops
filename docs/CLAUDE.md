@@ -14,6 +14,13 @@ Project documentation organized by purpose. Read applicable scoped CLAUDE.md ins
 | [assets/diagrams/](assets/diagrams/) | Hand-authored English SVG figures embedded in `architecture.md` (both language sections) and `reference/README.md` — the SVG is the source; edit it directly and keep labels English-only |
 | [guides/](guides/) | Evaluation guides (`diagnosis-evaluation.md`) |
 | [api-reference.md](api-reference.md) | API route reference |
+| [README.md](README.md) | Human navigation index; keep it in step with this table |
+| [history/archive/](history/archive/) | Dated records kept for provenance |
+
+v1-era documentation has been removed; it remains in git history. Do not add v1
+procedures back. A moved, renamed or deleted document must update every inbound
+reference in the same change; `tests/structure/test-doc-paths.sh` enforces this for
+published paths.
 
 ## Conventions
 - All `CLAUDE.md` and `AGENTS.md` context files are English-only regardless of
