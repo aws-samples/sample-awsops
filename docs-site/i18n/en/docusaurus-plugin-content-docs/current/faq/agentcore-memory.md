@@ -27,7 +27,7 @@ flowchart LR
 | **Live queries** | AgentCore MCP Lambda tools (~160, read-only) call AWS APIs directly via boto3 |
 | **Steampipe's role** | **Not** the live query engine. It is only a flag-gated **inventory sync** (`steampipe_enabled`, default OFF) — no local 9193 service, no pg Pool |
 | **Gating** | All of AgentCore is gated by the `agentcore_enabled` Terraform flag (default OFF → `plan` = No changes, $0) |
-| **Read-only** | All tools are read-only (ADR-041 / 2026-06-11 reversal: AWS-resource mutation + autonomy are permanently frozen) |
+| **Read-only** | All tools are read-only; AWS-resource mutation and autonomy are permanently frozen |
 
 :::info Steampipe is no longer the live engine
 Live AWS state is always answered by AgentCore tools. When enabled, Steampipe merely warms up on Fargate to sync inventory into Aurora — an auxiliary path, OFF by default.
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW route queries"]
 ```
 
-### There are 9 section gateways (ADR-004 as amended)
+### There are 9 section gateways
 
 `network · container · data · security · cost · monitoring · iac · ops · external-obs` — **9 total** (9 provisioned / 9 routed; external-obs promoted 2026-06-24).
 
 | Item | Detail |
 |------|--------|
-| **Gateway count** | **9** per ADR-004 as amended (2026-06-24) |
+| **Gateway count** | **9** |
 | **Tool count** | About **160**, all read-only — evolves as the fleet grows (not a fixed number) |
-| **External observability** | The Prometheus·ClickHouse connectors ride the **external-obs gateway** (the ninth, per amended ADR-004); other external integrations are the separate **Integrations axis** (ADR-007/017) |
+| **External observability** | The Prometheus·ClickHouse connectors ride the **external-obs gateway** (the ninth); other external integrations are the separate **Integrations axis**  |
 | **Protocol** | MCP (Model Context Protocol) standard |
 
 - The Agent calls `list_tools` to discover available tools
@@ -397,6 +397,6 @@ The web BFF queries Runtime / Gateway / Code Interpreter status. It reads identi
 
 The AI assistant is available at `/assistant` (full page) and in a resizable drawer you can open anywhere; both share the same Aurora conversation history.
 
-:::tip Routing is hybrid (ADR-038)
+:::tip Routing is hybrid
 Questions are routed to the appropriate section agent via a regex fast-path + Haiku 4.5 classifier + prompt caching (LIVE, ~59% cache hit). This is not the legacy fixed multi-route Sonnet registry.
 :::

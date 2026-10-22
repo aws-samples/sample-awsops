@@ -213,7 +213,7 @@ AWSops는 이 4가지 문제를 동시에 해결합니다.
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
   <div style="background:var(--yellow-bg);border:1px solid var(--orange);border-radius:8px;padding:1.25rem;">
     <div style="color:var(--orange);font-weight:bold;font-size:1.125rem;margin-bottom:.5rem;">Bedrock AgentCore</div>
-    <div style="color:var(--text-secondary);line-height:1.6;">Claude Opus 4.8 / Sonnet 5 / Haiku 4.5<br>AgentCore Runtime + 섹션 에이전트<br>ADR-003 하이브리드 라우팅</div>
+    <div style="color:var(--text-secondary);line-height:1.6;">Claude Opus 4.8 / Sonnet 5 / Haiku 4.5<br>AgentCore Runtime + 섹션 에이전트<br>하이브리드 라우팅</div>
   </div>
   <div style="display:grid;grid-template-rows:1fr 1fr;gap:.75rem;">
     <div style="background:var(--yellow-bg);border:1px solid var(--orange);border-radius:8px;padding:.75rem;text-align:center;">
@@ -274,7 +274,7 @@ AWSops는 3개 레이어로 구성됩니다.
 {cue: pause}
 Data Layer는 Aurora Serverless v2가 중심입니다. PostgreSQL 17 기반으로 worker 작업, chat 스레드, 진단 리포트 같은 영속 상태를 안전하게 저장합니다. 인벤토리는 flag로 켜는 Steampipe sync가 41종 리소스 타입을 Aurora로 동기화해 화면에 보여주는 보조 역할입니다. 라이브 조회 엔진이 아니라 인벤토리 캐시라는 점이 핵심입니다.
 
-AI Engine은 Bedrock입니다. Opus 4.8, Sonnet 5, Haiku 4.5를 상황에 맞게 쓰고, AgentCore는 9개 섹션 게이트웨이(8개 AWS 도메인 + external-obs)로 설계되어 160개 이상의 읽기 전용 도구를 갖췄고, 함대 배포가 완료되어 30개 슬라이스 전부, 9개 게이트웨이 전부 READY MCP 타깃을 보유하고 있습니다. 라우팅은 ADR-003 하이브리드 방식으로 빠르고 정확합니다.
+AI Engine은 Bedrock입니다. Opus 4.8, Sonnet 5, Haiku 4.5를 상황에 맞게 쓰고, AgentCore는 9개 섹션 게이트웨이(8개 AWS 도메인 + external-obs)로 설계되어 160개 이상의 읽기 전용 도구를 갖췄고, 함대 배포가 완료되어 30개 슬라이스 전부, 9개 게이트웨이 전부 READY MCP 타깃을 보유하고 있습니다. 라우팅은 하이브리드 방식으로 빠르고 정확합니다.
 
 Dashboard는 Next.js 14 thin-BFF입니다. Overview, AI Diagnosis, Assistant, Security, Compliance, Topology, Monitoring, Accounts, Integrations, Jobs, Customization까지 하나의 대시보드로 통합되어 있고, 화면에 보이는 스크린샷처럼 실제 라이브 v2 환경입니다. 무거운 작업은 비동기 워커 티어로 넘깁니다.
 
@@ -320,7 +320,7 @@ Dashboard는 Next.js 14 thin-BFF입니다. Overview, AI Diagnosis, Assistant, Se
 | **Compute** | ECS Fargate | web thin-BFF + OOM-safe 비동기 워커 티어 (arm64) |
 | **Data** | Aurora Serverless v2 | PostgreSQL 17 영속 상태 + 41종 인벤토리 sync |
 | **AI Tools** | 9 게이트웨이 설계 (160+ 도구) · 30개 슬라이스 전부 LIVE | AgentCore 섹션 에이전트 (모두 read-only; 9개 게이트웨이 전부 READY MCP 타깃) |
-| **AI Routing** | ADR-003 하이브리드 | regex fast-path + Haiku 분류기, 게이트 96.9% |
+| **AI Routing** | 하이브리드 | regex fast-path + Haiku 분류기, 게이트 96.9% |
 | **Diagnosis** | light·mid 9 / deep 16 섹션 | Well-Architected 매핑, DOCX/PDF 내보내기 |
 | **UX** | 3-테마 + 모바일 + 4개 언어 | 반응형 대시보드 + Cmd-K + 한/영/中/日 i18n |
 
@@ -332,7 +332,7 @@ Dashboard는 Next.js 14 thin-BFF입니다. Overview, AI Diagnosis, Assistant, Se
 
 데이터는 Aurora Serverless v2, PostgreSQL 17로 영속 상태를 보관하고, 인벤토리는 41종 리소스 타입을 sync합니다.
 
-AI는 9개 섹션 게이트웨이(8개 AWS 도메인 + external-obs)에 160개 이상의 읽기 전용 도구가 설계되어 있고, 30개 슬라이스 전부 함대 배포되어 9개 게이트웨이 전부 READY 상태입니다. 라우팅은 ADR-003 하이브리드로 게이트 정확도 96.9%를 달성했습니다. 진단은 light·mid 티어가 9섹션(기본 8 + 의도-실제 드리프트 1), deep 티어가 16섹션이며 Well-Architected에 매핑되고 DOCX/PDF로 뽑을 수 있습니다. UX 쪽은 3-테마·모바일 대응에 더해 한국어/English/中文/日本語 4개 언어를 완전히 지원합니다 — 일본어는 최근 복원되어 전체 화면 번역 커버리지 점검까지 마쳤습니다.
+AI는 9개 섹션 게이트웨이(8개 AWS 도메인 + external-obs)에 160개 이상의 읽기 전용 도구가 설계되어 있고, 30개 슬라이스 전부 함대 배포되어 9개 게이트웨이 전부 READY 상태입니다. 라우팅은 하이브리드로 게이트 정확도 96.9%를 달성했습니다. 진단은 light·mid 티어가 9섹션(기본 8 + 의도-실제 드리프트 1), deep 티어가 16섹션이며 Well-Architected에 매핑되고 DOCX/PDF로 뽑을 수 있습니다. UX 쪽은 3-테마·모바일 대응에 더해 한국어/English/中文/日本語 4개 언어를 완전히 지원합니다 — 일본어는 최근 복원되어 전체 화면 번역 커버리지 점검까지 마쳤습니다.
 
 {cue: transition}
 이게 어떤 가치를 만드는지 보겠습니다.
@@ -432,7 +432,7 @@ Cmd-K 커맨드 팔레트로 마우스 없이 전체 화면을 이동할 수 있
   <div style="background: var(--green-bg); border: 1px solid var(--green); border-radius: 12px; padding: 1.5rem; text-align: center;">
     <div style="font-size: 3rem; margin-bottom: .75rem;">🔒</div>
     <div style="color: var(--green); font-weight: bold; font-size: 1.125rem; margin-bottom: .5rem;">Read-Only Posture</div>
-    <div style="color: var(--text-muted); font-size: .875rem;">AWS 리소스 변경·자율 실행 동결<br>ADR-005 (FROZEN) / ADR-007 — 설계상 안전</div>
+    <div style="color: var(--text-muted); font-size: .875rem;">AWS 리소스 변경·자율 실행 동결<br>설계상 안전</div>
   </div>
   <div style="background: var(--accent-subtle); border: 1px solid var(--accent); border-radius: 12px; padding: 1.5rem; text-align: center;">
     <div style="font-size: 3rem; margin-bottom: .75rem;">📊</div>
@@ -448,7 +448,7 @@ AWSops의 차별점은 세 가지로 압축됩니다.
 
 첫째, In-Account Bedrock AI입니다. AI 추론을 고객 AWS 계정 안의 Bedrock에서 직접 호출합니다. OpenAI 같은 외부 AI SaaS API를 쓰지 않으므로 데이터가 계정 밖으로 나가지 않습니다. 금융, 공공, 의료처럼 데이터 주권이 중요한 환경에 적합합니다.
 
-둘째, 읽기 전용 운영 태세입니다. ADR-005 기준으로 AWS 리소스 변경과 자율 실행은 동결(FROZEN, 새 명시적 결정 전까지)되어 있습니다. AI가 진단하고 권고할 뿐 직접 바꾸지 않으므로, 설계 단계에서부터 안전합니다. "read-only"는 AWS 리소스에 한정된 정의이고, 외부 관측성 데이터소스의 읽기/쓰기는 ADR-007 거버넌스 하에 별도로 허용됩니다.
+둘째, 읽기 전용 운영 태세입니다. AWS 리소스 변경과 자율 실행은 동결(FROZEN)되어 있습니다. AI가 진단하고 권고할 뿐 직접 바꾸지 않으므로, 설계 단계에서부터 안전합니다. "read-only"는 AWS 리소스에 한정된 정의이고, 외부 관측성 데이터소스의 읽기/쓰기는 거버넌스 하에 별도로 허용됩니다.
 
 셋째, AI 종합진단 리포트입니다. Well-Architected에 매핑된 light·mid 9섹션, deep 16섹션 리포트를 비동기 워커가 생성하고 DOCX와 PDF로 내보냅니다.
 
@@ -473,7 +473,7 @@ AWSops의 차별점은 세 가지로 압축됩니다.
 - **③ Well-Architected** → 종합진단 리포트 자동 생성 (light·mid/deep, DOCX/PDF)
 - **④ 보안성** → Security Findings + CIS Compliance 벤치마크, 둘 다 읽기 전용
 - **⑤ 장애 대응 AI** → AI Assistant/Diagnosis가 메트릭·로그·트레이스·NFM 경로를 자연어로 교차 분석
-- **핵심 차별점** → In-account Bedrock AI + 읽기 전용 태세 (ADR-005 FROZEN) + 4개 언어 UX
+- **핵심 차별점** → In-account Bedrock AI + 읽기 전용 태세 + 4개 언어 UX
 
 :::notes
 {timing: 2min}

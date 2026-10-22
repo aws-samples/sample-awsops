@@ -45,7 +45,7 @@ AgentCore は Amazon Bedrock AgentCore Runtime と Gateway をベースに、AI 
 | **エンジン** | Strands Agent Framework |
 | **コンテナ** | Docker arm64（ECR に保存、`make agentcore`） |
 | **実行環境** | AgentCore マネージドサービス（Bedrock AgentCore Runtime） |
-| **モデル** | Claude Haiku 4.5（ADR-038 ルーティング分類器）/ **Runtime 自体は Sonnet 4.6 のみ**実行（`agent/agent.py` にハードコーディング）。Opus 4.8 は Runtime ではなく、別の **AI 診断（非同期ワーカー）** Deep ティアでのみ選択的に使用 |
+| **モデル** | Claude Haiku 4.5（ルーティング分類器）/ **Runtime 自体は Sonnet 4.6 のみ**実行（`agent/agent.py` にハードコーディング）。Opus 4.8 は Runtime ではなく、別の **AI 診断（非同期ワーカー）** Deep ティアでのみ選択的に使用 |
 
 ### ステータス
 
@@ -116,14 +116,14 @@ IAM およびセキュリティ分析のツールを提供します。（P1f で
 
 ### Monitoring Gateway (36 tools)
 
-CloudWatch、CloudTrail（AWS ネイティブ）に加え、OpenSearch、Loki/Tempo/Mimir（オブザーバビリティスタック）のツールを提供します（Prometheus・ClickHouse は External-Obs が担当 — ADR-004）。
+CloudWatch、CloudTrail（AWS ネイティブ）に加え、OpenSearch、Loki/Tempo/Mimir（オブザーバビリティスタック）のツールを提供します（Prometheus・ClickHouse は External-Obs が担当）。
 
 | カテゴリ | ツール |
 |---------|------|
 | **cloudwatch-mcp** (11) | メトリクス/アラーム/Logs Insights の照会 |
 | **cloudtrail-mcp** (5) | `lookup_events`, `list_event_data_stores`, `lake_query`, `get_query_status`, `get_query_results` |
 | **opensearch-mcp** (4) | OpenSearch のドメイン/インデックス照会 |
-| **loki-mcp / tempo-mcp / mimir-mcp**（loki 5・tempo 5・mimir 6、`integrations_enabled`） | LogQL/TraceQL の照会 — Loki/Tempo/Mimir はこの Gateway に残留（ADR-004；Prometheus·ClickHouse は External-Obs へ移動） |
+| **loki-mcp / tempo-mcp / mimir-mcp**（loki 5・tempo 5・mimir 6、`integrations_enabled`） | LogQL/TraceQL の照会 — Loki/Tempo/Mimir はこの Gateway に残留（Prometheus·ClickHouse は External-Obs へ移動） |
 
 ### Cost Gateway (14 tools)
 
@@ -146,7 +146,7 @@ AWS ドキュメント検索・運用ヘルパー・インベントリ照会ツ�
 
 ### External-Obs (13 tools, ルーティングキー: `observability`)
 
-外部オブザーバビリティ・連携コネクタをホスティングする 9 番目のルーティングセクションです（ADR-004 改訂 2026-06-24）。カタログには `notion-mcp`（3 tools）が定義されています（`integrations_enabled` ゲート、デフォルト off）。Prometheus（6 tools）・ClickHouse（4 tools）のコネクタターゲットもこのセクションに配置されます（`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` の gateway=external-obs）。
+外部オブザーバビリティ・連携コネクタをホスティングする 9 番目のルーティングセクションです。カタログには `notion-mcp`（3 tools）が定義されています（`integrations_enabled` ゲート、デフォルト off）。Prometheus（6 tools）・ClickHouse（4 tools）のコネクタターゲットもこのセクションに配置されます（`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` の gateway=external-obs）。
 
 ## Code Interpreter
 
@@ -186,7 +186,7 @@ AgentCore Runtime ARN・Memory ID などの設定値は **SSM のみ**に存在�
 | **会話履歴の保持** | 最大 365 日 |
 | **AgentCore の応答** | 最終テキストのみ返却（ツール推論はタイピング効果でストリーミング） |
 | **ツール有効化フラグ** | 30 スライスは `agentcore_enabled`（21）・`integrations_enabled`（9）でゲート — ライブ環境はフリートのデプロイ完了（2026-08-02）、新規インストールのデフォルトは off |
-| **ベンダー mcpServer ターゲット** | external-obs のベンダーホスティング mcpServer ターゲット（Datadog・Dynatrace・New Relic）は `capability=read` がプロトコルレベルで強制されません（ADR-017）— read-only 保証は Lambda ターゲットが対象で、エンドポイント未設定時は SKIP。ランタイムでは fail-closed のツール allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — カタログに転写された read ツールのみ通過、`agent/agent.py`）が補完 |
+| **ベンダー mcpServer ターゲット** | external-obs のベンダーホスティング mcpServer ターゲット（Datadog・Dynatrace・New Relic）は `capability=read` がプロトコルレベルで強制されません— read-only 保証は Lambda ターゲットが対象で、エンドポイント未設定時は SKIP。ランタイムでは fail-closed のツール allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — カタログに転写された read ツールのみ通過、`agent/agent.py`）が補完 |
 
 ## 次のステップ
 

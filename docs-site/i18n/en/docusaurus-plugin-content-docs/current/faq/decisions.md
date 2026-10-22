@@ -1,158 +1,152 @@
 ---
 sidebar_position: 7
-title: Key Architecture Decisions FAQ
-description: The core architecture decisions (ADRs) behind AWSops, framed as operator Q&A — read-only posture, external-write governance, AI routing/diagnosis, infrastructure shape, and cost/security/operations decisions.
+title: Design Principles FAQ
+description: Why AWSops behaves the way it does, framed as operator Q&A — read-only posture, external-write governance, AI routing/diagnosis, infrastructure shape, and cost/security/operations principles.
 ---
 
-# Key Architecture Decisions FAQ
+# Design Principles FAQ
 
-This page distills the design decisions (ADRs — Architecture Decision Records) that determine *why AWSops behaves the way it does*, in the form of the questions operators ask most. Each answer cites the underlying ADR number.
-
-The full decision log and detailed context live in `docs/decisions/` (ADR 001–044); the index and correction notes are in `docs/decisions/CLAUDE.md`.
+This page distills the core design principles that determine *why AWSops behaves the way it does*, in the form of the questions operators ask most.
 
 :::info
-AWSops's most important principle is **read-only**. But that constraint is bound precisely to **AWS-resource mutation + autonomy** (ADR-041). External observability **data reads** and governed external **data writes** are *not* covered by it — they are data operations, not AWS-resource changes.
+AWSops's single most important principle is **read-only**. That constraint is bound precisely to **AWS-resource mutation + autonomy**. Reading external observability **data** and writing external **data records** under governance fall outside it — they are data operations, not AWS-resource changes.
 :::
 
 ## Security
 
-### Does AWSops change AWS resources directly, or take automated action?
+### Does AWSops change AWS resources directly or remediate automatically?
 
-**No. AWS-resource mutation and autonomy are permanently frozen (do-not-enable).**
+**No. AWS-resource mutation and autonomous execution are permanently frozen (do-not-enable).**
 
-A mutating-action framework (ADR-029) and an execution substrate (SSM Automation + Change Manager × P2-worker hybrid, ADR-036) were designed, but **both were REVERSED by 3-AI consensus on 2026-06-11**. The code is retained in a dark state, but the flags are permanently OFF — it is never enabled.
+The code for the mutating-action framework and its execution substrate (SSM Automation + Change Manager × workers) is preserved dark, but the flags are permanently OFF and are not enabled.
 
-- **AWS-resource changes** — stopping an EC2 instance, modifying an SG, scaling, deploying — are performed by no screen and no AI feature.
+- **No screen or AI feature performs AWS-resource changes** such as terminating EC2, modifying SGs, scaling, or deploying.
 - All ~160 AgentCore MCP Lambda tools are read-only.
 
 :::info
-The scope of the "freeze" is **AWS-resources only** (ADR-029/036 scope clarification 2026-06-16; ADR-041 keystone). The controls layer and the worker execution branch may be reused for non-AWS external data writes, but the AWS-resource automation substrate itself stays frozen.
+The "freeze" is scoped to **AWS resources only**. The control layer and the worker execution branch may be reused for non-AWS external data writes, but the AWS-resource automation substrate itself stays frozen.
 :::
 
-### Are writes to external systems like Slack / Jira also blocked?
+### Are writes to external systems like Slack or Jira also blocked?
 
-**No — they are allowed under governance.** They are **data records**, not AWS-resource changes (ADR-040, ADR-041).
+**No — they are allowed under governance.** These are **data records**, not AWS-resource changes.
 
-After the 2026-06-11 reversal, ADR-040 carved out a narrow allowance for **non-AWS-resource external knowledge/comms writes** (records and messages to Slack, Notion, Confluence, Jira, ServiceNow), and ADR-041 re-anchored this as the keystone: read-only constraint = AWS-resource mutation + autonomy, **external data integration (read + write) excluded**.
+Non-AWS-resource external knowledge/comms writes (records and messages in Slack, Notion, Confluence, Jira, ServiceNow) are narrowly allowed. The read-only constraint applies to AWS-resource mutation + autonomy, and **external data integration (read + write) is excluded** from it.
 
-- Leaving a report, ticket, or message in an external system is possible under governance controls.
-- No path — **none** — grants permission to change the AWS infrastructure itself.
+- Leaving reports, tickets, and messages in external systems is possible under governance controls.
+- Mutation rights over AWS infrastructure itself are granted **by no path at all**.
 
-### Could internal information leak when writing externally?
+### Is there a risk of leaking internal information when writing externally?
 
-External data writes are designed to operate only under ADR-040's **seven hard conditions**. The key guards are:
+External data writes are designed to operate only under **hard conditions**. The key guards:
 
-- **DLP / redaction** — strips sensitive information from outbound content (strongly emphasized, as it was the dissent's core concern)
+- **DLP / redaction** — strips sensitive information from outbound content
 - **Destination allowlist** — sends only to approved external destinations
 - **SSRF guard** — blocks metadata/IMDS and internal endpoints
 - **Secrets in Secrets Manager**
-- **Human-gate** — sent only after human approval (or a draft-only fallback)
+- **Human gate** — sends only after human approval (or a draft-only fallback)
 - **Non-AWS-resource only** + **flag-OFF by default**
 
 :::tip
-To stay coherent with the 2026-06-11 consensus (which explicitly named external-endpoint/egress/SSRF as scope-creep), ADR-041 records this allowance as an **owner-override**, not a "clarification" (addendum applied). In other words, external writes are not an "exception" but a data-write standard *under* a controls mandate.
+External writes are not "an exception that was allowed" — they are the data-write standard under a **control mandate**.
 :::
 
-### How was login decided?
+### How does login work?
 
-AWSops uses an **in-app login form** (`/login`) (ADR-042).
+AWSops uses an **in-app login form** (`/login`).
 
-The self-hosted `/login` form calls the BFF `POST /api/auth/login` → authenticates via the unsigned public Cognito `InitiateAuth(USER_PASSWORD_AUTH)` → mints an `awsops_token` cookie (id_token, 12 hours). Every subsequent request is checked by Lambda@Edge with **RS256 JWKS signature verification**. The Hosted UI PKCE flow is retained only as a dark fallback.
+The self-hosted `/login` form calls the BFF `POST /api/auth/login` → authenticates via the unsigned public Cognito `InitiateAuth(USER_PASSWORD_AUTH)` → issues the `awsops_token` cookie (id_token, 12 hours). Every subsequent request is checked by Lambda@Edge with **RS256 JWKS signature verification**. The Hosted UI PKCE flow is preserved only as a dark fallback.
 
-This refines ADR-020 (Cognito + Lambda@Edge) on top of the ADR-037 foundation, following least privilege (no REFRESH granted).
+The Cognito + Lambda@Edge setup follows least privilege (no REFRESH granted).
 
-### How is admin access controlled?
+### How are admin privileges controlled?
 
-A **server-side, fail-closed gate** (ADR-023).
+By a **server-side fail-closed gate**.
 
-Admin features are allowed only for users who are members of the Cognito `admins` **group** or who appear on the SSM **admin-email allowlist**. If neither check confirms the user, access is denied by default (fail-closed).
+Admin functions are allowed only for users who are Cognito `admins` **group members** or are included in the SSM **admin email allowlist**. If neither confirms the user, access is blocked by default (fail-closed).
 
 ## Architecture
 
-### Why isn't the infrastructure a single EC2 instance?
+### Why isn't the infrastructure a single EC2?
 
-AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA** (ADR-037, ADR-030).
+AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA**.
 
-- **IaC**: Terraform (partial S3 backend). CDK is dropped (ADR-024 → superseded by ADR-037).
-- **Compute**: ECS Fargate (arm64). web is a Next.js 15 thin-BFF served at the root path.
-- **Async workers**: heavy / long / OOM-risk work is never run inline by web — it goes through SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
+- **IaC**: Terraform (partial S3 backend). CDK is retired.
+- **Compute**: ECS Fargate (arm64). The web tier is a Next.js 15 thin-BFF served at the root path.
+- **Async workers**: heavy, long, or OOM-risk work is not handled by web directly; it goes SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
 
-ADR-037 supersedes ADR-024 in full and refines ADR-030's mechanism (no live Steampipe; flag-gated inventory sync only).
+There is no live Steampipe query path; only the flag-gated inventory sync exists.
 
 ### Why is data stored in Aurora?
 
-State is persisted in **Aurora Serverless v2 (PostgreSQL 17)**, not in JSON files on an EC2 instance (ADR-030).
+State is persisted to **Aurora Serverless v2 (PostgreSQL 17)**, not JSON files on an EC2 instance.
 
-App state — `worker_jobs` (async jobs), chat threads, AI diagnosis reports, datasource schema cache — all lives in Aurora, and the app accesses it via node-pg. This keeps state intact across instance restarts and replacements. (The Aurora / dual-ECR *intent* holds from ADR-030; the 4-container / Service-Connect / CDK *mechanism* is superseded by ADR-037.)
+All app state — `worker_jobs` (async jobs), chat threads, AI diagnosis reports, datasource schema caches, and more — lives in Aurora, and the app accesses it via node-pg. State therefore survives instance restarts and replacements.
 
-### Will a graph database like Neptune be adopted?
+### Will AWSops adopt a graph database such as Neptune?
 
-**Not for now — it's deferred** (ADR-043).
+**Not now — it is deferred.**
 
-Topology and resource graphs are handled well enough by Postgres recursive CTEs, so the **Postgres-first** principle holds; Neptune remains an option only, flag-OFF. (2026-06-17 addendum: a 5-family consensus reaffirmed Postgres-first; the topology UI keeps its current client-side build, with server-side materialize wired only when a consumer appears.)
+Topology and resource graphs are handled well enough by Postgres recursive CTEs, so the **Postgres-first** principle holds; Neptune remains only an option and is flag-OFF. The topology UI keeps its current client build, and server-side materialization is wired when a consumer appears.
 
 ## AI
 
-### Does the AI automatically analyze incidents and take action?
+### Does AI analyze incidents and also remediate them automatically?
 
-**Analysis (RCA) yes, automated action (mitigation) no** (ADR-032, DOWNGRADED 2026-06-11).
+**Analysis (RCA): yes. Automatic mitigation: no.**
 
-ADR-032 originally defined an event-triggered autonomous incident lifecycle (multi-agent Lead/Sub), but the 2026-06-11 consensus **dropped autonomous mitigation/action** and **retained only read-only Triage, investigation, and RCA** (advisory-only; analysis-only when enabled). A human reviews the analysis and decides on any action.
+Autonomous mitigation/action is not provided; **only read-only triage, investigation, and RCA are provided** (advisory only; analysis-only when activated). Humans make the decision and take action based on the analysis.
 
-### Where do RCA (root-cause analysis) results get recorded?
+### Where are RCA (root-cause analysis) results recorded?
 
-They are designed to write back bidirectionally to OpsCenter / Incident Manager (ADR-034, KEPT).
+They are designed to be recorded via bidirectional write-back to OpsCenter / Incident Manager.
 
-However, ADR-034 currently inherits the frozen 029/036 substrate role, so until a **self-contained role is decoupled and `rca_writeback_enabled` is turned on, it is flag-OFF / do-not-enable**. The ADR-041 coherence addendum (2026-06-17) classifies this writeback as an **AWS-native observability-metadata write (third tier)** — governed like data rather than FROZEN, but the role split must come first.
+However, this write-back currently inherits the role of the frozen automation substrate, so it is **flag-OFF and do-not-enable until a self-contained role split is in place and `rca_writeback_enabled` is turned on**. The write-back is classified as an **AWS-native observability metadata write**: it is governed like data rather than frozen, but the role split must come first.
 
 ### How does AI routing work?
 
-**ADR-038 hybrid routing** — regex fast-path + Haiku 4.5 classifier + prompt caching. **Activated LIVE 2026-06-10.**
+**Hybrid routing** — a regex fast-path + a Haiku 4.5 classifier + prompt caching.
 
-The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. Rather than the earlier 11/18-route Sonnet registry, a fast regex catches clear queries first, and ambiguous ones are routed by the Haiku classifier. (The classifier timeout was corrected to 3.5s — 1s is too short on global cross-region profiles.)
+The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. A fast regex catches clear queries first, and ambiguous ones go to the Haiku classifier. The classifier timeout is 3.5s (1s is not enough on the global cross-region profile).
 
-### Does the AI keep costing money for repeated questions?
+### Do repeated questions keep costing AI spend?
 
-**It's optimized with prompt caching and model-by-depth selection** (ADR-038, ADR-033).
+They are **optimized through prompt caching and per-depth model selection**.
 
-- **Prompt caching** — about a 59% hit rate, reducing recomputation of repeated context (ADR-038).
-- **Model by task depth** — AI Diagnosis uses Sonnet by default for Light·Mid (8+1 sections), and Sonnet default / Opus selectable (cost-gate) for Deep (15+1 sections). Classification and routing use the cheaper Haiku 4.5 (ADR-033).
-- ADR-033 defined an Aurora durable token budget (implemented in v1; wiring it into the current web chat path is a pending follow-up).
+- **Prompt caching** — an ~59% hit rate reduces recomputation of repeated context.
+- **Per-depth models** — AI diagnosis uses Sonnet by default for Light and Mid (8+1 sections); Deep (15+1 sections) uses Sonnet by default with Opus as an option (cost-gate). Classification and routing use the cheaper Haiku 4.5.
+- The Aurora durable token budget (persisted budget) is implemented in v1; wiring it into the current web-chat path is follow-up work.
 
-### Did the gateways grow to 9?
+### How many gateways are there?
 
-**Yes — it is 9** (ADR-004 as amended, 2026-06-24).
+**Nine.**
 
-In addition to the 8 AWS-domain gateways — network · container · data · security · cost · monitoring · iac · ops — an **external-obs gateway** hosting the external-observability connectors (Prometheus·ClickHouse) is provisioned and routed as the ninth (9 provisioned / 9 routed). The chat key `observability` aliases to external-obs.
+In addition to the 8 AWS-domain gateways — network · container · data · security · cost · monitoring · iac · ops — the **external-obs gateway**, which hosts the external observability connectors (Prometheus · ClickHouse), is provisioned and routed as the ninth (9 provisioned / 9 routed). The chat key `observability` aliases to external-obs.
 
-### Can I add my own agents or tools?
+### Can I configure additional agents or tools myself?
 
-**Only via governed connectors** (ADR-039, ADR-031, ADR-041): curated connectors, official presets, or an administrator-registered `custom_mcp` integration.
+**Only through governed connectors** — curated connectors, official presets, or the administrator-registered `custom_mcp` integration.
 
-The ADR-039 multi-agent platform introduced frontier agents (DevOps/Security/FinOps + N) and the Integrations axis, and admin-configured Agent Spaces (ADR-031 Phase 1/2) are LIVE. However:
+The multi-agent platform provides frontier agents (DevOps/Security/FinOps + N) and an Integrations axis, and the admin-configured Agent Space is LIVE. However:
 
-- **Arbitrary-form BYO-MCP (ADR-031 Phase 3) is dropped** (2026-06-11 reversal). An MCP endpoint path without governance controls is not allowed (ADR-041).
-- The administrator-only `custom_mcp` integration is a governed path with those controls: administrator-only registration, per-account enablement, an administrator-set exposed-tool ceiling (empty exposes no tools), a credential read from Secrets Manager at connect time, and connect-time SSRF checks. The official presets keep their host pins.
-- Among **mutating tools (ADR-031 Phase 4)**, only non-AWS external *data* writes are narrowly allowed under ADR-040 governance; AWS-resource mutation stays dropped.
+- **Arbitrary-form BYO-MCP is not provided.** MCP endpoint paths without governance controls are not allowed.
+- The administrator-only `custom_mcp` integration is the governed path with those controls: admin-only registration, per-account enablement, an admin-set exposed-tool ceiling (empty exposes nothing), a credential read from Secrets Manager at connect time, and connect-time SSRF checks. Official presets keep their host pins.
+- Of the **mutating tools**, only non-AWS external data writes are narrowly allowed under external-write governance; AWS-resource mutation is not provided.
 
-### Does the AI diagnose Kubernetes (EKS) automatically too?
+### Does AI also diagnose Kubernetes (EKS) automatically?
 
-**It provides read-only diagnosis only** (ADR-035, DOWNGRADED 2026-06-11).
+**Read-only diagnosis only.**
 
-The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) retains only **read-only Result-CRD integration (GET-only)**; the wiring that led to automated action (H3a → 032/034/029 proposals) was dropped. EKS queries are all read-only. The default identity is the web task role for host clusters or the registered member read role, normally `AWSopsReadOnlyRole`, for member clusters; the applicable role needs an Access Entry/read policy. Member metadata discovery and default Kubernetes token signing both use member-role credentials, and an old host-role entry alone is insufficient. Saved SA tokens or explicit AssumeRole authentication use separately authorized Kubernetes identities; member AssumeRole overrides are limited to that same member account. SA authentication needs no IAM Access Entry but still needs metadata discovery permissions. None of these modes enables automatic remediation.
+The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) provides **only the read-only Result-CRD integration (GET-only)**, with no wiring toward automatic remediation. All EKS lookups are read-only. The default authenticating principal is the web task role for the host cluster, or the registered member read role for a member cluster (typically `AWSopsReadOnlyRole`), and that role needs an Access Entry and read policy. Member metadata lookups and default Kubernetes token signing both use member-role credentials; the existing host-role Entry alone is not sufficient. A stored SA token or an explicit AssumeRole uses a separately allowed Kubernetes principal, and a member AssumeRole is limited to roles in the same member account. SA authentication does not need an IAM Access Entry but does need metadata permissions. None of these methods enables automatic remediation.
 
 ## Operations
 
 ### How are long or heavy jobs handled?
 
-They are **enqueued to the async worker tier** (ADR-037).
+They are **enqueued to the async worker tier**.
 
-Since web is a thin-BFF, it never runs heavy/long/OOM-risk work inline: `POST /api/jobs` → `worker_jobs` (queued) + SQS → ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions routes by `$.runtime` (short → RunLambda, long/OOM-risk → `ecs:runTask.sync` Fargate) → the worker writes running/succeeded itself → on failure the status_updater Lambda writes failed → a reaper (EventBridge, every 5 min) reconciles stale jobs.
+Web is a thin-BFF, so it never runs heavy, long, or OOM-risk work inline: `POST /api/jobs` → `worker_jobs` (queued) + SQS → ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions routes by `$.runtime` (short → RunLambda, long/OOM-risk → `ecs:runTask.sync` Fargate) → the worker writes running/succeeded itself → on failure the status_updater Lambda writes failed → a reaper (EventBridge, every 5 min) reconciles stale jobs.
 
 :::tip
 The ESM has a kill-switch to stop queue consumption instantly, and the dispatcher is idempotent on job_id, so duplicate dispatches are safely ignored.
 :::
-
-### Where can I read more about these decisions?
-
-The full ADR set (001–044) is in `docs/decisions/`, and the index, status, and reversal/correction notes are in `docs/decisions/CLAUDE.md`. The 2026-06-11 high-risk reversal consensus is in `docs/reviews/2026-06-11-high-risk-adr-reversal-consensus.md`, and the external-write unfreeze consensus is in `docs/reviews/2026-06-14-external-write-unfreeze-consensus.md`.

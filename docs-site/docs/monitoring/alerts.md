@@ -186,9 +186,3 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 - [AI 종합 진단](./ai-diagnosis.md) — 15섹션 전체 진단
 - [CloudWatch](./cloudwatch) — 알람 원본
 - [외부 데이터소스](./datasources) — Alertmanager/Grafana 쿼리 원천
-
-## 참고
-
-- ADR-009: 알림 트리거 AI 진단
-- ADR-012: SNS 알림 전략
-- ADR-013: 자동 수집 조사 에이전트

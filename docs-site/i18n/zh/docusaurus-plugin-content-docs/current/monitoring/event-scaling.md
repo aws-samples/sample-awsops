@@ -1,14 +1,14 @@
 ---
 sidebar_position: 10
 title: 事件预扩容
-description: ADR-010 Phase 1+2 — 流量事件登记、历史指标分析、基于 AI 的预热脚本生成
+description: 流量事件登记、历史指标分析、基于 AI 的预热脚本生成
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # 事件预扩容 (Event Pre-Scaling)
 
-`/event-scaling` 页面为即将到来的流量事件（黑色星期五、开票抢购、直播等）生成**基于 AI 的预热计划**。这是 ADR-010 Phase 1+2 的实现，**仅执行到计划生成 + 脚本导出为止**，**执行由运维人员手动审核后自行完成**。
+`/event-scaling` 页面为即将到来的流量事件（黑色星期五、开票抢购、直播等）生成**基于 AI 的预热计划**。该功能**仅执行到计划生成 + 脚本导出为止**，**执行由运维人员手动审核后自行完成**。
 
 <Screenshot src="/screenshots/overview/event-scaling.png" alt="事件预扩容页面" />
 
@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **支持的资源** | KEDA、HPA、Aurora replica/ACU、MSK broker/partition、ASG、EC2、EBS IOPS、ALB |
 
 :::caution Phase 2 的局限
-生成的脚本**仅供人工审核使用**。AWSops 不会直接执行基础设施变更（KEDA 部署、AWS API 调用）。自动执行 + IAM 扩展 + KEDA 集成将在 ADR-029 Phase 3 门控（Proposed）中另行处理。
+生成的脚本**仅供人工审核使用**。AWSops 不会直接执行基础设施变更（KEDA 部署、AWS API 调用）。
 :::
 
 ## 工作流
@@ -150,8 +150,6 @@ curl -X DELETE '/awsops/api/event-scaling?id=<eventId>'
 
 ## 参考
 
-- **ADR-010 Phase 1+2** — 事件登记 + AI 计划生成（当前实现）
-- **ADR-029** — Phase 3 mutating action 门控 (Proposed)
 - `src/lib/event-scaling.ts` — 数据模型 + JSON 持久化
 - `src/lib/event-scaling-prompts.ts` — Bedrock 提示词 + `PLAN_JSON` 标记解析
 - `src/lib/event-scaling-scripts.ts` — 按资源生成安全的 bash 脚本

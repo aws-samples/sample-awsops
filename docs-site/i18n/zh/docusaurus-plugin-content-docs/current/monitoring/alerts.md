@@ -185,9 +185,3 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 - [AI 综合诊断](./ai-diagnosis.md) — 全部 15 个分区的诊断
 - [CloudWatch](./cloudwatch) — 告警来源
 - [外部数据源](./datasources) — Alertmanager/Grafana 查询源头
-
-## 参考
-
-- ADR-009: 告警触发 AI 诊断
-- ADR-012: SNS 通知策略
-- ADR-013: 自动采集调查代理

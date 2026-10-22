@@ -186,9 +186,3 @@ The server-side runbook [alert-pipeline-troubleshoot.md](https://github.com/aws-
 - [AI Comprehensive Diagnosis](./ai-diagnosis.md) — full 15-section diagnosis
 - [CloudWatch](./cloudwatch) — alarm origin
 - [External Datasources](./datasources) — Alertmanager/Grafana query sources
-
-## References
-
-- ADR-009: Alert-triggered AI diagnosis
-- ADR-012: SNS notification strategy
-- ADR-013: Auto-collection investigation agent

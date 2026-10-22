@@ -186,9 +186,3 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 - [AI 総合診断](./ai-diagnosis.md) — 15 セクションのフル診断
 - [CloudWatch](./cloudwatch) — アラームのソース
 - [外部データソース](./datasources) — Alertmanager/Grafana クエリの源泉
-
-## 参考
-
-- ADR-009: アラートトリガー AI 診断
-- ADR-012: SNS 通知戦略
-- ADR-013: 自動収集調査エージェント

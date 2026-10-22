@@ -37,7 +37,7 @@ import Screenshot from '@site/src/components/Screenshot';
 - 数据·AI·认证·边缘全部在 AWS 内部完成，因此**数据治理·合规非常简单**。
 
 :::tip 会话要点
-"这个仪表板本身就是按 AWS Well-Architected 构建的" — 因为开源，其实现可以直接验证，并且所有设计决策都以 32 个 ADR（Architecture Decision Record）文档化。
+"这个仪表板本身就是按 AWS Well-Architected 构建的" — 因为开源，其实现可以直接验证。
 :::
 
 ---
@@ -48,7 +48,7 @@ AWSops 的数据引擎是 [Steampipe](https://steampipe.io/)（内嵌 PostgreSQL
 
 - 用 SQL 即时查询 **380+ AWS 表 + 60+ Kubernetes 表** — 像操作 SQL 一样操作 AWS API。
 - 结果通过 **node-cache 缓存 5 分钟**，仪表板核心 23 个查询由**缓存预热器每 4 分钟提前预热**，保证亚秒级响应。
-- 所有查询只能通过 `src/lib/steampipe.ts` 的 **pg Pool**（max 10, 8 sequential batch）执行 — CLI（`steampipe query`）慢 660 倍，**在代码层面禁止**（ADR-001）。
+- 所有查询只能通过 `src/lib/steampipe.ts` 的 **pg Pool**（max 10, 8 sequential batch）执行 — CLI（`steampipe query`）慢 660 倍，**在代码层面禁止**。
 
 → 结果：不必反复刷新控制台，**所有资源在一个界面上即时**呈现。
 
@@ -82,7 +82,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 
 - **单台 EC2 t4g.2xlarge（ARM64 Graviton）** — 同机运行 Steampipe 内嵌 PostgreSQL，**没有额外的托管数据库成本**。
 - **AgentCore 是无服务器的** — AI 运行时/网关仅在调用时计费。
-- Bedrock 模型按任务选择 — 分类·路由用 **Sonnet 4.6**，深度诊断用 **Opus 4.8**，快速低成本任务用 **Haiku 4.5**，并应用提示词缓存（ADR-016）。
+- Bedrock 模型按任务选择 — 分类·路由用 **Sonnet 4.6**，深度诊断用 **Opus 4.8**，快速低成本任务用 **Haiku 4.5**，并应用提示词缓存。
 
 而且这个工具还能**降低客户基础设施的成本** — Cost Explorer 分析、闲置资源检测、FinOps 建议都包含在诊断报告中。
 
@@ -95,7 +95,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 <Screenshot src="/screenshots/overview/accounts.png" alt="多账户管理" />
 
 - Steampipe **Aggregator 模式** — `aws` = 全账户统一，`aws_<id>` = 单个账户。可以在顶部切换账户，也可以**合并查看全部**。
-- 添加/删除账户只需修改 `data/config.json` 中的 `accounts[]` 数组 — **无需更改代码**（ADR-008）。跨账户使用 assume-role。
+- 添加/删除账户只需修改 `data/config.json` 中的 `accounts[]` 数组 — **无需更改代码**。跨账户使用 assume-role。
 
 ---
 
@@ -113,7 +113,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 
 <Screenshot src="/screenshots/monitoring/datasources.png" alt="外部数据源集成" />
 
-在 AWS 数据之外，还可将现有可观测性栈**作为数据源接入**（防 SSRF allowlist，ADR-011）：
+在 AWS 数据之外，还可将现有可观测性栈**作为数据源接入**（防 SSRF allowlist）：
 
 | 种类 | 平台 |
 |------|--------|
@@ -134,12 +134,11 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 | 优势 | 内容 |
 |------|------|
 | **AI 工具架构** | 8 个基于角色的 AgentCore Gateway · **125 个 MCP 工具** · 19 个 Lambda |
-| **多路由合成** | 分类器将问题分类到 11 个路由中的 1~3 个，**并行调用后综合**（ADR-002/025） |
-| **告警流水线** | Webhook（CloudWatch SNS/Alertmanager/Grafana）→ 关联分析 → AI 自动诊断 → Slack（ADR-009） |
-| **事件预扩容** | 分析历史指标 → Bedrock 生成多阶段预热计划·脚本（ADR-010，审核后执行） |
+| **多路由合成** | 分类器将问题分类到 11 个路由中的 1~3 个，**并行调用后综合** |
+| **告警流水线** | Webhook（CloudWatch SNS/Alertmanager/Grafana）→ 关联分析 → AI 自动诊断 → Slack |
+| **事件预扩容** | 分析历史指标 → Bedrock 生成多阶段预热计划·脚本（审核后执行） |
 | **CIS 合规** | 使用 Powerpipe 进行 CIS v1.5~v4.0、**431 个控制项**基准测试 |
-| **安全设计** | 外部调用 SSRF allowlist、管理员门控（adminEmails）、变更操作门控框架（ADR-029） |
-| **设计透明性** | **32 个 ADR** — 所有重大决策以韩语/英语文档化 |
+| **安全设计** | 外部调用 SSRF allowlist、管理员门控（adminEmails）、变更操作门控框架 |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore 仪表板 — Runtime/Gateway/工具状态" />
 

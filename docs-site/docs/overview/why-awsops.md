@@ -38,7 +38,7 @@ import Screenshot from '@site/src/components/Screenshot';
 - 데이터·AI·인증·엣지가 전부 AWS 안에서 끝나므로 **데이터 거버넌스·컴플라이언스가 단순**합니다.
 
 :::tip 세션 포인트
-"이 대시보드 자체가 AWS Well-Architected하게 만들어졌다" — 오픈소스라 그 구현을 직접 검증할 수 있고, 32개의 ADR(Architecture Decision Record)로 모든 설계 결정이 문서화돼 있습니다.
+"이 대시보드 자체가 AWS Well-Architected하게 만들어졌다" — 오픈소스라 그 구현을 직접 검증할 수 있습니다.
 :::
 
 ---
@@ -49,7 +49,7 @@ AWSops의 데이터 엔진은 [Steampipe](https://steampipe.io/)(내장 PostgreS
 
 - **380+ AWS 테이블 + 60+ Kubernetes 테이블**을 SQL로 즉시 조회 — AWS API를 SQL처럼 다룹니다.
 - 결과는 **node-cache로 5분 캐싱**, 대시보드 핵심 23개 쿼리는 **캐시 워머가 4분 주기로 미리 데워** 서브초 응답을 보장합니다.
-- 모든 쿼리는 `src/lib/steampipe.ts`의 **pg Pool**(max 10, 8 sequential batch)을 통해서만 실행 — CLI(`steampipe query`)는 660배 느려 **코드 레벨에서 금지**(ADR-001).
+- 모든 쿼리는 `src/lib/steampipe.ts`의 **pg Pool**(max 10, 8 sequential batch)을 통해서만 실행 — CLI(`steampipe query`)는 660배 느려 **코드 레벨에서 금지**.
 
 → 결과: 콘솔을 여러 번 새로고침하는 대신, **한 화면에서 전 리소스가 즉시** 뜹니다.
 
@@ -83,7 +83,7 @@ EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront
 
 - **단일 EC2 t4g.2xlarge (ARM64 Graviton)** — Steampipe 임베디드 PostgreSQL을 같이 돌려 **별도 관리형 DB 비용이 없습니다**.
 - **AgentCore는 서버리스** — AI 런타임/게이트웨이는 호출 시에만 과금.
-- Bedrock 모델은 작업에 맞게 선택 — 분류·라우팅은 **Sonnet 4.6**, 심층 진단은 **Opus 4.8**, 빠르고 저렴한 작업은 **Haiku 4.5**, 프롬프트 캐싱 적용(ADR-016).
+- Bedrock 모델은 작업에 맞게 선택 — 분류·라우팅은 **Sonnet 4.6**, 심층 진단은 **Opus 4.8**, 빠르고 저렴한 작업은 **Haiku 4.5**, 프롬프트 캐싱 적용.
 
 그리고 도구가 **고객 인프라의 비용도 절감**합니다 — Cost Explorer 분석, 유휴 리소스 탐지, FinOps 권고가 진단 리포트에 포함됩니다.
 
@@ -96,7 +96,7 @@ EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront
 <Screenshot src="/screenshots/overview/accounts.png" alt="멀티 어카운트 관리" />
 
 - Steampipe **Aggregator 패턴** — `aws` = 전 계정 통합, `aws_<id>` = 개별 계정. 상단에서 계정을 전환하거나 **전체를 합쳐서** 봅니다.
-- 계정 추가/삭제는 `data/config.json`의 `accounts[]` 배열만 수정 — **코드 변경 불필요**(ADR-008). 교차 계정은 assume-role.
+- 계정 추가/삭제는 `data/config.json`의 `accounts[]` 배열만 수정 — **코드 변경 불필요**. 교차 계정은 assume-role.
 
 ---
 
@@ -114,7 +114,7 @@ EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront
 
 <Screenshot src="/screenshots/monitoring/datasources.png" alt="외부 데이터소스 통합" />
 
-AWS 데이터에 더해 기존 관측성 스택을 **데이터소스로 연동**합니다 (SSRF 방지 allowlist, ADR-011):
+AWS 데이터에 더해 기존 관측성 스택을 **데이터소스로 연동**합니다 (SSRF 방지 allowlist):
 
 | 종류 | 플랫폼 |
 |------|--------|
@@ -135,12 +135,11 @@ AWS 데이터에 더해 기존 관측성 스택을 **데이터소스로 연동**
 | 강점 | 내용 |
 |------|------|
 | **AI 도구 아키텍처** | 8개 역할 기반 AgentCore Gateway · **125 MCP 도구** · 19 Lambda |
-| **멀티 라우트 합성** | 분류기가 질문을 11개 라우트 중 1~3개로 분류해 **병렬 호출 후 종합**(ADR-002/025) |
-| **알림 파이프라인** | 웹훅(CloudWatch SNS/Alertmanager/Grafana) → 상관 분석 → AI 자동 진단 → Slack(ADR-009) |
-| **이벤트 사전 스케일링** | 과거 메트릭 분석 → Bedrock이 다단계 워밍업 플랜·스크립트 생성(ADR-010, 검토-후-실행) |
+| **멀티 라우트 합성** | 분류기가 질문을 11개 라우트 중 1~3개로 분류해 **병렬 호출 후 종합** |
+| **알림 파이프라인** | 웹훅(CloudWatch SNS/Alertmanager/Grafana) → 상관 분석 → AI 자동 진단 → Slack |
+| **이벤트 사전 스케일링** | 과거 메트릭 분석 → Bedrock이 다단계 워밍업 플랜·스크립트 생성(검토-후-실행) |
 | **CIS 컴플라이언스** | Powerpipe로 CIS v1.5~v4.0, **431개 컨트롤** 벤치마크 |
-| **보안 설계** | 외부 호출 SSRF allowlist, 관리자 게이트(adminEmails), 변경 작업 게이트 프레임워크(ADR-029) |
-| **설계 투명성** | **32개 ADR** — 모든 주요 결정이 한국어/영어로 문서화 |
+| **보안 설계** | 외부 호출 SSRF allowlist, 관리자 게이트(adminEmails), 변경 작업 게이트 프레임워크 |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore 대시보드 — Runtime/Gateway/도구 상태" />
 
