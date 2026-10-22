@@ -419,7 +419,7 @@ AI 어시스턴트, 비용/인벤토리/토폴로지 시나리오, 그리고 종
 {timing: 2min}
 AI 어시스턴트의 동작 흐름을 보겠습니다. 자연어 질문 하나가 답변으로 이어지는 과정입니다.
 
-사용자가 "EKS 비용 개선점 찾아줘"라고 질문합니다. 첫 단계는 ADR-003 하이브리드 라우팅입니다. regex fast-path가 먼저 매칭을 시도하고, 애매하면 Haiku 분류기가 판단합니다. 프롬프트 캐싱으로 약 59% 히트율을 내고, 이 질문은 cost 섹션 게이트웨이로 라우팅됩니다.
+사용자가 "EKS 비용 개선점 찾아줘"라고 질문합니다. 첫 단계는 하이브리드 라우팅입니다. regex fast-path가 먼저 매칭을 시도하고, 애매하면 Haiku 분류기가 판단합니다. 프롬프트 캐싱으로 약 59% 히트율을 내고, 이 질문은 cost 섹션 게이트웨이로 라우팅됩니다.
 
 {cue: pause}
 
@@ -491,7 +491,7 @@ AI 어시스턴트의 동작 흐름을 보겠습니다. 자연어 질문 하나�
 ### Read-Only 원칙
 
 > 권장사항만 제시 · **자동 적용 없음**
-> (mutating 설치 버튼은 **ADR-005**로 동결 — do-not-enable)
+> (mutating 설치 버튼은 동결 — do-not-enable)
 
 :::
 
@@ -528,7 +528,7 @@ EKS 워크로드는 read-only 메트릭으로 request 대비 실사용량을 비
 {timing: 1min}
 {cue: emphasis}
 
-여기서 중요한 점은, AWSops는 권장사항만 제시한다는 것입니다. 어떤 변경도 자동으로 적용하지 않습니다. 과거 설계에 있던 OpenCost mutating 설치 버튼은 **ADR-005**(AWS 리소스 변경·자율 조치 = FROZEN)로 동결됐습니다. 진단과 권고까지가 AWSops의 역할이고, 적용 결정과 실행은 운영자의 몫입니다.
+여기서 중요한 점은, AWSops는 권장사항만 제시한다는 것입니다. 어떤 변경도 자동으로 적용하지 않습니다. 과거 설계에 있던 OpenCost mutating 설치 버튼은 AWS 리소스 변경·자율 조치 동결(FROZEN) 원칙에 따라 동결됐습니다. 진단과 권고까지가 AWSops의 역할이고, 적용 결정과 실행은 운영자의 몫입니다.
 
 {cue: transition}
 다음은 인벤토리와 유휴 리소스 점검입니다.
@@ -785,7 +785,7 @@ AI 종합진단 리포트는 AWSops의 플래그십 기능입니다. 전부 read
 
 {cue: pause}
 
-실행은 비동기 워커 티어에서 일어납니다. 웹은 thin-BFF라 무거운 작업을 직접 돌리지 않고 워커 큐에 넣는데, 진단 잡은 범용 `POST /api/jobs`가 아니라 소유권을 검사하는 전용 라우트 `/api/diagnosis`로 제출합니다(ADR-009, IDOR 방지 — 범용 라우트는 `noop` 계열만 허용). SQS, Step Functions, Lambda 또는 Fargate 워커가 받아서 섹션을 분석합니다. 진행 상황은 SSE로 실시간 표시됩니다. "3/16 Security Posture 분석 중" 같은 상태가 클라이언트에 흐릅니다.
+실행은 비동기 워커 티어에서 일어납니다. 웹은 thin-BFF라 무거운 작업을 직접 돌리지 않고 워커 큐에 넣는데, 진단 잡은 범용 `POST /api/jobs`가 아니라 소유권을 검사하는 전용 라우트 `/api/diagnosis`로 제출합니다(IDOR 방지 — 범용 라우트는 `noop` 계열만 허용). SQS, Step Functions, Lambda 또는 Fargate 워커가 받아서 섹션을 분석합니다. 진행 상황은 SSE로 실시간 표시됩니다. "3/16 Security Posture 분석 중" 같은 상태가 클라이언트에 흐릅니다.
 
 {cue: transition}
 완성된 리포트 화면을 보겠습니다.
@@ -896,7 +896,7 @@ DOCX는 python-docx로, PDF는 chromium과 playwright로 렌더링합니다. 한
 
 ### 알림 다이제스트 (병합·배포 완료)
 
-- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨; ADR-13이 승인한 건 스케줄 요약뿐이라 수동 실행분까지 묶는 현재 범위는 ADR 정리 대상)
+- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨)
 - 완료 즉시 개별 발송(per-report) 방식 폐기 — 폭주 방지(하루 44건 → 1건)
 - **PII 스크러빙** — Bedrock 호출 전 ARN·계정ID·이메일·IP·액세스키를 결정론적으로 마스킹 (현재 라이브)
 
@@ -1106,7 +1106,7 @@ EKS 화면도 read-only지만 이제 완전한 메뉴 패밀리입니다. fleet 
 
 # Feature Tour: 멀티 계정 Security & Compliance
 
-**ADR-011** — STS AssumeRole read-only fan-out (ExternalId: 1st-party 옵션 · 3rd-party 필수) · 계정별 보안/컴플라이언스 스코핑 · CVE Severity Distribution donut(ECR 스캔 집계).
+**멀티 계정** — STS AssumeRole read-only fan-out (ExternalId: 1st-party 옵션 · 3rd-party 필수) · 계정별 보안/컴플라이언스 스코핑 · CVE Severity Distribution donut(ECR 스캔 집계).
 
 :::html
 <div class="columns">
@@ -1124,11 +1124,11 @@ EKS 화면도 read-only지만 이제 완전한 메뉴 패밀리입니다. fleet 
 :::notes
 {timing: 2min}
 [요약]
-• ADR-011 — 멀티 계정은 STS AssumeRole read-only fan-out, ExternalId는 1st-party 옵션·3rd-party 필수
+• 멀티 계정은 STS AssumeRole read-only fan-out, ExternalId는 1st-party 옵션·3rd-party 필수
 • Security 페이지에 CVE Severity Distribution donut(ECR 스캔 집계)이 추가됨
 • Compliance 벤치마크도 계정 단위로 스코핑되어 실행/이력 관리
 
-멀티 계정 지원은 ADR-011을 기준으로 합니다. 각 대상 계정에 STS AssumeRole로 read-only fan-out하고, ExternalId는 host ARN이 고정되는 1st-party 계정은 옵션, 신뢰 관계가 약한 3rd-party 계정은 필수입니다.
+멀티 계정은 다음과 같이 지원합니다. 각 대상 계정에 STS AssumeRole로 read-only fan-out하고, ExternalId는 host ARN이 고정되는 1st-party 계정은 옵션, 신뢰 관계가 약한 3rd-party 계정은 필수입니다.
 
 {cue: pause}
 
@@ -1233,9 +1233,9 @@ EKS 화면도 read-only지만 이제 완전한 메뉴 패밀리입니다. fleet 
 
 ::: right
 
-### Read-Only 자세 (ADR-005/007)
+### Read-Only 자세
 
-- **AWS-리소스 변경 + 자율 = 동결** (ADR-005, do-not-enable)
+- **AWS-리소스 변경 + 자율 = 동결** (do-not-enable)
 - 외부 관측성 **READ** 허용
 - 외부 기록 / 티켓 / 메시지 **WRITE** 는 거버넌스 하 허용
   - SSRF · Secrets · DLP · human-gate · flag-OFF
@@ -1262,7 +1262,7 @@ AWSops를 정리하면, read-only AWS 운영 대시보드에 AI 진단을 결합
 
 {cue: emphasis}
 
-가장 중요한 원칙은 read-only 자세입니다. ADR-007(keystone) 기준으로 read-only는 AWS **리소스**에 한정되고, AWS 리소스 변경과 자율 실행은 ADR-005로 동결(새 명시적 결정 전까지, 영구 아님)입니다. 다만 외부 관측성 데이터를 읽고, 외부 기록이나 티켓, 메시지를 쓰는 것은 SSRF 방어, Secrets 관리, DLP, human-gate, flag-OFF 같은 거버넌스 아래에서 허용됩니다. 변경되는 것은 데이터일 뿐, AWS 리소스가 아닙니다.
+가장 중요한 원칙은 read-only 자세입니다. read-only는 AWS **리소스**에 한정되고, AWS 리소스 변경과 자율 실행은 동결(새 명시적 결정 전까지, 영구 아님)입니다. 다만 외부 관측성 데이터를 읽고, 외부 기록이나 티켓, 메시지를 쓰는 것은 SSRF 방어, Secrets 관리, DLP, human-gate, flag-OFF 같은 거버넌스 아래에서 허용됩니다. 변경되는 것은 데이터일 뿐, AWS 리소스가 아닙니다.
 
 시작은 간단합니다. configure하고 Terraform을 apply한 뒤 deploy하고, Cognito 사용자를 추가해 `/login`으로 들어오면 됩니다.
 

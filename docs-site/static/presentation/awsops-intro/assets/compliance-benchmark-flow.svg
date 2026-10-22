@@ -54,7 +54,7 @@
   <!-- read-only badge -->
   <rect x="900" y="16" width="280" height="34" rx="17" fill="rgba(0,184,148,.15)" stroke="#00b894" stroke-width="1.5"/>
   <use href="#icon-lock" x="912" y="21" width="22" height="22" color="#00b894"/>
-  <text x="940" y="38" fill="#00b894" font-size="12.5" font-weight="700">READ-ONLY — no remediation (ADR-005/007)</text>
+  <text x="940" y="38" fill="#00b894" font-size="12.5" font-weight="700">READ-ONLY — no remediation</text>
 
   <!-- ================= 1. Triggers ================= -->
   <rect x="20" y="200" width="160" height="70" rx="10" fill="#1a1d2e" stroke="#a29bfe" stroke-width="1.5"/>
