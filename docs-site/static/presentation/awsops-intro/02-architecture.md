@@ -506,7 +506,7 @@ Well-Architected Review를 수동으로 며칠씩 만들어 보신 분 계시죠
 ### 잡 종류 (2026-06-18 이후 증가)
 
 - **schedule_dispatcher** — 시간별 EventBridge → `report_schedules` 스캔 → 진단 잡 enqueue (`diagnosis_schedule_enabled`, LIVE)
-- **diagnosis_digest** (workers.tf) — 리포트별 이메일 대신 배치 SNS 다이제스트 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 배포됨)
+- **diagnosis_digest** (workers.tf) — 리포트별 이메일 대신 배치 SNS 다이제스트 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 배포됨; 승인된 범위는 스케줄 진단 요약뿐이지만 현재 구현은 수동 실행분까지 함께 묶음 — 후속 정리 필요)
 - **compliance** (Powerpipe) — CIS 벤치마크 Fargate 잡 (`steampipe_enabled`)
 
 :::
@@ -781,7 +781,7 @@ AgentCore와 워커는 각각의 flag로 apply한 뒤 `make agentcore`, `make wo
 :::notes
 {timing: 3min}
 이 아키텍처의 태세를 정확히 정의하겠습니다.
-AWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니다. AWS 리소스 변경과 자율 실행은 동결입니다. 영구 금지는 아니지만, 해제하려면 별도의 명시적인 제품 결정이 필요합니다. do-not-enable, 그냥 조용히 다시 켜지 않는다는 뜻입니다.
+AWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니다. AWS 리소스 변경과 자율 실행은 동결입니다. 영구 금지는 아니지만, 해제하려면 새 결정 문서와 멀티 AI 패널 검토, 날짜가 기록된 소유자 승인이 모두 필요합니다. do-not-enable, 그냥 조용히 다시 켜지 않는다는 뜻입니다.
 {cue: pause}
 딱 하나 예외가 있습니다. 호스트 자기 web 서비스를 Aurora secret 회전 이벤트에 맞춰 force-new-deployment로 재시작하는 것, 그거 하나만 허용됩니다. IAM은 서비스 1개 ARN으로 스코프되고, secret id가 안 맞으면 fail-closed로 아예 안 돕니다. 기본값은 off입니다. 나머지는 전부 그대로 동결입니다.
 다만 외부 데이터에 대해서는 다릅니다. 외부 관측성 데이터 읽기, 그리고 외부 기록·티켓·메시지 write는 거버넌스 하에 허용됩니다. SSRF 방어, Secrets 관리, DLP와 redaction, human-gate를 모두 거칩니다. 즉 AWS 리소스는 안 건드리지만, 외부 시스템에 리포트를 보내거나 티켓을 끊는 건 통제된 형태로 가능합니다.
