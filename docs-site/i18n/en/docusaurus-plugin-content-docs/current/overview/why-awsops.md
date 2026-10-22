@@ -38,7 +38,7 @@ What used to require jumping across dozens of consoles is consolidated into **on
 - Data, AI, auth, and edge all stay inside AWS, so **data governance and compliance stay simple**.
 
 :::tip Session point
-"The dashboard itself is built the AWS Well-Architected way" — and because it is open source, that implementation is verifiable, with 32 ADRs (Architecture Decision Records) documenting every design decision.
+"The dashboard itself is built the AWS Well-Architected way" — and because it is open source, that implementation is verifiable.
 :::
 
 ---
@@ -49,7 +49,7 @@ The data engine is [Steampipe](https://steampipe.io/) (embedded PostgreSQL, port
 
 - **380+ AWS tables + 60+ Kubernetes tables** queryable instantly via SQL — AWS APIs treated as SQL.
 - Results are **cached for 5 minutes** (node-cache); the dashboard's 23 core queries are **pre-warmed every 4 minutes** by a cache warmer for sub-second responses.
-- All queries run only through the **pg Pool** in `src/lib/steampipe.ts` (max 10, 8 sequential batch) — the CLI (`steampipe query`) is 660× slower and is **banned at the code level** (ADR-001).
+- All queries run only through the **pg Pool** in `src/lib/steampipe.ts` (max 10, 8 sequential batch) — the CLI (`steampipe query`) is 660× slower and is **banned at the code level** .
 
 → Result: instead of refreshing multiple consoles, **every resource appears instantly** in one view.
 
@@ -83,7 +83,7 @@ The operations tool itself is designed to be inexpensive:
 
 - **A single EC2 t4g.2xlarge (ARM64 Graviton)** runs the Steampipe embedded PostgreSQL alongside the app — **no separate managed-DB cost**.
 - **AgentCore is serverless** — the AI runtime/gateways bill only on invocation.
-- Bedrock models are matched to the task — **Sonnet 4.6** for classification/routing, **Opus 4.8** for deep diagnosis, **Haiku 4.5** for fast/cheap work, with prompt caching (ADR-016).
+- Bedrock models are matched to the task — **Sonnet 4.6** for classification/routing, **Opus 4.8** for deep diagnosis, **Haiku 4.5** for fast/cheap work, with prompt caching .
 
 And the tool also **reduces the customer's infrastructure cost** — Cost Explorer analysis, idle-resource detection, and FinOps recommendations are included in the diagnosis report.
 
@@ -96,7 +96,7 @@ And the tool also **reduces the customer's infrastructure cost** — Cost Explor
 <Screenshot src="/screenshots/overview/accounts.png" alt="Multi-account management" />
 
 - Steampipe **aggregator pattern** — `aws` = all accounts merged, `aws_<id>` = a single account. Switch accounts from the top bar or view **everything merged**.
-- Adding/removing accounts means editing only the `accounts[]` array in `data/config.json` — **no code changes** (ADR-008). Cross-account via assume-role.
+- Adding/removing accounts means editing only the `accounts[]` array in `data/config.json` — **no code changes** . Cross-account via assume-role.
 
 ---
 
@@ -114,7 +114,7 @@ And the tool also **reduces the customer's infrastructure cost** — Cost Explor
 
 <Screenshot src="/screenshots/monitoring/datasources.png" alt="External datasource integration" />
 
-On top of AWS data, AWSops connects your existing observability stack as **datasources** (SSRF-protected allowlist, ADR-011):
+On top of AWS data, AWSops connects your existing observability stack as **datasources** (SSRF-protected allowlist):
 
 | Type | Platform |
 |------|----------|
@@ -135,12 +135,11 @@ No need to memorize a different query language per tool — **one line of natura
 | Strength | Detail |
 |----------|--------|
 | **AI tool architecture** | 8 role-based AgentCore gateways · **125 MCP tools** · 19 Lambda |
-| **Multi-route synthesis** | the classifier routes a question to 1–3 of 11 routes and **calls them in parallel, then synthesizes** (ADR-002/025) |
-| **Alert pipeline** | webhook (CloudWatch SNS/Alertmanager/Grafana) → correlation → automatic AI diagnosis → Slack (ADR-009) |
-| **Event pre-scaling** | historical-metric analysis → Bedrock generates multi-phase warm-up plans/scripts (ADR-010, review-then-run) |
+| **Multi-route synthesis** | the classifier routes a question to 1–3 of 11 routes and **calls them in parallel, then synthesizes**  |
+| **Alert pipeline** | webhook (CloudWatch SNS/Alertmanager/Grafana) → correlation → automatic AI diagnosis → Slack  |
+| **Event pre-scaling** | historical-metric analysis → Bedrock generates multi-phase warm-up plans/scripts (review-then-run) |
 | **CIS compliance** | Powerpipe benchmarks CIS v1.5–v4.0, **431 controls** |
-| **Security design** | SSRF allowlist on outbound calls, admin gate (adminEmails), mutating-action gate framework (ADR-029) |
-| **Design transparency** | **32 ADRs** — every major decision documented in Korean/English |
+| **Security design** | SSRF allowlist on outbound calls, admin gate (adminEmails), mutating-action gate framework  |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore dashboard — Runtime/Gateway/tool status" />
 

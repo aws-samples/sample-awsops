@@ -128,7 +128,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **PDF** | `/ai-diagnosis/report` 页面 + 浏览器 Print | 白色背景、A4 分页、无额外 PDF 库（保护 bundle size） |
 
 :::tip 为什么不添加 PDF 库
-ADR-019：额外的 PDF 库（Puppeteer 等）会显著增大 Next.js 打包体积和 EC2 内存占用。取而代之的是构建打印专用页面并利用浏览器的 Print-to-PDF — 产出质量相当而依赖为 0。
+额外的 PDF 库（Puppeteer 等）会显著增大 Next.js 打包体积和 EC2 内存占用。取而代之的是构建打印专用页面并利用浏览器的 Print-to-PDF — 产出质量相当而依赖为 0。
 :::
 
 ## 与告警管道的联动
@@ -179,8 +179,5 @@ curl -X POST /awsops/api/report \
 
 ## 参考
 
-- ADR-019: 诊断报告格式矩阵
-- ADR-014: 报告代理下载 URL
-- ADR-016: Bedrock 模型选择策略（固定 Opus 4.8）
 - `src/lib/report-prompts.ts` — 15 分区提示词定义（精确的输出结构）
 - `src/lib/report-scheduler.ts` — 调度计算逻辑（以 KST 为准）

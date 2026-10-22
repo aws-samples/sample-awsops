@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-선택한 계정·리전 범위의 EKS 클러스터와 Kubernetes 리소스를 조회합니다. AWSops의 클라우드·클러스터 조회는 읽기 전용이며, 등록은 앱 설정만 저장합니다(ADR-005).
+선택한 계정·리전 범위의 EKS 클러스터와 Kubernetes 리소스를 조회합니다. AWSops의 클라우드·클러스터 조회는 읽기 전용이며, 등록은 앱 설정만 저장합니다.
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 

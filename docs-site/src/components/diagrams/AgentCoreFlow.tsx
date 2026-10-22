@@ -140,7 +140,7 @@ export default function AgentCoreFlow(): React.ReactElement {
     const routerBoxX = centerX - routerBoxW / 2;
     drawBox(routerBoxX, routerBoxY, routerBoxW, routerBoxH, THEME.purple);
     drawText('AI Router', centerX, routerBoxY + 20 * scale, THEME.text, 14);
-    drawText(`${ROUTES.length}-Section Routing (Haiku 4.5, ADR-038)`, centerX, routerBoxY + 42 * scale, THEME.muted, 10);
+    drawText(`${ROUTES.length}-Section Routing (Haiku 4.5)`, centerX, routerBoxY + 42 * scale, THEME.muted, 10);
 
     // Arrows: Router -> Routes (fan out)
     for (let i = 0; i < ROUTES.length; i++) {

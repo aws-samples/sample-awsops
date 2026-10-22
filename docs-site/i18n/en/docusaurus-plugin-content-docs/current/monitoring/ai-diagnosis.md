@@ -128,7 +128,7 @@ Recipients are stored alongside the schedule in `data/report-schedule.json` (`no
 | **PDF** | `/ai-diagnosis/report` page + browser Print | White background, A4 page breaks, no extra PDF library (bundle-size hygiene) |
 
 :::tip Why no dedicated PDF library
-ADR-019: a separate PDF library (Puppeteer, etc.) significantly bloats the Next.js bundle and EC2 memory. Instead we render a print-friendly page and use the browser's Print-to-PDF — equivalent output quality, zero new dependencies.
+a separate PDF library (Puppeteer, etc.) significantly bloats the Next.js bundle and EC2 memory. Instead we render a print-friendly page and use the browser's Print-to-PDF — equivalent output quality, zero new dependencies.
 :::
 
 ## Integration With the Alert Pipeline
@@ -179,8 +179,5 @@ curl -X POST /awsops/api/report \
 
 ## References
 
-- ADR-019: report format matrix
-- ADR-014: report proxy download URLs
-- ADR-016: Bedrock model selection (Opus 4.8 pinned)
 - `src/lib/report-prompts.ts` — 15-section prompt definitions (exact output structure)
 - `src/lib/report-scheduler.ts` — schedule computation (KST)

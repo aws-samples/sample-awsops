@@ -1,14 +1,14 @@
 ---
 sidebar_position: 10
 title: イベント事前スケーリング
-description: ADR-010 Phase 1+2 — トラフィックイベント登録、過去メトリクス分析、AI ベースのウォームアップスクリプト生成
+description: トラフィックイベント登録、過去メトリクス分析、AI ベースのウォームアップスクリプト生成
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # イベント事前スケーリング (Event Pre-Scaling)
 
-`/event-scaling` ページは、今後のトラフィックイベント（ブラックフライデー、チケット販売開始、ライブ配信など）に備えた **AI ベースの事前ウォームアップ計画**を生成します。ADR-010 Phase 1+2 の実装であり、**計画生成 + スクリプトのエクスポートまでのみ**を実行し、**実行はオペレーターが手動レビュー後に直接実行**します。
+`/event-scaling` ページは、今後のトラフィックイベント（ブラックフライデー、チケット販売開始、ライブ配信など）に備えた **AI ベースの事前ウォームアップ計画**を生成します。この機能は**計画生成 + スクリプトのエクスポートまでのみ**を実行し、**実行はオペレーターが手動レビュー後に直接実行**します。
 
 <Screenshot src="/screenshots/overview/event-scaling.png" alt="イベント事前スケーリングページ" />
 
@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **対応リソース** | KEDA、HPA、Aurora replica/ACU、MSK broker/partition、ASG、EC2、EBS IOPS、ALB |
 
 :::caution Phase 2 の制限
-生成されたスクリプトは**人によるレビュー用**です。AWSops はインフラ変更（KEDA デプロイ、AWS API 呼び出し）を直接実行しません。自動実行 + IAM 拡張 + KEDA 統合は ADR-029 Phase 3 ゲート（Proposed）で別途扱います。
+生成されたスクリプトは**人によるレビュー用**です。AWSops はインフラ変更（KEDA デプロイ、AWS API 呼び出し）を直接実行しません。
 :::
 
 ## ワークフロー
@@ -150,8 +150,6 @@ curl -X DELETE '/awsops/api/event-scaling?id=<eventId>'
 
 ## 参考
 
-- **ADR-010 Phase 1+2** — イベント登録 + AI プラン生成（現在の実装）
-- **ADR-029** — Phase 3 mutating action ゲート (Proposed)
 - `src/lib/event-scaling.ts` — データモデル + JSON 永続化
 - `src/lib/event-scaling-prompts.ts` — Bedrock プロンプト + `PLAN_JSON` マーカーのパース
 - `src/lib/event-scaling-scripts.ts` — リソース別の安全な bash スクリプト生成
