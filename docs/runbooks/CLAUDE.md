@@ -15,20 +15,13 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [custom-mcp-governance.md](custom-mcp-governance.md) | Administrator MCP read controls, per-row current Secret binding, account selection, attestation and pending policy acceptance |
 | [review-codec-sandbox.md](review-codec-sandbox.md) | Standalone Docker codec confinement, bounded byte transport and owned cleanup |
 | [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
-| [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
-| [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
-| [add-new-page.md](add-new-page.md) | Adding a new dashboard page |
-| [multi-account-setup.md](multi-account-setup.md) | **⚠️ v1 (legacy)** — onboard a new AWS account (Steampipe Aggregator); v2 uses `onboard-target-account.md` |
 | [onboard-target-account.md](onboard-target-account.md) | v2 target-account onboarding (`AWSopsReadOnlyRole` + ExternalId) |
 | [istio-agent-eks-access.md](istio-agent-eks-access.md) | Granting `istio-read` MCP access to an EKS cluster (agent Lambda role Access Entry) |
 | [network-path-eks-access.md](network-path-eks-access.md) | Granting Network Path Check live-identity verification access to an EKS cluster's Nodes/Pods (worker/member-role Access Entry with minimal Nodes/Pods read RBAC) |
 | [k8sgpt-operator-install.md](k8sgpt-operator-install.md) | Out-of-band K8sGPT operator install (manual operator work, ADR-005 precedent) |
-| [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
-| [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
 | [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |
-| [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
@@ -261,7 +254,7 @@ The release controller synchronously collects every code-checked catalog type th
 
 ## Adding a Runbook
 1. Add it to this index.
-2. Use a v2 symptom-organized runbook as a template (`cognito-auth-issues.md`, `alert-pipeline-troubleshoot.md`).
+2. Use a v2 symptom-organized runbook as a template (`legacy-web-image-recovery.md`, `web-release.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
 
