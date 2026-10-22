@@ -636,7 +636,7 @@
 <ul><li><code>report_schedules</code> 테이블 — 주간 / 격주 / 월간 (<code>next_run_at</code> 기준)</li><li>hourly <strong><code>schedule_dispatcher</code></strong> — 스캔 후 <code>report</code> job enqueue</li><li>v1 <code>report-scheduler.ts</code> 패턴 승계</li></ul>
 </div><div class="col">
 <h3>알림 다이제스트 (병합·배포 완료)</h3>
-<ul><li><strong><code>diagnosis_digest.py</code></strong> — <code>notified_at IS NULL</code> 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (<code>workers_enabled && diagnosis_notify_enabled</code> 게이트로 이미 main 병합·라이브 배포됨)</li><li>완료 즉시 개별 발송(per-report) 방식 폐기 — 폭주 방지(하루 44건 → 1건)</li><li><strong>PII 스크러빙</strong> — Bedrock 호출 전 ARN·계정ID·이메일·IP·액세스키를 결정론적으로 마스킹 (현재 라이브)</li></ul>
+<ul><li><strong><code>diagnosis_digest.py</code></strong> — <code>notified_at IS NULL</code> 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (<code>workers_enabled && diagnosis_notify_enabled</code> 게이트로 이미 main 병합·라이브 배포됨; 승인된 범위는 스케줄 요약뿐이지만 현재 구현은 수동 실행분까지 묶음 — 후속 정리 대상)</li><li>완료 즉시 개별 발송(per-report) 방식 폐기 — 폭주 방지(하루 44건 → 1건)</li><li><strong>PII 스크러빙</strong> — Bedrock 호출 전 ARN·계정ID·이메일·IP·액세스키를 결정론적으로 마스킹 (현재 라이브)</li></ul>
 </div>
 </div>
   </div>

@@ -896,7 +896,7 @@ DOCX는 python-docx로, PDF는 chromium과 playwright로 렌더링합니다. 한
 
 ### 알림 다이제스트 (병합·배포 완료)
 
-- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨)
+- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨; 승인된 범위는 스케줄 요약뿐이지만 현재 구현은 수동 실행분까지 묶음 — 후속 정리 대상)
 - 완료 즉시 개별 발송(per-report) 방식 폐기 — 폭주 방지(하루 44건 → 1건)
 - **PII 스크러빙** — Bedrock 호출 전 ARN·계정ID·이메일·IP·액세스키를 결정론적으로 마스킹 (현재 라이브)
 
