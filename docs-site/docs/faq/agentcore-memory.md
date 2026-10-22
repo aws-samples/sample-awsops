@@ -27,7 +27,7 @@ flowchart LR
 | **라이브 조회** | AgentCore MCP Lambda 도구(약 160개, 읽기 전용)가 boto3로 AWS API를 직접 호출 |
 | **Steampipe의 역할** | 라이브 쿼리 엔진이 **아님**. `steampipe_enabled` 플래그로만 켜지는 **인벤토리 sync**(기본 OFF)일 뿐 — 로컬 9193 서비스/pg Pool 없음 |
 | **게이트** | AgentCore 전체는 `agentcore_enabled` Terraform 플래그로 게이트(기본 OFF → `plan` = No changes, $0) |
-| **읽기 전용** | 모든 도구는 read-only (ADR-041 / 2026-06-11 번복: AWS-리소스 변경+자율은 영구 동결) |
+| **읽기 전용** | 모든 도구는 read-only이며, AWS 리소스 변경과 자율 실행은 영구 동결 |
 
 :::info Steampipe는 더 이상 라이브 엔진이 아닙니다
 라이브 AWS 상태는 항상 AgentCore 도구가 답합니다. Steampipe는 켜질 경우 Fargate에서 워밍업되어 인벤토리를 Aurora로 sync하는 보조 경로일 뿐이며, 기본값은 비활성입니다.
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW 라우트 조회"]
 ```
 
-### 섹션 게이트웨이는 9개입니다 (ADR-004 개정)
+### 섹션 게이트웨이는 9개입니다
 
 `network · container · data · security · cost · monitoring · iac · ops · external-obs` — 총 **9개**입니다(9 프로비저닝 / 9 라우트, external-obs 승격 2026-06-24).
 
 | 항목 | 내용 |
 |------|------|
-| **게이트웨이 수** | ADR-004에 따라 **9개(ADR-004 개정)** |
+| **게이트웨이 수** | **9개** |
 | **도구 수** | 약 **160개**, 전부 읽기 전용 — 함대가 확장되면 변동(고정 수치 아님) |
-| **외부 관측성** | Prometheus·ClickHouse 커넥터가 **external-obs 게이트웨이**(아홉 번째)로 라우팅됨(ADR-004 개정) — 그 외 외부 연동은 별도의 **Integrations 축**(ADR-007/017) |
+| **외부 관측성** | Prometheus·ClickHouse 커넥터가 **external-obs 게이트웨이**(아홉 번째)로 라우팅됨 — 그 외 외부 연동은 별도의 **Integrations 축** |
 | **프로토콜** | MCP(Model Context Protocol) 표준 |
 
 - Agent가 `list_tools`로 사용 가능한 도구 목록을 조회
@@ -397,6 +397,6 @@ flowchart LR
 
 AI 어시스턴트는 `/assistant`(전체 페이지)와 어디서나 열 수 있는 리사이즈 드로어에서 사용하며, 두 곳이 동일한 Aurora 대화 이력을 공유합니다.
 
-:::tip 라우팅은 하이브리드(ADR-038)
+:::tip 라우팅은 하이브리드
 질문은 정규식 fast-path + Haiku 4.5 분류기 + 프롬프트 캐싱으로 적절한 섹션 에이전트에 라우팅됩니다(LIVE, 캐시 적중 ~59%). 레거시의 고정 다중-라우트 Sonnet 레지스트리가 아닙니다.
 :::
