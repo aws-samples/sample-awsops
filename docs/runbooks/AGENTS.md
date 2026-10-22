@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3f5c25174d46 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e90ce179eb10 · generated-at: 2026-10-21 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
 
@@ -14,9 +14,8 @@ Web image receipt/ECR proof precedes private migrations, including reuse; promot
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
-`docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
-(legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
-legacy runbook's steps as the current operational path).
+`docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
+removed; flag any change that reintroduces a v1 procedure.
 
 `pr-review-head-images.md` defines two comprehensive reviewer reports, complete diff
 admission (6,000 lines/128 KiB), bounded chair input and distinct incomplete-review
@@ -169,9 +168,8 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 
 ## Known false-positives
-- A runbook marked **v1 (legacy)** describing a procedure that no longer matches v2's
-  architecture is intentional — it's kept for reference during the v1 decommission window
-  (ADR-016), not stale content to delete outright.
+- `v1-decommission.md` and `v1-to-v2-aurora-backfill.md` are v2 procedures that act on v1
+  resources and data; they are not v1 remnants.
 
 ## Authenticated development verification
 - Every dev release requires the full gate: apply `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
