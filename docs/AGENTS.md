@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c9e89760b39 · generated-at: 2026-10-21 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 906777e9b1e2 · generated-at: 2026-10-22 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -38,6 +38,8 @@ Keep application/runtime implementation outside this documentation tree.
 
 - v1-era documentation has been removed (it remains in git history); flag a change that adds
   a v1 procedure back.
+- `docs-site/` must not cite ADRs (numbers, decision-record paths or decision history);
+  `tests/structure/test-docs-site-no-adr.sh` enforces it.
 - A moved, renamed or deleted document must update every inbound reference in the same
   change; `tests/structure/test-doc-paths.sh` checks published paths.
 

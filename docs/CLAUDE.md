@@ -30,6 +30,9 @@ published paths.
   maintaining an existing bilingual document; do not add parallel translations.
   Existing bodies are a migration backlog, not a bilingual-authoring requirement.
   Preserve explicit heading anchors or update inbound links when headings change.
+- `docs-site/` describes product behavior and never cites ADRs: no ADR numbers,
+  decision-record paths or decision history in pages, release notes or presentation
+  sources. `tests/structure/test-docs-site-no-adr.sh` enforces this.
 - Keep multilingual product guides under `docs-site/` and application translations.
   Root `README.md` stays bilingual (English/Korean). `CHANGELOG.md` follows the
   English/Korean parity rule in root `CLAUDE.md`.
