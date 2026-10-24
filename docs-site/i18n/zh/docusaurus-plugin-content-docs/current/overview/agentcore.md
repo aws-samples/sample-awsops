@@ -45,7 +45,7 @@ AgentCore 基于 Amazon Bedrock AgentCore Runtime 和 Gateway，负责 AI 助手
 | **引擎** | Strands Agent Framework |
 | **容器** | Docker arm64（存储于 ECR，`make agentcore`） |
 | **运行环境** | AgentCore 托管服务（Bedrock AgentCore Runtime） |
-| **模型** | Claude Haiku 4.5（ADR-038 路由分类器）/ **Runtime 本身仅**运行 Sonnet 4.6（`agent/agent.py` 硬编码）。Opus 4.8 不在 Runtime 中使用，仅在独立的 **AI 诊断（异步 worker）** Deep 层级中按需选用 |
+| **模型** | Claude Haiku 4.5（路由分类器）/ **Runtime 本身仅**运行 Sonnet 4.6（`agent/agent.py` 硬编码）。Opus 4.8 不在 Runtime 中使用，仅在独立的 **AI 诊断（异步 worker）** Deep 层级中按需选用 |
 
 ### 状态
 
@@ -116,14 +116,14 @@ v2 由 8 个 AWS 领域 Gateway（`awsops-v2-{network,container,data,security,co
 
 ### Monitoring Gateway (36 tools)
 
-除 CloudWatch、CloudTrail（AWS 原生）外，还提供 OpenSearch、Loki/Tempo/Mimir（可观测性栈）工具（Prometheus·ClickHouse 由 External-Obs 负责 — ADR-004）。
+除 CloudWatch、CloudTrail（AWS 原生）外，还提供 OpenSearch、Loki/Tempo/Mimir（可观测性栈）工具（Prometheus·ClickHouse 由 External-Obs 负责）。
 
 | 类别 | 工具 |
 |---------|------|
 | **cloudwatch-mcp** (11) | 指标/告警/日志洞察查询 |
 | **cloudtrail-mcp** (5) | `lookup_events`、`list_event_data_stores`、`lake_query`、`get_query_status`、`get_query_results` |
 | **opensearch-mcp** (4) | OpenSearch 域/索引查询 |
-| **loki-mcp / tempo-mcp / mimir-mcp**（loki 5·tempo 5·mimir 6，`integrations_enabled`） | LogQL/TraceQL 查询 — Loki/Tempo/Mimir 保留在此 Gateway（ADR-004；Prometheus·ClickHouse 已迁移至 External-Obs） |
+| **loki-mcp / tempo-mcp / mimir-mcp**（loki 5·tempo 5·mimir 6，`integrations_enabled`） | LogQL/TraceQL 查询 — Loki/Tempo/Mimir 保留在此 Gateway（Prometheus·ClickHouse 已迁移至 External-Obs） |
 
 ### Cost Gateway (14 tools)
 
@@ -146,7 +146,7 @@ v2 由 8 个 AWS 领域 Gateway（`awsops-v2-{network,container,data,security,co
 
 ### External-Obs (13 tools, 路由键: `observability`)
 
-托管外部可观测性·集成连接器的第 9 个路由分区（ADR-004 修订 2026-06-24）。目录中定义了 `notion-mcp`（3 tools）（由 `integrations_enabled` 门控，默认 off）。Prometheus（6 tools）·ClickHouse（4 tools）连接器目标同样部署在此分区（`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` 的 gateway=external-obs）。
+托管外部可观测性·集成连接器的第 9 个路由分区。目录中定义了 `notion-mcp`（3 tools）（由 `integrations_enabled` 门控，默认 off）。Prometheus（6 tools）·ClickHouse（4 tools）连接器目标同样部署在此分区（`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` 的 gateway=external-obs）。
 
 ## Code Interpreter
 
@@ -186,7 +186,7 @@ AgentCore Runtime ARN·Memory ID 等配置值**仅存在于 SSM**，不在 UI �
 | **对话历史保留** | 最长 365 天 |
 | **AgentCore 响应** | 仅返回最终文本（工具推理以打字效果流式呈现） |
 | **工具启用标志** | 30 个切片由 `agentcore_enabled`（21）·`integrations_enabled`（9）门控 — 线上环境编队已部署完毕（2026-08-02），新装环境默认 off |
-| **厂商 mcpServer 目标** | external-obs 的厂商托管 mcpServer 目标（Datadog·Dynatrace·New Relic）的 `capability=read` 不在协议层强制（ADR-017）— read-only 保证以 Lambda 目标为准；未配置端点时 SKIP。运行时由 fail-closed 工具 allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — 仅放行目录转写的 read 工具，`agent/agent.py`）作为补偿控制 |
+| **厂商 mcpServer 目标** | external-obs 的厂商托管 mcpServer 目标（Datadog·Dynatrace·New Relic）的 `capability=read` 不在协议层强制 — read-only 保证以 Lambda 目标为准；未配置端点时 SKIP。运行时由 fail-closed 工具 allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — 仅放行目录转写的 read 工具，`agent/agent.py`）作为补偿控制 |
 
 ## 下一步
 

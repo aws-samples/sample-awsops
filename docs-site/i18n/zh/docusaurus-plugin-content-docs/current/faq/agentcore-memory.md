@@ -27,7 +27,7 @@ flowchart LR
 | **实时查询** | AgentCore MCP Lambda 工具（约 160 个，只读）用 boto3 直接调用 AWS API |
 | **Steampipe 的角色** | **不是**实时查询引擎。仅是通过 `steampipe_enabled` 标志开启的**清单同步**（默认 OFF）— 没有本地 9193 服务/pg Pool |
 | **门禁** | AgentCore 整体由 `agentcore_enabled` Terraform 标志控制（默认 OFF → `plan` = No changes，$0） |
-| **只读** | 所有工具都是 read-only（ADR-041 / 2026-06-11 撤销：AWS 资源变更+自主执行永久冻结） |
+| **只读** | 所有工具都是 read-only，AWS 资源变更与自主执行永久冻结 |
 
 :::info Steampipe 不再是实时引擎
 实时 AWS 状态始终由 AgentCore 工具回答。Steampipe 若被开启，只是一条在 Fargate 中预热后将清单同步到 Aurora 的辅助路径，默认为禁用。
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW 路由查询"]
 ```
 
-### 分区网关有 9 个（ADR-004 修订）
+### 分区网关有 9 个
 
 `network · container · data · security · cost · monitoring · iac · ops · external-obs` — 共 **9 个**（9 配置 / 9 路由，external-obs 于 2026-06-24 提升）。
 
 | 项目 | 内容 |
 |------|------|
-| **网关数量** | 依 ADR-004 修订（2026-06-24）为 **9 个** |
+| **网关数量** | **9 个** |
 | **工具数量** | 约 **160 个**，全部只读 — 随工具集扩展而变动（不是固定数字） |
-| **外部可观测性** | Prometheus·ClickHouse 连接器经由 **external-obs 网关**（第九个）参与路由（ADR-004 修订）— 其余外部集成属于独立的 **Integrations 轴**（ADR-007/017） |
+| **外部可观测性** | Prometheus·ClickHouse 连接器经由 **external-obs 网关**（第九个）参与路由— 其余外部集成属于独立的 **Integrations 轴** |
 | **协议** | MCP（Model Context Protocol）标准 |
 
 - Agent 通过 `list_tools` 查询可用工具列表
@@ -397,6 +397,6 @@ Web BFF 查询 Runtime / Gateway / Code Interpreter 的状态。先从 SSM 读�
 
 AI 助手可在 `/assistant`（完整页面）和随处可打开的可调整大小抽屉中使用，两处共享同一份 Aurora 会话历史。
 
-:::tip 路由是混合方式（ADR-038）
+:::tip 路由是混合方式
 问题通过正则 fast-path + Haiku 4.5 分类器 + 提示词缓存路由到合适的分区代理（LIVE，缓存命中率约 59%）。不是旧版的固定多路由 Sonnet 注册表。
 :::

@@ -32,7 +32,7 @@ AI 助手回答横跨 **9 个分区领域**（另有本地专项分区）的 AWS
 <details>
 <summary>问题是如何被路由到合适领域的？</summary>
 
-AI 助手使用**混合路由**（ADR-038，LIVE）。不再是把所有问题都抛给大模型的固定路由注册表。
+AI 助手使用**混合路由**（LIVE）。不再是把所有问题都抛给大模型的固定路由注册表。
 
 **3 阶段流水线**
 
@@ -51,8 +51,8 @@ AI 助手使用**混合路由**（ADR-038，LIVE）。不再是把所有问题�
 
 实时 AWS 查询通过 **AgentCore MCP（Model Context Protocol）Lambda 工具**完成。助手直接用工具查询回答问题所需的数据，然后进行分析。
 
-- **约 160 个只读工具**分布在 **9 个分区网关**（Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs — 依 ADR-004 修订）中。工具数量为约数，仍在持续演进。
-- 外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个网关参与路由（ADR-004 修订 2026-06-24，9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**（ADR-007/017）。
+- **约 160 个只读工具**分布在 **9 个分区网关**（Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs）中。工具数量为约数，仍在持续演进。
+- 外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个网关参与路由（9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**。
 - Steampipe 仅作为**由 flag 门控的库存同步**（`steampipe_enabled`，默认 OFF）用途存在。它不是实时查询引擎，也不是常驻的本地服务。
 
 :::info 技术细节
@@ -89,9 +89,9 @@ AI 助手使用**混合路由**（ADR-038，LIVE）。不再是把所有问题�
 
 **不会。** AWSops 是**只读运维仪表板 + AI 诊断**。助手**不会**创建·修改·删除·重启 AWS 资源。
 
-- **AWS 资源变更与自主执行已永久冻结**（do-not-enable）——这是依据 2026-06-11 高风险 ADR 撤销共识确立的政策。
+- **AWS 资源变更与自主执行已永久冻结**（do-not-enable）。
 - 助手只提供诊断·根因分析（RCA）·建议。实际变更由用户在 AWS 控制台/IaC 中自行执行。
-- 不过在**外部数据**方面，在治理之下可以**读取**外部可观测性数据，并**写入**外部记录/工单/消息（ADR-041）。这需经过 SSRF 防护·Secrets Manager·DLP/redaction·目的地 allowlist·human-gate·flag-OFF 管控，属于**外部系统的数据记录，而非 AWS 资源变更**。
+- 不过在**外部数据**方面，在治理之下可以**读取**外部可观测性数据，并**写入**外部记录/工单/消息。这需经过 SSRF 防护·Secrets Manager·DLP/redaction·目的地 allowlist·human-gate·flag-OFF 管控，属于**外部系统的数据记录，而非 AWS 资源变更**。
 
 :::tip
 "助手帮我重启这个实例"之类的变更请求不会被执行。请改为提问"帮我诊断为什么这个实例不稳定"。
