@@ -7,6 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import clickhouse_mcp as ch  # noqa: E402
+import datasource_http  # noqa: E402
 
 DS = {"endpoint": "http://ch:8123", "username": "default", "password": "pw"}
 
@@ -113,7 +114,7 @@ class TestTools(unittest.TestCase):
     def test_query_builds_request(self):
         captured = {}
 
-        def fake_http(method, url, headers=None, body=None, timeout=None):
+        def fake_http(method, url, headers=None, body=None, timeout=None, max_bytes=None):
             captured.update(method=method, url=url, headers=headers, body=body)
             return 200, {"data": [{"x": 1}, {"x": 2}, {"x": 3}], "rows": 3}
 
@@ -132,11 +133,19 @@ class TestTools(unittest.TestCase):
         self.assertIn("FORMAT JSON", captured["body"])
         self.assertEqual(captured["headers"]["Authorization"][:6], "Basic ")
 
+    def test_sql_results_use_the_larger_response_budget(self):
+        # wide max_result_rows-bounded results must not hit the default 4 MiB transport cap
+        with mock.patch.object(ch, "http_json", return_value=(200, {"data": [], "rows": 0})) as hj:
+            out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                     "arguments": {"sql": "SELECT 1"}}, None)
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(hj.call_args.kwargs["max_bytes"], datasource_http.MAX_TRACE_RESPONSE_BYTES)
+
     def test_database_setting_appends_validated_param(self):
         # gap L203: a per-datasource default database rides the conn config → &database=
         captured = {}
 
-        def fake_http(method, url, headers=None, body=None, timeout=None):
+        def fake_http(method, url, headers=None, body=None, timeout=None, max_bytes=None):
             captured.update(url=url)
             return 200, {"data": []}
 
@@ -151,7 +160,7 @@ class TestTools(unittest.TestCase):
     def test_execution_bound_defaults_to_10_and_conn_timeoutS_overrides(self):
         captured = {}
 
-        def fake_http(method, url, headers=None, body=None, timeout=None):
+        def fake_http(method, url, headers=None, body=None, timeout=None, max_bytes=None):
             captured.update(url=url, timeout=timeout)
             return 200, {"data": []}
 
@@ -211,7 +220,7 @@ class TestTools(unittest.TestCase):
     def test_configured_timeout_is_a_ceiling_not_a_default(self):
         captured = {}
 
-        def fake_http(method, url, headers=None, body=None, timeout=None):
+        def fake_http(method, url, headers=None, body=None, timeout=None, max_bytes=None):
             captured.update(url=url)
             return 200, {"data": []}
 

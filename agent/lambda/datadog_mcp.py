@@ -124,14 +124,22 @@ def datadog_schema(args):
 
 
 def datadog_health(args):
-    """Validate configured API keys, then metric-query access (key pair or bearer)."""
+    """Validate configured API keys, then metric-query access (key pair or bearer). Both requests
+    share one request_timeout deadline so the probe stays inside the connector Lambda's wall."""
     def run():
         creds = load_datasource(SLUG)
         assert_host_allowed(creds["endpoint"])
+        deadline = time.monotonic() + request_timeout(creds)
+
+        def remaining():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("Datadog connection test deadline exceeded")
+            return left
         # The API-key validator does not validate bearer access tokens. Those use
         # the supported metric-query operation itself as the authentication proof.
         if any(name.lower() == "dd-api-key" for name in _headers(creds)):
-            v = _get(creds, "/api/v1/validate")
+            v = _get(creds, "/api/v1/validate", timeout=remaining())
             if not isinstance(v, dict) or v.get("valid") is not True:
                 return None
         end = int(time.time())
@@ -140,7 +148,7 @@ def datadog_health(args):
         probe = _get(creds, "/api/v1/query", {
             "query": "avg:system.cpu.user{host:awsops-connection-probe}",
             "from": str(end - 60), "to": str(end),
-        })
+        }, timeout=remaining())
         return "ok" if isinstance(probe, dict) and probe.get("status") == "ok" and isinstance(probe.get("series"), list) else None
     return ok(query_probe(run, "Datadog credentials or metric-query access could not be verified"))
 
