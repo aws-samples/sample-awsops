@@ -58,41 +58,20 @@ def test_bearer_connection_tests_the_metric_operation_without_api_key_validation
     assert request.call_args.args[1] == "/api/v1/query"
 
 
-def _deadline_probe(validate_cost):
-    """Run the key-pair health probe with a fake monotonic clock; validate consumes `validate_cost` s."""
-    clock = [100.0]
-    timeouts = []
-
-    def fake_get(creds, path, params=None, *, timeout=None):
-        timeouts.append((path, timeout))
-        if path == "/api/v1/validate":
-            clock[0] += validate_cost
-            return {"valid": True}
-        return {"status": "ok", "series": []}
-
-    creds = {**CREDS, "timeoutS": 20}
-    with patch.object(dd, "load_datasource", return_value=creds), patch.object(dd, "assert_host_allowed"), \
-            patch.object(dd.time, "monotonic", side_effect=lambda: clock[0]), \
-            patch.object(dd, "_get", side_effect=fake_get):
-        probe = body(dd.datadog_health({}))
-    return probe, timeouts
-
-
 def test_health_requests_share_one_deadline():
-    probe, timeouts = _deadline_probe(validate_cost=15)
-    assert probe["ok"] is True
-    (validate_path, validate_timeout), (query_path, query_timeout) = timeouts
-    assert validate_path == "/api/v1/validate" and query_path == "/api/v1/query"
-    assert validate_timeout == 20
-    assert query_timeout < 20
-    # elapsed validate time plus the query's allowance never exceeds the saved budget
-    assert 15 + query_timeout <= 20
+    for cost, passed in ((15, True), (25, False)):  # validate consumes `cost` of a 20s budget
+        clock, calls = [100.0], []
 
-
-def test_health_exhausted_deadline_skips_the_metric_query():
-    probe, timeouts = _deadline_probe(validate_cost=25)
-    assert probe["ok"] is False
-    assert [path for path, _ in timeouts] == ["/api/v1/validate"]
+        def fake_get(creds, path, params=None, *, timeout=None):
+            calls.append((path, timeout))
+            clock[0] += cost if path == "/api/v1/validate" else 0
+            return {"valid": True} if path == "/api/v1/validate" else {"status": "ok", "series": []}
+        with patch.object(dd, "load_datasource", return_value={**CREDS, "timeoutS": 20}), \
+                patch.object(dd, "assert_host_allowed"), patch.object(dd, "_get", side_effect=fake_get), \
+                patch.object(dd.time, "monotonic", side_effect=lambda: clock[0]):
+            assert body(dd.datadog_health({}))["ok"] is passed
+        assert calls[0] == ("/api/v1/validate", 20)
+        assert calls[1:] == ([("/api/v1/query", 5)] if passed else [])
 
 
 def test_point_limit_is_disclosed_and_preserves_other_series():

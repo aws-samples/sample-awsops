@@ -49,7 +49,7 @@ from urllib.parse import urlparse
 HTTP_TIMEOUT = 12
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
-# single-trace, log-query and ClickHouse SQL result responses may exceed the default cap; trace/log connectors project them to their own 1 MB budgets after parsing, while ClickHouse SQL results are bounded by max_result_rows.
+# single-trace, log-query and ClickHouse SQL responses may exceed the default cap; trace/log connectors re-bound them to 1 MB after parsing, ClickHouse SQL by max_result_rows.
 # 8 MiB keeps the buffered body plus parsed JSON inside the 256 MB connector Lambda.
 MAX_TRACE_RESPONSE_BYTES = 8 * 1024 * 1024
 

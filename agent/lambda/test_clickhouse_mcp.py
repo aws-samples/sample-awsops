@@ -115,7 +115,7 @@ class TestTools(unittest.TestCase):
         captured = {}
 
         def fake_http(method, url, headers=None, body=None, timeout=None, max_bytes=None):
-            captured.update(method=method, url=url, headers=headers, body=body)
+            captured.update(method=method, url=url, headers=headers, body=body, max_bytes=max_bytes)
             return 200, {"data": [{"x": 1}, {"x": 2}, {"x": 3}], "rows": 3}
 
         with mock.patch.object(ch, "http_json", side_effect=fake_http):
@@ -132,14 +132,8 @@ class TestTools(unittest.TestCase):
         self.assertNotIn("output_format_json_quote_64bit_integers", captured["url"])
         self.assertIn("FORMAT JSON", captured["body"])
         self.assertEqual(captured["headers"]["Authorization"][:6], "Basic ")
-
-    def test_sql_results_use_the_larger_response_budget(self):
-        # wide max_result_rows-bounded results must not hit the default 4 MiB transport cap
-        with mock.patch.object(ch, "http_json", return_value=(200, {"data": [], "rows": 0})) as hj:
-            out = ch.lambda_handler({"tool_name": "clickhouse_query",
-                                     "arguments": {"sql": "SELECT 1"}}, None)
-        self.assertEqual(out["statusCode"], 200)
-        self.assertEqual(hj.call_args.kwargs["max_bytes"], datasource_http.MAX_TRACE_RESPONSE_BYTES)
+        # wide max_result_rows-bounded results get the larger transport budget
+        self.assertEqual(captured["max_bytes"], datasource_http.MAX_TRACE_RESPONSE_BYTES)
 
     def test_database_setting_appends_validated_param(self):
         # gap L203: a per-datasource default database rides the conn config → &database=

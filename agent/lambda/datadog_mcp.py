@@ -124,8 +124,7 @@ def datadog_schema(args):
 
 
 def datadog_health(args):
-    """Validate configured API keys, then metric-query access (key pair or bearer). Both requests
-    share one request_timeout deadline so the probe stays inside the connector Lambda's wall."""
+    """Validate configured API keys, then metric-query access (key pair or bearer) under one deadline."""
     def run():
         creds = load_datasource(SLUG)
         assert_host_allowed(creds["endpoint"])
