@@ -4,7 +4,10 @@ Shared datasource-connector helper for the v2 external-observability datasource 
 endpoint + credential queried in a query language. This module
 centralizes: reading the per-slug credential from the single integrations secret, SSRF host guarding
 (always-block metadata/loopback/...; private allowed — in-cluster datasources are the target),
-auth headers (Basic/Bearer), and a no-redirect HTTP fetch. Stdlib + boto3 only.
+auth headers (Basic/Bearer), and a no-redirect HTTP fetch. Explicit instance IDs require an
+ID-bound credential; kind-only reads retain the default mirror. Responses are byte-bounded before
+parsing and body reads share the request's monotonic deadline. Connection tests execute bounded
+queries instead of trusting public health endpoints. Stdlib + boto3 only.
 
 SECURITY: never log credential material. The endpoint is user-supplied → assert_host_allowed before
 every request; redirects are NOT auto-followed (a malicious endpoint can't 30x to metadata/internal).
@@ -30,6 +33,7 @@ decodes translator-embedded IPv4 forms — IPv4-mapped, 6to4, Teredo, well-known
 stay resolve-based, connection time is pinned on both transports.
 """
 import base64
+import concurrent.futures
 import functools
 import http.client
 import ipaddress
@@ -37,11 +41,17 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
 HTTP_TIMEOUT = 12
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+# single-trace, log-query and ClickHouse SQL responses may exceed the default cap; trace/log connectors re-bound them to 1 MB after parsing, ClickHouse SQL by max_result_rows.
+# 8 MiB keeps the buffered body plus parsed JSON inside the 256 MB connector Lambda.
+MAX_TRACE_RESPONSE_BYTES = 8 * 1024 * 1024
 
 _SM = None
 _SECRET_CACHE = None
@@ -54,6 +64,10 @@ _SECRET_TTL = 60.0  # bound stale creds in a warm (long-lived worker) container
 # Reset every invocation by set_request_conn — see module docstring.
 _PINNED_IP_CACHE = {}
 
+# Shared (not per-call) pool for _open_within; 4 workers: a connection that ignores shutdown()
+# must not stall every later request.
+_OPEN_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="ds-open")
+
 
 class NotConnected(Exception):
     """Raised when a datasource slug has no stored credential/endpoint."""
@@ -61,6 +75,46 @@ class NotConnected(Exception):
 
 class SsrfBlocked(Exception):
     """Raised when an endpoint host/scheme is disallowed."""
+
+
+class ResponseTooLarge(ValueError):
+    """The upstream body exceeded the read budget; this is never an empty result."""
+
+
+def _seconds(value, default, ceiling=55):
+    if isinstance(value, bool):
+        return default
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{1,6}s?", text):
+        return default
+    return max(1, min(ceiling, int(text.removesuffix("s"))))
+
+
+def request_timeout(creds):
+    """Saved transport deadline for APIs without a provider execution-time parameter."""
+    return _seconds(creds.get("timeoutS"), HTTP_TIMEOUT)
+
+
+def execution_timeout(creds, requested=None):
+    """Provider execution ceiling, with a caller allowed only to tighten it."""
+    configured = _seconds(creds.get("timeoutS"), 10)
+    return min(configured, _seconds(requested, configured))
+
+
+def finite_number(value, bound=1.7976931348623157e308):
+    """JSON chart numbers exclude booleans, non-finite values and oversized integers."""
+    return type(value) in (int, float) and abs(value) <= bound
+
+
+class ObservedPayload(dict):
+    """Transport evidence is an attribute, so upstream JSON cannot impersonate it."""
+    def __init__(self, data, status):
+        super().__init__(data)
+        self.http_status = status
+
+
+def observed_payload(data, status):
+    return ObservedPayload(data, status) if isinstance(data, dict) else data
 
 
 # Cloud instance-metadata endpoints blocked even though private is otherwise allowed (mirror agent.py).
@@ -179,6 +233,27 @@ def set_request_conn(conn):
     _PINNED_IP_CACHE = {}
 
 
+def query_probe(run, error, accepted=("ok", "empty", "partial")):
+    """Time one real bounded query for the connection test. `run` executes the connector's own
+    query tool and returns its `collectionStatus` (None when the response was unrecognizable).
+    Returns {ok, verified, latency_ms, error?} — fixed sentences only, never upstream text; the
+    connector's own classification (SSRF policy vs. unverifiable) is kept because an admin needs it."""
+    t0 = time.monotonic()
+    try:
+        state = run()
+    except SsrfBlocked:
+        state, error = None, "endpoint rejected by the private-network policy"
+    except NotConnected:
+        state, error = None, "datasource not connected"
+    except Exception as exc:
+        print(f"[datasource_http] connection probe failed: {type(exc).__name__}")
+        state = None
+    latency = int((time.monotonic() - t0) * 1000)
+    verified = state in accepted
+    return {"ok": verified, "verified": ["query"] if verified else [], "latency_ms": latency,
+            **({} if verified else {"error": error})}
+
+
 def health(creds, path):
     """Lightweight connectivity probe: GET endpoint+path with auth, SSRF-guarded. {ok, latency_ms, error?}."""
     import time as _t
@@ -229,17 +304,24 @@ def _load_secret_map():
 def load_datasource(slug, instance_id=None):
     """Resolve a datasource's connection blob. Precedence:
        1. the request-scoped inline conn-config (`_REQUEST_CONN`) — the trusted BFF path only;
-       2. the per-instance secret key `map[str(instance_id)]` — the credential-blind worker path,
-          where the caller sends ONLY an instance_id and the connector reads the secret server-side;
-       3. the `map[slug]` kind-mirror (the default instance) as the fallback.
+       2. for an explicit instance_id, the per-instance secret key `map[str(instance_id)]` only —
+          the credential-blind worker path, where the caller sends ONLY an instance_id and the
+          connector reads the secret server-side. It never falls back to the kind mirror: a sibling
+          must not inherit the default's credential, and a migrated default whose id key was never
+          written must be re-saved first (the administrator save writes it);
+       3. the `map[slug]` kind mirror, only when no explicit instance was requested.
     `instance_id` is a pure argument (no module-global), so warm-container reuse cannot bleed one
     invocation's instance into the next."""
     if _REQUEST_CONN is not None:
         return _REQUEST_CONN
     m = _load_secret_map()
-    creds = m.get(str(instance_id)) if instance_id is not None else None
-    if not (isinstance(creds, dict) and creds.get("endpoint")):
-        creds = m.get(slug)  # kind-mirror (default instance) fallback
+    if instance_id is not None:
+        creds = m.get(str(instance_id))
+        if not isinstance(creds, dict) or not creds.get("endpoint"):
+            print(f"[datasource_http] strict instance lookup failed: slug={slug} instance_id={instance_id}")
+            raise NotConnected("requested datasource instance is not configured")
+    else:
+        creds = m.get(slug)
     if not isinstance(creds, dict) or not creds.get("endpoint"):
         raise NotConnected(f"{slug} not connected (no endpoint configured in the Connectors UI)")
     return creds
@@ -253,7 +335,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 # ProxyHandler({}) disables HTTP_PROXY/HTTPS_PROXY env-var routing — pinning implies a direct
 # connection to the validated IP; honoring a proxy would route the request elsewhere and defeat
 # the point of pinning (and break it, since the socket wouldn't reach the pinned IP at all).
-_opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+class _ConnTracker:
+    """Per-request handle: the connection urllib opens for this request, so the deadline watchdog
+    in _open_within can close it (which unblocks the worker's recv) instead of abandoning it."""
+    conn = None
+
+
+def _tracked(conn_class, req):
+    def make(*args, **kwargs):
+        conn = conn_class(*args, **kwargs)
+        tracker = getattr(req, "_awsops_tracker", None)
+        if tracker is not None:
+            tracker.conn = conn
+        return conn
+    return make
+
+
+class _TrackingHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_tracked(http.client.HTTPConnection, req), req)
+
+
+class _TrackingHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_tracked(http.client.HTTPSConnection, req), req, context=self._context)
+
+
+_opener = urllib.request.build_opener(
+    _NoRedirect, urllib.request.ProxyHandler({}), _TrackingHTTPHandler, _TrackingHTTPSHandler)
 
 
 def _pin_create_connection(base_create, pinned_ips):
@@ -298,7 +407,8 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         self._pinned_ips = pinned_ips
 
     def http_open(self, req):
-        return self.do_open(functools.partial(_PinnedHTTPConnection, pinned_ips=self._pinned_ips), req)
+        return self.do_open(
+            _tracked(functools.partial(_PinnedHTTPConnection, pinned_ips=self._pinned_ips), req), req)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -314,7 +424,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         # inside HTTPSConnection, and self.host (unchanged — only the socket target is pinned) is
         # passed as server_hostname for SNI + the default context's built-in hostname/cert check.
         return self.do_open(
-            functools.partial(_PinnedHTTPSConnection, pinned_ips=self._pinned_ips),
+            _tracked(functools.partial(_PinnedHTTPSConnection, pinned_ips=self._pinned_ips), req),
             req,
             context=self._context,
         )
@@ -342,18 +452,117 @@ def _parse(raw):
         return {"raw": raw.decode("utf-8", "replace")[:4000]}
 
 
-def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT):
+def _response_socket(response):
+    """Find urllib's HTTPResponse socket, including HTTPError's extra fp wrapper."""
+    stream = response
+    for _ in range(4):
+        raw = getattr(stream, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            return sock
+        stream = getattr(stream, "fp", None)
+        if stream is None:
+            break
+    return None
+
+
+def _read_bounded(response, max_bytes, deadline):
+    """Read at most budget+1 bytes before the absolute monotonic `deadline`; never trust
+    Content-Length or parse before the bound. The deadline is the request's — connect, headers
+    and body share one budget, so a slow-but-alive upstream cannot double it."""
+    chunks = []
+    total = 0
+    read = getattr(response, "read1", response.read)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("datasource response read deadline exceeded")
+            sock = _response_socket(response)
+            if sock is not None:
+                sock.settimeout(remaining)
+            try:
+                chunk = read(min(65536, max_bytes - total + 1))
+            except socket.timeout as exc:
+                raise TimeoutError("datasource response read deadline exceeded") from exc
+            if time.monotonic() >= deadline:
+                raise TimeoutError("datasource response read deadline exceeded")
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ResponseTooLarge(f"datasource response exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+    finally:
+        response.close()
+
+
+def _open_within(opener, req, timeout, deadline):
+    """Open the connection and read the response headers under the request's absolute deadline.
+    urllib's `timeout` is per socket operation, so a server dripping header bytes could hold
+    open() past the deadline. The open runs on the shared worker pool; at the deadline the
+    watchdog shuts the request's socket down (close() alone is a no-op while the response is
+    being read, because the file wrapper holds an io ref) and cancels an open that never
+    started; any response that still arrives later is closed by the completion callback."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("datasource request deadline exceeded before connect")
+    req._awsops_tracker = tracker = _ConnTracker()
+    future = _OPEN_POOL.submit(opener.open, req, timeout=min(timeout, remaining))
+    try:
+        return future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError as exc:
+        if future.cancel():
+            raise TimeoutError("datasource request deadline exceeded before connect") from exc
+        sock = getattr(tracker.conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if tracker.conn is not None:
+            try:
+                tracker.conn.close()
+            except OSError:
+                pass
+        future.add_done_callback(_close_late)
+        raise TimeoutError("datasource response header deadline exceeded") from exc
+
+
+def _close_late(future):
+    """Close whatever a timed-out open eventually produced: a response, or an HTTPError's body."""
+    error = future.exception()
+    late = future.result() if error is None else getattr(error, "fp", None)
+    if late is not None:
+        try:
+            late.close()
+        except OSError:
+            pass
+
+
+def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT, max_bytes=MAX_RESPONSE_BYTES):
     """Send a request (no auto-redirect). Returns (status, parsed_dict). Non-2xx → (status, body).
     Pinned to the IPs assert_host_allowed(url) most recently validated for this host, if any (tried
     in order with fallback) — see module docstring (IP-pinning)."""
     data = body if isinstance(body, (bytes, bytearray)) else (body.encode() if isinstance(body, str) else None)
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    # One absolute deadline covers connect, headers and body. The socket timeout is per operation, so
+    # the header phase is bounded by the worker wait in _open_within and the body by _read_bounded;
+    # the connector Lambda's 60s wall assumes the aligned HTTP timeout (at most 55s + 3s) is the whole request.
+    deadline = time.monotonic() + timeout
     try:
-        resp = _opener_for(urlparse(url).hostname).open(req, timeout=timeout)
-        return resp.getcode(), _parse(resp.read())
+        resp = _open_within(_opener_for(urlparse(url).hostname), req, timeout, deadline)
+        return resp.getcode(), _parse(_read_bounded(resp, max_bytes, deadline))
     except urllib.error.HTTPError as e:
+        # Keep the (status, body) contract for error responses: an oversized or slow error body is
+        # reported as such under its real HTTP status instead of replacing the status with a
+        # transport exception.
         try:
-            raw = e.read()
-        except Exception:  # noqa: BLE001
-            raw = b""
+            raw = _read_bounded(e, min(max_bytes, MAX_ERROR_BYTES), deadline)
+        except ResponseTooLarge:
+            return e.code, {"error": f"error body exceeded {MAX_ERROR_BYTES} bytes"}
+        except TimeoutError:
+            return e.code, {"error": "error body read deadline exceeded"}
+        except (OSError, http.client.HTTPException):
+            return e.code, {"error": "error body could not be read"}
         return e.code, _parse(raw)

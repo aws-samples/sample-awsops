@@ -70,11 +70,15 @@ class CollectionMarkers(unittest.TestCase):
                         for target in catalog.TARGETS.values() for tool in target["tools"]}
         names = {f"{kind}_{action}" for kind in ("prometheus", "mimir")
                  for action in ("query", "query_range", "labels", "series")}
-        names.update(("tempo_search", "clickhouse_query", "clickhouse_tables", "clickhouse_describe"))
+        names.update(("tempo_search", "clickhouse_query", "clickhouse_tables", "clickhouse_describe", "loki_query", "loki_query_range"))
         for name in names:
             with self.subTest(tool=name):
                 for marker in ("collectionStatus", "ok", "empty", "partial", "unknown", "error"):
                     self.assertIn(marker, descriptions[name])
+
+    def test_loki_errors_carry_the_error_marker(self):
+        body = json.loads(importlib.import_module("loki_mcp").err("synthetic failure")["body"])
+        self.assertEqual(body["collectionStatus"], "error")
 
     def test_native_histogram_output_is_explicitly_unsupported_and_never_echoed(self):
         for kind in ("prometheus", "mimir"):

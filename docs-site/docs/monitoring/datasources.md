@@ -58,7 +58,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 | **Type** | O | 데이터소스 유형 (8종 중 선택) |
 | **URL** | O | 엔드포인트 URL (예: `http://prometheus:9090`) |
 | **Authentication** | - | 인증 방식 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 저장 범위 1–60초(기본 10초). ClickHouse는 모든 경로에서 `max_execution_time` 상한으로 적용하며 유효 최대는 55초(56–60초는 55초로 단축). Prometheus/Mimir는 Explore 경로에서만 API `timeout`으로 적용하며 최대 10초. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 저장만 되고 현재 적용되지 않음 |
+| **Timeout** | - | 저장 범위 1–60초(기본 10초), 유효 최대 55초(56–60초는 55초로 단축). Prometheus/Mimir/ClickHouse는 모든 경로에서 서버 실행 제한으로 적용하고 커넥터 HTTP 타임아웃을 그 위로 정렬합니다. Explore의 Prometheus/Mimir 쿼리는 최대 10초로 더 짧게 제한합니다. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 쿼리 도구의 HTTP 응답 제한(기본 12초)으로 적용하며 서버 쿼리 중단은 보장하지 않습니다. 스키마/디스커버리 호출은 커넥터의 고정 HTTP 예산을 유지합니다 |
 | **Database** | - | 기본 데이터베이스 이름 (ClickHouse 전용, 식별자만 허용) |
 
 :::note v1과의 차이
@@ -79,15 +79,15 @@ v1의 결과 캐시 TTL 설정은 v2에 없습니다 — v2의 질의 경로는 
 
 | 데이터소스 | 테스트 엔드포인트 | 확인 내용 |
 |-----------|-----------------|----------|
-| Prometheus | `/-/healthy` | 서버 상태, 응답 시간 |
-| Loki | `/ready` | 서버 준비 상태, 응답 시간 |
-| Tempo | `/ready` | 서버 준비 상태, 응답 시간 |
-| ClickHouse | `SELECT 1` | 쿼리 실행 가능 여부, 응답 시간 |
-| Jaeger | `/api/services` | 서비스 목록 조회, 응답 시간 |
-| Dynatrace | `/api/v2/entities` | API 접근 가능 여부, 응답 시간 |
-| Datadog | `/api/v1/validate` | API 키 유효성, 응답 시간 |
+| Prometheus | `query?query=vector(1)` (서버 타임아웃 1초) | 쿼리 접근 |
+| Loki | `query_range`, 1분, `limit=1` | 테넌트 범위 쿼리 접근 |
+| Tempo | 트레이스 1건 검색, 1분 | 쿼리 접근 |
+| ClickHouse | `SELECT 1`, `readonly=1`, 실행 제한 1초 | 읽기 전용 SQL 접근 |
+| Jaeger | `/api/traces?limit=1`, 1분 | 쿼리 접근 |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`, 1분 | 메트릭 쿼리 접근 |
+| Datadog | 키 검증(키 쌍만) 후 `/api/v1/query`, 1분 | 메트릭 쿼리 접근 |
 
-테스트 결과에는 연결 성공/실패 상태와 응답 지연 시간(ms)이 표시됩니다.
+테스트 결과에는 성공/실패와 응답 지연 시간(ms)이 표시됩니다.
 
 ## 쿼리 실행
 
@@ -203,7 +203,7 @@ AI 어시스턴트는 등록된 데이터소스를 활용하여 분석을 수행
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
-| **Timeout** | 10초 | 업스트림 쿼리 실행 제한(초, 1–60). ClickHouse는 모든 경로(Explore·서비스 그래프·에이전트)의 상한(ceiling)으로 적용되고(호출자는 더 짧게만 조정 가능) 커넥터가 자체 HTTP 타임아웃을 그 위로 정렬합니다(유효 최댓값 55초 — Lambda 60초 한도 아래 정렬을 위해 56–60초 설정은 55초로 단축됩니다). Prometheus/Mimir는 Explore 경로의 API `timeout` 파라미터로 적용되며 커넥터 HTTP 타임아웃(12초) 아래로 10초에 캡됩니다 |
+| **Timeout** | 10초 | 저장 범위 1–60초(기본 10초), 유효 최대 55초(56–60초는 55초로 단축). Prometheus/Mimir/ClickHouse는 모든 경로에서 서버 실행 제한으로 적용하고 커넥터 HTTP 타임아웃을 그 위로 정렬합니다. Explore의 Prometheus/Mimir 쿼리는 최대 10초로 더 짧게 제한합니다. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 쿼리 도구의 HTTP 응답 제한(기본 12초)으로 적용하며 서버 쿼리 중단은 보장하지 않습니다. 스키마/디스커버리 호출은 커넥터의 고정 HTTP 예산을 유지합니다 |
 
 ### ClickHouse 전용
 

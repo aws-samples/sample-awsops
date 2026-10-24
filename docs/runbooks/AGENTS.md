@@ -13,6 +13,8 @@
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
+`datasource-credential-isolation.md` requires native-default credential backfill before stricter
+explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007/039).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
 removed; flag any change that reintroduces a v1 procedure.

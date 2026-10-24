@@ -17,13 +17,14 @@ import re
 
 from cross_account import resolve_tool_name
 from datasource_http import (
+    MAX_TRACE_RESPONSE_BYTES,
     NotConnected,
     SsrfBlocked,
     assert_host_allowed,
     auth_headers,
-    health,
     http_json,
     load_datasource,
+    query_probe,
     set_request_conn,
 )
 from sql_readonly_guard import assert_read_only as _shared_assert_read_only
@@ -161,7 +162,9 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
     # HTTP timeout ALIGNED ABOVE the execution bound (+3s margin): the shared default of 12s
     # would client-abort a legitimately long query while the server kept scanning under
     # timeout_overflow_mode=throw — the server-side bound must fire first.
-    status, data = http_json("POST", url, headers=headers, body=body, timeout=max_execution_time + 3)
+    # Wide max_result_rows-bounded results can exceed the default cap.
+    status, data = http_json("POST", url, headers=headers, body=body, timeout=max_execution_time + 3,
+                             max_bytes=MAX_TRACE_RESPONSE_BYTES)
     if status >= 400:
         snippet = (data.get("raw") or data.get("exception") or data) if isinstance(data, dict) else "non-object error response"
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")
@@ -273,8 +276,12 @@ def clickhouse_schema(args):
 
 
 def clickhouse_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ping."""
-    return ok(health(load_datasource(SLUG), "/ping"))
+    """Verify read-only SQL access using one constant row and a one-second ceiling."""
+    def run():
+        result = _run_sql("SELECT 1 AS probe", 1, max_execution_time=1)
+        return json.loads(result["body"]).get("collectionStatus") if result["statusCode"] == 200 else None
+    # "empty" is impossible for SELECT 1; "partial" means the result cap applied, which still proves access.
+    return ok(query_probe(run, "ClickHouse query access could not be verified", accepted=("ok", "partial")))
 
 
 _TOOLS = {

@@ -16,11 +16,12 @@ from urllib.parse import urlencode
 from cross_account import resolve_tool_name
 from datasource_http import (
     NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
-    set_request_conn,
+    query_probe, set_request_conn, request_timeout, finite_number, observed_payload, HTTP_TIMEOUT,
 )
 
 SLUG = "dynatrace"
 MAX_SERIES = 50
+MAX_POINTS = 1500
 _REL = re.compile(r"^(\d+)([smhdw])$")
 _NATIVE = re.compile(r"^now(-\d+[smhdw])?$")
 
@@ -46,7 +47,7 @@ def _headers(creds):
     """Api-Token scheme: an explicit token (authType bearer) becomes `Authorization: Api-Token …`;
     custom-header auth passes through unchanged (auth_headers refuses to set Authorization itself)."""
     h = dict(auth_headers(creds))
-    if creds.get("token"):
+    if creds.get("token") and creds.get("authType") in (None, "bearer"):
         h["Authorization"] = f"Api-Token {creds['token']}"
     return h
 
@@ -57,14 +58,15 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds))
+    status, data = http_json("GET", url, headers=_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds))
     if status >= 400:
         detail = data.get("error") if isinstance(data, dict) else None
         msg = detail.get("message") if isinstance(detail, dict) else (detail or data.get("raw") if isinstance(data, dict) else data)
         raise _ApiError(f"Dynatrace HTTP {status}: {str(msg)[:300]}")
-    return data
+    return observed_payload(data, status)
 
 
 def dynatrace_query(args):
@@ -79,24 +81,47 @@ def dynatrace_query(args):
     if args.get("resolution"):
         params["resolution"] = str(args["resolution"])
     data = _get(_ds(), "/api/v2/metrics/query", params)
-    result = data.get("result", []) if isinstance(data, dict) else []
+    if isinstance(data, dict) and data.get("error") not in (None, ""):
+        return ok({"result": [], "truncated": False, "collectionStatus": "error"})
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, list):
+        return ok({"result": [], "truncated": False, "collectionStatus": "unknown"})
     out = []
+    # Current Metrics v2 query responses have a null nextPageKey. Retain partial
+    # evidence if an older/compatible response advertises an unconsumed page.
+    truncated = len(result) > MAX_SERIES or bool(isinstance(data, dict) and data.get("nextPageKey"))
+    invalid = False
     for metric in result[:MAX_SERIES]:
-        if not isinstance(metric, dict):
+        if not isinstance(metric, dict) or not isinstance(metric.get("metricId"), str) or not isinstance(metric.get("data"), list):
+            invalid = True
             continue
+        truncated = truncated or len(metric["data"]) > MAX_SERIES
+        series = []
+        for entry in metric["data"][:MAX_SERIES]:
+            if (not isinstance(entry, dict) or not isinstance(entry.get("dimensions"), list)
+                    or not all(isinstance(value, str) for value in entry["dimensions"])
+                    or not isinstance(entry.get("timestamps"), list) or not isinstance(entry.get("values"), list)
+                    or len(entry["timestamps"]) != len(entry["values"])):
+                invalid = True
+                continue
+            timestamps, values = [], []
+            truncated = truncated or len(entry["values"]) > MAX_POINTS
+            for timestamp, value in zip(entry["timestamps"][:MAX_POINTS], entry["values"][:MAX_POINTS]):
+                if (not finite_number(timestamp, 8640000000000000)
+                        or value is not None and not finite_number(value)):
+                    invalid = True
+                    continue
+                timestamps.append(timestamp)
+                values.append(value)
+            series.append({"dimensions": entry["dimensions"], "timestamps": timestamps, "values": values})
         out.append({
-            "metricId": metric.get("metricId", ""),
-            "data": [
-                {
-                    "dimensions": d.get("dimensions", []),
-                    "timestamps": d.get("timestamps", []),
-                    "values": d.get("values", []),
-                }
-                for d in (metric.get("data") or [])[:MAX_SERIES]
-                if isinstance(d, dict)
-            ],
+            "metricId": metric["metricId"], "data": series,
         })
-    return ok({"result": out, "truncated": len(result) > MAX_SERIES,
+    http_status = getattr(data, "http_status", 200)
+    warned = bool(isinstance(data, dict) and data.get("warnings"))  # provider warnings (e.g. limited results) are not completeness proof
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if truncated or warned or http_status == 206 else "ok" if out else "empty"
+    return ok({"result": out, "truncated": truncated,
+               "collectionStatus": state,
                "resolution": data.get("resolution") if isinstance(data, dict) else None})
 
 
@@ -118,21 +143,22 @@ def dynatrace_problems(args):
 
 def dynatrace_schema(args):
     """Metric ids (query-gen vocabulary for metricSelector)."""
-    data = _get(_ds(), "/api/v2/metrics", {"pageSize": "200", "fields": "metricId"})
+    data = _get(_ds(), "/api/v2/metrics", {"pageSize": "200", "fields": "metricId"}, timeout=HTTP_TIMEOUT)
     metrics = [m.get("metricId", "") for m in (data.get("metrics") or []) if isinstance(m, dict)] if isinstance(data, dict) else []
     metrics = [m for m in metrics if m]
     return ok({"metrics": metrics[:200], "truncated": bool(isinstance(data, dict) and data.get("nextPageKey"))})
 
 
 def dynatrace_health(args):
-    """Connectivity + token probe: metrics list pageSize=1 (requires metrics.read scope)."""
-    creds = load_datasource(SLUG)
-    assert_host_allowed(creds["endpoint"])
-    try:
-        _get(creds, "/api/v2/metrics", {"pageSize": "1"})
-        return ok({"ok": True})
-    except _ApiError as e:
-        return ok({"ok": False, "error": str(e)})
+    """Verify Metrics v2 query access with a one-minute, one-resolution query."""
+    def run():
+        creds = load_datasource(SLUG)
+        assert_host_allowed(creds["endpoint"])
+        return json.loads(dynatrace_query({
+            "query": "builtin:host.cpu.usage:avg", "start": "now-1m", "end": "now",
+            "resolution": "1m",
+        })["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Dynatrace metric-query access could not be verified"))
 
 
 _TOOLS = {

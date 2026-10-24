@@ -19,12 +19,13 @@ import {
   SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
 
-const DATASOURCE_KINDS = ['prometheus', 'mimir', 'loki', 'tempo', 'clickhouse'];
+const DATASOURCE_KINDS = ['prometheus', 'mimir', 'loki', 'tempo', 'clickhouse', 'jaeger', 'dynatrace', 'datadog']; // mirrors web/lib/integrations-category.ts DATASOURCE_KINDS
 const SECRET_NAME = process.env.INTEGRATIONS_SECRET_NAME || 'ops/awsops-v2/integrations/credentials';
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const LOCK_KEY = 472941143; // distinct from migrate.mjs / backfill-v1.mjs
 const die = (m) => { console.error(`\n✗ ${m}`); process.exit(1); };
 const redactDsn = (d) => { try { const u = new URL(d); if (u.password) u.password = '***'; return u.toString(); } catch { return '***'; } };
+const originOf = (u) => { try { return new URL(String(u ?? '')).origin; } catch { return null; } }; // scheme+host+port, as manage/route.ts
 
 function resolveDsn() {
   if (process.env.BACKFILL_DSN) return process.env.BACKFILL_DSN;
@@ -59,6 +60,7 @@ async function main() {
   console.log(`connected: ${redactDsn(resolveDsn())}`);
   const c = await pool.connect();
   let created = 0, mirrored = 0;
+  const skipped = [];
   try {
     await c.query('BEGIN');
     await c.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
@@ -73,11 +75,15 @@ async function main() {
          RETURNING id`,
         [slug],
       );
-      const { rows } = await c.query('SELECT id FROM integrations WHERE name = $1', [slug]);
+      const { rows } = await c.query('SELECT id, is_default, endpoint FROM integrations WHERE name = $1 AND kind = $1', [slug]);
       const id = rows[0]?.id;
       if (ins.rowCount > 0) created++;
-      // Copy the slug credential to the bigint id key if the id entry is missing (keep the kind mirror).
+      // The kind key mirrors the CURRENT default, but after a default switch/delete it can still hold another
+      // instance's blob. Copy it only into the slug-named default row it was just created from, or whose endpoint
+      // origin matches the mirror's (as the admin save flow does); otherwise report it for an administrator re-save.
       if (id != null && map[String(id)] === undefined) {
+        const sameOrigin = originOf(map[slug]?.endpoint) !== null && originOf(map[slug]?.endpoint) === originOf(rows[0].endpoint);
+        if (!rows[0].is_default || !(ins.rowCount > 0 || sameOrigin)) { skipped.push(slug); continue; }
         if (!dryRun) { map[String(id)] = map[slug]; secretDirty = true; }
         mirrored++;
       }
@@ -94,7 +100,7 @@ async function main() {
     c.release();
     await pool.end();
   }
-  console.log(`${dryRun ? '[dry-run] ' : ''}rows created: ${created}, id-credentials backfilled: ${mirrored}`);
+  console.log(`${dryRun ? '[dry-run] ' : ''}rows created: ${created}, id-credentials backfilled: ${mirrored}, skipped non-default or origin-mismatched rows (re-save via the admin flow): ${skipped.join(', ') || 'none'}`);
 }
 
 main().catch((e) => die(e?.message || String(e)));

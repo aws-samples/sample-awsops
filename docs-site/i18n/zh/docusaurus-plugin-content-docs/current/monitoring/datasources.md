@@ -58,7 +58,7 @@ AWSops 数据源功能对外部可观测性平台进行集中管理。注册数�
 | **Type** | O | 数据源类型（从 8 种中选择） |
 | **URL** | O | 端点 URL（例：`http://prometheus:9090`） |
 | **Authentication** | - | 认证方式（None、Basic、Bearer Token、Custom Header） |
-| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒）。ClickHouse 在所有路径应用 `max_execution_time` 上限，有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir 仅在 Explore 路径应用 API `timeout`，上限为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）仅存储该值，目前不生效 |
+| **Timeout** | - | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。Explore 中的 Prometheus/Mimir 查询进一步限制为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
 | **Database** | - | 默认数据库名称（仅 ClickHouse，仅允许标识符） |
 
 :::note 与 v1 的差异
@@ -79,15 +79,15 @@ v2 中没有 v1 的结果缓存 TTL 设置 — v2 查询路径刻意不做缓存
 
 | 数据源 | 测试端点 | 确认内容 |
 |-----------|-----------------|----------|
-| Prometheus | `/-/healthy` | 服务器状态、响应时间 |
-| Loki | `/ready` | 服务器就绪状态、响应时间 |
-| Tempo | `/ready` | 服务器就绪状态、响应时间 |
-| ClickHouse | `SELECT 1` | 查询是否可执行、响应时间 |
-| Jaeger | `/api/services` | 服务列表查询、响应时间 |
-| Dynatrace | `/api/v2/entities` | API 是否可访问、响应时间 |
-| Datadog | `/api/v1/validate` | API 密钥有效性、响应时间 |
+| Prometheus | `query?query=vector(1)`（服务器超时 1 秒） | 查询访问 |
+| Loki | `query_range`、1 分钟、`limit=1` | 租户范围的查询访问 |
+| Tempo | 单条 trace 搜索、1 分钟 | 查询访问 |
+| ClickHouse | `SELECT 1`、`readonly=1`、执行限制 1 秒 | 只读 SQL 访问 |
+| Jaeger | `/api/traces?limit=1`、1 分钟 | 查询访问 |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`、1 分钟 | 指标查询访问 |
+| Datadog | 密钥验证（仅密钥对）后 `/api/v1/query`、1 分钟 | 指标查询访问 |
 
-测试结果会显示连接成功/失败状态以及响应延迟时间 (ms)。
+测试结果会显示成功/失败以及响应延迟时间 (ms)。
 
 ## 查询执行
 
@@ -203,7 +203,7 @@ AI 助手可以利用已注册的数据源执行分析。
 
 | 设置 | 默认值 | 说明 |
 |------|--------|------|
-| **Timeout** | 10 秒 | 上游查询执行上限（秒，1–60）。ClickHouse 在所有路径（Explore、服务图、代理）作为上限生效（调用方只能调得更短），连接器会将自身 HTTP 超时对齐到该上限之上（有效上限 55 秒 — 为保持在 Lambda 60 秒限制之下，56–60 秒的设置会缩短为 55 秒）；Prometheus/Mimir 通过 Explore 路径的 API `timeout` 参数生效，并在连接器 12 秒 HTTP 超时之下封顶为 10 秒 |
+| **Timeout** | 10 秒 | 存储范围为 1–60 秒（默认 10 秒），有效最大值为 55 秒（56–60 秒缩短为 55 秒）。Prometheus/Mimir/ClickHouse 在所有路径作为服务器执行上限生效，并将连接器 HTTP 超时对齐到其上。Explore 中的 Prometheus/Mimir 查询进一步限制为 10 秒。其他类型（Loki/Tempo/Jaeger/Dynatrace/Datadog）作为查询工具的 HTTP 响应上限生效（默认 12 秒），不保证服务器端取消查询。模式/发现调用保持连接器固定的 HTTP 预算 |
 
 ### 仅 ClickHouse
 
