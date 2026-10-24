@@ -96,7 +96,7 @@ AWSops는 EC2 인스턴스 내 JSON 파일이 아니라 **관리형 AWS 서비�
 라이브 AWS / Kubernetes 데이터는 **AgentCore MCP Lambda 도구**를 통해 조회합니다. 약 160개의 읽기 전용 도구가 **9개 섹션 게이트웨이**(network · container · data · security · cost · monitoring · iac · ops · external-obs)에 걸쳐 배치되어 있습니다.
 
 - 모든 도구는 read-only입니다.
-- 게이트웨이 수는 **9개**입니다 (ADR-004 개정 2026-06-24) — 외부 관측성 커넥터(Prometheus·ClickHouse)를 호스팅하는 external-obs가 아홉 번째로 프로비저닝·라우팅됩니다.
+- 게이트웨이 수는 **9개**입니다  — 외부 관측성 커넥터(Prometheus·ClickHouse)를 호스팅하는 external-obs가 아홉 번째로 프로비저닝·라우팅됩니다.
 - 더 이상 로컬 Steampipe(127.0.0.1:9193) 서비스나 380개 테이블 직접 접근에 의존하지 않습니다.
 
 ## 외부 관측성 데이터(Prometheus / Loki / Tempo / ClickHouse / Datadog)도 조회할 수 있나요?

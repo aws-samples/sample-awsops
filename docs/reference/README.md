@@ -1,7 +1,7 @@
 # AWSops — System Overview & Component Reference / 시스템 개요 · 컴포넌트 레퍼런스
 
 > v2 is live on `main`. Current decisions live in
-> [`../decisions/BASELINE.md`](../decisions/BASELINE.md) (single current-truth). ADRs hold detail.
+> the BASELINE register (private upstream) (single current-truth). ADRs hold detail.
 
 **EN** — AWSops is a **read-only AWS / Kubernetes operations dashboard + AI diagnosis**, organized
 around the **AWS Well-Architected 6 pillars** (Operational Excellence, Security, Reliability,
@@ -11,7 +11,7 @@ HTTPS:443 → Fargate web — no internet-facing load balancer on the path), Cog
 terminates at the edge, **Aurora Serverless v2** holds durable state, AgentCore **section agents**
 answer per-domain questions over **live AWS data**, and an **OOM-safe async worker tier** lifts
 heavy work off the request path. **AWS-resource mutation and autonomous action are FROZEN**
-(read-only by design — see [ADR-005](../decisions/005-aws-mutation-autonomy-frozen.md) and BASELINE §2).
+(read-only by design — see ADR-005 and BASELINE §2).
 
 **KO** — AWSops는 **읽기 전용 AWS / Kubernetes 운영 대시보드 + AI 진단**으로, **AWS Well-Architected
 6기둥**(운영 우수성·보안·안정성·성능 효율·비용 최적화·지속 가능성)을 축으로 구성된다. **Terraform 기반
@@ -19,13 +19,13 @@ MSA**다: 모든 요청은 **비공개 엣지**(CloudFront → VPC Origin `https
 Fargate web — 경로상 인터넷 노출 LB 없음)를 거치고, Cognito + Lambda@Edge 인증이 엣지에서 종료되며,
 **Aurora Serverless v2**가 영속 상태를 보관하고, AgentCore **섹션 에이전트**가 도메인별 질의에
 **라이브 AWS 데이터**로 답하며, **OOM-안전 비동기 워커 티어**가 무거운 작업을 요청 경로에서 떼어낸다.
-**AWS 리소스 변경·자율 조치는 FROZEN**(설계상 read-only — [ADR-005](../decisions/005-aws-mutation-autonomy-frozen.md),
+**AWS 리소스 변경·자율 조치는 FROZEN**(설계상 read-only — ADR-005,
 BASELINE §2 참조).
 
 **Source-of-truth model / 단일 출처 모델** — These reference docs are the **single current source**
 per component (current design, decisions, key files, status, gotchas). The current cross-cutting
-decision baseline is [`../decisions/BASELINE.md`](../decisions/BASELINE.md); ADRs under
-[`../decisions/`](../decisions/) hold the detail (the *why*); per-phase execution history lives in
+decision baseline is the BASELINE register (private upstream); the ADRs
+(private upstream) hold the detail (the *why*); per-phase execution history lives in
 [`../history/archive/`](../history/archive/). 이 레퍼런스 문서들이 컴포넌트별 **현행 단일 출처**, 현행 결정 기준선은
 `../decisions/BASELINE.md`, ADR은 상세 결정 출처, 실행 이력은 `../history/archive/`다.
 
@@ -36,7 +36,7 @@ decision baseline is [`../decisions/BASELINE.md`](../decisions/BASELINE.md); ADR
 ## Components / 컴포넌트
 
 각 컴포넌트는 한 단락으로 요약하고, 상세는 해당 레퍼런스 문서로 링크한다. The current decision
-baseline for all of them is [`../decisions/BASELINE.md`](../decisions/BASELINE.md).
+baseline for all of them is the BASELINE register (private upstream).
 
 **Edge & Networking — [`01-edge-network.md`](01-edge-network.md).** CloudFront(TLS) → **VPC Origin
 `https-only:443`** → **internal ALB HTTPS:443** (regional ACM) → HTTP → Fargate web. No public ALB;
@@ -122,7 +122,7 @@ owners must provision scoped access and plan-prefix lifecycle before publication
 Foundation phases P1a–P2 are **GREEN**. Read-only agent fleet, chat UI, and dashboard data pages
 have largely shipped beyond their original P1x snapshots; per-component status and current scope
 live in each reference doc, and the cross-cutting decision baseline (including the FROZEN/GATED
-register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계별·컴포넌트별 현황은 각
+register) is in the BASELINE register (private upstream). 단계별·컴포넌트별 현황은 각
 레퍼런스 문서, 동결/게이트 등 현행 결정 기준선은 `../decisions/BASELINE.md`.
 
 ## Execution history / 실행 이력

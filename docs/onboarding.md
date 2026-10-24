@@ -70,5 +70,5 @@ freshness. Main/preview keep `make migrate` and advisory compatibility smoke, wi
 - `CLAUDE.md`(루트) — 필수 규칙·알려진 함정 (SG description 불변, HOSTNAME=0.0.0.0, ENTRYPOINT 금지 등)
 - `DESIGN.md` — v2 설계
 - `docs/reference/01-edge-network.md` ~ `07-eks.md` — 레이어별 구현 레퍼런스
-- `docs/runbooks/deploy-new-version.md` — 릴리스 배포 런북
+- `docs/runbooks/web-release.md` — 웹 릴리스 순서와 복구 런북
 - 결정(ADR) 본문과 BASELINE 레지스터는 비공개 upstream 리포지토리에서 관리됩니다 (이 트리에는 없음 — 문서의 ADR 번호는 추적용 인용)
