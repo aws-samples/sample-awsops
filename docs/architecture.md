@@ -57,18 +57,18 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 
 ## Key Design Decisions
 
-Current decision baseline: [decisions/BASELINE.md](decisions/BASELINE.md) (north star + invariants + FROZEN/GATED register + index of the consolidated ADRs).
+Current decision baseline: the BASELINE register (private upstream) (north star + invariants + FROZEN/GATED register + index of the consolidated ADRs).
 
 | ADR | Decision | Why |
 |---|---|---|
-| [ADR-001](decisions/001-v2-foundation.md) | v2 Foundation — Terraform + thin-BFF + async workers (CDK→Terraform) | v1's single-host build+run coupling caused web latency spikes and non-durable `data/*.json` state |
-| [ADR-002](decisions/002-auth-and-login.md) | Auth — Cognito + Lambda@Edge RS256 + in-app `/login` | No request may reach the backend unauthenticated; terminate auth as far upstream as possible |
-| [ADR-003](decisions/003-ai-agent-routing.md) | AI routing — regex fast-path + Haiku classifier + cross-domain auto-synthesis | Deterministic speed for clear queries, LLM classification for ambiguous/multi-domain ones |
-| [ADR-004](decisions/004-agentcore-gateways-runtime.md) | AgentCore — 9 section gateways + shared Runtime + Memory + Code Interpreter | Per-domain read-only MCP tools, idempotently provisioned, config delivered via SSM |
-| [ADR-005](decisions/005-aws-mutation-autonomy-frozen.md) | AWS-resource mutation + autonomy = FROZEN (do-not-enable) | Read-only by design; unfreezing requires a new ADR + multi-AI panel + dated owner-override |
-| [ADR-007](decisions/007-external-data-integration-governance.md) | External data integration governance (keystone) | "Read-only" scopes AWS resources; external DATA read+write is allowed only under governance |
-| [ADR-009](decisions/009-async-worker-backbone.md) | Async worker backbone — SQS + Step Functions + Lambda/Fargate | Heavy/OOM-risk work must never affect web availability; ledger-first + idempotent dispatch |
-| [ADR-016](decisions/016-v1-decommission.md) | v1 legacy decommission | v2 fully replaces v1; staged human-directed teardown, not autonomous action |
+| ADR-001 | v2 Foundation — Terraform + thin-BFF + async workers (CDK→Terraform) | v1's single-host build+run coupling caused web latency spikes and non-durable `data/*.json` state |
+| ADR-002 | Auth — Cognito + Lambda@Edge RS256 + in-app `/login` | No request may reach the backend unauthenticated; terminate auth as far upstream as possible |
+| ADR-003 | AI routing — regex fast-path + Haiku classifier + cross-domain auto-synthesis | Deterministic speed for clear queries, LLM classification for ambiguous/multi-domain ones |
+| ADR-004 | AgentCore — 9 section gateways + shared Runtime + Memory + Code Interpreter | Per-domain read-only MCP tools, idempotently provisioned, config delivered via SSM |
+| ADR-005 | AWS-resource mutation + autonomy = FROZEN (do-not-enable) | Read-only by design; unfreezing requires a new ADR + multi-AI panel + dated owner-override |
+| ADR-007 | External data integration governance (keystone) | "Read-only" scopes AWS resources; external DATA read+write is allowed only under governance |
+| ADR-009 | Async worker backbone — SQS + Step Functions + Lambda/Fargate | Heavy/OOM-risk work must never affect web availability; ledger-first + idempotent dispatch |
+| ADR-016 | v1 legacy decommission | v2 fully replaces v1; staged human-directed teardown, not autonomous action |
 
 ## Operations
 
@@ -76,13 +76,6 @@ Operational runbooks live in [runbooks/](runbooks/):
 
 | Runbook | Topic |
 |---|---|
-| [deploy-new-version.md](runbooks/deploy-new-version.md) | Deploy a new version |
-| [start-services.md](runbooks/start-services.md) | Start services |
-| [add-new-page.md](runbooks/add-new-page.md) | Add a new dashboard page |
-| [cognito-auth-issues.md](runbooks/cognito-auth-issues.md) | Cognito authentication issues |
-| [alert-pipeline-troubleshoot.md](runbooks/alert-pipeline-troubleshoot.md) | Alert pipeline troubleshooting |
-| [cache-warmer-issues.md](runbooks/cache-warmer-issues.md) | Cache warmer troubleshooting |
-| [multi-account-setup.md](runbooks/multi-account-setup.md) | Multi-account setup |
 | [onboard-target-account.md](runbooks/onboard-target-account.md) | Onboard a target account |
 | [istio-agent-eks-access.md](runbooks/istio-agent-eks-access.md) | Grant istio-read MCP access to an EKS cluster |
 | [k8sgpt-operator-install.md](runbooks/k8sgpt-operator-install.md) | K8sGPT operator install (out-of-band) |
@@ -147,18 +140,18 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 
 ## Key Design Decisions
 
-결정의 현행 기준선: [decisions/BASELINE.md](decisions/BASELINE.md) (북극성 + 불변식 + FROZEN/GATED register + 통합 ADR 인덱스).
+결정의 현행 기준선: the BASELINE register (private upstream) (북극성 + 불변식 + FROZEN/GATED register + 통합 ADR 인덱스).
 
 | ADR | 결정 | 이유 |
 |---|---|---|
-| [ADR-001](decisions/001-v2-foundation.md) | v2 파운데이션 — Terraform + thin-BFF + 비동기 워커(CDK→Terraform) | v1 단일 호스트 build+run 결합이 웹 지연 스파이크와 비영속 `data/*.json` 상태를 유발 |
-| [ADR-002](decisions/002-auth-and-login.md) | 인증 — Cognito + Lambda@Edge RS256 + 인앱 `/login` | 어떤 요청도 인증 없이 백엔드에 도달 불가 — 인증은 최대한 상류에서 종료 |
-| [ADR-003](decisions/003-ai-agent-routing.md) | AI 라우팅 — 정규식 fast-path + Haiku 분류기 + 교차도메인 자동합성 | 명확한 질의는 결정적 속도로, 모호/멀티도메인 질의는 LLM 분류로 처리 |
-| [ADR-004](decisions/004-agentcore-gateways-runtime.md) | AgentCore — 9 섹션 게이트웨이 + 공유 Runtime + Memory + Code Interpreter | 도메인별 read-only MCP 도구를 멱등 프로비저닝, 설정은 SSM으로 전달 |
-| [ADR-005](decisions/005-aws-mutation-autonomy-frozen.md) | AWS 리소스 변경 + 자율 = FROZEN(do-not-enable) | 설계상 read-only; 해제는 새 ADR + 멀티-AI 패널 + 날짜박힌 owner-override 필요 |
-| [ADR-007](decisions/007-external-data-integration-governance.md) | 외부 데이터 통합 거버넌스(keystone) | "read-only"는 AWS 리소스 한정 — 외부 DATA read+write는 거버넌스 하에서만 허용 |
-| [ADR-009](decisions/009-async-worker-backbone.md) | 비동기 워커 백본 — SQS + Step Functions + Lambda/Fargate | 무거운/OOM 위험 작업이 web 가용성에 영향을 주지 않도록; ledger-first + 멱등 디스패치 |
-| [ADR-016](decisions/016-v1-decommission.md) | v1 레거시 폐기 | v2가 v1을 완전 대체; 자율 조치가 아닌 단계별 수동 폐기 |
+| ADR-001 | v2 파운데이션 — Terraform + thin-BFF + 비동기 워커(CDK→Terraform) | v1 단일 호스트 build+run 결합이 웹 지연 스파이크와 비영속 `data/*.json` 상태를 유발 |
+| ADR-002 | 인증 — Cognito + Lambda@Edge RS256 + 인앱 `/login` | 어떤 요청도 인증 없이 백엔드에 도달 불가 — 인증은 최대한 상류에서 종료 |
+| ADR-003 | AI 라우팅 — 정규식 fast-path + Haiku 분류기 + 교차도메인 자동합성 | 명확한 질의는 결정적 속도로, 모호/멀티도메인 질의는 LLM 분류로 처리 |
+| ADR-004 | AgentCore — 9 섹션 게이트웨이 + 공유 Runtime + Memory + Code Interpreter | 도메인별 read-only MCP 도구를 멱등 프로비저닝, 설정은 SSM으로 전달 |
+| ADR-005 | AWS 리소스 변경 + 자율 = FROZEN(do-not-enable) | 설계상 read-only; 해제는 새 ADR + 멀티-AI 패널 + 날짜박힌 owner-override 필요 |
+| ADR-007 | 외부 데이터 통합 거버넌스(keystone) | "read-only"는 AWS 리소스 한정 — 외부 DATA read+write는 거버넌스 하에서만 허용 |
+| ADR-009 | 비동기 워커 백본 — SQS + Step Functions + Lambda/Fargate | 무거운/OOM 위험 작업이 web 가용성에 영향을 주지 않도록; ledger-first + 멱등 디스패치 |
+| ADR-016 | v1 레거시 폐기 | v2가 v1을 완전 대체; 자율 조치가 아닌 단계별 수동 폐기 |
 
 ## Operations
 
@@ -166,13 +159,6 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 
 | 런북 | 주제 |
 |---|---|
-| [deploy-new-version.md](runbooks/deploy-new-version.md) | 새 버전 배포 |
-| [start-services.md](runbooks/start-services.md) | 서비스 시작 |
-| [add-new-page.md](runbooks/add-new-page.md) | 새 대시보드 페이지 추가 |
-| [cognito-auth-issues.md](runbooks/cognito-auth-issues.md) | Cognito 인증 문제 |
-| [alert-pipeline-troubleshoot.md](runbooks/alert-pipeline-troubleshoot.md) | 알림 파이프라인 문제 해결 |
-| [cache-warmer-issues.md](runbooks/cache-warmer-issues.md) | 캐시 워머 문제 해결 |
-| [multi-account-setup.md](runbooks/multi-account-setup.md) | 멀티 어카운트 설정 |
 | [onboard-target-account.md](runbooks/onboard-target-account.md) | 타깃 계정 온보딩 |
 | [istio-agent-eks-access.md](runbooks/istio-agent-eks-access.md) | istio-read MCP의 EKS 클러스터 접근 부여 |
 | [k8sgpt-operator-install.md](runbooks/k8sgpt-operator-install.md) | K8sGPT 오퍼레이터 설치(아웃-오브-밴드) |

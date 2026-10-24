@@ -96,7 +96,7 @@ AWSops は EC2 インスタンス内の JSON ファイルではなく、**マネ
 ライブ AWS / Kubernetes データは **AgentCore MCP Lambda ツール**を通じて照会します。約 160 個の読み取り専用ツールが **9 個のセクションゲートウェイ**(network · container · data · security · cost · monitoring · iac · ops · external-obs)にわたって配置されています。
 
 - すべてのツールは read-only です。
-- ゲートウェイ数は **9 個**です (ADR-004 改訂 2026-06-24) — Prometheus·ClickHouse コネクタをホストする external-obs が 9 番目としてプロビジョニング・ルーティングされます。
+- ゲートウェイ数は **9 個**です  — Prometheus·ClickHouse コネクタをホストする external-obs が 9 番目としてプロビジョニング・ルーティングされます。
 - ローカル Steampipe(127.0.0.1:9193)サービスや 380 テーブルへの直接アクセスにはもう依存しません。
 
 ## 外部オブザーバビリティデータ(Prometheus / Loki / Tempo / ClickHouse / Datadog)も照会できますか?
