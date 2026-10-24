@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-查看所选账户和区域范围内的 EKS 集群与 Kubernetes 资源。AWSops 以只读方式查询云端和集群资源；注册仅保存应用设置（ADR-005）。
+查看所选账户和区域范围内的 EKS 集群与 Kubernetes 资源。AWSops 以只读方式查询云端和集群资源；注册仅保存应用设置。
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 
