@@ -41,7 +41,7 @@ Deep（15+1 セクション、計 16 レンダー）** のティア構造です 
                           [Slack/SNS 発送]
 ```
 
-詳細な設定手順はサーバー側の[ランブック](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md)にあります。
+詳細な設定手順はサーバー側の[ランブック](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md)にあります。
 
 ## Webhook エンドポイント
 
@@ -179,16 +179,10 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 ダッシュボードヘッダーの 🚨 バッジをクリックすると `/ai-diagnosis` ページへ移動し、進行中のインシデントの詳細ビューを確認できます。
 
 ### 通知が届かないとき
-サーバー側ランブック [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md) に症状別のチェックリストがあります。
+サーバー側ランブック [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md) に症状別のチェックリストがあります。
 
 ## 関連ページ
 
 - [AI 総合診断](./ai-diagnosis.md) — 15 セクションのフル診断
 - [CloudWatch](./cloudwatch) — アラームのソース
 - [外部データソース](./datasources) — Alertmanager/Grafana クエリの源泉
-
-## 参考
-
-- ADR-009: アラートトリガー AI 診断
-- ADR-012: SNS 通知戦略
-- ADR-013: 自動収集調査エージェント

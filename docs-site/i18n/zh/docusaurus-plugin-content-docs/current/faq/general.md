@@ -96,7 +96,7 @@ AWSops 不使用 EC2 实例内的 JSON 文件，而是将状态存储在**托管
 实时 AWS / Kubernetes 数据通过 **AgentCore MCP Lambda 工具**查询。约 160 个只读工具分布在 **9 个分区网关**（network · container · data · security · cost · monitoring · iac · ops · external-obs）中。
 
 - 所有工具均为 read-only。
-- 网关数量为 **9 个**（ADR-004 修订 2026-06-24）— 承载 Prometheus·ClickHouse 连接器的 external-obs 作为第九个网关被配置并参与路由。
+- 网关数量为 **9 个**— 承载 Prometheus·ClickHouse 连接器的 external-obs 作为第九个网关被配置并参与路由。
 - 不再依赖本地 Steampipe（127.0.0.1:9193）服务或对 380 个表的直接访问。
 
 ## 可以查询外部可观测性数据（Prometheus / Loki / Tempo / ClickHouse / Datadog）吗？

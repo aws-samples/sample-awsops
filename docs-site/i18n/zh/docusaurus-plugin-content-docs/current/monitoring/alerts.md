@@ -40,7 +40,7 @@ description: 接收 CloudWatch / Alertmanager / Grafana Webhook、告警关联�
                           [Slack/SNS 发送]
 ```
 
-详细的设置步骤见服务器端的[运维手册](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md)。
+详细的设置步骤见服务器端的[运维手册](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md)。
 
 ## Webhook 端点
 
@@ -178,16 +178,10 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 点击仪表板页头的 🚨 徽章会跳转到 `/ai-diagnosis` 页面，可查看进行中事件的详情视图。
 
 ### 收不到告警时
-服务器端运维手册 [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md) 中提供了按症状分类的检查清单。
+服务器端运维手册 [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md) 中提供了按症状分类的检查清单。
 
 ## 相关页面
 
 - [AI 综合诊断](./ai-diagnosis.md) — 全部 15 个分区的诊断
 - [CloudWatch](./cloudwatch) — 告警来源
 - [外部数据源](./datasources) — Alertmanager/Grafana 查询源头
-
-## 参考
-
-- ADR-009: 告警触发 AI 诊断
-- ADR-012: SNS 通知策略
-- ADR-013: 自动采集调查代理

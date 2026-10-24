@@ -27,7 +27,7 @@ flowchart LR
 | **ライブ照会** | AgentCore MCP Lambda ツール（約 160 個、読み取り専用）が boto3 で AWS API を直接呼び出し |
 | **Steampipe の役割** | ライブクエリエンジンでは**ない**。`steampipe_enabled` フラグでのみ有効化される**インベントリ sync**（デフォルト OFF）に過ぎない — ローカル 9193 サービス/pg Pool なし |
 | **ゲート** | AgentCore 全体は `agentcore_enabled` Terraform フラグでゲート（デフォルト OFF → `plan` = No changes、$0） |
-| **読み取り専用** | すべてのツールは read-only（ADR-041 / 2026-06-11 の撤回：AWS リソースの変更+自律は恒久凍結） |
+| **読み取り専用** | すべてのツールは read-only で、AWS リソースの変更と自律実行は恒久凍結 |
 
 :::info Steampipe はもはやライブエンジンではありません
 ライブ AWS の状態は常に AgentCore ツールが回答します。Steampipe は有効化された場合に Fargate でウォームアップされ、インベントリを Aurora へ sync する補助経路に過ぎず、デフォルトは無効です。
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW ルート照会"]
 ```
 
-### セクションゲートウェイは 9 個です（ADR-004 改訂）
+### セクションゲートウェイは 9 個です
 
 `network · container · data · security · cost · monitoring · iac · ops · external-obs` — 合計 **9 個**です（9 プロビジョニング / 9 ルーティング、external-obs 昇格 2026-06-24）。
 
 | 項目 | 内容 |
 |------|------|
-| **ゲートウェイ数** | ADR-004 改訂（2026-06-24）に従い **9 個** |
+| **ゲートウェイ数** | **9 個** |
 | **ツール数** | 約 **160 個**、すべて読み取り専用 — フリートが拡張されれば変動（固定値ではない） |
-| **外部オブザーバビリティ** | Prometheus·ClickHouse コネクタは **external-obs ゲートウェイ**（9 番目）としてルーティング（ADR-004 改訂）— その他の外部連携は独立した **Integrations 軸**（ADR-007/017） |
+| **外部オブザーバビリティ** | Prometheus·ClickHouse コネクタは **external-obs ゲートウェイ**（9 番目）としてルーティング— その他の外部連携は独立した **Integrations 軸** |
 | **プロトコル** | MCP（Model Context Protocol）標準 |
 
 - Agent が `list_tools` で利用可能なツール一覧を照会
@@ -397,6 +397,6 @@ Web BFF が Runtime / Gateway / Code Interpreter の状態を照会します。S
 
 AI アシスタントは `/assistant`（フルページ）と、どこからでも開けるリサイズ可能なドロワーで使用し、両者は同一の Aurora 会話履歴を共有します。
 
-:::tip ルーティングはハイブリッド（ADR-038）
+:::tip ルーティングはハイブリッド
 質問は正規表現 fast-path + Haiku 4.5 分類器 + プロンプトキャッシングで適切なセクションエージェントにルーティングされます（LIVE、キャッシュヒット ~59%）。レガシーの固定マルチルート Sonnet レジストリではありません。
 :::

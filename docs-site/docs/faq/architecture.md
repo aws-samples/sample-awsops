@@ -66,7 +66,7 @@ flowchart TD
 
 ### 단계별 동작
 
-1. **enqueue** — web 이 `worker_jobs`에 `queued`로 행을 쓰고 SQS에 메시지를 넣습니다. 범용 `POST /api/jobs`는 `noop` 계열만 받고, 도메인 작업은 소유권-스코프 라우트(`POST /api/diagnosis`·`POST /api/compliance/run`)로, 나머지는 내부 전용 경로로 들어갑니다(ADR-009).
+1. **enqueue** — web 이 `worker_jobs`에 `queued`로 행을 쓰고 SQS에 메시지를 넣습니다. 범용 `POST /api/jobs`는 `noop` 계열만 받고, 도메인 작업은 소유권-스코프 라우트(`POST /api/diagnosis`·`POST /api/compliance/run`)로, 나머지는 내부 전용 경로로 들어갑니다.
 2. **ESM(킬스위치)** — Event Source Mapping이 SQS → dispatcher Lambda를 연결합니다. ESM은 비활성화로 즉시 처리를 멈출 수 있는 **킬스위치** 역할을 합니다.
 3. **dispatcher (멱등)** — `job_id`를 기준으로 멱등합니다. Step Functions 실행 이름을 `job_id`로 설정하므로 중복 enqueue가 같은 실행으로 수렴합니다.
 4. **Step Functions `$.runtime` Choice** — 입력의 `runtime` 값으로 분기합니다:
@@ -116,13 +116,13 @@ AWSops의 라이브 AWS 데이터는 **AgentCore MCP Lambda 도구**가 담당�
 | **AgentCore MCP 도구 (라이브)** | 실시간 AWS API 조회 — 챗·진단·페이지의 라이브 데이터 소스 |
 | **Steampipe (flag-gated)** | `steampipe_enabled`(기본 OFF) 인벤토리 sync **전용**. 라이브 쿼리 엔진이 아니며, 로컬 9193 서비스도 아님 |
 
-:::info 게이트웨이 수는 9개입니다 (ADR-004 개정 2026-06-24)
-외부 관측성 커넥터(Prometheus·ClickHouse)는 **external-obs 게이트웨이**로 승격되어 아홉 번째로 프로비저닝·라우팅됩니다(9 프로비저닝 / 9 라우트). 그 외 외부 연동은 별도의 **Integrations 축**(ADR-007/017)입니다.
+:::info 게이트웨이 수는 9개입니다
+외부 관측성 커넥터(Prometheus·ClickHouse)는 **external-obs 게이트웨이**로 승격되어 아홉 번째로 프로비저닝·라우팅됩니다(9 프로비저닝 / 9 라우트). 그 외 외부 연동은 별도의 **Integrations 축**입니다.
 :::
 
-## AI 라우팅은 어떻게 동작하나요? (ADR-038 하이브리드)
+## AI 라우팅은 어떻게 동작하나요? (하이브리드)
 
-AI 라우팅은 **ADR-038 하이브리드** 방식으로 LIVE입니다. v1의 Sonnet 단일 분류기 11/18-route 레지스트리를 대체합니다.
+AI 라우팅은 **하이브리드** 방식으로 LIVE입니다. v1의 Sonnet 단일 분류기 11/18-route 레지스트리를 대체합니다.
 
 ```mermaid
 flowchart TD
@@ -168,7 +168,7 @@ flowchart LR
 - 모든 요청에서 `awsops_token` 쿠키의 JWT를 **RS256 JWKS로 서명 검증** + `iss`/`aud`/`token_use` 확인.
 - 미인증이면 자체 **`/login`** 폼으로 redirect.
 
-**2. 인앱 로그인 (ADR-042)**
+**2. 인앱 로그인**
 - 로그인 = **자체 `/login` 폼**. BFF `POST /api/auth/login`이 **무서명 공개 `InitiateAuth(USER_PASSWORD_AUTH)`** 를 호출(SDK 미사용) → `awsops_token` 쿠키 발급(id_token 12시간).
 - **Hosted UI PKCE 플로우(`/_callback`)는 다크 폴백**으로만 보존.
 - signout은 쿠키 삭제 → `/login`(Hosted UI `/logout` 왕복 없음).
