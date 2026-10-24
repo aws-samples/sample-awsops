@@ -30,6 +30,10 @@ class TestSearch(_Base):
             out=tm.lambda_handler({"tool_name":"tempo_search","arguments":{"query":"{}"}},None)
         self.assertEqual(out["statusCode"],200)
         self.assertEqual(len(json.loads(out["body"])["traces"]),1)
+    def test_health_accepts_bare_empty_but_search_does_not(self):
+        with mock.patch.object(tm,"http_json",return_value=(200,{})):
+            self.assertTrue(json.loads(tm.lambda_handler({"tool_name":"tempo_health","arguments":{}},None)["body"])["ok"])
+            self.assertEqual(json.loads(tm.lambda_handler({"tool_name":"tempo_search","arguments":{"query":"{}"}},None)["body"])["collectionStatus"],"unknown")
     def test_http_error(self):
         with mock.patch.object(tm,"http_json",return_value=(500,{"raw":"boom"})):
             self.assertEqual(tm.lambda_handler({"tool_name":"tempo_search","arguments":{"query":"{}"}},None)["statusCode"],400)

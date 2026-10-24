@@ -58,6 +58,22 @@ def test_bearer_connection_tests_the_metric_operation_without_api_key_validation
     assert request.call_args.args[1] == "/api/v1/query"
 
 
+def test_health_requests_share_one_deadline():
+    for cost, passed in ((15, True), (25, False)):  # validate consumes `cost` of a 20s budget
+        clock, calls = [100.0], []
+
+        def fake_get(creds, path, params=None, *, timeout=None):
+            calls.append((path, timeout))
+            clock[0] += cost if path == "/api/v1/validate" else 0
+            return {"valid": True} if path == "/api/v1/validate" else {"status": "ok", "series": []}
+        with patch.object(dd, "load_datasource", return_value={**CREDS, "timeoutS": 20}), \
+                patch.object(dd, "assert_host_allowed"), patch.object(dd, "_get", side_effect=fake_get), \
+                patch.object(dd.time, "monotonic", side_effect=lambda: clock[0]):
+            assert body(dd.datadog_health({}))["ok"] is passed
+        assert calls[0] == ("/api/v1/validate", 20)
+        assert calls[1:] == ([("/api/v1/query", 5)] if passed else [])
+
+
 def test_point_limit_is_disclosed_and_preserves_other_series():
     points = [[1000 + i, i] for i in range(dd.MAX_POINTS + 1)]
     response = {"status": "ok", "series": [

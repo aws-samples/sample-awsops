@@ -255,7 +255,7 @@ def _trace_projection(data, requested_trace_id):
     return out if out[key] else None
 
 
-def tempo_search(args):
+def tempo_search(args, bare_empty=False):
     query = (args.get("query") or "").strip()
     if not query:
         return err("query (TraceQL) required")
@@ -277,7 +277,8 @@ def tempo_search(args):
     # Require a recognizable message. Bare {} is unverified, not universal API malformation.
     metrics = data.get("metrics") if isinstance(data, dict) else None
     known_metrics = isinstance(metrics, dict) and (not metrics or any(key in metrics for key in _SEARCH_FIELDS))
-    recognizable = isinstance(data, dict) and ("traces" in data or known_metrics) and "raw" not in data
+    # Only the connection test accepts an idle tenant's bare {} 200 as an empty search.
+    recognizable = isinstance(data, dict) and ("traces" in data or known_metrics or bare_empty and data == {}) and "raw" not in data
     raw = data.get("traces", []) if recognizable else None
     traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
     truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
@@ -551,7 +552,7 @@ def tempo_health(args):
         return json.loads(tempo_search({
             "query": '{ resource.service.name = "awsops-connection-probe" }',
             "start": str(end - 60), "end": str(end), "limit": "1",
-        })["body"]).get("collectionStatus")
+        }, bare_empty=True)["body"]).get("collectionStatus")
     return ok(query_probe(run, "Tempo tenant query access could not be verified"))
 
 

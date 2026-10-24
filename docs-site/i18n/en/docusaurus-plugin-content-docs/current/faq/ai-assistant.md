@@ -32,7 +32,7 @@ If you've connected datasources (external observability), you can also query the
 <details>
 <summary>How does a question get routed to the right domain?</summary>
 
-The AI assistant uses **hybrid routing** (ADR-038, LIVE). It is no longer a fixed route registry that sends every question to a large model.
+The AI assistant uses **hybrid routing** (LIVE). It is no longer a fixed route registry that sends every question to a large model.
 
 **Three-stage pipeline**
 
@@ -51,8 +51,8 @@ Want to pick a domain explicitly? Type a slash (`/`) in the input box. See the "
 
 Live AWS queries go through **AgentCore MCP (Model Context Protocol) Lambda tools**. The assistant queries exactly the data it needs to answer, then analyzes it.
 
-- **~160 read-only tools** are spread across **9 section gateways** (Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs — per amended ADR-004). The tool count is approximate and evolving.
-- The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, routed as the ninth (ADR-004 as amended 2026-06-24, 9 provisioned / 9 routed). Other external integrations (vendor-hosted, etc.) remain the separate **Integrations axis** (ADR-007/017).
+- **~160 read-only tools** are spread across **9 section gateways** (Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs). The tool count is approximate and evolving.
+- The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, routed as the ninth (9 provisioned / 9 routed). Other external integrations (vendor-hosted, etc.) remain the separate **Integrations axis** .
 - Steampipe exists only as a **flag-gated inventory sync** (`steampipe_enabled`, default OFF). It is not the live query engine, and not an always-on local service.
 
 :::info Technical Details
@@ -89,9 +89,9 @@ Yes. Conversations are persisted as threads in **Aurora** (PostgreSQL). The file
 
 **No.** AWSops is a **read-only operations dashboard + AI diagnosis**. The assistant does **not** create, modify, delete, or restart AWS resources.
 
-- **AWS-resource mutation and autonomy are permanently frozen** (do-not-enable) — per the 2026-06-11 high-risk ADR reversal consensus.
+- **AWS-resource mutation and autonomy are permanently frozen** (do-not-enable).
 - The assistant only provides diagnosis, root-cause analysis (RCA), and recommendations. You make any actual change yourself in the AWS Console / IaC.
-- On the **external-data** side only, governed external observability **reads** and external record/ticket/message **writes** are permitted (ADR-041). These pass through SSRF guard · Secrets Manager · DLP/redaction · destination allowlist · human-gate · flag-OFF controls, and are **data records in external systems, not AWS-resource changes**.
+- On the **external-data** side only, governed external observability **reads** and external record/ticket/message **writes** are permitted . These pass through SSRF guard · Secrets Manager · DLP/redaction · destination allowlist · human-gate · flag-OFF controls, and are **data records in external systems, not AWS-resource changes**.
 
 :::tip
 A mutation request like "assistant, restart this instance" will not be executed. Ask instead, "diagnose why this instance is unstable."
