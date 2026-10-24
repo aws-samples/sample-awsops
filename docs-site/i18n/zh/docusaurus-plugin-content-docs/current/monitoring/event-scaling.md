@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **支持的资源** | KEDA、HPA、Aurora replica/ACU、MSK broker/partition、ASG、EC2、EBS IOPS、ALB |
 
 :::caution Phase 2 的局限
-生成的脚本**仅供人工审核使用**。AWSops 不会直接执行基础设施变更（KEDA 部署、AWS API 调用）。
+生成的脚本**仅供人工审核使用**。AWSops 不会直接执行基础设施变更（KEDA 部署、AWS API 调用）。自动执行、IAM 扩展和 KEDA 集成仍是未获批准的提案，在独立门控之后保持关闭。
 :::
 
 ## 工作流

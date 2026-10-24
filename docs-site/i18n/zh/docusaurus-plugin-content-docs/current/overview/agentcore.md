@@ -186,7 +186,7 @@ AgentCore Runtime ARN·Memory ID 等配置值**仅存在于 SSM**，不在 UI �
 | **对话历史保留** | 最长 365 天 |
 | **AgentCore 响应** | 仅返回最终文本（工具推理以打字效果流式呈现） |
 | **工具启用标志** | 30 个切片由 `agentcore_enabled`（21）·`integrations_enabled`（9）门控 — 线上环境编队已部署完毕（2026-08-02），新装环境默认 off |
-| **厂商 mcpServer 目标** | external-obs 的厂商托管 mcpServer 目标（Datadog·Dynatrace·New Relic）的 `capability=read` 不在协议层强制— read-only 保证以 Lambda 目标为准；未配置端点时 SKIP。运行时由 fail-closed 工具 allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — 仅放行目录转写的 read 工具，`agent/agent.py`）作为补偿控制 |
+| **厂商 mcpServer 目标** | external-obs 的厂商托管 mcpServer 目标（Datadog·Dynatrace·New Relic）的 `capability=read` 不在协议层强制 — read-only 保证以 Lambda 目标为准；未配置端点时 SKIP。运行时由 fail-closed 工具 allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — 仅放行目录转写的 read 工具，`agent/agent.py`）作为补偿控制 |
 
 ## 下一步
 

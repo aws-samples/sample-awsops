@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **対応リソース** | KEDA、HPA、Aurora replica/ACU、MSK broker/partition、ASG、EC2、EBS IOPS、ALB |
 
 :::caution Phase 2 の制限
-生成されたスクリプトは**人によるレビュー用**です。AWSops はインフラ変更（KEDA デプロイ、AWS API 呼び出し）を直接実行しません。
+生成されたスクリプトは**人によるレビュー用**です。AWSops はインフラ変更（KEDA デプロイ、AWS API 呼び出し）を直接実行しません。自動実行・IAM 拡張・KEDA 統合は未承認の提案段階であり、別のゲートの背後で無効のまま維持されます。
 :::
 
 ## ワークフロー

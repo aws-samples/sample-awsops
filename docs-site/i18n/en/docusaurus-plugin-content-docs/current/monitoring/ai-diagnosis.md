@@ -128,7 +128,7 @@ Recipients are stored alongside the schedule in `data/report-schedule.json` (`no
 | **PDF** | `/ai-diagnosis/report` page + browser Print | White background, A4 page breaks, no extra PDF library (bundle-size hygiene) |
 
 :::tip Why no dedicated PDF library
-a separate PDF library (Puppeteer, etc.) significantly bloats the Next.js bundle and EC2 memory. Instead we render a print-friendly page and use the browser's Print-to-PDF — equivalent output quality, zero new dependencies.
+A separate PDF library (Puppeteer, etc.) significantly bloats the Next.js bundle and EC2 memory. Instead we render a print-friendly page and use the browser's Print-to-PDF — equivalent output quality, zero new dependencies.
 :::
 
 ## Integration With the Alert Pipeline

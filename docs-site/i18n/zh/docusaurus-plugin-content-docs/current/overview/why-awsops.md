@@ -138,7 +138,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 | **告警流水线** | Webhook（CloudWatch SNS/Alertmanager/Grafana）→ 关联分析 → AI 自动诊断 → Slack |
 | **事件预扩容** | 分析历史指标 → Bedrock 生成多阶段预热计划·脚本（审核后执行） |
 | **CIS 合规** | 使用 Powerpipe 进行 CIS v1.5~v4.0、**431 个控制项**基准测试 |
-| **安全设计** | 外部调用 SSRF allowlist、管理员门控（adminEmails）、变更操作门控框架 |
+| **安全设计** | 外部调用 SSRF allowlist、管理员门控（adminEmails）、不变更 AWS 资源（只读 — 变更仅以脚本形式导出） |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore 仪表板 — Runtime/Gateway/工具状态" />
 

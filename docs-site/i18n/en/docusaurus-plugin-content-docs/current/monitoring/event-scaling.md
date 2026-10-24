@@ -1,7 +1,7 @@
 ---
 sidebar_position: 10
 title: Event Pre-Scaling
-description: traffic event registration, historical metric analysis, AI-driven warm-up scripts
+description: Traffic event registration, historical metric analysis, AI-driven warm-up scripts
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
@@ -24,7 +24,7 @@ The `/event-scaling` page generates **AI-driven warm-up plans** for upcoming tra
 | **Supported resources** | KEDA, HPA, Aurora replica/ACU, MSK broker/partition, ASG, EC2, EBS IOPS, ALB |
 
 :::caution Phase 2 boundary
-Generated scripts are for **human review**. AWSops does not perform infrastructure mutations (KEDA deploys, AWS API calls).
+Generated scripts are for **human review**. AWSops does not perform infrastructure mutations (KEDA deploys, AWS API calls). Auto-execution, IAM expansion and KEDA integration are an unapproved proposal, kept off behind a separate gate.
 :::
 
 ## Workflow

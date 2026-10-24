@@ -139,7 +139,7 @@ AWS 데이터에 더해 기존 관측성 스택을 **데이터소스로 연동**
 | **알림 파이프라인** | 웹훅(CloudWatch SNS/Alertmanager/Grafana) → 상관 분석 → AI 자동 진단 → Slack |
 | **이벤트 사전 스케일링** | 과거 메트릭 분석 → Bedrock이 다단계 워밍업 플랜·스크립트 생성(검토-후-실행) |
 | **CIS 컴플라이언스** | Powerpipe로 CIS v1.5~v4.0, **431개 컨트롤** 벤치마크 |
-| **보안 설계** | 외부 호출 SSRF allowlist, 관리자 게이트(adminEmails), 변경 작업 게이트 프레임워크 |
+| **보안 설계** | 외부 호출 SSRF allowlist, 관리자 게이트(adminEmails), AWS 리소스 변경 없음(읽기 전용 — 변경 작업은 스크립트로만 내보냄) |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore 대시보드 — Runtime/Gateway/도구 상태" />
 

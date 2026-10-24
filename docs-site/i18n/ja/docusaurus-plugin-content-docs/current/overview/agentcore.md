@@ -186,7 +186,7 @@ AgentCore Runtime ARN・Memory ID などの設定値は **SSM のみ**に存在�
 | **会話履歴の保持** | 最大 365 日 |
 | **AgentCore の応答** | 最終テキストのみ返却（ツール推論はタイピング効果でストリーミング） |
 | **ツール有効化フラグ** | 30 スライスは `agentcore_enabled`（21）・`integrations_enabled`（9）でゲート — ライブ環境はフリートのデプロイ完了（2026-08-02）、新規インストールのデフォルトは off |
-| **ベンダー mcpServer ターゲット** | external-obs のベンダーホスティング mcpServer ターゲット（Datadog・Dynatrace・New Relic）は `capability=read` がプロトコルレベルで強制されません— read-only 保証は Lambda ターゲットが対象で、エンドポイント未設定時は SKIP。ランタイムでは fail-closed のツール allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — カタログに転写された read ツールのみ通過、`agent/agent.py`）が補完 |
+| **ベンダー mcpServer ターゲット** | external-obs のベンダーホスティング mcpServer ターゲット（Datadog・Dynatrace・New Relic）は `capability=read` がプロトコルレベルで強制されません — read-only 保証は Lambda ターゲットが対象で、エンドポイント未設定時は SKIP。ランタイムでは fail-closed のツール allowlist（`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — カタログに転写された read ツールのみ通過、`agent/agent.py`）が補完 |
 
 ## 次のステップ
 

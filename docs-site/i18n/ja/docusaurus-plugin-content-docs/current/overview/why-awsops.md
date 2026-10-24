@@ -139,7 +139,7 @@ AWS データに加え、既存のオブザーバビリティスタックを**�
 | **アラートパイプライン** | Webhook（CloudWatch SNS/Alertmanager/Grafana）→ 相関分析 → AI 自動診断 → Slack |
 | **イベント事前スケーリング** | 過去メトリクスの分析 → Bedrock が多段階ウォームアッププラン・スクリプトを生成（レビュー後実行） |
 | **CIS コンプライアンス** | Powerpipe で CIS v1.5〜v4.0、**431 個のコントロール**をベンチマーク |
-| **セキュリティ設計** | 外部呼び出しの SSRF allowlist、管理者ゲート（adminEmails）、変更操作ゲートフレームワーク |
+| **セキュリティ設計** | 外部呼び出しの SSRF allowlist、管理者ゲート（adminEmails）、AWS リソースの変更なし（読み取り専用 — 変更はスクリプトとしてエクスポートのみ） |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore ダッシュボード — Runtime/Gateway/ツールの状態" />
 

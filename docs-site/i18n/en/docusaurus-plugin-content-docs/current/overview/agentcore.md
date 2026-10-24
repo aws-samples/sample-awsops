@@ -146,7 +146,7 @@ Provides AWS documentation search, operations helpers, and inventory query tools
 
 ### External-Obs (13 tools, routing key: `observability`)
 
-The 9th routed section, hosting external-observability/integration connectors (amended 2026-06-24). The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). The Prometheus (6 tools) and ClickHouse (4 tools) connector targets also live on this section (`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` with gateway=external-obs).
+The 9th routed section, hosting external-observability/integration connectors. The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). The Prometheus (6 tools) and ClickHouse (4 tools) connector targets also live on this section (`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` with gateway=external-obs).
 
 ## Code Interpreter
 
@@ -186,7 +186,7 @@ The AgentCore Runtime ARN, Memory ID, and similar config values live **only in S
 | **Conversation history retention** | Maximum 365 days |
 | **AgentCore response** | Returns final text only (tool inference streamed with a typing effect) |
 | **Tool activation flags** | The 30 slices are gated on `agentcore_enabled` (21) / `integrations_enabled` (9) — the live environment has the fleet fully deployed (2026-08-02); new installs default to off |
-| **Vendor mcpServer targets** | For external-obs's vendor-hosted mcpServer targets (Datadog · Dynatrace · New Relic), `capability=read` is not enforced at the protocol level  — the read-only guarantee applies to Lambda targets; unset endpoints SKIP. At runtime a fail-closed tool allowlist (`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — only catalog-transcribed read tools pass, `agent/agent.py`) compensates |
+| **Vendor mcpServer targets** | For external-obs's vendor-hosted mcpServer targets (Datadog · Dynatrace · New Relic), `capability=read` is not enforced at the protocol level — the read-only guarantee applies to Lambda targets; unset endpoints SKIP. At runtime a fail-closed tool allowlist (`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — only catalog-transcribed read tools pass, `agent/agent.py`) compensates |
 
 ## Next Steps
 

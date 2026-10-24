@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **지원 리소스** | KEDA, HPA, Aurora replica/ACU, MSK broker/partition, ASG, EC2, EBS IOPS, ALB |
 
 :::caution Phase 2 한계
-생성된 스크립트는 **사람의 검토용**입니다. AWSops는 인프라 변경(KEDA 배포, AWS API 호출)을 직접 실행하지 않습니다.
+생성된 스크립트는 **사람의 검토용**입니다. AWSops는 인프라 변경(KEDA 배포, AWS API 호출)을 직접 실행하지 않습니다. 자동 실행·IAM 권한 확장·KEDA 통합은 승인되지 않은 제안 단계이며, 별도 게이트 뒤에서 비활성 상태로 유지됩니다.
 :::
 
 ## 워크플로우
