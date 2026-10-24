@@ -128,7 +128,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **PDF** | `/ai-diagnosis/report` ページ + ブラウザ Print | ホワイト背景、A4 ページブレーク、別途 PDF ライブラリなし（bundle size 保護） |
 
 :::tip PDF ライブラリを追加しない理由
-ADR-019: 別途の PDF ライブラリ（Puppeteer など）は Next.js のバンドルサイズと EC2 メモリを大幅に増加させます。代わりに印刷用ページを作成し、ブラウザの Print-to-PDF を活用します — 成果物の品質は同等でありながら依存関係は 0 個です。
+別途の PDF ライブラリ（Puppeteer など）は Next.js のバンドルサイズと EC2 メモリを大幅に増加させます。代わりに印刷用ページを作成し、ブラウザの Print-to-PDF を活用します — 成果物の品質は同等でありながら依存関係は 0 個です。
 :::
 
 ## アラートパイプラインとの連携
@@ -179,8 +179,5 @@ curl -X POST /awsops/api/report \
 
 ## 参考
 
-- ADR-019: 診断レポートのフォーマットマトリクス
-- ADR-014: レポートのプロキシダウンロード URL
-- ADR-016: Bedrock モデル選択戦略（Opus 4.8 固定）
 - `src/lib/report-prompts.ts` — 15 セクションのプロンプト定義（正確な出力構造）
 - `src/lib/report-scheduler.ts` — スケジュール計算ロジック（KST 基準）

@@ -45,7 +45,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 | **Engine** | Strands Agent Framework |
 | **Container** | Docker arm64 (stored in ECR, via `make agentcore`) |
 | **Execution Environment** | AgentCore managed service (Bedrock AgentCore Runtime) |
-| **Model** | Claude Haiku 4.5 (ADR-038 routing classifier) / **the Runtime itself only ever runs Sonnet 4.6** (hardcoded in `agent/agent.py`). Opus 4.8 isn't used by the Runtime — it's an optional Deep-tier choice in the separate **AI Diagnosis (async worker)** feature |
+| **Model** | Claude Haiku 4.5 (routing classifier) / **the Runtime itself only ever runs Sonnet 4.6** (hardcoded in `agent/agent.py`). Opus 4.8 isn't used by the Runtime — it's an optional Deep-tier choice in the separate **AI Diagnosis (async worker)** feature |
 
 ### Status
 
@@ -116,14 +116,14 @@ Provides IAM and security analysis tools. (Deployed in P1f.)
 
 ### Monitoring Gateway (36 tools)
 
-Provides CloudWatch and CloudTrail (AWS-native), plus OpenSearch and the Loki/Tempo/Mimir observability stack (Prometheus and ClickHouse are owned by External-Obs — ADR-004).
+Provides CloudWatch and CloudTrail (AWS-native), plus OpenSearch and the Loki/Tempo/Mimir observability stack (Prometheus and ClickHouse are owned by External-Obs).
 
 | Category | Tools |
 |----------|-------|
 | **cloudwatch-mcp** (11) | Metrics/alarms/log-insights queries |
 | **cloudtrail-mcp** (5) | `lookup_events`, `list_event_data_stores`, `lake_query`, `get_query_status`, `get_query_results` |
 | **opensearch-mcp** (4) | OpenSearch domain/index queries |
-| **loki-mcp / tempo-mcp / mimir-mcp** (loki 5 · tempo 5 · mimir 6, `integrations_enabled`) | LogQL/TraceQL queries — Loki/Tempo/Mimir stay on this Gateway (ADR-004; Prometheus·ClickHouse moved to External-Obs) |
+| **loki-mcp / tempo-mcp / mimir-mcp** (loki 5 · tempo 5 · mimir 6, `integrations_enabled`) | LogQL/TraceQL queries — Loki/Tempo/Mimir stay on this Gateway (Prometheus·ClickHouse moved to External-Obs) |
 
 ### Cost Gateway (14 tools)
 
@@ -146,7 +146,7 @@ Provides AWS documentation search, operations helpers, and inventory query tools
 
 ### External-Obs (13 tools, routing key: `observability`)
 
-The 9th routed section, hosting external-observability/integration connectors (ADR-004, amended 2026-06-24). The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). The Prometheus (6 tools) and ClickHouse (4 tools) connector targets also live on this section (`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` with gateway=external-obs).
+The 9th routed section, hosting external-observability/integration connectors. The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). The Prometheus (6 tools) and ClickHouse (4 tools) connector targets also live on this section (`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` with gateway=external-obs).
 
 ## Code Interpreter
 
@@ -186,7 +186,7 @@ The AgentCore Runtime ARN, Memory ID, and similar config values live **only in S
 | **Conversation history retention** | Maximum 365 days |
 | **AgentCore response** | Returns final text only (tool inference streamed with a typing effect) |
 | **Tool activation flags** | The 30 slices are gated on `agentcore_enabled` (21) / `integrations_enabled` (9) — the live environment has the fleet fully deployed (2026-08-02); new installs default to off |
-| **Vendor mcpServer targets** | For external-obs's vendor-hosted mcpServer targets (Datadog · Dynatrace · New Relic), `capability=read` is not enforced at the protocol level (ADR-017) — the read-only guarantee applies to Lambda targets; unset endpoints SKIP. At runtime a fail-closed tool allowlist (`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — only catalog-transcribed read tools pass, `agent/agent.py`) compensates |
+| **Vendor mcpServer targets** | For external-obs's vendor-hosted mcpServer targets (Datadog · Dynatrace · New Relic), `capability=read` is not enforced at the protocol level — the read-only guarantee applies to Lambda targets; unset endpoints SKIP. At runtime a fail-closed tool allowlist (`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — only catalog-transcribed read tools pass, `agent/agent.py`) compensates |
 
 ## Next Steps
 
