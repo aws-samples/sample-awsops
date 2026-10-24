@@ -160,7 +160,7 @@ Stored passwords and tokens are masked in the UI. New values can only be entered
 
 The following security checks are applied to datasource URLs:
 
-- **Blocked targets**: only metadata (169.254.169.254), loopback, and link-local addresses — private (RFC1918) datasource endpoints are ALLOWED per ADR-007 (URLs containing a backslash are rejected to prevent parser-differential abuse)
+- **Blocked targets**: only metadata (169.254.169.254), loopback, and link-local addresses — private (RFC1918) datasource endpoints are ALLOWED (URLs containing a backslash are rejected to prevent parser-differential abuse)
 - **Metadata endpoint blocking**: Blocks `169.254.169.254` (EC2 instance metadata) access
 - **Link-local address blocking**: Blocks the `169.254.x.x` range
 - **Protocol restriction**: Only `http://` and `https://` are allowed
@@ -271,7 +271,7 @@ query/schema tools.
 ## Allowed Networks
 
 :::caution v1 documentation
-This section describes v1's Allowed Networks feature, which does not exist in v2 — private (RFC1918) datasource endpoints are allowed by default per ADR-007; only metadata/loopback/link-local addresses are blocked.
+This section describes v1's Allowed Networks feature, which does not exist in v2 — private (RFC1918) datasource endpoints are allowed by default; only metadata/loopback/link-local addresses are blocked.
 :::
 
 Admins can configure an allow list to exempt specific private network addresses from SSRF blocking.

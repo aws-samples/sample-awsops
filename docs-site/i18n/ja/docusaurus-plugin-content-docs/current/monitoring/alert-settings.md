@@ -173,8 +173,6 @@ curl -X POST '/awsops/api/alert-webhook?source=generic' \
 
 ## 参考
 
-- ADR-022: アラート相関分析ポリシー
-- ADR-026: HMAC シークレット active+standby 2 キーポリシー
 - `src/lib/alert-types.ts` — 5 種のソース正規化ロジック
 - `src/lib/alert-correlation.ts` — グループ化/重複排除/エスカレーション
 - `src/lib/alert-diagnosis.ts` — Bedrock 診断オーケストレーション
