@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8510917389b2 · generated-at: 2026-10-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 61369e8e4b68 · generated-at: 2026-10-28 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -21,7 +21,7 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **Data:** Aurora Serverless v2 (PG 17.9) via node-pg (`web/lib/db.ts`, shared `getPool`). App state in Aurora, **not `data/*.json`** (v1 pattern). Schema = `terraform/foundation/data/schema.sql` + ULID migrations (`migrations/<ULID>_*.sql`, never append to schema.sql — a migration's `-- since:` header is checksum-immutable once merged, never retag it).
 - **IaC:** Terraform only (CDK dropped). Single root `terraform/foundation/`, partial S3 backend (`backend.hcl`, no DynamoDB), TF ≥1.15, provider `~>6.0`.
 - **Edge:** CloudFront(TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only → 504).
-- **AI:** Bedrock Sonnet 5 / Opus 4.8 / Haiku 4.5 + AgentCore (Strands, `agent/agent.py`, routes via `GATEWAYS_JSON`). Live AWS queries via AgentCore MCP Lambda tools (`agent/lambda/*.py`), never inline in the BFF. Config source of truth = SSM `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` (runtime read; no ECS `valueFrom`).
+- **AI:** Bedrock Sonnet 5.5 / Opus 5.5 / Haiku 5.5 + AgentCore (Strands, `agent/agent.py`, routes via `GATEWAYS_JSON`). Live AWS queries via AgentCore MCP Lambda tools (`agent/lambda/*.py`), never inline in the BFF. Config source of truth = SSM `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` (runtime read; no ECS `valueFrom`).
 - **Chat routing (LIVE):** regex fast-path (`web/lib/route.ts`, first-match-wins RULES) → Haiku classifier fallback; gated by `hybrid_routing_enabled`. **16 routing keys are registered** = 9 gateway-routed sections + `aws-data` + 6 auto-collect collectors (`web/lib/collectors/`); the latter 7 are web-BFF-local (not via AgentCore) and their Steampipe-backed execution is hard-disabled — they fail-open to normal routing at runtime.
 - **Async workers (P2):** enqueue → `worker_jobs` + SQS → ESM (kill-switch) → dispatcher Lambda (idempotent on job_id) → Step Functions → RunLambda (short) or `ecs:runTask.sync` Fargate (long/OOM) → worker writes running/succeeded itself → status_updater on Catch sets failed (SFN can't write VPC Aurora) → reaper (5min) reconciles stale. Files: `terraform/foundation/workers.tf`, `scripts/v2/workers/`.
 

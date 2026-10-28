@@ -15,10 +15,10 @@ import type { ChatMsg } from './agentcore';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const PROJECT = process.env.PROJECT ?? 'awsops-v2-stg';
-const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 /** Analysis model: SYNTHESIS_MODEL_ID, falling back to CODEGEN_MODEL_ID (exported for the footer). */
 export const AWS_DATA_ANALYSIS_MODEL =
-  process.env.SYNTHESIS_MODEL_ID || process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+  process.env.SYNTHESIS_MODEL_ID || process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 const SECRET_TTL_MS = 10 * 60 * 1000; // password cache — Steampipe secret is static plaintext
 const MAX_ROWS = 200;                 // hard row cap: bounds both memory and the analysis context

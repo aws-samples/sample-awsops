@@ -225,7 +225,7 @@ PROMPT_EOF
 # retry + 10s hard-kill grace) x2 chair models ~= 34m20s. With the workflow's longest
 # panel cell budget of 40m20s, a 90-minute job leaves about 15 minutes for other steps.
 PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-us.anthropic.claude-fable-5}"
-FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5}"
+FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5-5}"
 CHAIR_TIMEOUT="${CHAIR_TIMEOUT:-900}"
 CHAIR_KILL_AFTER="${CHAIR_KILL_AFTER:-10s}"
 

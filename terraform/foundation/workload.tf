@@ -262,8 +262,8 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
       Action = ["bedrock:InvokeModel"]
       Resource = [
         # global cross-region profile fans out to per-region FMs → wildcard region on the FM ARN
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-*",
-        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-4-5-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5*",
       ]
     }]
   })
@@ -282,8 +282,8 @@ resource "aws_iam_role_policy" "task_synthesis_bedrock" {
       Effect = "Allow"
       Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
       Resource = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5",
-        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5",
       ]
     }]
   })
@@ -505,7 +505,7 @@ resource "aws_ecs_task_definition" "web" {
         ] : [], var.hybrid_routing_enabled ? [
         # ADR-038: hybrid routing flag + classifier model (BFF reads both at runtime).
         { name = "HYBRID_ROUTING_ENABLED", value = "true" },
-        { name = "CLASSIFIER_MODEL_ID", value = "global.anthropic.claude-haiku-4-5-20251001-v1:0" }
+        { name = "CLASSIFIER_MODEL_ID", value = "global.anthropic.claude-haiku-5-5" }
         ] : [], var.multi_route_synthesis_enabled ? [
         # ADR-044: cross-domain auto-synthesis — matches the aws_iam_role_policy.task_synthesis_bedrock gate above.
         { name = "MULTI_ROUTE_SYNTHESIS_ENABLED", value = "true" }
@@ -517,7 +517,7 @@ resource "aws_ecs_task_definition" "web" {
         # with our own Haiku (fact analyzer_result vs hypothesis llm_explanation kept separate).
         { name = "K8SGPT_ENABLED", value = "true" },
         { name = "K8SGPT_STALE_MINUTES", value = "5" },
-        { name = "K8SGPT_NARRATION_MODEL", value = "global.anthropic.claude-haiku-4-5-20251001-v1:0" },
+        { name = "K8SGPT_NARRATION_MODEL", value = "global.anthropic.claude-haiku-5-5" },
         ] : [], var.datasource_diagnosis_enabled ? [
         # External datasource diagnosis enqueue gate. False/default omits the env so add/schema-refresh
         # routes do not enqueue datasource_index jobs; the worker has the same DIAG_DATASOURCES_ENABLED

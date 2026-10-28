@@ -323,15 +323,19 @@ def run_model(data, model_id, region, output_path):
                 response = client.converse(
                     modelId=model_id, system=[{"text": REFERENCE_PROMPT}],
                     messages=[{"role": "user", "content": [{"text": payload}]}],
-                    inferenceConfig={"maxTokens": 512, "temperature": 0},
+                    # Current Claude and GPT models reject `temperature`; reasoning tokens count
+                    # toward maxTokens, so the cap leaves room beyond the JSON answer.
+                    inferenceConfig={"maxTokens": 4096},
                 )
                 elapsed = round((time.perf_counter() - start) * 1000, 3)
                 require(response.get("stopReason") == "end_turn",
                         "model did not finish a normal text response")
                 content = response["output"]["message"]["content"]
-                require(len(content) == 1 and set(content[0]) == {"text"},
+                texts = [block for block in content if set(block) == {"text"}]
+                require(len(texts) == 1 and all(
+                    set(block) in ({"text"}, {"reasoningContent"}) for block in content),
                         "model must return one text block")
-                raw = content[0]["text"]
+                raw = texts[0]["text"]
                 require(len(raw.encode("utf-8")) <= 8192, "model response exceeds 8192 bytes")
                 row = parse_json(raw)
                 fields(row, PREDICTION_FIELDS - {"elapsed_ms"})

@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 
-`/ai-diagnosis` ページは、Amazon Bedrock **Claude Opus 4.8** が 15 セクションで AWS インフラ全体を自動分析する総合レポートツールです。
+`/ai-diagnosis` ページは、Amazon Bedrock **Claude Sonnet 5.5**（デフォルト）·**Opus 5.5**（Deep 選択）が 15 セクションで AWS インフラ全体を自動分析する総合レポートツールです。
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 総合診断ページ" />
 
@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 | 項目 | 値 |
 |------|---|
-| **モデル** | `global.anthropic.claude-opus-4-8`（固定） |
+| **モデル** | `global.anthropic.claude-sonnet-5-5`（デフォルト）· `global.anthropic.claude-opus-5-5`（Deep 段階で選択） |
 | **セクション数** | 15（コスト 4 + インフラ 6 + セキュリティ/ネットワーク 2 + サマリー 3） |
 | **出力フォーマット** | DOCX (A4 + TOC)、Markdown、PDF（ブラウザ print） |
 | **保存場所** | S3 レポートバケット + `data/reports/*.json` キャッシュ |

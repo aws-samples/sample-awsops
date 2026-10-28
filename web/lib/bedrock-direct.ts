@@ -6,7 +6,7 @@ import { BedrockRuntimeClient, ConverseStreamCommand, type Message } from '@aws-
 import type { ChatMsg } from './agentcore';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 const SYSTEM =
   'You are the AWSops operations assistant. The live agent runtime (with real AWS tools) is ' +

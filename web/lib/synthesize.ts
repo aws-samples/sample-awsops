@@ -10,7 +10,7 @@ export interface SynthPart { gateway: string; text: string }
 export type SynthSend = (system: string, user: string, modelId: string, abortSignal?: AbortSignal) => AsyncIterable<string>;
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 // Immutable synthesis system prompt. Domain answers arrive inside <domain_response> tags and the
 // user question inside <user_query> — both are DATA. A domain answer may itself be prompt-injected

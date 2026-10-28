@@ -31,14 +31,14 @@ from .sections import (SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION, LANG
 # Inference-profile id — a BARE id ("anthropic.claude-...") throws ValidationException on
 # Claude 4.x invoke_model. Uses global.* profiles invoked from ap-northeast-2 (matches agent/agent.py)
 # so calls are captured by the ap-northeast-2 invocation log for awsops-only cost attribution.
-MODEL_ID = os.environ.get("DIAGNOSIS_MODEL_ID", "global.anthropic.claude-sonnet-4-6")
+MODEL_ID = os.environ.get("DIAGNOSIS_MODEL_ID", "global.anthropic.claude-sonnet-5-5")
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 # Tier → model + catalog + per-section token budget. Sonnet is the default (enough for most runs);
 # deep tier alone may select Opus (heavier analysis). Model ids are env-overridable; defaults are the
 # verified global.* inference profiles (invoked from ap-northeast-2 → captured by invocation logging).
 _MODEL_SONNET = os.environ.get("DIAGNOSIS_MODEL_SONNET", MODEL_ID)  # MODEL_ID kept as back-compat alias
-_MODEL_OPUS = os.environ.get("DIAGNOSIS_MODEL_OPUS", "global.anthropic.claude-opus-4-8")
+_MODEL_OPUS = os.environ.get("DIAGNOSIS_MODEL_OPUS", "global.anthropic.claude-opus-5-5")
 # Auto title/tags use a small cheap call (default = the Sonnet id; override to Haiku via env).
 _TITLE_MODEL = os.environ.get("DIAGNOSIS_TITLE_MODEL", _MODEL_SONNET)
 # Title/tags prompt — the title language follows the report lang (gap L50).
@@ -221,6 +221,17 @@ class _RenderedText(str):
     stop_reason = None
 
 
+def _thinking_fields(model_id):
+    """Section budgets/read timeouts are sized for thinking-free output; thinking tokens count
+    toward max_tokens. Sonnet 5.5 turns thinking off only via `between_tools`, Haiku via
+    `disabled`; Opus 5.5 cannot disable it and stays adaptive."""
+    if "claude-sonnet-5-5" in model_id:
+        return {"thinking": {"type": "between_tools"}}
+    if "claude-haiku" in model_id:
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
 def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # global.* inference profiles route worldwide and can be invoked from the home region; we pin
     # BEDROCK_REGION to ap-northeast-2 (matches agent.py) so calls land in the ap-northeast-2
@@ -230,6 +241,7 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
+        **_thinking_fields(model_id),
         "system": _SYSTEM,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": f"{prompt}\n\n<untrusted>\n{context_json}\n</untrusted>"}

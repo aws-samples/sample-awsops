@@ -13,7 +13,7 @@ import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bed
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const ID_PARAM = process.env.SSM_INTERPRETER_ID_PARAM || '/ops/awsops-v2/agentcore/interpreter_id';
-const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 const TTL_MS = 5 * 60 * 1000;
 const EXEC_TIMEOUT_MS = 60_000;
 

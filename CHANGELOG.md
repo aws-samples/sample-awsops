@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Topology navigation: the sidebar's Topology entry expands to Request flow, Infra layout and Service map, and opens automatically on any topology page, so the infrastructure layout graph and service map no longer require the small in-page buttons.
 - User guide: `docs-site/` is published as this repository's GitHub Pages site (deployed automatically on pushes to `dev`, or manually via workflow dispatch), retargeted from the previous personal-domain deployment — site URL, navigation/landing GitHub links, robots.txt sitemap and alert runbook cross-references now point at this repository, and the previous dashboard link and personal analytics tracker are removed.
 
+### Changed
+
+- Bedrock models: chat, AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it; short Haiku calls and Sonnet report sections run without extended thinking so existing output budgets still fit. The web task's classifier and synthesis IAM grants follow the new model IDs and take effect on the next Terraform apply.
+
 ### Fixed
 
 - Native observability connectors: connection tests verify bounded query access instead of public health endpoints. Explicit instance reads require ID-bound credentials; migrated defaults must be backfilled through the administrator save flow before rollout. Prometheus and Mimir default to a 10-second execution ceiling, configurable per datasource and tightened by Explore; provider response bytes and body reads are bounded. Valid short Jaeger trace IDs are retained, and local loss, search saturation and unknown results carry distinct completeness evidence.
@@ -689,6 +693,10 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 - 토폴로지 내비게이션: 사이드바의 토폴로지 항목을 펼치면 요청 흐름·인프라 배치·서비스 맵으로 바로 이동할 수 있고, 토폴로지 화면에 있으면 자동으로 펼쳐집니다. 인프라 배치 그래프와 서비스 맵을 찾기 위해 화면 안의 작은 버튼을 쓰지 않아도 됩니다.
 - 사용자 가이드: `docs-site/`를 이 저장소의 GitHub Pages 사이트로 게시합니다(`dev` 브랜치 push 시 자동 배포, 또는 워크플로 수동 실행). 이전 개인 도메인 배포 대상을 이 저장소 기준으로 재조정하여 사이트 URL, 내비게이션·랜딩 페이지의 GitHub 링크, robots.txt sitemap, 알림 런북 상호 참조가 이 저장소를 가리키며, 기존 대시보드 링크와 개인 애널리틱스 트래커는 제거합니다.
+
+### Changed
+
+- Bedrock 모델: 채팅, AI 진단, 라우팅, 합성, 백그라운드 워커가 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않으며, 짧은 Haiku 호출과 Sonnet 리포트 섹션은 기존 출력 상한이 유지되도록 확장 사고 없이 실행합니다. 웹 태스크의 분류기·합성 IAM 권한은 새 모델 ID를 따르며 다음 Terraform 적용 때 반영됩니다.
 
 ### 수정
 

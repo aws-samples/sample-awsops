@@ -313,7 +313,7 @@ class BedrockStubberTests(unittest.TestCase):
                 "case_id": case["case_id"], "summary": case["summary"],
                 "candidate_causes": fixture()["causes"], "evidence": case["evidence"],
             }, sort_keys=True)}]}],
-            "inferenceConfig": {"maxTokens": 512, "temperature": 0},
+            "inferenceConfig": {"maxTokens": 4096},
         }
 
     def response(self, row, stop="end_turn"):

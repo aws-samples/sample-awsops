@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 
-`/ai-diagnosis` 页面是由 Amazon Bedrock **Claude Opus 4.8** 按 15 个分区对整个 AWS 基础设施进行自动分析的综合报告工具。
+`/ai-diagnosis` 页面是由 Amazon Bedrock **Claude Sonnet 5.5**（默认）·**Opus 5.5**（Deep 可选）按 15 个分区对整个 AWS 基础设施进行自动分析的综合报告工具。
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 综合诊断页面" />
 
@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 | 项目 | 值 |
 |------|---|
-| **模型** | `global.anthropic.claude-opus-4-8`（固定） |
+| **模型** | `global.anthropic.claude-sonnet-5-5`（默认）· `global.anthropic.claude-opus-5-5`（Deep 阶段可选） |
 | **分区数** | 15（成本 4 + 基础设施 6 + 安全/网络 2 + 摘要 3） |
 | **输出格式** | DOCX (A4 + TOC)、Markdown、PDF（浏览器 print） |
 | **存储位置** | S3 报告存储桶 + `data/reports/*.json` 缓存 |

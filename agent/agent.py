@@ -123,7 +123,7 @@ GATEWAYS = _discover_gateways()
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
-MODEL_ID = "global.anthropic.claude-sonnet-5"
+MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 # Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
 # live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
 # Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.

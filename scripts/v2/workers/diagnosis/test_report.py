@@ -370,6 +370,14 @@ def test_render_section_threads_model_id_and_max_tokens(monkeypatch):
     assert out["body"] == "본문"
     assert captured["modelId"] == report.MODEL_ID
     assert captured["body"]["max_tokens"] == 1500
+    assert "temperature" not in captured["body"]
+
+
+def test_thinking_fields_keep_section_budgets_thinking_free():
+    # Sonnet 5.5 rejects `disabled` (only `between_tools`); Opus 5.5 cannot turn thinking off.
+    assert report._thinking_fields("global.anthropic.claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
+    assert report._thinking_fields("global.anthropic.claude-haiku-5-5") == {"thinking": {"type": "disabled"}}
+    assert report._thinking_fields("global.anthropic.claude-opus-5-5") == {}
 
 
 def test_redact_strips_pii():

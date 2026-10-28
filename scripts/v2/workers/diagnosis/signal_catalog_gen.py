@@ -98,8 +98,9 @@ def _bedrock_invoke(prompt):
     """Default Bedrock invoke — identical model/pattern to graph_querygen._bedrock_invoke."""
     import boto3
     region = os.environ.get("AWS_REGION", "ap-northeast-2")
-    model = os.environ.get("GRAPH_QUERYGEN_MODEL_ID", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+    model = os.environ.get("GRAPH_QUERYGEN_MODEL_ID", "global.anthropic.claude-haiku-5-5")
     body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 400,
+            **({"thinking": {"type": "disabled"}} if "claude-haiku" in model else {}),
             "messages": [{"role": "user", "content": prompt}]}
     resp = boto3.client("bedrock-runtime", region_name=region).invoke_model(modelId=model, body=json.dumps(body))
     payload = json.loads(resp["body"].read())

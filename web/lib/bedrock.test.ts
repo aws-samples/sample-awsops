@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { getModelLabel, getModelPricing, computeCost, RANGE_CONFIGS, MODEL_PRICING } from './bedrock';
+import { getModelLabel, getModelPricing, computeCost, RANGE_CONFIGS, MODEL_PRICING, thinkingOffFields } from './bedrock';
+
+describe('thinkingOffFields', () => {
+  it('disables thinking only for Haiku (Sonnet/Opus 5.5 reject `disabled`)', () => {
+    expect(thinkingOffFields('global.anthropic.claude-haiku-5-5')).toEqual({
+      additionalModelRequestFields: { thinking: { type: 'disabled' } },
+    });
+    expect(thinkingOffFields('global.anthropic.claude-sonnet-5-5')).toEqual({});
+    expect(thinkingOffFields('global.anthropic.claude-opus-5-5')).toEqual({});
+  });
+});
+
+describe('Claude 5.5 pricing entries', () => {
+  it('resolves global. profiles to labeled 5.5 entries', () => {
+    expect(getModelLabel('global.anthropic.claude-sonnet-5-5')).toBe('Claude Sonnet 5.5');
+    expect(getModelLabel('global.anthropic.claude-opus-5-5')).toBe('Claude Opus 5.5');
+    expect(getModelLabel('global.anthropic.claude-haiku-5-5')).toBe('Claude Haiku 5.5');
+    expect(getModelPricing('global.anthropic.claude-haiku-5-5').input).toBe(0.10);
+  });
+});
 
 describe('getModelPricing', () => {
   it('exact-matches a known id', () => {

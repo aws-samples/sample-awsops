@@ -65,7 +65,7 @@ EC2・Lambda・ECS/ECR・EKS（Pod/Node/Deployment/Service/Explorer）・VPC・C
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 総合診断 — Well-Architected Deep Dive レポート" />
 
-`/ai-diagnosis` は、Amazon Bedrock **Claude Opus 4.8** がインフラ全体を自動分析して正式なレポートを作成するツールです。
+`/ai-diagnosis` は、Amazon Bedrock **Claude Opus 5.5** がインフラ全体を自動分析して正式なレポートを作成するツールです。
 
 - **6 つの Well-Architected ピラーのスコアカード** — Executive Summary が Operational Excellence・Security・Reliability・Performance Efficiency・Cost Optimization・Sustainability の全体にスコアを付けます。
 - **3 ピラーの詳細分析（15+1 セクション）** — Cost Optimization・Security・Reliability を深く掘り下げます（コスト概要/コンピューティング/ネットワーク/ストレージ、アイドルリソース、セキュリティ状況、ネットワーク・コンピューティング・EKS・DB・MSK・ストレージ分析など）。
@@ -83,7 +83,7 @@ EC2・Lambda・ECS/ECR・EKS（Pod/Node/Deployment/Service/Explorer）・VPC・C
 
 - **単一 EC2 t4g.2xlarge (ARM64 Graviton)** — Steampipe の組み込み PostgreSQL を同居させ、**別途のマネージド DB コストがありません**。
 - **AgentCore はサーバーレス** — AI ランタイム/ゲートウェイは呼び出し時のみ課金。
-- Bedrock モデルはタスクに合わせて選択 — 分類・ルーティングは **Sonnet 4.6**、詳細診断は **Opus 4.8**、高速で低コストなタスクは **Haiku 4.5**、プロンプトキャッシング適用。
+- Bedrock モデルはタスクに合わせて選択 — 分類・ルーティングは **Sonnet 5.5**、詳細診断は **Opus 5.5**、高速で低コストなタスクは **Haiku 5.5**、プロンプトキャッシング適用。
 
 さらに、このツールは**顧客インフラのコストも削減**します — Cost Explorer 分析、アイドルリソース検出、FinOps 推奨が診断レポートに含まれます。
 

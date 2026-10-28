@@ -329,12 +329,12 @@ class DriveAnthropicLoopTest(unittest.TestCase):
             {"type": "tool_use", "id": "t", "name": "x", "input": {}},
         ])
 
-    def test_temperature_zero_passed_to_stream(self):
-        # P4 gate (kiro-opus MAJOR): parity with the Strands BedrockModel temperature=0.0 (ADR-038).
+    def test_stream_sends_between_tools_and_no_temperature(self):
+        # sonnet-5-5 rejects `temperature`; replayed history carries no thinking blocks.
         client = _FakeClient([(["x"], _final("end_turn", [_text("x")]))])
         _drive(client, _Recorder(), tools=[])
-        self.assertEqual(client.messages.calls[0]["temperature"], al.MODEL_TEMPERATURE)
-        self.assertEqual(al.MODEL_TEMPERATURE, 0.0)
+        self.assertNotIn("temperature", client.messages.calls[0])
+        self.assertEqual(client.messages.calls[0]["thinking"], {"type": "between_tools"})
 
     def test_multiple_tool_uses_in_one_turn_all_run(self):
         client = _FakeClient([
