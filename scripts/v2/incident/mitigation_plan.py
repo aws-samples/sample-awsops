@@ -12,7 +12,7 @@ incidents.mitigation_plan. It is RECOMMENDATION-ONLY (Addendum #5, BINDING):
 
 THE SEAM (documented, intentional human gate): a human reviews incidents.mitigation_plan in the UI
 and, if they choose, separately initiates POST /api/actions to create an action_plan — which then
-runs through the FULL ADR-005[legacy 029] six-control gate (flag + kill-switch + Change-Manager 4-eyes +
+runs through the FULL ADR-005[legacy 029/036] six-control gate (flag + kill-switch + Change-Manager 4-eyes +
 per-action role + dry-run + rollback). This Lambda performs NONE of that; it stops at the plan.
 """
 import json

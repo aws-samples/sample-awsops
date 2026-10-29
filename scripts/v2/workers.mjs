@@ -27,7 +27,7 @@ if (!repo || repo === 'null') {
 }
 const registry = repo.split('/')[0];
 
-// ADR-005[legacy 029] remediation P2-code executor (Fargate path): Docker COPY cannot reach a parent of the
+// ADR-005[legacy 029/036] remediation P2-code executor (Fargate path): Docker COPY cannot reach a parent of the
 // build context (scripts/v2/workers/), so pre-build copy the 3 remediation modules into the build
 // context (approach (b) — chosen over relocating the context to keep the GREEN P2 worker path intact).
 // Gated on the files existing; if remediation hasn't landed, this is a no-op and the Dockerfile COPY

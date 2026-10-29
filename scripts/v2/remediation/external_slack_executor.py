@@ -1,4 +1,4 @@
-"""external_slack_executor.py — ADR-007[legacy 040] governed external Slack-write executor (RW-slice T4).
+"""external_slack_executor.py — ADR-007[legacy 040/041] governed external Slack-write executor (RW-slice T4).
 
 A DATA-write (NOT an AWS-resource mutation). The model only PROPOSED the inputs; a human already
 plan->approved (4-eyes) via /api/actions. This executor is the LAST hop: it RE-applies DLP redaction +

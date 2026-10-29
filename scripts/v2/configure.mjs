@@ -148,7 +148,7 @@ function buildTfvars(cfg) {
   // These were previously hand-added to terraform.tfvars and silently lost on a `make configure`
   // regenerate (→ a follow-up apply would destroy the gated infra); they are now first-class here.
   if (cfg.agentcoreEnabled) lines.push('agentcore_enabled         = true');
-  if (cfg.integrationsEnabled) lines.push('integrations_enabled      = true'); // ADR-007[legacy 039] P2-infra inc2 (needs agentcore)
+  if (cfg.integrationsEnabled) lines.push('integrations_enabled      = true'); // ADR-007[legacy 039 P2-infra] inc2 (needs agentcore)
   if (cfg.workersEnabled) lines.push('workers_enabled           = true');
   if (cfg.steampipeEnabled) lines.push('steampipe_enabled         = true');
   if (cfg.hybridRoutingEnabled) lines.push('hybrid_routing_enabled    = true');
@@ -376,7 +376,7 @@ async function main() {
     message: 'Provision the AgentCore skeleton (9 gateways + runtime + slice tools)? You run `make agentcore` after apply.',
     default: readExistingFlag('agentcore_enabled'),
   });
-  // ADR-007[legacy 039] P2-infra inc2 — egress Integrations (live external-MCP connect; scoped Secrets Manager +
+  // ADR-007[legacy 039 P2-infra] inc2 — egress Integrations (live external-MCP connect; scoped Secrets Manager +
   // dedicated KMS). Only meaningful with AgentCore (the TF local is agentcore_enabled && integrations_enabled).
   const integrationsEnabled = agentcoreEnabled
     ? await confirm({

@@ -1,5 +1,5 @@
 # scripts/v2/remediation/remediation_executor.py
-"""ADR-005[legacy 029] — P2 'lambda'/'fargate' code executor for K8s/app-state/composite + observability
+"""ADR-005[legacy 029/036] — P2 'lambda'/'fargate' code executor for K8s/app-state/composite + observability
 actions. Invoked by the remediation SFN's code branch. Input:
   {job_id, plan_id, action, payload, dry_run, phase}  phase ∈ {dry_run, execute, rollback}
 Each action: dry_run/execute/rollback. Uses a PER-ACTION task role (NOT the shared worker role) —
@@ -39,7 +39,7 @@ def _flag_rollback(conn, rollback_plan, _sess):
     return {"rolled_back": rollback_plan["flagKey"]}
 
 
-# ---- observability write (ADR-005[legacy 036] #5 reduced subset), MARKED for the feedback-loop breaker ----
+# ---- observability write (ADR-005[legacy 036 #5] reduced subset), MARKED for the feedback-loop breaker ----
 _MARKER = {"key": "CreatedBy", "value": "AWSops-AIOps"}
 
 def _opsitem_dry_run(payload, _sess):
@@ -57,7 +57,7 @@ def _opsitem_execute(_conn, payload, sess):
         Tags=[{"Key": _MARKER["key"], "Value": _MARKER["value"]}])
     return {"ops_item_id": r["OpsItemId"], "marker": _MARKER["value"]}
 
-def _opsitem_resolve(_conn, rollback_plan, sess):   # ADR-006[legacy 034] #4 rollback = resolve (no infra revert)
+def _opsitem_resolve(_conn, rollback_plan, sess):   # ADR-006[legacy 034 #4] rollback = resolve (no infra revert)
     sess.client("ssm").update_ops_item(OpsItemId=rollback_plan["ops_item_id"], Status="Resolved")
     return {"resolved": rollback_plan["ops_item_id"]}
 
@@ -74,7 +74,7 @@ def _incident_enrich(_conn, payload, sess):
     return {"enriched": payload["incident_record_arn"], "marker": _MARKER["value"]}
 
 
-# ---- external Slack DATA-write (ADR-007[legacy 040]) — NOT an AWS-resource mutation. Core governance logic
+# ---- external Slack DATA-write (ADR-007[legacy 040/041]) — NOT an AWS-resource mutation. Core governance logic
 #      (refuse non-external / re-redact / channel-allowlist / dry-run) is in external_slack_executor;
 #      here is the thin glue (allowlist re-fetch from the DB, Secrets-Manager token, HTTP post). The
 #      gate() already branched this to the integrations-write plane; the executor never sees AWS-mutation. ----

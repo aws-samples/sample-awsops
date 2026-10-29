@@ -1,7 +1,7 @@
 # scripts/v2/remediation/ssm_bridge.py
 """Build SSM StartAutomationExecution params from a resolved catalog action. Cross-account
 (TargetLocations) is DORMANT: only emitted when ALLOW_CROSS_ACCOUNT_MUTATION=true AND the action's
-conditions list non-self accounts. Default = host-account-only (ADR-005[legacy 029] #8 toggle, not a limit)."""
+conditions list non-self accounts. Default = host-account-only (ADR-005[legacy 029 #8] toggle, not a limit)."""
 import os
 
 def build_start_params(action, payload, dry_run):

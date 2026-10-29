@@ -3,8 +3,8 @@
 Gathers the Sub-agent findings, runs the ported RCA analysis prompt through agent_bridge.invoke,
 parses the machine-readable ROOT_CAUSE / CATEGORY / CONFIDENCE header (ported from
 src/lib/alert-diagnosis.ts buildAnalysisPrompt + extractField/extractCategory/extractConfidence),
-and persists the structured RCA into incidents.rca — the ADR-006[legacy 034] write-back SEAM (legacy 034 later mirrors
-it to OpsCenter / Incident Manager; here we only persist locally).
+and persists the structured RCA into incidents.rca — the ADR-006[legacy 034] write-back SEAM (the gated ADR-006 write-back path, not yet
+enabled, mirrors it to OpsCenter / Incident Manager; here we only persist locally).
 
 SAFETY: read-only over findings + a single bounded UPDATE of incidents.rca + status. NO mutation of
 AWS resources; the analysis is recommend-only and the prompt rides the SAFEGUARD boundary.

@@ -8,7 +8,7 @@ destination is decided on the subscription side. (Prior design published one ema
 report, unconditionally — replaced by the digest batch to avoid flooding the inbox when many reports
 finish in a short window; build_message/publish_report are kept for reuse, not on the hot path.)
 
-Governance (ADR-007[legacy 040]): the ONLY write here is sns:Publish to a single, terraform-provisioned, IAM-
+Governance (ADR-013[legacy 040/041]): the ONLY write here is sns:Publish to a single, terraform-provisioned, IAM-
 scoped topic — a governed external-comms write, NOT the permanently-frozen AWS-resource-mutation class.
 Read-only on all diagnosis data sources. Best-effort by contract: a publish failure (throttle, bad
 config, SNS outage) is logged and swallowed — it must NEVER fail or downgrade the report/digest run.

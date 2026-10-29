@@ -5,7 +5,7 @@ truth, `/ops/awsops-v2/agentcore/runtime_arn`) and call boto3 bedrock-agentcore
 `invoke_agent_runtime` with {gateway, messages} (+ optional systemPromptOverride / allowlist /
 ADR-004[legacy 031] traceability). One retry, matching the TS client.
 
-SAFETY (ADR-006[legacy 032] #5 + #6 — BINDING, do not weaken):
+SAFETY (ADR-006[legacy 032 #5] + #6 — BINDING, do not weaken):
   - SAFEGUARD_LINE is the immutable, non-overridable boundary copied verbatim from
     web/lib/agent-resolver.ts. build_prompt ALWAYS prepends it (read-only, recommend-only).
   - build_prompt ONLY ever embeds the ISOLATED payload (`isolated['block']` from
@@ -81,7 +81,7 @@ def build_prompt(isolated, persona, raw_hint=None):
 
 
 def enforce_token_budget(messages, system_prompt, token_budget):
-    """ADR-008[legacy 033] token-budget HOOK (integration point). When the legacy 033 governor lands, plug the budget governor
+    """ADR-008[legacy 033] token-budget HOOK (integration point). When the ADR-008 token-budget governor lands, plug it
     here (estimate -> cap -> compact). Until then this is a transparent pass-through that only
     asserts a positive budget when one is supplied. Returns (messages, system_prompt) unchanged."""
     if token_budget is not None and token_budget <= 0:

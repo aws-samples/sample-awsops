@@ -92,7 +92,7 @@ def lambda_handler(event, _ctx):
         evidence = f"{_PUBLIC_BASE}/incidents/{incident_id}" if _PUBLIC_BASE else incident_id
         body = r.build_recommendation_body(inc, inc["rca"], evidence, inc["finding_count"], inc["data_sources"])
 
-        if phase == "dry_run":   # ADR-006[legacy 034] #2 = render only, NO mutation
+        if phase == "dry_run":   # ADR-006[legacy 034 #2] = render only, NO mutation
             _record(conn, incident_id, dedup, target, "rendered", detail={"body": body})
             return {"incident_id": incident_id, "writeback": "rendered", "body": body}
 

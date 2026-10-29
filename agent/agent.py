@@ -147,7 +147,7 @@ try:
     )
 except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConfig missing; or CacheConfig(strategy="auto") rejected (ValueError/pydantic ValidationError)
     # NOTE: this fires once per cold start only. The production cache-degradation detector is
-    # the cacheReadInputTokens usage check (ADR-003[legacy 038] Task 8) — do not rely on this line alone.
+    # the cacheReadInputTokens usage check (ADR-003[legacy 038 Task 8]) — do not rely on this line alone.
     print(f"[Agent] prompt caching unavailable ({e}); falling back to no-cache")
     model = BedrockModel(
         model_id=MODEL_ID,
@@ -804,7 +804,7 @@ def _connect_integration(spec, stack, account_context=None):
     """Open ONE egress-READ integration MCP session (kept live via ``stack`` for the agent run) and
     return its exposed tools. Raises on SSRF/unknown-transport/connect/list error → the caller
     (gather_integration_tools) isolates it. Credentials are fetched at runtime from Secrets Manager
-    by server-bound name (the payload contains no plaintext credential — ADR-007[legacy 039] Q3=B)."""
+    by server-bound name (the payload contains no plaintext credential — ADR-007[legacy 039 Q3=B])."""
     # Deny before DNS, secret fetch, connection and tool listing. Applies to every vendor label.
     version = validate_custom_mcp_spec(spec, account_context)
     endpoint = spec.get("endpoint")
@@ -1472,7 +1472,7 @@ async def handler(payload):
             "ja": "[回答は必ずすべて日本語で書いてください。質問が韓国語でも日本語で回答し、他言語の単語を混ぜないでください。]",
         }[response_language]
         lang_hooks = [LanguageReminderHook(LANG_TOOL_REMINDER[response_language])]
-    tool_allowlist = payload.get("toolAllowlist")  # ADR-004[legacy 031]: server-side cap, enforced below (was a no-op)
+    tool_allowlist = payload.get("toolAllowlist")  # ADR-004[legacy 031]/ADR-007[legacy 039]: server-side cap, enforced below (was a no-op)
     gateway_key = _resolve_gateway_key(gateway_role, GATEWAYS)
     # NO eager `GATEWAYS[DEFAULT_GATEWAY]` default — that index is always evaluated and KeyErrors
     # (outside the try → no MCP fallback) when `ops` is absent (v2-only discovery = `v2-ops`).
@@ -1500,7 +1500,7 @@ async def handler(payload):
     if lang_user_suffix:
         user_input = f"{user_input}{lang_user_suffix}"
 
-    # ADR-007[legacy 039] P2-infra inc2: enabled egress-READ integrations the resolver surfaced (live MCP connect).
+    # ADR-007[legacy 039 P2-infra] inc2: enabled egress-READ integrations the resolver surfaced (live MCP connect).
     integrations = payload.get("integrations") or []
 
     logging.info(f"Gateway: {gateway_role} -> {gateway_url} (history: {len(history)} messages, account: {account_id or 'default'}, integrations: {len(integrations)})")

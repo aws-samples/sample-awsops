@@ -10,7 +10,7 @@ import handlers
 
 _sfn = boto3.client("stepfunctions", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
 _SM_ARN = os.environ["STATE_MACHINE_ARN"]
-# ADR-005[legacy 029]: remediation jobs route to a SEPARATE state machine. Empty when remediation is off
+# ADR-005[legacy 029/036]: remediation jobs route to a SEPARATE state machine. Empty when remediation is off
 # (the gated infra in remediation.tf is the only thing that sets this) -> action jobs are DROPPED.
 _REM_SM_ARN = os.environ.get("REMEDIATION_STATE_MACHINE_ARN", "")
 # ADR-006[legacy 032]: incident_stage jobs route to the SIBLING incident state machine. Empty when the
@@ -28,7 +28,7 @@ def lambda_handler(event, _ctx):
             body = json.loads(rec["body"])
             job_id, type_ = body["job_id"], body["type"]
             if type_ == "action":
-                # ADR-005[legacy 029] remediation job. The web `execute` route already injected the catalog
+                # ADR-005[legacy 029/036] remediation job. The web `execute` route already injected the catalog
                 # `action` name + `executor_type` (the dispatcher has NO Aurora access, so it does NOT
                 # resolve the catalog here — the catalog gate runs in-VPC in record_ssm_start /
                 # remediation_executor). The dispatcher only picks the remediation SM.

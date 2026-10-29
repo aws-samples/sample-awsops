@@ -1,4 +1,4 @@
-"""egress_dlp.py — Python parity of web/lib/egress-dlp.ts (ADR-007[legacy 040] §2 exfiltration defense).
+"""egress_dlp.py — Python parity of web/lib/egress-dlp.ts (ADR-007[legacy 040 §2] exfiltration defense).
 
 Re-applied inside the executor (never trust the web layer). Pure (no I/O). Same patterns + entropy-gated
 long-blob heuristic + size cap + channel allowlist as the TS version — the executor is the LAST hop, so
