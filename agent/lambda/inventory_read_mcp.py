@@ -3,7 +3,7 @@ Inventory-Read MCP Lambda — Aurora-backed, read-only topology & unused-resourc
 
 The v2 equivalent of v1's ops `run_steampipe_query`: instead of querying live Steampipe, it reads
 the inventory the Steampipe sync already materialized into Aurora (`inventory_resources` +
-`topology_nodes/edges`, ADR-010) and answers topology / unused-resource questions over it. This
+`topology_nodes/edges`, ADR-010[legacy 043]) and answers topology / unused-resource questions over it. This
 reconnects "the topology data we built in Aurora" to AgentCore — the bridge that was missing in v2.
 
 Tools (all read-only — SELECT only; no AWS mutation, no arbitrary SQL):
@@ -191,7 +191,7 @@ def build_topology_chain(by_type, root=None):
 
 
 def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
-    """Read the materialized topology graph from topology_nodes/edges (ADR-010).
+    """Read the materialized topology graph from topology_nodes/edges (ADR-010[legacy 043]).
 
     Matches the /api/graph contract:
       nodes = [{id, kind, label, meta}]

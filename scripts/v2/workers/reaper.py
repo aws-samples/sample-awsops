@@ -36,7 +36,7 @@ def lambda_handler(_event, _ctx):
             out["reaped_queued"] = len(q)
         else:
             out["reaped_queued"] = "skipped (dispatch ESM disabled)"
-        # ADR-005: remediation reconciliation (slow backstop only). Remediation rows carry an
+        # ADR-005[legacy 029]: remediation reconciliation (slow backstop only). Remediation rows carry an
         # automation_execution_id; the EventBridge status_resume path is the PRIMARY completion path
         # and the resume Lambda owns the terminal write. The reaper NEVER blindly fails them (a still-
         # running SSM automation must not be reaped) and NEVER touches 'manual_intervention' (a

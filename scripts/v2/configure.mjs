@@ -393,7 +393,7 @@ async function main() {
     default: readExistingFlag('steampipe_enabled'),
   });
   const hybridRoutingEnabled = await confirm({
-    message: 'Enable hybrid chat routing (ADR-003 regex + Haiku classifier)?',
+    message: 'Enable hybrid chat routing (ADR-003[legacy 038] regex + Haiku classifier)?',
     default: readExistingFlag('hybrid_routing_enabled'),
   });
   // eks_auto_register reuses the workers pg8000 layer → only offered when workers are on.

@@ -24,7 +24,7 @@ MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
 MAX_OUTPUT_TOKENS = 4096     # Anthropic Messages API REQUIRES max_tokens on every call
-MODEL_TEMPERATURE = 0.0      # parity with the Strands BedrockModel — deterministic tool selection (ADR-003)
+MODEL_TEMPERATURE = 0.0      # parity with the Strands BedrockModel — deterministic tool selection (ADR-003[legacy 038])
 EXTRA_CONTEXT_CAP = 8000     # bound BFF-supplied context (parity with agent.handler)
 TOOL_RESULT_CHAR_CAP = 24000 # bound a single tool result fed back (avoid per-round context/token blowup)
 
@@ -198,7 +198,7 @@ async def drive_anthropic_loop(*, aclient, mcp_call, model, system_blocks,
             msgs.append({"role": "assistant", "content": _assistant_content(final)})
             results = []
             for tu in tool_uses:
-                # Defense-in-depth (ADR-004): the allowlist is enforced OUTSIDE the model. The model
+                # Defense-in-depth (ADR-004[legacy 031]/ADR-007[legacy 039]): the allowlist is enforced OUTSIDE the model. The model
                 # output is NOT a security boundary — refuse to EXECUTE any tool the model names that is
                 # not in the allowed set, even if it hallucinated a gateway tool we did not expose.
                 if allowed_tool_names is not None and tu["name"] not in allowed_tool_names:

@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-006 — RCA write-back STAGE-LAMBDA unit tests (no AWS, no live DB).
+"""AWSops v2 ADR-006[legacy 034] — RCA write-back STAGE-LAMBDA unit tests (no AWS, no live DB).
 
 Run: python3 scripts/v2/incident/test_writeback.py   (or python3 -m pytest <file>)
 

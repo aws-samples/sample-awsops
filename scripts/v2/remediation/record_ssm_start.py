@@ -1,5 +1,5 @@
 # scripts/v2/remediation/record_ssm_start.py
-"""ADR-005 ssm branch: start the SSM Automation, persist AutomationExecutionId + the SFN task
+"""ADR-005[legacy 036] ssm branch: start the SSM Automation, persist AutomationExecutionId + the SFN task
 token to worker_jobs IMMEDIATELY (so a SFN timeout cannot orphan a running automation; the reaper
 reconciles), then return. The SM stays in .waitForTaskToken until status_resume sends the token.
 Gated: cat.gate must pass (flag + kill-switch + enabled) BEFORE any StartAutomationExecution."""

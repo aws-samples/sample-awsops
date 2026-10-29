@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # KST as a fixed +9 offset — Korea has no DST, so this needs no `tzdata` package in the slim image.
 _KST = timezone(timedelta(hours=9))
 
-# ADR-008: render sections concurrently (bounded) so deep-tier wall-clock ≈ slowest section, not the
+# ADR-008[legacy 045]: render sections concurrently (bounded) so deep-tier wall-clock ≈ slowest section, not the
 # sum of ~15 sequential Bedrock calls. Bounded to stay under Bedrock per-model TPM/RPM (botocore
 # retries are off; _bedrock_render backs off on throttling within the render budget); env-overridable.
 _RENDER_CONCURRENCY = max(1, int(os.environ.get("DIAGNOSIS_RENDER_CONCURRENCY", "4")))
@@ -196,7 +196,7 @@ _SYSTEM = (
 
 
 # Bedrock clients are thread-safe for invoke calls, but creating one through boto3's shared default
-# Session is NOT — concurrent section rendering (ADR-008) could race during creation. Create one client
+# Session is NOT — concurrent section rendering (ADR-008[legacy 045]) could race during creation. Create one client
 # per (region, read timeout) under a lock (double-checked) and reuse it across threads.
 _bedrock_lock = threading.Lock()
 _bedrock_clients: dict = {}
@@ -236,7 +236,7 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
         ]}],
     }
     for attempt in range(1, _CALL_ATTEMPTS + 1):
-        # thread-safe shared client (ADR-008 concurrent render); read timeout sized to this budget
+        # thread-safe shared client (ADR-008[legacy 045] concurrent render); read timeout sized to this budget
         # and capped by what is left of the render budget (raises once it is spent)
         client = _get_bedrock_client(bedrock_region, _call_timeout(max_tokens))
         try:
@@ -867,7 +867,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
                "scope": "host account" if scope == "self" else "member account",
                "region": src.REGION, "tier": tier}
 
-    # ADR-008: render sections concurrently (bounded). Each section keeps its own Bedrock read/connect
+    # ADR-008[legacy 045]: render sections concurrently (bounded). Each section keeps its own Bedrock read/connect
     # timeout; a single section that fails degrades to a visible error body (loud, not silent) WITHOUT
     # sinking the whole report; results reassembled in catalog order. Progress is emitted on completion.
     def _render_one(i, sec):

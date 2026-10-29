@@ -10,10 +10,10 @@ import handlers
 
 _sfn = boto3.client("stepfunctions", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
 _SM_ARN = os.environ["STATE_MACHINE_ARN"]
-# ADR-005: remediation jobs route to a SEPARATE state machine. Empty when remediation is off
+# ADR-005[legacy 029]: remediation jobs route to a SEPARATE state machine. Empty when remediation is off
 # (the gated infra in remediation.tf is the only thing that sets this) -> action jobs are DROPPED.
 _REM_SM_ARN = os.environ.get("REMEDIATION_STATE_MACHINE_ARN", "")
-# ADR-006: incident_stage jobs route to the SIBLING incident state machine. Empty when the
+# ADR-006[legacy 032]: incident_stage jobs route to the SIBLING incident state machine. Empty when the
 # autonomous incident lifecycle is off (only the gated infra in incidents.tf sets this) ->
 # incident_stage jobs are DROPPED (never retried into a loop). The lifecycle ships flag-OFF.
 _INC_SM_ARN = os.environ.get("INCIDENT_STATE_MACHINE_ARN", "")
@@ -28,7 +28,7 @@ def lambda_handler(event, _ctx):
             body = json.loads(rec["body"])
             job_id, type_ = body["job_id"], body["type"]
             if type_ == "action":
-                # ADR-005 remediation job. The web `execute` route already injected the catalog
+                # ADR-005[legacy 029] remediation job. The web `execute` route already injected the catalog
                 # `action` name + `executor_type` (the dispatcher has NO Aurora access, so it does NOT
                 # resolve the catalog here — the catalog gate runs in-VPC in record_ssm_start /
                 # remediation_executor). The dispatcher only picks the remediation SM.
@@ -50,7 +50,7 @@ def lambda_handler(event, _ctx):
                 )
                 continue
             if type_ == "incident_stage":
-                # ADR-006 autonomous incident lifecycle. The web Triage route already inserted the
+                # ADR-006[legacy 032] autonomous incident lifecycle. The web Triage route already inserted the
                 # 'queued' worker_jobs row + the incidents/stage rows; the dispatcher only picks the
                 # sibling incident SM (it has NO Aurora access). Empty SM ARN => lifecycle is OFF
                 # (flag/infra) -> drop (never retry into a loop). The SM itself invokes the stage

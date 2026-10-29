@@ -1,5 +1,5 @@
 # scripts/v2/remediation/remediation_executor.py
-"""ADR-005 — P2 'lambda'/'fargate' code executor for K8s/app-state/composite + observability
+"""ADR-005[legacy 029] — P2 'lambda'/'fargate' code executor for K8s/app-state/composite + observability
 actions. Invoked by the remediation SFN's code branch. Input:
   {job_id, plan_id, action, payload, dry_run, phase}  phase ∈ {dry_run, execute, rollback}
 Each action: dry_run/execute/rollback. Uses a PER-ACTION task role (NOT the shared worker role) —
@@ -62,7 +62,7 @@ def _opsitem_resolve(_conn, rollback_plan, sess):   # ADR-006[legacy 034] #4 rol
     return {"resolved": rollback_plan["ops_item_id"]}
 
 def _incident_enrich(_conn, payload, sess):
-    """ADR-006 routing: enrich a matched Incident Manager incident (timeline event). Marked via
+    """ADR-006[legacy 034] routing: enrich a matched Incident Manager incident (timeline event). Marked via
     eventData/source so the ingress can drop it. ssm-incidents:* only (per-action role)."""
     inc = sess.client("ssm-incidents")
     inc.create_timeline_event(
@@ -74,7 +74,7 @@ def _incident_enrich(_conn, payload, sess):
     return {"enriched": payload["incident_record_arn"], "marker": _MARKER["value"]}
 
 
-# ---- external Slack DATA-write (ADR-007) — NOT an AWS-resource mutation. Core governance logic
+# ---- external Slack DATA-write (ADR-007[legacy 040]) — NOT an AWS-resource mutation. Core governance logic
 #      (refuse non-external / re-redact / channel-allowlist / dry-run) is in external_slack_executor;
 #      here is the thin glue (allowlist re-fetch from the DB, Secrets-Manager token, HTTP post). The
 #      gate() already branched this to the integrations-write plane; the executor never sees AWS-mutation. ----

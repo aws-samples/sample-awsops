@@ -6,7 +6,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_bedrock_client_cache():
-    # ADR-008 added a region-keyed bedrock client cache (report._bedrock_clients) for concurrent section
+    # ADR-008[legacy 045] added a region-keyed bedrock client cache (report._bedrock_clients) for concurrent section
     # rendering. The cache persists across tests, so a client built in one test (often a monkeypatched
     # fake) would leak into the next and silently defeat its own boto3.client monkeypatch — making
     # render_section tests order-dependent. Clear it before each test so they stay isolated.

@@ -2,7 +2,7 @@
 Istio-read MCP Lambda — READ-ONLY Istio service-mesh inspection via the EKS Kubernetes API.
 
 Read-only v2 variant of aws_istio_mcp.py. The v1 tool queried Istio CRDs through Steampipe's k8s
-tables (pg8000 → steampipe:9193) — that contradicts ADR-001 ("No live Steampipe in v2"). This variant
+tables (pg8000 → steampipe:9193) — that contradicts ADR-001[legacy 037] ("No live Steampipe in v2"). This variant
 reads the SAME CRDs directly from the cluster's Kubernetes API using a bearer token built from a
 presigned STS GetCallerIdentity (the `k8s-aws-v1.` pattern, reused from datasource_diag_mcp), over the
 Python stdlib (urllib + ssl) — no pg8000, no Steampipe, no third-party k8s client.
@@ -13,7 +13,7 @@ to the AWS-returned endpoint (no SSRF surface from caller input). The operator r
 entry with AmazonEKSViewPolicy (View, NOT AdminView — least privilege: no cluster-wide Secret/node
 read; istio-read only LISTs namespaced Istio CRDs + namespaces) — see register-istio-access.sh.
 
-Istio-read MCP — Steampipe 대신 EKS k8s API로 Istio CRD를 읽기 전용 조회(ADR-001 준수).
+Istio-read MCP — Steampipe 대신 EKS k8s API로 Istio CRD를 읽기 전용 조회(ADR-001[legacy 037] 준수).
 """
 import base64
 import json

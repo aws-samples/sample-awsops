@@ -330,7 +330,7 @@ class DriveAnthropicLoopTest(unittest.TestCase):
         ])
 
     def test_temperature_zero_passed_to_stream(self):
-        # P4 gate (kiro-opus MAJOR): parity with the Strands BedrockModel temperature=0.0 (ADR-003).
+        # P4 gate (kiro-opus MAJOR): parity with the Strands BedrockModel temperature=0.0 (ADR-003[legacy 038]).
         client = _FakeClient([(["x"], _final("end_turn", [_text("x")]))])
         _drive(client, _Recorder(), tools=[])
         self.assertEqual(client.messages.calls[0]["temperature"], al.MODEL_TEMPERATURE)

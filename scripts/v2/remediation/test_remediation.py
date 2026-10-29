@@ -1,5 +1,5 @@
 # scripts/v2/remediation/test_remediation.py
-"""ADR-005 remediation substrate tests — catalog loader + fail-closed gating (Task 3).
+"""ADR-005[legacy 029] remediation substrate tests — catalog loader + fail-closed gating (Task 3).
 No live AWS / no DB: a fake conn and a monkeypatched SSM client exercise every gate branch."""
 import ast
 import json
@@ -213,7 +213,7 @@ def test_handler_rollback_without_handler_raises_manual(monkeypatch):
     conn = _ExecConn()
     monkeypatch.setattr(ex.db, "connect", lambda: conn)
     # incident-manager-enrich has rb=None; gate must pass for us to reach the rollback branch.
-    # (ADR-006 gave opscenter-create-opsitem a real rollback = _opsitem_resolve, so the no-rollback
+    # (ADR-006[legacy 034] gave opscenter-create-opsitem a real rollback = _opsitem_resolve, so the no-rollback
     #  MANUAL_INTERVENTION path is now exercised via the enrich action.)
     monkeypatch.setattr(ex.cat, "gate", lambda _c, _n: ({"name": "incident-manager-enrich"}, None))
     monkeypatch.setattr(ex, "_assume", lambda _arn: object())

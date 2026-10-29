@@ -118,7 +118,7 @@ def _discover_gateways():
 GATEWAYS = _discover_gateways()
 
 # Bedrock Model / Bedrock 모델
-# ADR-003: deterministic tool selection + prompt caching (verified against strands-agents 1.41.0:
+# ADR-003[legacy 038]: deterministic tool selection + prompt caching (verified against strands-agents 1.41.0:
 # BedrockConfig exposes temperature / cache_config / cache_tools; cache_prompt is deprecated).
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance
@@ -136,10 +136,10 @@ try:
         region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
         # NOTE: sonnet-5 rejects `temperature` on ConverseStream ("temperature is deprecated for
         # this model" — live-verified 2026-07-07, every request failed with a ValidationException
-        # until this was dropped). The ADR-003 determinism rationale (temperature=0.0 for tool
+        # until this was dropped). The ADR-003[legacy 038] determinism rationale (temperature=0.0 for tool
         # selection) no longer applies to this model generation — omit rather than pass an invalid value.
         # Rollback contract: if MODEL_ID moves back to a temperature-accepting generation (e.g.
-        # sonnet-4-6), restore temperature=0.0 here AND in the no-cache fallback below — ADR-003
+        # sonnet-4-6), restore temperature=0.0 here AND in the no-cache fallback below — ADR-003[legacy 038]
         # determinism is suspended only while the model rejects the param, not repealed.
         cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
         cache_tools="default",                      # toolConfig cachePoint, 5m TTL
@@ -448,7 +448,7 @@ def build_skill_prompt(gateway_role, tools):
 
 
 def _filter_tools(tools, allowlist):
-    """ADR-004: enforce the resolver-computed tool allowlist OUTSIDE the model.
+    """ADR-004[legacy 031]/ADR-007[legacy 039]: enforce the resolver-computed tool allowlist OUTSIDE the model.
 
     None is legacy unrestricted; [] or the reserved wire token is deny-all. The BFF resolves gateway aliases
     to exact target-qualified names; NEVER authorize by suffix here. Duplicate
@@ -758,7 +758,7 @@ def _get_secret(ref, expected_version=None):
 
 
 def select_integration_tools(live_tools, exposed_tools):
-    """ADR-007: an egress-READ integration's live tools ∩ its admin ``exposed_tools`` (the ceiling).
+    """ADR-007[legacy 039]: an egress-READ integration's live tools ∩ its admin ``exposed_tools`` (the ceiling).
     Empty ``exposed_tools`` ⇒ ``[]`` — a READ integration that exposes nothing contributes nothing
     (NOT 'all tools'). Output order follows ``live_tools``. The resolver's per-account toolAllowlist
     is then applied on top in the handler (defense-in-depth)."""
@@ -784,7 +784,7 @@ def _dedup_by_tool_name(tools):
 
 
 def gather_integration_tools(specs, connect):
-    """ADR-007 per-integration failure ISOLATION: connect+collect each integration's tools via the
+    """ADR-007[legacy 039] per-integration failure ISOLATION: connect+collect each integration's tools via the
     injected ``connect(spec)``; a failure (SsrfBlocked / unknown-transport ValueError / connect or
     list error) drops ONLY that integration — the gateway tools and the other integrations are
     unaffected — and is logged with the integration name + endpoint. This function NEVER raises, so
@@ -1421,7 +1421,7 @@ async def handler(payload):
 
     gateway_role = payload.get("gateway", DEFAULT_GATEWAY)
     skill_role = payload.get("skill", gateway_role)  # skill override for SKILL_BASE / SKILL_BASE용 스킬 오버라이드
-    system_prompt_override = payload.get("systemPromptOverride")  # ADR-004: resolver-supplied custom prompt
+    system_prompt_override = payload.get("systemPromptOverride")  # ADR-004[legacy 031]: resolver-supplied custom prompt
     extra_context = payload.get("extraContext")  # bounded BFF-supplied context (e.g. cached datasource schemas)
     # v1-parity (getSystemPrompt(lang)): the UI language wins over question-language guessing —
     # a short/mixed-language prompt must still be answered in the user's UI language.
@@ -1472,7 +1472,7 @@ async def handler(payload):
             "ja": "[回答は必ずすべて日本語で書いてください。質問が韓国語でも日本語で回答し、他言語の単語を混ぜないでください。]",
         }[response_language]
         lang_hooks = [LanguageReminderHook(LANG_TOOL_REMINDER[response_language])]
-    tool_allowlist = payload.get("toolAllowlist")  # ADR-004: server-side cap, enforced below (was a no-op)
+    tool_allowlist = payload.get("toolAllowlist")  # ADR-004[legacy 031]: server-side cap, enforced below (was a no-op)
     gateway_key = _resolve_gateway_key(gateway_role, GATEWAYS)
     # NO eager `GATEWAYS[DEFAULT_GATEWAY]` default — that index is always evaluated and KeyErrors
     # (outside the try → no MCP fallback) when `ops` is absent (v2-only discovery = `v2-ops`).
@@ -1522,11 +1522,11 @@ async def handler(payload):
             # helper returns is only needed by the hand-rolled dispatch in anthropic_loop.)
             gateway_tools, clickhouse_stdio_tools, _ = apply_official_mcp_gates(
                 gateway_tools, gateway_key, stack)
-            # ADR-007: live-connect each enabled egress-READ integration. Per-integration failures are
+            # ADR-007[legacy 039]: live-connect each enabled egress-READ integration. Per-integration failures are
             # ISOLATED here (gateway tools always survive) — NOT escalated to the Bedrock-direct fallback.
             integration_tools = gather_integration_tools(
                 integrations, lambda spec: _connect_integration(spec, stack, payload.get("accountId")))
-            # ADR-004: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
+            # ADR-004[legacy 031]/ADR-007[legacy 039]: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
             # Filter before dedup: ambiguous identities must not silently pick the first source.
             tools = _dedup_by_tool_name(_filter_tools(
@@ -1534,7 +1534,7 @@ async def handler(payload):
             tool_names = [t.tool_name for t in tools]
             logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist is not None else 'off'}): {tool_names}")
 
-            # ADR-004: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
+            # ADR-004[legacy 031]: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
             if system_prompt_override:
                 tool_lines = []
                 for t in tools:

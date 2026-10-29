@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-006 — Lead stage Lambda (the Incident Commander).
+"""AWSops v2 ADR-006[legacy 032] — Lead stage Lambda (the Incident Commander).
 
 The Lead is a DELEGATOR ONLY. It resolves the sub-agent roster for the fan-out and hands the SM
 Map a bounded list — it NEVER invokes a mutating gateway/tool and NEVER calls agent_bridge.invoke
@@ -6,7 +6,7 @@ itself (Addendum #5 — BINDING). All actual investigation happens in the Sub-ag
 each read-only. Mitigation is recommendation-only and lives in mitigation_plan.py.
 
 ROSTER RESOLUTION (ports web/lib/agent-resolver.ts pickCustomAgent to Python):
-  - read ENABLED `agents` rows (ADR-004 catalog); for each, if any routing keyword appears in the
+  - read ENABLED `agents` rows (ADR-004[legacy 031] catalog); for each, if any routing keyword appears in the
     incident's signal text → include its gateway. Built-in gateways are the fallback fleet
     (logs/metrics/code-change/deploy-history) when no custom agent matches.
   - de-dup gateways, cap at `fanout_max` (storm control #7). The cap is the Map MaxConcurrency too.
@@ -48,7 +48,7 @@ def _signal_text(incident):
 
 
 def _enabled_agents(conn):
-    """ENABLED catalog agents (ADR-004). routing_keywords is JSONB; pg8000 returns it parsed."""
+    """ENABLED catalog agents (ADR-004[legacy 031]). routing_keywords is JSONB; pg8000 returns it parsed."""
     rows = conn.run(
         "SELECT name, gateway, persona, routing_keywords, tier, version "
         "FROM agents WHERE enabled = true ORDER BY id")

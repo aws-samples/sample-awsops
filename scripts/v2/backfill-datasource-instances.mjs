@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // scripts/v2/backfill-datasource-instances.mjs
-// One-time, idempotent backfill for the multi-instance datasource model (ADR-007 hub).
+// One-time, idempotent backfill for the multi-instance datasource model (ADR-007[legacy 039] hub).
 //
 // The SQL migration (01KVB3MDTTSJ3WNTJ2DCPDWJS9_…_backfill.sql) creates `integrations` rows from the
 // `datasource_schemas` CACHE. But a datasource configured in Secrets Manager that was NEVER introspected

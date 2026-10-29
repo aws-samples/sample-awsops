@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-006 — WriteBack stage Lambda (the RCA output channel).
+"""AWSops v2 ADR-006[legacy 034] — WriteBack stage Lambda (the RCA output channel).
 
 Runs as the SM stage AFTER RootCause. Reads incidents.rca (does NOT re-run the model), renders a
 recommendation-only body, routes OpsCenter-vs-Incident-Manager, performs ONE marked observability

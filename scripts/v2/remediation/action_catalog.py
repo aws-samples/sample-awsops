@@ -1,4 +1,4 @@
-"""ADR-005 — resolve a catalog action by name into an executor binding, and gate it.
+"""ADR-005[legacy 029] — resolve a catalog action by name into an executor binding, and gate it.
 Gating layers (ALL must pass before any mutation): (1) REMEDIATION_ENABLED env (the TF flag,
 surfaced to the Lambda), (2) the SSM kill-switch /ops/awsops-v2/mutating-actions/enabled == true,
 (3) the catalog row's enabled flag. Read-only here; execution lives in remediation_executor.py
@@ -32,7 +32,7 @@ def load_action(conn, name):
 
 
 def _is_external(a):
-    # ADR-007: an 'external:' target_resource_type marks a DATA-write (Slack/Notion/...), NOT an
+    # ADR-007[legacy 040]: an 'external:' target_resource_type marks a DATA-write (Slack/Notion/...), NOT an
     # AWS-resource mutation → it is gated by the integrations-write control plane.
     return (a.get("target_resource_type") or "").startswith("external:")
 

@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-006 — Sub-agent stage Lambda (one Map iteration of the fan-out).
+"""AWSops v2 ADR-006[legacy 032] — Sub-agent stage Lambda (one Map iteration of the fan-out).
 
 Each Sub-agent consults ONE read-only section gateway via agent_bridge.invoke (which always
 prepends the non-overridable SAFEGUARD_LINE), compresses the result, and writes exactly ONE
