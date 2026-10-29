@@ -1,6 +1,6 @@
 // Pure OpenCost config render — values.yaml + install.sh string generators.
 // READ-ONLY: AWSops generates these; the user runs them out-of-band on their own kubeconfig
-// (ADR-006 operator-install precedent). Ported from v1 scripts/07-setup-opencost.sh:83-104.
+// (ADR-006[legacy 035] operator-install precedent). Ported from v1 scripts/07-setup-opencost.sh:83-104.
 // No yaml dependency — YAML is hand-built deterministically (stable key order).
 
 export interface OpencostCuratedValues {

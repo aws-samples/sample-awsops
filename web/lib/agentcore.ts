@@ -37,9 +37,9 @@ export interface InvokeInput {
   // POST handler always derives this itself — an unscoped/invalid client-supplied value is never
   // passed through untouched, only a value already matching this exact own-namespaced shape
   // (pentest-remediation P3-1, PR #200 review).
-  systemPromptOverride?: string; // ADR-004: resolved custom prompt
+  systemPromptOverride?: string; // ADR-004[legacy 031]: resolved custom prompt
   toolAllowlist?: string[];      // ADR-004[legacy 031] Phase 2: now the server-side-enforced set
-  agentName?: string;            // ADR-004: traceability
+  agentName?: string;            // ADR-004[legacy 031]: traceability
   agentVersion?: number;
   skillHashes?: string[];
   accountId?: string;            // ADR-004[legacy 031] Phase 2: agent.py reads payload.accountId

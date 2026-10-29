@@ -8,7 +8,7 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 // Per-cluster OpenCost surface — relocated from the standalone /opencost page into a collapse
 // banner on the cluster detail view. READ-ONLY: detects install status and generates a download
 // bundle (values.yaml / install.sh) the user runs out-of-band on their own kubeconfig. AWSops
-// never writes to the cluster (ADR-005 reversed). Backend routes/libs are reused unchanged.
+// never writes to the cluster (the legacy ADR-029 install decision was reversed; ADR-005 stays frozen). Backend routes/libs are reused unchanged.
 
 // Client-local API contract; do not import the Node-only server error classifier.
 type ReadFailureReason = 'denied' | 'unreachable' | 'upstream-error' | 'timeout';

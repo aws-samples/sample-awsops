@@ -4,7 +4,7 @@ import { classifyRoute, pickGateway } from './route';
 import { classifyPrompt } from './classifier';
 import golden from './fixtures/golden-routing.json';
 
-describe.skipIf(!process.env.LIVE_ROUTING)('hybrid routing live accuracy (ADR-003 gate)', () => {
+describe.skipIf(!process.env.LIVE_ROUTING)('hybrid routing live accuracy (ADR-003[legacy 038] gate)', () => {
   it(`hybrid >= ${golden.sloAccuracy * 100}% AND >= regex baseline + ${golden.minDeltaPp}pp`, async () => {
     let regexCorrect = 0, hybridCorrect = 0;
     for (const c of golden.cases) {

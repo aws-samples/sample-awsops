@@ -12,8 +12,8 @@ export interface SkillInput {
   toolAllowlist: string[];
   tier: Tier;
   createdBy?: string;
-  agentTypes?: string[];      // ADR-004: agent-type targeting (default ['generic'])
-  referenceKeys?: string[];   // ADR-004: S3 reference/asset object keys
+  agentTypes?: string[];      // ADR-004[legacy 039]: agent-type targeting (default ['generic'])
+  referenceKeys?: string[];   // ADR-004[legacy 039]: S3 reference/asset object keys
 }
 export interface AgentInput {
   name: string;
@@ -24,9 +24,9 @@ export interface AgentInput {
   model?: string;
   tier: Tier;
   createdBy?: string;
-  agentType?: string;         // ADR-004: generic|on_demand|triage|rca|mitigation|evaluation (default 'generic')
-  gateways?: string[];        // ADR-004: multi-gateway frontier scope (default [gateway])
-  responseLanguage?: string;  // ADR-004: Agent Space response language
+  agentType?: string;         // ADR-004[legacy 039]: generic|on_demand|triage|rca|mitigation|evaluation (default 'generic')
+  gateways?: string[];        // ADR-004[legacy 039]: multi-gateway frontier scope (default [gateway])
+  responseLanguage?: string;  // ADR-004[legacy 039]: Agent Space response language
 }
 export interface SkillRef {
   name: string; instructions: string; contentHash: string; ord: number; toolAllowlist: string[];
@@ -38,7 +38,7 @@ export interface SkillRow {
 export interface AgentWithSkills {
   id: number; name: string; description: string; persona: string; gateway: string;
   tier: Tier; version: number; enabled: boolean; routingKeywords: string[]; skills: SkillRef[];
-  // ADR-004 frontier-agent fields — optional so existing call sites/fixtures stay valid;
+  // ADR-004[legacy 039] frontier-agent fields — optional so existing call sites/fixtures stay valid;
   // listAgentsWithSkills always populates them (with defaults) from the new columns.
   agentType?: string; gateways?: string[]; responseLanguage?: string | null;
   toolPolicyConfigured?: boolean; // persisted history: edits/detachment never restore unrestricted tools
@@ -163,7 +163,7 @@ export async function listAgentsWithSkills(opts?: { enabledOnly?: boolean }): Pr
 }
 
 /**
- * ADR-004 fail-closed revocation. Authoritative (un-cached) check that a custom agent
+ * ADR-004[legacy 031]/ADR-007[legacy 039] fail-closed revocation. Authoritative (un-cached) check that a custom agent
  * is still enabled, used on the chat hot path BEFORE routing to a keyword-picked custom agent.
  * This also catches revocation committed after the fresh catalog read. Missing / disabled /
  * builtin rows return false. Compatibility callers also get false on query errors; dispatch

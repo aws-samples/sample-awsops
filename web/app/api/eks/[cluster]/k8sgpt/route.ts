@@ -1,6 +1,6 @@
 import { eksReadFailure } from '@/lib/eks-read-error';
 // web/app/api/eks/[cluster]/k8sgpt/route.ts
-// ADR-006 read-only diagnosis route. Auth (verifyUser) + admin (isAdmin) + cluster-allowlist gated.
+// ADR-006[legacy 035] read-only diagnosis route. Auth (verifyUser) + admin (isAdmin) + cluster-allowlist gated.
 // Flag OFF (K8SGPT_ENABLED !== 'true') → 503 {enabled:false} and getDiagnosis does NO cluster read.
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';

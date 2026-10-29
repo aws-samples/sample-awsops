@@ -1,6 +1,6 @@
 // ADR-007[legacy 039] P2 — admin-gated Integrations registration (egress connectors + ingress webhook sources).
-// Registration is the egress/credential/SSRF surface → admin-only (ADR-002). Reads are SSRF-guarded
-// (ADR-007) using the account's allow_private_datasource opt-in. Ingress rows get a server-generated
+// Registration is the egress/credential/SSRF surface → admin-only (ADR-002[legacy 023]). Reads are SSRF-guarded
+// (ADR-007[legacy 011]) using the account's allow_private_datasource opt-in. Ingress rows get a server-generated
 // receive_path. The actual Secrets Manager write + live MCP connection + edge carve-out are P2-infra.
 import { randomBytes } from 'crypto';
 import { verifyUser } from '@/lib/auth';
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
   const direction = String(body.direction);
   let receivePath: string | undefined;
   if (direction === 'egress') {
-    // SSRF guard at registration (ADR-007) — allowPrivate from the account's agent_spaces opt-in.
+    // SSRF guard at registration (ADR-007[legacy 011]) — allowPrivate from the account's agent_spaces opt-in.
     const allowPrivate = await getAllowPrivate(currentAccountId());
     try { assertEgressEndpointAllowed(String(body.endpoint), { allowPrivate }); }
     catch (e) { return json({ error: e instanceof Error ? e.message : 'endpoint rejected' }, 400); }

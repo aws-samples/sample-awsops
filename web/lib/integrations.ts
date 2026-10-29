@@ -200,7 +200,7 @@ export async function attestAndEnableMcp(id: number, actorSub: string, confirmed
 }
 
 /**
- * ADR-007 — the egress-WRITE destination allowlist for a connector kind (e.g. 'slack' → allowed
+ * ADR-007[legacy 040] — the egress-WRITE destination allowlist for a connector kind (e.g. 'slack' → allowed
  * Slack channels). Reuses the enabled READ_WRITE egress integration's `source_allowlist` as the
  * destination allowlist (documented egress-write reuse). [] when Aurora off / none / error → the caller's
  * assertChannelAllowed treats [] as deny-all (fail-closed).

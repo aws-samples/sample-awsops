@@ -205,7 +205,7 @@ describe('correlationKey — deterministic dedup-race UNIQUE key', () => {
   });
 });
 
-describe('bearsSelfWritebackMarker — ADR-006 feedback-loop breaker (ALWAYS-ON safety)', () => {
+describe('bearsSelfWritebackMarker — ADR-006[legacy 034] feedback-loop breaker (ALWAYS-ON safety)', () => {
   const clean: AlertEvent = { id: '1', source: 'generic', alertName: 'X', severity: 'critical', status: 'firing',
     message: 'm', timestamp: 't', labels: { service: 'api' }, annotations: { summary: 's' },
     services: ['api'], resources: ['i-1'], rawPayload: { source: 'datadog' } };

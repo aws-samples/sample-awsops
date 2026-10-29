@@ -12,7 +12,7 @@ export interface AgentSpace {
   // ADR-007[legacy 039] P2 — optional so existing AgentSpace literals/fixtures stay valid; getAgentSpace/
   // upsertAgentSpace always populate them (with defaults).
   enabledIntegrationIds?: number[];     // per-space enabled integrations
-  allowPrivateDatasource?: boolean;     // ADR-007 private-egress opt-in (default false)
+  allowPrivateDatasource?: boolean;     // ADR-007[legacy 011] private-egress opt-in (default false)
   nonAdminAuthoring?: boolean;          // §10 non-admin authoring flag (default false)
 }
 

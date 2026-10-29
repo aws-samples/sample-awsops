@@ -77,7 +77,7 @@ describe('POST /api/incidents/webhook — flag OFF (BINDING: no autonomous accep
   });
 });
 
-describe('POST /api/incidents/webhook — HMAC (ADR-013 active/standby)', () => {
+describe('POST /api/incidents/webhook — HMAC (ADR-013[legacy 022] active/standby)', () => {
   it('401 on a bad signature (flag on)', async () => {
     const { POST } = await import('./route');
     const res = await POST(post(ALERT, { 'x-webhook-signature': 'sha256=deadbeef' }));
@@ -102,7 +102,7 @@ describe('POST /api/incidents/webhook — HMAC (ADR-013 active/standby)', () => 
     expect(enqueueInitialStage).toHaveBeenCalledWith('inc-1');
   });
 
-  it('accepts the standby secret (ADR-013 rotation) — 202', async () => {
+  it('accepts the standby secret (ADR-013[legacy 022] rotation) — 202', async () => {
     const STANDBY = 'standby-secret-key';
     process.env.SSM_INCIDENT_HMAC_STANDBY_PARAM = '/ops/awsops-v2/incident/webhook-hmac-standby';
     ssmSend.mockImplementation((cmd: { input?: { Name?: string } }) => {
@@ -127,7 +127,7 @@ describe('POST /api/incidents/webhook — HMAC (ADR-013 active/standby)', () => 
   });
 });
 
-describe('POST /api/incidents/webhook — ADR-006 marker-drop (ALWAYS-ON, independent of write-back flag)', () => {
+describe('POST /api/incidents/webhook — ADR-006[legacy 034] marker-drop (ALWAYS-ON, independent of write-back flag)', () => {
   // A self-write-back-marked generic alert (CreatedBy=AWSops-AIOps in labels).
   const SELF = JSON.stringify({ title: 'HighCPU', severity: 'critical', source: 'generic', message: 'cpu high', labels: { service: 'api', CreatedBy: 'AWSops-AIOps' } });
 

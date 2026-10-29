@@ -38,7 +38,7 @@ const TABS: { value: Tab; label: string }[] = [
   { value: 'cost', label: 'Cost' },
 ];
 
-// ADR-006 Rule 7: the deterministic K8sGPT analyzer fact (FACT half).
+// ADR-006[legacy 035] Rule 7: the deterministic K8sGPT analyzer fact (FACT half).
 interface AnalyzerResult {
   analyzer: string;
   resourceName: string;
@@ -47,7 +47,7 @@ interface AnalyzerResult {
   details: string;
   parentObject: string;
 }
-// ADR-006 Rule 8: analyzer_result (FACT) is kept structurally separate from
+// ADR-006[legacy 035] Rule 8: analyzer_result (FACT) is kept structurally separate from
 // llm_explanation (HYPOTHESIS — Haiku narration, may be null).
 interface DiagnosisFinding {
   analyzer_result: AnalyzerResult;
@@ -113,7 +113,7 @@ const COLUMNS: Record<Exclude<Tab, 'diagnosis' | 'cost'>, Column[]> = {
   ],
 };
 
-// ADR-006 Rule 8: the table surfaces ONLY the deterministic facts. The AI
+// ADR-006[legacy 035] Rule 8: the table surfaces ONLY the deterministic facts. The AI
 // hypothesis (llm_explanation) is shown distinctly in the detail panel below.
 const DIAGNOSIS_COLUMNS: Column[] = [
   { key: 'analyzer', label: 'Analyzer' },
@@ -173,7 +173,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
     setDiag(null);
     setErr('');
     try {
-      // ADR-006: the diagnosis endpoint returns {enabled,stale,findings:[...]},
+      // ADR-006[legacy 035]: the diagnosis endpoint returns {enabled,stale,findings:[...]},
       // NOT {rows}. Only the explicit flag-off payload identifies a disabled feature.
       if (tab === 'cost') return; // CostPanel fetches its own data
       if (tab === 'diagnosis') {
@@ -532,7 +532,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
 }
 
 /**
- * DiagnosisDetailPanel — ADR-006 Rule 8 surface. Shows the DETERMINISTIC
+ * DiagnosisDetailPanel — ADR-006[legacy 035] Rule 8 surface. Shows the DETERMINISTIC
  * analyzer_result facts (high confidence) and, in a visually distinct block
  * below, the Haiku narration explicitly badged as an UNVERIFIED hypothesis.
  * Read-only: nothing here mutates the cluster.

@@ -8,7 +8,7 @@ import {
 
 // In-app management of the scheduled-diagnosis mailing list (v1 report-scheduler parity). The worker
 // publishes scheduled report summaries to one dedicated SNS topic; this manages its email subscriptions.
-// Governed external-comms write (ADR-007), scoped by IAM to the single topic ARN — NOT AWS-resource
+// Governed external-comms write (ADR-007[legacy 040]), scoped by IAM to the single topic ARN — NOT AWS-resource
 // mutation. The topic ARN is injected by Terraform (gated on diagnosis_notify_enabled); absent → disabled.
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 

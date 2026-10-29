@@ -462,7 +462,7 @@ export async function POST(request: Request) {
   } else {
     gateway = pickGateway(prompt, body.section, previous);
   }
-  // ADR-004 custom agents. ADR-003 precedence: explicit pin > custom > classifier (spec §2.2),
+  // ADR-004[legacy 031] custom agents. ADR-003[legacy 038] precedence: explicit pin > custom > classifier (spec §2.2),
   // then the previous answering section (follow-up continuity) before the default catch-all.
   // ADR-004[legacy 031] Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
   // v1-parity multi-account target (v1 route.ts:926-930): an explicit body.accountId targets a
@@ -551,7 +551,7 @@ export async function POST(request: Request) {
   // ADR-007[legacy 039] P2: enabled egress-READ integrations contribute tools + bounded context (per-space scoped).
   // ingress + READ_WRITE contribute nothing here (writes go via the mutating gate).
   // P2-infra inc2: also carry connection details so the resolver can hand agent.py a live-connect list.
-  // allowPrivate = the per-account ADR-011 opt-in (no space ⇒ false). sigv4 service/region threading
+  // allowPrivate = the per-account ADR-007[legacy 011] opt-in (no space ⇒ false). sigv4 service/region threading
   // (same-account sigv4 integrations) is deferred with the rest of Q3-sigv4=C — api_key/bearer is live.
   const allowPrivate = space?.allowPrivateDatasource ?? false;
   const integrationSelection = await getEnabledIntegrationSelection(accountId);
@@ -564,7 +564,7 @@ export async function POST(request: Request) {
       endpoint: i.endpoint ?? undefined, transport: i.transport ?? undefined,
       credentialsRef: i.credentialsRef ?? undefined, allowPrivate,
     }));
-  // ADR-007 — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
+  // ADR-007[legacy 040] — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
   // writes go through the human-gated /api/actions path). They never enter the resolver's tool union.
   const proposableWrites = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
@@ -572,7 +572,7 @@ export async function POST(request: Request) {
   const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
     space, egressReadIntegrations, proposableWrites,
     { mcpSelectionSuppressed: integrationSelection.mcpSelectionSuppressed }); // server-side enforcement
-  // ADR-003: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
+  // ADR-003[legacy 044]: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is
   // `fanGateways.length >= 2` (gate MAJOR: re-derived from the live `active` flags here, so a stale
@@ -584,7 +584,7 @@ export async function POST(request: Request) {
   const fanGateways = (route?.selected ?? []).filter((s) => s.active && s.key !== 'aws-data' && !collectorByKey(s.key)).map((s) => s.key).slice(0, 3);
   const doFanout = synthOn && hybridOn && !customPick && !unavailablePin && spec.tier === 'builtin'
     && fanGateways.length >= 2;
-  // ADR-003 honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
+  // ADR-003[legacy 038] honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
   // Skipped on the fan-out path (every fanGateway is already active-filtered).
   const inactiveSection = !doFanout && hybridOn && spec.tier === 'builtin' && sectionByKey(spec.gateway)?.active === false
     ? sectionByKey(spec.gateway)! : null;
@@ -660,7 +660,7 @@ export async function POST(request: Request) {
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
-        // ADR-003: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
+        // ADR-003[legacy 044]: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
         // Promise.allSettled survivors, which would stall the badge/Thinking UX for the whole fan-out).
         ...(via ? { via, routes: fanGateways } : {}),
         ...(!useAssistant && spec.tier === 'custom' ? { customAgent: spec.agentName, spaceVersion: spec.spaceVersion } : {}),
@@ -706,7 +706,7 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      // ADR-003 cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
+      // ADR-003[legacy 044] cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
       if (doFanout) {
         const tf0 = Date.now();
         // gate CRITICAL: each gateway gets its OWN built-in invoke input (no shared primary spec).

@@ -152,7 +152,7 @@ beforeEach(() => {
   // default to the built-in no-op shape
   getEnabledCustomAgents.mockResolvedValue([]);
   pickCustomAgent.mockReturnValue(null);
-  isCustomAgentEnabled.mockResolvedValue(true); // ADR-004: authoritative re-check passes by default
+  isCustomAgentEnabled.mockResolvedValue(true); // ADR-004[legacy 039]: authoritative re-check passes by default
   getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: false }); // ADR-007[legacy 039] P2: no integrations by default
 
   resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'ops', skill: 'ops', agentName: 'ops', skillHashes: [] });
@@ -308,7 +308,7 @@ describe('POST /api/chat', () => {
   });
 });
 
-describe('hybrid routing (ADR-003)', () => {
+describe('hybrid routing (ADR-003[legacy 038])', () => {
   it('flag off: uses legacy pickGateway path, no classifyRoute call', async () => {
     delete process.env.HYBRID_ROUTING_ENABLED;
     verifyUser.mockResolvedValue({ sub: 'u' });
@@ -442,7 +442,7 @@ describe('hybrid routing (ADR-003)', () => {
     expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], [], { mcpSelectionSuppressed: false }); // gateway, not the revoked custom
   });
 
-  it('ADR-007: passes ONLY enabled egress-READ integrations to resolveAgent, WITH connection details (ingress + READ_WRITE excluded)', async () => {
+  it('ADR-007[legacy 039]: passes ONLY enabled egress-READ integrations to resolveAgent, WITH connection details (ingress + READ_WRITE excluded)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
@@ -456,7 +456,7 @@ describe('hybrid routing (ADR-003)', () => {
     const { POST } = await import('./route');
     await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
     // 4th arg = ONLY the egress+read integration (with connection details + allowPrivate=false);
-    // 5th arg = the READ_WRITE integration as PROPOSE-ONLY (never tool-injected). ADR-007.
+    // 5th arg = the READ_WRITE integration as PROPOSE-ONLY (never tool-injected). ADR-007[legacy 040].
     expect(resolveAgent).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), null,
       [{ id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read', name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
@@ -705,7 +705,7 @@ describe('datasource schema injection', () => {
   });
 });
 
-describe('cross-domain auto-synthesis (ADR-003)', () => {
+describe('cross-domain auto-synthesis (ADR-003[legacy 044])', () => {
   const multiRoute = {
     primary: 'network',
     ranked: [{ key: 'network', score: 0.9, active: true }, { key: 'data', score: 0.6, active: true }],

@@ -183,7 +183,7 @@ print(json.dumps(out))
   });
 });
 
-describe('resolveAgent — ADR-007 egress-READ integration injection', () => {
+describe('resolveAgent — ADR-007[legacy 039] egress-READ integration injection', () => {
   // custom is on the 'security' gateway whose target-qualified gateway catalog has 14 IAM tools.
   it('integration tools BYPASS the gateway catalog (a non-IAM tool survives) and union with skill tools', () => {
     const spec = resolveAgent('compliance', [custom], null, [
@@ -314,7 +314,7 @@ describe('resolveAgent — ADR-007[legacy 039] P2-infra inc2 connection details 
   });
 });
 
-describe('resolveAgent — ADR-007 propose-only READ_WRITE', () => {
+describe('resolveAgent — ADR-007[legacy 040] propose-only READ_WRITE', () => {
   it('surfaces write actions as a propose-only prompt block, NEVER as a live tool', () => {
     const spec = resolveAgent('compliance', [custom], null, [], [{ name: 'slack', writeActionRefs: ['slack.post_message'] }]);
     expect(spec.systemPromptOverride).toMatch(/## Proposable write actions/);

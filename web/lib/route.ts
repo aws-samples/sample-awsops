@@ -87,15 +87,15 @@ export function pickGateway(prompt: string, pinned?: string, previous?: string):
   return 'ops';
 }
 
-// ── ADR-003 hybrid routing ───────────────────────────────────────────────────
+// ── ADR-003[legacy 038] hybrid routing ───────────────────────────────────────────────────
 
 export interface RankedEntry { key: string; score: number; active: boolean }
 export interface RouteResult {
   primary: string;
   ranked: RankedEntry[];
   method: 'pin' | 'regex' | 'llm' | 'fallback' | 'previous';
-  // ADR-003: cross-domain auto-synthesis signal. `selected` = the active routes the chat
-  // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-003 fan-out+synthesis.
+  // ADR-003[legacy 044]: cross-domain auto-synthesis signal. `selected` = the active routes the chat
+  // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-003[legacy 025] fan-out+synthesis.
   // pin/regex/fallback are always single. NOTE: the Agent-Space/active filter later in
   // chat/route.ts may shrink `selected` — the handler MUST recompute multiDomain after filtering.
   multiDomain: boolean;
@@ -104,17 +104,17 @@ export interface RouteResult {
 export interface ClassifyOpts {
   llmEnabled?: boolean;
   classify?: (prompt: string) => Promise<{ key: string; score: number }[]>;
-  /** ADR-003: min classifier score for a route to join the multi-domain fan-out set. */
+  /** ADR-003[legacy 044]: min classifier score for a route to join the multi-domain fan-out set. */
   minScore?: number;
   /** Follow-up continuity: the section that answered the previous turn (caller-validated). Used
    *  only when neither a keyword nor the classifier picked a route, instead of the default. */
   previous?: string;
 }
 
-/** ADR-003 default multi-route inclusion threshold (env-overridable, golden-set-tuned). */
+/** ADR-003[legacy 044] default multi-route inclusion threshold (env-overridable, golden-set-tuned). */
 export const MULTI_ROUTE_MIN_SCORE = Number(process.env.MULTI_ROUTE_MIN_SCORE || 0.3);
 
-/** Active routes (score ≥ minScore), best-first, capped at 3 — the fan-out candidate set (ADR-003). */
+/** Active routes (score ≥ minScore), best-first, capped at 3 — the fan-out candidate set (ADR-003[legacy 044]). */
 export function selectMultiRoute(ranked: RankedEntry[], minScore = MULTI_ROUTE_MIN_SCORE): RankedEntry[] {
   return ranked.filter((r) => r.active && r.score >= minScore).slice(0, 3);
 }
@@ -140,7 +140,7 @@ function entry(key: string, score: number): RankedEntry {
  * → graceful fallback. Never throws; never blocks chat (spec §2, §6).
  */
 export async function classifyRoute(prompt: string, pinned?: string, opts: ClassifyOpts = {}): Promise<RouteResult> {
-  // Single-route result: selected = [the one entry], never multi-domain (ADR-003).
+  // Single-route result: selected = [the one entry], never multi-domain (ADR-003[legacy 044]).
   const single = (primary: string, ranked: RankedEntry[], method: RouteResult['method']): RouteResult =>
     ({ primary, ranked, method, multiDomain: false, selected: [ranked[0]] });
 
@@ -179,7 +179,7 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     try {
       const ranked = (await opts.classify(prompt)).map((r) => entry(r.key, r.score));
       if (ranked.length > 0) {
-        // ADR-003: ≥2 active routes above threshold ⇒ candidate for cross-domain auto-synthesis.
+        // ADR-003[legacy 044]: ≥2 active routes above threshold ⇒ candidate for cross-domain auto-synthesis.
         const selected = selectMultiRoute(ranked, opts.minScore);
         const multiDomain = selected.length >= 2;
         return { primary: ranked[0].key, ranked, method: 'llm', multiDomain, selected: multiDomain ? selected : [ranked[0]] };
@@ -191,7 +191,7 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     return single(matched[0], [entry(matched[0], 1)], 'regex');
   }
   if (opts.previous && sectionByKey(opts.previous)) {
-    // distinct method so ADR-003 routing/misroute telemetry keeps continuity separate from the catch-all
+    // distinct method so ADR-003[legacy 038] routing/misroute telemetry keeps continuity separate from the catch-all
     return single(opts.previous, [entry(opts.previous, 0)], 'previous');
   }
   const fallbackKey = opts.llmEnabled ? ACTIVE_FALLBACK : 'ops'; // flag off = exact legacy behavior

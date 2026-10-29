@@ -1,6 +1,6 @@
 import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
 
-// ADR-003 / ADR-003: merge several per-domain agent answers into ONE coherent streamed answer.
+// ADR-003[legacy 044, 025]: merge several per-domain agent answers into ONE coherent streamed answer.
 // Used only on the cross-domain auto-synthesis path (flag MULTI_ROUTE_SYNTHESIS_ENABLED). The
 // Bedrock call is injectable so tests never hit the network. Never throws — degrades to a
 // deterministic concatenation so a synthesis failure can never blank the chat answer.

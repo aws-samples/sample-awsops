@@ -12,7 +12,7 @@ interface SpaceState { enabledAgentIds: number[]; enabledSkillIds: number[]; ena
 interface IntegrationRow { id: number; name: string; kind: string; direction: string; capability: string; enabled: boolean; tier: string; receivePath?: string | null; exposedTools?: string[]; endpoint?: string; transport?: string; credentialsRef?: string; }
 
 const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops', 'observability'];
-// ADR-004 agent-type lifecycle roles (mirrors web/lib/skill-validation.ts AGENT_TYPES).
+// ADR-004[legacy 039] agent-type lifecycle roles (mirrors web/lib/skill-validation.ts AGENT_TYPES).
 const AGENT_TYPES = ['generic', 'on_demand', 'triage', 'rca', 'mitigation', 'evaluation'];
 // ADR-007[legacy 039] P2 — integration kinds. Imported (not re-hardcoded) so this dropdown can't drift from the
 // migration's integrations_kind_check like it did before (missing clickhouse/mimir/loki/tempo/
@@ -183,7 +183,7 @@ export default function CustomizationPage() {
     setSpace({ ...cur, enabledIntegrationIds: [...set] });
   }
 
-  if (denied) return <div className="p-6 text-[13px] text-ink-500">Admin access required (ADR-004).</div>;
+  if (denied) return <div className="p-6 text-[13px] text-ink-500">Admin access required (ADR-004[legacy 031]).</div>;
   if (noAurora) return <div className="p-6 text-[13px] text-ink-500">Aurora is not configured — custom agents are unavailable.</div>;
 
   return (

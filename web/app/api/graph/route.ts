@@ -101,7 +101,7 @@ async function graphRoot(client: Parameters<Parameters<typeof graphReadTransacti
   } : null };
 }
 
-// Read-only graph access (ADR-010). GET returns the materialized topology graph for a class
+// Read-only graph access (ADR-010[legacy 043]). GET returns the materialized topology graph for a class
 // (flow|infra), or — when ?from=<nodeId> is passed — the per-resource SUBGRAPH: the node + its
 // up/down neighborhood within `depth` hops (capped per hop by graph-query). No rebuild here —
 // rebuilds run separately in the gated timer or scripts/v2/graph-rebuild.mjs manual runner.

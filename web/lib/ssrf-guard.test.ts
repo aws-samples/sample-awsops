@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { isBlockedHost, assertEgressEndpointAllowed } from './ssrf-guard';
 
-describe('isBlockedHost (ADR-007 blocklist)', () => {
+describe('isBlockedHost (ADR-007[legacy 011] blocklist)', () => {
   it('blocks private/link-local/loopback/metadata IPv4', () => {
     for (const ip of ['10.0.0.1', '10.255.255.255', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '127.0.0.1']) {
       expect(isBlockedHost(ip)).toBe(true);

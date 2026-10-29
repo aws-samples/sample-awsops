@@ -1,5 +1,5 @@
 // web/lib/incident-normalize.ts
-// ADR-006 Triage — alert normalizers PORTED from src/lib/alert-types.ts (CloudWatch SNS /
+// ADR-006[legacy 032] Triage — alert normalizers PORTED from src/lib/alert-types.ts (CloudWatch SNS /
 // Alertmanager / Grafana / Generic) + detectAlertSource, ADAPTED to pure v2 functions
 // (no app-config, no in-memory Map). Adds Addendum #6 structured-input isolation
 // (isolatePayload) and the dedup-race UNIQUE key builder (correlationKey).
@@ -313,7 +313,7 @@ export function correlationKey(event: AlertEvent): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 40);
 }
 
-// --- ADR-006 feedback-loop breaker: detect AWSops's own write-backs ---
+// --- ADR-006[legacy 034] feedback-loop breaker: detect AWSops's own write-backs ---
 // Every write-back is stamped CreatedBy=AWSops-AIOps (OpsItem OperationalData/tag) or source=AWSops-AIOps
 // (Incident Manager). The webhook ingress drops any inbound event bearing this marker so our own
 // observability write can never re-trigger an RCA. ALWAYS-ON (harmless when nothing writes back).

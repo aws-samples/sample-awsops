@@ -2,7 +2,7 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import { SECTIONS } from './sections';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
 
-// ADR-003: Haiku routing classifier. Pure module — Bedrock call is injectable for tests.
+// ADR-003[legacy 038]: Haiku routing classifier. Pure module — Bedrock call is injectable for tests.
 // Output is ADVISORY ONLY (routing), never used for authorization decisions.
 
 const VALID_KEYS = new Set(SECTIONS.map((s) => s.key));

@@ -1136,7 +1136,7 @@ export const TERMS: Record<string, Pair> = {
   '벤치마크 실행 →': { en: 'Run a benchmark →', zh: '运行基准测试 →', ja: 'ベンチマーク実行 →' },
   '섹션 전문 에이전트가 질문을 자동 분류해 라이브 AWS 데이터로 답합니다.': { en: 'Section-specialist agents auto-classify your question and answer with live AWS data.', zh: '分区专家智能体会自动分类问题，并基于实时 AWS 数据给出回答。', ja: 'セクション専門エージェントが質問を自動分類し、ライブ AWS データで回答します。' },
   'EKS 진단 (K8sGPT)': { en: 'EKS Diagnosis (K8sGPT)', zh: 'EKS 诊断（K8sGPT）', ja: 'EKS 診断（K8sGPT）' },
-  'ADR-003 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)': { en: 'ADR-003 gate benchmark — live measurement is a follow-up (Bedrock invocation-log telemetry)', zh: 'ADR-003 门控基准测试 — 实时测量为后续工作（Bedrock invocation-log 遥测）', ja: 'ADR-003 ゲートベンチマーク — ライブ計測は後続対応（Bedrock invocation-log テレメトリ）' },
+  'ADR-003[legacy 038] 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)': { en: 'ADR-003[legacy 038] gate benchmark — live measurement is a follow-up (Bedrock invocation-log telemetry)', zh: 'ADR-003[legacy 038] 门控基准测试 — 实时测量为后续工作（Bedrock invocation-log 遥测）', ja: 'ADR-003[legacy 038] ゲートベンチマーク — ライブ計測は後続対応（Bedrock invocation-log テレメトリ）' },
   '게이트 96.9%': { en: 'Gate 96.9%', zh: '闸门 96.9%', ja: 'ゲート 96.9%' },
   'awsops가 사용한 Bedrock 토큰 비용 (최근 30일, invocation-log 기준)': { en: 'Bedrock token cost incurred by awsops (last 30 days, based on invocation-log)', zh: 'awsops 使用的 Bedrock 令牌费用（最近30天，基于 invocation-log）', ja: 'awsops が使用した Bedrock トークンコスト（過去30日、invocation-log 基準）' },
   'Bedrock 토큰 비용 (30d)': { en: 'Bedrock token cost (30d)', zh: 'Bedrock 令牌费用（30天）', ja: 'Bedrock トークンコスト（30日）' },

@@ -45,7 +45,7 @@ export interface ResolvedIntegration {
   transport: string;            // sigv4 | api_key | oauth_client_credentials
   credentialsRef?: string;      // Secrets Manager ARN (runtime fetch); undefined for sigv4
   exposedTools: string[];
-  allowPrivate: boolean;        // per-account ADR-007 allowPrivateDatasource opt-in (SSRF)
+  allowPrivate: boolean;        // per-account ADR-007[legacy 011] allowPrivateDatasource opt-in (SSRF)
   sigv4Service?: string;        // sigv4 only
   sigv4Region?: string;         // sigv4 only
 }
@@ -85,13 +85,13 @@ export interface EgressReadIntegration {
   sigv4Region?: string;
 }
 
-// ADR-008 — bound the integration context injected into the prompt.
+// ADR-008[legacy 033] — bound the integration context injected into the prompt.
 // PARITY NOTE: the incident federation bridge (scripts/v2/incident/agent_bridge.py) does NOT yet inject
 // integration context — that parity is deferred to P4 (federation is flag-off). Chat (here) and federation
 // intentionally diverge on integration context until P4; keep SAFEGUARD_LINE byte-identical across both.
 export const MAX_PROVIDED_CONTEXT_CHARS = 2000;
 
-// ADR-007 — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
+// ADR-007[legacy 040] — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
 export interface ProposableWriteIntegration {
   name: string;
   writeActionRefs: string[];   // action_catalog names the model may PROPOSE (e.g. slack.post_message)
@@ -149,7 +149,7 @@ export function resolveAgent(
     const ordered = [...custom.skills].sort((a, b) => a.ord - b.ord);
     const skillBlock = ordered.map((s) => s.instructions).filter(Boolean).join('\n\n');
     const integrationBlock = renderIntegrationContext(egressReadIntegrations);
-    // ADR-007: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
+    // ADR-007[legacy 040]: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
     // live tools (writes go through the human-gated /api/actions path), so they do NOT touch toolAllowlist.
     const proposableBlock = renderProposableWrites(proposableWrites);
     const systemPromptOverride = [SAFEGUARD_LINE, custom.persona.trim(), skillBlock, integrationBlock, proposableBlock]
