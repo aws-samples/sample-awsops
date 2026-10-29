@@ -387,7 +387,7 @@ export async function POST(request: Request) {
     const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
     const enc = new TextEncoder();
     const t0 = Date.now();
-    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
     const stream = new ReadableStream({
       async start(controller) {
         controller.enqueue(enc.encode(': heartbeat\n\n'));

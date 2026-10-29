@@ -1,6 +1,7 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { parser as traceqlParser } from '@grafana/lezer-traceql';
 import { tempoAttributeIdentity, type TempoAttribute } from '@/lib/tempo-schema';
+import { thinkingOffFields } from '@/lib/bedrock';
 
 // NL → datasource query (Explore "AI로 생성"). Bedrock-DIRECT (NOT the AgentCore monitoring gateway).
 //
@@ -22,7 +23,7 @@ const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 // ASSISTANT_MODEL_ID (often Sonnet/Opus) → that would AccessDenied → every generate 502s.
 const MODEL_ID =
   process.env.DATASOURCE_QUERYGEN_MODEL_ID ||
-  'global.anthropic.claude-haiku-4-5-20251001-v1:0';
+  'global.anthropic.claude-haiku-5-5';
 
 const MAX_QUERY = 8_000;
 const TEMPO_SCHEMA_REQUIRED = 'Tempo schema is not available for the requested attributes. Refresh the datasource schema and try again. (Tempo 스키마를 새로고침한 뒤 다시 생성하세요.)';
@@ -48,7 +49,8 @@ const bedrockSend: QueryGenSend = async (system, user, modelId) => {
       modelId,
       system: [{ text: system }],
       messages: [{ role: 'user', content: [{ text: user }] }],
-      inferenceConfig: { maxTokens: 1536, temperature: 0 }, // deterministic, query-sized (headroom so SQL isn't truncated mid-fence)
+      inferenceConfig: { maxTokens: 1536 }, // query-sized (headroom so SQL isn't truncated mid-fence)
+      ...thinkingOffFields(modelId),
     }),
   );
   return (res.output?.message?.content ?? [])

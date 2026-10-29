@@ -3,10 +3,11 @@
 // frame. Honest by design — the caller tags the answer `via: 'bedrock-direct-fallback'` and the
 // text opens with a notice that live tools were unavailable.
 import { BedrockRuntimeClient, ConverseStreamCommand, type Message } from '@aws-sdk/client-bedrock-runtime';
+import { thinkingOffFields } from './bedrock';
 import type { ChatMsg } from './agentcore';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 const SYSTEM =
   'You are the AWSops operations assistant. The live agent runtime (with real AWS tools) is ' +
@@ -37,8 +38,9 @@ export async function* bedrockDirectStream(
     modelId: MODEL_ID,
     system: [{ text: `${SYSTEM} Always respond in ${lang}.` }],
     messages,
-    // sonnet-5 rejects `temperature` on ConverseStream (see agent/agent.py note) — omit it.
+    // Claude 5.x models reject `temperature`; thinking stays off so the fixed output cap holds the answer.
     inferenceConfig: { maxTokens: 4096 },
+    ...thinkingOffFields(MODEL_ID),
   }), { abortSignal: opts.abortSignal });
   for await (const ev of res.stream ?? []) {
     const d = ev.contentBlockDelta?.delta;

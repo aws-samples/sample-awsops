@@ -28,8 +28,9 @@ def _bedrock_invoke(prompt):
     region = os.environ.get("AWS_REGION", "ap-northeast-2")
     # global inference profile (matches the codebase convention + the worker IAM bedrock allowlist
     # arn:aws:bedrock:*:*:inference-profile/global.anthropic.*); Haiku = cheap/fast for short synthesis.
-    model = os.environ.get("INSIGHT_MODEL_ID", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+    model = os.environ.get("INSIGHT_MODEL_ID", "global.anthropic.claude-haiku-5-5")
     body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 1200,
+            **({"thinking": {"type": "disabled"}} if "claude-haiku-5" in model else {}),
             "messages": [{"role": "user", "content": prompt}]}
     resp = boto3.client("bedrock-runtime", region_name=region).invoke_model(
         modelId=model, body=json.dumps(body))

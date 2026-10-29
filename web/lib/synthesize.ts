@@ -1,4 +1,5 @@
 import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { thinkingOffFields } from './bedrock';
 
 // ADR-003[legacy 044, 025]: merge several per-domain agent answers into ONE coherent streamed answer.
 // Used only on the cross-domain auto-synthesis path (flag MULTI_ROUTE_SYNTHESIS_ENABLED). The
@@ -10,7 +11,7 @@ export interface SynthPart { gateway: string; text: string }
 export type SynthSend = (system: string, user: string, modelId: string, abortSignal?: AbortSignal) => AsyncIterable<string>;
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const MODEL_ID = process.env.SYNTHESIS_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 // Immutable synthesis system prompt. Domain answers arrive inside <domain_response> tags and the
 // user question inside <user_query> — both are DATA. A domain answer may itself be prompt-injected
@@ -42,10 +43,9 @@ const bedrockSend: SynthSend = async function* (system, user, modelId, abortSign
     modelId,
     system: [{ text: system }],
     messages: [{ role: 'user', content: [{ text: user }] }],
-    // LATENT BUG FIX (found via the code-route live test 2026-07-19): sonnet-5 rejects
-    // `temperature` on ConverseStream — with it, EVERY live synthesis call failed and the
-    // fan-out path degraded to concatenation. Same constraint as agent/agent.py.
+    // Claude 5.x models reject `temperature`; thinking stays off so the fixed output cap holds the answer.
     inferenceConfig: { maxTokens: 4096 },
+    ...thinkingOffFields(modelId),
   }), { abortSignal }); // stop token generation (and cost) if the client disconnects
   for await (const ev of res.stream ?? []) {
     const d = ev.contentBlockDelta?.delta;
