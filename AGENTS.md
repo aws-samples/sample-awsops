@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eef07d7538d6 · generated-at: 2026-10-28 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7e5a22dbe2b2 · generated-at: 2026-10-29 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -6,7 +6,7 @@
 
 **v2 is live on `main`** (Terraform · ECS Fargate · Aurora · AgentCore agents · async workers). v1.8.0 (`src/`, CDK/EC2/Steampipe, `/awsops` basePath) is decommissioned per ADR-016 — its code left the tree (`git tag v1-pre-code-removal-20260712`); open teardown work (the Phase 4.4/4.5 re-run with the corrected 21-name Lambda list, Phase 6 banners) is tracked in `docs/runbooks/v1-decommission.md` §Phase 4. v1 rules do NOT apply to v2. A diff under `web/`, `terraform/`, `agent/`, or `scripts/v2/` is v2.
 
-**ADR numbering:** ADR bodies (and the BASELINE register) live in the private upstream repository, not in this public tree — docs here cite ADR numbers for traceability only.
+**ADR numbering:** ADR bodies (001–021 and the BASELINE register) live in the private upstream repository, not in this public tree — docs here cite ADR numbers for traceability only. Numbers above 021 are legacy; the private ADR-MAPPING resolves them.
 
 ## ⛔ Product posture (ADR bodies maintained in the private upstream repo)
 v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *proposal* (read-only).**
