@@ -264,6 +264,11 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
         # global cross-region profile fans out to per-region FMs → wildcard region on the FM ARN
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-*",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-4-5-*",
+        # Claude Haiku 5.5 (bare id and any dated suffix); the 4.5 entries stay until the 5.5 web rollout is verified.
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5-*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5-*",
       ]
     }]
   })
@@ -284,6 +289,11 @@ resource "aws_iam_role_policy" "task_synthesis_bedrock" {
       Resource = [
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5",
+        # Claude Sonnet 5.5 (bare id and any dated suffix); the Sonnet 5 entries stay until the 5.5 web rollout is verified.
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5-*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5-*",
       ]
     }]
   })
