@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — correlation engine (Python core).
+"""AWSops v2 ADR-006 — correlation engine (Python core).
 
 PORTED from src/lib/alert-correlation.ts `findCorrelatedIncident` (v1, in-memory Map) into a
 STATELESS Aurora query: the active set is the look-back window read live from `incidents`, so
@@ -14,7 +14,7 @@ UNIQUE winner is decided by web/lib/incident.ts INSERT … ON CONFLICT — `clas
 the orchestrator; it performs NO writes.
 
 `find_similar` is the lexical Jaccard scorer ported from src/lib/alert-knowledge.ts. It is the
-SINGLE swappable pgvector seam (ADR-032 plan): when pgvector lands, replace this one function with
+SINGLE swappable pgvector seam (ADR-006 plan): when pgvector lands, replace this one function with
 an embedding nearest-neighbour query and nothing else changes.
 
 SAFETY: this module is read-only over `incidents`; it never executes a mutation and never reads or

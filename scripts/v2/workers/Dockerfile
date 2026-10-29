@@ -29,7 +29,7 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 ENV POWERPIPE_MOD_DIR=/app/powerpipe
 COPY db.py handlers.py fargate_worker.py compliance.py redact.py ./
-# ADR-029+036 remediation P2-code executor (Fargate path). Same image; the SFN command selects the
+# ADR-005 remediation P2-code executor (Fargate path). Same image; the SFN command selects the
 # module (`python remediation_executor_cli.py --job-id X --action Y`). Docker COPY cannot reach a
 # parent of the build context (scripts/v2/workers/), so workers.mjs does a pre-build `cp` of these 3
 # remediation modules into this dir (gated on the files existing) — approach (b) per the plan, chosen

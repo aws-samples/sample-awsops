@@ -5,7 +5,7 @@ onboarding CLI (create-access-entry + associate-access-policy) for the web task 
 CloudTrail emits the management event, EventBridge matches it, and this Lambda records
 the cluster in Aurora `eks_registrations` — the BFF allow-list (env ∪ DB) picks it up on
 the next read. DeleteAccessEntry symmetrically unregisters. READ-ONLY toward AWS: we
-never create/modify AWS resources here — we only observe operator actions (ADR-029-safe).
+never create/modify AWS resources here — we only observe operator actions (ADR-005-safe).
 
 OPERATIONAL NOTE (PR #36 r5): registration reflects the policy posture AT GRANT TIME.
 A later AssociateAccessPolicy adding a broader policy is skipped by the read-only gate
@@ -29,7 +29,7 @@ _secret_cache: dict = {}
 
 # Only read-only VIEW policy associations may auto-register (PR #36 r4): an operator
 # fat-fingering e.g. AmazonEKSEditPolicy onto the task role must NOT silently onboard
-# that cluster — ADR-029 reversal keeps this system strictly read-only.
+# that cluster — ADR-005 freeze keeps this system strictly read-only.
 # Keep in sync with terraform/foundation/eks.tf aws_eks_access_policy_association.web_view
 # policy_arn (AdminViewPolicy) — both lists name AWS-managed, stable policy names (PR #36 r5).
 _READONLY_POLICY_SUFFIXES = ("/AmazonEKSViewPolicy", "/AmazonEKSAdminViewPolicy")

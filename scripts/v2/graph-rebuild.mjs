@@ -1,4 +1,4 @@
-// ADR-043 — manual graph execution; the default-off timer uses these builders in the web process.
+// ADR-010 — manual graph execution; the default-off timer uses these builders in the web process.
 // Complete self infra supports normal trace; published stale/degraded self permits only qualified partial telemetry.
 // Builders retain their existing collection/publication behavior:
 //   - flow  (class='flow')  via rebuildGraph      → traffic-flow topology

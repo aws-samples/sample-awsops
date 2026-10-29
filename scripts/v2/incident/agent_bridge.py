@@ -1,11 +1,11 @@
-"""AWSops v2 ADR-032 — agent bridge (Python core).
+"""AWSops v2 ADR-006 — agent bridge (Python core).
 
 MIRRORS web/lib/agentcore.ts invokeAgent: read the AgentCore runtime ARN from SSM (source of
 truth, `/ops/awsops-v2/agentcore/runtime_arn`) and call boto3 bedrock-agentcore
 `invoke_agent_runtime` with {gateway, messages} (+ optional systemPromptOverride / allowlist /
-ADR-031 traceability). One retry, matching the TS client.
+ADR-004 traceability). One retry, matching the TS client.
 
-SAFETY (ADR-032 #5 + #6 — BINDING, do not weaken):
+SAFETY (ADR-006[legacy 032] #5 + #6 — BINDING, do not weaken):
   - SAFEGUARD_LINE is the immutable, non-overridable boundary copied verbatim from
     web/lib/agent-resolver.ts. build_prompt ALWAYS prepends it (read-only, recommend-only).
   - build_prompt ONLY ever embeds the ISOLATED payload (`isolated['block']` from
@@ -15,7 +15,7 @@ SAFETY (ADR-032 #5 + #6 — BINDING, do not weaken):
   - The Lead delegates only; this bridge never executes a mutation. Mitigation is
     recommendation-only (catalog action NAMES routed through /api/actions, never executed here).
 
-ADR-033 token-budget hook: `invoke` accepts `token_budget` and calls `enforce_token_budget` before
+ADR-008 token-budget hook: `invoke` accepts `token_budget` and calls `enforce_token_budget` before
 the call — the single integration point for the 033 budget governor (no-op stub until 033 lands).
 """
 import json
@@ -81,7 +81,7 @@ def build_prompt(isolated, persona, raw_hint=None):
 
 
 def enforce_token_budget(messages, system_prompt, token_budget):
-    """ADR-033 token-budget HOOK (integration point). When 033 lands, plug the budget governor
+    """ADR-008 token-budget HOOK (integration point). When 033 lands, plug the budget governor
     here (estimate -> cap -> compact). Until then this is a transparent pass-through that only
     asserts a positive budget when one is supplied. Returns (messages, system_prompt) unchanged."""
     if token_budget is not None and token_budget <= 0:
@@ -97,7 +97,7 @@ def invoke(gateway, messages, session_id, system_prompt_override=None,
     (one retry). session_id must be >=33 chars (a UUID works). Returns the final text.
 
     The Lead/sub-agents pass system_prompt_override = build_prompt(...) so SAFEGUARD_LINE is always
-    in force. ADR-033: enforce_token_budget runs before the call (the budget hook).
+    in force. ADR-008: enforce_token_budget runs before the call (the budget hook).
 
     ADR-006 RCA: mode="rca" routes to the agent's EoG branch (returns a JSON dict the
     handler serializes; _read_response's JSON path unwraps it — no streaming/SSE)."""

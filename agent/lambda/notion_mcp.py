@@ -2,7 +2,7 @@
 Notion read MCP Lambda — read-only Notion knowledge tools via AgentCore Gateway MCP.
 Notion 읽기 전용 MCP Lambda — AgentCore Gateway를 통해 Notion 지식 조회 도구를 제공합니다.
 
-First concrete integration on the M1 gateway-target pattern (ADR-039 read-tier; the
+First concrete integration on the M1 gateway-target pattern (ADR-007 read-tier; the
 external-obs gateway). READ-ONLY: search / fetch page / query database. No mutation
 (consistent with the 2026-06-11 high-risk ADR reversal: AWSops = read-only ops + AI
 diagnosis). The Notion integration token is read at runtime from Secrets Manager

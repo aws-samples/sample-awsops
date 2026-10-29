@@ -2,7 +2,7 @@
 """ApprovalWait Task-Token target. Records awaiting_approval + the token (so the web execute route
 can SendTaskSuccess to the SAME token) and returns — the SM parks until the token resolves or the
 ApprovalWait TimeoutSeconds expires (fail-closed → no execution). 4-eyes (a DIFFERENT approver) is
-enforced by the web execute route (ADR-029 #4 / ADR-036 #2)."""
+enforced by the web execute route (ADR-005[legacy 029] #4 / ADR-005[legacy 036] #2)."""
 import db
 
 

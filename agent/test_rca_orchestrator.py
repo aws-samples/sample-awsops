@@ -21,7 +21,7 @@ class BedrockInvokeRequestBodyTest(unittest.TestCase):
     def test_stays_on_sonnet_4_6_with_deterministic_temperature(self):
         # Model stays on sonnet-4-6 (AGENTS.md's pinned RCA model) — bumping to sonnet-5 is a
         # separate decision (own PR + ADR), not something to bundle into a hotfix. And since
-        # sonnet-4-6 accepts `temperature`, ADR-038 determinism (temperature=0) stays in force
+        # sonnet-4-6 accepts `temperature`, ADR-003 determinism (temperature=0) stays in force
         # on this path. NOTE for the future model-bump PR: sonnet-5 rejects `temperature`
         # outright (ValidationException — see agent.py's MODEL_ID + hotfix c30ac9e7), so that
         # PR must drop the param and update this test together with the modelId.

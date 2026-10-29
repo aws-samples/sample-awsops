@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — incident_watchdog Lambda (per-stage timeout reaper).
+"""AWSops v2 ADR-006 — incident_watchdog Lambda (per-stage timeout reaper).
 
 EventBridge-driven (the gated rule fires only when the lifecycle flag is on). It flips any
 incident_stage that has been 'running' past its timeout_seconds to 'stalled', then rolls each

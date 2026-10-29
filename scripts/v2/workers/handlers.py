@@ -1,4 +1,4 @@
-"""AWSops v2 P2 — job-type registry. READ/COMPUTE only (no mutate ops until P3 ADR-029 controls).
+"""AWSops v2 P2 — job-type registry. READ/COMPUTE only (no mutate ops until P3 ADR-005 controls).
 Each handler: (payload: dict, dry_run: bool) -> (result_dict_or_None, artifact_bytes_or_None).
 P2 ships ONE synthetic proof handler ('noop') exercising sleep / memory / optional OOM."""
 import os
@@ -103,7 +103,7 @@ def _report(payload, dry_run):
             ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
                               summary=summary, artifact_uri=artifact_uri,
                               title=meta["title"], tags=meta["tags"])
-            # GOVERNANCE (ADR-040/041 external-comms): notification is no longer published here —
+            # GOVERNANCE (ADR-007 external-comms): notification is no longer published here —
             # a completed report just leaves diagnosis_reports.notified_at NULL. A periodic digest
             # Lambda (diagnosis_digest.py, ~15min) batches everything with notified_at IS NULL into
             # ONE SNS email and stamps notified_at, instead of one email per completion (v1 parity's

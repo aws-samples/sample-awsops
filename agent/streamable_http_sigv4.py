@@ -110,7 +110,7 @@ class StreamableHTTPTransportWithSigV4(StreamableHTTPTransport):
 
 
 def _no_redirect_http_client_factory(*args, **kwargs):
-    """ADR-039 redirect:'manual': build the MCP httpx client normally, THEN force follow_redirects=False
+    """ADR-007 redirect:'manual': build the MCP httpx client normally, THEN force follow_redirects=False
     on the instance. create_mcp_http_client does NOT accept a follow_redirects kwarg — passing it raises
     TypeError and breaks transport init (regression caught in live verify) — so we set it on the returned
     client. httpx already defaults to follow_redirects=False; this makes the guarantee explicit + robust."""

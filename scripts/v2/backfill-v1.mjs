@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/v2/backfill-v1.mjs
 // One-time, idempotent backfill of v1 high-value history (data/*.json) into the
-// v2 Aurora ADR-030 app-state tables. Tool only — reads a *copy* of v1's data/.
+// v2 Aurora ADR-001 app-state tables. Tool only — reads a *copy* of v1's data/.
 //
 //   node scripts/v2/backfill-v1.mjs --data-dir <path> [--only a,b] [--account-id <id>]
 //                                   [--alert-source <s>] [--dry-run]

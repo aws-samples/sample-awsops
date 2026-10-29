@@ -1,8 +1,8 @@
-"""AWSops v2 ADR-034 — RCA write-back PURE helpers (no AWS, no DB).
+"""AWSops v2 ADR-006 — RCA write-back PURE helpers (no AWS, no DB).
 
 Renders the recommendation-only body, sanity-checks the (attacker-influenced) RCA before any
 write-back, and decides the OpsCenter-vs-Incident-Manager route. The model is NOT re-invoked here;
-034 consumes the ADR-032 RCA already persisted in incidents.rca.
+034 consumes the ADR-006 RCA already persisted in incidents.rca.
 
 SAFETY: recommendation-only labelling (never 'confirmed root cause'); the RCA markdown is defanged
 + length-bounded before embedding; a fallback/garbage RCA is DROPPED (returns ok=False)."""
@@ -38,7 +38,7 @@ def dedup_key(incident_id):
 
 
 def sanitize_writeback_body(rca):
-    """Output sanity-check (ADR-034 prompt-injection-into-content control). Returns (ok, reason).
+    """Output sanity-check (ADR-006 prompt-injection-into-content control). Returns (ok, reason).
     Drops the write if: rca missing, the model fallback ('analysis unavailable'), or invalid enums."""
     if not isinstance(rca, dict):
         return False, "rca-missing"
@@ -75,6 +75,6 @@ def build_recommendation_body(incident, rca, evidence_url, finding_count, data_s
 
 
 def route_decision(matched_response_plan_arn):
-    """Resolve the ADR-034 'or': a matched Incident Manager response plan => enrich that incident;
+    """Resolve the ADR-006 'or': a matched Incident Manager response plan => enrich that incident;
     otherwise => create an OpsCenter OpsItem. Pure given the lookup result."""
     return "incident_manager" if matched_response_plan_arn else "opscenter"

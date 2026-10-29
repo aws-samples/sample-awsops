@@ -224,7 +224,7 @@ def test_generate_resolves_tier_catalog_and_model(monkeypatch):
 
 
 def test_generate_parallel_preserves_order_and_isolates_section_failure(monkeypatch):
-    # ADR-045: sections render concurrently. Order MUST be preserved (reassembled by index) and a single
+    # ADR-008: sections render concurrently. Order MUST be preserved (reassembled by index) and a single
     # failing section MUST degrade in place (loud) WITHOUT sinking the whole report.
     from diagnosis import sections as S
     monkeypatch.setattr(report.src, "collect_all",

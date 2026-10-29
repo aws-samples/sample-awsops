@@ -91,10 +91,10 @@ class TestGuards(_Base):
 class TestNoSteampipe(unittest.TestCase):
     def test_source_has_no_steampipe_or_pg8000(self):
         # the v1 dependency may be NAMED in the docstring (explaining what was dropped) but must never
-        # be IMPORTED/connected — assert the usage forms are absent (ADR-037: no live Steampipe).
+        # be IMPORTED/connected — assert the usage forms are absent (ADR-001: no live Steampipe).
         src = open(os.path.join(os.path.dirname(__file__), "istio_read_mcp.py")).read()
         for banned in ("import pg8000", "pg8000.connect", "STEAMPIPE_HOST", ":9193/"):
-            self.assertNotIn(banned, src, f"istio-read must not use {banned} (ADR-037: no live Steampipe)")
+            self.assertNotIn(banned, src, f"istio-read must not use {banned} (ADR-001: no live Steampipe)")
 
 
 class TestCatalogWiring(unittest.TestCase):

@@ -109,7 +109,7 @@ def test_creds_cache_ttl_and_force_refresh(monkeypatch):
 
 
 def test_non_view_policy_association_is_rejected():
-    """PR #36 r4: a mutating-capable policy association must NOT auto-register (ADR-029 read-only)."""
+    """PR #36 r4: a mutating-capable policy association must NOT auto-register (ADR-005 read-only)."""
     action, reason = parse_event(
         ev("AssociateAccessPolicy", {"name": "c1", "principalArn": "arn:aws:iam::1:role/awsops-v2-task",
            "policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"}),

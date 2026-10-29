@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — Triage stage Lambda (the SM StartAt).
+"""AWSops v2 ADR-006 — Triage stage Lambda (the SM StartAt).
 
 PORTS web/lib/incident.ts triageAndCreateOrLink into pg8000 so the worker tier can re-run the
 exact dedup-race write idempotently (the web BFF does the first pass; the SM re-enters here on
