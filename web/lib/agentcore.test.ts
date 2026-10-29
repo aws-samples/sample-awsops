@@ -169,7 +169,7 @@ print(json.dumps({'current': [t.tool_name for t in scope['_filter_tools'](tools,
     expect('accountAlias' in without).toBe(false);
   });
 
-  it('ADR-039: threads integrations into the payload when non-empty, omits otherwise', async () => {
+  it('ADR-007[legacy 039]: threads integrations into the payload when non-empty, omits otherwise', async () => {
     vi.resetModules();
     ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf('"ok"') });

@@ -1,5 +1,5 @@
 // web/lib/account.ts
-// ADR-031 Phase 2 — minimal account-context. v2 has one live account and no
+// ADR-004[legacy 031] Phase 2 — minimal account-context. v2 has one live account and no
 // selector UI; the web tier already uses the literal 'self' as its single-account
 // convention (inventory.ts). HOST_ACCOUNT_ID is wired from data.aws_caller_identity
 // in workload.tf. Forward-ready: agent_spaces is account-keyed, so multi-account is a

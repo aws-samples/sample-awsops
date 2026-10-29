@@ -1,5 +1,5 @@
 // web/app/api/incidents/webhook/route.ts
-// ADR-032 incident ingress — HMAC webhook (ADR-022 active/standby rotation), PORTED from
+// ADR-006[legacy 032] incident ingress — HMAC webhook (ADR-013[legacy 022] active/standby rotation), PORTED from
 // src/app/api/alert-webhook/route.ts (verifySignature + rate-limit + extractClientIp + SNS
 // subscription-confirm), ADAPTED to the v2 thin-BFF (root path, node-pg Triage, SSM secrets).
 //
@@ -8,7 +8,7 @@
 //     returns 503 and does NOT accept, HMAC-verify, normalize, triage, or enqueue ANYTHING.
 //     There is NO autonomous trigger when off (BINDING). The Triage layer (Task 2) is a second
 //     line of defense (it also returns {decision:'disabled'} when off).
-//   - Alert payloads are attacker-controlled. We HMAC-verify (ADR-022) before any processing,
+//   - Alert payloads are attacker-controlled. We HMAC-verify (ADR-013[legacy 022]) before any processing,
 //     and only isolated/descriptive data (incident-normalize.isolatePayload) ever flows toward
 //     the agent tier — nothing here influences tool perms / sub-agent roster / approval.
 //   - This route NEVER executes a mutation. On accept it does Triage (DB write of the incident
@@ -60,7 +60,7 @@ function extractClientIp(request: Request): string {
   return ips.length >= 2 ? ips[ips.length - 2] : ips[0] || 'unknown';
 }
 
-// HMAC verify (ADR-022 active/standby) now lives in @/lib/incident-ingress-auth as verifyHmac.
+// HMAC verify (ADR-013[legacy 022] active/standby) now lives in @/lib/incident-ingress-auth as verifyHmac.
 
 // --- HMAC secret(s) from SSM (read once, cached) — NOT app-config ---
 const TTL_MS = 5 * 60 * 1000;
@@ -183,7 +183,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       const result = verifyHmac(rawBody, signature, await hmacSecrets());
       if (!signature || !result.ok) return INVALID_AUTH();
       if (result.matched === 'standby') {
-        console.log('[IncidentWebhook] HMAC matched standby secret (ADR-022 rotation; promote+retire)');
+        console.log('[IncidentWebhook] HMAC matched standby secret (ADR-013[legacy 022] rotation; promote+retire)');
       }
     }
   }
@@ -195,7 +195,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'No valid alerts found in payload' }, { status: 400 });
   }
 
-  // ADR-034 feedback-loop breaker (ALWAYS-ON, independent of rca_writeback_enabled). Drop any event
+  // ADR-006[legacy 034] feedback-loop breaker (ALWAYS-ON, independent of rca_writeback_enabled). Drop any event
   // that carries AWSops's own write-back marker so an OpsItem/IM enrichment can never re-trigger RCA.
   // Accepted-and-ignored (200) so the source does not retry. Harmless when nothing writes back.
   const live = alerts.filter((a) => !bearsSelfWritebackMarker(a));

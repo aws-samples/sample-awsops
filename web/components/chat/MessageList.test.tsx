@@ -7,7 +7,7 @@ const doneMsg = (over: Partial<Msg>): Msg => ({ role: 'assistant', content: 'ans
 
 afterEach(cleanup);
 
-describe('MessageList switch chips (ADR-038)', () => {
+describe('MessageList switch chips (ADR-003[legacy 038])', () => {
   it('renders switch chips for active ranked alternates (excluding the used gateway)', () => {
     const msgs: Msg[] = [doneMsg({
       gateway: 'network',
@@ -37,7 +37,7 @@ describe('MessageList switch chips (ADR-038)', () => {
     // scoped to switch chips, not the answer-provenance footer's own copy button
     expect(screen.queryAllByRole('button', { name: /로 다시$/ })).toHaveLength(0);
   });
-  it('renders a combined "통합 분석" badge for a cross-domain synthesis answer (ADR-044)', () => {
+  it('renders a combined "통합 분석" badge for a cross-domain synthesis answer (ADR-003[legacy 044])', () => {
     const msgs: Msg[] = [doneMsg({
       gateway: 'network',
       via: 'multi:network+data',

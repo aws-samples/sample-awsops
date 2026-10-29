@@ -1,5 +1,5 @@
 // web/lib/trace.ts
-// ADR-031 Phase 1 — traceability: record custom-agent invocations into agentcore_stats.
+// ADR-004[legacy 031] Phase 1 — traceability: record custom-agent invocations into agentcore_stats.
 import { getPool } from '@/lib/db';
 
 export interface CustomAgentTrace {
@@ -9,7 +9,7 @@ export interface CustomAgentTrace {
   agentVersion?: number;
   tier: 'builtin' | 'custom';
   skillHashes: string[];
-  spaceVersion?: number; // ADR-031 Phase 2 traceability
+  spaceVersion?: number; // ADR-004[legacy 031] Phase 2 traceability
 }
 
 /** Fire-and-forget. Records {agentName, agentVersion, skillHashes, tier} for reproducibility. Never throws. */

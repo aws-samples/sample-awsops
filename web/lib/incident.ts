@@ -1,5 +1,5 @@
 // web/lib/incident.ts
-// ADR-032 Triage data layer (web BFF side). Pure-ish: all DB through node-pg getPool().
+// ADR-006[legacy 032] Triage data layer (web BFF side). Pure-ish: all DB through node-pg getPool().
 //
 // SAFETY (autonomous incident lifecycle shipped OFF):
 //   - triageAndCreateOrLink returns {decision:'disabled'} and performs NO writes unless
@@ -110,7 +110,7 @@ export async function triageAndCreateOrLink(event: AlertEvent): Promise<TriageRe
 }
 
 /**
- * enqueueInitialStage — rides the P2 backbone (ADR-032 Addendum #3): a worker_jobs row
+ * enqueueInitialStage — rides the P2 backbone (ADR-006[legacy 032] Addendum #3): a worker_jobs row
  * (type='incident_stage', queued) + SendMessage to JOBS_QUEUE_URL. No parallel queue.
  * Mirrors web/app/api/actions/[id]/route.ts. The dispatcher routes 'incident_stage' → incident SM.
  */
@@ -162,7 +162,7 @@ export async function getIncident(id: string): Promise<IncidentDetail | null> {
   const { rows: findings } = await getPool().query(
     `SELECT sub_agent, agent_version, skill_hashes, findings, created_at
      FROM incident_findings WHERE incident_id = $1 ORDER BY id`, [id]);
-  // ADR-034 write-back audit (read-only; the write path is the SM Lambda, never web). Degrade-safe:
+  // ADR-006[legacy 034] write-back audit (read-only; the write path is the SM Lambda, never web). Degrade-safe:
   // returns [] when the incident_writeback table / migration v6 is absent (flag-OFF substrate).
   let writeback: Record<string, unknown>[] = [];
   try {
