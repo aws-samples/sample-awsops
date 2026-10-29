@@ -103,7 +103,7 @@ def _report(payload, dry_run):
             ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
                               summary=summary, artifact_uri=artifact_uri,
                               title=meta["title"], tags=meta["tags"])
-            # GOVERNANCE (ADR-013[legacy 040/041] external-comms): notification is no longer published here —
+            # GOVERNANCE (ADR-007/ADR-013[legacy 040/041] external-comms): notification is no longer published here —
             # a completed report just leaves diagnosis_reports.notified_at NULL. A periodic digest
             # Lambda (diagnosis_digest.py, ~15min) batches everything with notified_at IS NULL into
             # ONE SNS email and stamps notified_at, instead of one email per completion (v1 parity's
