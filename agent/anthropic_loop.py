@@ -24,8 +24,7 @@ MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
 MAX_OUTPUT_TOKENS = 4096     # Anthropic Messages API REQUIRES max_tokens on every call
-# sonnet-5-5 rejects `temperature`. `between_tools` keeps thinking blocks out of the replayed
-# history, which _assistant_content rebuilds from text/tool_use only.
+# sonnet-5-5 rejects `temperature`. Any thinking blocks are replayed verbatim (_assistant_content).
 MODEL_THINKING = {"type": "between_tools"}
 EXTRA_CONTEXT_CAP = 8000     # bound BFF-supplied context (parity with agent.handler)
 TOOL_RESULT_CHAR_CAP = 24000 # bound a single tool result fed back (avoid per-round context/token blowup)
@@ -135,7 +134,7 @@ def apply_cache_control(system_blocks, anthropic_tools):
 
 
 def _assistant_content(final):
-    """Rebuild a serializable assistant turn (text + tool_use blocks) from a final message,
+    """Rebuild a serializable assistant turn (thinking + text + tool_use blocks) from a final message,
     so it can be appended to ``messages`` before the tool_result turn. Handles dict/object blocks."""
     out = []
     for b in getattr(final, "content", None) or []:
@@ -144,6 +143,11 @@ def _assistant_content(final):
             txt = _block_attr(b, "text", "") or ""
             if txt.strip():  # Anthropic rejects empty text blocks in INPUT → drop them (P4 CI: API 400)
                 out.append({"type": "text", "text": txt})
+        elif t == "thinking":  # replay unchanged: an edited or dropped block invalidates the turn
+            out.append({"type": "thinking", "thinking": _block_attr(b, "thinking", "") or "",
+                        "signature": _block_attr(b, "signature")})
+        elif t == "redacted_thinking":
+            out.append({"type": "redacted_thinking", "data": _block_attr(b, "data")})
         elif t == "tool_use":
             out.append({"type": "tool_use", "id": _block_attr(b, "id"),
                         "name": _block_attr(b, "name"), "input": _block_attr(b, "input") or {}})

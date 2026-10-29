@@ -278,16 +278,16 @@ use 0 when abstaining. Do not output elapsed_ms or cost_usd.
 **EN** — Each input file is limited to 1 MiB. Offline: at most 32 cases, 16 candidate
 causes, 16 evidence records per case, 64-character IDs, 200-character cause descriptions,
 1,000-character summaries and 2,000-character evidence text. Model mode: at most 8 sequential
-calls, one reused client, 5s connect / 30s read timeout, one attempt with no retries;
-system + case text ≤16,000 UTF-8 bytes, ≤512 output tokens per call and ≤8,192 response bytes.
-Only one JSON text block ending normally is accepted; truncation, tool use and malformed
-output fail closed. SDK timeouts are not a hard whole-run deadline or a dollar budget.
+calls, one reused client, 5s connect / 264s read timeout (scaled from the token cap), one
+attempt with no retries; system + case text ≤16,000 UTF-8 bytes, ≤4,096 output tokens per call
+(reasoning counts toward the cap) and ≤8,192 response bytes. Text blocks are joined and reasoning
+blocks ignored; truncation, tool use and malformed output fail closed. SDK timeouts are not a hard whole-run deadline or a dollar budget.
 
 **KO** — 파일당 1 MiB, 오프라인 최대 32개 사례·16개 후보 원인·사례당 16개 증거입니다.
 ID 64자, 원인 설명 200자, 요약 1,000자, 증거 2,000자로 제한합니다. 모델 모드는 최대
-8회 순차 호출, 단일 클라이언트, 연결 5초·읽기 30초, 재시도 없음입니다.
-시스템+사례 텍스트 16,000바이트, 호출당 출력 512토큰·응답 8,192바이트 이하입니다.
-정상 종료한 단일 JSON 텍스트만 허용합니다. 전체 실행 시간·금액 상한을 보장하는 것은 아닙니다.
+8회 순차 호출, 단일 클라이언트, 연결 5초·읽기 264초(토큰 상한 기준), 재시도 없음입니다.
+시스템+사례 텍스트 16,000바이트, 호출당 출력 4,096토큰(추론 토큰 포함)·응답 8,192바이트 이하입니다.
+정상 종료한 텍스트 블록만 이어 붙이고 추론 블록은 무시합니다. 전체 실행 시간·금액 상한을 보장하는 것은 아닙니다.
 
 **EN** — Keep fixtures synthetic and remove secrets, account identifiers and personal data
 before any explicit model run. The synthetic flag is a declaration, not a redaction scanner.

@@ -53,9 +53,9 @@ export function getModelPricing(modelId: string): ModelPricing {
   return { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 };
 }
 
-/** Converse fields that turn thinking off; only Haiku accepts `disabled`, other Claude 5.5 models 400. */
+/** Converse fields that turn thinking off; only Haiku 5.x accepts `disabled` (4.5 takes no thinking field). */
 export function thinkingOffFields(modelId: string): { additionalModelRequestFields?: { thinking: { type: 'disabled' } } } {
-  return modelId.includes('claude-haiku') ? { additionalModelRequestFields: { thinking: { type: 'disabled' } } } : {};
+  return modelId.includes('claude-haiku-5') ? { additionalModelRequestFields: { thinking: { type: 'disabled' } } } : {};
 }
 
 export const RANGE_CONFIGS: Record<string, { hours: number; period: number }> = {

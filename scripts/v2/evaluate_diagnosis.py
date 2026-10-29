@@ -298,6 +298,11 @@ def model_requests(data):
     return requests
 
 
+# Reasoning tokens count toward the cap; the read timeout scales like report.py's _read_timeout_for.
+MODEL_MAX_TOKENS = 4096
+MODEL_READ_TIMEOUT_S = max(30, MODEL_MAX_TOKENS // 20 + 60)
+
+
 def run_model(data, model_id, region, output_path):
     requests = model_requests(data)
     text(model_id, 2048)
@@ -315,7 +320,7 @@ def run_model(data, model_id, region, output_path):
         try:
             client = boto3.client(
                 "bedrock-runtime", region_name=region,
-                config=Config(connect_timeout=5, read_timeout=30,
+                config=Config(connect_timeout=5, read_timeout=MODEL_READ_TIMEOUT_S,
                               retries={"mode": "standard", "total_max_attempts": 1}),
             )
             for case, payload in zip(data["cases"], requests):
@@ -323,19 +328,18 @@ def run_model(data, model_id, region, output_path):
                 response = client.converse(
                     modelId=model_id, system=[{"text": REFERENCE_PROMPT}],
                     messages=[{"role": "user", "content": [{"text": payload}]}],
-                    # Current Claude and GPT models reject `temperature`; reasoning tokens count
-                    # toward maxTokens, so the cap leaves room beyond the JSON answer.
-                    inferenceConfig={"maxTokens": 4096},
+                    # Current Claude and GPT models reject `temperature`.
+                    inferenceConfig={"maxTokens": MODEL_MAX_TOKENS},
                 )
                 elapsed = round((time.perf_counter() - start) * 1000, 3)
                 require(response.get("stopReason") == "end_turn",
                         "model did not finish a normal text response")
                 content = response["output"]["message"]["content"]
                 texts = [block for block in content if set(block) == {"text"}]
-                require(len(texts) == 1 and all(
+                require(texts and all(
                     set(block) in ({"text"}, {"reasoningContent"}) for block in content),
-                        "model must return one text block")
-                raw = texts[0]["text"]
+                        "model must return text blocks only")
+                raw = "".join(block["text"] for block in texts)
                 require(len(raw.encode("utf-8")) <= 8192, "model response exceeds 8192 bytes")
                 row = parse_json(raw)
                 fields(row, PREDICTION_FIELDS - {"elapsed_ms"})

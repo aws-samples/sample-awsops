@@ -173,8 +173,12 @@ def _backoff(attempt):
 _MAX_OUTPUT_TOKENS = max(1, int(os.environ.get("DIAGNOSIS_MAX_OUTPUT_TOKENS", "32000")))
 
 
-def _capped_budget(section, tier_budget):
-    return min(_section_budget(section, tier_budget), _MAX_OUTPUT_TOKENS)
+# Opus cannot disable thinking, which spends from max_tokens (budgets are thinking-free).
+_OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
+
+
+def _capped_budget(section, tier_budget, headroom=0):
+    return min(_section_budget(section, tier_budget) + headroom, _MAX_OUTPUT_TOKENS)
 
 
 def _bedrock_config(read_timeout):
@@ -227,7 +231,7 @@ def _thinking_fields(model_id):
     `disabled`; Opus 5.5 cannot disable it and stays adaptive."""
     if "claude-sonnet-5-5" in model_id:
         return {"thinking": {"type": "between_tools"}}
-    if "claude-haiku" in model_id:
+    if "claude-haiku-5" in model_id:
         return {"thinking": {"type": "disabled"}}
     return {}
 
@@ -833,6 +837,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
     job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
+    headroom = _OPUS_THINKING_HEADROOM if "claude-opus" in model_id else 0
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
     def _emit(current, section, phase, completed=None):
@@ -885,7 +890,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     def _render_one(i, sec):
         try:
             return i, render_section(dict(sec, _run=run_ctx), collected, model_id,
-                                     _capped_budget(sec, max_tokens), lang)
+                                     _capped_budget(sec, max_tokens, headroom), lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.

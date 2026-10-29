@@ -378,6 +378,16 @@ def test_thinking_fields_keep_section_budgets_thinking_free():
     assert report._thinking_fields("global.anthropic.claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
     assert report._thinking_fields("global.anthropic.claude-haiku-5-5") == {"thinking": {"type": "disabled"}}
     assert report._thinking_fields("global.anthropic.claude-opus-5-5") == {}
+    assert report._thinking_fields("global.anthropic.claude-haiku-4-5-20251001-v1:0") == {}
+
+
+def test_opus_sections_get_thinking_headroom(monkeypatch):
+    monkeypatch.setattr(report, "_MAX_OUTPUT_TOKENS", 32000)
+    sec = {"key": "security_posture"}
+    assert report._capped_budget(sec, 7000, report._OPUS_THINKING_HEADROOM) == 7000 + report._OPUS_THINKING_HEADROOM
+    assert report._capped_budget(sec, 7000) == 7000
+    monkeypatch.setattr(report, "_MAX_OUTPUT_TOKENS", 9000)
+    assert report._capped_budget(sec, 7000, 8000) == 9000
 
 
 def test_redact_strips_pii():

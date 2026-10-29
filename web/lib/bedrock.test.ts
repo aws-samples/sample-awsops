@@ -8,6 +8,7 @@ describe('thinkingOffFields', () => {
     });
     expect(thinkingOffFields('global.anthropic.claude-sonnet-5-5')).toEqual({});
     expect(thinkingOffFields('global.anthropic.claude-opus-5-5')).toEqual({});
+    expect(thinkingOffFields('global.anthropic.claude-haiku-4-5-20251001-v1:0')).toEqual({});
   });
 });
 
