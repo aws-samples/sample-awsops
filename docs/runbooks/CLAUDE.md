@@ -19,7 +19,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [istio-agent-eks-access.md](istio-agent-eks-access.md) | Granting `istio-read` MCP access to an EKS cluster (agent Lambda role Access Entry) |
 | [network-path-eks-access.md](network-path-eks-access.md) | Granting Network Path Check live-identity verification access to an EKS cluster's Nodes/Pods (worker/member-role Access Entry with minimal Nodes/Pods read RBAC) |
 | [k8sgpt-operator-install.md](k8sgpt-operator-install.md) | Out-of-band K8sGPT operator install (manual operator work, ADR-005 precedent) |
-| [datasource-credential-isolation.md](datasource-credential-isolation.md) | Native datasource credential identity and mandatory default backfill before rollout (ADR-007/039) |
+| [datasource-credential-isolation.md](datasource-credential-isolation.md) | Native datasource credential identity and mandatory default backfill before rollout (ADR-007) |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
 | [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |

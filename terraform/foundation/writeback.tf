@@ -1,5 +1,5 @@
 # terraform/foundation/writeback.tf
-# AWSops v2 ADR-034 — RCA write-back (observability-write tier). EVERY resource here is gated by
+# AWSops v2 ADR-006[legacy 034] — RCA write-back (observability-write tier). EVERY resource here is gated by
 # var.rca_writeback_enabled (local.rwb; default false => count=0 => ZERO write-back infra, ZERO cost,
 # ZERO OpsCenter / Incident-Manager write). The webhook marker-drop ingress filter is ALWAYS-ON and
 # lives in the web BFF (independent of this flag) — it is the feedback-loop safety control.
@@ -21,7 +21,7 @@
 
 locals { rwb_acct = data.aws_caller_identity.current.account_id }
 
-# Incident Manager per-action role (ADR-036 #1 per-action IAM). Assumed by the incident-Lambda role
+# Incident Manager per-action role (ADR-005[legacy 036] #1 per-action IAM). Assumed by the incident-Lambda role
 # (incidents.tf). ssm-incidents enrich ONLY (timeline event / incident-record update) — NO ssm:*
 # infra mutate, NO destructive action. Routing reads (ListResponsePlans/GetResponsePlan) are granted
 # so the same assumed session can confirm the target record.
