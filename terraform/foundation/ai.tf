@@ -18,7 +18,7 @@ variable "ci_readiness_enabled" {
 
 variable "integrations_enabled" {
   type        = bool
-  description = "ADR-039 P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
+  description = "ADR-007[legacy 039] P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
   default     = false
 }
 
@@ -289,7 +289,7 @@ resource "aws_iam_role_policy" "official_mcp_credentials" {
   })
 }
 
-# ---- ADR-039 P2-infra inc2: egress integrations — dedicated CMK + scoped runtime grant ----
+# ---- ADR-007[legacy 039] P2-infra inc2: egress integrations — dedicated CMK + scoped runtime grant ----
 # Integration credentials (API keys / OAuth tokens) live in Secrets Manager under
 # ops/${project}/integrations/* encrypted with THIS dedicated key (isolated from the Aurora CMK).
 # All count-gated on integrations_enabled (default false → $0, plan = No changes). The agent.py

@@ -1,5 +1,5 @@
 # terraform/foundation/k8sgpt.tf
-# AWSops v2 ADR-035 — K8sGPT in-cluster diagnosis, AWSOPS-SIDE SUBSTRATE ONLY.
+# AWSops v2 ADR-006 — K8sGPT in-cluster diagnosis, AWSOPS-SIDE SUBSTRATE ONLY.
 # Gated by var.k8sgpt_enabled (default false → count=0 → ZERO gated AWS resources, ZERO cost).
 #
 # REUSE (no new infra): the Result CRD reader is a BFF route reusing the P3-D presigned-STS read
@@ -8,7 +8,7 @@
 # ai.tf). NO new compute, NO new IAM role, NO ECR. The always-present k8s_findings/k8s_scan_runs
 # tables (migration v7) are inert when off.
 #
-# OUT-OF-BAND (NOT here, mirrors ADR-029 §7 KEDA): the K8sGPT operator Helm install, its read-only
+# OUT-OF-BAND (NOT here, mirrors ADR-005[legacy 029] §7 KEDA): the K8sGPT operator Helm install, its read-only
 # ClusterRole + --fix-off config, and binding the Result-CRD read RBAC to awsops-v2-task are ALL
 # operator/cluster-admin actions documented in docs/runbooks/k8sgpt-operator-install.md. AWSops
 # issues ONLY HTTP GET against the cluster API — it NEVER writes to the shared EKS cluster.

@@ -1,6 +1,6 @@
 # AWSops v2 P2 — async worker backbone (SQS → dispatcher → Step Functions → Lambda/Fargate).
 # EVERY resource here is gated by var.workers_enabled (default false → count=0 → zero AWS
-# resources and zero cost). Enable only in P2 W9. Design refs: ADR-029/030 + the P2 spec/plan.
+# resources and zero cost). Enable only in P2 W9. Design refs: ADR-005/001 + the P2 spec/plan.
 # Key decisions baked in:
 #   C1  pg8000 vendored as a Lambda LAYER (worker/status/reaper import pg8000; dispatcher does not).
 #   C5  SFN role carries ecs:RunTask + StopTask + DescribeTasks + iam:PassRole + the .sync managed rule.
@@ -15,7 +15,7 @@ locals {
   acct         = data.aws_caller_identity.current.account_id
   # ai-cost aggregator gate — reuses the worker role/pg8000 layer/VPC, so it REQUIRES workers_enabled.
   act = var.workers_enabled && var.ai_cost_tracking_enabled ? 1 : 0
-  # datasource-diagnosis egress gate (ADR-039/041) — requires workers_enabled. Grants the worker role
+  # datasource-diagnosis egress gate (ADR-007) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
   ds_connector_arns = [for k in ["prometheus", "loki", "tempo", "mimir", "clickhouse"] :
@@ -566,10 +566,10 @@ resource "aws_lambda_function" "dispatcher" {
     # (this resource only exists when workers are on).
     variables = merge(
       { STATE_MACHINE_ARN = aws_sfn_state_machine.workers[0].arn },
-      # ADR-040/041: the remediation SM is OR-gated (re_or_iw) so the Slack DATA-write path can dispatch
+      # ADR-007: the remediation SM is OR-gated (re_or_iw) so the Slack DATA-write path can dispatch
       # while remediation_enabled stays false. The dispatcher needs the SM ARN whenever EITHER plane is on.
       (var.remediation_enabled || var.integrations_write_enabled) ? { REMEDIATION_STATE_MACHINE_ARN = aws_sfn_state_machine.remediation[0].arn } : {},
-      # ADR-032: enabling the incident lifecycle adds the sibling incident SM ARN so the dispatcher
+      # ADR-006: enabling the incident lifecycle adds the sibling incident SM ARN so the dispatcher
       # can route incident_stage jobs to it (dispatcher.py reads INCIDENT_STATE_MACHINE_ARN; empty
       # → the incident branch is inert). merge(base,{}) == base when off → byte-identical dispatcher
       # (no revision). Incident lifecycle REQUIRES workers_enabled=true (this Lambda only exists then).
@@ -1021,7 +1021,7 @@ resource "aws_lambda_permission" "finops_dispatcher_events" {
   source_arn    = aws_cloudwatch_event_rule.finops_dispatcher[0].arn
 }
 
-# Datasource-diagnosis connector invoke (ADR-039/041 governed external egress) — GATED on
+# Datasource-diagnosis connector invoke (ADR-007 governed external egress) — GATED on
 # datasource_diagnosis_enabled (default false → not created → $0). Scoped to the 5 named connector
 # Lambda ARNs only (NO function:* wildcard). Granted to BOTH diagnosis compute roles (Fargate task +
 # worker Lambda), matching the worker_diagnosis / worker_lambda_diagnosis split above. The matching

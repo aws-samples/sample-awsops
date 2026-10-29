@@ -42,7 +42,7 @@ permissions. Resource reads stay behind the curated MCP tools.
 ## Decisions (ADRs) / 결정
 
 - **ADR-001** — v2 foundation: ECS Fargate workload + Aurora split (the v2 workload topology this component runs on). → ADR-001 (private upstream)
-- **ADR-024 (legacy → consolidated into ADR-001)** — CDK three-stack split (v1 precedent; **superseded** by the Terraform-based v2 foundation). → ADR-001 (private upstream)
+- **ADR-001 (legacy → consolidated into ADR-001)** — CDK three-stack split (v1 precedent; **superseded** by the Terraform-based v2 foundation). → ADR-001 (private upstream)
 
 ## Key files / 핵심 파일
 

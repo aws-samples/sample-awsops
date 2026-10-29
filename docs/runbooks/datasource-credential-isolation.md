@@ -1,7 +1,7 @@
 # Datasource credential identity and rollout
 
 This runbook covers native datasource isolation under ADR-007 external-data governance
-and ADR-039 integration identity. It does not approve deployment or activate any gate.
+and ADR-007 integration identity. It does not approve deployment or activate any gate.
 
 ## Symptoms
 

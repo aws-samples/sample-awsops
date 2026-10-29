@@ -1,5 +1,5 @@
 # terraform/foundation/remediation.tf
-# AWSops v2 ADR-029+036 — remediation / mutation execution substrate.
+# AWSops v2 ADR-005 — remediation / mutation execution substrate.
 # EVERY resource here is gated by var.remediation_enabled (default false → count=0 → ZERO AWS
 # resources, ZERO cost, ZERO live mutation). This EXTENDS the P2 backbone (workers.tf): it reuses
 # the worker_jobs Aurora ledger, the SQS queue + dispatcher + status_updater + reaper, and the
@@ -8,10 +8,10 @@
 # executor task role, an S3 Object-Lock audit bucket, an EventBridge SSM status-change resume
 # Lambda, and the kill-switch SSM param. Nothing here mutates customer infra until an operator
 # flips remediation_enabled, sets the kill-switch true, enables a catalog row, AND a 4-eyes
-# approval passes. Design refs: ADR-029 (6 controls) + ADR-036 (hybrid substrate).
+# approval passes. Design refs: ADR-005 (6 controls) + ADR-005 (hybrid substrate).
 locals {
   re = var.remediation_enabled ? 1 : 0
-  # ADR-040/041 §4 — the external DATA-write plane. `iw` gates its OWN resources (kill-switch, Slack
+  # ADR-007[legacy 040, 041] §4 — the external DATA-write plane. `iw` gates its OWN resources (kill-switch, Slack
   # role/secret, external IAM). `re_or_iw` gates the SHARED execution infra (SM + executor/resume
   # Lambdas + audit bucket + SFN role/logs) so the executor EXISTS for Slack while remediation stays
   # off — AWS-resource safety is NOT infra-existence (it's the flag env + enabled + the prefix split +
@@ -47,7 +47,7 @@ resource "aws_ssm_parameter" "allow_cross_account" {
 }
 
 ############################################################
-# Step 2: S3 Object-Lock audit bucket (governance mode, 1yr; ADR-029 #6 second synchronous sink).
+# Step 2: S3 Object-Lock audit bucket (governance mode, 1yr; ADR-005[legacy 029] #6 second synchronous sink).
 ############################################################
 resource "aws_s3_bucket" "remediation_audit" {
   count               = local.re_or_iw
@@ -92,7 +92,7 @@ resource "aws_ssm_document" "ec2_create_tags" {
 
 ############################################################
 # Step 4: Per-runbook AutomationAssumeRole (scoped; exact-ARN/allowlist where Modify* lacks tag
-#   conditions — ADR-029 #5 revision).
+#   conditions — ADR-005[legacy 029] #5 revision).
 ############################################################
 data "aws_iam_policy_document" "ssm_assume" {
   count = local.re
@@ -127,7 +127,7 @@ resource "aws_iam_role_policy" "automation_ec2_tags" {
 }
 
 ############################################################
-# Step 5: Per-action P2-code task roles (NOT the shared worker role — ADR-036 #3).
+# Step 5: Per-action P2-code task roles (NOT the shared worker role — ADR-005[legacy 036] #3).
 #   The remediation executor assumes these via STS.
 ############################################################
 resource "aws_iam_role" "action_app_feature_flag" {
@@ -155,14 +155,14 @@ resource "aws_iam_role_policy" "action_opscenter_write" {
   count = local.re
   name  = "${var.project}-action-opscenter-write"
   role  = aws_iam_role.action_opscenter_write[0].id
-  # ADR-036 #5 reduced subset: a single non-destructive observability write.
+  # ADR-005[legacy 036] #5 reduced subset: a single non-destructive observability write.
   policy = jsonencode({ Version = "2012-10-17", Statement = [
   { Effect = "Allow", Action = ["ssm:CreateOpsItem"], Resource = "*" }] })
 }
 
 ############################################################
 # Step 6: Change Manager change template (AutoApprove=false, approvers exclude the AWSops
-#   principal — ADR-036 #2). Created via aws_ssm_document of type Automation.ChangeTemplate.
+#   principal — ADR-005[legacy 036] #2). Created via aws_ssm_document of type Automation.ChangeTemplate.
 ############################################################
 resource "aws_ssm_document" "change_template" {
   count           = local.re
@@ -306,7 +306,7 @@ resource "aws_iam_role_policy" "remediation_lambda_extra" {
 }
 
 locals {
-  # ADR-040/041 §4 — base executor env present whenever the executor EXISTS (either plane). The flags
+  # ADR-007[legacy 040, 041] §4 — base executor env present whenever the executor EXISTS (either plane). The flags
   # track the VARS (NOT infra-existence — opus R2 CRITICAL-1): REMEDIATION_ENABLED is "false" under
   # iw-only so the executor's AWS-resource gate fail-closes. iw-gated ARNs use one()/coalesce (null→"").
   rem_env_base = local.re_or_iw == 1 ? {
@@ -337,7 +337,7 @@ locals {
   rem_env = merge(local.rem_env_base, local.rem_env_aws)
 }
 
-# ===== ADR-040/041 external knowledge/comms DATA-write (Slack) — OWN control plane, ZERO AWS-mutation =====
+# ===== ADR-007 external knowledge/comms DATA-write (Slack) — OWN control plane, ZERO AWS-mutation =====
 # All iw-gated (default off → $0). Requires integrations_enabled (the Slack secret uses the integrations
 # CMK) + workers_enabled (shared executor infra). Enabling these can NEVER enable AWS-resource mutation.
 resource "aws_ssm_parameter" "integrations_write_enabled" {
