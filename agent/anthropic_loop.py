@@ -23,7 +23,9 @@ import sys
 MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
-MAX_OUTPUT_TOKENS = 4096     # Anthropic Messages API REQUIRES max_tokens on every call
+# Anthropic Messages API REQUIRES max_tokens. Sized above the old 4096 because thinking between
+# tool calls (`between_tools`) bills against the same cap on tool-using turns.
+MAX_OUTPUT_TOKENS = 8192
 # sonnet-5-5 rejects `temperature`. Any thinking blocks are replayed verbatim (_assistant_content).
 MODEL_THINKING = {"type": "between_tools"}
 EXTRA_CONTEXT_CAP = 8000     # bound BFF-supplied context (parity with agent.handler)
@@ -144,10 +146,15 @@ def _assistant_content(final):
             if txt.strip():  # Anthropic rejects empty text blocks in INPUT → drop them (P4 CI: API 400)
                 out.append({"type": "text", "text": txt})
         elif t == "thinking":  # replay unchanged: an edited or dropped block invalidates the turn
-            out.append({"type": "thinking", "thinking": _block_attr(b, "thinking", "") or "",
-                        "signature": _block_attr(b, "signature")})
+            blk = {"type": "thinking", "thinking": _block_attr(b, "thinking", "") or ""}
+            sig = _block_attr(b, "signature")
+            if sig:  # the API rejects a null signature; real SDK blocks always carry one
+                blk["signature"] = sig
+            out.append(blk)
         elif t == "redacted_thinking":
-            out.append({"type": "redacted_thinking", "data": _block_attr(b, "data")})
+            data = _block_attr(b, "data")
+            if data:
+                out.append({"type": "redacted_thinking", "data": data})
         elif t == "tool_use":
             out.append({"type": "tool_use", "id": _block_attr(b, "id"),
                         "name": _block_attr(b, "name"), "input": _block_attr(b, "input") or {}})

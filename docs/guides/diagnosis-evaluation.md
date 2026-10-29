@@ -126,7 +126,9 @@ A retry backoff is skipped, and the section fails fast, when a call could no lon
 the sleep, so throttling never sleeps past the render budget. Every section budget is capped by
 `DIAGNOSIS_MAX_OUTPUT_TOKENS` (default 32000). The default models accept more; if you point
 `DIAGNOSIS_MODEL_*` at a model with a smaller output limit, set this variable to that limit so
-sections are not rejected. The coverage note names the gap behind a `partial` source (failed reads,
+sections are not rejected. Opus 5.x always thinks, so its Deep sections, invariant proposals and an
+Opus title model get `DIAGNOSIS_OPUS_THINKING_HEADROOM` (default 8000) extra output tokens; the
+read timeout grows with the budget but stays clamped to the remaining render budget. The coverage note names the gap behind a `partial` source (failed reads,
 the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
 detail query reports a bounded error code rather than provider text, and that page is sorted by
 normalized severity, so it holds the highest-severity findings (`top_findings_order: severity_desc`;

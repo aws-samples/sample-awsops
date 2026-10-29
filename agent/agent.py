@@ -118,9 +118,10 @@ def _discover_gateways():
 GATEWAYS = _discover_gateways()
 
 # Bedrock Model / Bedrock 모델
-# ADR-038: deterministic tool selection + prompt caching (verified against strands-agents 1.41.0:
-# BedrockConfig exposes temperature / cache_config / cache_tools; cache_prompt is deprecated).
-# Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
+# Prompt caching (verified against strands-agents 1.41.0: BedrockConfig exposes cache_config /
+# cache_tools; cache_prompt is deprecated). Cache params are guarded — an unsupported version degrades
+# to no-cache (spec §6 no-op rule). Thinking: the chat agent keeps the model's default adaptive
+# thinking, as it did on Sonnet 5; AGENT_MAX_TOKENS already budgets for it on multi-tool turns.
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
 MODEL_ID = "global.anthropic.claude-sonnet-5-5"
