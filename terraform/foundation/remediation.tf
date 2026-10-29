@@ -1,5 +1,5 @@
 # terraform/foundation/remediation.tf
-# AWSops v2 ADR-005 — remediation / mutation execution substrate.
+# AWSops v2 ADR-005[legacy 029] — remediation / mutation execution substrate.
 # EVERY resource here is gated by var.remediation_enabled (default false → count=0 → ZERO AWS
 # resources, ZERO cost, ZERO live mutation). This EXTENDS the P2 backbone (workers.tf): it reuses
 # the worker_jobs Aurora ledger, the SQS queue + dispatcher + status_updater + reaper, and the
@@ -8,7 +8,7 @@
 # executor task role, an S3 Object-Lock audit bucket, an EventBridge SSM status-change resume
 # Lambda, and the kill-switch SSM param. Nothing here mutates customer infra until an operator
 # flips remediation_enabled, sets the kill-switch true, enables a catalog row, AND a 4-eyes
-# approval passes. Design refs: ADR-005 (6 controls) + ADR-005 (hybrid substrate).
+# approval passes. Design refs: ADR-005[legacy 029] (6 controls) + ADR-005[legacy 036] (hybrid substrate).
 locals {
   re = var.remediation_enabled ? 1 : 0
   # ADR-007[legacy 040, 041] §4 — the external DATA-write plane. `iw` gates its OWN resources (kill-switch, Slack
@@ -337,7 +337,7 @@ locals {
   rem_env = merge(local.rem_env_base, local.rem_env_aws)
 }
 
-# ===== ADR-007 external knowledge/comms DATA-write (Slack) — OWN control plane, ZERO AWS-mutation =====
+# ===== ADR-007[legacy 040] external knowledge/comms DATA-write (Slack) — OWN control plane, ZERO AWS-mutation =====
 # All iw-gated (default off → $0). Requires integrations_enabled (the Slack secret uses the integrations
 # CMK) + workers_enabled (shared executor infra). Enabling these can NEVER enable AWS-resource mutation.
 resource "aws_ssm_parameter" "integrations_write_enabled" {

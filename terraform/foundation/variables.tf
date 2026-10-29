@@ -148,13 +148,13 @@ variable "demo_password" {
 
 variable "k8sgpt_enabled" {
   type        = bool
-  description = "ADR-006 K8sGPT in-cluster diagnosis (AWSops-side substrate) gate. false (default) = 0 gated infra ($0), the /api/eks/[cluster]/k8sgpt route is dark (503), NO cluster read, NO narration. The always-present k8s_findings/k8s_scan_runs tables (migration v7) are harmless when off. The K8sGPT OPERATOR install is OUT-OF-BAND (docs/runbooks/k8sgpt-operator-install.md) — AWSops NEVER writes to the EKS cluster. REQUIRES onboard_eks_clusters non-empty + agentcore_enabled (narration rides the Container agent)."
+  description = "ADR-006[legacy 035] K8sGPT in-cluster diagnosis (AWSops-side substrate) gate. false (default) = 0 gated infra ($0), the /api/eks/[cluster]/k8sgpt route is dark (503), NO cluster read, NO narration. The always-present k8s_findings/k8s_scan_runs tables (migration v7) are harmless when off. The K8sGPT OPERATOR install is OUT-OF-BAND (docs/runbooks/k8sgpt-operator-install.md) — AWSops NEVER writes to the EKS cluster. REQUIRES onboard_eks_clusters non-empty + agentcore_enabled (narration rides the Container agent)."
   default     = false
 }
 
 variable "k8sgpt_monthly_bedrock_budget_usd" {
   type        = number
-  description = "ADR-006 Rule 11 cost cap: monthly Bedrock spend budget (USD) for the K8sGPT narration. Alarm only (no enforcement). Tunable."
+  description = "ADR-006[legacy 035] Rule 11 cost cap: monthly Bedrock spend budget (USD) for the K8sGPT narration. Alarm only (no enforcement). Tunable."
   default     = 50
 }
 
@@ -180,7 +180,7 @@ variable "workers_enabled" {
 
 variable "graph_rebuild_interval_mins" {
   type        = number
-  description = "Minutes between web-instrumentation topology graph-rebuilds (flow/infra/trace layers, ADR-010 + 2026-06-25 trace-topology design). 0 (default) = the interval never starts; the manual `scripts/v2/graph-rebuild.mjs` path is unaffected either way. No new AWS resource — runs in the existing web task using perms it already holds. Recommended: 15 (matches steampipe.tf's inventory-sync cadence)."
+  description = "Minutes between web-instrumentation topology graph-rebuilds (flow/infra/trace layers, ADR-010[legacy 043] + 2026-06-25 trace-topology design). 0 (default) = the interval never starts; the manual `scripts/v2/graph-rebuild.mjs` path is unaffected either way. No new AWS resource — runs in the existing web task using perms it already holds. Recommended: 15 (matches steampipe.tf's inventory-sync cadence)."
   default     = 0
   validation {
     # Must be 0 (off) or a whole minute ≥1 — a fractional/zero-ish positive value (e.g. 0.01) would
@@ -206,7 +206,7 @@ variable "ai_cost_tracking_enabled" {
 
 variable "datasource_diagnosis_enabled" {
   type        = bool
-  description = "AI-diagnosis external-observability collector gate (ADR-007 governed egress). When true (requires workers_enabled), grants the worker role lambda:InvokeFunction on the 5 connector Lambdas and sets DIAG_DATASOURCES_ENABLED/HOST_ACCOUNT_ID/PROJECT on the worker so collect_datasources can fan out. false (default) = 0 resources/IAM, $0, collector stays disabled (no AccessDenied degrade)."
+  description = "AI-diagnosis external-observability collector gate (ADR-007[legacy 039] governed egress). When true (requires workers_enabled), grants the worker role lambda:InvokeFunction on the 5 connector Lambdas and sets DIAG_DATASOURCES_ENABLED/HOST_ACCOUNT_ID/PROJECT on the worker so collect_datasources can fan out. false (default) = 0 resources/IAM, $0, collector stays disabled (no AccessDenied degrade)."
   default     = false
   validation {
     condition     = !var.datasource_diagnosis_enabled || (var.workers_enabled && var.agentcore_enabled && var.integrations_enabled)
@@ -242,7 +242,7 @@ variable "diagnosis_schedule_enabled" {
 
 variable "diagnosis_notify_enabled" {
   type        = bool
-  description = "Email the scheduled-diagnosis mailing list (v1 report-scheduler parity): provisions one SNS topic; the worker publishes a summary+link to it when a SCHEDULED report finishes, and the web BFF manages its email subscriptions (/api/diagnosis/subscribers, admin-only). Governed external-comms write (ADR-007), IAM-scoped to the single topic ARN — NOT AWS-resource mutation. Worker publish needs workers_enabled. false (default) = 0 resources/IAM, $0, no topic, app treats it as disabled."
+  description = "Email the scheduled-diagnosis mailing list (v1 report-scheduler parity): provisions one SNS topic; the worker publishes a summary+link to it when a SCHEDULED report finishes, and the web BFF manages its email subscriptions (/api/diagnosis/subscribers, admin-only). Governed external-comms write (ADR-007[legacy 040]), IAM-scoped to the single topic ARN — NOT AWS-resource mutation. Worker publish needs workers_enabled. false (default) = 0 resources/IAM, $0, no topic, app treats it as disabled."
   default     = false
 }
 
@@ -274,13 +274,13 @@ variable "worker_image_tag" {
 
 variable "remediation_enabled" {
   type        = bool
-  description = "ADR-005 remediation/mutation substrate gate. ⛔ DECISION REVERSED 2026-06-11 (3-AI consensus; docs/reviews/2026-06-11-high-risk-adr-reversal-consensus.md) — DO NOT ENABLE. The mutating direction is abandoned (AWSops stays read-only; mutation = operator's SSM/Change Manager/IaC). Stays false permanently; the flag-OFF substrate is frozen, not deleted. false = 0 mutating resources, 0 cost, ZERO live AWS mutation; the always-present catalog/plan/audit tables (migration v4) are harmless when off."
+  description = "ADR-005[legacy 029] remediation/mutation substrate gate. ⛔ DECISION REVERSED 2026-06-11 (3-AI consensus; docs/reviews/2026-06-11-high-risk-adr-reversal-consensus.md) — DO NOT ENABLE. The mutating direction is abandoned (AWSops stays read-only; mutation = operator's SSM/Change Manager/IaC). Stays false permanently; the flag-OFF substrate is frozen, not deleted. false = 0 mutating resources, 0 cost, ZERO live AWS mutation; the always-present catalog/plan/audit tables (migration v4) are harmless when off."
   default     = false
 }
 
 variable "integrations_write_enabled" {
   type        = bool
-  description = "ADR-007 external knowledge/comms DATA-write gate (Slack/Notion/Jira records). Reuses the action_catalog facade + SM + executor but on a FULLY-INDEPENDENT control plane (own flag env, own kill-switch under ops/<project>/integrations-write/enabled, own no-AWS-mutation IAM) so enabling it can NEVER enable AWS-resource mutation (which stays remediation_enabled-frozen). NON-AWS-resource only. false (default) = 0 resources, zero cost, no behavior change. Ships flag-OFF; owner enables (requires agentcore/integrations + workers enabled)."
+  description = "ADR-007[legacy 040] external knowledge/comms DATA-write gate (Slack/Notion/Jira records). Reuses the action_catalog facade + SM + executor but on a FULLY-INDEPENDENT control plane (own flag env, own kill-switch under ops/<project>/integrations-write/enabled, own no-AWS-mutation IAM) so enabling it can NEVER enable AWS-resource mutation (which stays remediation_enabled-frozen). NON-AWS-resource only. false (default) = 0 resources, zero cost, no behavior change. Ships flag-OFF; owner enables (requires agentcore/integrations + workers enabled)."
   default     = false
   validation {
     # The shared executor infra (re_or_iw) reuses workers_enabled resources (worker_lambda role, pg8000
@@ -294,33 +294,33 @@ variable "integrations_write_enabled" {
 
 variable "hybrid_routing_enabled" {
   type        = bool
-  description = "ADR-003 hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline."
+  description = "ADR-003[legacy 038] hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline."
   default     = false
 }
 
 variable "multi_route_synthesis_enabled" {
   type        = bool
-  description = "ADR-003 cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no direct Sonnet Bedrock call from the web task, no extra IAM. PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003 Haiku classifier policy existed) — this flag gates the matching IAM statement."
+  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no direct Sonnet Bedrock call from the web task, no extra IAM. PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
   default     = false
 }
 
 variable "incident_lifecycle_enabled" {
   type        = bool
-  description = "ADR-006 incident lifecycle gate. ⚠️ DOWNGRADED 2026-06-11 (3-AI consensus) — the autonomous mitigation/action path is abandoned (it routed through the reversed ADR-005). If ever enabled, it is ANALYSIS-ONLY (read-only Triage/investigation/RCA, recommendation-only, NO mutation routing). false (default) = 0 lifecycle infra, 0 cost, ZERO autonomous triggers; the always-present incident_* tables (migration v5) are harmless when off. REQUIRES workers_enabled=true to enable."
+  description = "ADR-006[legacy 032] incident lifecycle gate. ⚠️ DOWNGRADED 2026-06-11 (3-AI consensus) — the autonomous mitigation/action path is abandoned (it routed through the reversed legacy ADR-029/036; ADR-005 stays frozen). If ever enabled, it is ANALYSIS-ONLY (read-only Triage/investigation/RCA, recommendation-only, NO mutation routing). false (default) = 0 lifecycle infra, 0 cost, ZERO autonomous triggers; the always-present incident_* tables (migration v5) are harmless when off. REQUIRES workers_enabled=true to enable."
   default     = false
 }
 
 variable "rca_writeback_enabled" {
   type        = bool
-  description = "ADR-006 RCA write-back gate (observability-write tier). false (default) = 0 write-back infra, 0 cost, ZERO OpsCenter/Incident-Manager write. The always-present incident_writeback table (migration v6) is harmless when off. REQUIRES incident_lifecycle_enabled=true (adds a stage to the incident SM, reads incidents.rca) AND remediation_enabled=true (reuses the opscenter-create-opsitem catalog action + action_opscenter_write per-action role from remediation.tf — frozen-substrate reuse, so decoupling onto a self-contained role is a prerequisite before activation; the validation below enforces this fail-loud). The webhook marker-drop filter is ALWAYS-ON (a harmless safety filter independent of this flag)."
+  description = "ADR-006[legacy 034] RCA write-back gate (observability-write tier). false (default) = 0 write-back infra, 0 cost, ZERO OpsCenter/Incident-Manager write. The always-present incident_writeback table (migration v6) is harmless when off. REQUIRES incident_lifecycle_enabled=true (adds a stage to the incident SM, reads incidents.rca) AND remediation_enabled=true (reuses the opscenter-create-opsitem catalog action + action_opscenter_write per-action role from remediation.tf — frozen-substrate reuse, so decoupling onto a self-contained role is a prerequisite before activation; the validation below enforces this fail-loud). The webhook marker-drop filter is ALWAYS-ON (a harmless safety filter independent of this flag)."
   default     = false
 
   validation {
-    # ADR-006 vs 029/036 reversal: the write-back currently reuses the frozen substrate's
+    # ADR-006[legacy 034] vs 029/036 reversal: the write-back currently reuses the frozen substrate's
     # action_opscenter_write role (count = remediation_enabled). Enabling rwb alone would
     # hit an index-out-of-range deep in incidents.tf — fail here with the real story instead.
     condition     = !var.rca_writeback_enabled || var.remediation_enabled
-    error_message = "rca_writeback_enabled currently requires remediation_enabled (frozen substrate role reuse — see ADR-006 banner). remediation_enabled is DO-NOT-ENABLE (2026-06-11 reversal): to activate write-back, first decouple it onto a self-contained role."
+    error_message = "rca_writeback_enabled currently requires remediation_enabled (frozen substrate role reuse — see ADR-006[legacy 034] banner). remediation_enabled is DO-NOT-ENABLE (2026-06-11 reversal): to activate write-back, first decouple it onto a self-contained role."
   }
 }
 

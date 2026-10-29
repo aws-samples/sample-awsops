@@ -1,5 +1,5 @@
 # terraform/foundation/writeback.tf
-# AWSops v2 ADR-006 — RCA write-back (observability-write tier). EVERY resource here is gated by
+# AWSops v2 ADR-006[legacy 034] — RCA write-back (observability-write tier). EVERY resource here is gated by
 # var.rca_writeback_enabled (local.rwb; default false => count=0 => ZERO write-back infra, ZERO cost,
 # ZERO OpsCenter / Incident-Manager write). The webhook marker-drop ingress filter is ALWAYS-ON and
 # lives in the web BFF (independent of this flag) — it is the feedback-loop safety control.

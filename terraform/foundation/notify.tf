@@ -1,6 +1,6 @@
 # Scheduled-diagnosis email notifications (v1 report-scheduler parity), gated on diagnosis_notify_enabled.
 # One dedicated SNS topic: the worker publishes a summary+link when a SCHEDULED report finishes; the web
-# BFF manages its email subscriptions (admin-only). Governed external-comms write (ADR-007) — every
+# BFF manages its email subscriptions (admin-only). Governed external-comms write (ADR-007[legacy 040]) — every
 # IAM grant is scoped to this single topic ARN; this is NOT the frozen AWS-resource-mutation class.
 # false (default) → empty count/for_each everywhere → 0 resources, $0.
 locals {

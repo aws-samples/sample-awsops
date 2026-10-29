@@ -66,7 +66,7 @@ output "onboarded_eks_clusters" {
 # ── EKS auto-register (EventBridge → Lambda → eks_registrations) ─────────────
 # v1 "Register kubeconfig"의 완전 자동화: 운영자가 CLI로 access entry + AdminViewPolicy를
 # 연계하면 CloudTrail 이벤트를 EventBridge가 잡아 Aurora 등록 리스트에 기록한다 (버튼 불요).
-# AWS 리소스를 변경하지 않는 관찰-전용 자동화 (ADR-005 freeze과 무충돌).
+# AWS 리소스를 변경하지 않는 관찰-전용 자동화 (legacy ADR-029 reversal과 무충돌, ADR-005 동결 유지).
 # Requires workers_enabled=true (pg8000 layer + VPC plumbing 재사용).
 
 locals {

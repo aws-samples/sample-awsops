@@ -1,5 +1,5 @@
 # terraform/foundation/k8sgpt.tf
-# AWSops v2 ADR-006 — K8sGPT in-cluster diagnosis, AWSOPS-SIDE SUBSTRATE ONLY.
+# AWSops v2 ADR-006[legacy 035] — K8sGPT in-cluster diagnosis, AWSOPS-SIDE SUBSTRATE ONLY.
 # Gated by var.k8sgpt_enabled (default false → count=0 → ZERO gated AWS resources, ZERO cost).
 #
 # REUSE (no new infra): the Result CRD reader is a BFF route reusing the P3-D presigned-STS read

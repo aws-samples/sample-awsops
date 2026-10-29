@@ -401,7 +401,7 @@ reachability.
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
-| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-013 active/standby 로테이션) | 없음 (HMAC 검증) |
+| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-013[legacy 022] active/standby 로테이션) | 없음 (HMAC 검증) |
 | `/api/incidents/[id]` | GET | 인시던트 상세 (admin, read-only, UUID 가드) | verifyUser |
 | `/api/insights` | GET | Overview용 최신 캐시 AI 인사이트 (DB read only) | verifyUser |
 | `/api/insights/refresh` | POST | AI 인사이트 재생성 enqueue (admin) — 플래그 off 시 fail-closed, 중복 job dedup | verifyUser |

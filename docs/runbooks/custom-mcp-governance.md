@@ -3,8 +3,8 @@
 ## Purpose and prerequisites
 
 Custom MCP remains intentional (owner clarification 2026-10-11).
-It is a governed connector under ADR-007 (amended 2026-10-29). Trust evidence precedes
-reviewed activation; tests prove no deployment. Web/AgentCore `CUSTOM_MCP_ENABLED` defaults OFF; only exact `true` enables it. Activation wiring is deferred. The next apply adds web read-only `DescribeSecret`
+ADR-022 is **Proposed**. Final panel, dated owner acceptance and trust evidence
+precede reviewed activation; tests prove no acceptance/deployment. Web/AgentCore `CUSTOM_MCP_ENABLED` defaults OFF; only exact `true` enables it. Activation wiring is deferred. The next apply adds web read-only `DescribeSecret`
 for the registration namespace on already-enabled stacks.
 
 Before activation, the controller applies reviewed standalone migration
@@ -130,4 +130,4 @@ a skip proves no PG verification.
   web/app/customization/page.tsx
 - agent/agent.py, agent/test_custom_mcp_policy.py, agent/pinned_http.py,
   agent/streamable_http_sigv4.py, agent/test_pinned_http.py, terraform/foundation/workload.tf
-- ADR-005/007/015/017.
+- ADR-005/007/015/017; private Proposed ADR-022.

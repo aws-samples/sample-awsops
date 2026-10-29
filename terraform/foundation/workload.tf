@@ -234,7 +234,7 @@ resource "aws_iam_role_policy" "task_admin_ssm" {
   })
 }
 
-# ADR-005: the web execute route reads the mutating-actions kill-switch param to fail-closed
+# ADR-005[legacy 029]: the web execute route reads the mutating-actions kill-switch param to fail-closed
 # before SendTaskSuccess. Gated (var.remediation_enabled) so the web task role is UNTOUCHED when off.
 resource "aws_iam_role_policy" "task_killswitch_ssm" {
   count = var.remediation_enabled ? 1 : 0
@@ -250,7 +250,7 @@ resource "aws_iam_role_policy" "task_killswitch_ssm" {
   })
 }
 
-# ADR-003: BFF Haiku routing classifier. Scoped to Haiku FM + global inference profile only.
+# ADR-003[legacy 038]: BFF Haiku routing classifier. Scoped to Haiku FM + global inference profile only.
 resource "aws_iam_role_policy" "task_classifier_bedrock" {
   count = var.hybrid_routing_enabled ? 1 : 0
   name  = "${var.project}-task-classifier-bedrock"
@@ -269,7 +269,7 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
   })
 }
 
-# ADR-003: cross-domain auto-synthesis (web/lib/synthesize.ts calls Bedrock directly from the web
+# ADR-003[legacy 044]: cross-domain auto-synthesis (web/lib/synthesize.ts calls Bedrock directly from the web
 # task, not via AgentCore's unrestricted role). PR #153 review: this had no matching IAM grant —
 # only the Haiku classifier policy above existed on this role, so a live invoke would AccessDenied.
 resource "aws_iam_role_policy" "task_synthesis_bedrock" {
@@ -289,7 +289,7 @@ resource "aws_iam_role_policy" "task_synthesis_bedrock" {
   })
 }
 
-# ADR-006: the web incident ingress (HMAC webhook) + synchronous Triage path reads the incident SSM
+# ADR-006[legacy 032]: the web incident ingress (HMAC webhook) + synchronous Triage path reads the incident SSM
 # params (window/storm-cap knobs + the HMAC webhook secret(s)) and synchronously consults the
 # read-only AgentCore runtime. Gated (local.il) so the web task role is UNTOUCHED when off (when
 # incident_lifecycle_enabled=false the route 503s first and never reads any of these).
@@ -468,26 +468,26 @@ resource "aws_ecs_task_definition" "web" {
         ] : [], var.workers_enabled ? [
         { name = "JOBS_QUEUE_URL", value = one(aws_sqs_queue.jobs[*].url) }
         ] : [], var.remediation_enabled ? [
-        # ADR-005: the web execute route reads the kill-switch param name + remediation SM ARN.
+        # ADR-005[legacy 029]: the web execute route reads the kill-switch param name + remediation SM ARN.
         # concat(base, []) == base when remediation_enabled=false → byte-identical web task def.
         # REMEDIATION_ENABLED is the flag the execute route fails-closed on (env-side hard gate).
         { name = "REMEDIATION_ENABLED", value = "true" },
         { name = "MUTATING_ACTIONS_SSM", value = one(aws_ssm_parameter.mutating_enabled[*].name) },
         { name = "REMEDIATION_STATE_MACHINE_ARN", value = one(aws_sfn_state_machine.remediation[*].arn) }
         ] : [], var.integrations_write_enabled ? [
-        # ADR-007: external DATA-write plane env for the /api/actions execute route — its OWN flag +
+        # ADR-007[legacy 040]: external DATA-write plane env for the /api/actions execute route — its OWN flag +
         # kill-switch param (separate from the AWS-resource ones above). The web enqueues to SQS (the
         # dispatcher owns the SM ARN), so no SM ARN here → no duplicate when both planes are on.
         { name = "INTEGRATIONS_WRITE_ENABLED", value = "true" },
         { name = "INTEGRATIONS_WRITE_SSM", value = one(aws_ssm_parameter.integrations_write_enabled[*].name) }
         ] : [], var.incident_lifecycle_enabled ? [
-        # ADR-006: the incident ingress/triage routes read INCIDENT_LIFECYCLE_ENABLED FIRST and 503
+        # ADR-006[legacy 032]: the incident ingress/triage routes read INCIDENT_LIFECYCLE_ENABLED FIRST and 503
         # when not "true" (no accept / HMAC / normalize / triage / enqueue). concat(base, []) == base
         # when incident_lifecycle_enabled=false → byte-identical web task def (no redeploy when off).
         # The synchronous Triage path runs in web (thin-BFF); heavy work is enqueued to the worker SM.
         { name = "INCIDENT_LIFECYCLE_ENABLED", value = "true" },
         { name = "PROJECT", value = var.project },
-        # HMAC webhook secret(s) (ADR-013 active/standby) — operator-provisioned SSM params (read
+        # HMAC webhook secret(s) (ADR-013[legacy 022] active/standby) — operator-provisioned SSM params (read
         # once, cached by the route). Names only here; the web task role grants read on the namespace.
         { name = "SSM_INCIDENT_HMAC_SECRET_PARAM", value = "/ops/${var.project}/incident/webhook-hmac-secret" },
         { name = "SSM_INCIDENT_HMAC_STANDBY_PARAM", value = "/ops/${var.project}/incident/webhook-hmac-standby" },
@@ -503,14 +503,14 @@ resource "aws_ecs_task_definition" "web" {
         # EKS auto-register is on — the onboarding guide promises hands-free connection.
         { name = "EKS_AUTO_REGISTER", value = "true" }
         ] : [], var.hybrid_routing_enabled ? [
-        # ADR-003: hybrid routing flag + classifier model (BFF reads both at runtime).
+        # ADR-003[legacy 038]: hybrid routing flag + classifier model (BFF reads both at runtime).
         { name = "HYBRID_ROUTING_ENABLED", value = "true" },
         { name = "CLASSIFIER_MODEL_ID", value = "global.anthropic.claude-haiku-4-5-20251001-v1:0" }
         ] : [], var.multi_route_synthesis_enabled ? [
-        # ADR-003: cross-domain auto-synthesis — matches the aws_iam_role_policy.task_synthesis_bedrock gate above.
+        # ADR-003[legacy 044]: cross-domain auto-synthesis — matches the aws_iam_role_policy.task_synthesis_bedrock gate above.
         { name = "MULTI_ROUTE_SYNTHESIS_ENABLED", value = "true" }
         ] : [], var.k8sgpt_enabled ? [
-        # ADR-006: the /api/eks/[cluster]/k8sgpt route reads K8SGPT_ENABLED FIRST and 503s when not
+        # ADR-006[legacy 035]: the /api/eks/[cluster]/k8sgpt route reads K8SGPT_ENABLED FIRST and 503s when not
         # "true" (no cluster read / STS presign / narration). concat(base, []) == base when
         # k8sgpt_enabled=false → byte-identical web task def (no redeploy when off). Read-only: the
         # route consumes deterministic K8sGPT Result CRDs via the P3-D GET-only path and narrates

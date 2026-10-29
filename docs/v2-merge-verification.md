@@ -37,7 +37,7 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 | Scenario | Invariant | Design source | Verification code path | Command |
 | --- | --- | --- | --- | --- |
 | S1 | Frozen and gated Terraform resources stay default-off, gated by `count` or `for_each`, and tracked tfvars do not enable gated flags. | `docs/decisions/BASELINE.md`, ADR-005, ADR-006, ADR-007 | `scripts/v2/test_merge_invariants.py`, `scripts/v2/merge_invariants.py` | `python3 -m pytest scripts/v2/test_merge_invariants.py -q` |
-| S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-003 | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
+| S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-003[legacy 038] | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
 | S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL migration and web connection-phase tests, backend-disabled Terraform mock tests, and conditional documentation build/presentation checks. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `docs-site/package.json`, `docs-site/package-lock.json`, `docs-site/scripts/verify-deck.sh`, `.github/workflows/merge-verify.yml` | The four common commands and conditional documentation commands below |
 
 ## Runner Usage
@@ -243,7 +243,7 @@ account and explicit permission for live checks. 오프라인 검증과 별개�
 node scripts/v2/routing-accuracy.mjs
 ```
 
-This is the ADR-003 golden-set check and must remain at or above 85%.
+This is the ADR-003[legacy 038] golden-set check and must remain at or above 85%.
 
 Also run the production web build manually:
 
