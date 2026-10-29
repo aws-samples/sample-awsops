@@ -13,6 +13,7 @@
 // - Analysis streaming mirrors aws-data's analyzeStream: ConverseStream + tagged-DATA injection
 //   containment (collected rows can carry attacker-influenced strings: tags, names, images).
 import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { thinkingOffFields } from '../bedrock';
 import { AWS_DATA_ANALYSIS_MODEL } from '../aws-data';
 import type { ChatLang } from '../chat-i18n';
 import idleScan from './idle-scan';
@@ -121,8 +122,9 @@ export async function* collectorAnalyzeStream(opts: CollectorAnalyzeOpts): Async
     modelId: AWS_DATA_ANALYSIS_MODEL,
     system: [{ text: system }],
     messages: [{ role: 'user', content: [{ text: user }] }],
-    // sonnet-5 rejects `temperature` on ConverseStream (aws-data/synthesize.ts note) — omit it.
+    // Claude 5.x models reject `temperature`; thinking stays off so the fixed output cap holds the answer.
     inferenceConfig: { maxTokens: 8192 },
+    ...thinkingOffFields(AWS_DATA_ANALYSIS_MODEL),
   }), { abortSignal: opts.abortSignal });
   for await (const ev of res.stream ?? []) {
     const d = ev.contentBlockDelta?.delta;

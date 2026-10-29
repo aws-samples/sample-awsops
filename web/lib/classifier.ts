@@ -1,13 +1,14 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { SECTIONS } from './sections';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
+import { thinkingOffFields } from './bedrock';
 
 // ADR-003[legacy 038]: Haiku routing classifier. Pure module — Bedrock call is injectable for tests.
 // Output is ADVISORY ONLY (routing), never used for authorization decisions.
 
 const VALID_KEYS = new Set(SECTIONS.map((s) => s.key));
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.CLASSIFIER_MODEL_ID || 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
+const MODEL_ID = process.env.CLASSIFIER_MODEL_ID || 'global.anthropic.claude-haiku-5-5';
 // Measured live (2026-06-10): the global. cross-region profile runs 1.9–3.0s from ap-northeast-2,
 // so the spec's original 1s abort starved every call into fallback. 3500ms covers observed p99.
 const TIMEOUT_MS = Number(process.env.CLASSIFIER_TIMEOUT_MS || 3500);
@@ -46,7 +47,8 @@ const bedrockSend: SendFn = async (system, query, modelId) => {
       modelId,
       system: [{ text: system }],
       messages: [{ role: 'user', content: [{ text: query }] }],
-      inferenceConfig: { maxTokens: 120, temperature: 0 },
+      inferenceConfig: { maxTokens: 120 },
+      ...thinkingOffFields(modelId),
     }), { abortSignal: ac.signal });
     const block = res.output?.message?.content?.find((c) => 'text' in c);
     return (block && 'text' in block && block.text) || '';

@@ -119,7 +119,7 @@ describe('MessageList answer-provenance footer (design handoff 개선안 ③)', 
   it('falls back to the default model label and hides elapsed/tools when absent (legacy agent image)', () => {
     const msgs: Msg[] = [doneMsg({ gateway: 'network' })];
     render(<MessageList msgs={msgs} />);
-    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy(); // fallback constant
+    expect(screen.getByText('Claude Sonnet 5.5')).toBeTruthy(); // fallback constant
     expect(screen.queryByText(/^\d+\.\ds$/)).toBeNull();
     expect(screen.queryByText('Tools')).toBeNull();
   });
