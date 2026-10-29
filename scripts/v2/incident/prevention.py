@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — Prevention stage Lambda (Phase-4 SKELETON).
+"""AWSops v2 ADR-006[legacy 032] — Prevention stage Lambda (Phase-4 SKELETON).
 
 Thin terminal stage: from the RCA category it writes ONE prevention_recommendations row and
 advances incidents.status='prevention'. The full Phase-4 prevention/learning loop is deferred; this

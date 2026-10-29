@@ -1,9 +1,9 @@
-"""AWSops v2 ADR-032 — lifecycle helpers (Python core).
+"""AWSops v2 ADR-006[legacy 032] — lifecycle helpers (Python core).
 
 Stage idempotency + checkpoint + storm-cap reader, used by the incident stage Lambdas (Task 5).
 These ride the P2 backbone (worker_jobs / SQS / Step Functions); they do NOT add a parallel queue.
 
-Binding semantics (ADR-032 Addenda):
+Binding semantics (ADR-006[legacy 032] Addenda):
   (b) per-stage CHECKPOINT — `incident_stages.last_checkpoint_at` is the watchdog anchor.
   (c) at-least-once + IDEMPOTENCY — `stage_idempotency_key` is deterministic, so a retried stage
       resumes from its row and never spawns duplicate sub-agents.

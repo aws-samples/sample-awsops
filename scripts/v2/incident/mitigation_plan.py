@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — Mitigation-Plan stage Lambda (RECOMMENDATION-ONLY — SAFETY-CRITICAL).
+"""AWSops v2 ADR-006[legacy 032] — Mitigation-Plan stage Lambda (RECOMMENDATION-ONLY — SAFETY-CRITICAL).
 
 From the RCA this stage builds a PLAN of catalog action references — a list of
 {action: <action_catalog.name>, inputs: {...}, rationale} — and persists it into
@@ -12,7 +12,7 @@ incidents.mitigation_plan. It is RECOMMENDATION-ONLY (Addendum #5, BINDING):
 
 THE SEAM (documented, intentional human gate): a human reviews incidents.mitigation_plan in the UI
 and, if they choose, separately initiates POST /api/actions to create an action_plan — which then
-runs through the FULL ADR-029/036 six-control gate (flag + kill-switch + Change-Manager 4-eyes +
+runs through the FULL ADR-005[legacy 029/036] six-control gate (flag + kill-switch + Change-Manager 4-eyes +
 per-action role + dry-run + rollback). This Lambda performs NONE of that; it stops at the plan.
 """
 import json
@@ -74,7 +74,7 @@ def build_plan(rca, known_actions):
         "category": category,
         "actions": actions,
         "seam": "human reviews this plan, then separately POSTs /api/actions to create an action_plan "
-                "(full ADR-029/036 six-control gate). This stage performs NO mutation.",
+                "(full ADR-005[legacy 029] six-control gate). This stage performs NO mutation.",
     }
 
 

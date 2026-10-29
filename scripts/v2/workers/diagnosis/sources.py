@@ -634,7 +634,7 @@ def _summarize_result(body):
     """Compact a connector result to NON-PII SIGNAL ONLY — count, result type, source key, and metric
     LABEL NAMES (keys, never values). Critically: NEVER emit raw samples. Loki `result` is raw log
     lines, Tempo `traces` are trace payloads, ClickHouse `rows` are raw row values; sampling any of
-    those leaks PII into the Bedrock context (module docstring 'NO raw log lines' + DLP / ADR-040/041).
+    those leaks PII into the Bedrock context (module docstring 'NO raw log lines' + DLP / ADR-007[legacy 040/041]).
     Handles the ACTUAL envelopes: prom/loki/clickhouse spread a top-level list (+resultType), Tempo
     returns `traces`; some shapes nest under `result:{series|...}`."""
     out = {}
@@ -762,7 +762,7 @@ def collect_datasources(conn):
 
     FLAG-GATED (CLAUDE.md: gate new features, default OFF → $0): runs only when DIAG_DATASOURCES_ENABLED
     is set. The terraform var `datasource_diagnosis_enabled` wires this env AND the worker
-    lambda:InvokeFunction IAM together (ADR-039/041 governed external egress), so the connector fan-out
+    lambda:InvokeFunction IAM together (ADR-007[legacy 039/041] governed external egress), so the connector fan-out
     can never be live without its IAM — no silent AccessDenied degrade."""
     if os.environ.get("DIAG_DATASOURCES_ENABLED") != "true":
         return _result("datasources_obs", data={"instances": [], "queried": 0},

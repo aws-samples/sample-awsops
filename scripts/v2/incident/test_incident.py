@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — incident lifecycle core unit tests (TDD, no AWS, no live DB).
+"""AWSops v2 ADR-006[legacy 032] — incident lifecycle core unit tests (TDD, no AWS, no live DB).
 
 Run: python3 scripts/v2/incident/test_incident.py   (or python3 -m pytest <file>)
 
