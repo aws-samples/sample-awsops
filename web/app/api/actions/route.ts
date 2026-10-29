@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   if (!action.enabled) return NextResponse.json({ message: 'action disabled (catalog enabled=false)' }, { status: 409 });
   let inputs = (body?.inputs && typeof body.inputs === 'object') ? body.inputs : {};
   for (const k of action.requiredInputs) if (!(k in inputs)) return NextResponse.json({ message: `missing input: ${k}` }, { status: 400 });
-  // ADR-040/041 §2 — external DATA-write: enforce the destination (channel) allowlist + DLP-redact the
+  // ADR-007[legacy 040, 041] §2 — external DATA-write: enforce the destination (channel) allowlist + DLP-redact the
   // inputs AT PLAN TIME, so the stored dry-run/preview a human 4-eyes-reviews is already redacted, and a
   // disallowed destination is rejected before any plan exists. (AWS-resource actions are untouched.)
   if ((action.targetResourceType ?? '').startsWith('external:')) {

@@ -233,9 +233,9 @@ describe('POST /api/actions/[id] cancel + validation', () => {
   });
 });
 
-// ADR-040/041 §4 — the data-write plane is FULLY decoupled from the AWS-resource plane. The invariant:
+// ADR-007[legacy 040, 041] §4 — the data-write plane is FULLY decoupled from the AWS-resource plane. The invariant:
 // enabling INTEGRATIONS_WRITE can NEVER enable an AWS-resource action, and vice-versa.
-describe('POST execute — external DATA-write decoupling (ADR-040/041)', () => {
+describe('POST execute — external DATA-write decoupling (ADR-007)', () => {
   const slackAction = { name: 'slack.post_message', executorType: 'lambda', targetResourceType: 'external:slack', enabled: true } as any;
   const slackPlan = (over = {}) => plannedPlan({ action_name: 'slack.post_message', dry_run: { inputs: { channel: '#ops', text: 'hi' } }, ...over });
   beforeEach(() => { delete process.env.INTEGRATIONS_WRITE_ENABLED; delete process.env.INTEGRATIONS_WRITE_SSM; });

@@ -1,5 +1,5 @@
 // web/app/api/incidents/route.ts
-// ADR-032 incident reads + manual trigger (admin-gated). Mirrors the admin-gate +
+// ADR-006 incident reads + manual trigger (admin-gated). Mirrors the admin-gate +
 // `dynamic = 'force-dynamic'` idiom from web/app/api/actions/route.ts.
 //
 // SAFETY (autonomous incident lifecycle shipped OFF):

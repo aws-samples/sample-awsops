@@ -144,7 +144,7 @@ export async function getConfiguredMcpPresetSlugs(): Promise<string[]> {
   }
 }
 
-// ── Multi-instance datasources (ADR-039 hub) ────────────────────────────────────────────────
+// ── Multi-instance datasources (ADR-007 hub) ────────────────────────────────────────────────
 // Each datasource INSTANCE stores its connConfig secret blob ({endpoint, authType, creds…, org_id?})
 // under its bigint `integrations.id` key. The plain `kind` key is the MANAGED DEFAULT MIRROR — the
 // connector Lambda's no-inline (AgentCore gateway) path loads it, so it must always equal the current

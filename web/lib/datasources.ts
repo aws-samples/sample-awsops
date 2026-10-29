@@ -1,5 +1,5 @@
 // web/lib/datasources.ts
-// Multi-instance datasource data layer (ADR-039 hub). A datasource is an `integrations` row with
+// Multi-instance datasource data layer (ADR-007 hub). A datasource is an `integrations` row with
 // category=datasource (direction='egress', capability='read', a query-language kind). This module owns
 // the row lifecycle AND the kind-mirror credential coordination (the agent gateway no-inline path):
 // create/update/setDefault/delete keep the `kind` mirror equal to the current default instance.

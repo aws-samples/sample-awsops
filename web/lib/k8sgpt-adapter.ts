@@ -1,5 +1,5 @@
 // web/lib/k8sgpt-adapter.ts
-// ADR-035 Rule 7 — the VERSIONED ADAPTER is the stable abstraction between K8sGPT's
+// ADR-006 Rule 7 — the VERSIONED ADAPTER is the stable abstraction between K8sGPT's
 // native Result CRD schema and OUR durable MCP/tool contract. Pin the operator generation;
 // a CI schema-compat test (k8sgpt-adapter.test.ts) gates upgrades. If K8sGPT is archived or
 // its schema diverges, swap the analyzer behind THIS contract — callers never change.

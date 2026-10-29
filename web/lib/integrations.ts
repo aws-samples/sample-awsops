@@ -1,5 +1,5 @@
 // web/lib/integrations.ts
-// ADR-039 P2 — Aurora-backed Integrations catalog (egress connectors + ingress webhook sources).
+// ADR-007[legacy 039] P2 — Aurora-backed Integrations catalog (egress connectors + ingress webhook sources).
 // Mirrors the catalog.ts pattern: ON CONFLICT(name) DO UPDATE WHERE tier='custom' (never clobber a
 // built-in), disabled-by-default, audited. NOTE: the integrations table has NO `version` column
 // (unlike skills/agents) — do not reference it. getEnabledIntegrations is per-account-space scoped.
@@ -200,7 +200,7 @@ export async function attestAndEnableMcp(id: number, actorSub: string, confirmed
 }
 
 /**
- * ADR-040/041 — the egress-WRITE destination allowlist for a connector kind (e.g. 'slack' → allowed
+ * ADR-007 — the egress-WRITE destination allowlist for a connector kind (e.g. 'slack' → allowed
  * Slack channels). Reuses the enabled READ_WRITE egress integration's `source_allowlist` as the
  * destination allowlist (documented egress-write reuse). [] when Aurora off / none / error → the caller's
  * assertChannelAllowed treats [] as deny-all (fail-closed).

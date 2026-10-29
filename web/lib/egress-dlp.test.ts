@@ -1,4 +1,4 @@
-// web/lib/egress-dlp.test.ts — ADR-040 §2 exfiltration defense (RW-slice T2).
+// web/lib/egress-dlp.test.ts — ADR-007[legacy 040] §2 exfiltration defense (RW-slice T2).
 import { describe, it, expect } from 'vitest';
 import { redactEgress, assertChannelAllowed } from './egress-dlp';
 

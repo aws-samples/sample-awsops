@@ -150,7 +150,7 @@ describe('classifyRoute', () => {
   });
 });
 
-describe('classifyRoute — ADR-044 multi-domain detection', () => {
+describe('classifyRoute — ADR-003 multi-domain detection', () => {
   it('≥2 active routes above threshold ⇒ multiDomain + selected (desc, ≤3)', async () => {
     const classify = vi.fn().mockResolvedValue([
       { key: 'network', score: 0.9 }, { key: 'data', score: 0.6 }, { key: 'container', score: 0.5 },

@@ -1,5 +1,5 @@
 // web/lib/ssrf-guard.ts
-// ADR-007 §6 (formerly ADR-011/ADR-039 §11 pre-consolidation — see ADR-MAPPING.md) — static SSRF
+// ADR-007[legacy 011, 039] §6 — static SSRF
 // host blocklist for egress integration REGISTRATION.
 // v2 runs in-VPC (mgmt-vpc, near 169.254.169.254 + the internal ALB), so an admin-registered egress
 // endpoint pointing at a private/link-local/metadata address is the SSRF risk this guards.

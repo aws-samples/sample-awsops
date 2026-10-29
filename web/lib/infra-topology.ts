@@ -1,4 +1,4 @@
-// ADR-043 Step 2 — single source for the RESOURCE-RELATIONSHIP (infra) graph ontology.
+// ADR-010[legacy 043] Step 2 — single source for the RESOURCE-RELATIONSHIP (infra) graph ontology.
 // Pure TS (no I/O), mirroring how flow-topology.ts is the single source for the traffic-flow graph.
 // Emits resource -> vpc/subnet/sg placement edges from synced inventory. The materializer
 // (graph-store.rebuildInfraGraph) and any future consumer reuse this — no rule duplication.

@@ -152,8 +152,8 @@ beforeEach(() => {
   // default to the built-in no-op shape
   getEnabledCustomAgents.mockResolvedValue([]);
   pickCustomAgent.mockReturnValue(null);
-  isCustomAgentEnabled.mockResolvedValue(true); // ADR-039: authoritative re-check passes by default
-  getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: false }); // ADR-039 P2: no integrations by default
+  isCustomAgentEnabled.mockResolvedValue(true); // ADR-004: authoritative re-check passes by default
+  getEnabledIntegrationSelection.mockResolvedValue({ integrations: [], mcpSelectionSuppressed: false }); // ADR-007[legacy 039] P2: no integrations by default
 
   resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'ops', skill: 'ops', agentName: 'ops', skillHashes: [] });
   classifyRoute.mockReset();
@@ -308,7 +308,7 @@ describe('POST /api/chat', () => {
   });
 });
 
-describe('hybrid routing (ADR-038)', () => {
+describe('hybrid routing (ADR-003)', () => {
   it('flag off: uses legacy pickGateway path, no classifyRoute call', async () => {
     delete process.env.HYBRID_ROUTING_ENABLED;
     verifyUser.mockResolvedValue({ sub: 'u' });
@@ -364,7 +364,7 @@ describe('hybrid routing (ADR-038)', () => {
     expect(classifyPrompt).toHaveBeenCalledWith(expect.stringContaining('클러스터 안에 어디서 저걸 쓰나'));
   });
 
-  it('flag on: EXPLICIT pin to an inactive section short-circuits with the honest 🔒 (ADR-044 §2)', async () => {
+  it('flag on: EXPLICIT pin to an inactive section short-circuits with the honest 🔒 (ADR-003[legacy 044] §2)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     // user explicitly pinned /container → method:'pin' (an auto-routed inactive section now degrades
@@ -442,7 +442,7 @@ describe('hybrid routing (ADR-038)', () => {
     expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], [], { mcpSelectionSuppressed: false }); // gateway, not the revoked custom
   });
 
-  it('ADR-039: passes ONLY enabled egress-READ integrations to resolveAgent, WITH connection details (ingress + READ_WRITE excluded)', async () => {
+  it('ADR-007: passes ONLY enabled egress-READ integrations to resolveAgent, WITH connection details (ingress + READ_WRITE excluded)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
@@ -456,7 +456,7 @@ describe('hybrid routing (ADR-038)', () => {
     const { POST } = await import('./route');
     await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
     // 4th arg = ONLY the egress+read integration (with connection details + allowPrivate=false);
-    // 5th arg = the READ_WRITE integration as PROPOSE-ONLY (never tool-injected). ADR-040/041.
+    // 5th arg = the READ_WRITE integration as PROPOSE-ONLY (never tool-injected). ADR-007.
     expect(resolveAgent).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), null,
       [{ id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read', name: 'dd', exposedTools: ['datadog_query'], providedContext: { d: 1 },
@@ -466,7 +466,7 @@ describe('hybrid routing (ADR-038)', () => {
     );
   });
 
-  it('ADR-039 P2-infra inc2: forwards spec.integrations to invokeAgent', async () => {
+  it('ADR-007[legacy 039] P2-infra inc2: forwards spec.integrations to invokeAgent', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     pickGateway.mockReturnValue('security');
     const integrations = [{ name: 'dd', endpoint: 'https://mcp.dd/mcp', transport: 'api_key', credentialsRef: 'arn:dd', exposedTools: ['datadog_query'], allowPrivate: false }];
@@ -542,7 +542,7 @@ describe('thread persistence', () => {
   });
 });
 
-describe('ADR-031 Phase 2 — per-account space wiring', () => {
+describe('ADR-004[legacy 031] Phase 2 — per-account space wiring', () => {
   it('resolves the account and threads accountId into the custom-agent loader, resolver, and invoke', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     pickGateway.mockReturnValue('ops');
@@ -705,7 +705,7 @@ describe('datasource schema injection', () => {
   });
 });
 
-describe('cross-domain auto-synthesis (ADR-044)', () => {
+describe('cross-domain auto-synthesis (ADR-003)', () => {
   const multiRoute = {
     primary: 'network',
     ranked: [{ key: 'network', score: 0.9, active: true }, { key: 'data', score: 0.6, active: true }],
@@ -846,7 +846,7 @@ describe('cross-domain auto-synthesis (ADR-044)', () => {
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'cost' }));
   });
 
-  it('explicit pin to an ENABLED custom agent is honored (ADR-044 §2 — pin > keyword/classifier)', async () => {
+  it('explicit pin to an ENABLED custom agent is honored (ADR-003[legacy 044] §2 — pin > keyword/classifier)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     process.env.MULTI_ROUTE_SYNTHESIS_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
@@ -865,7 +865,7 @@ describe('cross-domain auto-synthesis (ADR-044)', () => {
     expect(body).toContain('"agentName":"compliance"');
   });
 
-  it('explicit pin to a DISABLED/absent custom agent ⇒ honest message, no silent fallback (ADR-044 §2)', async () => {
+  it('explicit pin to a DISABLED/absent custom agent ⇒ honest message, no silent fallback (ADR-003[legacy 044] §2)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     getEnabledCustomAgents.mockResolvedValue([]); // 'ghost' is not an enabled agent in this space
@@ -878,7 +878,7 @@ describe('cross-domain auto-synthesis (ADR-044)', () => {
     expect(body).toContain('[DONE]');
   });
 
-  it('thread is agent-agnostic: same threadId across two turns to different gateways (ADR-044 §4)', async () => {
+  it('thread is agent-agnostic: same threadId across two turns to different gateways (ADR-003[legacy 044] §4)', async () => {
     process.env.HYBRID_ROUTING_ENABLED = 'true';
     verifyUser.mockResolvedValue({ sub: 'u' });
     const tid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';

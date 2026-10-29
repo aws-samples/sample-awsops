@@ -19,7 +19,7 @@ interface MetricsCallsSourceLike {
   calls(windowMins: number, endMs?: number): Promise<SourceRead<ServiceGraphCall>>;
 }
 
-// ADR-043: materialization runs off the request path in the gated instrumentation timer
+// ADR-010: materialization runs off the request path in the gated instrumentation timer
 // or manual runner, with shared graph admission reserving a pool slot for auth.
 // Read/build per account with explicit budgets; only publication holds the class lock.
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.

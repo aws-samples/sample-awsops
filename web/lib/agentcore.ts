@@ -37,14 +37,14 @@ export interface InvokeInput {
   // POST handler always derives this itself — an unscoped/invalid client-supplied value is never
   // passed through untouched, only a value already matching this exact own-namespaced shape
   // (pentest-remediation P3-1, PR #200 review).
-  systemPromptOverride?: string; // ADR-031: resolved custom prompt
-  toolAllowlist?: string[];      // ADR-031 Phase 2: now the server-side-enforced set
-  agentName?: string;            // ADR-031: traceability
+  systemPromptOverride?: string; // ADR-004: resolved custom prompt
+  toolAllowlist?: string[];      // ADR-004[legacy 031] Phase 2: now the server-side-enforced set
+  agentName?: string;            // ADR-004: traceability
   agentVersion?: number;
   skillHashes?: string[];
-  accountId?: string;            // ADR-031 Phase 2: agent.py reads payload.accountId
+  accountId?: string;            // ADR-004[legacy 031] Phase 2: agent.py reads payload.accountId
   accountAlias?: string;
-  integrations?: ResolvedIntegration[]; // ADR-039 P2-infra inc2: live egress-READ MCP connections
+  integrations?: ResolvedIntegration[]; // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
   extraContext?: string; // bounded BFF context appended to the agent system prompt (e.g. cached datasource schemas)
   responseLanguage?: string; // v1-parity: UI-language directive ('ko'|'en'|'zh'|'ja') — agent.py forces the answer language
   regions?: string[]; // the target account's enabled inventory regions (['*'] = all regions) — agent.py region scope

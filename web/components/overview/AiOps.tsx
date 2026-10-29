@@ -89,7 +89,7 @@ export default function AiOps() {
           </a>
           <a
             href="/bedrock"
-            title={tt('ADR-038 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)')}
+            title={tt('ADR-003 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)')}
             className="flex items-center justify-between text-[12px] text-ink-600 hover:text-brand-700"
           >
             <span>{tt('하이브리드 라우팅')}</span><Badge tone="neutral" variant="soft">{tt('게이트 96.9%')}</Badge>

@@ -301,7 +301,7 @@ export function useChat() {
     const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
     const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant');
     // Only a misroute candidate if the previous answer came from a LIVE agent —
-    // switching away from an inactive-section guidance bubble is not a misroute (ADR-038 §5).
+    // switching away from an inactive-section guidance bubble is not a misroute (ADR-003[legacy 038] §5).
     const prevGateway = lastAssistant?.gateway;
     const switchedFrom = prevGateway && sectionByKey(prevGateway)?.active ? prevGateway : undefined;
     if (lastUser) void send(lastUser.content, sectionKey, switchedFrom);

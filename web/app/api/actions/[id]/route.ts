@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let ssm: SSMClient | null = null; let sqs: SQSClient | null = null;
-// ADR-040/041 §4: the kill-switch param is branched by the caller — external DATA-writes read the
+// ADR-007[legacy 040, 041] §4: the kill-switch param is branched by the caller — external DATA-writes read the
 // SEPARATE integrations-write switch, AWS-resource the mutating-actions switch. Empty name ⇒ fail-closed.
 async function killSwitchOn(name: string | undefined): Promise<boolean> {
   if (!name) return false; // fail-closed
@@ -57,7 +57,7 @@ export async function POST(req: NextRequest, { params: pendingParams }: { params
   }
   if (op !== 'execute') return NextResponse.json({ message: 'op must be execute|cancel' }, { status: 400 });
 
-  // ADR-040/041 §4 — branch the control plane by the action's target_resource_type. An `external:`
+  // ADR-007[legacy 040, 041] §4 — branch the control plane by the action's target_resource_type. An `external:`
   // action is a DATA-write (Slack/Notion/…) gated by the INTEGRATIONS_WRITE plane; everything else is
   // an AWS-resource action gated by the (frozen) REMEDIATION plane. (getAction may be unset in early
   // gates → treated as non-external = the AWS plane, preserving legacy behavior.)
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest, { params: pendingParams }: { params
   if (!ok) return NextResponse.json({ message: 'plan not in an approvable state (re-fetch)' }, { status: 409 });
 
   // Enqueue into the P2 ledger (worker_jobs) + SQS — the dispatcher routes 'action' to the remediation SM.
-  // ADR-040 §2 defense-in-depth: re-redact the inputs for an external DATA-write before they leave the web
+  // ADR-007[legacy 040] §2 defense-in-depth: re-redact the inputs for an external DATA-write before they leave the web
   // layer (the executor re-redacts again — never trust upstream). AWS-resource inputs pass through.
   const rawInputs = plan.dry_run?.inputs ?? {};
   const inputs = isExternal ? redactEgress(rawInputs).payload : rawInputs;

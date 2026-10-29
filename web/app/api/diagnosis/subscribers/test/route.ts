@@ -7,7 +7,7 @@ import { topicArn, publishTest } from '@/lib/diagnosis-notify';
 // message to the diagnosis topic so a freshly confirmed subscriber can verify delivery. Same
 // gates as the sibling subscribe/unsubscribe mutations; a publish failure surfaces as 502 —
 // never a silent success. This is a notification to the app's own topic — a governed
-// external-comms write per ADR-013 (ADR-040/041 lineage), not an AWS-resource mutation.
+// external-comms write per ADR-013 (ADR-007 lineage), not an AWS-resource mutation.
 export const dynamic = 'force-dynamic';
 
 // Server-side cooldown (per pod): the client `busy` flag alone can't stop an admin session from

@@ -1,5 +1,5 @@
 // web/app/api/incidents/[id]/route.ts
-// ADR-032 incident detail (admin-gated, READ-ONLY). Mirrors the admin-gate + UUID guard +
+// ADR-006 incident detail (admin-gated, READ-ONLY). Mirrors the admin-gate + UUID guard +
 // `dynamic = 'force-dynamic'` idiom from web/app/api/actions/[id]/route.ts.
 //
 // SAFETY (autonomous incident lifecycle shipped OFF):
