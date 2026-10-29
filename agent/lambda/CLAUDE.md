@@ -162,9 +162,8 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
   strips string literals before matching, and `SET TRANSACTION READ ONLY` only blocks data
   writes while still allowing control-plane calls.
 - **So do not try to "complete" this by adding more DANGER entries to these files.** A new
-  lexical hole isn't privilege escalation (the ClickHouse connector has no DB-role boundary yet,
-  so there the guard is still the primary defense — a backslash-escape hardening idea for it is
-  noted as a follow-up, out of scope here).
+  lexical hole isn't privilege escalation. Exception: the ClickHouse connector has no DB-role
+  boundary, so its lexical guard is the primary defense there.
 
 Detail: ADR-004 §7 amendment (2026-07-31).
 
