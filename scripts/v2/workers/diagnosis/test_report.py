@@ -1767,3 +1767,25 @@ def test_rules_give_a_console_path_alternative_to_change_commands():
 def test_context_rules_forbid_inferring_iam_cause():
     assert "notes에" in report._CONTEXT_RULES and "IAM 권한 부족" in report._CONTEXT_RULES
     assert "권한 추가로 해결되지 않는다" in report._CONTEXT_RULES
+
+
+def test_opus_headroom_applies_to_opus_5_only():
+    # An Opus 4.x rollback override (thinking off) must not inherit the 5.x headroom.
+    assert report._opus_headroom("global.anthropic.claude-opus-5-5") == report._OPUS_THINKING_HEADROOM
+    assert report._opus_headroom("global.anthropic.claude-opus-4-8") == 0
+    assert report._opus_headroom("global.anthropic.claude-sonnet-5-5") == 0
+
+
+def test_title_call_gets_opus_headroom(monkeypatch):
+    seen = {}
+
+    def fake_render(prompt, ctx, model_id, max_tokens):
+        seen.update(model_id=model_id, max_tokens=max_tokens)
+        return '{"title": "t", "tags": []}'
+    monkeypatch.setattr(report, "_bedrock_render", fake_render)
+    monkeypatch.setattr(report, "_TITLE_MODEL", "global.anthropic.claude-opus-5-5")
+    report.make_title_and_tags("# report")
+    assert seen["max_tokens"] == min(300 + report._OPUS_THINKING_HEADROOM, report._MAX_OUTPUT_TOKENS)
+    monkeypatch.setattr(report, "_TITLE_MODEL", "global.anthropic.claude-sonnet-5-5")
+    report.make_title_and_tags("# report")
+    assert seen["max_tokens"] == 300

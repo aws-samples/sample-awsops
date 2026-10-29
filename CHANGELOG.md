@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bedrock models: chat, AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it. Haiku calls and Sonnet calls with fixed output caps run without extended thinking so existing budgets still fit; Opus 5.5, which always thinks, gets extra output headroom for Deep report sections and invariant proposals. The web task's classifier and synthesis IAM grants must allow the 5.5 models before this release rolls out.
+- Bedrock models: chat, AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it. Haiku calls and Sonnet calls with fixed output caps run without extended thinking so existing budgets still fit (the chat agent keeps adaptive thinking, as on Sonnet 5); Opus 5.5, which always thinks, gets extra output headroom for Deep report sections and invariant proposals. The web task's classifier and synthesis IAM grants must allow the 5.5 models before this release rolls out.
 
 ### Fixed
 
@@ -696,7 +696,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Changed
 
-- Bedrock 모델: 채팅, AI 진단, 라우팅, 합성, 백그라운드 워커가 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않습니다. Haiku 호출과 출력 상한이 고정된 Sonnet 호출은 기존 상한이 유지되도록 확장 사고 없이 실행하고, 항상 사고하는 Opus 5.5는 Deep 리포트 섹션과 불변식 제안에 출력 여유분을 더 받습니다. 웹 태스크의 분류기·합성 IAM 권한이 이 릴리스 배포 전에 5.5 모델을 허용해야 합니다.
+- Bedrock 모델: 채팅, AI 진단, 라우팅, 합성, 백그라운드 워커가 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않습니다. Haiku 호출과 출력 상한이 고정된 Sonnet 호출은 기존 상한이 유지되도록 확장 사고 없이 실행하고(채팅 에이전트는 Sonnet 5 때처럼 adaptive 사고 유지), 항상 사고하는 Opus 5.5는 Deep 리포트 섹션과 불변식 제안에 출력 여유분을 더 받습니다. 웹 태스크의 분류기·합성 IAM 권한이 이 릴리스 배포 전에 5.5 모델을 허용해야 합니다.
 
 ### 수정
 

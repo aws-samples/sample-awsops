@@ -96,7 +96,8 @@ def make_title_and_tags(md, lang="ko"):
     """One cheap LLM call → {'title': str|None, 'tags': [str]}. Best-effort: ANY failure → None/[]
     (the title is decorative; it must never affect report success)."""
     try:
-        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL, 300)
+        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL,
+                              min(300 + _opus_headroom(_TITLE_MODEL), _MAX_OUTPUT_TOKENS))
         snippet = raw[raw.find("{"): raw.rfind("}") + 1]  # tolerate ```json fences / filler text
         data = json.loads(snippet)
         title = data.get("title")
@@ -173,8 +174,16 @@ def _backoff(attempt):
 _MAX_OUTPUT_TOKENS = max(1, int(os.environ.get("DIAGNOSIS_MAX_OUTPUT_TOKENS", "32000")))
 
 
-# Opus cannot disable thinking, which spends from max_tokens (budgets are thinking-free).
+# Opus 5.x cannot disable thinking, which spends from max_tokens (budgets are thinking-free). The
+# headroom raises the per-call ceiling, not the expected duration: _call_timeout still clamps every
+# read to the remaining render budget, and a measured Opus 5.5 compute section rendered in 59 s
+# (2026-10-29, n=1), far inside the 2400 s budget at concurrency 4.
 _OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
+
+
+def _opus_headroom(model_id):
+    """Thinking headroom for Opus 5.x only; an Opus 4.x rollback override takes thinking off."""
+    return _OPUS_THINKING_HEADROOM if "claude-opus-5" in model_id else 0
 
 
 def _capped_budget(section, tier_budget, headroom=0):
@@ -837,7 +846,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
     job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
-    headroom = _OPUS_THINKING_HEADROOM if "claude-opus" in model_id else 0
+    headroom = _opus_headroom(model_id)
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
     def _emit(current, section, phase, completed=None):
