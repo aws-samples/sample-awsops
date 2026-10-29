@@ -7,8 +7,8 @@ Bash-based structure test suite. Separate from the v2 app's own tests — `web/`
 ## Layout
 | Path | Covers | Runner |
 |------|--------|--------|
-| `tests/structure/test-*.sh` | Agent contracts, PR review workflow, Steampipe/ExternalId terraform wiring | `bash tests/run-all.sh` |
-| `tests/fixtures/` | Secret samples, false-positive samples | Not loaded by any current suite |
+| `tests/structure/test-*.sh` | Doc/path consistency, PR review workflow, Steampipe/ExternalId terraform wiring | `bash tests/run-all.sh` |
+| `tests/fixtures/` | Secret samples, false-positive samples | Retained for future secret-detection tests; not loaded by any current suite |
 
 `tests/run-all.sh` also drives `agent/`'s Python unittest (dark-path loop, account logic, etc.)
 alongside the structure tests above.
