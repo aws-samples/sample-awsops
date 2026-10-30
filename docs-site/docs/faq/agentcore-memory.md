@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"이미지 참조"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 섹션 게이트웨이<br/>(~160 읽기 전용 도구)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5 / Opus 4.8 / Haiku 4.5"]
+  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5"]
 ```
 
 ### AgentCore Runtime
@@ -398,5 +398,5 @@ flowchart LR
 AI 어시스턴트는 `/assistant`(전체 페이지)와 어디서나 열 수 있는 리사이즈 드로어에서 사용하며, 두 곳이 동일한 Aurora 대화 이력을 공유합니다.
 
 :::tip 라우팅은 하이브리드
-질문은 정규식 fast-path + Haiku 4.5 분류기 + 프롬프트 캐싱으로 적절한 섹션 에이전트에 라우팅됩니다(LIVE, 캐시 적중 ~59%). 레거시의 고정 다중-라우트 Sonnet 레지스트리가 아닙니다.
+질문은 정규식 fast-path + Haiku 5.5 분류기 + 프롬프트 캐싱으로 적절한 섹션 에이전트에 라우팅됩니다(LIVE, 캐시 적중 ~59%). 레거시의 고정 다중-라우트 Sonnet 레지스트리가 아닙니다.
 :::

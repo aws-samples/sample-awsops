@@ -128,7 +128,7 @@ AI routing is the **hybrid** scheme, and it is LIVE. It replaces the v1 single-S
 flowchart TD
   Q["User question"] --> REGEX{"Regex<br/>fast-path match?"}
   REGEX -->|"match"| ROUTE["Resolve section route immediately<br/>(no LLM call)"]
-  REGEX -->|"no match"| HAIKU["Haiku 4.5 classifier<br/>(prompt caching)"]
+  REGEX -->|"no match"| HAIKU["Haiku 5.5 classifier<br/>(prompt caching)"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["Section agent<br/>(AgentCore Runtime → 8 GW)"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### Three core mechanisms
 
 1. **Regex fast-path** — clear keyword patterns route instantly with no LLM call → latency saved.
-2. **Haiku 4.5 classifier** — only questions the fast-path misses go to the lightweight Haiku model.
+2. **Haiku 5.5 classifier** — only questions the fast-path misses go to the lightweight Haiku model.
 3. **Prompt caching** — the classifier prompt is cached (~59% hit rate), cutting tokens and latency.
 
 ### AI assistant behavior

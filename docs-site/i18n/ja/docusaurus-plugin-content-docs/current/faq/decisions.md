@@ -105,7 +105,7 @@ OpsCenter / Incident Manager への双方向ライトバックで記録するよ
 
 ### AI ルーティングはどのように動作しますか?
 
-**ハイブリッドルーティング**です — 正規表現 fast-path + Haiku 4.5 分類器 + プロンプトキャッシングで動作します。
+**ハイブリッドルーティング**です — 正規表現 fast-path + Haiku 5.5 分類器 + プロンプトキャッシングで動作します。
 
 ゲートスコアが hybrid 69.2% → **96.9%(+27.7pp) PASSED** と検証されました。高速な正規表現で明確なクエリを先に捉え、曖昧なら Haiku 分類器でルーティングします。分類器のタイムアウトは 3.5s です(グローバル cross-region プロファイルでは 1s は不足)。
 
@@ -114,7 +114,7 @@ OpsCenter / Incident Manager への双方向ライトバックで記録するよ
 **プロンプトキャッシングと作業深度別のモデル選択で最適化**されます。
 
 - **プロンプトキャッシング** — 約 59% のヒット率で、繰り返しコンテキストの再計算を削減します。
-- **作業深度別モデル** — AI 診断は Light·Mid(8+1 セクション)は Sonnet デフォルト、Deep(15+1 セクション)は Sonnet デフォルト・Opus 選択(cost-gate)。分類・ルーティングには低コストの Haiku 4.5 を使用します。
+- **作業深度別モデル** — AI 診断は Light·Mid(8+1 セクション)は Sonnet デフォルト、Deep(15+1 セクション)は Sonnet デフォルト・Opus 選択(cost-gate)。分類・ルーティングには低コストの Haiku 5.5 を使用します。
 - Aurora durable token budget(予算永続化)は v1 に実装済みで、現在のウェブチャット経路への連携は今後の課題です。
 
 ### ゲートウェイはいくつありますか?
@@ -137,7 +137,7 @@ network · container · data · security · cost · monitoring · iac · ops の
 
 **read-only 診断のみ提供します。**
 
-K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 4.5)は **read-only の Result-CRD 統合(GET-only)のみ提供**し、自動対処につながる配線はありません。EKS クエリはすべて読み取り専用です。既定の認証主体は、ホストクラスターでは web タスクロール、メンバークラスターでは登録済みメンバー読み取りロール（通常 `AWSopsReadOnlyRole`）で、それぞれ対象クラスターの Access Entry と読み取りポリシーが必要です。メンバーのメタデータ取得と既定の Kubernetes トークン署名はともにメンバーロールの認証情報を使い、以前のホストロールの Entry だけでは許可されません。保存された SA トークンまたは明示的な AssumeRole 認証は別途許可された Kubernetes ID を使用し、メンバークラスターの AssumeRole は同じメンバーアカウントのロールに限られます。SA 認証に IAM Access Entry は不要ですが、メタデータ取得権限は必要です。どの方式も自動修復を有効にしません。
+K8sGPT ハイブリッド(MCP で AgentCore に統合されるインクラスター K8s 診断、Haiku 5.5)は **read-only の Result-CRD 統合(GET-only)のみ提供**し、自動対処につながる配線はありません。EKS クエリはすべて読み取り専用です。既定の認証主体は、ホストクラスターでは web タスクロール、メンバークラスターでは登録済みメンバー読み取りロール（通常 `AWSopsReadOnlyRole`）で、それぞれ対象クラスターの Access Entry と読み取りポリシーが必要です。メンバーのメタデータ取得と既定の Kubernetes トークン署名はともにメンバーロールの認証情報を使い、以前のホストロールの Entry だけでは許可されません。保存された SA トークンまたは明示的な AssumeRole 認証は別途許可された Kubernetes ID を使用し、メンバークラスターの AssumeRole は同じメンバーアカウントのロールに限られます。SA 認証に IAM Access Entry は不要ですが、メタデータ取得権限は必要です。どの方式も自動修復を有効にしません。
 
 ## 運用 / Operations
 

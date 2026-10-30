@@ -105,7 +105,7 @@ OpsCenter / Incident Manager 양방향 라이트백으로 기록하도록 설계
 
 ### AI 라우팅은 어떻게 동작하나요?
 
-**하이브리드 라우팅**입니다 — 정규식 fast-path + Haiku 4.5 분류기 + 프롬프트 캐싱으로 동작합니다.
+**하이브리드 라우팅**입니다 — 정규식 fast-path + Haiku 5.5 분류기 + 프롬프트 캐싱으로 동작합니다.
 
 게이트 점수는 hybrid 69.2% → **96.9%(+27.7pp) PASSED**로 검증되었습니다. 빠른 정규식으로 명확한 질의를 먼저 잡고, 모호하면 Haiku 분류기로 라우팅합니다. 분류기 타임아웃은 3.5s입니다(글로벌 cross-region 프로파일에서 1s는 부족).
 
@@ -114,7 +114,7 @@ OpsCenter / Incident Manager 양방향 라이트백으로 기록하도록 설계
 **프롬프트 캐싱과 작업 깊이별 모델 선택으로 최적화**됩니다.
 
 - **프롬프트 캐싱** — 약 59% 히트율로 반복 컨텍스트 재계산을 줄입니다.
-- **작업 깊이별 모델** — AI 진단은 Light·Mid(8+1섹션)는 Sonnet 기본, Deep(15+1섹션)은 Sonnet 기본·Opus 선택(cost-gate). 분류·라우팅에는 저렴한 Haiku 4.5를 사용합니다.
+- **작업 깊이별 모델** — AI 진단은 Light·Mid(8+1섹션)는 Sonnet 기본, Deep(15+1섹션)은 Sonnet 기본·Opus 선택(cost-gate). 분류·라우팅에는 저렴한 Haiku 5.5를 사용합니다.
 - Aurora durable token budget(예산 영속)은 v1에 구현돼 있고, 현재 웹 챗 경로 연동은 후속 과제입니다.
 
 ### 게이트웨이는 몇 개인가요?
@@ -137,7 +137,7 @@ network · container · data · security · cost · monitoring · iac · ops의 
 
 **read-only 진단만 제공합니다.**
 
-K8sGPT 하이브리드(MCP로 AgentCore에 통합되는 인클러스터 K8s 진단, Haiku 4.5)는 **read-only Result-CRD 통합(GET-only)만 제공**하며, 자동 조치로 이어지는 배선은 없습니다. EKS 조회는 모두 읽기 전용입니다. 기본 인증 주체는 호스트 클러스터의 web 태스크 역할 또는 멤버 클러스터의 등록된 멤버 읽기 역할(일반적으로 `AWSopsReadOnlyRole`)이며, 해당 역할의 Access Entry·읽기 정책이 필요합니다. 멤버의 메타데이터 조회와 기본 Kubernetes 토큰 서명은 모두 멤버 역할 자격증명을 사용하고, 기존 호스트 역할 Entry만으로는 허용되지 않습니다. 저장된 SA 토큰 또는 명시적 AssumeRole은 별도 허용된 Kubernetes 인증 주체를 사용하며, 멤버 AssumeRole은 같은 멤버 계정의 역할로 제한됩니다. SA 인증은 IAM Access Entry가 필요하지 않지만 메타데이터 권한은 필요합니다. 어떤 방식도 자동 조치를 활성화하지 않습니다.
+K8sGPT 하이브리드(MCP로 AgentCore에 통합되는 인클러스터 K8s 진단, Haiku 5.5)는 **read-only Result-CRD 통합(GET-only)만 제공**하며, 자동 조치로 이어지는 배선은 없습니다. EKS 조회는 모두 읽기 전용입니다. 기본 인증 주체는 호스트 클러스터의 web 태스크 역할 또는 멤버 클러스터의 등록된 멤버 읽기 역할(일반적으로 `AWSopsReadOnlyRole`)이며, 해당 역할의 Access Entry·읽기 정책이 필요합니다. 멤버의 메타데이터 조회와 기본 Kubernetes 토큰 서명은 모두 멤버 역할 자격증명을 사용하고, 기존 호스트 역할 Entry만으로는 허용되지 않습니다. 저장된 SA 토큰 또는 명시적 AssumeRole은 별도 허용된 Kubernetes 인증 주체를 사용하며, 멤버 AssumeRole은 같은 멤버 계정의 역할로 제한됩니다. SA 인증은 IAM Access Entry가 필요하지 않지만 메타데이터 권한은 필요합니다. 어떤 방식도 자동 조치를 활성화하지 않습니다.
 
 ## 운영 / Operations
 

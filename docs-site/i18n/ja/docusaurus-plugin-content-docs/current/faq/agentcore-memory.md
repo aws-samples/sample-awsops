@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"イメージ参照"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 セクションゲートウェイ<br/>(~160 読み取り専用ツール)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5 / Opus 4.8 / Haiku 4.5"]
+  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5"]
 ```
 
 ### AgentCore Runtime
@@ -398,5 +398,5 @@ Web BFF が Runtime / Gateway / Code Interpreter の状態を照会します。S
 AI アシスタントは `/assistant`（フルページ）と、どこからでも開けるリサイズ可能なドロワーで使用し、両者は同一の Aurora 会話履歴を共有します。
 
 :::tip ルーティングはハイブリッド
-質問は正規表現 fast-path + Haiku 4.5 分類器 + プロンプトキャッシングで適切なセクションエージェントにルーティングされます（LIVE、キャッシュヒット ~59%）。レガシーの固定マルチルート Sonnet レジストリではありません。
+質問は正規表現 fast-path + Haiku 5.5 分類器 + プロンプトキャッシングで適切なセクションエージェントにルーティングされます（LIVE、キャッシュヒット ~59%）。レガシーの固定マルチルート Sonnet レジストリではありません。
 :::

@@ -105,7 +105,7 @@ However, this write-back currently inherits the role of the frozen automation su
 
 ### How does AI routing work?
 
-**Hybrid routing** — a regex fast-path + a Haiku 4.5 classifier + prompt caching.
+**Hybrid routing** — a regex fast-path + a Haiku 5.5 classifier + prompt caching.
 
 The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. A fast regex catches clear queries first, and ambiguous ones go to the Haiku classifier. The classifier timeout is 3.5s (1s is not enough on the global cross-region profile).
 
@@ -114,7 +114,7 @@ The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. A f
 They are **optimized through prompt caching and per-depth model selection**.
 
 - **Prompt caching** — an ~59% hit rate reduces recomputation of repeated context.
-- **Per-depth models** — AI diagnosis uses Sonnet by default for Light and Mid (8+1 sections); Deep (15+1 sections) uses Sonnet by default with Opus as an option (cost-gate). Classification and routing use the cheaper Haiku 4.5.
+- **Per-depth models** — AI diagnosis uses Sonnet by default for Light and Mid (8+1 sections); Deep (15+1 sections) uses Sonnet by default with Opus as an option (cost-gate). Classification and routing use the cheaper Haiku 5.5.
 - The Aurora durable token budget (persisted budget) is implemented in v1; wiring it into the current web-chat path is follow-up work.
 
 ### How many gateways are there?
@@ -137,7 +137,7 @@ The multi-agent platform provides frontier agents (DevOps/Security/FinOps + N) a
 
 **Read-only diagnosis only.**
 
-The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 4.5) provides **only the read-only Result-CRD integration (GET-only)**, with no wiring toward automatic remediation. All EKS lookups are read-only. The default authenticating principal is the web task role for the host cluster, or the registered member read role for a member cluster (typically `AWSopsReadOnlyRole`), and that role needs an Access Entry and read policy. Member metadata lookups and default Kubernetes token signing both use member-role credentials; the existing host-role Entry alone is not sufficient. A stored SA token or an explicit AssumeRole uses a separately allowed Kubernetes principal, and a member AssumeRole is limited to roles in the same member account. SA authentication does not need an IAM Access Entry but does need metadata permissions. None of these methods enables automatic remediation.
+The K8sGPT hybrid (in-cluster K8s diagnosis integrated into AgentCore via MCP, Haiku 5.5) provides **only the read-only Result-CRD integration (GET-only)**, with no wiring toward automatic remediation. All EKS lookups are read-only. The default authenticating principal is the web task role for the host cluster, or the registered member read role for a member cluster (typically `AWSopsReadOnlyRole`), and that role needs an Access Entry and read policy. Member metadata lookups and default Kubernetes token signing both use member-role credentials; the existing host-role Entry alone is not sufficient. A stored SA token or an explicit AssumeRole uses a separately allowed Kubernetes principal, and a member AssumeRole is limited to roles in the same member account. SA authentication does not need an IAM Access Entry but does need metadata permissions. None of these methods enables automatic remediation.
 
 ## Operations
 

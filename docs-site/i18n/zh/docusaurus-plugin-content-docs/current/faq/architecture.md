@@ -128,7 +128,7 @@ AI 路由采用 **混合**方式，已 LIVE。它取代了 v1 的 Sonnet 单一�
 flowchart TD
   Q["用户问题"] --> REGEX{"正则<br/>fast-path 匹配？"}
   REGEX -->|"匹配"| ROUTE["立即确定分区路由<br/>（无 LLM 调用）"]
-  REGEX -->|"未匹配"| HAIKU["Haiku 4.5 分类器<br/>（提示词缓存）"]
+  REGEX -->|"未匹配"| HAIKU["Haiku 5.5 分类器<br/>（提示词缓存）"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["分区代理<br/>（AgentCore Runtime → 8 GW）"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### 3 个核心机制
 
 1. **正则 fast-path** — 明确的关键词模式无需 LLM 调用即可立即路由 → 降低延迟。
-2. **Haiku 4.5 分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
+2. **Haiku 5.5 分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
 3. **提示词缓存** — 缓存分类提示词（命中率约 59%），减少 token 消耗与延迟。
 
 ### AI 助手行为

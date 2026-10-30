@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"镜像引用"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 个分区网关<br/>（约 160 个只读工具）"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5 / Opus 4.8 / Haiku 4.5"]
+  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5"]
 ```
 
 ### AgentCore Runtime
@@ -398,5 +398,5 @@ Web BFF 查询 Runtime / Gateway / Code Interpreter 的状态。先从 SSM 读�
 AI 助手可在 `/assistant`（完整页面）和随处可打开的可调整大小抽屉中使用，两处共享同一份 Aurora 会话历史。
 
 :::tip 路由是混合方式
-问题通过正则 fast-path + Haiku 4.5 分类器 + 提示词缓存路由到合适的分区代理（LIVE，缓存命中率约 59%）。不是旧版的固定多路由 Sonnet 注册表。
+问题通过正则 fast-path + Haiku 5.5 分类器 + 提示词缓存路由到合适的分区代理（LIVE，缓存命中率约 59%）。不是旧版的固定多路由 Sonnet 注册表。
 :::
