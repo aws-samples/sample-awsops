@@ -105,7 +105,7 @@ AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA*
 
 ### AI 路由是如何运作的？
 
-采用**混合路由**——正则 fast-path + Haiku 4.5 分类器 + 提示词缓存。
+采用**混合路由**——正则 fast-path + Haiku 5.5 分类器 + 提示词缓存。
 
 门禁得分经验证从 hybrid 69.2% → **96.9%（+27.7pp）PASSED**。先用快速正则捕获明确的查询，模糊时再由 Haiku 分类器路由。分类器超时为 3.5s（在全局 cross-region profile 下 1s 不够）。
 
@@ -114,7 +114,7 @@ AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA*
 **通过提示词缓存与按任务深度选择模型进行优化**。
 
 - **提示词缓存** — 以约 59% 命中率减少重复上下文的重新计算。
-- **按任务深度选择模型** — AI 诊断的 Light·Mid（8+1 章节，共 9）默认 Sonnet，Deep（15+1 章节，共 16）默认 Sonnet·可选 Opus（cost-gate）。分类·路由使用低成本的 Haiku 4.5。
+- **按任务深度选择模型** — AI 诊断的 Light·Mid（8+1 章节，共 9）默认 Sonnet，Deep（15+1 章节，共 16）默认 Sonnet·可选 Opus（cost-gate）。分类·路由使用低成本的 Haiku 5.5。
 - Aurora durable token budget（预算持久化）已在 v1 实现，与当前 web 聊天路径的对接是后续课题。
 
 ### 网关有几个？
@@ -137,7 +137,7 @@ AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA*
 
 **仅提供 read-only 诊断。**
 
-K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 4.5）**仅提供 read-only Result-CRD 集成（GET-only）**，没有通往自动处置的接线。EKS 查询全部为只读。宿主集群的默认身份是 web 任务角色，成员集群的默认身份是已注册的成员只读角色（通常为 `AWSopsReadOnlyRole`），各自需要目标集群中的 Access Entry 和只读策略。成员元数据查询和默认 Kubernetes 令牌签名均使用成员角色凭证，仅有旧的宿主角色 Entry 不足以授权。保存的 SA 令牌或显式 AssumeRole 认证使用另行授权的 Kubernetes 身份，成员集群的 AssumeRole 仅允许同一成员账户的角色。SA 认证不需要 IAM Access Entry，但仍需要元数据查询权限。任何方式都不会启用自动修复。
+K8sGPT 混合方案（通过 MCP 集成到 AgentCore 的集群内 K8s 诊断，Haiku 5.5）**仅提供 read-only Result-CRD 集成（GET-only）**，没有通往自动处置的接线。EKS 查询全部为只读。宿主集群的默认身份是 web 任务角色，成员集群的默认身份是已注册的成员只读角色（通常为 `AWSopsReadOnlyRole`），各自需要目标集群中的 Access Entry 和只读策略。成员元数据查询和默认 Kubernetes 令牌签名均使用成员角色凭证，仅有旧的宿主角色 Entry 不足以授权。保存的 SA 令牌或显式 AssumeRole 认证使用另行授权的 Kubernetes 身份，成员集群的 AssumeRole 仅允许同一成员账户的角色。SA 认证不需要 IAM Access Entry，但仍需要元数据查询权限。任何方式都不会启用自动修复。
 
 ## 运维 / Operations
 

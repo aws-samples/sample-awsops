@@ -37,7 +37,7 @@ The AI assistant uses **hybrid routing** (LIVE). It is no longer a fixed route r
 **Three-stage pipeline**
 
 1. **Regex fast-path** — clear signals ("EKS pod", "IAM policy", "cost spike", etc.) are matched by pattern alone and routed instantly, with no model call (zero latency / cost).
-2. **Haiku 4.5 classifier** — if the fast-path doesn't decide, a lightweight, fast Haiku model classifies the question and sends it to the right section.
+2. **Haiku 5.5 classifier** — if the fast-path doesn't decide, a lightweight, fast Haiku model classifies the question and sends it to the right section.
 3. **Prompt caching** — system prompts / tool definitions are cached to cut latency and token cost on repeat calls (cache hit rate ~59%).
 
 :::tip
