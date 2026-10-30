@@ -128,7 +128,7 @@ AI 라우팅은 **하이브리드** 방식으로 LIVE입니다. v1의 Sonnet 단
 flowchart TD
   Q["사용자 질문"] --> REGEX{"정규식<br/>fast-path 매칭?"}
   REGEX -->|"매칭"| ROUTE["섹션 라우트 즉시 결정<br/>(LLM 호출 없음)"]
-  REGEX -->|"미매칭"| HAIKU["Haiku 4.5 분류기<br/>(프롬프트 캐싱)"]
+  REGEX -->|"미매칭"| HAIKU["Haiku 5.5 분류기<br/>(프롬프트 캐싱)"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["섹션 에이전트<br/>(AgentCore Runtime → 8 GW)"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### 3가지 핵심 메커니즘
 
 1. **정규식 fast-path** — 명확한 키워드 패턴은 LLM 호출 없이 즉시 라우팅 → 지연 절감.
-2. **Haiku 4.5 분류기** — fast-path로 못 잡은 질문만 가벼운 Haiku 모델이 분류.
+2. **Haiku 5.5 분류기** — fast-path로 못 잡은 질문만 가벼운 Haiku 모델이 분류.
 3. **프롬프트 캐싱** — 분류 프롬프트를 캐시(약 59% 히트)해 토큰·지연을 줄임.
 
 ### AI 어시스턴트 동작
