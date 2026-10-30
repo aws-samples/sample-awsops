@@ -211,7 +211,7 @@ async def drive_anthropic_loop(*, aclient, mcp_call, model, system_blocks,
             msgs.append({"role": "assistant", "content": _assistant_content(final)})
             results = []
             for tu in tool_uses:
-                # Defense-in-depth (ADR-031/039): the allowlist is enforced OUTSIDE the model. The model
+                # Defense-in-depth (ADR-004[legacy 031]/ADR-007[legacy 039]): the allowlist is enforced OUTSIDE the model. The model
                 # output is NOT a security boundary — refuse to EXECUTE any tool the model names that is
                 # not in the allowed set, even if it hallucinated a gateway tool we did not expose.
                 if allowed_tool_names is not None and tu["name"] not in allowed_tool_names:
