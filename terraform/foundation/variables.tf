@@ -294,7 +294,7 @@ variable "integrations_write_enabled" {
 
 variable "hybrid_routing_enabled" {
   type        = bool
-  description = "ADR-003[legacy 038] hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline."
+  description = "ADR-003[legacy 038] hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline. Last run 2026-10-29 on Haiku 5.5 without temperature: 67 cases, regex 71.6% -> hybrid 91.0%."
   default     = false
 }
 

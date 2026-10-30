@@ -15,7 +15,7 @@ Current v2 uses the **Light / Mid / Deep (15+1 sections, 16 rendered)** tier str
 :::
 
 
-The `/ai-diagnosis` page generates a 15-section infrastructure analysis report using Amazon Bedrock **Claude Opus 4.8**.
+The `/ai-diagnosis` page generates a 15-section infrastructure analysis report using Amazon Bedrock **Claude Sonnet 5.5** (default) or **Opus 5.5** (Deep tier option).
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI Comprehensive Diagnosis page" />
 
@@ -23,7 +23,7 @@ The `/ai-diagnosis` page generates a 15-section infrastructure analysis report u
 
 | Item | Value |
 |------|-------|
-| **Model** | `global.anthropic.claude-opus-4-8` (fixed) |
+| **Model** | `global.anthropic.claude-sonnet-5-5` (default) · `global.anthropic.claude-opus-5-5` (Deep tier option) |
 | **Sections** | 15 (4 cost + 6 infra + 2 security/network + 3 summary) |
 | **Output formats** | DOCX (A4 + TOC), Markdown, PDF (browser print) |
 | **Storage** | S3 report bucket + `data/reports/*.json` cache |

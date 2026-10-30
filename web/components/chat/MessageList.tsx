@@ -78,7 +78,7 @@ function statusLabel(s: { phase: string; elapsedMs?: number }, tt: (s: string) =
 
 // Mirrors agent.py's MODEL_ID label for the (rare) legacy-image case where the stream carries
 // no `{"model": ...}` provenance frame — never shown once a redeployed agent reports its own.
-const FALLBACK_MODEL_LABEL = 'Claude Sonnet 4.6';
+const FALLBACK_MODEL_LABEL = 'Claude Sonnet 5.5';
 
 export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[]; onSwitch?: (key: string) => void; onFollowUp?: (q: string) => void }) {
   const { tt } = useI18n();

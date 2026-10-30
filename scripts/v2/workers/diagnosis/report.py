@@ -31,14 +31,14 @@ from .sections import (SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION, LANG
 # Inference-profile id — a BARE id ("anthropic.claude-...") throws ValidationException on
 # Claude 4.x invoke_model. Uses global.* profiles invoked from ap-northeast-2 (matches agent/agent.py)
 # so calls are captured by the ap-northeast-2 invocation log for awsops-only cost attribution.
-MODEL_ID = os.environ.get("DIAGNOSIS_MODEL_ID", "global.anthropic.claude-sonnet-4-6")
+MODEL_ID = os.environ.get("DIAGNOSIS_MODEL_ID", "global.anthropic.claude-sonnet-5-5")
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 # Tier → model + catalog + per-section token budget. Sonnet is the default (enough for most runs);
 # deep tier alone may select Opus (heavier analysis). Model ids are env-overridable; defaults are the
 # verified global.* inference profiles (invoked from ap-northeast-2 → captured by invocation logging).
 _MODEL_SONNET = os.environ.get("DIAGNOSIS_MODEL_SONNET", MODEL_ID)  # MODEL_ID kept as back-compat alias
-_MODEL_OPUS = os.environ.get("DIAGNOSIS_MODEL_OPUS", "global.anthropic.claude-opus-4-8")
+_MODEL_OPUS = os.environ.get("DIAGNOSIS_MODEL_OPUS", "global.anthropic.claude-opus-5-5")
 # Auto title/tags use a small cheap call (default = the Sonnet id; override to Haiku via env).
 _TITLE_MODEL = os.environ.get("DIAGNOSIS_TITLE_MODEL", _MODEL_SONNET)
 # Title/tags prompt — the title language follows the report lang (gap L50).
@@ -96,7 +96,8 @@ def make_title_and_tags(md, lang="ko"):
     """One cheap LLM call → {'title': str|None, 'tags': [str]}. Best-effort: ANY failure → None/[]
     (the title is decorative; it must never affect report success)."""
     try:
-        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL, 300)
+        raw = _bedrock_render(_title_prompt(lang), md[:_TITLE_INPUT_CHARS], _TITLE_MODEL,
+                              min(300 + _opus_headroom(_TITLE_MODEL), _MAX_OUTPUT_TOKENS))
         snippet = raw[raw.find("{"): raw.rfind("}") + 1]  # tolerate ```json fences / filler text
         data = json.loads(snippet)
         title = data.get("title")
@@ -173,8 +174,20 @@ def _backoff(attempt):
 _MAX_OUTPUT_TOKENS = max(1, int(os.environ.get("DIAGNOSIS_MAX_OUTPUT_TOKENS", "32000")))
 
 
-def _capped_budget(section, tier_budget):
-    return min(_section_budget(section, tier_budget), _MAX_OUTPUT_TOKENS)
+# Opus 5.x cannot disable thinking, which spends from max_tokens (budgets are thinking-free). The
+# headroom raises the per-call ceiling, not the expected duration: _call_timeout still clamps every
+# read to the remaining render budget, and a measured Opus 5.5 compute section rendered in 59 s
+# (2026-10-29, n=1), far inside the 2400 s budget at concurrency 4.
+_OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
+
+
+def _opus_headroom(model_id):
+    """Thinking headroom for Opus 5.x only; an Opus 4.x rollback override takes thinking off."""
+    return _OPUS_THINKING_HEADROOM if "claude-opus-5" in model_id else 0
+
+
+def _capped_budget(section, tier_budget, headroom=0):
+    return min(_section_budget(section, tier_budget) + headroom, _MAX_OUTPUT_TOKENS)
 
 
 def _bedrock_config(read_timeout):
@@ -221,6 +234,17 @@ class _RenderedText(str):
     stop_reason = None
 
 
+def _thinking_fields(model_id):
+    """Section budgets/read timeouts are sized for thinking-free output; thinking tokens count
+    toward max_tokens. Sonnet 5.5 turns thinking off only via `between_tools`, Haiku via
+    `disabled`; Opus 5.5 cannot disable it and stays adaptive."""
+    if "claude-sonnet-5-5" in model_id:
+        return {"thinking": {"type": "between_tools"}}
+    if "claude-haiku-5" in model_id:
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
 def _bedrock_render(prompt, context_json, model_id, max_tokens):
     # global.* inference profiles route worldwide and can be invoked from the home region; we pin
     # BEDROCK_REGION to ap-northeast-2 (matches agent.py) so calls land in the ap-northeast-2
@@ -230,6 +254,7 @@ def _bedrock_render(prompt, context_json, model_id, max_tokens):
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
+        **_thinking_fields(model_id),
         "system": _SYSTEM,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": f"{prompt}\n\n<untrusted>\n{context_json}\n</untrusted>"}
@@ -821,6 +846,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
     job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
+    headroom = _opus_headroom(model_id)
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
     def _emit(current, section, phase, completed=None):
@@ -873,7 +899,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     def _render_one(i, sec):
         try:
             return i, render_section(dict(sec, _run=run_ctx), collected, model_id,
-                                     _capped_budget(sec, max_tokens), lang)
+                                     _capped_budget(sec, max_tokens, headroom), lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
             # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.

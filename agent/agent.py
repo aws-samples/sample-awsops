@@ -118,12 +118,13 @@ def _discover_gateways():
 GATEWAYS = _discover_gateways()
 
 # Bedrock Model / Bedrock 모델
-# ADR-003[legacy 038]: deterministic tool selection + prompt caching (verified against strands-agents 1.41.0:
-# BedrockConfig exposes temperature / cache_config / cache_tools; cache_prompt is deprecated).
-# Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
+# Prompt caching (verified against strands-agents 1.41.0: BedrockConfig exposes cache_config /
+# cache_tools; cache_prompt is deprecated). Cache params are guarded — an unsupported version degrades
+# to no-cache (spec §6 no-op rule). Thinking: the chat agent keeps the model's default adaptive
+# thinking, as it did on Sonnet 5; AGENT_MAX_TOKENS already budgets for it on multi-tool turns.
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
-MODEL_ID = "global.anthropic.claude-sonnet-5"
+MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 # Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
 # live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
 # Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.
@@ -134,13 +135,10 @@ try:
     model = BedrockModel(
         model_id=MODEL_ID,
         region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
-        # NOTE: sonnet-5 rejects `temperature` on ConverseStream ("temperature is deprecated for
-        # this model" — live-verified 2026-07-07, every request failed with a ValidationException
-        # until this was dropped). The ADR-003[legacy 038] determinism rationale (temperature=0.0 for tool
-        # selection) no longer applies to this model generation — omit rather than pass an invalid value.
-        # Rollback contract: if MODEL_ID moves back to a temperature-accepting generation (e.g.
-        # sonnet-4-6), restore temperature=0.0 here AND in the no-cache fallback below — ADR-003[legacy 038]
-        # determinism is suspended only while the model rejects the param, not repealed.
+        # NOTE: Claude Sonnet 5 and 5.5 reject `temperature` on ConverseStream (ValidationException,
+        # live-verified 2026-07-07 and 2026-10-28), so it is omitted. Routing determinism is held by
+        # the regex fast path, classifier output validation and the tool allowlist, not sampling
+        # (ADR-003[legacy 038]); do not reintroduce a sampling parameter the model rejects.
         cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
         cache_tools="default",                      # toolConfig cachePoint, 5m TTL
         max_tokens=AGENT_MAX_TOKENS,

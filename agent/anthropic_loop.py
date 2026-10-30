@@ -20,11 +20,14 @@ import os
 import sys
 
 # Same model + home region as the Strands path → invocation-log cost attribution intact.
-MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
-MAX_OUTPUT_TOKENS = 4096     # Anthropic Messages API REQUIRES max_tokens on every call
-MODEL_TEMPERATURE = 0.0      # parity with the Strands BedrockModel — deterministic tool selection (ADR-003[legacy 038])
+# Anthropic Messages API REQUIRES max_tokens. Sized above the old 4096 because thinking between
+# tool calls (`between_tools`) bills against the same cap on tool-using turns.
+MAX_OUTPUT_TOKENS = 8192
+# sonnet-5-5 rejects `temperature`. Any thinking blocks are replayed verbatim (_assistant_content).
+MODEL_THINKING = {"type": "between_tools"}
 EXTRA_CONTEXT_CAP = 8000     # bound BFF-supplied context (parity with agent.handler)
 TOOL_RESULT_CHAR_CAP = 24000 # bound a single tool result fed back (avoid per-round context/token blowup)
 
@@ -133,7 +136,7 @@ def apply_cache_control(system_blocks, anthropic_tools):
 
 
 def _assistant_content(final):
-    """Rebuild a serializable assistant turn (text + tool_use blocks) from a final message,
+    """Rebuild a serializable assistant turn (thinking + text + tool_use blocks) from a final message,
     so it can be appended to ``messages`` before the tool_result turn. Handles dict/object blocks."""
     out = []
     for b in getattr(final, "content", None) or []:
@@ -142,6 +145,16 @@ def _assistant_content(final):
             txt = _block_attr(b, "text", "") or ""
             if txt.strip():  # Anthropic rejects empty text blocks in INPUT → drop them (P4 CI: API 400)
                 out.append({"type": "text", "text": txt})
+        elif t == "thinking":  # replay unchanged: an edited or dropped block invalidates the turn
+            blk = {"type": "thinking", "thinking": _block_attr(b, "thinking", "") or ""}
+            sig = _block_attr(b, "signature")
+            if sig:  # the API rejects a null signature; real SDK blocks always carry one
+                blk["signature"] = sig
+            out.append(blk)
+        elif t == "redacted_thinking":
+            data = _block_attr(b, "data")
+            if data:
+                out.append({"type": "redacted_thinking", "data": data})
         elif t == "tool_use":
             out.append({"type": "tool_use", "id": _block_attr(b, "id"),
                         "name": _block_attr(b, "name"), "input": _block_attr(b, "input") or {}})
@@ -178,7 +191,7 @@ async def drive_anthropic_loop(*, aclient, mcp_call, model, system_blocks,
         while True:
             offer_tools = bool(anthropic_tools) and rounds < max_rounds
             kwargs = {"model": model, "max_tokens": max_tokens,
-                      "temperature": MODEL_TEMPERATURE,
+                      "thinking": MODEL_THINKING,
                       "system": system_blocks, "messages": msgs}
             if offer_tools:
                 kwargs["tools"] = anthropic_tools

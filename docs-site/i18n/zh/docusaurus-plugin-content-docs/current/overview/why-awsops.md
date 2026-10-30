@@ -64,7 +64,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 综合诊断 — Well-Architected Deep Dive 报告" />
 
-`/ai-diagnosis` 是由 Amazon Bedrock **Claude Opus 4.8** 自动分析整体基础设施并生成正式报告的工具。
+`/ai-diagnosis` 是由 Amazon Bedrock **Claude Sonnet 5.5**（默认）·**Opus 5.5**（Deep 阶段可选）自动分析整体基础设施并生成正式报告的工具。
 
 - **6 个 Well-Architected 支柱记分卡** — Executive Summary 为 Operational Excellence·Security·Reliability·Performance Efficiency·Cost Optimization·Sustainability 全部打分。
 - **3 个支柱深度分析（15+1 个章节）** — 深入剖析 Cost Optimization·Security·Reliability（成本概览/计算/网络/存储、闲置资源、安全状况、网络·计算·EKS·数据库·MSK·存储分析等）。
@@ -82,7 +82,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 
 - **单台 EC2 t4g.2xlarge（ARM64 Graviton）** — 同机运行 Steampipe 内嵌 PostgreSQL，**没有额外的托管数据库成本**。
 - **AgentCore 是无服务器的** — AI 运行时/网关仅在调用时计费。
-- Bedrock 模型按任务选择 — 分类·路由用 **Sonnet 4.6**，深度诊断用 **Opus 4.8**，快速低成本任务用 **Haiku 4.5**，并应用提示词缓存。
+- Bedrock 模型按任务选择 — 分类·路由和快速低成本任务用 **Haiku 5.5**，聊天代理和 AI 诊断默认用 **Sonnet 5.5**，AI 诊断 Deep 阶段选择时用 **Opus 5.5**，并应用提示词缓存。
 
 而且这个工具还能**降低客户基础设施的成本** — Cost Explorer 分析、闲置资源检测、FinOps 建议都包含在诊断报告中。
 

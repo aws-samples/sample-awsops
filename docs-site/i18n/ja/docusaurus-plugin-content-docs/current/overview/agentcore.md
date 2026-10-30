@@ -45,7 +45,7 @@ AgentCore は Amazon Bedrock AgentCore Runtime と Gateway をベースに、AI 
 | **エンジン** | Strands Agent Framework |
 | **コンテナ** | Docker arm64（ECR に保存、`make agentcore`） |
 | **実行環境** | AgentCore マネージドサービス（Bedrock AgentCore Runtime） |
-| **モデル** | Claude Haiku 4.5（ルーティング分類器）/ **Runtime 自体は Sonnet 4.6 のみ**実行（`agent/agent.py` にハードコーディング）。Opus 4.8 は Runtime ではなく、別の **AI 診断（非同期ワーカー）** Deep ティアでのみ選択的に使用 |
+| **モデル** | Claude Haiku 5.5（ルーティング分類器）/ **Runtime 自体は Sonnet 5.5 のみ**実行（`agent/agent.py` にハードコーディング）。Opus 5.5 は Runtime ではなく、別の **AI 診断（非同期ワーカー）** Deep ティアでのみ選択的に使用 |
 
 ### ステータス
 

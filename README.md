@@ -63,7 +63,7 @@ Stats: 41 pages, 104 API routes, 118 components (`web/`), 21 consolidated ADRs, 
 
 All 9 rows are gated behind `agentcore_enabled`/`integrations_enabled` (default `false` in a fresh clone/deploy — `plan` = No changes, $0); "live" here describes this project's actual running deployment, which has both flags on.
 
-Models: Claude Sonnet 5 (default), Opus 4.8 (deep analysis), Haiku 4.5 (fast/low-cost).
+Models: Claude Sonnet 5.5 (default), Opus 5.5 (deep analysis), Haiku 5.5 (fast/low-cost).
 
 ## Prerequisites
 
@@ -305,7 +305,7 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 
 9개 행 모두 `agentcore_enabled`/`integrations_enabled` 뒤에 게이트되어 있습니다(새로 클론·배포 시 기본값은 `false` — `plan` = No changes, $0). 여기서 "live"는 이 프로젝트의 실제 운영 배포 기준이며, 그 배포는 두 플래그 모두 켜져 있습니다.
 
-모델: Claude Sonnet 5(기본), Opus 4.8(심층 분석), Haiku 4.5(빠르고 저렴).
+모델: Claude Sonnet 5.5(기본), Opus 5.5(심층 분석), Haiku 5.5(빠르고 저렴).
 
 ## 사전 요구 사항
 
