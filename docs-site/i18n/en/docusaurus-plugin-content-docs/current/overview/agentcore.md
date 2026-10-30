@@ -45,7 +45,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 | **Engine** | Strands Agent Framework |
 | **Container** | Docker arm64 (stored in ECR, via `make agentcore`) |
 | **Execution Environment** | AgentCore managed service (Bedrock AgentCore Runtime) |
-| **Model** | Claude Haiku 4.5 (routing classifier) / **the Runtime itself only ever runs Sonnet 4.6** (hardcoded in `agent/agent.py`). Opus 4.8 isn't used by the Runtime — it's an optional Deep-tier choice in the separate **AI Diagnosis (async worker)** feature |
+| **Model** | Claude Haiku 5.5 (routing classifier) / **the Runtime itself only ever runs Sonnet 5.5** (hardcoded in `agent/agent.py`). Opus 5.5 isn't used by the Runtime — it's an optional Deep-tier choice in the separate **AI Diagnosis (async worker)** feature |
 
 ### Status
 

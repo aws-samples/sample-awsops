@@ -45,7 +45,7 @@ AgentCore 基于 Amazon Bedrock AgentCore Runtime 和 Gateway，负责 AI 助手
 | **引擎** | Strands Agent Framework |
 | **容器** | Docker arm64（存储于 ECR，`make agentcore`） |
 | **运行环境** | AgentCore 托管服务（Bedrock AgentCore Runtime） |
-| **模型** | Claude Haiku 4.5（路由分类器）/ **Runtime 本身仅**运行 Sonnet 4.6（`agent/agent.py` 硬编码）。Opus 4.8 不在 Runtime 中使用，仅在独立的 **AI 诊断（异步 worker）** Deep 层级中按需选用 |
+| **模型** | Claude Haiku 5.5（路由分类器）/ **Runtime 本身仅**运行 Sonnet 5.5（`agent/agent.py` 硬编码）。Opus 5.5 不在 Runtime 中使用，仅在独立的 **AI 诊断（异步 worker）** Deep 层级中按需选用 |
 
 ### 状态
 
