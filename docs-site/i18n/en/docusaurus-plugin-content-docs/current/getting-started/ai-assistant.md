@@ -113,7 +113,7 @@ Example: `Network Gateway (17 tools)`, `Bedrock + Steampipe SQL`
 │  - Supports tables, lists, code blocks                 │
 │                                                        │
 ├────────────────────────────────────────────────────────┤
-│  Network Gateway (17 tools)  │  Claude sonnet-4.6  │ 3.2s │
+│  Network Gateway (17 tools)  │  Claude Sonnet-class│ 3.2s │
 ├────────────────────────────────────────────────────────┤
 │  Tools: list_vpcs, get_vpc_network_details, ...        │
 │  Queried: aws_vpc, aws_vpc_subnet                      │
@@ -138,11 +138,7 @@ Responses are streamed in real-time and displayed progressively on screen. The o
 
 ## Model Selection
 
-Select a model from the dropdown in the upper right corner:
-
-- **Claude Sonnet 4.6**: Fast responses, suitable for general questions (default)
-- **Claude Opus 4.8**: Complex analysis, suitable for deep reasoning
-- **Claude Haiku 4.5**: Fast and low-cost, suitable for simple questions / high volume
+Chat has no model dropdown. Agent answers use a Claude Sonnet-class model and routing classification uses a Haiku-class model; an Opus-class model is selectable only in the [AI Diagnosis](../monitoring/ai-diagnosis.md) Deep tier. Exact model IDs live in code.
 
 ## Related Questions
 
