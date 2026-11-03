@@ -51,7 +51,7 @@ describe('resolveAgent', () => {
 
 describe('resolveAgent — Phase 2 server-side tool-allowlist enforcement', () => {
   // A custom agent declaring two tools at the security gateway. Both are REAL IAM tools present in
-  // KNOWN_TOOL_CATALOG.security (ADR-039 Task 3 populated it from create_targets.py iam-mcp-target),
+  // KNOWN_TOOL_CATALOG.security (ADR-004[legacy 039] Task 3 populated it from create_targets.py iam-mcp-target),
   // so the known-catalog intersection keeps both — the test still demonstrates the skill-declared union.
   const customTwoTools: AgentWithSkills = {
     ...custom,
@@ -183,7 +183,7 @@ print(json.dumps(out))
   });
 });
 
-describe('resolveAgent — ADR-039 egress-READ integration injection', () => {
+describe('resolveAgent — ADR-007[legacy 039] egress-READ integration injection', () => {
   // custom is on the 'security' gateway whose target-qualified gateway catalog has 14 IAM tools.
   it('integration tools BYPASS the gateway catalog (a non-IAM tool survives) and union with skill tools', () => {
     const spec = resolveAgent('compliance', [custom], null, [
@@ -229,7 +229,7 @@ describe('resolveAgent — ADR-039 egress-READ integration injection', () => {
   });
 });
 
-describe('resolveAgent — ADR-039 P2-infra inc2 connection details (spec.integrations)', () => {
+describe('resolveAgent — ADR-007[legacy 039] P2-infra inc2 connection details (spec.integrations)', () => {
   beforeEach(() => vi.stubEnv('CUSTOM_MCP_ENABLED', 'true'));
   const conn = {
     id: 7, kind: 'custom_mcp', direction: 'egress', capability: 'read',
@@ -314,7 +314,7 @@ describe('resolveAgent — ADR-039 P2-infra inc2 connection details (spec.integr
   });
 });
 
-describe('resolveAgent — ADR-040/041 propose-only READ_WRITE', () => {
+describe('resolveAgent — ADR-007[legacy 040] propose-only READ_WRITE', () => {
   it('surfaces write actions as a propose-only prompt block, NEVER as a live tool', () => {
     const spec = resolveAgent('compliance', [custom], null, [], [{ name: 'slack', writeActionRefs: ['slack.post_message'] }]);
     expect(spec.systemPromptOverride).toMatch(/## Proposable write actions/);

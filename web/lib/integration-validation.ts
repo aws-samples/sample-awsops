@@ -1,5 +1,5 @@
 // web/lib/integration-validation.ts
-// ADR-039 P2 — pure validation for admin-registered integrations (egress connectors + ingress sources).
+// ADR-007[legacy 039] P2 — pure validation for admin-registered integrations (egress connectors + ingress sources).
 // SOURCE OF TRUTH: INTEGRATION_KINDS_EGRESS / INTEGRATION_KINDS_INGRESS / INTEGRATION_TRANSPORTS are
 // shared with the migration's integrations_kind_check / transport CHECK
 // (01KV0JKFF7Q28CMKQ2JGM2D1NK_integrations_p2.sql, 01KTY39P4S…_p1.sql) — keep in sync.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e90ce179eb10 · generated-at: 2026-10-21 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c8745303a2cc · generated-at: 2026-10-29 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -14,7 +14,7 @@ Web image receipt/ECR proof precedes private migrations, including reuse; promot
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
 `datasource-credential-isolation.md` requires native-default credential backfill before stricter
-explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007/039).
+explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
 removed; flag any change that reintroduces a v1 procedure.

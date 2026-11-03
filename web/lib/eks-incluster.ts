@@ -639,7 +639,7 @@ export async function listInCluster(cluster: string, kind: Kind): Promise<InClus
   return (parsed.items ?? []).map(norm);
 }
 
-// ── K8sGPT Result CRDs (ADR-035) — SAME presigned-STS token path, different API group ─────
+// ── K8sGPT Result CRDs (ADR-006[legacy 035]) — SAME presigned-STS token path, different API group ─────
 // result.core.k8sgpt.ai/v1, namespaced `results`; cluster-wide collection across namespaces.
 // READ-ONLY: a single HTTP GET, exactly like listInCluster. AWSops issues NO write verb.
 const K8SGPT_RESULTS_PATH = '/apis/result.core.k8sgpt.ai/v1/results';

@@ -1,5 +1,5 @@
 # scripts/v2/remediation/test_remediation.py
-"""ADR-029+036 remediation substrate tests — catalog loader + fail-closed gating (Task 3).
+"""ADR-005[legacy 029/036] remediation substrate tests — catalog loader + fail-closed gating (Task 3).
 No live AWS / no DB: a fake conn and a monkeypatched SSM client exercise every gate branch."""
 import ast
 import json
@@ -119,7 +119,7 @@ def test_gate_passes_only_when_all_three_pass(monkeypatch):
     assert a is not None and a["name"] == "ec2-detach-sg"
 
 
-# ADR-040/041 §4 — the executor-side control plane is decoupled by target_resource_type. An external:
+# ADR-007[legacy 040/041 §4] — the executor-side control plane is decoupled by target_resource_type. An external:
 # DATA-write is gated by the integrations-write plane; enabling one plane can NEVER enable the other.
 _SLACK_ROW = ("slack.post_message", "lambda", "external:slack", "integrations-slack-write",
               '["channel","text"]', '{"mode":"preview"}', None, "four_eyes", '{"accounts":["self"]}', True)
@@ -213,7 +213,7 @@ def test_handler_rollback_without_handler_raises_manual(monkeypatch):
     conn = _ExecConn()
     monkeypatch.setattr(ex.db, "connect", lambda: conn)
     # incident-manager-enrich has rb=None; gate must pass for us to reach the rollback branch.
-    # (ADR-034 gave opscenter-create-opsitem a real rollback = _opsitem_resolve, so the no-rollback
+    # (ADR-006[legacy 034] gave opscenter-create-opsitem a real rollback = _opsitem_resolve, so the no-rollback
     #  MANUAL_INTERVENTION path is now exercised via the enrich action.)
     monkeypatch.setattr(ex.cat, "gate", lambda _c, _n: ({"name": "incident-manager-enrich"}, None))
     monkeypatch.setattr(ex, "_assume", lambda _arn: object())

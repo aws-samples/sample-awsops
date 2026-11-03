@@ -49,9 +49,3 @@ published paths.
 - Runbooks follow the rules in `docs/runbooks/CLAUDE.md`.
 - Reject credentials, tokens and environment-specific account IDs, ARNs or live domains
   in new documentation. Use placeholders for those identifiers in this public sample.
-
-## Related Skills
-- `/sync-docs` — auto-sync CLAUDE.md
-- `/project-init:add-adr` — create a new ADR in the private upstream repository
-- `/project-init:add-runbook` — create a new runbook
-- `/project-init:health-check` — verify documentation coverage

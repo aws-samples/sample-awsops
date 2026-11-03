@@ -36,10 +36,10 @@ powerpipe/.mod.cache.json
 
 # data (config, inventory, cost, memory, stats — all local/auto-generated)
 data/
-# CDK schema/seed files (ADR-030) live under infra-cdk/data/ and are source-controlled
+# CDK schema/seed files (ADR-001[legacy 030]) live under infra-cdk/data/ and are source-controlled
 !infra-cdk/data/
 !infra-cdk/data/**
-# v2 foundation schema/seed files (ADR-030) — source-controlled, same as infra-cdk/data/
+# v2 foundation schema/seed files (ADR-001[legacy 030]) — source-controlled, same as infra-cdk/data/
 !terraform/foundation/data/
 !terraform/foundation/data/**
 

@@ -1,6 +1,6 @@
 // web/lib/agent-resolver.ts
-// ADR-031 Phase 1 — turn a selected route/agent into an effective spec. Pure.
-// ADR-031 Phase 2 — custom branch enforces the per-account Agent Space tool cap
+// ADR-004[legacy 031] Phase 1 — turn a selected route/agent into an effective spec. Pure.
+// ADR-004[legacy 031] Phase 2 — custom branch enforces the per-account Agent Space tool cap
 // (server-side, OUTSIDE the model). The built-in branch is byte-identical to Phase 1.
 import type { AgentWithSkills } from '@/lib/catalog';
 import type { AgentSpace } from '@/lib/agent-space';
@@ -25,7 +25,7 @@ export interface ResolvedAgentSpec {
   agentVersion?: number;
   skillHashes: string[];
   spaceVersion?: number;          // Phase 2 traceability (custom path only; undefined when no space)
-  // ADR-039 P2-infra inc2: connectable egress-READ integrations (custom path only). agent.py uses these
+  // ADR-007[legacy 039] P2-infra inc2: connectable egress-READ integrations (custom path only). agent.py uses these
   // to live-connect external MCP endpoints; credentialsRef is a Secrets Manager ARN (never plaintext).
   integrations?: ResolvedIntegration[];
 }
@@ -45,7 +45,7 @@ export interface ResolvedIntegration {
   transport: string;            // sigv4 | api_key | oauth_client_credentials
   credentialsRef?: string;      // Secrets Manager ARN (runtime fetch); undefined for sigv4
   exposedTools: string[];
-  allowPrivate: boolean;        // per-account ADR-011 allowPrivateDatasource opt-in (SSRF)
+  allowPrivate: boolean;        // per-account ADR-007[legacy 011] allowPrivateDatasource opt-in (SSRF)
   sigv4Service?: string;        // sigv4 only
   sigv4Region?: string;         // sigv4 only
 }
@@ -67,7 +67,7 @@ export function pickCustomAgent(prompt: string, candidates: AgentWithSkills[]): 
  *                   allowlist; has NO effect on the built-in branch. No space (or a DB
  *                   miss from getAgentSpace returning null) ⇒ Phase-1 behavior. Policy read errors propagate.
  */
-// ADR-039 P2 — egress READ integration as the resolver sees it (only these contribute tools/context).
+// ADR-007[legacy 039] P2 — egress READ integration as the resolver sees it (only these contribute tools/context).
 export interface EgressReadIntegration {
   id?: number;
   kind?: string;
@@ -76,7 +76,7 @@ export interface EgressReadIntegration {
   name: string;
   exposedTools: string[];
   providedContext?: Record<string, unknown>;
-  // ADR-039 P2-infra inc2 — connection details (only integrations with endpoint+transport are connectable).
+  // ADR-007[legacy 039] P2-infra inc2 — connection details (only integrations with endpoint+transport are connectable).
   endpoint?: string;
   transport?: string;
   credentialsRef?: string;
@@ -85,13 +85,13 @@ export interface EgressReadIntegration {
   sigv4Region?: string;
 }
 
-// ADR-033 — bound the integration context injected into the prompt.
+// ADR-008[legacy 033] — bound the integration context injected into the prompt.
 // PARITY NOTE: the incident federation bridge (scripts/v2/incident/agent_bridge.py) does NOT yet inject
 // integration context — that parity is deferred to P4 (federation is flag-off). Chat (here) and federation
 // intentionally diverge on integration context until P4; keep SAFEGUARD_LINE byte-identical across both.
 export const MAX_PROVIDED_CONTEXT_CHARS = 2000;
 
-// ADR-040/041 — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
+// ADR-007[legacy 040] — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
 export interface ProposableWriteIntegration {
   name: string;
   writeActionRefs: string[];   // action_catalog names the model may PROPOSE (e.g. slack.post_message)
@@ -149,7 +149,7 @@ export function resolveAgent(
     const ordered = [...custom.skills].sort((a, b) => a.ord - b.ord);
     const skillBlock = ordered.map((s) => s.instructions).filter(Boolean).join('\n\n');
     const integrationBlock = renderIntegrationContext(egressReadIntegrations);
-    // ADR-040/041: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
+    // ADR-007[legacy 040]: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
     // live tools (writes go through the human-gated /api/actions path), so they do NOT touch toolAllowlist.
     const proposableBlock = renderProposableWrites(proposableWrites);
     const systemPromptOverride = [SAFEGUARD_LINE, custom.persona.trim(), skillBlock, integrationBlock, proposableBlock]
@@ -174,7 +174,7 @@ export function resolveAgent(
     const integEnforced = integTools.filter(integrationAllowed);
     const merged = Array.from(new Set([...skillEnforced, ...integEnforced]));
     const restricted = capped || declaredPolicy || integTools.length > 0 || mcpRequested;
-    // ADR-039 P2-infra inc2: surface ONLY connectable integrations (endpoint+transport present) for
+    // ADR-007[legacy 039] P2-infra inc2: surface ONLY connectable integrations (endpoint+transport present) for
     // agent.py to live-connect. Tool/context injection above is independent — a context-only integration
     // (no endpoint) still contributes tools/context but is not in this connect list.
     const connectable: ResolvedIntegration[] = egressReadIntegrations

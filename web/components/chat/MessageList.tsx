@@ -41,8 +41,8 @@ export interface RankedChip { key: string; score: number; active: boolean }
 export interface QueryPreview { tool: string; query: string }
 export interface Msg {
   role: 'user' | 'assistant'; content: string; gateway?: string; streaming?: boolean;
-  ranked?: RankedChip[]; method?: string; // ADR-038 meta
-  via?: string; // ADR-044 meta: 'multi:network+data' when the answer is a cross-domain synthesis
+  ranked?: RankedChip[]; method?: string; // ADR-003[legacy 038] meta
+  via?: string; // ADR-003[legacy 044] meta: 'multi:network+data' when the answer is a cross-domain synthesis
   status?: { phase: string; elapsedMs?: number; tool?: string; query?: string };
   // Answer-provenance footer (design handoff 개선안 ③): known only after the invoke resolves,
   // so these arrive on a second `meta` frame — absent against a legacy agent image.
@@ -87,10 +87,10 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
       {msgs.map((m, i) => {
         const sec = m.gateway ? sectionByKey(m.gateway) : null;
         const me = m.role === 'user';
-        // ADR-044: a cross-domain synthesis answer — the keys merged into this one answer.
+        // ADR-003[legacy 044]: a cross-domain synthesis answer — the keys merged into this one answer.
         const viaKeys = (!me && m.via?.startsWith('multi:')) ? m.via.slice(6).split('+').filter(Boolean) : null;
         const viaSet = new Set(viaKeys ?? []);
-        // ADR-038/044: active alternates the answer did NOT already cover — a SECONDARY manual aid
+        // ADR-003[legacy 038]: active alternates the answer did NOT already cover — a SECONDARY manual aid
         // (cross-domain is handled automatically by synthesis), shown once streaming ends.
         const alts = (!me && !m.streaming && m.ranked)
           ? m.ranked.filter((r) => r.active && r.key !== m.gateway && !viaSet.has(r.key)).slice(0, 2)
@@ -201,7 +201,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
             )}
             {alts.length > 0 && (
               <div className="mt-2">
-                {/* ADR-044: chips are a SECONDARY manual aid (cross-domain is auto-synthesized). */}
+                {/* ADR-003[legacy 044]: chips are a SECONDARY manual aid (cross-domain is auto-synthesized). */}
                 <div className="mb-1 text-[10px] text-ink-400">{tt('다른 도메인으로 더 보기')}</div>
                 <div className="flex flex-wrap gap-1.5">
                 {alts.map((r) => {
