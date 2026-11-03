@@ -1,6 +1,6 @@
 # NOTE: the runtime image installs deps from agent/Dockerfile's inline pip list (NOT this file).
 # Keep the strands-agents pin in sync in BOTH places when bumping.
-strands-agents==1.41.0
+strands-agents==1.48.0
 strands-agents-tools
 boto3
 # Custom MCP pinning uses the tested HTTPX/HTTPcore SNI extension contract.
