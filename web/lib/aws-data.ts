@@ -195,6 +195,7 @@ const invokeSend: GenSend = async (system, messages) => {
   const body = JSON.stringify({
     anthropic_version: 'bedrock-2023-05-31',
     max_tokens: 1024, // thinking 블록이 예산을 소모해도 SQL 본문이 잘리지 않게
+    ...(CODEGEN_MODEL.includes('claude-sonnet-5-5') ? { thinking: { type: 'between_tools' } } : {}),
     system,
     messages,
   });
