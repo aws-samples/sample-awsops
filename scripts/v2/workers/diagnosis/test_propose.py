@@ -106,7 +106,12 @@ def test_propose_passes_model_and_token_budget(monkeypatch):
         return "[]"
     monkeypatch.setattr(propose, "_bedrock_render", render)
     propose.propose({"service_map": {"edges": []}}, model="opus")
-    assert seen == {"model_id": propose._MODEL_OPUS, "max_tokens": propose.PROPOSE_MAX_TOKENS}
+    # Opus 5.5 always thinks; its budget carries the same headroom as Deep report sections.
+    opus_budget = min(propose.PROPOSE_MAX_TOKENS + propose._opus_headroom(propose._MODEL_OPUS),
+                      propose._MAX_OUTPUT_TOKENS)
+    assert seen == {"model_id": propose._MODEL_OPUS, "max_tokens": opus_budget}
+    assert opus_budget > propose.PROPOSE_MAX_TOKENS
     for alias in (None, "sonnet", "x"):
         propose.propose({"service_map": {"edges": []}}, model=alias)
         assert seen["model_id"] == propose._MODEL_SONNET
+        assert seen["max_tokens"] == propose.PROPOSE_MAX_TOKENS

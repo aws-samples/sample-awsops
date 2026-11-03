@@ -31,18 +31,16 @@ def _bedrock_invoke(prompt):
         region_name=os.environ.get("AWS_REGION", "ap-northeast-2"),
     )
     response = client.invoke_model(
-        # Stays on sonnet-4-6 (AGENTS.md's pinned RCA model) with temperature=0 for ADR-003[legacy 038]
-        # determinism. A model-generation bump is a separate decision (own PR + ADR) — and
-        # note for that PR: sonnet-5 rejects `temperature` outright with a ValidationException
-        # (see agent.py's MODEL_ID + hotfix c30ac9e7), so the bump must drop the param too.
-        modelId="global.anthropic.claude-sonnet-4-6",
+        # sonnet-5-5 rejects `temperature` (ValidationException), so ADR-003[legacy 038]'s temperature=0 is
+        # suspended on this path; `between_tools` keeps the short label call thinking-free.
+        modelId="global.anthropic.claude-sonnet-5-5",
         contentType="application/json",
         accept="application/json",
         body=json.dumps(
             {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 512,
-                "temperature": 0,
+                "thinking": {"type": "between_tools"},
                 "messages": [
                     {"role": "user", "content": [{"type": "text", "text": prompt}]}
                 ],

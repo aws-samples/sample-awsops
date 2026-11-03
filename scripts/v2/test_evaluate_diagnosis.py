@@ -313,7 +313,7 @@ class BedrockStubberTests(unittest.TestCase):
                 "case_id": case["case_id"], "summary": case["summary"],
                 "candidate_causes": fixture()["causes"], "evidence": case["evidence"],
             }, sort_keys=True)}]}],
-            "inferenceConfig": {"maxTokens": 512, "temperature": 0},
+            "inferenceConfig": {"maxTokens": evaluator.MODEL_MAX_TOKENS},
         }
 
     def response(self, row, stop="end_turn"):
@@ -358,7 +358,7 @@ class BedrockStubberTests(unittest.TestCase):
         self.assertEqual(self.factory.call_args.args, ("bedrock-runtime",))
         config = self.factory.call_args.kwargs["config"]
         self.assertEqual(config.connect_timeout, 5)
-        self.assertEqual(config.read_timeout, 30)
+        self.assertEqual(config.read_timeout, evaluator.MODEL_READ_TIMEOUT_S)
         self.assertEqual(config.retries, {"mode": "standard", "total_max_attempts": 1})
         self.stubber.assert_no_pending_responses()
 
@@ -445,6 +445,12 @@ class BedrockStubberTests(unittest.TestCase):
         self.assertEqual(self.invoke_live()[0], 2)
         self.assertEqual(self.output.read_text(), "keep existing artifact")
         self.factory.assert_not_called()
+
+
+class ModelBoundsTest(unittest.TestCase):
+    def test_read_timeout_covers_token_cap(self):
+        self.assertEqual(evaluator.MODEL_MAX_TOKENS, 4096)
+        self.assertGreaterEqual(evaluator.MODEL_READ_TIMEOUT_S, evaluator.MODEL_MAX_TOKENS // 20 + 60)
 
 
 if __name__ == "__main__":
