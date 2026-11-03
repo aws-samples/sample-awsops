@@ -113,7 +113,7 @@ AI 어시스턴트는 질문을 분석하여 11개의 전문 라우트 중 가�
 │  - 테이블, 리스트, 코드 블록 지원                      │
 │                                                        │
 ├────────────────────────────────────────────────────────┤
-│  Network Gateway (17 tools)  │  Claude sonnet-4.6  │ 3.2s │
+│  Network Gateway (17 tools)  │  Claude Sonnet급    │ 3.2s │
 ├────────────────────────────────────────────────────────┤
 │  Tools: list_vpcs, get_vpc_network_details, ...        │
 │  Queried: aws_vpc, aws_vpc_subnet                      │
@@ -138,11 +138,7 @@ AI 어시스턴트는 질문을 분석하여 11개의 전문 라우트 중 가�
 
 ## 모델 선택
 
-화면 우측 상단의 드롭다운에서 모델을 선택할 수 있습니다:
-
-- **Claude Sonnet 5.5**: 빠른 응답, 일반적인 질문에 적합 (기본값)
-- **Claude Opus 5.5**: 복잡한 분석, 심층적인 추론에 적합
-- **Claude Haiku 5.5**: 빠르고 저렴, 간단한 질문·대량 처리에 적합
+채팅에는 모델 선택 드롭다운이 없습니다. 에이전트 답변은 Claude Sonnet급 모델이, 질문 라우팅 분류는 Haiku급 모델이 맡습니다. Opus급 모델은 [AI 진단](../monitoring/ai-diagnosis.md)의 Deep 단계에서만 선택할 수 있습니다. 정확한 모델 ID는 코드가 기준입니다.
 
 ## 연관 질문
 

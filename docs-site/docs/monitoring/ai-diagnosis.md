@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 
-`/ai-diagnosis` 페이지는 Amazon Bedrock **Claude Opus 4.8**가 15섹션으로 AWS 인프라 전반을 자동 분석하는 종합 리포트 도구입니다.
+`/ai-diagnosis` 페이지는 Amazon Bedrock Claude 모델(기본 Sonnet급, Deep 단계는 Opus급 선택 가능)이 15섹션으로 AWS 인프라 전반을 자동 분석하는 종합 리포트 도구입니다.
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 종합 진단 페이지" />
 
@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 | 항목 | 값 |
 |------|---|
-| **모델** | `global.anthropic.claude-opus-4-8` (고정) |
+| **모델** | 기본 Claude Sonnet급, Deep 단계에서만 Opus급 선택 가능(정확한 ID: `scripts/v2/workers/diagnosis/report.py`) |
 | **섹션 수** | 15 (비용 4 + 인프라 6 + 보안/네트워크 2 + 요약 3) |
 | **출력 포맷** | DOCX (A4 + TOC), Markdown, PDF (브라우저 print) |
 | **저장 위치** | S3 리포트 버킷 + `data/reports/*.json` 캐시 |
