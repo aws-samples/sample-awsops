@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eb11950f5d91 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 177c119f8f33 · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -207,7 +207,7 @@ automatic `sudo`/`DOCKER` override. The web connection and policy suites use the
 
 The CI glob also needs Python boto3/botocore (`pip install -r agent/requirements.txt`).
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
-checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
+checks use 1.17.1 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
 
 Runtime smoke configuration is explicit and private: prepare checks registration, verify

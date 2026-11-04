@@ -12,8 +12,8 @@ FROM turbot/steampipe:0.22.0 AS steampipe-base
 # Use a relocatable ARM64 Python distribution, verified before extraction/execution.
 FROM steampipe-base AS python-runtime
 USER root
-ADD https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-unknown-linux-gnu-install_only.tar.gz /tmp/python.tar.gz
-RUN echo 'b61b856c3e1a4fc65b8f6e6b0495ef975dd0924f90c59f3ea61b38a079173b84  /tmp/python.tar.gz' | sha256sum -c - \
+ADD https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.14.10%2B20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz /tmp/python.tar.gz
+RUN echo '90f48337bc3dd4ae6eda81e001e4c981236d403b6b5a07778bbdf94ee423dc00  /tmp/python.tar.gz' | sha256sum -c - \
  && mkdir -p /opt/python \
  && tar -xzf /tmp/python.tar.gz --strip-components=1 -C /opt/python
 
@@ -35,7 +35,8 @@ ENV PATH="/opt/python/bin:${PATH}"
 # The loopback pg8000 health probe does not read AWS_CONFIG_FILE.
 # No AWS access keys or session tokens are baked into the image.
 ENV AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
-RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.5 boto3==1.34.162
+COPY requirements.txt /app/requirements.txt
+RUN python3 -m pip install --no-cache-dir --only-binary=:all: -r /app/requirements.txt
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
 # VERIFY_FULL on the boot generator's Aurora connection instead of CERT_NONE (M3 fix). Fetched at
 # build time — this image already requires network access at build (aws plugin from ghcr.io

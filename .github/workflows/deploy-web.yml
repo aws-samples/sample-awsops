@@ -436,7 +436,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.15.7
+          terraform_version: 1.17.1
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)

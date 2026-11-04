@@ -174,7 +174,7 @@ data "archive_file" "edge" {
 resource "aws_lambda_function" "edge" {
   provider         = aws.use1
   function_name    = "${var.project}-cognito-auth"
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   handler          = "cognito_edge.lambda_handler"
   role             = aws_iam_role.edge.arn
   filename         = data.archive_file.edge.output_path
