@@ -331,35 +331,51 @@ run "privatelink_endpoint_creates_restricted_consumer_resources" {
     target = aws_vpc_endpoint.privatelink["clickhouse"]
     values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
   }
+  override_resource {
+    target          = aws_security_group.service
+    override_during = plan
+    values          = { id = "sg-0fixtureservice" }
+  }
+  override_resource {
+    target          = aws_security_group.privatelink_clients
+    override_during = plan
+    values          = { id = "sg-0fixtureclients" }
+  }
   variables {
     agentcore_enabled      = true
     integrations_enabled   = true
     clickhouse_vpc_enabled = true
+    prometheus_vpc_enabled = true
     privatelink_endpoints = {
-      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123, 9000] }
     }
   }
   assert {
     condition = (
       length(aws_security_group.privatelink) == 1 &&
-      length(aws_vpc_security_group_ingress_rule.privatelink) == 1 &&
-      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].from_port == 8123 &&
-      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].to_port == 8123 &&
-      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].cidr_ipv4 == null &&
-      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].cidr_ipv6 == null
+      length(aws_security_group.privatelink_clients) == 1 &&
+      length(aws_vpc_security_group_ingress_rule.privatelink) == 2 &&
+      alltrue([for _, r in aws_vpc_security_group_ingress_rule.privatelink : r.cidr_ipv4 == null && r.cidr_ipv6 == null]) &&
+      toset([for _, r in aws_vpc_security_group_ingress_rule.privatelink : r.from_port]) == toset([8123, 9000])
     )
-    error_message = "The endpoint SG must admit only the connector SG on the listed ports, with no CIDR rules."
+    error_message = "The endpoint SG must admit exactly the dedicated client SG, one rule per port, never the shared service SG and never a CIDR."
   }
   assert {
     condition = (
       aws_vpc_endpoint.privatelink["clickhouse"].vpc_endpoint_type == "Interface" &&
       aws_vpc_endpoint.privatelink["clickhouse"].private_dns_enabled == false &&
       aws_vpc_endpoint.privatelink["clickhouse"].subnet_ids == toset(var.existing_private_subnet_ids) &&
-      aws_vpc_endpoint.privatelink["clickhouse"].vpc_id == var.existing_vpc_id &&
-      length(aws_lambda_function.agent["clickhouse-mcp"].vpc_config) == 1 &&
-      length(aws_lambda_function.agent["prometheus-mcp"].vpc_config) == 0
+      aws_vpc_endpoint.privatelink["clickhouse"].vpc_id == var.existing_vpc_id
     )
-    error_message = "The endpoint must be a private-DNS-off interface endpoint in the existing private subnets and only the selected connector joins the VPC."
+    error_message = "The endpoint must be a private-DNS-off interface endpoint in the existing private subnets."
+  }
+  assert {
+    condition = (
+      aws_lambda_function.agent["clickhouse-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice", "sg-0fixtureclients"]) &&
+      aws_lambda_function.agent["prometheus-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice"]) &&
+      length(aws_lambda_function.agent["loki-mcp"].vpc_config) == 0
+    )
+    error_message = "Only the connector whose kind has an endpoint may join the client SG; another VPC-attached connector keeps only the service SG and others stay outside the VPC."
   }
 }
 

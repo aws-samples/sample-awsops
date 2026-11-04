@@ -83,8 +83,9 @@ privatelink_zone_name = "obs.awsops.internal"
 
 Then plan and apply through the reviewed saved-plan flow (`docs/runbooks/dev-repo-setup.md`); never
 `-auto-approve`. Terraform creates, per entry: one interface endpoint with private DNS **off**, one
-endpoint security group (ingress only from the connector Lambdas' security group, only on the
-listed ports, no CIDR rules), and with a zone name one private hosted zone plus a 60-second CNAME
+endpoint security group (ingress only from a dedicated, rule-less `<project>-privatelink-clients` group, only on the
+listed ports, no CIDR rules). That client group is attached only to the connector Lambdas whose kind has an
+endpoint (for example `clickhouse-mcp`); the web tasks, workers and other Lambdas do not carry it, and with a zone name one private hosted zone plus a 60-second CNAME
 per endpoint.
 
 Each new endpoint starts in `pendingAcceptance`. Accept it on the provider side:

@@ -68,10 +68,26 @@ variable "privatelink_zone_name" {
 locals {
   privatelink_enabled      = length(var.privatelink_endpoints) > 0
   privatelink_zone_enabled = local.privatelink_enabled && var.privatelink_zone_name != ""
+  # Connector Lambda keys (ai.tf local.agent_lambdas) for the kinds that have an endpoint. Only these
+  # functions get the dedicated client security group below.
+  privatelink_client_connectors = toset([for _, e in var.privatelink_endpoints : "${e.kind}-mcp"])
 }
 
-# The endpoint ENIs accept traffic only from the connector Lambdas' security group, only on the
-# listed ports. No CIDR rules and no egress rule (an endpoint ENI never initiates connections).
+# Dedicated, empty client group. It carries no rules of its own: it exists only as the SINGLE source
+# the endpoint security group admits. ai.tf attaches it (in addition to the shared `service` group,
+# which still provides egress) to the connector Lambdas whose kind has an endpoint, and to nothing else.
+# The web tasks, workers and every other Lambda share `service` but not this group, so they cannot
+# reach a PrivateLink datasource. The description is immutable once created.
+resource "aws_security_group" "privatelink_clients" {
+  count       = local.privatelink_enabled ? 1 : 0
+  name        = "${var.project}-privatelink-clients"
+  description = "Connector Lambdas allowed to use PrivateLink datasource endpoints"
+  vpc_id      = local.vpc_id
+  tags        = { Name = "${var.project}-privatelink-clients" }
+}
+
+# The endpoint ENIs accept traffic only from the dedicated client group, only on the listed
+# ports. No CIDR rules and no egress rule (an endpoint ENI never initiates connections).
 resource "aws_security_group" "privatelink" {
   count       = local.privatelink_enabled ? 1 : 0
   name        = "${var.project}-privatelink-sg"
@@ -90,11 +106,11 @@ resource "aws_vpc_security_group_ingress_rule" "privatelink" {
   }
 
   security_group_id            = aws_security_group.privatelink[0].id
-  referenced_security_group_id = aws_security_group.service.id
+  referenced_security_group_id = aws_security_group.privatelink_clients[0].id
   ip_protocol                  = "tcp"
   from_port                    = each.value
   to_port                      = each.value
-  description                  = "Connector Lambda ${each.key}"
+  description                  = "PrivateLink clients ${each.key}"
 }
 
 resource "aws_vpc_endpoint" "privatelink" {
