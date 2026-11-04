@@ -81,7 +81,7 @@ resource "aws_lambda_function" "secret_rotation_redeploy" {
   count            = local.srr
   function_name    = "${var.project}-secret-rotation-redeploy"
   role             = aws_iam_role.secret_rotation_redeploy[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"] # repo convention (all v2 Lambdas are arm64)
   handler          = "redeploy.handler"
   filename         = data.archive_file.secret_rotation_redeploy[0].output_path
