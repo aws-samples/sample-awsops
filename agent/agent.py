@@ -133,9 +133,11 @@ AGENT_MAX_TOKENS = max(1024, int(os.environ.get("AGENT_MAX_TOKENS", "16000")))
 
 
 def supports_prompt_cache(model_id):
-    """Bedrock cachePoint is Claude-only here: GPT models reject it (ValidationException
-    "doesn't support the cachePoint field" / AccessDenied "did not allow prompt caching",
-    live-verified on gpt-6-luna and gpt-6.1-terra 2026-11-04)."""
+    """Whether to inject explicit Bedrock cachePoint blocks. Claude needs them; GPT models reject
+    them (ValidationException "doesn't support the cachePoint field" / AccessDenied "did not allow
+    prompt caching") but cache a repeated prefix automatically: a 5,118-token system prompt sent
+    twice wrote then read 5,118 cached tokens on gpt-6-luna and gpt-6.1-terra (2026-11-04), so
+    cacheReadInputTokens still reflects caching without cachePoint."""
     return "anthropic.claude-" in model_id
 
 
