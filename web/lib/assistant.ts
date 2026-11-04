@@ -9,9 +9,9 @@ import { thinkingOffFields } from './bedrock';
 // Also the graceful fallback when the classifier auto-routes to an inactive section (vs a dead-end).
 //
 // Model = Haiku via ConverseCommand (NON-stream) on purpose: the web task role's Bedrock policy
-// (terraform workload.tf) grants ONLY `bedrock:InvokeModel` on the Haiku model — not
-// InvokeModelWithResponseStream and not Sonnet. So we mirror the classifier's IAM surface (Haiku,
-// InvokeModel) and let the chat route typewriter-stream the buffered answer. Grounded doc Q&A is
+// (terraform workload.tf, task_web_models) grants `bedrock:InvokeModel` for the assistant's Haiku
+// and query generation's Terra/Sonnet models. It does not grant InvokeModelWithResponseStream,
+// so the chat route typewriter-streams the buffered answer. Grounded doc Q&A is
 // well within Haiku's range. Injectable send for tests; never throws.
 
 export type AssistantSend = (system: string, user: string, modelId: string) => Promise<string>;

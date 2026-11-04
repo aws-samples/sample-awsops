@@ -63,7 +63,7 @@ Stats: 41 pages, 104 API routes, 118 components (`web/`), 21 consolidated ADRs, 
 
 All 9 rows are gated behind `agentcore_enabled`/`integrations_enabled` (default `false` in a fresh clone/deploy — `plan` = No changes, $0); "live" here describes this project's actual running deployment, which has both flags on.
 
-Models: a Claude Sonnet-class model by default, an Opus-class model only as the AI Diagnosis Deep-tier option, and a Haiku-class model for routing and short helpers. Exact Bedrock model IDs live in code (`agent/agent.py`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`).
+Models: GPT-6 Luna for chat, GPT-6.1 Terra for Explore query generation with Claude Sonnet 5.5 fallback, Claude Sonnet 5.5 for AI Diagnosis and synthesis, Opus 5.5 as the AI Diagnosis Deep-tier option, and Haiku 5.5 for routing and short helpers. Exact Bedrock model IDs live in code (`agent/agent.py`, `web/lib/datasource-querygen.ts`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`).
 
 ## Prerequisites
 
@@ -305,7 +305,7 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 
 9개 행 모두 `agentcore_enabled`/`integrations_enabled` 뒤에 게이트되어 있습니다(새로 클론·배포 시 기본값은 `false` — `plan` = No changes, $0). 여기서 "live"는 이 프로젝트의 실제 운영 배포 기준이며, 그 배포는 두 플래그 모두 켜져 있습니다.
 
-모델: 기본은 Claude Sonnet급, AI 진단 Deep 단계 선택지로만 Opus급, 라우팅·분류와 짧은 보조 작업은 Haiku급을 씁니다. 정확한 Bedrock 모델 ID는 코드(`agent/agent.py`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`)에 있습니다.
+모델: 채팅은 GPT-6 Luna, Explore 쿼리 생성은 GPT-6.1 Terra와 Claude Sonnet 5.5 fallback, AI 진단·합성은 Claude Sonnet 5.5를 씁니다. AI 진단 Deep 단계에서는 Opus 5.5를 선택할 수 있으며, 라우팅·분류와 짧은 보조 작업은 Haiku 5.5를 씁니다. 정확한 Bedrock 모델 ID는 코드(`agent/agent.py`, `web/lib/datasource-querygen.ts`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`)에 있습니다.
 
 ## 사전 요구 사항
 

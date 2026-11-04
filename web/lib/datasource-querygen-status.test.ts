@@ -48,14 +48,17 @@ describe('Tempo requested-status retention', () => {
   });
 
   it.each(['{ status = error }', '{}', '{ span.customResponseCode = 404 }'])(
-    'gives schema guidance instead of a substitute when standard keys are unavailable: %s',
+    'tries fallback then gives manual guidance when complete custom evidence still yields no status filter: %s',
     async draft => {
       const send = vi.fn().mockResolvedValue(draft);
       await expect(generateQuery({
         nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed customResponseCode',
         tempoAttributes: [attributes[2]], isSql: false, send,
       })).rejects.toThrow(/schema.*manual|manual.*schema/i);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls.map(c => c[2])).toEqual([
+        'global.openai.gpt-6.1-terra', 'global.anthropic.claude-sonnet-5-5',
+      ]);
+      expect(send.mock.calls[0][0]).toBe(send.mock.calls[1][0]);
     },
   );
 

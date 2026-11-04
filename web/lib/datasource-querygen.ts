@@ -24,7 +24,7 @@ const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 export const QUERYGEN_PRIMARY_MODEL_ID =
   process.env.DATASOURCE_QUERYGEN_MODEL_ID || 'global.openai.gpt-6.1-terra';
 export const QUERYGEN_FALLBACK_MODEL_ID =
-  process.env.DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
+  process.env.DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID?.trim() ?? 'global.anthropic.claude-sonnet-5-5';
 
 /** Missing or bounded schema evidence. Deterministic for the cached schema, so a second model cannot
  *  fix it and the fallback is skipped. */
@@ -515,6 +515,11 @@ export async function generateQuery(input: GenerateQueryInput): Promise<Generate
   } catch (error) {
     if (error instanceof SchemaEvidenceError || !QUERYGEN_FALLBACK_MODEL_ID
         || QUERYGEN_FALLBACK_MODEL_ID === QUERYGEN_PRIMARY_MODEL_ID) throw error;
+    console.warn('[querygen] retrying with fallback model', {
+      primaryModelId: QUERYGEN_PRIMARY_MODEL_ID,
+      fallbackModelId: QUERYGEN_FALLBACK_MODEL_ID,
+      reason: 'primary_failed',
+    });
     return generateWith(input, QUERYGEN_FALLBACK_MODEL_ID);
   }
 }
@@ -565,7 +570,7 @@ async function generateWith(input: GenerateQueryInput, MODEL_ID: string): Promis
         if (problem === 'TraceQL HTTP-status schema evidence is missing') {
           if (input.tempoSchemaIncomplete || input.tempoSchemaEmpty || input.tempoSchemaNamesTruncated
               || !input.schemaBlock.trim()) throw tempoSchemaError(input);
-          throw new SchemaEvidenceError('Could not generate an HTTP-status filter from the observed Tempo schema. Verify the status attribute and use a manually reviewed TraceQL query in Grafana Explore or the Tempo API. (관측된 Tempo 스키마에서 HTTP 상태 필터를 생성하지 못했습니다. 상태 속성을 확인하고 검토한 TraceQL을 Grafana Explore 또는 Tempo API에서 사용하세요.)');
+          throw new Error('Could not generate an HTTP-status filter from the observed Tempo schema. Verify the status attribute and use a manually reviewed TraceQL query in Grafana Explore or the Tempo API. (관측된 Tempo 스키마에서 HTTP 상태 필터를 생성하지 못했습니다. 상태 속성을 확인하고 검토한 TraceQL을 Grafana Explore 또는 Tempo API에서 사용하세요.)');
         }
         if (input.tempoSchemaNamesTruncated
             && problem === 'TraceQL schema mismatch: a custom attribute was not observed') {

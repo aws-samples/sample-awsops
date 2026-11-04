@@ -290,18 +290,26 @@ run "host_core_permissions_and_digest_binding" {
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
       "arn:aws:bedrock:*:123456789012:inference-profile/*anthropic.claude-*",
       "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna",
-      "arn:aws:bedrock:*:123456789012:inference-profile/global.openai.gpt-6-luna"])
+      "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna-*",
+      "arn:aws:bedrock:*:123456789012:inference-profile/global.openai.gpt-6-luna",
+      "arn:aws:bedrock:*:123456789012:inference-profile/global.openai.gpt-6-luna-*"])
     if contains(s.Action, "bedrock:InvokeModel")])
     error_message = "The chat runtime may invoke only curated Claude resources plus GPT-6 Luna."
   }
   assert {
     condition = toset(one(jsondecode(aws_iam_role_policy.task_web_models.policy).Statement).Resource) == toset([
       "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
+      "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra-*",
       "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.openai.gpt-6.1-terra",
+      "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.openai.gpt-6.1-terra-*",
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5-*",
       "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.anthropic.claude-sonnet-5-5",
+      "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.anthropic.claude-sonnet-5-5-*",
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5",
-    "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.anthropic.claude-haiku-5-5"])
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5-*",
+      "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.anthropic.claude-haiku-5-5",
+    "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.anthropic.claude-haiku-5-5-*"])
     error_message = "Web direct model calls are limited to query generation (Terra, Sonnet 5.5) and the assistant (Haiku 5.5)."
   }
 }

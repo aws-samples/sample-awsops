@@ -13,6 +13,8 @@ export const MODEL_PRICING: Record<string, PriceEntry> = {
   // GPT rows: not yet in the AWS Price List API (AmazonBedrockFoundationModels lists only GPT-6 Astra
   // for ap-northeast-2 on 2026-11-04); values are the ap-northeast-2 global standard rates published by
   // inferplane.github.io/model-comparision data/models.json (generatedAt 2026-11-04T05:16:46Z).
+  // Provisional estimates: recheck AWS Price List for this region/profile when published, including
+  // automatic cache billing. cacheWrite is charged only when actual usage reports cache-write tokens.
   'openai.gpt-6-luna': { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125, label: 'GPT-6 Luna' },
   'openai.gpt-6.1-terra': { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25, label: 'GPT-6.1 Terra' },
   'anthropic.claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 5' },
@@ -40,10 +42,16 @@ export const MODEL_PRICING: Record<string, PriceEntry> = {
 
 const CROSS_REGION = /^(us\.|eu\.|ap\.|global\.)/;
 
+/** Only normalize version/date suffixes for GPT models whose rates we explicitly track. */
+function pricingKey(modelId: string): string {
+  const base = modelId.replace(CROSS_REGION, '');
+  return base.replace(/^(openai\.gpt-6(?:\.1-terra|-luna))-(?:\d{8}(?:-v\d+)?|v\d+)(?::\d+)?$/, '$1');
+}
+
 /** Friendly model label; strips cross-region prefixes and falls back to a readable id. */
 export function getModelLabel(modelId: string): string {
   if (MODEL_PRICING[modelId]) return MODEL_PRICING[modelId].label;
-  const base = modelId.replace(CROSS_REGION, '');
+  const base = pricingKey(modelId);
   if (MODEL_PRICING[base]) return MODEL_PRICING[base].label;
   const parts = modelId.split('.');
   return parts.length > 1 ? parts.slice(1).join('.').replace(/-v\d.*$/, '') : modelId;
@@ -51,7 +59,7 @@ export function getModelLabel(modelId: string): string {
 
 /** Pricing for a model id, normalizing cross-region prefixes; family fallback when unknown. */
 export function getModelPricing(modelId: string): ModelPricing {
-  const base = modelId.replace(CROSS_REGION, '');
+  const base = pricingKey(modelId);
   const p = MODEL_PRICING[base] || MODEL_PRICING[modelId];
   if (p) return { input: p.input, output: p.output, cacheRead: p.cacheRead ?? 0, cacheWrite: p.cacheWrite ?? 0 };
   if (modelId.includes('haiku')) return { input: 0.25, output: 1.25, cacheRead: 0, cacheWrite: 0 };

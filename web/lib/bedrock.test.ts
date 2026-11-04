@@ -25,6 +25,12 @@ describe('Claude 5.5 pricing entries', () => {
 });
 
 describe('GPT pricing entries', () => {
+  it.each(['openai.gpt-6-luna-20261104-v1:0', 'global.openai.gpt-6-luna-v1:0',
+    'global.openai.gpt-6.1-terra-20261104-v2:0'])('normalizes a known GPT version: %s', id => {
+    const canonical = id.includes('terra') ? 'openai.gpt-6.1-terra' : 'openai.gpt-6-luna';
+    expect(getModelPricing(id)).toEqual(getModelPricing(canonical));
+    expect(getModelLabel(id)).toBe(getModelLabel(canonical));
+  });
   it('resolves global. GPT profiles to labeled entries', () => {
     expect(getModelLabel('global.openai.gpt-6-luna')).toBe('GPT-6 Luna');
     expect(getModelLabel('global.openai.gpt-6.1-terra')).toBe('GPT-6.1 Terra');

@@ -19,7 +19,8 @@ import logging
 import os
 import sys
 
-# Same model + home region as the Strands path → invocation-log cost attribution intact.
+# This dark Anthropic SDK path retains Sonnet; the live Strands path defaults to GPT-6 Luna.
+# Both use the home region and Bedrock invocation-log cost attribution.
 MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
@@ -127,7 +128,7 @@ def tool_result_block(tool_use_id, result, is_error=False):
 
 
 def apply_cache_control(system_blocks, anthropic_tools):
-    """Prompt-cache parity with the Strands path (cache_config='auto' + cache_tools): mark the
+    """Explicit Claude prompt caching for this dark path; Luna rejects cache points. Mark the
     LAST system block and the LAST tool with ``cache_control={'type':'ephemeral'}``. No-op on empties."""
     if system_blocks:
         system_blocks[-1]["cache_control"] = {"type": "ephemeral"}

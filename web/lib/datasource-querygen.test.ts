@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { buildQueryGenSystem, extractQuery, looksReadOnlySql, looksLikeProse, stripLeadingSqlComments, generateQuery, unknownPromqlNames, nearMissCandidates, ruleCore, confidentNearMisses, type QueryGenSend } from './datasource-querygen';
 
 describe('buildQueryGenSystem', () => {
@@ -67,6 +67,36 @@ describe('looksLikeProse [1]', () => {
 });
 
 describe('generateQuery model fallback', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
+  it('allows an explicit empty fallback override to disable retries', async () => {
+    vi.stubEnv('DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID', '');
+    vi.resetModules();
+    const isolated = await import('./datasource-querygen');
+    const send = vi.fn<QueryGenSend>().mockRejectedValue(new Error('throttled'));
+    await expect(isolated.generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .rejects.toThrow('throttled');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('logs only a bounded reason before fallback, excluding provider errors and request data', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = new Error('private-query secret-provider-payload');
+    error.name = 'private-error-name';
+    const send = vi.fn<QueryGenSend>().mockRejectedValueOnce(error).mockResolvedValue('SELECT 1');
+    await generateQuery({ nl: 'private-query', lang: 'ClickHouse SQL', schemaBlock: 'secret-schema', isSql: true, send });
+    expect(warn).toHaveBeenCalledWith('[querygen] retrying with fallback model', {
+      primaryModelId: 'global.openai.gpt-6.1-terra', fallbackModelId: 'global.anthropic.claude-sonnet-5-5',
+      reason: 'primary_failed',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private|secret/);
+  });
+  it('uses fallback for a draft that drops HTTP status despite complete observed evidence', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValueOnce('{ status = error }')
+      .mockResolvedValue('{ span.custom_status = 500 }');
+    await expect(generateQuery({ nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed', isSql: false,
+      tempoAttributes: [{ name: 'span.custom_status', types: ['int'], typesTruncated: false }], send }))
+      .resolves.toEqual({ query: '{ span.custom_status = 500 }' });
+    expect(send.mock.calls.map(c => c[2])).toEqual(['global.openai.gpt-6.1-terra', 'global.anthropic.claude-sonnet-5-5']);
+  });
   it('uses GPT-6.1 Terra first', async () => {
     const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
     await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))

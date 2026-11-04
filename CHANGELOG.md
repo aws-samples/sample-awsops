@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bedrock models: chat answers with OpenAI GPT-6 Luna (without Bedrock prompt caching, which GPT models reject); Explore "AI generate" writes queries with GPT-6.1 Terra and retries on Claude Sonnet 5.5 when Terra fails or its draft fails validation; AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it. Haiku calls and Sonnet calls with fixed output caps run without extended thinking so existing budgets still fit (the chat agent keeps adaptive thinking, as on Sonnet 5); Opus 5.5, which always thinks, gets extra output headroom for Deep report sections and invariant proposals. The web task now always holds a grant for its direct query-generation and assistant models (Terra, Sonnet 5.5, Haiku 5.5), so "AI generate" and the product-help assistant no longer fail with AccessDenied when hybrid routing is off; the chat runtime role additionally allows GPT-6 Luna.
+- Bedrock models: chat answers with OpenAI GPT-6 Luna (without explicit Bedrock cache points, which GPT models reject); Explore "AI generate" writes queries with GPT-6.1 Terra and retries on Claude Sonnet 5.5 when Terra fails or its draft fails validation; AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it. Haiku calls and Sonnet calls with fixed output caps run without extended thinking so existing budgets still fit; Opus 5.5, which always thinks, gets extra output headroom for Deep report sections and invariant proposals. The web task now always holds a grant for its direct query-generation and assistant models (Terra, Sonnet 5.5, Haiku 5.5), so "AI generate" and the product-help assistant no longer fail with AccessDenied when hybrid routing is off; the chat runtime role additionally allows GPT-6 Luna.
 
 ### Fixed
 
@@ -698,7 +698,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Changed
 
-- Bedrock 모델: 채팅은 OpenAI GPT-6 Luna로 답합니다(GPT 모델이 거부하는 Bedrock 프롬프트 캐싱은 끔). Explore "AI로 생성"은 GPT-6.1 Terra로 쿼리를 만들고, Terra 호출이 실패하거나 초안이 검증에서 거부되면 Claude Sonnet 5.5로 다시 시도합니다. AI 진단, 라우팅, 합성, 백그라운드 워커는 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않습니다. Haiku 호출과 출력 상한이 고정된 Sonnet 호출은 기존 상한이 유지되도록 확장 사고 없이 실행하고(채팅 에이전트는 Sonnet 5 때처럼 adaptive 사고 유지), 항상 사고하는 Opus 5.5는 Deep 리포트 섹션과 불변식 제안에 출력 여유분을 더 받습니다. 웹 태스크는 직접 호출하는 쿼리 생성·도움말 모델(Terra, Sonnet 5.5, Haiku 5.5) 권한을 항상 가지므로, 하이브리드 라우팅이 꺼져 있어도 "AI로 생성"과 제품 도움말이 AccessDenied로 실패하지 않습니다. 채팅 런타임 역할은 GPT-6 Luna도 허용합니다.
+- Bedrock 모델: 채팅은 OpenAI GPT-6 Luna로 답합니다(GPT 모델이 거부하는 명시적 Bedrock 캐시 포인트는 끔). Explore "AI로 생성"은 GPT-6.1 Terra로 쿼리를 만들고, Terra 호출이 실패하거나 초안이 검증에서 거부되면 Claude Sonnet 5.5로 다시 시도합니다. AI 진단, 라우팅, 합성, 백그라운드 워커는 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않습니다. Haiku 호출과 출력 상한이 고정된 Sonnet 호출은 기존 상한이 유지되도록 확장 사고 없이 실행하고, 항상 사고하는 Opus 5.5는 Deep 리포트 섹션과 불변식 제안에 출력 여유분을 더 받습니다. 웹 태스크는 직접 호출하는 쿼리 생성·도움말 모델(Terra, Sonnet 5.5, Haiku 5.5) 권한을 항상 가지므로, 하이브리드 라우팅이 꺼져 있어도 "AI로 생성"과 제품 도움말이 AccessDenied로 실패하지 않습니다. 채팅 런타임 역할은 GPT-6 Luna도 허용합니다.
 
 ### 수정
 

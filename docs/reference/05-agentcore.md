@@ -16,6 +16,31 @@ with all config delivered through SSM.
 
 <a id="current-design--현행-설계"></a>
 
+## Chat model configuration
+
+The Strands chat runtime defaults to `global.openai.gpt-6-luna`. `AGENT_MODEL_ID`
+is a process environment override read when `agent/agent.py` loads; an absent or
+blank value retains Luna. It does not change the separate Claude diagnosis workers
+or the default-off Anthropic loop, which retains Sonnet 5.5. The resolved chat
+model is logged at startup. IAM permits the curated Claude namespace and Luna,
+including their dated suffixes; other overrides require a separately reviewed grant.
+
+The current `scripts/v2/agentcore/provision.py` constructs its own environment map
+and **does not forward `AGENT_MODEL_ID` from the deployer's shell**. Therefore
+`AGENT_MODEL_ID=... make agentcore` is not a supported deployment rollback lever.
+An operator must review and deploy an explicit runtime environment change with the
+complete existing runtime configuration, or use the approved earlier-image release
+procedure. A subsequent provisioner reconciliation overwrites manual environment
+changes. This PR adds no deployment and no new autonomous model switching.
+
+Luna requests omit explicit `cachePoint` blocks and `cache_tools`; any automatic
+cache benefit must be verified before rollout using a multi-turn tool-using session
+and its `cacheReadInputTokens`. A prompt-only probe does not establish tool caching.
+The two GPT pricing rows are provisional third-party estimates: recheck the AWS
+Price List API when those models appear for the selected region and inference
+profile, including cache-read/write billing. No live caching or pricing verification
+is claimed by the local regression tests.
+
 ## Current design
 
 **Components (provisioned skeleton):**

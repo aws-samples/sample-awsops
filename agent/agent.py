@@ -126,6 +126,7 @@ GATEWAYS = _discover_gateways()
 # Chat answers with GPT-6 Luna; AGENT_MODEL_ID may roll back to a Claude profile. The runtime role
 # (terraform local.agentcore_model_resources) grants exactly Claude plus this Luna profile.
 MODEL_ID = os.environ.get("AGENT_MODEL_ID", "").strip() or "global.openai.gpt-6-luna"
+logging.info("[Agent] resolved chat model: %s", MODEL_ID)
 # Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
 # live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
 # Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.

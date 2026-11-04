@@ -45,7 +45,7 @@ AgentCore는 Amazon Bedrock AgentCore Runtime과 Gateway를 기반으로 AI 어�
 | **엔진** | Strands Agent Framework |
 | **컨테이너** | Docker arm64 (ECR 저장, `make agentcore`) |
 | **실행 환경** | AgentCore 관리형 서비스(Bedrock AgentCore Runtime) |
-| **모델** | Claude Haiku급(라우팅 분류기) / **Runtime 자체는 Sonnet급 모델만** 실행(`agent/agent.py`에 고정). Opus급은 Runtime이 아니라 별도의 **AI 진단(비동기 워커)** Deep 티어에서만 선택적으로 사용 |
+| **모델** | 채팅 Runtime 기본값은 **GPT-6 Luna**이며 프로세스의 `AGENT_MODEL_ID`로 재정의할 수 있습니다. 현재 배포기는 셸의 이 변수를 전달하지 않습니다. Explore 쿼리 생성은 GPT-6.1 Terra → Claude Sonnet 5.5 fallback, AI 진단은 Sonnet 5.5 / Deep 선택은 Opus 5.5, 라우팅·도움말은 Haiku 5.5를 사용합니다 |
 
 ### 상태
 
