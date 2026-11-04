@@ -836,14 +836,133 @@ def _diff_summary(current_drift, parent_summary, verdicts=()):
     return {"regressions": regressions, "improvements": improvements}
 
 
+def evidence_loop_enabled():
+    """Only applied worker configuration can select the evidence path."""
+    return os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") == "true"
+
+
+def _evidence_invariant_sources(bundle):
+    """Retain the live evaluator's unresolved-target contract.
+
+    Verified scoped resource pairs are for diagnosis, not the legacy name-based
+    invariant predicates. No encryption aggregate or complete name graph is certified.
+    """
+    by_type, resources = {}, {}
+    for resource in bundle.get("resources", []):
+        kind = resource["kind"]
+        by_type[kind] = by_type.get(kind, 0) + 1
+        resources.setdefault(kind, []).append({
+            "resource_id": resource["resource_id"], "region": resource["region"],
+            "data": resource.get("facts", {})})
+    edges = [{"from": edge["source"], "to_ref": edge["target"]}
+             for edge in bundle.get("relationships", []) if edge.get("kind") == "observed_call"]
+    return {
+        "inventory": src._result("inventory", data={
+            "by_type": by_type, "resources": resources, "partial": True,
+            "truncated": bool(bundle.get("incomplete"))}),
+        "service_map": src._result("service_map", data={"edges": edges, "partial": True}),
+    }
+
+
+def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope, lang, budget):
+    """Gated worker loop; local presentation runs after admitted specialist findings."""
+    from . import discovery, loop, presentation, supporting
+    from .pillar_agents import validate_language
+    validate_language(lang)
+    from .budget import ReportBudget
+    budget = budget if budget is not None else ReportBudget(tier)
+    base_catalog, model_id, _ = _resolve_tier(tier, model)
+    catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
+    total = len(catalog)
+
+    def emit(current, section, phase, completed=None):
+        if on_progress is not None:
+            try:
+                on_progress(current, total, section, phase, completed)
+            except Exception as exc:  # heartbeat failures never abort reports
+                print(f"evidence report progress failed: {type(exc).__name__}", file=sys.stderr)
+
+    emit(0, "Discovery", "collect")
+    try:
+        bundle = discovery.collect(conn, account, budget, scope=scope)
+        bundle = supporting.collect(bundle, budget, scope=scope)
+    except Exception as exc:  # a partial artifact is preferable to losing all stage metadata
+        print(f"evidence report discovery failed: {type(exc).__name__}", file=sys.stderr)
+        bundle = {"resources": [], "evidence": [], "relationships": [], "coverage": {},
+                  "gaps": ["discovery_failed"], "degraded": ["discovery_failed"], "incomplete": []}
+    collected = _evidence_invariant_sources(bundle)
+    active = ddb.list_active_invariants(conn)
+    verdicts = _evaluate_intent(active, _build_actual(collected))
+    drift = _drift(verdicts)
+    unassessed = [v for v in verdicts if v.get("passed") is None]
+    emit(0, "Six pillars", "render", [])
+
+    def follow_up(requests):
+        nonlocal bundle
+        bundle = discovery.follow_up(conn, account, bundle, requests, budget)
+        return bundle
+
+    try:
+        analysis = loop.run(bundle, account=account, tier=tier, model_id=model_id,
+                            budget=budget, collect_follow_up=follow_up, lang=lang)
+    except Exception as exc:  # fail closed; never reuse unvalidated model output
+        print(f"evidence report analysis failed: {type(exc).__name__}", file=sys.stderr)
+        analysis = {"findings": [], "pillar_coverage": {}, "rejected": [],
+                    "degraded": ["analysis_failed"], "incomplete": ["six_pillars"],
+                    "passes": 0, "model_stages": []}
+    # This is the exact projected/admitted index used by the specialists, including
+    # follow-up facts. Raw discovery fields cannot reappear through presentation.
+    bundle = analysis.get("evidence_bundle", bundle)
+    bodies = presentation.render(catalog, bundle, analysis, lang=lang,
+                                 invariant_md=_render_intended_vs_actual(verdicts, lang))
+    by_key = dict(bodies)
+    rendered, completed = [], []
+    for index, section in enumerate(catalog, start=1):
+        title = localized_title(section, lang)
+        rendered.append({"key": section["key"], "title": title, "body": by_key[section["key"]]})
+        completed.append(title)
+        emit(index, title, "render", list(completed))
+    emit(total, "Assemble", "assemble", list(completed))
+    now = datetime.now(timezone.utc)
+    md = build_markdown(rendered, account, tier, lang=lang, generated_at=now)
+    sources_used = list(dict.fromkeys(
+        record.get("source", "discovery") for record in bundle.get("evidence", [])))
+    degraded = list(dict.fromkeys(bundle.get("degraded", []) + analysis.get("degraded", [])))
+    incomplete = list(dict.fromkeys(bundle.get("incomplete", []) + analysis.get("incomplete", [])))
+    summary = {
+        "sections": total, "sources_used": sources_used, "degraded": degraded,
+        "incomplete": incomplete, "render_degraded": analysis.get("degraded", []),
+        "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),
+        "evidence_loop": {"enabled": True, "passes": analysis.get("passes", 0),
+                          "prompt_version": analysis.get("prompt_version"),
+                          "schema_version": analysis.get("schema_version")},
+        "discovery": {"coverage": bundle.get("coverage", {}), "gaps": bundle.get("gaps", []),
+                      "resources": len(bundle.get("resources", [])),
+                      "relationships": len(bundle.get("relationships", []))},
+        "pillar_coverage": analysis.get("pillar_coverage", {}),
+        "rejected_findings": analysis.get("rejected", []),
+        "model_stages": analysis.get("model_stages", []),
+        "title_and_tags": presentation.title_and_tags(bundle, analysis, lang=lang),
+        "budget": budget.snapshot(),
+    }
+    if report_id is not None:
+        parent_id, _ = ddb.get_report_summary(conn, report_id)
+        if parent_id is not None:
+            _, parent_summary = ddb.get_report_summary(conn, parent_id)
+            summary["diff"] = _diff_summary(drift, parent_summary, verdicts)
+    return md, summary, sources_used
+
+
 def generate(conn, account, tier="mid", report_id=None, on_progress=None, model="sonnet", scope="self",
-             lang="ko"):
+             lang="ko", budget=None):
     """Collect → evaluate active invariants → render each section → markdown + summary.
     Returns (markdown, summary, sources_used). Read-only throughout; the intended-vs-actual
     section renders verdicts deterministically without an LLM. `report_id` enables the parent diff.
     `tier` picks the catalog (mid/light=8, deep=15; +intended-vs-actual appended → 9/16 rendered) and `model` ('sonnet'|'opus', deep-only) the
     Bedrock model + token budget. `on_progress(current, total, section, phase)` (optional, A3 / V1
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
+    if evidence_loop_enabled():
+        return _generate_evidence(conn, account, tier, report_id, on_progress, model, scope, lang, budget)
     job_start = time.monotonic()
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
     headroom = _opus_headroom(model_id)

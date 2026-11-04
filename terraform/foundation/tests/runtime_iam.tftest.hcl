@@ -62,6 +62,58 @@ variables {
   existing_private_subnet_ids  = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
 }
 
+run "diagnosis_evidence_defaults_remain_dark" {
+  command = plan
+  variables { workers_enabled = true }
+  assert {
+    condition     = !var.diagnosis_evidence_loop_enabled && length(aws_iam_role_policy.worker_diagnosis_evidence) == 0
+    error_message = "The evidence loop must be default-off with no additional IAM."
+  }
+  assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if contains(["DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "DIAGNOSIS_HOST_ACCOUNT_ID"], e.name)]) == 0 && !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_EVIDENCE_LOOP_ENABLED")
+    error_message = "Disabled discovery must leave both worker environments unchanged."
+  }
+}
+
+run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
+  command = plan
+  variables {
+    workers_enabled                 = true
+    diagnosis_evidence_loop_enabled = true
+  }
+  assert {
+    condition     = length(aws_iam_role_policy.worker_diagnosis_evidence) == 2 && length(aws_iam_role_policy.worker_finops_baseline) == 0
+    error_message = "Diagnosis provider reads must be separately gated from FinOps on each worker role."
+  }
+  assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      jsondecode(p.policy).Statement[0].Action == ["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"] &&
+      jsondecode(p.policy).Statement[0].Effect == "Allow" &&
+      jsondecode(p.policy).Statement[0].Resource == "*" &&
+      jsondecode(p.policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"] == ["ap-northeast-2", "eu-west-1", "us-east-1"]
+    ])
+    error_message = "Only the two provider reads in supported runtime regions may be added."
+  }
+  assert {
+    condition     = [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_HOST_ACCOUNT_ID"] == ["123456789012"] && aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_HOST_ACCOUNT_ID"] == "123456789012"
+    error_message = "Both worker runtimes must bind discovery to the applied host account."
+  }
+  assert {
+    condition     = aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == "true" && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == ["true"] && [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == []
+    error_message = "The gate must enable worker discovery without adding a web/BFF execution path."
+  }
+  assert {
+    condition     = !var.remediation_enabled && !var.integrations_write_enabled && !var.incident_lifecycle_enabled
+    error_message = "Enabling read-only discovery must leave frozen and unrelated gates off."
+  }
+}
+
+run "diagnosis_evidence_gate_requires_workers" {
+  command = plan
+  variables { diagnosis_evidence_loop_enabled = true }
+  expect_failures = [var.diagnosis_evidence_loop_enabled]
+}
+
 run "defaults_remain_dark" {
   command = plan
   assert {

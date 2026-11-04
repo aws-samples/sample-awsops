@@ -246,6 +246,16 @@ variable "diagnosis_notify_enabled" {
   default     = false
 }
 
+variable "diagnosis_evidence_loop_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only six-pillar diagnosis evidence loop. Adds worker-only configuration with an applied host-account binding and the two Compute Optimizer EC2/RDS recommendation reads, independently of FinOps. No mutation, autonomous remediation, new connector or scheduled job. Disabled leaves worker environment and IAM unchanged."
+  validation {
+    condition     = !var.diagnosis_evidence_loop_enabled || var.workers_enabled
+    error_message = "diagnosis_evidence_loop_enabled requires workers_enabled."
+  }
+}
+
 variable "ai_insights_enabled" {
   type        = bool
   description = "AI Insights dashboard panel: a daily worker collects K8s events + CloudWatch alarms + cost anomalies (all read-only) and an LLM synthesizes 3-5 prioritized admin bullets, cached in ai_insights and shown on the Overview dashboard with manual refresh. Requires workers_enabled (reuses worker role/pg8000/VPC + jobs queue; adds read-only cloudwatch:DescribeAlarms/GetMetricData, ce:GetCostAndUsage, eks:DescribeCluster, sqs:SendMessage). K8s events also need the worker role's EKS access entry, registered out-of-band (scripts/v2/eks/register-insight-access.sh). false (default) = 0 resources/IAM, $0, runtime fail-closed (AI_INSIGHTS_ENABLED unset)."

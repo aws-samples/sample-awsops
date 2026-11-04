@@ -63,6 +63,10 @@ def _report(payload, dry_run):
     The BFF creates the diagnosis_reports row (running) and passes report_id — this fixes the
     worker_job_id FK (handlers receive only `payload`, never job_id) and the UI race. _report
     uploads the markdown to S3 itself and writes artifact_uri. Read-only AWS data sources."""
+    # This timestamp precedes DB connection and collection. Enabled-mode analysis
+    # and local title selection share the same worker deadline.
+    import time
+    entry_started = time.monotonic()
     account = str(payload.get("account", ""))
     tier = payload.get("tier", "mid")
     model = payload.get("model", "sonnet")  # deep-tier may select 'opus'; resolver pins others to sonnet
@@ -79,6 +83,10 @@ def _report(payload, dry_run):
     from diagnosis import db as ddb
     from diagnosis import report as rpt
     import traceback
+    budget = None
+    if rpt.evidence_loop_enabled():
+        from diagnosis.budget import ReportBudget
+        budget = ReportBudget(tier, started_at=entry_started)
     conn = wdb.connect()
     try:  # [PR#37 review CRITICAL] always release the pg8000 connection (was leaked every call → Aurora pool exhaustion under retries)
         # Fallback: if BFF didn't pre-create (older enqueue), create now (worker_job_id stays NULL).
@@ -89,17 +97,25 @@ def _report(payload, dry_run):
             on_progress = (lambda c, t, s, p, done=None: ddb.update_progress(
                 conn, report_id, current=c, total=t, section=s, phase=p, completed=done))
             scope = payload.get("scope") or "self"
+            budget_kwargs = {"budget": budget} if budget is not None else {}
             md, summary, sources_used = rpt.generate(
                 conn, account, tier, report_id=report_id, on_progress=on_progress, model=model,
-                scope=scope, lang=lang)
+                scope=scope, lang=lang, **budget_kwargs)
             artifact_uri = _upload_markdown(md, report_id)
             _export_artifacts(md, report_id)  # best-effort DOCX+PDF; never fails the report
-            try:  # auto title + suggested tags — best-effort, never fails the report
-                meta = rpt.make_title_and_tags(md, lang)
-            except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
-                meta = {"title": None, "tags": []}
+            if budget is not None:
+                meta = summary.get("title_and_tags", {"title": None, "tags": []})
+                # Final ledger includes artifact export and local metadata selection.
+                summary["budget"] = budget.snapshot()
+            else:
+                try:  # auto title + suggested tags — best-effort, never fails the report
+                    meta = rpt.make_title_and_tags(md, lang)
+                except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
+                    meta = {"title": None, "tags": []}
             # A failed/cut-off section degrades the report just like a failed collector.
-            status = "partial" if summary.get("degraded") or summary.get("render_degraded") else "succeeded"
+            partial = (summary.get("degraded") or summary.get("render_degraded")
+                       or (budget is not None and summary.get("incomplete")))
+            status = "partial" if partial else "succeeded"
             ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
                               summary=summary, artifact_uri=artifact_uri,
                               title=meta["title"], tags=meta["tags"])

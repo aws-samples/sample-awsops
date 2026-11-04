@@ -168,13 +168,14 @@ def _valid_trace_span(span, trace_id):
         return False
     return True
 
+_TRACE_INSTANCE_ATTRIBUTES = {"cloud.resource_id", "host.id", "service.instance.id"}
 _TRACE_ATTRIBUTES = {
     "service.name", "service.namespace", "service.version", "cloud.account.id", "cloud.region",
     "deployment.environment.name", "deployment.environment", "k8s.namespace.name",
     "k8s.cluster.name", "k8s.pod.name", "k8s.deployment.name", "db.system", "db.name",
     "server.address", "server.port", "net.peer.name", "net.peer.port", "peer.service",
     "messaging.system", "messaging.destination.name", "messaging.destination",
-}
+} | _TRACE_INSTANCE_ATTRIBUTES
 
 
 def _json_size(value):
@@ -190,7 +191,15 @@ def _trace_attributes(value):
                 or not entry["key"] or not isinstance(entry.get("value"), dict)):
             return None
         if entry["key"] in _TRACE_ATTRIBUTES:
-            selected[entry["key"]] = entry  # Preserve last-value identity semantics, never shorten IDs.
+            if entry["key"] in _TRACE_INSTANCE_ATTRIBUTES:
+                claim = entry["value"].get("stringValue")
+                # Never shorten identities or retain arbitrary AnyValue maps/extra attributes.
+                selected.pop(entry["key"], None)
+                if (isinstance(claim, str) and 0 < len(claim) <= 512
+                        and claim.strip() and not any(ord(char) < 32 or ord(char) == 127 for char in claim)):
+                    selected[entry["key"]] = {"key": entry["key"], "value": {"stringValue": claim.strip()}}
+            else:
+                selected[entry["key"]] = entry  # Preserve last-value identity semantics, never shorten IDs.
     return list(selected.values())
 
 
