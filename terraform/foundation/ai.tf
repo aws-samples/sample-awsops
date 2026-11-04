@@ -918,7 +918,7 @@ resource "aws_lambda_function" "agent" {
   # rds-mcp/inventory-read run under the dedicated reader role (agent_lambda_reader) — see the
   # PR #197 review comment above that role's definition. Every other slice is unaffected.
   role             = contains(["rds-mcp", "inventory-read"], each.key) ? aws_iam_role.agent_lambda_reader[0].arn : aws_iam_role.agent_lambda[0].arn
-  runtime          = "python3.11"
+  runtime          = "python3.14"
   handler          = each.value.handler
   filename         = data.archive_file.agent[each.key].output_path
   source_code_hash = data.archive_file.agent[each.key].output_base64sha256

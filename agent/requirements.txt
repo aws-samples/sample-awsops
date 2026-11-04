@@ -1,15 +1,3 @@
-# NOTE: the runtime image installs deps from agent/Dockerfile's inline pip list (NOT this file).
-# Keep the strands-agents pin in sync in BOTH places when bumping.
-strands-agents==1.41.0
-strands-agents-tools
-boto3
-# Dark-path chat loop (ANTHROPIC_AGENT_LOOP_ENABLED, default OFF) — Bedrock client, no API key.
-# Keep the pin in sync with agent/Dockerfile. Validate at `make agentcore` build/smoke.
-anthropic[bedrock]==0.111.0
-bedrock-agentcore<=0.1.5
-bedrock-agentcore-starter-toolkit==0.1.14
-psycopg2-binary
-# ADR-017 (amended): official ClickHouse MCP, stdio-embedded (CLICKHOUSE_OFFICIAL_MCP). Image installs via Dockerfile — keep the EXACT pin in sync.
-# Pinned exactly: an unpinned rebuild can change the `mcp_clickhouse.main` module path, the
-# CLICKHOUSE_* env contract, or the exposed tool surface with no review signal.
-mcp-clickhouse==0.4.1
+# Runtime pins are shared with the image; the starter toolkit is host-only tooling.
+-r requirements-runtime.txt
+bedrock-agentcore-starter-toolkit==0.3.14

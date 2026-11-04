@@ -341,7 +341,7 @@ resource "aws_cloudwatch_log_group" "incident_sfn" {
 }
 
 ############################################################
-# Step 3 (cont.): the seven incident stage Lambdas (arm64, python3.12, pg8000 layer, VPC for Aurora).
+# Step 3 (cont.): the seven incident stage Lambdas (arm64, python3.14, pg8000 layer, VPC for Aurora).
 #   Each handler is "<mod>.lambda_handler". Env: Aurora connection (db.py) + PROJECT (the Lambdas
 #   derive the incident SSM paths from it) + the five SSM param names + the AgentCore runtime-ARN
 #   param (agent_bridge.py reads SSM_RUNTIME_ARN_PARAM). NO mutation surface in any of these.
@@ -387,7 +387,7 @@ resource "aws_lambda_function" "incident_triage" {
   count            = local.il
   function_name    = "${var.project}-incident-triage"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "triage.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -407,7 +407,7 @@ resource "aws_lambda_function" "incident_lead" {
   count            = local.il
   function_name    = "${var.project}-incident-lead"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "lead.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -427,7 +427,7 @@ resource "aws_lambda_function" "incident_subagent" {
   count            = local.il
   function_name    = "${var.project}-incident-subagent"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "subagent.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -447,7 +447,7 @@ resource "aws_lambda_function" "incident_rootcause" {
   count            = local.il
   function_name    = "${var.project}-incident-rootcause"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "rootcause.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -467,7 +467,7 @@ resource "aws_lambda_function" "incident_mitigation_plan" {
   count            = local.il
   function_name    = "${var.project}-incident-mitigation-plan"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "mitigation_plan.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -487,7 +487,7 @@ resource "aws_lambda_function" "incident_prevention" {
   count            = local.il
   function_name    = "${var.project}-incident-prevention"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "prevention.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -507,7 +507,7 @@ resource "aws_lambda_function" "incident_stage_failed" {
   count            = local.il
   function_name    = "${var.project}-incident-stage-failed"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "incident_stage_failed.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -532,7 +532,7 @@ resource "aws_lambda_function" "incident_writeback" {
   count            = local.rwb
   function_name    = "${var.project}-incident-writeback"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "writeback.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -629,7 +629,7 @@ resource "aws_lambda_function" "incident_watchdog" {
   count            = local.il
   function_name    = "${var.project}-incident-watchdog"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "incident_watchdog.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -730,7 +730,7 @@ resource "aws_lambda_function" "prevention_loop" {
   count            = local.il
   function_name    = "${var.project}-prevention-loop"
   role             = aws_iam_role.incident_lambda[0].arn # reuse the incident-Lambda least-priv role
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "prevention_loop.lambda_handler"
   filename         = data.archive_file.prevention_loop[0].output_path

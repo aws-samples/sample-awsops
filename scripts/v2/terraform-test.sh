@@ -15,13 +15,15 @@ done
 export CHECKPOINT_DISABLE=1 AWS_EC2_METADATA_DISABLED=true
 export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
 terraform version -json | python3 -c \
-  'import json,sys; v=json.load(sys.stdin)["terraform_version"]; sys.exit(0 if v == "1.15.7" else "Terraform 1.15.7 is required")'
+  'import json,sys; v=json.load(sys.stdin)["terraform_version"]; sys.exit(0 if v == "1.17.1" else "Terraform 1.17.1 is required")'
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/awsops-terraform-test.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 # Preserve relative archive source paths; exclude untracked backend/config/state
-# and .terraform data. This copies current edits, not a stale HEAD archive.
-git ls-files -z | tar --null --verbatim-files-from -T - -cf - | tar -C "$scratch" -xf -
+# and .terraform data. Current tracked files may have been deleted or renamed.
+git ls-files -z | python3 -c \
+  'import os,sys; sys.stdout.buffer.write(b"".join(p+b"\0" for p in sys.stdin.buffer.read().split(b"\0") if p and os.path.lexists(p)))' \
+  | tar --null --verbatim-files-from -T - -cf - | tar -C "$scratch" -xf -
 cd "$scratch/terraform/foundation"
 export TF_DATA_DIR="$scratch/.terraform"
 terraform init -backend=false -input=false -lockfile=readonly -no-color

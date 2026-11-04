@@ -109,15 +109,12 @@ class StreamableHTTPTransportWithSigV4(StreamableHTTPTransport):
 
 
 def _no_redirect_http_client_factory(*args, **kwargs):
-    """ADR-039 redirect:'manual': build the MCP httpx client normally, THEN force follow_redirects=False
-    on the instance. create_mcp_http_client does NOT accept a follow_redirects kwarg — passing it raises
-    TypeError and breaks transport init (regression caught in live verify) — so we set it on the returned
-    client. httpx already defaults to follow_redirects=False; this makes the guarantee explicit + robust."""
+    """ADR-039: forbid redirects in both HTTPX and the MCP SDK's own redirect loop."""
     client = create_mcp_http_client(*args, **kwargs)
-    try:
-        client.follow_redirects = False
-    except Exception:
-        pass  # best-effort: httpx already defaults to no-follow; never let this break transport init
+    client.follow_redirects = False
+    # MCP 1.30 follows same-origin redirects independently of follow_redirects.
+    # A zero budget makes it return the original redirect response without a second request.
+    client.max_redirects = 0
     return client
 
 

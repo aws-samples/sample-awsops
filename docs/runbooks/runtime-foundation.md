@@ -9,7 +9,7 @@
 ## Symptoms and verification
 
 A healthy web endpoint does not prove inventory, SSM, AgentCore or worker readiness; inspect disabled backends, pending parameters and failed collection separately.
-Use Terraform 1.15.7 and both `scripts/v2/requirements-test.txt` and `scripts/v2/steampipe/requirements.txt`. From the repository root, run these mocked-provider checks:
+Use Terraform 1.17.1 and both `scripts/v2/requirements-test.txt` and `scripts/v2/steampipe/requirements.txt`. From the repository root, run these mocked-provider checks:
 
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_*.py
@@ -618,7 +618,7 @@ Catalog/per-type invocation timeouts are defined in
 [collection effects and proof](runtime-verifier-sessions.md#collection-effects-and-proof).
 Offline controller, real authentication composition, and clock-helper checks require
 Node.js and Python/PyYAML; the authenticated fixtures also require curl, OpenSSL and
-Terraform 1.15.7. From the repository root:
+Terraform 1.17.1. From the repository root:
 
 ```bash
 node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
