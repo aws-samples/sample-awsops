@@ -316,3 +316,166 @@ run "legacy_tag_and_scope_behavior" {
     error_message = "Null digests and host-only=false must preserve legacy behavior."
   }
 }
+
+run "privatelink_defaults_remain_dark" {
+  command = plan
+  assert {
+    condition     = length(aws_security_group.privatelink) == 0 && length(aws_vpc_endpoint.privatelink) == 0 && length(aws_vpc_security_group_ingress_rule.privatelink) == 0
+    error_message = "An empty privatelink_endpoints map must create no PrivateLink resources."
+  }
+}
+
+run "privatelink_endpoint_creates_restricted_consumer_resources" {
+  command = plan
+  override_resource {
+    target = aws_vpc_endpoint.privatelink["clickhouse"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+    }
+  }
+  assert {
+    condition = (
+      length(aws_security_group.privatelink) == 1 &&
+      length(aws_vpc_security_group_ingress_rule.privatelink) == 1 &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].from_port == 8123 &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].to_port == 8123 &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].cidr_ipv4 == null &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].cidr_ipv6 == null
+    )
+    error_message = "The endpoint SG must admit only the connector SG on the listed ports, with no CIDR rules."
+  }
+  assert {
+    condition = (
+      aws_vpc_endpoint.privatelink["clickhouse"].vpc_endpoint_type == "Interface" &&
+      aws_vpc_endpoint.privatelink["clickhouse"].private_dns_enabled == false &&
+      aws_vpc_endpoint.privatelink["clickhouse"].subnet_ids == toset(var.existing_private_subnet_ids) &&
+      aws_vpc_endpoint.privatelink["clickhouse"].vpc_id == var.existing_vpc_id &&
+      length(aws_lambda_function.agent["clickhouse-mcp"].vpc_config) == 1 &&
+      length(aws_lambda_function.agent["prometheus-mcp"].vpc_config) == 0
+    )
+    error_message = "The endpoint must be a private-DNS-off interface endpoint in the existing private subnets and only the selected connector joins the VPC."
+  }
+}
+
+run "privatelink_rejects_a_malformed_service_name" {
+  command = plan
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.not-a-service", ports = [8123] }
+    }
+  }
+  expect_failures = [var.privatelink_endpoints]
+}
+
+run "privatelink_requires_the_connector_vpc_flag" {
+  command = plan
+  variables {
+    agentcore_enabled    = true
+    integrations_enabled = true
+    privatelink_endpoints = {
+      prometheus = { kind = "prometheus", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [9090] }
+    }
+  }
+  expect_failures = [var.privatelink_endpoints]
+}
+
+run "privatelink_zone_is_absent_by_default" {
+  command = plan
+  override_resource {
+    target = aws_vpc_endpoint.privatelink["clickhouse"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+    }
+  }
+  assert {
+    condition     = length(aws_route53_zone.privatelink) == 0 && length(aws_route53_record.privatelink) == 0 && length(output.privatelink_datasource_hosts) == 0
+    error_message = "Without privatelink_zone_name no zone, record or friendly host may exist."
+  }
+}
+
+run "privatelink_zone_adds_one_private_zone_and_a_cname_per_endpoint" {
+  command = plan
+  override_resource {
+    target = aws_vpc_endpoint.privatelink["clickhouse"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  override_resource {
+    target = aws_vpc_endpoint.privatelink["prometheus"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-def.vpce-svc-0fedcba9876543210.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    prometheus_vpc_enabled = true
+    privatelink_zone_name  = "obs.awsops.internal"
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+      prometheus = { kind = "prometheus", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0fedcba9876543210", ports = [9090] }
+    }
+  }
+  assert {
+    condition = (
+      length(aws_route53_zone.privatelink) == 1 &&
+      aws_route53_zone.privatelink[0].name == "obs.awsops.internal" &&
+      length(aws_route53_zone.privatelink[0].vpc) == 1 &&
+      one(aws_route53_zone.privatelink[0].vpc).vpc_id == var.existing_vpc_id &&
+      length(aws_route53_record.privatelink) == 2 &&
+      aws_route53_record.privatelink["clickhouse"].name == "clickhouse.obs.awsops.internal" &&
+      aws_route53_record.privatelink["clickhouse"].type == "CNAME" &&
+      aws_route53_record.privatelink["clickhouse"].ttl == 60 &&
+      aws_route53_record.privatelink["prometheus"].name == "prometheus.obs.awsops.internal"
+    )
+    error_message = "A zone name must create one VPC-associated private zone and one 60s CNAME per endpoint key."
+  }
+  assert {
+    condition     = output.privatelink_datasource_hosts == { clickhouse = "clickhouse.obs.awsops.internal", prometheus = "prometheus.obs.awsops.internal" }
+    error_message = "The hosts output must list <key>.<zone> for every endpoint."
+  }
+  assert {
+    condition     = alltrue([for _, ep in aws_vpc_endpoint.privatelink : ep.private_dns_enabled == false])
+    error_message = "Endpoints keep private DNS off; names come from the optional zone only."
+  }
+}
+
+run "privatelink_zone_without_endpoints_creates_nothing" {
+  command = plan
+  variables {
+    privatelink_zone_name = "obs.awsops.internal"
+  }
+  assert {
+    condition     = length(aws_route53_zone.privatelink) == 0 && length(aws_route53_record.privatelink) == 0
+    error_message = "A zone name alone must not create a zone."
+  }
+}
+
+run "privatelink_zone_rejects_a_trailing_dot" {
+  command = plan
+  variables {
+    privatelink_zone_name = "obs.awsops.internal."
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_rejects_the_cloud_map_namespace_name" {
+  command = plan
+  variables {
+    privatelink_zone_name = "awsops-fixture.internal"
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
