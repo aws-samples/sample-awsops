@@ -514,11 +514,12 @@ run "privatelink_zone_adds_one_private_zone_and_a_cname_per_endpoint" {
     values = { dns_entry = [{ dns_name = "vpce-0fixture-def.vpce-svc-0fedcba9876543210.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
   }
   variables {
-    agentcore_enabled      = true
-    integrations_enabled   = true
-    clickhouse_vpc_enabled = true
-    prometheus_vpc_enabled = true
-    privatelink_zone_name  = "obs.awsops.internal"
+    agentcore_enabled                = true
+    integrations_enabled             = true
+    clickhouse_vpc_enabled           = true
+    prometheus_vpc_enabled           = true
+    privatelink_zone_records_enabled = true
+    privatelink_zone_name            = "obs.awsops.internal"
     privatelink_endpoints = {
       clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
       prometheus = { kind = "prometheus", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0fedcba9876543210", ports = [9090] }
@@ -573,4 +574,80 @@ run "privatelink_zone_rejects_the_cloud_map_namespace_name" {
     privatelink_zone_name = "awsops-fixture.internal"
   }
   expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_without_the_records_flag_creates_the_zone_but_no_records" {
+  command = plan
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    privatelink_zone_name  = "obs.awsops.internal"
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+    }
+  }
+  assert {
+    condition     = length(aws_route53_zone.privatelink) == 1 && length(aws_route53_record.privatelink) == 0
+    error_message = "Without privatelink_zone_records_enabled the zone exists but no CNAME is planned."
+  }
+}
+
+run "privatelink_records_flag_requires_a_zone_name" {
+  command = plan
+  variables {
+    privatelink_zone_records_enabled = true
+  }
+  expect_failures = [var.privatelink_zone_records_enabled]
+}
+
+run "privatelink_zone_rejects_the_public_domain_name" {
+  command = plan
+  variables {
+    domain_name           = "v2.example.com"
+    hosted_zone_name      = "example.com"
+    privatelink_zone_name = "v2.example.com"
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_rejects_a_subdomain_of_the_hosted_zone" {
+  command = plan
+  variables {
+    domain_name           = "v2.example.com"
+    hosted_zone_name      = "example.com"
+    privatelink_zone_name = "obs.example.com"
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_rejects_a_parent_of_the_hosted_zone" {
+  command = plan
+  variables {
+    domain_name           = "v2.example.com"
+    hosted_zone_name      = "example.com"
+    privatelink_zone_name = "com"
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_rejects_amazonaws_com_names" {
+  command = plan
+  variables {
+    privatelink_zone_name = "vpce.amazonaws.com"
+  }
+  expect_failures = [var.privatelink_zone_name]
+}
+
+run "privatelink_zone_accepts_an_unrelated_name" {
+  command = plan
+  variables {
+    domain_name           = "v2.example.com"
+    hosted_zone_name      = "example.com"
+    privatelink_zone_name = "obs.awsops.internal"
+  }
+  assert {
+    condition     = var.privatelink_zone_name == "obs.awsops.internal"
+    error_message = "An internal zone name unrelated to the public domain must stay valid."
+  }
 }

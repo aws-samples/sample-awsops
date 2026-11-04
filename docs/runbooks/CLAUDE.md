@@ -23,7 +23,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
 | [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |
-| [privatelink-observability.md](privatelink-observability.md) | Cross-account PrivateLink to ClickHouse/Prometheus/Loki/Tempo/Mimir datasources (endpoints admit only their own kind's connector client group; zone changes need `allow_dns_changes`) — provider endpoint service, consumer endpoints, optional private DNS names, acceptance, verification, rollback (ADR-007) |
+| [privatelink-observability.md](privatelink-observability.md) | Cross-account PrivateLink to ClickHouse/Prometheus/Loki/Tempo/Mimir datasources (endpoints admit only their own kind's connector client group; zone/record changes need `allow_dns_changes` and a two-step apply) — provider endpoint service, consumer endpoints, optional private DNS names, acceptance, verification, rollback (ADR-007) |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |

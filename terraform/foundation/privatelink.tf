@@ -4,8 +4,9 @@
 #
 # The provider account exposes each datasource's internal NLB as a VPC endpoint service
 # (docs/runbooks/privatelink-observability.md). This file only creates the CONSUMER side.
-# No provider-side resource, route table, peering or private hosted zone is involved:
-# the connector uses the endpoint's regional DNS name (output below) as the datasource address.
+# No provider-side resource, route table or peering is involved. By default the connector uses the
+# endpoint's regional DNS name (output below) as the datasource address; an optional private hosted
+# zone (privatelink_zone_name) adds short stable names on top.
 
 variable "privatelink_endpoints" {
   type = map(object({
@@ -18,16 +19,16 @@ variable "privatelink_endpoints" {
   description = "Interface endpoints to datasource endpoint services exposed by another account. Map key = a short label (lowercase letters, digits, hyphen). kind = clickhouse|prometheus|loki|tempo|mimir. service_name = the provider's endpoint service (com.amazonaws.vpce.<region>.vpce-svc-<id>). ports = the TCP ports the connector may use through the endpoint. Each kind needs its <kind>_vpc_enabled flag and integrations_enabled. Default {} → no-op."
 
   validation {
-    condition     = alltrue([for k, _ in var.privatelink_endpoints : can(regex("^[a-z0-9][a-z0-9-]{0,30}$", k))])
-    error_message = "privatelink_endpoints keys must be 1-31 characters: lowercase letters, digits and hyphens, starting with a letter or digit."
+    condition     = alltrue([for k, _ in var.privatelink_endpoints : can(regex("^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$", k))])
+    error_message = "privatelink_endpoints keys must be 1-31 characters: lowercase letters, digits and hyphens, starting and ending with a letter or digit."
   }
   validation {
     condition     = alltrue([for _, e in var.privatelink_endpoints : contains(["clickhouse", "prometheus", "loki", "tempo", "mimir"], e.kind)])
     error_message = "privatelink_endpoints kind must be one of clickhouse, prometheus, loki, tempo, mimir."
   }
   validation {
-    condition     = alltrue([for _, e in var.privatelink_endpoints : can(regex("^com\\.amazonaws\\.vpce\\.[a-z0-9-]+\\.vpce-svc-[0-9a-f]+$", e.service_name))])
-    error_message = "privatelink_endpoints service_name must be an endpoint service name: com.amazonaws.vpce.<region>.vpce-svc-<hex id>."
+    condition     = alltrue([for _, e in var.privatelink_endpoints : can(regex("^com\\.amazonaws\\.vpce\\.${var.region}\\.vpce-svc-[0-9a-f]+$", e.service_name))])
+    error_message = "privatelink_endpoints service_name must be an endpoint service name in this stack's region: com.amazonaws.vpce.<region>.vpce-svc-<hex id> (cross-region PrivateLink is not supported)."
   }
   validation {
     condition     = alltrue([for _, e in var.privatelink_endpoints : length(e.ports) > 0 && length(e.ports) <= 4 && length(distinct(e.ports)) == length(e.ports) && alltrue([for p in e.ports : p >= 1 && p <= 65535 && p == floor(p)])])
@@ -60,8 +61,35 @@ variable "privatelink_zone_name" {
     error_message = "privatelink_zone_name must be a lowercase DNS name with at least two labels and no trailing dot."
   }
   validation {
+    condition = var.privatelink_zone_name == "" || (
+      var.privatelink_zone_name != var.domain_name &&
+      var.privatelink_zone_name != var.hosted_zone_name &&
+      !endswith(var.domain_name, ".${var.privatelink_zone_name}") &&
+      !endswith(var.hosted_zone_name, ".${var.privatelink_zone_name}") &&
+      !endswith(var.privatelink_zone_name, ".${var.domain_name}") &&
+      !endswith(var.privatelink_zone_name, ".${var.hosted_zone_name}")
+    )
+    error_message = "privatelink_zone_name must not equal, be a parent of, or be a subdomain of domain_name or hosted_zone_name: a private zone with a public service name shadows the public DNS records inside the VPC."
+  }
+  validation {
+    condition     = var.privatelink_zone_name == "" || (var.privatelink_zone_name != "amazonaws.com" && !endswith(var.privatelink_zone_name, ".amazonaws.com"))
+    error_message = "privatelink_zone_name must not be amazonaws.com or end in .amazonaws.com: a private zone there shadows AWS service endpoint names inside the VPC."
+  }
+  validation {
     condition     = var.privatelink_zone_name != "${var.project}.internal"
     error_message = "privatelink_zone_name must not equal the Cloud Map namespace name (<project>.internal); use a separate zone name."
+  }
+}
+
+variable "privatelink_zone_records_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Create the <key>.<privatelink_zone_name> CNAME records. Leave false on the first apply: an endpoint that still awaits the provider's acceptance has no DNS name yet. After accepting the connections, set true and apply again. Needs privatelink_zone_name. Every apply that adds or removes the zone or records needs allow_dns_changes=true (see docs/runbooks/privatelink-observability.md)."
+
+  validation {
+    condition     = !var.privatelink_zone_records_enabled || var.privatelink_zone_name != ""
+    error_message = "privatelink_zone_records_enabled requires a non-empty privatelink_zone_name."
   }
 }
 
@@ -71,7 +99,7 @@ locals {
   # Kinds that have an endpoint. The connector Lambda "<kind>-mcp" (ai.tf local.agent_lambdas) gets
   # that kind's dedicated client security group below, and no other function does.
   # Regional DNS name per endpoint: the entry whose first label has no availability-zone suffix (AWS does not document
-  # dns_entry ordering); falls back to the first entry while the endpoint has none yet.
+  # dns_entry ordering); falls back to the first entry. Empty while the endpoint has no DNS entry yet (pending acceptance); the CNAME records stay behind privatelink_zone_records_enabled and refuse an empty value.
   privatelink_dns = {
     for key, ep in aws_vpc_endpoint.privatelink : key => try(
       [for d in ep.dns_entry : d.dns_name if !can(regex("^[^.]+-[a-z]{2}-[a-z]+-[0-9][a-z]\\.", d.dns_name))][0],
@@ -154,19 +182,26 @@ resource "aws_route53_zone" "privatelink" {
 }
 
 resource "aws_route53_record" "privatelink" {
-  for_each = { for key, e in var.privatelink_endpoints : key => e if local.privatelink_zone_enabled }
+  for_each = { for key, e in var.privatelink_endpoints : key => e if local.privatelink_zone_enabled && var.privatelink_zone_records_enabled }
 
   zone_id = aws_route53_zone.privatelink[0].zone_id
   name    = "${each.key}.${var.privatelink_zone_name}"
   type    = "CNAME"
   ttl     = 60
   records = [local.privatelink_dns[each.key]]
+
+  lifecycle {
+    precondition {
+      condition     = local.privatelink_dns[each.key] != ""
+      error_message = "Endpoint ${each.key} has no DNS name yet (still pending acceptance?). Accept the connection on the provider side, then apply again."
+    }
+  }
 }
 
 # First regional DNS name per endpoint. Register it as the datasource host,
 # e.g. http://<value>:<port>. It stays valid while the endpoint exists.
 output "privatelink_endpoint_dns" {
-  description = "Regional DNS name of each PrivateLink endpoint, keyed by privatelink_endpoints label."
+  description = "Regional DNS name of each PrivateLink endpoint, keyed by privatelink_endpoints label. Empty until the provider accepts the connection."
   value = {
     for key, ep in aws_vpc_endpoint.privatelink : key => local.privatelink_dns[key]
   }

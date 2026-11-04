@@ -29,11 +29,12 @@ the product, and the provider-side commands below are operator actions.
 
 1. The provider datasource runs behind an **internal** NLB (for example created by the AWS Load
    Balancer Controller for a Kubernetes `Service`) with healthy targets.
-2. The NLB's Availability Zones include the AZs of this stack's private subnets, compared by
+2. This stack's private subnets sit in distinct Availability Zones (an interface endpoint takes one subnet per AZ).
+   The NLB's Availability Zones include the AZs of this stack's private subnets, compared by
    **AZ ID** (for example `apne2-az1`), not by name. Names map differently per account.
 3. The provider NLB's security group admits the consumer endpoint's traffic. With security-group
    enforcement for PrivateLink traffic on, admit a **private** range that contains this stack's
-   private subnets; never a public CIDR.
+   private subnets; never a public CIDR. Prefer the exact subnet CIDRs over a broad range such as `10.0.0.0/8`.
 4. This stack has `agentcore_enabled`, `integrations_enabled` and the connector's
    `<kind>_vpc_enabled` flag (`clickhouse_vpc_enabled`, `prometheus_vpc_enabled`, ...) set.
 
@@ -81,7 +82,12 @@ privatelink_endpoints = {
 
 # Optional: short, stable names. Leave unset to use the raw endpoint DNS names.
 privatelink_zone_name = "obs.awsops.internal"
+# Leave false on the first apply; set true after the provider accepts the connections (below).
+privatelink_zone_records_enabled = false
 ```
+
+The zone name must not equal, contain or sit under the deployment's `domain_name` or `hosted_zone_name`, and must not
+end in `amazonaws.com`: a private zone with a public service name shadows the public DNS records inside the VPC.
 
 Then plan and apply through the reviewed saved-plan flow (`docs/runbooks/dev-repo-setup.md`); never
 `-auto-approve`. `privatelink_zone_name` plans Route 53 changes, which the CI DNS gate rejects by default: add or
@@ -94,14 +100,24 @@ entry's own ports, no CIDR rules). Each client group is attached only to the con
 port is never reachable on another datasource's endpoint, and with a zone name one private hosted zone plus a 60-second CNAME
 per endpoint.
 
-Each new endpoint starts in `pendingAcceptance`. Accept it on the provider side:
+Each new endpoint starts in `pendingAcceptance` and has no DNS name yet, so the CNAME records are a second step:
 
-```bash
-aws ec2 describe-vpc-endpoint-connections --region ap-northeast-2 \
-  --filters Name=service-id,Values=<SERVICE_ID> --query 'VpcEndpointConnections[].[VpcEndpointId,VpcEndpointState]'
-aws ec2 accept-vpc-endpoint-connections --region ap-northeast-2 \
-  --service-id <SERVICE_ID> --vpc-endpoint-ids <VPC_ENDPOINT_ID>
-```
+1. **Apply 1** with `privatelink_zone_records_enabled = false`: creates the endpoints (and the zone, if a zone name is set), no records.
+2. Accept each connection on the provider side:
+
+   ```bash
+   aws ec2 describe-vpc-endpoint-connections --region ap-northeast-2 \
+     --filters Name=service-id,Values=<SERVICE_ID> --query 'VpcEndpointConnections[].[VpcEndpointId,VpcEndpointState]'
+   aws ec2 accept-vpc-endpoint-connections --region ap-northeast-2 \
+     --service-id <SERVICE_ID> --vpc-endpoint-ids <VPC_ENDPOINT_ID>
+   ```
+
+3. When every endpoint is `available`, set `privatelink_zone_records_enabled = true` and run **Apply 2**, which creates one CNAME per endpoint.
+   A record whose endpoint still has no DNS name fails the plan with a clear message instead of writing an empty record.
+
+With a zone name, each of these applies changes Route 53, so both the plan and the apply dispatch need `allow_dns_changes=true`
+(see above). The CI DNS gate and the runtime-rollout policy also refuse Route 53 changes on a domain-rollout or runtime-rollout plan:
+use a normal full plan.
 
 ## Registering the datasources
 
@@ -151,8 +167,11 @@ Terraform outputs `privatelink_endpoint_dns` (raw regional DNS names) and, with 
 
 ## Rollback
 
-1. Remove the entries (and the zone name) from the private inputs and apply the reviewed plan (destroying the zone
-   needs `allow_dns_changes=true` as described above); the
+1. Set `privatelink_zone_records_enabled = false` and apply (removes the CNAMEs), then remove the zone name and apply
+   again, then remove the entries and apply a third time (each zone/record apply needs `allow_dns_changes=true` as
+   described above, on a normal full plan). Removing the entries last lets the connector Lambdas detach from the client
+   security groups first; if a security group destroy reports `DependencyViolation` while the ENIs release, wait a few
+   minutes and re-run the apply. The
    endpoints, security group, rules, zone and records are destroyed. The connectors keep working
    for every datasource that is still reachable another way.
 2. On the provider, reject or delete the connection, then delete the endpoint service:
