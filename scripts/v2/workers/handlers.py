@@ -1,6 +1,6 @@
 """AWSops v2 P2 — job-type registry. READ/COMPUTE only, with one gated exception: `connector_target_sync`
-creates/updates this stack's own AgentCore gateway targets (never deletes; ADR-005 owned-resource scope,
-owner clarification 2026-11-04; default off via connector_target_sync_enabled).
+creates/updates this stack's own AgentCore gateway targets (never deletes; ADR-005 owner-override
+exception 2026-11-04, the second after ADR-015; default off via connector_target_sync_enabled).
 Each handler: (payload: dict, dry_run: bool) -> (result_dict_or_None, artifact_bytes_or_None).
 P2 ships ONE synthetic proof handler ('noop') exercising sleep / memory / optional OOM."""
 import os

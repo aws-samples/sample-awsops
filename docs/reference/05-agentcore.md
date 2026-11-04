@@ -250,8 +250,10 @@ ClickHouse/Prometheus, `awsops-v2-monitoring-gateway` for Loki/Tempo/Mimir — w
 accepts only this stack's connector Lambda ARNs from `CONNECTOR_TARGET_LAMBDAS`, never deletes, and
 leaves a target that invokes another stack's Lambda untouched (gateway names are account-wide).
 IAM: `ListGateways` (region-scoped) plus Get/List/Create/UpdateGatewayTarget and GetGateway on those
-two gateway ARN patterns only. This is the first use of the ADR-005 owned-resource scope
-clarification (2026-11-04). `make agentcore` remains the full reconciler.
+two gateway ARN patterns only. This is an ADR-005 owner-override exception (2026-11-04), the second
+after ADR-015. `created`/`updated` mean the request was accepted, not that the target is READY (same
+semantics as the provisioner); chat sees the connector once the gateway finishes reconciling the
+target. `make agentcore` remains the full reconciler.
 
 <a id="decisions-adrs--결정"></a>
 

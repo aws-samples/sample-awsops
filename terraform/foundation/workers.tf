@@ -18,7 +18,7 @@ locals {
   # datasource-diagnosis egress gate (ADR-007[legacy 039]) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
-  # connector_target_sync (ADR-005 owner clarification 2026-11-04: own-resource create/update only).
+  # connector_target_sync (ADR-005 owner-override exception 2026-11-04: own gateway target create/update only).
   # Connector Lambdas with a catalog TARGETS entry (external-obs or monitoring gateway); the worker only ever
   # points a target at one of these ARNs. Default false → 0 resources/IAM and no env/zip diff.
   cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
@@ -1661,7 +1661,7 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
   source_arn    = aws_cloudwatch_event_rule.insight_dispatcher[0].arn
 }
 
-# connector_target_sync (ADR-005 owner clarification 2026-11-04): create/update of the awsops-owned
+# connector_target_sync (ADR-005 owner-override exception 2026-11-04): create/update of the awsops-owned
 # external-obs and monitoring gateways' targets only (the catalog homes for the connector kinds). No Delete action; the gateway ARN is pinned to the
 # provision.py name; ListGateways is a read needed to resolve that name to its id.
 resource "aws_iam_role_policy" "worker_lambda_connector_targets" {

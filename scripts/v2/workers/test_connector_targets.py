@@ -104,7 +104,7 @@ class ConnectorTargetSyncTest(unittest.TestCase):
     def test_rejects_non_connector_kinds_and_undeployed_lambdas(self):
         ctrl = FakeCtrl()
         self.assertEqual(ct.run({"kind": "network"}, ctrl=ctrl)["reason"], "not_a_connector_kind")
-        self.assertEqual(ct.run({"kind": "opensearch"}, ctrl=ctrl)["reason"], "connector_lambda_not_deployed")  # not a datasource connector
+        self.assertEqual(ct.run({"kind": "opensearch"}, ctrl=ctrl)["reason"], "not_a_connector_kind")  # pinned allowlist
         self.assertEqual(ct.run({"kind": "prometheus"}, ctrl=ctrl)["reason"], "connector_lambda_not_deployed")
         self.assertEqual(ct.run({"kind": "../x"}, ctrl=ctrl)["reason"], "invalid_kind")
         self.assertEqual(ctrl.calls, [])
@@ -116,6 +116,26 @@ class ConnectorTargetSyncTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ct.run({"kind": "clickhouse"}, ctrl=ctrl)
             self.assertEqual(ctrl.calls, [])
+
+    def test_runtime_error_is_reraised_and_failed_outcome_is_logged(self):
+        ctrl = FakeCtrl(gateways=[])
+        with mock.patch("builtins.print") as printed:
+            with self.assertRaises(RuntimeError):
+                ct.run({"kind": "clickhouse"}, ctrl=ctrl)
+        lines = [str(call.args[0]) for call in printed.call_args_list if call.args]
+        self.assertEqual(len(lines), 1)
+        self.assertIn('"status": "failed"', lines[0])
+        self.assertIn('"reason": "gateway_unavailable"', lines[0])
+        self.assertIn('"kind": "clickhouse"', lines[0])
+
+    def test_target_without_id_fails_with_logged_outcome(self):
+        ctrl = FakeCtrl(targets=[{"name": "clickhouse-mcp-target"}])
+        with mock.patch("builtins.print") as printed:
+            with self.assertRaises(RuntimeError):
+                ct.run({"kind": "clickhouse"}, ctrl=ctrl)
+        lines = [str(call.args[0]) for call in printed.call_args_list if call.args]
+        self.assertTrue(any('"status": "failed"' in line and "target_id_missing" in line for line in lines))
+        self.assertFalse([c for c in ctrl.calls if c[0] in ("create", "update")])
 
     def test_gateway_of_another_stack_is_never_written(self):
         ctrl = FakeCtrl(gateway_detail={"roleArn": ROLE.replace("awsops-dev", "awsops-v2-stg"),

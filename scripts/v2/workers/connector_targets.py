@@ -11,7 +11,7 @@ It then creates or updates exactly one awsops-owned target (`<kind>-mcp-target`)
 gateway for that kind (external-obs for ClickHouse/Prometheus; monitoring for Loki/Tempo/Mimir),
 pointing at this stack's own connector Lambda. Vendor MCP presets (Datadog/Dynatrace) stay owned by
 provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are out of scope. Scope (ADR-005
-owner clarification 2026-11-04): create/update of awsops's own resources only. It never deletes,
+owner-override exception 2026-11-04, the second after ADR-015): create/update of awsops's own resources only. It never deletes,
 only writes those two awsops gateways, and only accepts Lambda ARNs supplied by Terraform through
 CONNECTOR_TARGET_LAMBDAS. The tool schema comes from the packaged provision catalog, so the target
 is byte-identical to what provision.py would write.
@@ -22,6 +22,8 @@ import os
 import re
 
 GATEWAY_KEYS = ("external-obs", "monitoring")
+# Write ceiling pinned in code (not only via the CONNECTOR_TARGET_LAMBDAS env map).
+CONNECTOR_KINDS = ("clickhouse", "prometheus", "loki", "tempo", "mimir")
 
 
 def gateway_name(key):
@@ -95,9 +97,29 @@ def run(payload, ctrl=None, targets=None):
 
     Raises RuntimeError when the catalog gateway is missing or ambiguous so the job is marked failed.
     """
-    result = _run(payload, ctrl, targets)
-    _log(result)
+    kind = (payload or {}).get("kind")
+    kind = kind if isinstance(kind, str) and _KIND.fullmatch(kind) else None  # log only well-formed kinds
+    try:
+        result = _run(payload, ctrl, targets)
+    except Exception as error:
+        fields = getattr(error, "log_fields", None)
+        if not isinstance(fields, dict):
+            reason = str(error).split(":")[0] if isinstance(error, RuntimeError) else type(error).__name__
+            fields = {"status": "failed", "reason": reason or type(error).__name__}
+        if kind is not None and "kind" not in fields:
+            fields = {**fields, "kind": kind}
+        _log(fields)
+        raise
+    logged = result if kind is None or "kind" in result else {**result, "kind": kind}
+    _log(logged)
     return result
+
+
+def _failure(reason, detail, **fields):
+    """RuntimeError carrying the failed-outcome log fields; run() logs them once and re-raises."""
+    error = RuntimeError(f"{reason}: {detail}")
+    error.log_fields = {"status": "failed", "reason": reason, **fields}
+    return error
 
 
 def _run(payload, ctrl, targets):
@@ -106,6 +128,8 @@ def _run(payload, ctrl, targets):
     kind = (payload or {}).get("kind")
     if not isinstance(kind, str) or not _KIND.fullmatch(kind):
         return {"status": "skipped", "reason": "invalid_kind"}
+    if kind not in CONNECTOR_KINDS:
+        return {"status": "skipped", "reason": "not_a_connector_kind", "kind": kind}
     if targets is None:
         import catalog  # packaged copy of scripts/v2/agentcore/catalog.py
         targets = catalog.TARGETS
@@ -118,13 +142,12 @@ def _run(payload, ctrl, targets):
         return {"status": "skipped", "reason": "connector_lambda_not_deployed"}
     if ctrl is None:
         import boto3
-        ctrl = boto3.client("bedrock-agentcore-control")
+        ctrl = boto3.client("bedrock-agentcore-control", region_name=os.environ.get("AWS_REGION"))
 
     gw_name = gateway_name(spec["gateway"])
     gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == gw_name]
     if len(gateways) != 1 or not isinstance(gateways[0].get("gatewayId"), str):
-        _log({"status": "failed", "reason": "gateway_unavailable", "gateway": gw_name, "kind": kind})
-        raise RuntimeError(f"gateway_unavailable: {gw_name}")
+        raise _failure("gateway_unavailable", gw_name, gateway=gw_name, kind=kind)
     gw_id = gateways[0]["gatewayId"]
     # The gateway name is account-wide: write only to a gateway that runs as THIS stack's AgentCore
     # role with AWS_IAM inbound auth (never auto-replace a NONE-auth gateway; see provision.ensure_gateways).
@@ -149,7 +172,9 @@ def _run(payload, ctrl, targets):
                 return {"status": "exists", "reason": "concurrent_create", "target": name}
             raise
         return {"status": "created", "target": name}
-    target_id = existing[name]["targetId"]
+    target_id = existing[name].get("targetId")
+    if not isinstance(target_id, str):
+        raise _failure("target_id_missing", name, target=name, gateway=gw_name, kind=kind)
     current = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=target_id)
     current_lambda = current.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {})
     credential_types = [c.get("credentialProviderType")

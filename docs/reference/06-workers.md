@@ -11,7 +11,7 @@ ownership-scoped routes (`POST /api/diagnosis`, `POST /api/compliance/run`). Eve
 this backbone is read-only / computation-only except the gated `connector_target_sync` job, which
 only creates or updates this stack's own AgentCore gateway targets (it never deletes, and writes
 only the two awsops gateways whose role is this stack's AgentCore role) under the ADR-005
-owned-resource scope clarification (owner, 2026-11-04). Mutation of observed workloads and every
+owner-override exception (2026-11-04). Mutation of observed workloads and every
 other AWS resource stays FROZEN per ADR-005 (do-not-enable), and this backbone is not an
 escalation path for other mutating actions.
 
@@ -21,7 +21,7 @@ escalation path for other mutating actions.
 돈다 — 진단 리포트 렌더링(`report`)과 CIS 컴플라이언스 스캔(`compliance`)이 각자의 소유권-스코프
 전용 라우트(`POST /api/diagnosis`, `POST /api/compliance/run`)로 enqueue된다. 이 백본의 모든 job
 타입은 read-only/계산 전용이다 — 단, 게이트된 `connector_target_sync` job만 예외로, ADR-005
-소유 리소스 범위 명확화(owner, 2026-11-04)에 따라 이 스택 자신의 AgentCore gateway target을
+owner-override 예외(2026-11-04)에 따라 이 스택 자신의 AgentCore gateway target을
 생성·갱신만 한다(삭제하지 않으며, role이 이 스택의 AgentCore role인 awsops gateway 두 개에만 쓴다).
 관측 대상 워크로드와 그 밖의 모든 AWS 리소스 변경은 ADR-005에 따라 계속 동결(FROZEN,
 do-not-enable)이며, 이 백본은 다른 mutate 작업으로 가는 확장 경로가 아니다.
@@ -92,14 +92,15 @@ unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
   architecturally reserved, not an implicit escalation path. AWS-resource mutation stays FROZEN per
   ADR-005; turning any of this into live mutating operations (approval workflow, first-class rollback,
   the mutate-action registry itself) requires a new ADR decision, not just implementation work.
-  The only live exception on this backbone is the gated `connector_target_sync` owned-resource job
-  (see [05 AgentCore](05-agentcore.md)), which does not create a general mutate-action registry.
+  The only live exception on this backbone is the gated `connector_target_sync` job, an ADR-005
+  owner-override exception (2026-11-04; see [05 AgentCore](05-agentcore.md)), which does not create a
+  general mutate-action registry.
   / P2가 구현한 안전 훅(멱등 토큰·킬스위치·mutate/unknown 타입 가드·dry-run 통과)은 향후 있을 수 있는
   mutate-action 레지스트리를 위해 architecturally 예약된 dark/inactive substrate일 뿐, 암묵적 확장
   경로가 아니다. AWS 리소스 변경은 ADR-005에 따라 계속 FROZEN이며, 이를 실제 mutate 작업(승인
   워크플로·1급 롤백·mutate-action 레지스트리 자체)으로 전환하려면 구현이 아니라 새 ADR 결정이
-  필요하다. 이 백본에서 유일하게 실제 동작하는 예외는 게이트된 소유 리소스 job `connector_target_sync`
-  ([05 AgentCore](05-agentcore.md) 참조)이며, 이것이 범용 mutate-action 레지스트리를 만드는 것은 아니다.
+  필요하다(유일한 실동작 예외인 게이트된 `connector_target_sync` job — ADR-005 owner-override 예외(2026-11-04),
+  [05 AgentCore](05-agentcore.md) — 도 범용 mutate-action 레지스트리가 아니다).
 - **ADR-001 — v2 foundation (ECS/Fargate + Aurora split)** — the job
   ledger is the Aurora `worker_jobs` table (an infra table orthogonal to the 7 app-state tables); the
   worker_jobs row, not the SFN execution status, is the source of truth.
