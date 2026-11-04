@@ -63,7 +63,7 @@ resource "aws_iam_role_policy" "task_integrations_secret" {
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
       Resource = aws_secretsmanager_secret.integrations[0].arn
-    }, {
+      }, {
       Sid      = "CustomMcpCredentialMetadataRead"
       Effect   = "Allow"
       Action   = ["secretsmanager:DescribeSecret"]
@@ -269,6 +269,30 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5-*",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5-*",
+      ]
+    }]
+  })
+}
+
+# Ungated web Bedrock calls: the Explore "AI generate" query generator (web/lib/datasource-querygen.ts:
+# GPT-6.1 Terra first, Claude Sonnet 5.5 fallback) and the product-help assistant (web/lib/assistant.ts:
+# Haiku 5.5). Both run on every stack, so their grant must not depend on hybrid_routing_enabled.
+resource "aws_iam_role_policy" "task_web_models" {
+  name = "${var.project}-task-web-models"
+  role = aws_iam_role.task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "WebDirectModels"
+      Effect = "Allow"
+      Action = ["bedrock:InvokeModel"]
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6.1-terra",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5",
       ]
     }]
   })

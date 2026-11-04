@@ -51,6 +51,16 @@ with patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items"
     import agent  # noqa: E402  (import after stubs are installed)
 
 
+class ChatModelTest(unittest.TestCase):
+    def test_default_chat_model_is_gpt6_luna(self):
+        self.assertEqual(agent.MODEL_ID, "global.openai.gpt-6-luna")
+
+    def test_prompt_cache_only_for_claude(self):
+        self.assertFalse(agent.supports_prompt_cache("global.openai.gpt-6-luna"))
+        self.assertFalse(agent.supports_prompt_cache("global.openai.gpt-6.1-terra"))
+        self.assertTrue(agent.supports_prompt_cache("global.anthropic.claude-sonnet-5-5"))
+
+
 class ReadinessEntrypointTest(unittest.TestCase):
     def test_failure_is_one_structured_event_and_never_chat_fallback(self):
         import readiness

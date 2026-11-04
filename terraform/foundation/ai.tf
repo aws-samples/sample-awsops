@@ -204,7 +204,7 @@ resource "aws_iam_role_policy" "agentcore" {
         Sid      = "BedrockModelInvoke"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = local.runtime_model_resources
+        Resource = local.agentcore_model_resources
       },
       {
         Sid       = "DiscoverGateways"

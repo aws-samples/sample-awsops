@@ -66,6 +66,33 @@ describe('looksLikeProse [1]', () => {
   });
 });
 
+describe('generateQuery model fallback', () => {
+  it('uses GPT-6.1 Terra first', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send.mock.calls.map((c) => c[2])).toEqual(['global.openai.gpt-6.1-terra']);
+  });
+  it('retries on Claude Sonnet 5.5 when the primary call fails', async () => {
+    const send = vi.fn<QueryGenSend>().mockRejectedValueOnce(new Error('throttled')).mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send.mock.calls.map((c) => c[2])).toEqual(['global.openai.gpt-6.1-terra', 'global.anthropic.claude-sonnet-5-5']);
+  });
+  it('retries on the fallback when the primary draft fails validation', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValueOnce('DROP TABLE t').mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('does not retry schema-evidence errors on the fallback', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SCHEMA_REQUIRED');
+    await expect(generateQuery({ nl: 'x', lang: 'TraceQL', schemaBlock: '', isSql: false, send }))
+      .rejects.toThrow(/Tempo schema is not available/);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('generateQuery', () => {
   const typedTempo = [
     { name: 'span.http.status_code', types: ['int'], typesTruncated: false },
@@ -181,7 +208,7 @@ describe('generateQuery', () => {
       nl: 'traces', lang: 'TraceQL', schemaBlock: 'span.http.status_code (int)',
       tempoAttributes: typedTempo, isSql: false, send,
     })).rejects.toThrow(/TraceQL.*schema/i);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([
@@ -246,7 +273,7 @@ describe('generateQuery', () => {
       nl: 'HTTP 500 traces', lang: 'TraceQL', schemaBlock: 'observed',
       tempoAttributes: typedTempo, isSql: false, send,
     })).rejects.toThrow(/HTTP-status filter/);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([
@@ -356,7 +383,7 @@ describe('generateQuery', () => {
     await expect(generateQuery({
       nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'tags: .http.status_code', isSql: false, send,
     })).rejects.toThrow(/TraceQL.*syntax/i);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([

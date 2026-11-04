@@ -88,6 +88,12 @@ locals {
     "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
     "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*anthropic.claude-*",
   ]
+  # The AgentCore chat runtime answers with GPT-6 Luna (agent.py MODEL_ID); Claude stays granted for
+  # the dark anthropic_loop path and rollback. Workers keep the Claude-only list above.
+  agentcore_model_resources = concat(local.runtime_model_resources, [
+    "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna",
+    "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6-luna",
+  ])
 }
 
 output "runtime_deployment" {

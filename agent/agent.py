@@ -123,14 +123,27 @@ GATEWAYS = _discover_gateways()
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
-MODEL_ID = "global.anthropic.claude-sonnet-5-5"
+# Chat answers with GPT-6 Luna; AGENT_MODEL_ID may roll back to a Claude profile. The runtime role
+# (terraform local.agentcore_model_resources) grants exactly Claude plus this Luna profile.
+MODEL_ID = os.environ.get("AGENT_MODEL_ID", "").strip() or "global.openai.gpt-6-luna"
 # Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
 # live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
 # Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.
 AGENT_MAX_TOKENS = max(1024, int(os.environ.get("AGENT_MAX_TOKENS", "16000")))
+
+
+def supports_prompt_cache(model_id):
+    """Bedrock cachePoint is Claude-only here: GPT models reject it (ValidationException
+    "doesn't support the cachePoint field" / AccessDenied "did not allow prompt caching",
+    live-verified on gpt-6-luna and gpt-6.1-terra 2026-11-04)."""
+    return "anthropic.claude-" in model_id
+
+
 try:
     if CacheConfig is None:
         raise TypeError("CacheConfig unavailable")
+    if not supports_prompt_cache(MODEL_ID):
+        raise TypeError(f"{MODEL_ID} does not support Bedrock prompt caching")
     model = BedrockModel(
         model_id=MODEL_ID,
         region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
