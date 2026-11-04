@@ -35,6 +35,13 @@ earlier. The fallback reruns generation and validation against the same bounded
 schema; it never executes the query. `DATASOURCE_QUERYGEN_MODEL_ID` selects the
 primary model and `DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID` selects the fallback.
 Unset fallback uses Sonnet 5.5; an explicit empty value disables fallback.
+
+All model calls, corrections and fallback share the generation route's deadline:
+55 seconds from request entry, including time already spent resolving the schema.
+The Bedrock SDK receives the shared cancellation signal; an exhausted budget stops
+new model attempts and returns HTTP 502 guidance before the 60-second edge timeout.
+Callers without a route deadline use a 45-second generation budget. A usable PromQL
+draft retains its advisory warning if a correction fails or times out.
 Overrides outside the task role's curated model grant fail authorization.
 
 Missing, empty, incomplete or name-limited evidence that cannot establish the
@@ -154,6 +161,11 @@ terraform -chdir=terraform/foundation validate
 terraform -chdir=terraform/foundation plan -out=tfplan
 terraform -chdir=terraform/foundation show tfplan
 ```
+
+After reviewing the saved plan, the controller applies it and deploys the web app
+and AgentCore in order. Apply `task_web_models` and `agentcore_model_resources`
+before deploying either model-changing image. Run `make agentcore` after
+`make deploy` has completed its prerequisite `make migrate`:
 
 ```bash
 terraform -chdir=terraform/foundation apply tfplan

@@ -18,7 +18,7 @@ import { thinkingOffFields } from '@/lib/bedrock';
 // override outside that list AccessDenies. Injectable send for tests. UNLIKE the assistant, this
 // THROWS on failure (no sensible fallback query → the route returns 502).
 
-export type QueryGenSend = (system: string, user: string, modelId: string) => Promise<string>;
+export type QueryGenSend = (system: string, user: string, modelId: string, abortSignal?: AbortSignal) => Promise<string>;
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 export const QUERYGEN_PRIMARY_MODEL_ID =
@@ -29,6 +29,12 @@ export const QUERYGEN_FALLBACK_MODEL_ID =
 /** Missing or bounded schema evidence. Deterministic for the cached schema, so a second model cannot
  *  fix it and the fallback is skipped. */
 export class SchemaEvidenceError extends Error {}
+
+class QueryGenerationDeadlineError extends Error {
+  constructor() {
+    super('Query generation time budget exhausted; simplify the request and try again.');
+  }
+}
 
 const MAX_QUERY = 8_000;
 const TEMPO_SCHEMA_REQUIRED = 'Tempo schema is not available for the requested attributes. Refresh the datasource schema and try again. (Tempo 스키마를 새로고침한 뒤 다시 생성하세요.)';
@@ -47,7 +53,7 @@ const TRACEQL_RULES = [
 ].join('\n');
 
 let client: BedrockRuntimeClient | null = null;
-const bedrockSend: QueryGenSend = async (system, user, modelId) => {
+const bedrockSend: QueryGenSend = async (system, user, modelId, abortSignal) => {
   if (!client) client = new BedrockRuntimeClient({ region: REGION });
   const res = await client.send(
     new ConverseCommand({
@@ -57,6 +63,7 @@ const bedrockSend: QueryGenSend = async (system, user, modelId) => {
       inferenceConfig: { maxTokens: 1536 }, // query-sized (headroom so SQL isn't truncated mid-fence)
       ...thinkingOffFields(modelId),
     }),
+    { abortSignal },
   );
   return (res.output?.message?.content ?? [])
     .map((c) => ('text' in c && c.text ? c.text : ''))
@@ -162,6 +169,8 @@ export interface GenerateQueryInput {
    *  metrics past the cap and return that wrong answer clean) and softens the warning wording;
    *  the advisory (return-with-warning) semantics never change. */
   vocabularyComplete?: boolean;
+  /** Absolute request deadline; schema discovery and all model attempts share the route's budget. */
+  deadlineMs?: number;
   send?: QueryGenSend;
 }
 
@@ -510,17 +519,51 @@ export function nearMissCandidates(unknown: string[], metricNames: ReadonlySet<s
 /** Primary model first; on an invocation failure or a draft that fails validation, the whole
  *  generation reruns once on the fallback model. Schema-evidence errors are returned as-is. */
 export async function generateQuery(input: GenerateQueryInput): Promise<GeneratedQuery> {
+  const deadlineMs = input.deadlineMs ?? Date.now() + 45_000;
+  const controller = new AbortController();
+  const assertBudget = () => {
+    if (controller.signal.aborted || Date.now() >= deadlineMs) throw new QueryGenerationDeadlineError();
+  };
+  assertBudget();
+  let timeout: ReturnType<typeof setTimeout>;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new QueryGenerationDeadlineError());
+    }, deadlineMs - Date.now());
+  });
+  const baseSend = input.send ?? bedrockSend;
+  let failureReason = 'primary_draft_invalid';
+  const send: QueryGenSend = async (system, user, modelId) => {
+    assertBudget();
+    failureReason = 'primary_draft_invalid';
+    try {
+      const result = await Promise.race([baseSend(system, user, modelId, controller.signal), expired]);
+      assertBudget();
+      return result;
+    } catch (error) {
+      assertBudget();
+      failureReason = 'primary_invoke_failed';
+      throw error;
+    }
+  };
+  const boundedInput = { ...input, send };
   try {
-    return await generateWith(input, QUERYGEN_PRIMARY_MODEL_ID);
-  } catch (error) {
-    if (error instanceof SchemaEvidenceError || !QUERYGEN_FALLBACK_MODEL_ID
-        || QUERYGEN_FALLBACK_MODEL_ID === QUERYGEN_PRIMARY_MODEL_ID) throw error;
-    console.warn('[querygen] retrying with fallback model', {
-      primaryModelId: QUERYGEN_PRIMARY_MODEL_ID,
-      fallbackModelId: QUERYGEN_FALLBACK_MODEL_ID,
-      reason: 'primary_failed',
-    });
-    return generateWith(input, QUERYGEN_FALLBACK_MODEL_ID);
+    try {
+      return await generateWith(boundedInput, QUERYGEN_PRIMARY_MODEL_ID);
+    } catch (error) {
+      if (error instanceof SchemaEvidenceError || error instanceof QueryGenerationDeadlineError
+          || !QUERYGEN_FALLBACK_MODEL_ID || QUERYGEN_FALLBACK_MODEL_ID === QUERYGEN_PRIMARY_MODEL_ID) throw error;
+      assertBudget();
+      console.warn('[querygen] retrying with fallback model', {
+        primaryModelId: QUERYGEN_PRIMARY_MODEL_ID,
+        fallbackModelId: QUERYGEN_FALLBACK_MODEL_ID,
+        reason: failureReason,
+      });
+      return await generateWith(boundedInput, QUERYGEN_FALLBACK_MODEL_ID);
+    }
+  } finally {
+    clearTimeout(timeout!);
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import { buildQueryGenSystem, extractQuery, looksReadOnlySql, looksLikeProse, stripLeadingSqlComments, generateQuery, unknownPromqlNames, nearMissCandidates, ruleCore, confidentNearMisses, type QueryGenSend } from './datasource-querygen';
 
 describe('buildQueryGenSystem', () => {
@@ -67,7 +68,53 @@ describe('looksLikeProse [1]', () => {
 });
 
 describe('generateQuery model fallback', () => {
-  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
+  it('does not invoke either model after the request deadline', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() - 1, send })).rejects.toThrow(/time budget/i);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('aborts a slow invocation and skips fallback when the shared budget expires', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const send = vi.fn<QueryGenSend>().mockImplementation((_system, _user, _model, abortSignal) => {
+      signal = abortSignal;
+      return new Promise(() => {});
+    });
+    const result = generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() + 1_000, send });
+    const rejected = expect(result).rejects.toThrow(/time budget/i);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(signal?.aborted).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('does not reset the deadline when switching to fallback', async () => {
+    vi.useFakeTimers();
+    const send = vi.fn<QueryGenSend>()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('throttled')), 600);
+      }))
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const result = generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() + 1_000, send });
+    const rejected = expect(result).rejects.toThrow(/time budget/i);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0][3]).toBe(send.mock.calls[1][3]);
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+    expect(send.mock.calls[1][3]?.aborted).toBe(true);
+  });
+  it('passes cancellation to the real Bedrock SDK send boundary', async () => {
+    const sdkSend = vi.spyOn(BedrockRuntimeClient.prototype, 'send').mockResolvedValue({
+      output: { message: { role: 'assistant', content: [{ text: 'SELECT 1' }] } },
+    });
+    await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(sdkSend).toHaveBeenCalledWith(expect.anything(), { abortSignal: expect.any(AbortSignal) });
+  });
   it('allows an explicit empty fallback override to disable retries', async () => {
     vi.stubEnv('DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID', '');
     vi.resetModules();
@@ -85,7 +132,7 @@ describe('generateQuery model fallback', () => {
     await generateQuery({ nl: 'private-query', lang: 'ClickHouse SQL', schemaBlock: 'secret-schema', isSql: true, send });
     expect(warn).toHaveBeenCalledWith('[querygen] retrying with fallback model', {
       primaryModelId: 'global.openai.gpt-6.1-terra', fallbackModelId: 'global.anthropic.claude-sonnet-5-5',
-      reason: 'primary_failed',
+      reason: 'primary_invoke_failed',
     });
     expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private|secret/);
   });

@@ -8,6 +8,7 @@ importing agent, so the pure helper `_filter_tools` can be imported and tested i
 isolation. This keeps the change within Task 2's file scope (agent.py + test_agent.py).
 """
 import asyncio
+import os
 import sys
 import types
 import unittest
@@ -47,7 +48,8 @@ def _install_stubs():
 _install_stubs()
 # Gateway discovery shells out at import time; an offline unit suite must never
 # discover resources using the developer/runner's ambient AWS credentials.
-with patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
+with patch.dict(os.environ, {"AGENT_MODEL_ID": ""}), \
+        patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
     import agent  # noqa: E402  (import after stubs are installed)
 
 

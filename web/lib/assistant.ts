@@ -10,7 +10,7 @@ import { thinkingOffFields } from './bedrock';
 //
 // Model = Haiku via ConverseCommand (NON-stream) on purpose: the web task role's Bedrock policy
 // (terraform workload.tf, task_web_models) grants `bedrock:InvokeModel` for the assistant's Haiku
-// and query generation's Terra/Sonnet models. It does not grant InvokeModelWithResponseStream,
+// and query generation's Terra/Sonnet models. This policy does not grant InvokeModelWithResponseStream,
 // so the chat route typewriter-streams the buffered answer. Grounded doc Q&A is
 // well within Haiku's range. Injectable send for tests; never throws.
 

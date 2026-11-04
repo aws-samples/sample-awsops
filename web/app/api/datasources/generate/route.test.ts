@@ -50,6 +50,20 @@ beforeEach(() => {
 });
 
 describe('auth + validation', () => {
+  it('passes the original request deadline after schema discovery consumes time', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    listConfiguredSchemas.mockImplementation(async () => {
+      now.mockReturnValue(13_000);
+      return [];
+    });
+    try {
+      const { POST } = await import('./route');
+      expect((await POST(req({ slug: 'clickhouse', nl: 'x' }))).status).toBe(200);
+      expect(generateQuery.mock.calls.at(-1)![0]).toMatchObject({ deadlineMs: 56_000 });
+    } finally {
+      now.mockRestore();
+    }
+  });
   it('401 unauthenticated', async () => {
     verifyUser.mockResolvedValue(null);
     const { POST } = await import('./route');
