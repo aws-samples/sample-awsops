@@ -24,6 +24,15 @@ describe('Claude 5.5 pricing entries', () => {
   });
 });
 
+describe('GPT pricing entries', () => {
+  it('resolves global. GPT profiles to labeled entries', () => {
+    expect(getModelLabel('global.openai.gpt-6-luna')).toBe('GPT-6 Luna');
+    expect(getModelLabel('global.openai.gpt-6.1-terra')).toBe('GPT-6.1 Terra');
+    expect(getModelPricing('global.openai.gpt-6-luna')).toEqual({ input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125 });
+    expect(getModelPricing('global.openai.gpt-6.1-terra')).toEqual({ input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 });
+  });
+});
+
 describe('getModelPricing', () => {
   it('exact-matches a known id', () => {
     expect(getModelPricing('anthropic.claude-opus-4-8')).toEqual({ input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 });

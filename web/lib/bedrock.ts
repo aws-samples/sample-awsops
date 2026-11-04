@@ -10,6 +10,11 @@ export const MODEL_PRICING: Record<string, PriceEntry> = {
   'anthropic.claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5, label: 'Claude Opus 5.5' },
   'anthropic.claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50, label: 'Claude Sonnet 5.5' },
   'anthropic.claude-haiku-5-5': { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125, label: 'Claude Haiku 5.5' },
+  // GPT rows: not yet in the AWS Price List API (AmazonBedrockFoundationModels lists only GPT-6 Astra
+  // for ap-northeast-2 on 2026-11-04); values are the ap-northeast-2 global standard rates published by
+  // inferplane.github.io/model-comparision data/models.json (generatedAt 2026-11-04T05:16:46Z).
+  'openai.gpt-6-luna': { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125, label: 'GPT-6 Luna' },
+  'openai.gpt-6.1-terra': { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25, label: 'GPT-6.1 Terra' },
   'anthropic.claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 5' },
   'anthropic.claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 4.6' },
   'anthropic.claude-sonnet-4-6-v1': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 4.6' },
