@@ -72,7 +72,7 @@ Cognito + Lambda@Edge 구성은 최소 권한(REFRESH 미부여)을 따릅니다
 AWSops는 v1의 **단일 EC2 모놀리식**을 **Terraform 기반 MSA**로 재구축했습니다.
 
 - **IaC**: Terraform(부분 S3 backend). CDK는 폐기되었습니다.
-- **컴퓨트**: ECS Fargate(arm64). web은 Next.js 15 thin-BFF로 루트 경로에서 서빙됩니다.
+- **컴퓨트**: ECS Fargate(arm64). web은 Next.js thin-BFF로 루트 경로에서 서빙됩니다.
 - **비동기 워커**: 무겁거나 긴/OOM 위험 작업은 web이 직접 처리하지 않고 SQS → ESM(킬스위치) → dispatcher Lambda(멱등) → Step Functions → Lambda 또는 `ecs:runTask.sync` Fargate로 보냅니다.
 
 라이브 Steampipe 쿼리 경로는 없으며, flag-gated 인벤토리 sync만 있습니다.

@@ -28,7 +28,7 @@ This command generates static content into the `build` directory and can be serv
 
 ## Dependency validation
 
-Use Node.js 20 or later and npm so `package-lock.json` and the security overrides
+Use Node.js satisfying `package.json` engines and the checked-in CI pin, with npm so `package-lock.json` and the security overrides
 in `package.json` are applied. The presentation check uses the Linux tools available
 in CI: Bash, GNU coreutils/grep/sed, unzip and Python 3. For dependency updates, run:
 

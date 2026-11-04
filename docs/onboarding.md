@@ -8,8 +8,8 @@
 ## 사전 요구사항 / Prerequisites
 | 도구 | 버전/조건 | 비고 |
 |------|-----------|------|
-| terraform | **>= 1.15** | S3 native state locking(`use_lockfile`) 필요 — DynamoDB 없음 |
-| node | **>= 18** (configurator TUI 기준) | web 컨테이너는 `node:20-alpine` |
+| terraform | Satisfy `required_version` in `terraform/foundation/backend.tf` and `terraform/bootstrap/main.tf` | S3 native state locking (`use_lockfile`), no DynamoDB. Offline tests require the exact pin in `scripts/v2/terraform-test.sh`. |
+| node | Follow each workload's checked-in CI/container pin and any manifest `engines` | Use `web/package.json`, `scripts/v2/package.json`, `web/Dockerfile`, `scripts/v2/ci/Dockerfile.migration`, and `.github/workflows/merge-verify.yml` from the same checkout. |
 | aws CLI | 대상 계정 자격증명 구성 | `AWS_REGION` 기본값 `ap-northeast-2` |
 | docker + buildx | **arm64 크로스빌드 필수** (`--platform linux/arm64`) | `deploy.mjs`는 기본 `sudo docker` 사용 — `DOCKER` env로 오버라이드 가능 |
 
