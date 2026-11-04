@@ -18,6 +18,20 @@ locals {
   # datasource-diagnosis egress gate (ADR-007[legacy 039]) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
+  # connector_target_sync (ADR-005 owner clarification 2026-11-04: own-resource create/update only).
+  # Connector Lambdas whose catalog target lives on the external-obs gateway; the worker only ever
+  # points a target at one of these ARNs. Default false → 0 resources/IAM and no env/zip diff.
+  cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
+  cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp", "jaeger-mcp", "datadog-mcp", "dynatrace-mcp"]
+  cts_env_map = local.cts == 1 ? {
+    CONNECTOR_TARGET_SYNC_ENABLED = "true"
+    CONNECTOR_TARGET_LAMBDAS = jsonencode({ for k in local.cts_lambda_keys :
+    k => aws_lambda_function.agent[k].arn if contains(keys(aws_lambda_function.agent), k) })
+  } : {}
+  cts_sources = local.cts == 1 ? {
+    "connector_targets.py" = "${local.workers_src}/connector_targets.py"
+    "catalog.py"           = "${path.module}/../../scripts/v2/agentcore/catalog.py"
+  } : {}
   ds_connector_arns = [for k in ["prometheus", "loki", "tempo", "mimir", "clickhouse"] :
   "arn:aws:lambda:${var.region}:${local.acct}:function:${var.project}-agent-${k}-mcp"]
   # env that turns collect_datasources on (only when the gate is set) — kept as a list/map fragment so
@@ -141,6 +155,14 @@ data "archive_file" "workers_src" {
   source {
     content  = file("${local.workers_src}/datasource_index.py")
     filename = "datasource_index.py"
+  }
+  # connector_target_sync handler + the provision catalog it reads tool schemas from (gated: no zip diff when off).
+  dynamic "source" {
+    for_each = local.cts_sources
+    content {
+      content  = file(source.value)
+      filename = source.key
+    }
   }
   source {
     content  = file("${local.workers_src}/diagnosis/signal_catalog.py")
@@ -605,7 +627,7 @@ resource "aws_lambda_function" "worker" {
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
       }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
-    local.dsqg_env_map)
+    local.dsqg_env_map, local.cts_env_map)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
   }
@@ -1636,4 +1658,37 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
   function_name = aws_lambda_function.insight_dispatcher[0].function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.insight_dispatcher[0].arn
+}
+
+# connector_target_sync (ADR-005 owner clarification 2026-11-04): create/update of the awsops-owned
+# external-obs gateway's targets only. No Delete action; the gateway ARN is pinned to the
+# provision.py name; ListGateways is a read needed to resolve that name to its id.
+resource "aws_iam_role_policy" "worker_lambda_connector_targets" {
+  count = local.cts
+  name  = "${var.project}-worker-lambda-connector-targets"
+  role  = aws_iam_role.worker_lambda[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ResolveOwnGateway"
+        Effect    = "Allow"
+        Action    = ["bedrock-agentcore:ListGateways"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
+      },
+      {
+        Sid    = "ManageOwnGatewayTargets"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:GetGateway",
+          "bedrock-agentcore:ListGatewayTargets",
+          "bedrock-agentcore:GetGatewayTarget",
+          "bedrock-agentcore:CreateGatewayTarget",
+          "bedrock-agentcore:UpdateGatewayTarget",
+        ]
+        Resource = "arn:aws:bedrock-agentcore:${var.region}:${local.acct}:gateway/awsops-v2-external-obs-gateway-*"
+      },
+    ]
+  })
 }

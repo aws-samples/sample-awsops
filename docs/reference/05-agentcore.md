@@ -230,6 +230,21 @@ python3 scripts/v2/ci/runtime-build-provision.test.py
 API contracts: [UpdateGateway](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGateway.html)
 and [UpdateGatewayTarget](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGatewayTarget.html).
 
+### Connector target sync on datasource registration
+
+A connector Lambda created by a later Terraform apply has no external-obs gateway target until
+the provisioner runs again, so chat reports zero connector tools for a freshly registered
+datasource. With `connector_target_sync_enabled` (default false; requires `workers_enabled`,
+`agentcore_enabled` and `integrations_enabled`), `POST /api/datasources/manage` enqueues a
+`connector_target_sync` job (`scripts/v2/workers/connector_targets.py`, Lambda runtime). The job
+creates or updates `<kind>-mcp-target` on `awsops-v2-external-obs-gateway` with the same
+configuration `ensure_targets` writes (packaged `catalog.py`; parity is unit-tested). It accepts
+only this stack's connector Lambda ARNs from `CONNECTOR_TARGET_LAMBDAS`, never deletes, and
+leaves a target that invokes another stack's Lambda untouched (the gateway name is account-wide).
+IAM: `ListGateways` (region-scoped) plus Get/List/Create/UpdateGatewayTarget and GetGateway on
+`gateway/awsops-v2-external-obs-gateway-*` only. This is the first use of the ADR-005 owned-resource
+scope clarification (2026-11-04). `make agentcore` remains the full reconciler.
+
 <a id="decisions-adrs--결정"></a>
 
 ## Decisions (ADRs)

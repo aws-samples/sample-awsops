@@ -86,6 +86,54 @@ run "defaults_remain_dark" {
   }
 }
 
+run "connector_target_sync_is_default_off" {
+  command = plan
+  variables {
+    agentcore_enabled    = true
+    integrations_enabled = true
+    workers_enabled      = true
+  }
+  assert {
+    condition = (length(aws_iam_role_policy.worker_lambda_connector_targets) == 0 &&
+      !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "CONNECTOR_TARGET_SYNC_ENABLED") &&
+    length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "CONNECTOR_TARGET_SYNC_ENABLED"]) == 0)
+    error_message = "Connector target sync must add no IAM or env until its flag is set."
+  }
+}
+
+run "connector_target_sync_requires_its_prerequisites" {
+  command = plan
+  variables {
+    connector_target_sync_enabled = true
+  }
+  expect_failures = [var.connector_target_sync_enabled]
+}
+
+run "connector_target_sync_writes_only_the_own_gateway_without_delete" {
+  command = plan
+  variables {
+    agentcore_enabled             = true
+    integrations_enabled          = true
+    workers_enabled               = true
+    connector_target_sync_enabled = true
+  }
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement :
+      !anytrue([for a in s.Action : can(regex("Delete", a))]) &&
+      (s.Sid == "ResolveOwnGateway" ? s.Action == ["bedrock-agentcore:ListGateways"] :
+      s.Resource == "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-external-obs-gateway-*")
+    ])
+    error_message = "Target sync may only create/update targets on the awsops external-obs gateway and never delete."
+  }
+  assert {
+    condition = (aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_SYNC_ENABLED"] == "true" &&
+      toset(keys(jsondecode(aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_LAMBDAS"]))) == toset(["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp", "jaeger-mcp", "datadog-mcp", "dynatrace-mcp"]) &&
+    length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "CONNECTOR_TARGET_SYNC_ENABLED" && e.value == "true"]) == 1)
+    error_message = "The worker receives only connector Lambda ARNs and the web task the enqueue gate."
+  }
+}
+
 run "private_datasource_flags_require_applied_prerequisites" {
   command = plan
   variables {

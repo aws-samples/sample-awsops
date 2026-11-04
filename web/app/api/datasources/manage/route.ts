@@ -12,6 +12,7 @@ import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 import { invokeMcpLambdaTool, type ConnConfig } from '@/lib/mcp-lambda-invoke';
 import { upsertSchema } from '@/lib/datasource-schema';
 import { enqueueDatasourceIndex } from '@/lib/diag-signals';
+import { enqueueConnectorTargetSync } from '@/lib/connector-targets';
 import { currentAccountId } from '@/lib/account';
 
 export const dynamic = 'force-dynamic';
@@ -106,6 +107,7 @@ export async function POST(request: Request) {
     const ds = await getDatasource(id);
     if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
+    await enqueueConnectorTargetSync(kind); // make the kind callable from chat (best-effort, gated)
     return json({ id }, 201);
   } catch (e) {
     const msg = (e as Error).message || 'create failed';

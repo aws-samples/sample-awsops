@@ -181,6 +181,15 @@ def _datasource_index(payload, dry_run):
             pass
 
 
+def _connector_target_sync(payload, dry_run):
+    """Create/update this stack's external-obs gateway target for one datasource kind
+    (connector_targets.py). Short AgentCore control-plane calls → lambda runtime. payload: {kind}."""
+    if dry_run:
+        return {"dry_run": True, "would_sync": payload.get("kind")}, None
+    import connector_targets
+    return connector_targets.run(payload), None
+
+
 def _sg_rule_scan(payload, dry_run):
     """SG Rules & Usage daily/manual scan (ADR-019, sg_rule_scan.py). payload:
     {account_id, region, trigger}. Read-only (Role A DescribeSecurityGroupRules/
@@ -282,6 +291,7 @@ REGISTRY = {
     "report":           (_report, "fargate"),
     "compliance":       (_compliance, "fargate"),
     "datasource_index": (_datasource_index, "lambda"),
+    "connector_target_sync": (_connector_target_sync, "lambda"),
     "insight":          (_insight, "lambda"),
     "finops_baseline":  (_finops_baseline, "fargate"),
     "sg_rule_scan":     (_sg_rule_scan, "fargate"),
