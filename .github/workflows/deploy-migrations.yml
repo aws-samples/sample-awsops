@@ -73,7 +73,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
 
       - name: Resolve development project
         id: project
@@ -176,7 +176,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
 
       - uses: hashicorp/setup-terraform@v3
         with:
