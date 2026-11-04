@@ -277,8 +277,9 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
 # Ungated web Bedrock calls: the Explore "AI generate" query generator (web/lib/datasource-querygen.ts:
 # GPT-6.1 Terra first, Claude Sonnet 5.5 fallback) and the product-help assistant (web/lib/assistant.ts:
 # Haiku 5.5). Both run on every stack, so their grant must not depend on hybrid_routing_enabled.
-# Haiku overlaps the classifier and Sonnet overlaps synthesis, so this policy removes the
-# InvokeModel IAM backstop for both flags; both execution paths remain gated in code.
+# Haiku overlaps the classifier, so its InvokeModel IAM backstop is removed; the code gate remains.
+# Sonnet overlaps synthesis, but this non-stream grant leaves its InvokeModelWithResponseStream
+# IAM backstop in the gated task_synthesis_bedrock policy. Synthesis remains gated in code.
 # Bare IDs and dated suffixes follow the classifier grant.
 resource "aws_iam_role_policy" "task_web_models" {
   name = "${var.project}-task-web-models"

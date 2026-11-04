@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"镜像引用"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 个分区网关<br/>（约 160 个只读工具）"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet / Opus / Haiku classes"]
+  AGENT -->|"Bedrock API"| MODEL["GPT-6 Luna chat (AGENT_MODEL_ID override)"]
 ```
 
 ### AgentCore Runtime

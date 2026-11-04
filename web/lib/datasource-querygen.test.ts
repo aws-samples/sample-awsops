@@ -69,6 +69,12 @@ describe('looksLikeProse [1]', () => {
 
 describe('generateQuery model fallback', () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
+  it('uses the default primary model for a whitespace-only override', async () => {
+    vi.stubEnv('DATASOURCE_QUERYGEN_MODEL_ID', '   ');
+    vi.resetModules();
+    const isolated = await import('./datasource-querygen');
+    expect(isolated.QUERYGEN_PRIMARY_MODEL_ID).toBe('global.openai.gpt-6.1-terra');
+  });
   it('does not invoke either model after the request deadline', async () => {
     const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
     await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,

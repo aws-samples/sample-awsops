@@ -22,7 +22,7 @@ export type QueryGenSend = (system: string, user: string, modelId: string, abort
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 export const QUERYGEN_PRIMARY_MODEL_ID =
-  process.env.DATASOURCE_QUERYGEN_MODEL_ID || 'global.openai.gpt-6.1-terra';
+  process.env.DATASOURCE_QUERYGEN_MODEL_ID?.trim() || 'global.openai.gpt-6.1-terra';
 export const QUERYGEN_FALLBACK_MODEL_ID =
   process.env.DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID?.trim() ?? 'global.anthropic.claude-sonnet-5-5';
 
@@ -30,9 +30,9 @@ export const QUERYGEN_FALLBACK_MODEL_ID =
  *  fix it and the fallback is skipped. */
 export class SchemaEvidenceError extends Error {}
 
-class QueryGenerationDeadlineError extends Error {
+export class QueryGenerationDeadlineError extends Error {
   constructor() {
-    super('Query generation time budget exhausted; simplify the request and try again.');
+    super('Query generation time budget exhausted; simplify the request and try again. (쿼리 생성 제한 시간이 지났습니다. 요청을 줄인 뒤 다시 시도하세요.)');
   }
 }
 

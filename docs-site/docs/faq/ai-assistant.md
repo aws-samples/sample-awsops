@@ -149,7 +149,7 @@ AI 어시스턴트는 **하이브리드 라우팅**(LIVE)을 사용합니다. �
 <details>
 <summary>AI가 잘못된 답을 하면 어떻게 하나요?</summary>
 
-AI 어시스턴트는 Amazon Bedrock(Claude Sonnet / Opus / Haiku)을 기반으로 합니다.
+AI 어시스턴트는 Amazon Bedrock의 GPT-6 Luna로 채팅에 답합니다. AI 진단·합성은 Claude Sonnet, Deep 진단 선택은 Opus, 라우팅·보조 작업은 Haiku를 사용합니다.
 
 **데이터 정확성**
 

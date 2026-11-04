@@ -149,7 +149,7 @@ Yes. Python code can be executed through the **Code Interpreter**, used automati
 <details>
 <summary>What if the AI gives an incorrect answer?</summary>
 
-The AI assistant is based on Amazon Bedrock (Claude Sonnet / Opus / Haiku).
+The AI assistant answers chat with GPT-6 Luna on Amazon Bedrock. Diagnosis and synthesis use Claude Sonnet, Deep diagnosis can select Opus, and routing/helpers use Haiku.
 
 **Data accuracy**
 

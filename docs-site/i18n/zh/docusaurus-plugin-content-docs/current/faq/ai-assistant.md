@@ -149,7 +149,7 @@ AI 助手使用**混合路由**（LIVE）。不再是把所有问题都抛给大
 <details>
 <summary>AI 给出错误答案时怎么办？</summary>
 
-AI 助手基于 Amazon Bedrock（Claude Sonnet / Opus / Haiku）。
+AI 助手通过 Amazon Bedrock 的 GPT-6 Luna 回答聊天。诊断和综合使用 Claude Sonnet，Deep 诊断可选择 Opus，路由及辅助任务使用 Haiku。
 
 **数据准确性**
 

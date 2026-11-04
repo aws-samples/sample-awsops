@@ -229,7 +229,7 @@ AI 助手可以利用已注册的数据源执行分析。
 
 ### AI 查询生成
 
-启用 **AI Assist** 开关后，可以用自然语言编写查询。Bedrock Sonnet 会自动生成符合数据源类型的查询并显示说明横幅。
+启用 **AI Assist** 开关后，可以用自然语言编写查询。GPT-6.1 Terra（调用或验证失败时回退到 Claude Sonnet 5.5） 会自动生成符合数据源类型的查询并显示说明横幅。
 
 **按数据源类型的示例提示词：**
 
@@ -245,7 +245,7 @@ AI 助手可以利用已注册的数据源执行分析。
 1. 将 AI Assist 开关切换为 ON
 2. 用自然语言描述想要的数据
 3. 按 **Ctrl+Enter** 或点击执行按钮
-4. Bedrock Sonnet 生成 PromQL/LogQL/SQL 查询
+4. GPT-6.1 Terra（调用或验证失败时回退到 Claude Sonnet 5.5） 生成 PromQL/LogQL/SQL 查询
 5. 生成的查询会连同说明横幅一起显示
 
 :::tip AI Assist 快捷键

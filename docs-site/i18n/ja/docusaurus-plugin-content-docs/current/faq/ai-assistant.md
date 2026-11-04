@@ -149,7 +149,7 @@ AI アシスタントは**ハイブリッドルーティング**(LIVE)を使用�
 <details>
 <summary>AI が間違った回答をしたらどうすればいいですか?</summary>
 
-AI アシスタントは Amazon Bedrock(Claude Sonnet / Opus / Haiku)をベースにしています。
+AI アシスタントのチャットは Amazon Bedrock の GPT-6 Luna を使用します。診断・合成は Claude Sonnet、Deep 診断の選択肢は Opus、ルーティング・補助処理は Haiku です。
 
 **データの正確性**
 

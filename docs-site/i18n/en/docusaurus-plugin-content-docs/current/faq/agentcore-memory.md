@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"Image reference"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 section gateways<br/>(~160 read-only tools)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet / Opus / Haiku classes"]
+  AGENT -->|"Bedrock API"| MODEL["GPT-6 Luna chat (AGENT_MODEL_ID override)"]
 ```
 
 ### AgentCore Runtime
