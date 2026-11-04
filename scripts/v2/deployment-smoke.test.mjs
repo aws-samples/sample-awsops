@@ -510,7 +510,7 @@ test('Deploy Web runtime verification is mandatory on dev after exact image and 
   assert.equal(resolve.env.TF_VAR_demo_password, '${{ secrets.TF_VAR_DEMO_PASSWORD }}');
   assert.equal(auth.env.SMOKE_CREDENTIAL_FILE, '${{ steps.demo.outputs.credential_file }}');
   assert.equal(resolve.id, 'demo');
-  assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_version, '1.15.7');
+  assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_version, '1.17.1');
   // The wrapper can publish Terraform stdout as step outputs; the credential
   // helper must capture the effective password through the unwrapped binary.
   assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_wrapper, false);
@@ -735,7 +735,7 @@ function preparationFixture(t, {
     if (existsSync(join(root, 'scripts/v2', name))) copyFileSync(join(root, 'scripts/v2', name), join(directory, 'scripts/v2', name));
   }
   writeFileSync(join(foundation, 'main.tf'), `
-terraform { required_version = "= 1.15.7" }
+terraform { required_version = "= 1.17.1" }
 variable "create_demo_user" {
   type = bool
   default = false

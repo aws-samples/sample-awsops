@@ -179,7 +179,7 @@ resource "aws_lambda_function" "existing" {
             "filename": "./.build/function.zip", "source_code_hash": encoded,
         }
         (root / "terraform.tfstate").write_text(json.dumps({
-            "version": 4, "terraform_version": "1.15.7", "serial": 1,
+            "version": 4, "terraform_version": "1.17.1", "serial": 1,
             "lineage": "11111111-1111-4111-8111-111111111111", "outputs": {},
             "resources": [{
                 "mode": "managed", "type": "aws_lambda_function", "name": "existing",

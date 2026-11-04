@@ -63,7 +63,7 @@ resource "aws_iam_role_policy" "task_integrations_secret" {
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
       Resource = aws_secretsmanager_secret.integrations[0].arn
-    }, {
+      }, {
       Sid      = "CustomMcpCredentialMetadataRead"
       Effect   = "Allow"
       Action   = ["secretsmanager:DescribeSecret"]
