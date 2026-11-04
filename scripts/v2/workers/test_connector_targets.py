@@ -13,21 +13,35 @@ import handlers  # noqa: E402
 
 OWN = "arn:aws:lambda:ap-northeast-2:123456789012:function:awsops-dev-agent-clickhouse-mcp"
 TEMPO = OWN.replace("clickhouse", "tempo")
+ROLE = "arn:aws:iam::123456789012:role/awsops-dev-agentcore"
 ENV = {"CONNECTOR_TARGET_SYNC_ENABLED": "true",
-       "CONNECTOR_TARGET_LAMBDAS": '{"clickhouse-mcp": "%s", "tempo-mcp": "%s"}' % (OWN, TEMPO)}
+       "CONNECTOR_TARGET_LAMBDAS": '{"clickhouse-mcp": "%s", "tempo-mcp": "%s"}' % (OWN, TEMPO),
+       "CONNECTOR_TARGET_GATEWAY_ROLE_ARN": ROLE}
+
+
+class ClientError(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
 
 
 class FakeCtrl:
-    def __init__(self, targets=None, current=None, gateways=None):
+    def __init__(self, targets=None, current=None, gateways=None, gateway_detail=None, create_error=None):
         self.gateways = gateways if gateways is not None else [
             {"name": ct.gateway_name("external-obs"), "gatewayId": "gw-obs"},
             {"name": ct.gateway_name("monitoring"), "gatewayId": "gw-mon"}]
         self.targets = targets or []
         self.current = current or {}
+        self.gateway_detail = gateway_detail if gateway_detail is not None else {
+            "roleArn": ROLE, "authorizerType": "AWS_IAM"}
+        self.create_error = create_error
         self.calls = []
 
     def list_gateways(self, **_):
         return {"items": self.gateways}
+
+    def get_gateway(self, **_):
+        return self.gateway_detail
 
     def list_gateway_targets(self, **kw):
         self.calls.append(("list_targets", kw["gatewayIdentifier"]))
@@ -37,6 +51,8 @@ class FakeCtrl:
         return self.current
 
     def create_gateway_target(self, **kw):
+        if self.create_error is not None:
+            raise self.create_error
         self.calls.append(("create", kw))
 
     def update_gateway_target(self, **kw):
@@ -97,8 +113,37 @@ class ConnectorTargetSyncTest(unittest.TestCase):
         name = ct.gateway_name("external-obs")
         for gateways in ([], [{"name": name, "gatewayId": "a"}, {"name": name, "gatewayId": "b"}]):
             ctrl = FakeCtrl(gateways=gateways)
-            self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["reason"], "gateway_unavailable")
+            with self.assertRaises(RuntimeError):
+                ct.run({"kind": "clickhouse"}, ctrl=ctrl)
             self.assertEqual(ctrl.calls, [])
+
+    def test_gateway_of_another_stack_is_never_written(self):
+        ctrl = FakeCtrl(gateway_detail={"roleArn": ROLE.replace("awsops-dev", "awsops-v2-stg"),
+                                        "authorizerType": "AWS_IAM"})
+        self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["reason"], "gateway_owned_by_another_stack")
+        self.assertFalse([c for c in ctrl.calls if c[0] in ("create", "update")])
+
+    def test_gateway_without_iam_auth_is_never_written(self):
+        ctrl = FakeCtrl(gateway_detail={"roleArn": ROLE, "authorizerType": "NONE"})
+        self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["reason"], "gateway_auth_not_iam")
+        self.assertEqual(ctrl.calls, [])
+
+    def test_missing_gateway_role_env_skips_without_writes(self):
+        env = {k: v for k, v in ENV.items() if k != "CONNECTOR_TARGET_GATEWAY_ROLE_ARN"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            ctrl = FakeCtrl()
+            self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["reason"], "gateway_role_unknown")
+            self.assertEqual(ctrl.calls, [])
+
+    def test_concurrent_create_conflict_reports_exists(self):
+        ctrl = FakeCtrl(create_error=ClientError("ConflictException"))
+        self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl),
+                         {"status": "exists", "reason": "concurrent_create", "target": "clickhouse-mcp-target"})
+
+    def test_other_create_errors_are_reraised(self):
+        ctrl = FakeCtrl(create_error=ClientError("AccessDeniedException"))
+        with self.assertRaises(ClientError):
+            ct.run({"kind": "clickhouse"}, ctrl=ctrl)
 
     def test_disabled_flag_skips_everything(self):
         with mock.patch.dict(os.environ, {"CONNECTOR_TARGET_SYNC_ENABLED": "false"}):

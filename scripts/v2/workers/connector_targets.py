@@ -5,7 +5,9 @@ chat agent reaches connectors only through AgentCore gateways, whose per-kind
 targets were created by `make agentcore` (scripts/v2/agentcore/provision.py). A connector Lambda
 created by a later Terraform apply therefore had no target until the next provision run.
 
-This job creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the catalog
+The job first confirms via GetGateway that the catalog gateway runs as this stack's AgentCore role
+(CONNECTOR_TARGET_GATEWAY_ROLE_ARN) with AWS_IAM inbound auth, and skips without writing otherwise.
+It then creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the catalog
 gateway for that kind (external-obs for ClickHouse/Prometheus; monitoring for Loki/Tempo/Mimir),
 pointing at this stack's own connector Lambda. Vendor MCP presets (Datadog/Dynatrace) stay owned by
 provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are out of scope. Scope (ADR-005
@@ -77,8 +79,28 @@ def _connector_lambdas():
     return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str) and v.startswith("arn:aws:lambda:")}
 
 
+def _log(result):
+    """One CloudWatch line per outcome; status/reason/target/gateway/kind only (no ARNs)."""
+    fields = {k: result[k] for k in ("status", "reason", "target", "gateway", "kind") if k in result}
+    print(json.dumps({"connector_target_sync": fields}, sort_keys=True))
+
+
+def _expected_gateway_role():
+    value = os.environ.get("CONNECTOR_TARGET_GATEWAY_ROLE_ARN")
+    return value if isinstance(value, str) and value.startswith("arn:aws:iam::") else None
+
+
 def run(payload, ctrl=None, targets=None):
-    """payload: {kind}. Returns {status, target?}; status in created/updated/exists/skipped/error."""
+    """payload: {kind}. Returns {status, target?}; status in created/updated/exists/skipped.
+
+    Raises RuntimeError when the catalog gateway is missing or ambiguous so the job is marked failed.
+    """
+    result = _run(payload, ctrl, targets)
+    _log(result)
+    return result
+
+
+def _run(payload, ctrl, targets):
     if os.environ.get("CONNECTOR_TARGET_SYNC_ENABLED") != "true":
         return {"status": "skipped", "reason": "disabled"}
     kind = (payload or {}).get("kind")
@@ -98,16 +120,34 @@ def run(payload, ctrl=None, targets=None):
         import boto3
         ctrl = boto3.client("bedrock-agentcore-control")
 
-    gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == gateway_name(spec["gateway"])]
+    gw_name = gateway_name(spec["gateway"])
+    gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == gw_name]
     if len(gateways) != 1 or not isinstance(gateways[0].get("gatewayId"), str):
-        return {"status": "error", "reason": "gateway_unavailable"}
+        _log({"status": "failed", "reason": "gateway_unavailable", "gateway": gw_name, "kind": kind})
+        raise RuntimeError(f"gateway_unavailable: {gw_name}")
     gw_id = gateways[0]["gatewayId"]
+    # The gateway name is account-wide: write only to a gateway that runs as THIS stack's AgentCore
+    # role with AWS_IAM inbound auth (never auto-replace a NONE-auth gateway; see provision.ensure_gateways).
+    expected_role = _expected_gateway_role()
+    if not expected_role:
+        return {"status": "skipped", "reason": "gateway_role_unknown", "gateway": gw_name}
+    gw = ctrl.get_gateway(gatewayIdentifier=gw_id)
+    if gw.get("roleArn") != expected_role:
+        return {"status": "skipped", "reason": "gateway_owned_by_another_stack", "gateway": gw_name}
+    if gw.get("authorizerType") != "AWS_IAM":
+        return {"status": "skipped", "reason": "gateway_auth_not_iam", "gateway": gw_name}
     tools = inject_account(spec["tools"])
     cfg = {"mcp": {"lambda": {"lambdaArn": lambda_arn, "toolSchema": {"inlinePayload": tools}}}}
     existing = {t.get("name"): t for t in _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
     if name not in existing:
-        ctrl.create_gateway_target(gatewayIdentifier=gw_id, name=name, description=spec["description"],
-                                   targetConfiguration=cfg, credentialProviderConfigurations=_CREDS)
+        try:
+            ctrl.create_gateway_target(gatewayIdentifier=gw_id, name=name, description=spec["description"],
+                                       targetConfiguration=cfg, credentialProviderConfigurations=_CREDS)
+        except Exception as error:
+            code = (getattr(error, "response", None) or {}).get("Error", {}).get("Code")
+            if code == "ConflictException":
+                return {"status": "exists", "reason": "concurrent_create", "target": name}
+            raise
         return {"status": "created", "target": name}
     target_id = existing[name]["targetId"]
     current = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=target_id)
@@ -123,8 +163,8 @@ def run(payload, ctrl=None, targets=None):
     own = set(_connector_lambdas().values())
     if current_lambda.get("lambdaArn") not in own:
         return {"status": "skipped", "reason": "target_owned_by_another_stack", "target": name}
-    preserve ={field: copy.deepcopy(current[field]) for field in ("metadataConfiguration", "privateEndpoint")
-                if current.get(field) is not None}
+    preserve = {field: copy.deepcopy(current[field]) for field in ("metadataConfiguration", "privateEndpoint")
+                 if current.get(field) is not None}
     ctrl.update_gateway_target(gatewayIdentifier=gw_id, targetId=target_id, name=name,
                                description=spec["description"], targetConfiguration=cfg,
                                credentialProviderConfigurations=_CREDS, **preserve)

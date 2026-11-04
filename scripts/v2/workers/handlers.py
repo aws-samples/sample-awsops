@@ -1,4 +1,6 @@
-"""AWSops v2 P2 — job-type registry. READ/COMPUTE only (no mutate ops until P3 ADR-005[legacy 029] controls).
+"""AWSops v2 P2 — job-type registry. READ/COMPUTE only, with one gated exception: `connector_target_sync`
+creates/updates this stack's own AgentCore gateway targets (never deletes; ADR-005 owned-resource scope,
+owner clarification 2026-11-04; default off via connector_target_sync_enabled).
 Each handler: (payload: dict, dry_run: bool) -> (result_dict_or_None, artifact_bytes_or_None).
 P2 ships ONE synthetic proof handler ('noop') exercising sleep / memory / optional OOM."""
 import os
@@ -182,7 +184,7 @@ def _datasource_index(payload, dry_run):
 
 
 def _connector_target_sync(payload, dry_run):
-    """Create/update this stack's external-obs gateway target for one datasource kind
+    """Create/update this stack's catalog gateway target (external-obs or monitoring) for one datasource kind
     (connector_targets.py). Short AgentCore control-plane calls → lambda runtime. payload: {kind}."""
     if dry_run:
         return {"dry_run": True, "would_sync": payload.get("kind")}, None

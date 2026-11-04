@@ -236,7 +236,13 @@ A connector Lambda created by a later Terraform apply has no gateway target unti
 runs again, so chat reports zero connector tools for a freshly registered datasource. With
 `connector_target_sync_enabled` (default false; requires `workers_enabled`, `agentcore_enabled` and
 `integrations_enabled`), `POST /api/datasources/manage` enqueues a `connector_target_sync` job
-(`scripts/v2/workers/connector_targets.py`, Lambda runtime). The job creates or updates
+(`scripts/v2/workers/connector_targets.py`, Lambda runtime) fire-and-forget, only for the five
+connector kinds (ClickHouse, Prometheus, Loki, Tempo, Mimir). Before writing, the job calls
+`GetGateway` and proceeds only when the gateway's `roleArn` is this stack's AgentCore role
+(`CONNECTOR_TARGET_GATEWAY_ROLE_ARN`) and its inbound auth is `AWS_IAM`; otherwise it skips with
+`gateway_owned_by_another_stack` / `gateway_auth_not_iam`. A missing or ambiguous gateway fails the
+job (a `failed` row), every outcome is logged to the worker's CloudWatch log, and a concurrent
+create conflict is reported as `exists`. The job creates or updates
 `<kind>-mcp-target` on the kind's catalog gateway — `awsops-v2-external-obs-gateway` for
 ClickHouse/Prometheus, `awsops-v2-monitoring-gateway` for Loki/Tempo/Mimir — with the configuration
 `ensure_targets` writes (packaged `catalog.py`; parity is unit-tested). Vendor MCP presets

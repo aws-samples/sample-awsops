@@ -107,7 +107,7 @@ export async function POST(request: Request) {
     const ds = await getDatasource(id);
     if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
-    await enqueueConnectorTargetSync(kind); // make the kind callable from chat (best-effort, gated)
+    void enqueueConnectorTargetSync(kind); // make the kind callable from chat (fire-and-forget like warmSchemaCache; the helper swallows errors, gated)
     return json({ id }, 201);
   } catch (e) {
     const msg = (e as Error).message || 'create failed';

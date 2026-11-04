@@ -24,7 +24,8 @@ locals {
   cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
   cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]
   cts_env_map = local.cts == 1 ? {
-    CONNECTOR_TARGET_SYNC_ENABLED = "true"
+    CONNECTOR_TARGET_SYNC_ENABLED     = "true"
+    CONNECTOR_TARGET_GATEWAY_ROLE_ARN = aws_iam_role.agentcore[0].arn
     CONNECTOR_TARGET_LAMBDAS = jsonencode({ for k in local.cts_lambda_keys :
     k => aws_lambda_function.agent[k].arn if contains(keys(aws_lambda_function.agent), k) })
   } : {}
