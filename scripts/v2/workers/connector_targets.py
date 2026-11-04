@@ -1,14 +1,16 @@
 """Connector target sync: make a just-registered datasource kind callable from chat.
 
 Registering a ClickHouse/Prometheus/Tempo/... datasource stores the endpoint in Aurora, but the
-chat agent reaches connectors only through the external-obs AgentCore gateway, whose per-kind
+chat agent reaches connectors only through AgentCore gateways, whose per-kind
 targets were created by `make agentcore` (scripts/v2/agentcore/provision.py). A connector Lambda
 created by a later Terraform apply therefore had no target until the next provision run.
 
-This job creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the
-awsops-owned external-obs gateway, pointing at this stack's own connector Lambda. Scope (ADR-005
+This job creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the catalog
+gateway for that kind (external-obs for ClickHouse/Prometheus; monitoring for Loki/Tempo/Mimir),
+pointing at this stack's own connector Lambda. Vendor MCP presets (Datadog/Dynatrace) stay owned by
+provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are out of scope. Scope (ADR-005
 owner clarification 2026-11-04): create/update of awsops's own resources only. It never deletes,
-never touches another gateway, and only accepts Lambda ARNs supplied by Terraform through
+only writes those two awsops gateways, and only accepts Lambda ARNs supplied by Terraform through
 CONNECTOR_TARGET_LAMBDAS. The tool schema comes from the packaged provision catalog, so the target
 is byte-identical to what provision.py would write.
 """
@@ -17,8 +19,11 @@ import json
 import os
 import re
 
-GATEWAY_KEY = "external-obs"
-GATEWAY_NAME = f"awsops-v2-{GATEWAY_KEY}-gateway"  # provision.ensure_gateways naming
+GATEWAY_KEYS = ("external-obs", "monitoring")
+
+
+def gateway_name(key):
+    return f"awsops-v2-{key}-gateway"  # provision.ensure_gateways naming
 _KIND = re.compile(r"[a-z][a-z0-9-]{1,30}")
 _CREDS = [{"credentialProviderType": "GATEWAY_IAM_ROLE"}]
 
@@ -84,7 +89,7 @@ def run(payload, ctrl=None, targets=None):
         targets = catalog.TARGETS
     name = f"{kind}-mcp-target"
     spec = targets.get(name)
-    if not spec or spec.get("gateway") != GATEWAY_KEY:
+    if not spec or spec.get("gateway") not in GATEWAY_KEYS:
         return {"status": "skipped", "reason": "not_a_connector_kind"}
     lambda_arn = _connector_lambdas().get(spec["lambda_key"])
     if not lambda_arn:
@@ -93,7 +98,7 @@ def run(payload, ctrl=None, targets=None):
         import boto3
         ctrl = boto3.client("bedrock-agentcore-control")
 
-    gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == GATEWAY_NAME]
+    gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == gateway_name(spec["gateway"])]
     if len(gateways) != 1 or not isinstance(gateways[0].get("gatewayId"), str):
         return {"status": "error", "reason": "gateway_unavailable"}
     gw_id = gateways[0]["gatewayId"]

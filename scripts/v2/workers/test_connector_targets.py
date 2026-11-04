@@ -12,13 +12,16 @@ import connector_targets as ct  # noqa: E402
 import handlers  # noqa: E402
 
 OWN = "arn:aws:lambda:ap-northeast-2:123456789012:function:awsops-dev-agent-clickhouse-mcp"
+TEMPO = OWN.replace("clickhouse", "tempo")
 ENV = {"CONNECTOR_TARGET_SYNC_ENABLED": "true",
-       "CONNECTOR_TARGET_LAMBDAS": '{"clickhouse-mcp": "%s"}' % OWN}
+       "CONNECTOR_TARGET_LAMBDAS": '{"clickhouse-mcp": "%s", "tempo-mcp": "%s"}' % (OWN, TEMPO)}
 
 
 class FakeCtrl:
     def __init__(self, targets=None, current=None, gateways=None):
-        self.gateways = gateways if gateways is not None else [{"name": ct.GATEWAY_NAME, "gatewayId": "gw-obs"}]
+        self.gateways = gateways if gateways is not None else [
+            {"name": ct.gateway_name("external-obs"), "gatewayId": "gw-obs"},
+            {"name": ct.gateway_name("monitoring"), "gatewayId": "gw-mon"}]
         self.targets = targets or []
         self.current = current or {}
         self.calls = []
@@ -60,6 +63,12 @@ class ConnectorTargetSyncTest(unittest.TestCase):
         self.assertEqual(call["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"], OWN)
         self.assertEqual(call["credentialProviderConfigurations"], [{"credentialProviderType": "GATEWAY_IAM_ROLE"}])
 
+    def test_tempo_goes_to_the_monitoring_gateway(self):
+        ctrl = FakeCtrl()
+        self.assertEqual(ct.run({"kind": "tempo"}, ctrl=ctrl)["status"], "created")
+        self.assertEqual(ctrl.calls[-1][1]["gatewayIdentifier"], "gw-mon")
+        self.assertEqual(ctrl.calls[-1][1]["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"], TEMPO)
+
     def test_matching_target_is_left_alone(self):
         ctrl = FakeCtrl(targets=[{"name": "clickhouse-mcp-target", "targetId": "t1"}], current=current_for(OWN))
         self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["status"], "exists")
@@ -79,13 +88,14 @@ class ConnectorTargetSyncTest(unittest.TestCase):
     def test_rejects_non_connector_kinds_and_undeployed_lambdas(self):
         ctrl = FakeCtrl()
         self.assertEqual(ct.run({"kind": "network"}, ctrl=ctrl)["reason"], "not_a_connector_kind")
-        self.assertEqual(ct.run({"kind": "opensearch"}, ctrl=ctrl)["reason"], "not_a_connector_kind")  # monitoring gateway
+        self.assertEqual(ct.run({"kind": "opensearch"}, ctrl=ctrl)["reason"], "connector_lambda_not_deployed")  # not a datasource connector
         self.assertEqual(ct.run({"kind": "prometheus"}, ctrl=ctrl)["reason"], "connector_lambda_not_deployed")
         self.assertEqual(ct.run({"kind": "../x"}, ctrl=ctrl)["reason"], "invalid_kind")
         self.assertEqual(ctrl.calls, [])
 
     def test_missing_or_ambiguous_gateway_is_an_error_without_writes(self):
-        for gateways in ([], [{"name": ct.GATEWAY_NAME, "gatewayId": "a"}, {"name": ct.GATEWAY_NAME, "gatewayId": "b"}]):
+        name = ct.gateway_name("external-obs")
+        for gateways in ([], [{"name": name, "gatewayId": "a"}, {"name": name, "gatewayId": "b"}]):
             ctrl = FakeCtrl(gateways=gateways)
             self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl)["reason"], "gateway_unavailable")
             self.assertEqual(ctrl.calls, [])
@@ -108,7 +118,9 @@ class ProvisionParityTest(unittest.TestCase):
         for spec in catalog.TARGETS.values():
             self.assertEqual(ct.inject_account(spec["tools"]), provision._inject_account(spec["tools"]))
             self.assertEqual(ct.tool_fingerprint(spec["tools"]), provision.tool_fingerprint(spec["tools"]))
-        self.assertEqual(ct.GATEWAY_NAME, f"awsops-v2-{ct.GATEWAY_KEY}-gateway")
+        self.assertEqual(ct.gateway_name("monitoring"), "awsops-v2-monitoring-gateway")
+        for kind in ("clickhouse", "prometheus", "loki", "tempo", "mimir"):
+            self.assertIn(catalog.TARGETS[f"{kind}-mcp-target"]["gateway"], ct.GATEWAY_KEYS)
 
 
 if __name__ == "__main__":

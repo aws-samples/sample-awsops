@@ -122,13 +122,13 @@ run "connector_target_sync_writes_only_the_own_gateway_without_delete" {
       for s in jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement :
       !anytrue([for a in s.Action : can(regex("Delete", a))]) &&
       (s.Sid == "ResolveOwnGateway" ? s.Action == ["bedrock-agentcore:ListGateways"] :
-      s.Resource == "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-external-obs-gateway-*")
+      s.Resource == ["arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-external-obs-gateway-*", "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-monitoring-gateway-*"])
     ])
-    error_message = "Target sync may only create/update targets on the awsops external-obs gateway and never delete."
+    error_message = "Target sync may only create/update targets on the awsops external-obs/monitoring gateways and never delete."
   }
   assert {
     condition = (aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_SYNC_ENABLED"] == "true" &&
-      toset(keys(jsondecode(aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_LAMBDAS"]))) == toset(["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp", "jaeger-mcp", "datadog-mcp", "dynatrace-mcp"]) &&
+      toset(keys(jsondecode(aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_LAMBDAS"]))) == toset(["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]) &&
     length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "CONNECTOR_TARGET_SYNC_ENABLED" && e.value == "true"]) == 1)
     error_message = "The worker receives only connector Lambda ARNs and the web task the enqueue gate."
   }

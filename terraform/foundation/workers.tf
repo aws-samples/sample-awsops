@@ -19,10 +19,10 @@ locals {
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
   # connector_target_sync (ADR-005 owner clarification 2026-11-04: own-resource create/update only).
-  # Connector Lambdas whose catalog target lives on the external-obs gateway; the worker only ever
+  # Connector Lambdas with a catalog TARGETS entry (external-obs or monitoring gateway); the worker only ever
   # points a target at one of these ARNs. Default false → 0 resources/IAM and no env/zip diff.
   cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
-  cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp", "jaeger-mcp", "datadog-mcp", "dynatrace-mcp"]
+  cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]
   cts_env_map = local.cts == 1 ? {
     CONNECTOR_TARGET_SYNC_ENABLED = "true"
     CONNECTOR_TARGET_LAMBDAS = jsonencode({ for k in local.cts_lambda_keys :
@@ -1661,7 +1661,7 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
 }
 
 # connector_target_sync (ADR-005 owner clarification 2026-11-04): create/update of the awsops-owned
-# external-obs gateway's targets only. No Delete action; the gateway ARN is pinned to the
+# external-obs and monitoring gateways' targets only (the catalog homes for the connector kinds). No Delete action; the gateway ARN is pinned to the
 # provision.py name; ListGateways is a read needed to resolve that name to its id.
 resource "aws_iam_role_policy" "worker_lambda_connector_targets" {
   count = local.cts
@@ -1687,7 +1687,8 @@ resource "aws_iam_role_policy" "worker_lambda_connector_targets" {
           "bedrock-agentcore:CreateGatewayTarget",
           "bedrock-agentcore:UpdateGatewayTarget",
         ]
-        Resource = "arn:aws:bedrock-agentcore:${var.region}:${local.acct}:gateway/awsops-v2-external-obs-gateway-*"
+        Resource = [for g in ["external-obs", "monitoring"] :
+        "arn:aws:bedrock-agentcore:${var.region}:${local.acct}:gateway/awsops-v2-${g}-gateway-*"]
       },
     ]
   })
