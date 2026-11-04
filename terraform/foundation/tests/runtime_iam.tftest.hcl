@@ -332,14 +332,33 @@ run "privatelink_endpoint_creates_restricted_consumer_resources" {
     values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
   }
   override_resource {
+    target = aws_vpc_endpoint.privatelink["prometheus"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-def.vpce-svc-0123456789abcdef1.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  override_resource {
     target          = aws_security_group.service
     override_during = plan
     values          = { id = "sg-0fixtureservice" }
   }
   override_resource {
-    target          = aws_security_group.privatelink_clients
+    target          = aws_security_group.privatelink_clients["clickhouse"]
     override_during = plan
-    values          = { id = "sg-0fixtureclients" }
+    values          = { id = "sg-0fixtureclickhouse" }
+  }
+  override_resource {
+    target          = aws_security_group.privatelink_clients["prometheus"]
+    override_during = plan
+    values          = { id = "sg-0fixtureprometheus" }
+  }
+  override_resource {
+    target          = aws_security_group.privatelink["clickhouse"]
+    override_during = plan
+    values          = { id = "sg-0fixtureepclickhouse" }
+  }
+  override_resource {
+    target          = aws_security_group.privatelink["prometheus"]
+    override_during = plan
+    values          = { id = "sg-0fixtureepprometheus" }
   }
   variables {
     agentcore_enabled      = true
@@ -347,36 +366,96 @@ run "privatelink_endpoint_creates_restricted_consumer_resources" {
     clickhouse_vpc_enabled = true
     prometheus_vpc_enabled = true
     privatelink_endpoints = {
-      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123, 9000] }
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+      prometheus = { kind = "prometheus", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef1", ports = [9090] }
     }
   }
   assert {
     condition = (
-      length(aws_security_group.privatelink) == 1 &&
-      length(aws_security_group.privatelink_clients) == 1 &&
+      length(aws_security_group.privatelink) == 2 &&
+      length(aws_security_group.privatelink_clients) == 2 &&
       length(aws_vpc_security_group_ingress_rule.privatelink) == 2 &&
-      alltrue([for _, r in aws_vpc_security_group_ingress_rule.privatelink : r.cidr_ipv4 == null && r.cidr_ipv6 == null]) &&
-      toset([for _, r in aws_vpc_security_group_ingress_rule.privatelink : r.from_port]) == toset([8123, 9000])
+      alltrue([for _, r in aws_vpc_security_group_ingress_rule.privatelink : r.cidr_ipv4 == null && r.cidr_ipv6 == null])
     )
-    error_message = "The endpoint SG must admit exactly the dedicated client SG, one rule per port, never the shared service SG and never a CIDR."
+    error_message = "One endpoint SG and one client SG per entry/kind, one rule per port, never a CIDR."
+  }
+  assert {
+    condition = (
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].security_group_id == "sg-0fixtureepclickhouse" &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].referenced_security_group_id == "sg-0fixtureclickhouse" &&
+      aws_vpc_security_group_ingress_rule.privatelink["clickhouse-8123"].from_port == 8123 &&
+      aws_vpc_security_group_ingress_rule.privatelink["prometheus-9090"].security_group_id == "sg-0fixtureepprometheus" &&
+      aws_vpc_security_group_ingress_rule.privatelink["prometheus-9090"].referenced_security_group_id == "sg-0fixtureprometheus" &&
+      aws_vpc_security_group_ingress_rule.privatelink["prometheus-9090"].from_port == 9090
+    )
+    error_message = "Each endpoint SG must carry only its own entry's ports, admitted only from its own kind's client SG (no cross-entry port leakage)."
   }
   assert {
     condition = (
       aws_vpc_endpoint.privatelink["clickhouse"].vpc_endpoint_type == "Interface" &&
       aws_vpc_endpoint.privatelink["clickhouse"].private_dns_enabled == false &&
       aws_vpc_endpoint.privatelink["clickhouse"].subnet_ids == toset(var.existing_private_subnet_ids) &&
-      aws_vpc_endpoint.privatelink["clickhouse"].vpc_id == var.existing_vpc_id
+      aws_vpc_endpoint.privatelink["clickhouse"].vpc_id == var.existing_vpc_id &&
+      aws_vpc_endpoint.privatelink["clickhouse"].security_group_ids == toset(["sg-0fixtureepclickhouse"]) &&
+      aws_vpc_endpoint.privatelink["prometheus"].security_group_ids == toset(["sg-0fixtureepprometheus"])
     )
-    error_message = "The endpoint must be a private-DNS-off interface endpoint in the existing private subnets."
+    error_message = "Each endpoint must be a private-DNS-off interface endpoint in the existing private subnets with its own SG."
   }
   assert {
     condition = (
-      aws_lambda_function.agent["clickhouse-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice", "sg-0fixtureclients"]) &&
-      aws_lambda_function.agent["prometheus-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice"]) &&
+      aws_lambda_function.agent["clickhouse-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice", "sg-0fixtureclickhouse"]) &&
+      aws_lambda_function.agent["prometheus-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice", "sg-0fixtureprometheus"]) &&
       length(aws_lambda_function.agent["loki-mcp"].vpc_config) == 0
     )
-    error_message = "Only the connector whose kind has an endpoint may join the client SG; another VPC-attached connector keeps only the service SG and others stay outside the VPC."
+    error_message = "A connector joins only its own kind's client SG; connectors without an endpoint stay outside it."
   }
+}
+
+run "privatelink_vpc_flagged_connector_without_endpoint_keeps_only_the_service_sg" {
+  command = plan
+  override_resource {
+    target = aws_vpc_endpoint.privatelink["clickhouse"]
+    values = { dns_entry = [{ dns_name = "vpce-0fixture-abc.vpce-svc-0123456789abcdef0.ap-northeast-2.vpce.amazonaws.com", hosted_zone_id = "ZFIXTURE" }] }
+  }
+  override_resource {
+    target          = aws_security_group.service
+    override_during = plan
+    values          = { id = "sg-0fixtureservice" }
+  }
+  override_resource {
+    target          = aws_security_group.privatelink_clients["clickhouse"]
+    override_during = plan
+    values          = { id = "sg-0fixtureclickhouse" }
+  }
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    prometheus_vpc_enabled = true
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123] }
+    }
+  }
+  assert {
+    condition = (
+      aws_lambda_function.agent["prometheus-mcp"].vpc_config[0].security_group_ids == toset(["sg-0fixtureservice"]) &&
+      length(aws_security_group.privatelink_clients) == 1
+    )
+    error_message = "A VPC-attached connector whose kind has no endpoint must not join any client SG."
+  }
+}
+
+run "privatelink_rejects_duplicate_ports" {
+  command = plan
+  variables {
+    agentcore_enabled      = true
+    integrations_enabled   = true
+    clickhouse_vpc_enabled = true
+    privatelink_endpoints = {
+      clickhouse = { kind = "clickhouse", service_name = "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0", ports = [8123, 8123] }
+    }
+  }
+  expect_failures = [var.privatelink_endpoints]
 }
 
 run "privatelink_rejects_a_malformed_service_name" {

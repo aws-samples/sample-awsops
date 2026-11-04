@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d4c1cbce5925 · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a2604b6a1da3 · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -15,8 +15,8 @@ Web image receipt/ECR proof precedes private migrations, including reuse; promot
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
 `datasource-credential-isolation.md` requires native-default credential backfill before stricter
 explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007).
-`privatelink-observability.md` covers cross-account PrivateLink to datasources: acceptance stays manual, only private ranges and the
-connector security group are admitted, and no public CIDR is ever added (ADR-007).
+`privatelink-observability.md` covers cross-account PrivateLink to datasources: acceptance stays manual, each endpoint admits only its own kind's
+connector client security group and no CIDR, and zone changes need `allow_dns_changes` (ADR-007).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
 removed; flag any change that reintroduces a v1 procedure.

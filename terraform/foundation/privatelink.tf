@@ -30,8 +30,8 @@ variable "privatelink_endpoints" {
     error_message = "privatelink_endpoints service_name must be an endpoint service name: com.amazonaws.vpce.<region>.vpce-svc-<hex id>."
   }
   validation {
-    condition     = alltrue([for _, e in var.privatelink_endpoints : length(e.ports) > 0 && length(e.ports) <= 4 && alltrue([for p in e.ports : p >= 1 && p <= 65535 && p == floor(p)])])
-    error_message = "privatelink_endpoints ports must list 1-4 integer TCP ports between 1 and 65535."
+    condition     = alltrue([for _, e in var.privatelink_endpoints : length(e.ports) > 0 && length(e.ports) <= 4 && length(distinct(e.ports)) == length(e.ports) && alltrue([for p in e.ports : p >= 1 && p <= 65535 && p == floor(p)])])
+    error_message = "privatelink_endpoints ports must list 1-4 distinct integer TCP ports between 1 and 65535."
   }
   validation {
     condition = alltrue([for _, e in var.privatelink_endpoints : (
@@ -39,7 +39,7 @@ variable "privatelink_endpoints" {
       e.kind == "prometheus" ? var.prometheus_vpc_enabled :
       e.kind == "loki" ? var.loki_vpc_enabled :
       e.kind == "tempo" ? var.tempo_vpc_enabled :
-      var.mimir_vpc_enabled
+      e.kind == "mimir" ? var.mimir_vpc_enabled : true
     )])
     error_message = "Every kind in privatelink_endpoints needs its <kind>_vpc_enabled flag (the connector Lambda must be attached to the VPC)."
   }
@@ -53,7 +53,7 @@ variable "privatelink_zone_name" {
   type        = string
   default     = ""
   nullable    = false
-  description = "Optional private DNS zone name (for example obs.awsops.internal) that gives each PrivateLink endpoint a short, stable name <key>.<zone>. Empty (default) → no zone; the endpoint's regional vpce DNS name is used directly. Only takes effect when privatelink_endpoints is non-empty. Lowercase, at least two labels, no trailing dot."
+  description = "Optional private DNS zone name (for example obs.awsops.internal) that gives each PrivateLink endpoint a short, stable name <key>.<zone>. Empty (default) → no zone; the endpoint's regional vpce DNS name is used directly. Only takes effect when privatelink_endpoints is non-empty. Lowercase, at least two labels, no trailing dot. Setting or clearing it plans Route 53 changes, which the CI DNS gate refuses unless both the plan and the apply dispatch pass allow_dns_changes=true on a full (non-domain-rollout) plan; read the saved plan and confirm only the PrivateLink zone and records change (see docs/runbooks/privatelink-observability.md)."
 
   validation {
     condition     = var.privatelink_zone_name == "" || (length(var.privatelink_zone_name) <= 253 && can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", var.privatelink_zone_name)))
@@ -68,48 +68,58 @@ variable "privatelink_zone_name" {
 locals {
   privatelink_enabled      = length(var.privatelink_endpoints) > 0
   privatelink_zone_enabled = local.privatelink_enabled && var.privatelink_zone_name != ""
-  # Connector Lambda keys (ai.tf local.agent_lambdas) for the kinds that have an endpoint. Only these
-  # functions get the dedicated client security group below.
-  privatelink_client_connectors = toset([for _, e in var.privatelink_endpoints : "${e.kind}-mcp"])
+  # Kinds that have an endpoint. The connector Lambda "<kind>-mcp" (ai.tf local.agent_lambdas) gets
+  # that kind's dedicated client security group below, and no other function does.
+  # Regional DNS name per endpoint: the entry whose first label has no availability-zone suffix (AWS does not document
+  # dns_entry ordering); falls back to the first entry while the endpoint has none yet.
+  privatelink_dns = {
+    for key, ep in aws_vpc_endpoint.privatelink : key => try(
+      [for d in ep.dns_entry : d.dns_name if !can(regex("^[^.]+-[a-z]{2}-[a-z]+-[0-9][a-z]\\.", d.dns_name))][0],
+      try(ep.dns_entry[0].dns_name, "")
+    )
+  }
+  privatelink_kinds = toset([for _, e in var.privatelink_endpoints : e.kind])
 }
 
-# Dedicated, empty client group. It carries no rules of its own: it exists only as the SINGLE source
-# the endpoint security group admits. ai.tf attaches it (in addition to the shared `service` group,
-# which still provides egress) to the connector Lambdas whose kind has an endpoint, and to nothing else.
-# The web tasks, workers and every other Lambda share `service` but not this group, so they cannot
-# reach a PrivateLink datasource. The description is immutable once created.
+# Dedicated, empty client groups, one per connector kind. A client group carries no rules of its own:
+# it exists only as the SINGLE source that kind's endpoint security groups admit. ai.tf attaches it (in
+# addition to the shared `service` group, which still provides egress) to that kind's connector Lambda
+# and to nothing else. The web tasks, workers and every other Lambda share `service` but not these
+# groups, so they cannot reach a PrivateLink datasource, and one kind's connector cannot reach another
+# kind's endpoint. The description is immutable once created.
 resource "aws_security_group" "privatelink_clients" {
-  count       = local.privatelink_enabled ? 1 : 0
-  name        = "${var.project}-privatelink-clients"
+  for_each    = local.privatelink_kinds
+  name        = "${var.project}-privatelink-clients-${each.key}"
   description = "Connector Lambdas allowed to use PrivateLink datasource endpoints"
   vpc_id      = local.vpc_id
-  tags        = { Name = "${var.project}-privatelink-clients" }
+  tags        = { Name = "${var.project}-privatelink-clients-${each.key}", Kind = each.key }
 }
 
-# The endpoint ENIs accept traffic only from the dedicated client group, only on the listed
-# ports. No CIDR rules and no egress rule (an endpoint ENI never initiates connections).
+# One endpoint security group per entry, so each entry's port list is its own ceiling. Ingress only from
+# that entry's kind client group, only on its ports. No CIDR rules and no egress rule (an endpoint ENI
+# never initiates connections).
 resource "aws_security_group" "privatelink" {
-  count       = local.privatelink_enabled ? 1 : 0
-  name        = "${var.project}-privatelink-sg"
-  description = "PrivateLink interface endpoints for cross-account datasources"
+  for_each    = var.privatelink_endpoints
+  name        = "${var.project}-privatelink-${each.key}"
+  description = "PrivateLink interface endpoint for a cross-account datasource"
   vpc_id      = local.vpc_id
-  tags        = { Name = "${var.project}-privatelink-sg" }
+  tags        = { Name = "${var.project}-privatelink-${each.key}" }
 }
 
 resource "aws_vpc_security_group_ingress_rule" "privatelink" {
   for_each = {
     for pair in flatten([
       for key, e in var.privatelink_endpoints : [
-        for port in e.ports : { id = "${key}-${port}", port = port }
+        for port in e.ports : { id = "${key}-${port}", key = key, kind = e.kind, port = port }
       ]
-    ]) : pair.id => pair.port
+    ]) : pair.id => pair
   }
 
-  security_group_id            = aws_security_group.privatelink[0].id
-  referenced_security_group_id = aws_security_group.privatelink_clients[0].id
+  security_group_id            = aws_security_group.privatelink[each.value.key].id
+  referenced_security_group_id = aws_security_group.privatelink_clients[each.value.kind].id
   ip_protocol                  = "tcp"
-  from_port                    = each.value
-  to_port                      = each.value
+  from_port                    = each.value.port
+  to_port                      = each.value.port
   description                  = "PrivateLink clients ${each.key}"
 }
 
@@ -120,7 +130,7 @@ resource "aws_vpc_endpoint" "privatelink" {
   vpc_endpoint_type   = "Interface"
   service_name        = each.value.service_name
   subnet_ids          = local.private_subnet_ids
-  security_group_ids  = [aws_security_group.privatelink[0].id]
+  security_group_ids  = [aws_security_group.privatelink[each.key].id]
   private_dns_enabled = false
 
   tags = {
@@ -150,7 +160,7 @@ resource "aws_route53_record" "privatelink" {
   name    = "${each.key}.${var.privatelink_zone_name}"
   type    = "CNAME"
   ttl     = 60
-  records = [aws_vpc_endpoint.privatelink[each.key].dns_entry[0].dns_name]
+  records = [local.privatelink_dns[each.key]]
 }
 
 # First regional DNS name per endpoint. Register it as the datasource host,
@@ -158,7 +168,7 @@ resource "aws_route53_record" "privatelink" {
 output "privatelink_endpoint_dns" {
   description = "Regional DNS name of each PrivateLink endpoint, keyed by privatelink_endpoints label."
   value = {
-    for key, ep in aws_vpc_endpoint.privatelink : key => ep.dns_entry[0].dns_name
+    for key, ep in aws_vpc_endpoint.privatelink : key => local.privatelink_dns[key]
   }
 }
 
