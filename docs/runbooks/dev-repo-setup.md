@@ -1088,8 +1088,9 @@ Plan and Apply migrate together from `tfplan` to `tfplan-<attempt>`; historical 
 retain the old format and inspector. The reference overwrite uses the upload action's
 same-run runtime token, so `GITHUB_TOKEN` remains `actions: read`, not `actions: write`.
 
-Use a trusted checkout at the plan's full SHA with the Terraform version pinned
-by that checkout's plan workflow and its locked provider schemas already installed. Authenticate `gh` and the intended AWS profile. No client encryption
+Use a trusted checkout at the plan's full SHA with the exact `terraform_version`
+pinned in that checkout's `.github/workflows/terraform.yml` and its locked provider
+schemas already installed. Authenticate `gh` and the intended AWS profile. No client encryption
 key is required for this S3 inspection:
 
 ```bash

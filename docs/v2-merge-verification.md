@@ -10,7 +10,7 @@
   `observability`→`external-obs` 별칭이 라우팅 양쪽(카탈로그+에이전트 런타임)에 있는지,
   v1 `/awsops/` 경로 리터럴이 web 소스에 누출되지 않는지 확인 (`web/lib/merge-invariants.ts`).
 - **S3**: 파일 격리 pytest + web vitest + 배포 Node 테스트를 필수 실행한다. 배포 Node 테스트는
-  PyYAML과 Terraform (exact version pinned in `scripts/v2/terraform-test.sh`)이 필수이며 누락 시 실패한다. 마지막 fmt/validate 진단만
+  PyYAML과 Terraform (exact version enforced by `scripts/v2/deployment-smoke.test.mjs`)이 필수이며 누락 시 실패한다. 마지막 fmt/validate 진단만
   참고용이다. PR CI는 private migration 오프라인 테스트, 실제 PostgreSQL runner·웹 연결 단계 테스트,
   별도 복사본의 backend 비활성 Terraform mock 테스트도 필수로 실행한다
   (`scripts/v2/merge-verify.sh`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml`).
@@ -51,9 +51,11 @@ Python suite locally. Merge Verify prepares and cleans this state automatically.
 
 Use the Node.js and Terraform versions pinned in `.github/workflows/merge-verify.yml`,
 Python 3.12, curl, OpenSSL, jq and a reachable Docker daemon. The exact Terraform
-fixture requirement is enforced by `scripts/v2/terraform-test.sh`. Application and
-migration container tags are separate pins in `web/Dockerfile` and
-`scripts/v2/ci/Dockerfile.migration`; satisfy any manifest `engines` as well. Install dependencies from the repository root. The private
+fixture requirements are enforced by each suite: `scripts/v2/terraform-test.sh`,
+`scripts/v2/deployment-smoke.test.mjs` and `scripts/v2/ci/run-migration.terraform.test.mjs`.
+Web and migration workloads intentionally have separate Node.js pins that may
+differ: `web/Dockerfile` and `scripts/v2/ci/Dockerfile.migration`. Follow the pin for
+the workload being built or tested and satisfy any manifest `engines`, where present. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
 The required web-image helper suite also needs Linux `/proc` and curl installed
@@ -149,7 +151,7 @@ node --test scripts/v2/deployment-smoke.test.mjs
 ```
 
 This required deployment suite loads workflow YAML using Python 3 with **PyYAML** and evaluates
-an offline variable fixture with Terraform (exact version pinned in `scripts/v2/terraform-test.sh`). Real curl/HTTPS cases also require curl and
+an offline variable fixture with the exact Terraform version enforced by `scripts/v2/deployment-smoke.test.mjs`. Real curl/HTTPS cases also require curl and
 OpenSSL; they use only a loopback server and local test certificates. Missing prerequisites fail the suite and
 the shared runner; these tests never skip. The fixture uses no providers, deployment backend or AWS.
 
@@ -166,7 +168,7 @@ AWS/DNS API is called. Local `.terraform`, backend config, tfvars and state are 
 Initialization installs locked providers; for fully offline use, point `TF_CLI_CONFIG_FILE`
 at an existing filesystem mirror containing them with no `direct` fallback.
 
-배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform (exact version pinned in `scripts/v2/terraform-test.sh`)을 필수로 요구한다.
+배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform (exact version enforced by `scripts/v2/deployment-smoke.test.mjs`)을 필수로 요구한다.
 HTTPS 사례는 loopback 서버와 로컬 테스트 인증서만 사용한다. 의존성이 누락하면
 공통 러너도 실패하며 skip하지 않는다. 변수 fixture는 provider·배포 backend·AWS를 사용하지 않는다.
 마지막 fmt/validate 참고용 진단과 CI 필수 mock 검사는 별개이며 참고 진단의 SKIP으로

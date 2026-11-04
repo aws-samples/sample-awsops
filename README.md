@@ -67,8 +67,8 @@ Models: a Claude Sonnet-class model by default, an Opus-class model only as the 
 
 ## Prerequisites
 
-- Terraform satisfying `required_version` in `terraform/foundation/backend.tf` and `terraform/bootstrap/main.tf` (S3 native state locking via `use_lockfile`); offline tests require the exact pin in `scripts/v2/terraform-test.sh`.
-- Node.js appropriate for each workload: follow its checked-in CI/container pin and any `engines` declared in `web/package.json` and `scripts/v2/package.json` (configurator TUI, migration scripts).
+- Terraform satisfying `required_version` in `terraform/foundation/backend.tf` and `terraform/bootstrap/main.tf` (S3 native state locking via `use_lockfile`); offline suites enforce their own exact pins in `scripts/v2/terraform-test.sh`, `scripts/v2/deployment-smoke.test.mjs`, and `scripts/v2/ci/run-migration.terraform.test.mjs`.
+- Node.js appropriate for each workload: use the CI/tooling pin in `.github/workflows/merge-verify.yml`, the web-container pin in `web/Dockerfile`, and the migration-container pin in `scripts/v2/ci/Dockerfile.migration`. Also satisfy any `engines` declared in `web/package.json` and `scripts/v2/package.json`, where present (configurator TUI, migration scripts).
 - Docker with buildx (arm64 image builds)
 - AWS CLI configured with credentials for the target account
 - kubectl and a kubeconfig, if onboarding EKS clusters
@@ -202,7 +202,7 @@ The required migration, web connection-phase and agent tool-policy history Postg
 they use bare `docker` on PATH (the documented exceptions to optional legacy itests).
 The web connection and policy suites also require `npm ci --prefix web` for the locked driver and TypeScript.
 These suites and their offline companion use no AWS credentials.
-Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform (exact version pinned in `scripts/v2/terraform-test.sh`);
+Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and the exact Terraform version enforced by `scripts/v2/deployment-smoke.test.mjs`;
 their offline variable fixture needs no providers. Terraform mock tests require the exact version in `scripts/v2/terraform-test.sh` and installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
@@ -226,7 +226,7 @@ bash tests/run-all.sh             # repo-wide hook/structure tests + agent Pytho
 ```
 
 The private migration fixture command includes runtime, controller, workflow and mocked-plan
-checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform (exact version pinned in `scripts/v2/terraform-test.sh`).
+checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and the exact Terraform fixture version enforced by `scripts/v2/ci/run-migration.terraform.test.mjs`.
 See [merge verification](docs/v2-merge-verification.md) for the complete CI scope,
 including the conditional documentation build and full presentation archive check.
 
@@ -309,8 +309,8 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 
 ## 사전 요구 사항
 
-- Terraform은 `terraform/foundation/backend.tf`와 `terraform/bootstrap/main.tf`의 `required_version`을 충족해야 합니다(S3 native state locking, `use_lockfile`). 오프라인 테스트에는 `scripts/v2/terraform-test.sh`의 정확한 고정 버전이 필요합니다.
-- Node.js는 워크로드별로 체크인된 CI·컨테이너 버전을 따르고, `web/package.json`·`scripts/v2/package.json`에 선언된 `engines` 조건(있는 경우)을 충족해야 합니다(구성 TUI, 마이그레이션 스크립트).
+- Terraform은 `terraform/foundation/backend.tf`와 `terraform/bootstrap/main.tf`의 `required_version`을 충족해야 합니다(S3 native state locking, `use_lockfile`). 오프라인 테스트에는 각 스위트의 `scripts/v2/terraform-test.sh`, `scripts/v2/deployment-smoke.test.mjs`, `scripts/v2/ci/run-migration.terraform.test.mjs`에 고정된 정확한 버전이 필요합니다.
+- Node.js는 워크로드별로 CI·도구의 `.github/workflows/merge-verify.yml`, 웹 컨테이너의 `web/Dockerfile`, 마이그레이션 컨테이너의 `scripts/v2/ci/Dockerfile.migration`에 고정된 버전을 따릅니다. `web/package.json`·`scripts/v2/package.json`에 `engines`가 선언된 경우 그 조건도 충족해야 합니다(구성 TUI, 마이그레이션 스크립트).
 - Docker with buildx (arm64 이미지 빌드)
 - 대상 계정 자격 증명이 설정된 AWS CLI
 - EKS 클러스터를 온보딩한다면 kubectl 및 kubeconfig
@@ -439,7 +439,7 @@ Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no
 Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 연결·정책 테스트는 잠긴 드라이버와
 TypeScript를 위해 `npm ci --prefix web`도 필요합니다. 이 테스트들과 오프라인 companion은
 AWS 자격증명을 사용하지 않습니다.
-인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML과 `scripts/v2/terraform-test.sh`에 고정된 정확한 Terraform 버전을 필수로 요구하며,
+인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML과 `scripts/v2/deployment-smoke.test.mjs`에서 요구하는 정확한 Terraform 버전을 필수로 요구하며,
 누락 시 공통 러너도 실패합니다. 오프라인 변수 fixture에는 provider가 필요하지 않습니다.
 마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 `scripts/v2/terraform-test.sh`의 정확한 고정 버전과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
@@ -463,7 +463,7 @@ bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent
 ```
 
 위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
-controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)와 `scripts/v2/terraform-test.sh`에 고정된 정확한 Terraform 버전도 필요합니다.
+controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)와 `scripts/v2/ci/run-migration.terraform.test.mjs`에서 요구하는 정확한 Terraform fixture 버전도 필요합니다.
 조건부 문서 빌드와 프레젠테이션 전체 아카이브 검증을 포함한 CI 범위는
 [머지 검증 가이드](docs/v2-merge-verification.md)를 참고하세요.
 
