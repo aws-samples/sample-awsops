@@ -22,7 +22,7 @@
                 <mxCell id="bedrock-label" value="&lt;font color='#FFFFFF' style='font-size:15px'&gt;&lt;b&gt;Amazon Bedrock&lt;/b&gt;&lt;/font&gt;" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;" parent="1" vertex="1">
                     <mxGeometry x="1015" y="42" width="140" height="36" as="geometry"/>
                 </mxCell>
-                <mxCell id="model-sonnet" value="&lt;font color='#00d4ff' style='font-size:13px'&gt;&lt;b&gt;Claude Haiku 4.5&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font color='#aaaaaa' style='font-size:10px'&gt;Intent Classification&lt;br&gt;Route Selection (9 sections, ADR-038)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a2540;strokeColor=#00d4ff;strokeWidth=1.5;" parent="1" vertex="1">
+                <mxCell id="model-sonnet" value="&lt;font color='#00d4ff' style='font-size:13px'&gt;&lt;b&gt;Claude Haiku 4.5&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font color='#aaaaaa' style='font-size:10px'&gt;Intent Classification&lt;br&gt;Route Selection (9 sections)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a2540;strokeColor=#00d4ff;strokeWidth=1.5;" parent="1" vertex="1">
                     <mxGeometry x="955" y="100" width="190" height="70" as="geometry"/>
                 </mxCell>
                 <mxCell id="model-opus" value="&lt;font color='#a855f7' style='font-size:13px'&gt;&lt;b&gt;Claude Opus 4.8&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font color='#aaaaaa' style='font-size:10px'&gt;Deep Analysis (AI Diagnosis worker,&lt;br&gt;NOT the Runtime) — Report (15 sections)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a2540;strokeColor=#a855f7;strokeWidth=1.5;" parent="1" vertex="1">

@@ -111,7 +111,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 - `hybrid_routing_enabled` · `diagnosis_schedule_enabled` · `diagnosis_notify_enabled`
 - `incident_lifecycle_enabled` · `k8sgpt_enabled` · `rca_writeback_enabled`
 - `eks_auto_register_enabled` · `ai_cost_tracking_enabled` · `multi_route_synthesis_enabled`
-- `remediation_enabled` — **ADR-005 FROZEN**, do-not-enable
+- `remediation_enabled` — **FROZEN**, do-not-enable
 
 :::
 
@@ -122,7 +122,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 {cue: pause}
 큰 모듈은 전부 feature flag로 게이트합니다. 지금은 약 17개까지 늘어났습니다 — agentcore, workers, steampipe, hybrid_routing뿐 아니라 diagnosis_schedule, diagnosis_notify, incident_lifecycle, k8sgpt, rca_writeback, eks_auto_register, ai_cost_tracking, multi_route_synthesis, 그리고 동결(do-not-enable) 상태인 remediation까지. 전부 기본값이 false라서 plan을 돌리면 No changes, 비용은 0입니다.
 {cue: pause}
-다만 라이브 환경은 이미 여러 개를 켜 놓은 상태입니다. workers, steampipe, agentcore, integrations, ai_cost_tracking, diagnosis_schedule, diagnosis_notify, eks_auto_register, hybrid_routing가 terraform.tfvars에서 true입니다. remediation은 계속 off이자 ADR-005 동결 상태이고, integrations_write는 off이지만 ADR-007 거버넌스 아래 게이트 상태(동결은 아님)입니다.
+다만 라이브 환경은 이미 여러 개를 켜 놓은 상태입니다. workers, steampipe, agentcore, integrations, ai_cost_tracking, diagnosis_schedule, diagnosis_notify, eks_auto_register, hybrid_routing가 terraform.tfvars에서 true입니다. remediation은 계속 off이자 동결 상태이고, integrations_write는 off이지만 거버넌스 아래 게이트 상태(동결은 아님)입니다.
 공유 인프라는 절대 auto-approve를 쓰지 않고, 저장된 tfplan을 apply하는 규율을 지킵니다. CloudFront나 SG 같은 긴 apply는 컨트롤러가 직접 실행합니다.
 {cue: transition}
 파일별로 어떻게 나뉘어 있는지 보겠습니다.
@@ -167,7 +167,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 | `k8sgpt.tf` | K8sGPT 예산/리소스 (`k8sgpt_enabled`) |
 | `writeback.tf` | RCA write-back (`rca_writeback_enabled`) |
 | `remediation.tf` | 리메디에이션 substrate (**FROZEN**) |
-| `secret-rotation.tf` | 자기치유 재배포 (ADR-015) |
+| `secret-rotation.tf` | 자기치유 재배포 |
 
 :::
 
@@ -176,7 +176,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 파일별 역할입니다.
 왼쪽이 핵심 레이어입니다. 네트워크(`create_network`만 게이트), 엣지, 인증, 데이터, 워크로드, ECR은 항상 켜져 있는 core 레이어라 무조건 배포되고, AI와 워커만 각각 `agentcore_enabled`·`workers_enabled`로 게이트됩니다.
 {cue: pause}
-오른쪽은 게이트로 묶인 서브시스템입니다. EKS(Access Entry는 상시, `onboard_eks_clusters` for_each로 클러스터별 대상만 선택)에 더해 steampipe, notify, incidents, k8sgpt, writeback, remediation, secret-rotation까지 각 서브시스템이 별도 파일과 flag로 분리되어 있습니다. remediation은 ADR-005로 동결(do-not-enable) 상태입니다.
+오른쪽은 게이트로 묶인 서브시스템입니다. EKS(Access Entry는 상시, `onboard_eks_clusters` for_each로 클러스터별 대상만 선택)에 더해 steampipe, notify, incidents, k8sgpt, writeback, remediation, secret-rotation까지 각 서브시스템이 별도 파일과 flag로 분리되어 있습니다. remediation은 동결(do-not-enable) 상태입니다.
 {cue: transition}
 이제 컴퓨트와 웹 레이어입니다.
 :::
@@ -196,7 +196,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 
 - **루트 경로 서빙** — basePath 없음, fetch는 `/api/*`
 - **Thin-BFF 원칙** — 무겁고·길고·OOM 위험 작업은 직접 실행 금지
-- 무거운 작업은 워커 큐로 enqueue — 범용 **`POST /api/jobs`는 `noop` 계열만**, `report`/`compliance` 등 도메인 job은 소유권 검사하는 전용 라우트(ADR-009)
+- 무거운 작업은 워커 큐로 enqueue — 범용 **`POST /api/jobs`는 `noop` 계열만**, `report`/`compliance` 등 도메인 job은 소유권 검사하는 전용 라우트
 
 ### Routes
 
@@ -220,7 +220,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 웹 레이어는 Next.js 14 standalone 빌드이고 arm64입니다.
 전용 도메인을 쓰므로 basePath 없이 루트 경로에서 서빙하고, fetch는 그냥 `/api/*`를 호출합니다.
 {cue: pause}
-가장 중요한 설계 원칙은 thin-BFF입니다. 무겁거나, 오래 걸리거나, OOM 위험이 있는 작업은 절대 인라인으로 돌리지 않습니다. 대신 워커 큐에 넣는데, 범용 `POST /api/jobs`는 `noop` 계열만 받고, 진단·컴플라이언스 같은 도메인 job은 소유권을 검사하는 전용 라우트(`/api/diagnosis`, `/api/compliance/run`, ADR-009)로 제출합니다. 라우트는 공개 헬스체크, SSE 스트림, Aurora ping, 비동기 작업 정도로 얇게 유지합니다.
+가장 중요한 설계 원칙은 thin-BFF입니다. 무겁거나, 오래 걸리거나, OOM 위험이 있는 작업은 절대 인라인으로 돌리지 않습니다. 대신 워커 큐에 넣는데, 범용 `POST /api/jobs`는 `noop` 계열만 받고, 진단·컴플라이언스 같은 도메인 job은 소유권을 검사하는 전용 라우트(`/api/diagnosis`, `/api/compliance/run`)로 제출합니다. 라우트는 공개 헬스체크, SSE 스트림, Aurora ping, 비동기 작업 정도로 얇게 유지합니다.
 오른쪽은 실전에서 꼭 챙겨야 하는 두 가지입니다. 첫째, HOSTNAME을 0.0.0.0으로 런타임 env에 명시해야 합니다. 이미지 ENV만으로는 ECS가 ENI IP로 덮어써서 헬스체크가 UNHEALTHY가 됩니다. 둘째, 컨테이너와 타깃 그룹의 헬스 경로가 앱의 `/api/health`와 정확히 일치해야 circuit breaker 루프를 피합니다.
 {cue: transition}
 영속 상태를 담는 데이터 레이어로 갑니다.
@@ -241,7 +241,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 
 - **0.5–4 ACU**, KMS CMK, RDS-관리 master secret
 - 앱 접근 = **node-pg** (`web/lib/db.ts`)
-- ADR-030 스키마 (v9 baseline) + `worker_jobs` · chat threads · diagnosis
+- 스키마 (v9 baseline) + `worker_jobs` · chat threads · diagnosis
 - 새 테이블 = **ULID 마이그레이션** (`migrations/<ULID>_*.sql`)
 
 :::
@@ -259,7 +259,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 :::notes
 {timing: 3min}
 영속 상태는 Aurora Serverless v2가 담당합니다.
-PostgreSQL 17.9, 0.5에서 4 ACU로 오토스케일하고, KMS CMK로 암호화하며 master secret은 RDS가 관리합니다. 앱은 node-pg 공유 풀로 접근합니다. 스키마는 ADR-030 기반 v9 baseline에 worker_jobs, chat 스레드, 진단 리포트 테이블이 더해진 형태이고, 새 테이블은 schema.sql에 덧붙이지 않고 ULID 마이그레이션 파일로 추가하는 규칙입니다.
+PostgreSQL 17.9, 0.5에서 4 ACU로 오토스케일하고, KMS CMK로 암호화하며 master secret은 RDS가 관리합니다. 앱은 node-pg 공유 풀로 접근합니다. 스키마는 v9 baseline에 worker_jobs, chat 스레드, 진단 리포트 테이블이 더해진 형태이고, 새 테이블은 schema.sql에 덧붙이지 않고 ULID 마이그레이션 파일로 추가하는 규칙입니다.
 {cue: pause}
 여기서 꼭 짚어야 할 점이 있습니다. Steampipe는 라이브 쿼리 엔진이 아닙니다. flag로 켜는 인벤토리 sync일 뿐입니다. warm Fargate가 41종 리소스 타입을 Aurora로 동기화하고, 이걸 generic `/inventory/[type]` 페이지가 보여줍니다. 라이브 AWS 조회는 어디까지나 AgentCore MCP 도구가 합니다. 예전의 임베디드 pg Pool 방식이 아니라는 점을 강조합니다.
 {cue: transition}
@@ -333,14 +333,14 @@ AI 엔진은 Bedrock AgentCore입니다.
     <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:0.3125rem 0.75rem;font-size:0.8125rem;">ops</span>
     <span style="background:rgba(0,212,255,0.18);color:#7fd8ff;border-radius:6px;padding:0.3125rem 0.75rem;font-size:0.8125rem;">external-obs</span>
   </div>
-  <div style="color:#8b95a5;font-size:0.75rem;margin-top:0.625rem;">external-obs = <b style="color:#00d4ff;">9번째 게이트웨이</b>(2026-06-24 승격, ADR-004) — Prometheus·ClickHouse 커넥터 호스팅, 챗 키 <code style="color:#00d4ff;">observability</code>로 별칭. 30슬라이스 <b style="color:#00ff88;">전부 LIVE</b>(9개 게이트웨이 전부 READY MCP 타깃). 16개 챗 키는 전부 등록되어 있지만, 그중 aws-data + 콜렉터 6종(7개)은 <code>steampipeAvailable()</code>이 ADR-001/010에 따라 항상 false를 반환해 하드 비활성 — 선택하면 fail-open으로 ops에 위임됨</div>
+  <div style="color:#8b95a5;font-size:0.75rem;margin-top:0.625rem;">external-obs = <b style="color:#00d4ff;">9번째 게이트웨이</b>(2026-06-24 승격) — Prometheus·ClickHouse 커넥터 호스팅, 챗 키 <code style="color:#00d4ff;">observability</code>로 별칭. 30슬라이스 <b style="color:#00ff88;">전부 LIVE</b>(9개 게이트웨이 전부 READY MCP 타깃). 16개 챗 키는 전부 등록되어 있지만, 그중 aws-data + 콜렉터 6종(7개)은 <code>steampipeAvailable()</code>이 설계 원칙에 따라 항상 false를 반환해 하드 비활성 — 선택하면 fail-open으로 ops에 위임됨</div>
 </div>
 :::
 
 :::notes
 {timing: 2min}
 도구는 9개 섹션 게이트웨이로 묶입니다.
-network, container, data, security, cost, monitoring, iac, ops, 그리고 external-obs입니다. ADR-004가 2026년 6월 24일에 개정되면서 external-obs에 Prometheus·ClickHouse 커넥터가 붙었고, 그때부터 9번째 라우팅 가능한 게이트웨이로 승격됐습니다. 예전 버전에서 "9번째 게이트웨이가 아니다"라고 했던 건 그 커넥터가 붙기 전 부트스트랩 상태를 말한 거였고, 지금은 정반대입니다.
+network, container, data, security, cost, monitoring, iac, ops, 그리고 external-obs입니다. 2026년 6월 24일에 external-obs에 Prometheus·ClickHouse 커넥터가 붙었고, 그때부터 9번째 라우팅 가능한 게이트웨이로 승격됐습니다. 예전 버전에서 "9번째 게이트웨이가 아니다"라고 했던 건 그 커넥터가 붙기 전 부트스트랩 상태를 말한 거였고, 지금은 정반대입니다.
 {cue: pause}
 전체 카탈로그는 30개 슬라이스, 약 160개 읽기 전용 도구이고, 함대 배포가 완료돼 30개 슬라이스 전부, 9개 게이트웨이 전부 READY 상태로 라이브입니다.
 {cue: transition}
@@ -354,7 +354,7 @@ network, container, data, security, cost, monitoring, iac, ops, 그리고 extern
 @type: content
 @transition: slide
 
-# Hybrid Routing & Streaming Chat — ADR-003
+# Hybrid Routing & Streaming Chat
 
 ::: left
 
@@ -388,7 +388,7 @@ network, container, data, security, cost, monitoring, iac, ops, 그리고 extern
 
 :::notes
 {timing: 3min}
-9개 게이트웨이 중 어디로 보낼지는 ADR-003 하이브리드 라우팅이 정합니다.
+9개 게이트웨이 중 어디로 보낼지는 하이브리드 라우팅이 정합니다.
 파이프라인은 3단계입니다. 먼저 regex fast-path가 명백한 질의를 즉시 라우팅합니다. 애매하면 Haiku 4.5 분류기가 판단합니다. 그리고 prompt caching으로 약 59% 캐시 히트를 내서 비용과 지연을 줄입니다. 결정된 섹션으로 라우팅한 뒤 SSE로 응답을 스트리밍하면서 어떤 도구를 호출하는지도 함께 보여줍니다.
 {cue: pause}
 게이트 정확도는 69.2%에서 96.9%로 27.7 포인트 올랐고, 2026년 6월 10일에 라이브입니다.
@@ -484,7 +484,7 @@ Well-Architected Review를 수동으로 며칠씩 만들어 보신 분 계시죠
 :::notes
 {timing: 2min}
 무거운 작업은 모두 비동기 워커 티어가 받습니다.
-흐름은 이렇습니다. 웹이 진단은 `/api/diagnosis`, 컴플라이언스는 `/api/compliance/run`으로 제출하면(범용 `POST /api/jobs`는 `noop` 계열만 허용, ADR-009) worker_jobs 테이블에 queued 상태로 기록하고 SQS에 넣습니다. ESM이 킬스위치 역할을 하면서 dispatcher Lambda를 호출하는데, dispatcher는 job_id 기준으로 멱등하게 동작합니다.
+흐름은 이렇습니다. 웹이 진단은 `/api/diagnosis`, 컴플라이언스는 `/api/compliance/run`으로 제출하면(범용 `POST /api/jobs`는 `noop` 계열만 허용) worker_jobs 테이블에 queued 상태로 기록하고 SQS에 넣습니다. ESM이 킬스위치 역할을 하면서 dispatcher Lambda를 호출하는데, dispatcher는 job_id 기준으로 멱등하게 동작합니다.
 {cue: pause}
 그다음 Step Functions Standard가 `$.runtime` 값을 보고 분기합니다. 짧은 작업은 RunLambda로, 길거나 OOM 위험이 있는 작업은 ecs:runTask.sync로 Fargate 워커에 넘깁니다. 진단 리포트나 DOCX·PDF 생성 같은 무거운 작업이 여기로 갑니다.
 워커는 스스로 running과 succeeded를 Aurora에 기록합니다. 실패해서 Catch로 빠지면 status_updater Lambda가 failed로 표시하는데, 이건 SFN이 VPC 안 Aurora에 직접 쓸 수 없기 때문입니다. 마지막으로 reaper가 5분마다 stale 작업을 정합화합니다. 그래서 OOM에 안전한 백본입니다. 참고로 Fargate 워커는 ENTRYPOINT가 아니라 CMD를 써야 SFN command override가 정상 동작합니다.
@@ -506,7 +506,7 @@ Well-Architected Review를 수동으로 며칠씩 만들어 보신 분 계시죠
 ### 잡 종류 (2026-06-18 이후 증가)
 
 - **schedule_dispatcher** — 시간별 EventBridge → `report_schedules` 스캔 → 진단 잡 enqueue (`diagnosis_schedule_enabled`, LIVE)
-- **diagnosis_digest** (workers.tf) — 리포트별 이메일 대신 배치 SNS 다이제스트 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 배포됨; ADR-13이 명시적으로 승인한 건 스케줄 진단 요약뿐이라 수동 실행분까지 배치하는 현재 구현은 ADR 범위를 넘어섬 — 후속 ADR 정리 필요)
+- **diagnosis_digest** (workers.tf) — 리포트별 이메일 대신 배치 SNS 다이제스트 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 배포됨; 승인된 범위는 스케줄 진단 요약뿐이지만 현재 구현은 수동 실행분까지 함께 묶음 — 후속 정리 필요)
 - **compliance** (Powerpipe) — CIS 벤치마크 Fargate 잡 (`steampipe_enabled`)
 
 :::
@@ -618,7 +618,7 @@ EKS 페이지에는 접근 권한 배지와 CLI 가이드, 클러스터별 워�
 @type: content
 @transition: slide
 
-# Multi-Account — STS AssumeRole Fan-Out (ADR-011)
+# Multi-Account — STS AssumeRole Fan-Out
 
 ::: left
 
@@ -636,7 +636,7 @@ EKS 페이지에는 접근 권한 배지와 CLI 가이드, 클러스터별 워�
 ### Safety
 
 - **host self-assume 가드** — target == host면 `get_role_arn()`이 `None` 반환 → host 실행 role 직접 사용(v1 전용 role을 host에서 self-assume → AccessDenied 오진 방지)
-- **read-only 한정** — 대상 계정 변경 작업 없음(ADR-005 동결과 정합)
+- **read-only 한정** — 대상 계정 변경 작업 없음
 - `/accounts` admin UI + CFN으로 대상 계정에 read-only role 배포(코드 변경 없음)
 
 :::
@@ -648,7 +648,7 @@ EKS 페이지에는 접근 권한 배지와 CLI 가이드, 클러스터별 워�
 • ExternalId는 1st-party(task-role ARN 핀)면 선택, 3rd-party면 필수
 • host self-assume 가드로 "cross-account 차단" 오진을 방지
 
-AWSops는 단일 호스트 계정에서 돌지만, 여러 AWS 계정을 통합 대시보드로 보여줄 수 있습니다. ADR-011이 이걸 STS AssumeRole 기반 read-only 페더레이션으로 정의합니다. Aurora에 accounts 레지스트리를 두고, 호스트 계정은 처음 접근할 때 lazy seed로 등록됩니다. 대상 계정에는 AWSopsReadOnlyRole을 미리 배포해 두고, host task role이 그 role을 assume합니다.
+AWSops는 단일 호스트 계정에서 돌지만, 여러 AWS 계정을 통합 대시보드로 보여줄 수 있습니다. STS AssumeRole 기반 read-only 페더레이션으로 조회합니다. Aurora에 accounts 레지스트리를 두고, 호스트 계정은 처음 접근할 때 lazy seed로 등록됩니다. 대상 계정에는 AWSopsReadOnlyRole을 미리 배포해 두고, host task role이 그 role을 assume합니다.
 {cue: pause}
 ExternalId는 상황에 따라 다릅니다. 대상 계정의 trust policy가 AWSops task-role ARN을 정확히 핀해 두면 1st-party로 보고 ExternalId를 생략할 수 있습니다. 반대로 3rd-party거나 와일드카드 principal이면 ExternalId가 필수입니다 — confused-deputy 공격을 막기 위해서입니다. 이 구분은 코드가 강제하는 게 아니라 trust policy로 운영적으로 강제됩니다.
 전역 계정 셀렉터로 한 계정만 볼 수도 있고, __all__을 선택하면 전 계정을 fan-out으로 조회해서 비용이나 Bedrock 사용량 같은 걸 집계합니다.
@@ -675,7 +675,7 @@ ExternalId는 상황에 따라 다릅니다. 대상 계정의 trust policy가 AW
 - **RS256 JWKS** 서명 검증 (iss/aud/token_use)
 - OAuth `state` + **PKCE public client**
 
-### Login (ADR-002)
+### Login
 
 - **Primary** = 자체 `/login` 폼
 - BFF `POST /api/auth/login` → 무서명 공개 `InitiateAuth(USER_PASSWORD_AUTH)` → `awsops_token` (id_token 12h)
@@ -696,7 +696,7 @@ ExternalId는 상황에 따라 다릅니다. 대상 계정의 trust policy가 AW
 인증은 Cognito와 Lambda@Edge가 함께 처리합니다.
 Lambda@Edge는 us-east-1에서 viewer-request로 동작하며 RS256 JWKS로 토큰 서명을 검증합니다. iss, aud, token_use를 모두 확인하고, OAuth state와 PKCE public client를 씁니다. 시크릿이 없는 공개 클라이언트입니다.
 {cue: pause}
-로그인의 기본 경로는 ADR-002에 따라 자체 `/login` 폼입니다. BFF의 `POST /api/auth/login`이 무서명 공개 InitiateAuth를 USER_PASSWORD_AUTH 방식으로 호출해 awsops_token을 발급합니다. id_token은 12시간 유효합니다. 미인증 요청은 엣지가 `/login`으로 보냅니다. Hosted UI PKCE 플로우는 다크 폴백으로 남겨두고, signout은 쿠키만 삭제합니다.
+로그인의 기본 경로는 자체 `/login` 폼입니다. BFF의 `POST /api/auth/login`이 무서명 공개 InitiateAuth를 USER_PASSWORD_AUTH 방식으로 호출해 awsops_token을 발급합니다. id_token은 12시간 유효합니다. 미인증 요청은 엣지가 `/login`으로 보냅니다. Hosted UI PKCE 플로우는 다크 폴백으로 남겨두고, signout은 쿠키만 삭제합니다.
 오른쪽 세 가지가 보안 기둥입니다. 공개 ALB가 없는 비공개 엣지, ECS 시크릿은 task role이 아니라 execution role 권한이어야 한다는 점, 그리고 admin 모델은 SSM과 Cognito group 기반으로 fail-closed입니다.
 {cue: transition}
 이걸 실제로 배포하는 흐름을 보겠습니다.
@@ -760,16 +760,16 @@ AgentCore와 워커는 각각의 flag로 apply한 뒤 `make agentcore`, `make wo
   <div style="background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.4);border-radius:12px;padding:1.375rem;">
     <div style="font-size:2.5rem;margin-bottom:0.625rem;">🔒</div>
     <div style="color:#00ff88;font-weight:bold;font-size:1.0625rem;margin-bottom:0.5rem;">동결 (do-not-enable)</div>
-    <div style="color:#8b95a5;font-size:0.8125rem;line-height:1.6;">ADR-005 (029/036/031P4 통합, 2026-06-11 reversal)<br>AWS-리소스 <b>변경 + 자율</b> — 새 명시적 결정 전까지 동결(영구 아님)</div>
+    <div style="color:#8b95a5;font-size:0.8125rem;line-height:1.6;">AWS-리소스 <b>변경 + 자율</b> — 새 명시적 결정 전까지 동결(영구 아님)</div>
   </div>
   <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.4);border-radius:12px;padding:1.375rem;">
     <div style="font-size:2.5rem;margin-bottom:0.625rem;">📥</div>
-    <div style="color:#00d4ff;font-weight:bold;font-size:1.0625rem;margin-bottom:0.5rem;">거버넌스된 External (ADR-007)</div>
+    <div style="color:#00d4ff;font-weight:bold;font-size:1.0625rem;margin-bottom:0.5rem;">거버넌스된 External</div>
     <div style="color:#8b95a5;font-size:0.8125rem;line-height:1.6;">외부 DATA read + 기록/티켓/메시지 <b>write</b> 허용<br>SSRF · Secrets · DLP · human-gate 하</div>
   </div>
 </div>
 <div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:0.625rem 1rem;margin-top:0.875rem;font-size:0.75rem;color:#8b95a5;">
-  <b style="color:#ef4444;">예외 1건 — ADR-015</b> (2026-07-01 owner-override): 호스트 자기 web 서비스의 <code style="color:#ef4444;">ecs:UpdateService force-new-deployment</code>(재시작)만, Aurora secret 회전 이벤트 트리거 한정, IAM 1 ARN, secret-id fail-closed, default-off. 나머지 ADR-005 전부는 그대로 동결.
+  <b style="color:#ef4444;">예외 1건</b>: 호스트 자기 web 서비스의 <code style="color:#ef4444;">ecs:UpdateService force-new-deployment</code>(재시작)만, Aurora secret 회전 이벤트 트리거 한정, IAM 1 ARN, secret-id fail-closed, default-off. 나머지는 전부 그대로 동결.
 </div>
 <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.35);border-radius:12px;padding:1.125rem;margin-top:0.875rem;text-align:center;">
   <span style="font-size:1.5rem;">🧠</span>
@@ -781,10 +781,10 @@ AgentCore와 워커는 각각의 flag로 apply한 뒤 `make agentcore`, `make wo
 :::notes
 {timing: 3min}
 이 아키텍처의 태세를 정확히 정의하겠습니다.
-AWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니다. ADR-005(옛 029/036/031 Phase4를 통합, 2026년 6월 11일 reversal 합의)에 따라 AWS 리소스 변경과 자율 실행은 동결입니다. 다만 여기서 정확히 말씀드릴 게 있는데, 이건 "영구 금지"가 아닙니다. BASELINE 문서가 그 표현을 명시적으로 거부합니다. 정확히는 "안전조건 충족 + 새로운 명시적 결정 전까지" 동결이고, 완화하려면 새 ADR과 멀티-AI 패널, 날짜가 박힌 owner override가 필요합니다. do-not-enable, 그냥 조용히 다시 켜지 않는다는 뜻입니다.
+AWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니다. AWS 리소스 변경과 자율 실행은 동결입니다. 영구 금지는 아니지만, 해제하려면 새 결정 문서와 멀티 AI 패널 검토, 날짜가 기록된 소유자 승인이 모두 필요합니다. do-not-enable, 그냥 조용히 다시 켜지 않는다는 뜻입니다.
 {cue: pause}
-딱 하나 예외가 있습니다. ADR-015인데, 2026년 7월 1일에 오준석님이 owner-override로 승인했습니다. 호스트 자기 web 서비스를 Aurora secret 회전 이벤트에 맞춰 force-new-deployment로 재시작하는 것, 그거 하나만 허용됩니다. IAM은 서비스 1개 ARN으로 스코프되고, secret id가 안 맞으면 fail-closed로 아예 안 돕니다. 기본값은 off입니다. 나머지 ADR-005는 전부 그대로 동결입니다.
-다만 외부 데이터에 대해서는 다릅니다. ADR-007이 이걸 다루는데, 외부 관측성 데이터 읽기, 그리고 외부 기록·티켓·메시지 write는 거버넌스 하에 허용됩니다. SSRF 방어, Secrets 관리, DLP와 redaction, human-gate를 모두 거칩니다. 즉 AWS 리소스는 안 건드리지만, 외부 시스템에 리포트를 보내거나 티켓을 끊는 건 통제된 형태로 가능합니다.
+딱 하나 예외가 있습니다. 호스트 자기 web 서비스를 Aurora secret 회전 이벤트에 맞춰 force-new-deployment로 재시작하는 것, 그거 하나만 허용됩니다. IAM은 서비스 1개 ARN으로 스코프되고, secret id가 안 맞으면 fail-closed로 아예 안 돕니다. 기본값은 off입니다. 나머지는 전부 그대로 동결입니다.
+다만 외부 데이터에 대해서는 다릅니다. 외부 관측성 데이터 읽기, 그리고 외부 기록·티켓·메시지 write는 거버넌스 하에 허용됩니다. SSRF 방어, Secrets 관리, DLP와 redaction, human-gate를 모두 거칩니다. 즉 AWS 리소스는 안 건드리지만, 외부 시스템에 리포트를 보내거나 티켓을 끊는 건 통제된 형태로 가능합니다.
 그리고 핵심 차별점, AI 추론은 고객 계정 안 Bedrock에서 돌립니다. 외부 AI SaaS API가 없으므로 운영 데이터가 계정 밖으로 나가지 않습니다.
 {cue: transition}
 전체를 한 장으로 정리하겠습니다.
@@ -802,16 +802,16 @@ AWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니
 - **Terraform MSA on private edge** — CloudFront VPC Origin → 내부 ALB → Fargate, 공개 ALB 없음
 - **Aurora 영속 상태** — PostgreSQL 17.9 (Steampipe = flag-gated 인벤토리 sync일 뿐)
 - **AgentCore 섹션 에이전트** — 9 게이트웨이 · ~160 read-only 도구(30슬라이스 전부 LIVE)로 라이브 AWS 읽기
-- **ADR-003 하이브리드 라우팅 + ADR-011 멀티 계정** — regex + Haiku 분류기 + caching, STS AssumeRole fan-out
+- **하이브리드 라우팅 + 멀티 계정** — regex + Haiku 분류기 + caching, STS AssumeRole fan-out
 - **OOM-safe 비동기 워커 티어** — SQS + SFN + Lambda/Fargate, 진단·스케줄·알림·컴플라이언스 처리
-- **읽기 전용 동결 태세** — AWS 변경·자율 동결(ADR-005, 새 결정 전까지) + ADR-015 예외 1건, in-account Bedrock
+- **읽기 전용 동결 태세** — AWS 변경·자율 동결 + 예외 1건, in-account Bedrock
 
 :::notes
 {timing: 2min}
 아키텍처 파트를 한 장으로 정리합니다.
 첫째, 비공개 엣지 위의 Terraform MSA입니다. CloudFront VPC Origin에서 내부 ALB를 거쳐 Fargate로 가고, 공개 ALB는 없습니다. 둘째, 영속 상태는 Aurora PostgreSQL 17.9입니다. Steampipe는 라이브 엔진이 아니라 flag로 켜는 인벤토리 sync일 뿐입니다.
 {cue: pause}
-셋째, 라이브 AWS 읽기는 AgentCore 섹션 에이전트가, 9개 게이트웨이에 약 160개 읽기 전용 도구로 처리합니다. 30개 슬라이스 전부 LIVE입니다. 넷째, 라우팅은 ADR-003 하이브리드고 ADR-011 멀티 계정 STS AssumeRole로 여러 계정을 fan-out 조회합니다. 다섯째, 무거운 작업은 OOM에 안전한 비동기 워커 티어가 받는데, 진단 리포트뿐 아니라 스케줄, 알림 다이제스트, 컴플라이언스 잡까지 늘었습니다. 여섯째, 그 위에 읽기 전용 동결 태세가 있는데 영구 금지는 아니고 ADR-015라는 좁은 예외 1건이 있습니다. 그리고 in-account Bedrock입니다.
+셋째, 라이브 AWS 읽기는 AgentCore 섹션 에이전트가, 9개 게이트웨이에 약 160개 읽기 전용 도구로 처리합니다. 30개 슬라이스 전부 LIVE입니다. 넷째, 라우팅은 하이브리드고 멀티 계정 STS AssumeRole로 여러 계정을 fan-out 조회합니다. 다섯째, 무거운 작업은 OOM에 안전한 비동기 워커 티어가 받는데, 진단 리포트뿐 아니라 스케줄, 알림 다이제스트, 컴플라이언스 잡까지 늘었습니다. 여섯째, 그 위에 읽기 전용 동결 태세가 있는데 영구 금지는 아니고 좁은 예외 1건이 있습니다. 그리고 in-account Bedrock입니다.
 {cue: transition}
 세 번째 파트, 실제 데모와 진단 리포트로 이어가겠습니다.
 :::

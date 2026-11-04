@@ -116,19 +116,19 @@ AWSops 的实时 AWS 数据由 **AgentCore MCP Lambda 工具**负责。约 **160
 | **AgentCore MCP 工具（实时）** | 实时 AWS API 查询 — 聊天、诊断、页面的实时数据来源 |
 | **Steampipe（flag-gated）** | 仅用于 `steampipe_enabled`（默认 OFF）的清单同步。既不是实时查询引擎，也不是本地 9193 服务 |
 
-:::info 网关数量是 9 个（ADR-004 修订，2026-06-24）
-外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个被配置并参与路由（ADR-004 修订 — 9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**（ADR-007/017）。
+:::info 网关数量是 9 个
+外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个被配置并参与路由（9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**。
 :::
 
-## AI 路由是如何工作的？（ADR-038 混合方式）
+## AI 路由是如何工作的？（混合方式）
 
-AI 路由采用 **ADR-038 混合**方式，已 LIVE。它取代了 v1 的 Sonnet 单一分类器 11/18-route 注册表。
+AI 路由采用 **混合**方式，已 LIVE。它取代了 v1 的 Sonnet 单一分类器 11/18-route 注册表。
 
 ```mermaid
 flowchart TD
   Q["用户问题"] --> REGEX{"正则<br/>fast-path 匹配？"}
   REGEX -->|"匹配"| ROUTE["立即确定分区路由<br/>（无 LLM 调用）"]
-  REGEX -->|"未匹配"| HAIKU["Haiku 4.5 分类器<br/>（提示词缓存）"]
+  REGEX -->|"未匹配"| HAIKU["Haiku 级分类器<br/>（提示词缓存）"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["分区代理<br/>（AgentCore Runtime → 8 GW）"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### 3 个核心机制
 
 1. **正则 fast-path** — 明确的关键词模式无需 LLM 调用即可立即路由 → 降低延迟。
-2. **Haiku 4.5 分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
+2. **Haiku 级分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
 3. **提示词缓存** — 缓存分类提示词（命中率约 59%），减少 token 消耗与延迟。
 
 ### AI 助手行为
@@ -168,7 +168,7 @@ flowchart LR
 - 对每个请求都通过 **RS256 JWKS 签名校验** `awsops_token` Cookie 中的 JWT，并检查 `iss`/`aud`/`token_use`。
 - 未认证则重定向到自托管的 **`/login`** 表单。
 
-**2. 应用内登录（ADR-042）**
+**2. 应用内登录**
 - 登录 = **自托管 `/login` 表单**。BFF 的 `POST /api/auth/login` 调用**无签名的公开 `InitiateAuth(USER_PASSWORD_AUTH)`**（不使用 SDK）→ 签发 `awsops_token` Cookie（id_token 12 小时）。
 - **Hosted UI PKCE 流程（`/_callback`）仅作为暗备份（dark fallback）**保留。
 - signout 为删除 Cookie → `/login`（无 Hosted UI `/logout` 往返）。

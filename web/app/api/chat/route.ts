@@ -19,7 +19,7 @@ import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
 import { getCustomAgentContext } from '@/lib/catalog-source';
 import { isCustomAgentEnabled } from '@/lib/catalog';
-import { getEnabledIntegrations } from '@/lib/integrations';
+import { getEnabledIntegrationSelection } from '@/lib/integrations';
 import { pickCustomAgent, resolveAgent } from '@/lib/agent-resolver';
 import { recordCustomAgentTrace, recordChatInvoke } from '@/lib/trace';
 import { recordExchange } from '@/lib/chat-store';
@@ -387,7 +387,7 @@ export async function POST(request: Request) {
     const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
     const enc = new TextEncoder();
     const t0 = Date.now();
-    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
     const stream = new ReadableStream({
       async start(controller) {
         controller.enqueue(enc.encode(': heartbeat\n\n'));
@@ -436,7 +436,7 @@ export async function POST(request: Request) {
   }
   // Hybrid classification is gated; explicit built-in pins bypass custom selection in both modes.
   const hybridOn = process.env.HYBRID_ROUTING_ENABLED === 'true';
-  // ADR-038 §5: a chip-switch resend marks the previous answer as a misroute candidate.
+  // ADR-003[legacy 038] §5: a chip-switch resend marks the previous answer as a misroute candidate.
   // Structured log → CloudWatch Logs (durable enough for the P4 semantic-routing corpus).
   if (hybridOn && typeof body.switchedFrom === 'string' && body.switchedFrom) {
     console.warn(JSON.stringify({ evt: 'misroute', from: body.switchedFrom, to: body.section ?? null, user: user.sub, promptLen: prompt.length }));
@@ -462,9 +462,9 @@ export async function POST(request: Request) {
   } else {
     gateway = pickGateway(prompt, body.section, previous);
   }
-  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2),
+  // ADR-004[legacy 031] custom agents. ADR-003[legacy 038] precedence: explicit pin > custom > classifier (spec §2.2),
   // then the previous answering section (follow-up continuity) before the default catch-all.
-  // ADR-031 Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
+  // ADR-004[legacy 031] Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
   // v1-parity multi-account target (v1 route.ts:926-930): an explicit body.accountId targets a
   // REGISTERED+ENABLED account (accounts table); anything else keeps the host default. The value
   // only ever reaches the agent payload/Agent-Space keying — never IAM decisions.
@@ -500,7 +500,7 @@ export async function POST(request: Request) {
     customPinEnabled = customPinTarget
       ? (customAgents.some((a) => a.name === customPinTarget) && (await isCustomAgentEnabled(customPinTarget, { throwOnError: true })))
       : false;
-    // ADR-044 §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
+    // ADR-003[legacy 044] §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
     unavailablePin = !!customPinTarget && !customPinEnabled;
     // Recheck enablement after the fresh catalog read to catch a concurrent revocation.
     customPick = unavailablePin || productHelpIntent
@@ -548,28 +548,31 @@ export async function POST(request: Request) {
     sqlUnavailable = true; // same honest '미가용 → 일반 라우팅' status frame as aws-data
     routeKey = 'ops';
   }
-  // ADR-039 P2: enabled egress-READ integrations contribute tools + bounded context (per-space scoped).
+  // ADR-007[legacy 039] P2: enabled egress-READ integrations contribute tools + bounded context (per-space scoped).
   // ingress + READ_WRITE contribute nothing here (writes go via the mutating gate).
   // P2-infra inc2: also carry connection details so the resolver can hand agent.py a live-connect list.
-  // allowPrivate = the per-account ADR-011 opt-in (no space ⇒ false). sigv4 service/region threading
+  // allowPrivate = the per-account ADR-007[legacy 011] opt-in (no space ⇒ false). sigv4 service/region threading
   // (same-account sigv4 integrations) is deferred with the rest of Q3-sigv4=C — api_key/bearer is live.
   const allowPrivate = space?.allowPrivateDatasource ?? false;
-  const enabledIntegrations = await getEnabledIntegrations(accountId);
+  const integrationSelection = await getEnabledIntegrationSelection(accountId);
+  const enabledIntegrations = integrationSelection.integrations;
   const egressReadIntegrations = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read')
     .map((i) => ({
+      id: Number(i.id), kind: i.kind, direction: i.direction, capability: i.capability,
       name: i.name, exposedTools: i.exposedTools, providedContext: i.providedContext,
       endpoint: i.endpoint ?? undefined, transport: i.transport ?? undefined,
       credentialsRef: i.credentialsRef ?? undefined, allowPrivate,
     }));
-  // ADR-040/041 — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
+  // ADR-007[legacy 040] — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
   // writes go through the human-gated /api/actions path). They never enter the resolver's tool union.
   const proposableWrites = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
     .map((i) => ({ name: i.name, writeActionRefs: i.writeActionRefs }));
   const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
-    space, egressReadIntegrations, proposableWrites); // server-side enforcement
-  // ADR-044: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
+    space, egressReadIntegrations, proposableWrites,
+    { mcpSelectionSuppressed: integrationSelection.mcpSelectionSuppressed }); // server-side enforcement
+  // ADR-003[legacy 044]: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is
   // `fanGateways.length >= 2` (gate MAJOR: re-derived from the live `active` flags here, so a stale
@@ -581,7 +584,7 @@ export async function POST(request: Request) {
   const fanGateways = (route?.selected ?? []).filter((s) => s.active && s.key !== 'aws-data' && !collectorByKey(s.key)).map((s) => s.key).slice(0, 3);
   const doFanout = synthOn && hybridOn && !customPick && !unavailablePin && spec.tier === 'builtin'
     && fanGateways.length >= 2;
-  // ADR-038 honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
+  // ADR-003[legacy 038] honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
   // Skipped on the fan-out path (every fanGateway is already active-filtered).
   const inactiveSection = !doFanout && hybridOn && spec.tier === 'builtin' && sectionByKey(spec.gateway)?.active === false
     ? sectionByKey(spec.gateway)! : null;
@@ -593,7 +596,12 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
+  const mcpSuppression = spec.tier === 'custom' && !useAssistant && integrationSelection.mcpSelectionSuppressed
+    ? { reasons: integrationSelection.mcpSuppressionReasons ?? ['denied'] } : undefined;
+  const mcpNotice = mcpSuppression ? (lang === 'ko'
+    ? '일부 외부 연결을 사용할 수 없어 도구 접근을 제한했습니다. 연결 상태를 확인하세요.\n\n'
+    : 'Some external connections are unavailable; tool access remains restricted. Check the connection status.\n\n') : '';
+  const fallbackNotice = mcpNotice + accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
     ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
@@ -613,7 +621,7 @@ export async function POST(request: Request) {
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
       userContent: prompt, assistantContent: fallbackNotice + assistantContent,
-      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), account: turnAccount },
+      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), ...(mcpSuppression ? { mcpSuppression } : {}), account: turnAccount },
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
   // Region scope for the agent's live reads — skipped on paths that never invoke an agent.
@@ -648,10 +656,11 @@ export async function POST(request: Request) {
         gateway: useAssistant ? 'assistant' : spec.gateway,
         agentName: useAssistant ? 'AWSops Assistant' : spec.agentName,
         tier: spec.tier, skillHashes: spec.skillHashes, threadId, account: turnAccount,
+        ...(mcpSuppression ? { mcpSuppression } : {}),
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
-        // ADR-044: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
+        // ADR-003[legacy 044]: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
         // Promise.allSettled survivors, which would stall the badge/Thinking UX for the whole fan-out).
         ...(via ? { via, routes: fanGateways } : {}),
         ...(!useAssistant && spec.tier === 'custom' ? { customAgent: spec.agentName, spaceVersion: spec.spaceVersion } : {}),
@@ -661,9 +670,14 @@ export async function POST(request: Request) {
       if (sqlUnavailable) {
         controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({ phase: 'sql-unavailable' }) + '\n\n'));
       }
+      if (mcpSuppression) {
+        controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({
+          phase: 'integration-unavailable', reasons: mcpSuppression.reasons,
+        }) + '\n\n'));
+      }
       // Notices go out before every branch below (record() stores them with each answer).
       if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
-      // ADR-044 §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
+      // ADR-003[legacy 044] §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
       // HONEST message — never a silent fallback to keyword/classifier routing.
       if (unavailablePin) {
         const name = String(body.section).slice(0, 40);
@@ -692,7 +706,7 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      // ADR-044 cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
+      // ADR-003[legacy 044] cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
       if (doFanout) {
         const tf0 = Date.now();
         // gate CRITICAL: each gateway gets its OWN built-in invoke input (no shared primary spec).
@@ -768,7 +782,7 @@ export async function POST(request: Request) {
           toolAllowlist: spec.toolAllowlist,
           agentName: spec.agentName, agentVersion: spec.agentVersion, skillHashes: spec.skillHashes,
           accountId, accountAlias, regions,
-          integrations: spec.integrations, // ADR-039 P2-infra inc2: live egress-READ MCP connections
+          integrations: spec.integrations, // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
           extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing
         })) {

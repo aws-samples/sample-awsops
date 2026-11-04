@@ -21,10 +21,12 @@ from datasource_http import (
     SsrfBlocked,
     assert_host_allowed,
     auth_headers,
-    health,
     http_json,
     load_datasource,
+    query_probe,
     set_request_conn,
+    execution_timeout,
+    HTTP_TIMEOUT,
 )
 
 SLUG = "prometheus"
@@ -67,7 +69,7 @@ def _ds():
 
 def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    kwargs = {"headers": auth_headers(creds)}
+    kwargs = {"headers": auth_headers(creds), "timeout": HTTP_TIMEOUT}
     if http_timeout is not None:
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)
@@ -194,28 +196,15 @@ def _query_result(observed, *, allow_scalar=False):
 
 
 
-def _timeout_param(v):
-    """Optional Prometheus API `timeout` (e.g. "5s"), clamped to 1..60s. The connector bounds response SIZE
-    but had no execution bound, which matters now that a caller can run model-written PromQL (review)."""
-    # No digit cap: `\d{1,3}` made "1000" or "3600s" fall through to None, i.e. NO bound — a clamp that
-    # fails open for exactly the values that need clamping (review MINOR). Only non-numeric input is None.
-    # `v or ""` turns numeric 0 into "" (falsy), which then fails the match and returns None —
-    # i.e. NO bound for exactly the value that most needs clamping. Only skip on a true absence.
-    if v is None or v == "":
-        return None
-    m = re.fullmatch(r"\s*(\d+)s?\s*", str(v))
-    return f"{max(1, min(60, int(m.group(1))))}s" if m else None
-
-
 def prometheus_query(args):
     query = (args.get("query") or "").strip()
     if not query:
         return err("query (PromQL) required")
     params = {"query": query, "time": _parse_time(args.get("time"))}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, "/api/v1/query", params, http_timeout=timeout + 3, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):
@@ -226,10 +215,10 @@ def prometheus_query_range(args):
     end = _parse_time(args.get("end"))
     step = str(args.get("step") or "60").strip()
     params = {"query": query, "start": start, "end": end, "step": step}
-    timeout = _timeout_param(args.get("timeout"))
-    if timeout:
-        params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query_range", params, with_status=True))
+    creds = _ds()
+    timeout = execution_timeout(creds, args.get("timeout"))
+    params["timeout"] = f"{timeout}s"
+    return _query_result(_get(creds, "/api/v1/query_range", params, http_timeout=timeout + 3, with_status=True))
 
 
 def _list_result(observed, field, limit, kind):
@@ -297,8 +286,11 @@ def prometheus_schema(args):
 
 
 def prometheus_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /-/healthy."""
-    return ok(health(_ds(), "/-/healthy"))
+    """Verify the actual authenticated query API using a bounded scalar query. A successful query
+    whose result is empty or carries an upstream warning (`partial`) still proves access."""
+    return ok(query_probe(
+        lambda: json.loads(prometheus_query({"query": "vector(1)", "timeout": "1s"})["body"]).get("collectionStatus"),
+        "Prometheus query access could not be verified"))
 
 
 def prometheus_metric_meta(args):

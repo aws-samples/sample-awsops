@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-選択したアカウントとリージョンの範囲で EKS クラスターと Kubernetes リソースを確認します。AWSops はクラウドとクラスターのリソースを読み取り専用で照会し、登録時はアプリの設定のみを保存します（ADR-005）。
+選択したアカウントとリージョンの範囲で EKS クラスターと Kubernetes リソースを確認します。AWSops はクラウドとクラスターのリソースを読み取り専用で照会し、登録時はアプリの設定のみを保存します。
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 

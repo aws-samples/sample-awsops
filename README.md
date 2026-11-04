@@ -63,7 +63,7 @@ Stats: 41 pages, 104 API routes, 118 components (`web/`), 21 consolidated ADRs, 
 
 All 9 rows are gated behind `agentcore_enabled`/`integrations_enabled` (default `false` in a fresh clone/deploy — `plan` = No changes, $0); "live" here describes this project's actual running deployment, which has both flags on.
 
-Models: Claude Sonnet 5 (default), Opus 4.8 (deep analysis), Haiku 4.5 (fast/low-cost).
+Models: a Claude Sonnet-class model by default, an Opus-class model only as the AI Diagnosis Deep-tier option, and a Haiku-class model for routing and short helpers. Exact Bedrock model IDs live in code (`agent/agent.py`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`).
 
 ## Prerequisites
 
@@ -160,6 +160,8 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | `network_path_check_enabled` | the Network Path Check page/worker (`network-path.tf`) — `fetch_live_topology()` is now real (cache-only, from Aurora's synced topology), but a full live AWS/Kubernetes re-read at run time is still deliberately unimplemented, so `POST .../runs` still 503s `unimplemented` even with this flag on; see the Network Path Check changelog entry. A pod/node source's live identity confirmation additionally needs an EKS Access Entry — for the **worker task role** on a host-account cluster (this feature's `_default_k8s_get()` uses that role's own credentials directly when the source's account is the host account), or for the target account's **`AWSopsReadOnlyRole`** on a member-account cluster (the K8s GET is authenticated via that assumed session instead, so registering the worker task role there is a no-op and every GET 403s) — see [`docs/runbooks/network-path-eks-access.md`](docs/runbooks/network-path-eks-access.md) + `scripts/v2/eks/register-network-path-access.sh` (`ROLE_ARN=...` overrides the principal for the member-account case) |
 
 Runtime IAM narrowing is independent of these opt-in flags: the next apply changes permissions on already-enabled stacks, including main (three web SSM parameters, runtime discovery/token actions, own-cluster task control and Claude-only models). Known regions include future opt-ins; this is not live-access proof.
+
+**`CUSTOM_MCP_ENABLED`** is a separate exact-`true` environment gate in both web and AgentCore; it defaults off. Administrator-managed custom MCP registration is preparation while ADR-022 is Proposed. Acceptance and a separately reviewed activation release must precede enabling it. The next apply adds read-only `DescribeSecret` permission for the registration namespace on already-enabled stacks. Terraform/task-definition/provisioner activation wiring belongs to the future release. Native bundled datasource query connectors keep their existing controls. Denied applicable MCP declarations retain tool ceilings even when the gate is off; chat reports policy denial, selected disablement or lookup failure without exposing credentials. See [custom MCP governance](docs/runbooks/custom-mcp-governance.md).
 
 One more ADR-017 gate is **not** a terraform flag: **`CLICKHOUSE_OFFICIAL_MCP`** is an AgentCore runtime env recorded by the provisioner (`CLICKHOUSE_OFFICIAL_MCP=true make agentcore`) that embeds the official `mcp-clickhouse` as a stdio subprocess in the runtime container. It is **FROZEN / do-not-enable**: the stdio path has no replacement for the in-house lambda's table-function SSRF guard, so unfreezing requires both the technical precondition and a new ADR + multi-AI panel + dated owner-override (ADR-017 §Status, BASELINE §2).
 
@@ -304,7 +306,7 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 
 9개 행 모두 `agentcore_enabled`/`integrations_enabled` 뒤에 게이트되어 있습니다(새로 클론·배포 시 기본값은 `false` — `plan` = No changes, $0). 여기서 "live"는 이 프로젝트의 실제 운영 배포 기준이며, 그 배포는 두 플래그 모두 켜져 있습니다.
 
-모델: Claude Sonnet 5(기본), Opus 4.8(심층 분석), Haiku 4.5(빠르고 저렴).
+모델: 기본은 Claude Sonnet급, AI 진단 Deep 단계 선택지로만 Opus급, 라우팅·분류와 짧은 보조 작업은 Haiku급을 씁니다. 정확한 Bedrock 모델 ID는 코드(`agent/agent.py`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`)에 있습니다.
 
 ## 사전 요구 사항
 
@@ -396,6 +398,8 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `network_path_check_enabled` | Network Path Check 페이지/워커(`network-path.tf`) — `fetch_live_topology()`는 이제 실제 구현이다(캐시된 Aurora 토폴로지 기반), 다만 run 시점의 실시간 AWS/Kubernetes 재조회는 여전히 의도적으로 미구현이라 이 플래그가 켜져 있어도 `POST .../runs`는 여전히 503 `unimplemented`를 반환한다; Network Path Check CHANGELOG 항목 참고. pod/node 소스의 live identity 확인에는 EKS Access Entry가 추가로 필요하다 — 소스 계정이 호스트 계정이면 **워커 task role**용(이 경우 `_default_k8s_get()`이 그 role 자신의 자격증명을 직접 사용), 멤버 계정이면 대상 계정의 **`AWSopsReadOnlyRole`**용(그 assume된 세션으로 K8s GET을 인증하므로, 워커 task role을 등록해도 아무 효과가 없고 모든 GET이 403된다) — [`docs/runbooks/network-path-eks-access.md`](docs/runbooks/network-path-eks-access.md) + `scripts/v2/eks/register-network-path-access.sh`(멤버 계정의 경우 `ROLE_ARN=...`로 principal 오버라이드) 참고 |
 
 런타임 IAM 축소는 위 선택 플래그와 무관하며 main 등 기존 활성 스택의 다음 apply에 적용됩니다(웹 SSM 세 파라미터·런타임 조회/토큰 동작·자체 클러스터 태스크 제어·Claude 모델). 알려진 리전에는 이후 opt-in 리전도 포함되며 실제 접근 성공의 증거는 아닙니다.
+
+**`CUSTOM_MCP_ENABLED`**는 web과 AgentCore 양쪽에서 정확한 `true` 값만 허용하는 별도 환경변수 게이트이며 기본 비활성입니다. ADR-022가 Proposed인 동안 관리자 custom MCP 등록은 준비 단계입니다. 활성화에는 정책 승인과 별도로 검토한 활성화 릴리스가 선행되어야 합니다. 다음 apply는 이미 활성화된 스택에 등록 네임스페이스의 읽기 전용 `DescribeSecret` 권한을 추가합니다. Terraform·태스크 정의·provisioner의 활성화 배선은 향후 릴리스 범위입니다. 기본 데이터소스 쿼리 커넥터는 기존 통제를 유지합니다. 해당 계정의 거부된 MCP 선언은 게이트가 꺼져 있어도 도구 상한을 유지하며, 채팅은 자격증명 노출 없이 정책 거부·선택한 연결의 비활성·조회 실패를 표시합니다. [custom MCP 거버넌스](docs/runbooks/custom-mcp-governance.md)를 참고하세요.
 
 ADR-017에는 terraform flag가 **아닌** 게이트가 하나 더 있습니다: **`CLICKHOUSE_OFFICIAL_MCP`** — provisioner가 기록하는 AgentCore 런타임 env(`CLICKHOUSE_OFFICIAL_MCP=true make agentcore`)로, 공식 `mcp-clickhouse`를 런타임 컨테이너에 stdio 서브프로세스로 내장합니다. **FROZEN / do-not-enable**입니다: 자체 람다의 테이블 함수 SSRF 가드에 대응하는 방어가 stdio 경로에 없어, 해제에는 기술 선결조건과 새 ADR + 멀티-AI 패널 + 날짜박힌 owner-override가 모두 필요합니다(ADR-017 §Status, BASELINE §2).
 

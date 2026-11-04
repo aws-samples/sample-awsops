@@ -18,8 +18,8 @@ from urllib.parse import quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    MAX_TRACE_RESPONSE_BYTES, NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json,
+    load_datasource, query_probe, set_request_conn, request_timeout,
 )
 
 SLUG = "tempo"
@@ -76,9 +76,12 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None, with_status=False):
+def _get(creds, path, params=None, *, timeout=None, with_status=False, max_bytes=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    request_options = {"timeout": timeout} if timeout is not None else {}
+    # An explicit discovery budget wins over the saved query bound (timeoutS).
+    request_options = {"timeout": timeout if timeout is not None else request_timeout(creds)}
+    if max_bytes is not None:
+        request_options["max_bytes"] = max_bytes
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
@@ -252,7 +255,7 @@ def _trace_projection(data, requested_trace_id):
     return out if out[key] else None
 
 
-def tempo_search(args):
+def tempo_search(args, bare_empty=False):
     query = (args.get("query") or "").strip()
     if not query:
         return err("query (TraceQL) required")
@@ -274,7 +277,8 @@ def tempo_search(args):
     # Require a recognizable message. Bare {} is unverified, not universal API malformation.
     metrics = data.get("metrics") if isinstance(data, dict) else None
     known_metrics = isinstance(metrics, dict) and (not metrics or any(key in metrics for key in _SEARCH_FIELDS))
-    recognizable = isinstance(data, dict) and ("traces" in data or known_metrics) and "raw" not in data
+    # Only the connection test accepts an idle tenant's bare {} 200 as an empty search.
+    recognizable = isinstance(data, dict) and ("traces" in data or known_metrics or bare_empty and data == {}) and "raw" not in data
     raw = data.get("traces", []) if recognizable else None
     traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
     truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
@@ -314,7 +318,7 @@ def tempo_get_trace(args):
     tid = (args.get("trace_id") or "").strip()
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
-    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}", max_bytes=MAX_TRACE_RESPONSE_BYTES)
     if isinstance(data, dict) and (data.get("status") == "error"
             or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
         return err("Tempo trace fetch returned an error")
@@ -542,8 +546,14 @@ _TOOLS = {
 
 
 def tempo_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /ready."""
-    return ok(health(load_datasource(SLUG), "/ready"))
+    """Verify query access using a one-minute, one-trace search, not process readiness."""
+    def run():
+        end = int(time.time())
+        return json.loads(tempo_search({
+            "query": '{ resource.service.name = "awsops-connection-probe" }',
+            "start": str(end - 60), "end": str(end), "limit": "1",
+        }, bare_empty=True)["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Tempo tenant query access could not be verified"))
 
 
 _TOOLS["tempo_health"] = tempo_health

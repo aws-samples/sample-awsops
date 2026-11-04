@@ -1,14 +1,14 @@
 ---
 sidebar_position: 10
 title: Event Pre-Scaling
-description: ADR-010 Phase 1+2 — traffic event registration, historical metric analysis, AI-driven warm-up scripts
+description: Traffic event registration, historical metric analysis, AI-driven warm-up scripts
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # Event Pre-Scaling
 
-The `/event-scaling` page generates **AI-driven warm-up plans** for upcoming traffic events (Black Friday, ticket drops, live streams, etc.). This is the ADR-010 Phase 1+2 implementation: it **plans and exports scripts only**; operators run the scripts manually after review.
+The `/event-scaling` page generates **AI-driven warm-up plans** for upcoming traffic events (Black Friday, ticket drops, live streams, etc.). It **plans and exports scripts only**; operators run the scripts manually after review.
 
 <Screenshot src="/screenshots/overview/event-scaling.png" alt="Event Pre-Scaling page" />
 
@@ -24,7 +24,7 @@ The `/event-scaling` page generates **AI-driven warm-up plans** for upcoming tra
 | **Supported resources** | KEDA, HPA, Aurora replica/ACU, MSK broker/partition, ASG, EC2, EBS IOPS, ALB |
 
 :::caution Phase 2 boundary
-Generated scripts are for **human review**. AWSops does not perform infrastructure mutations (KEDA deploys, AWS API calls). Auto-execute + IAM expansion + KEDA integration are gated separately under ADR-029 Phase 3 (Proposed).
+Generated scripts are for **human review**. AWSops does not perform infrastructure mutations (KEDA deploys, AWS API calls). Auto-execution, IAM expansion and KEDA integration are an unapproved proposal, kept off behind a separate gate.
 :::
 
 ## Workflow
@@ -150,8 +150,6 @@ curl -X DELETE '/awsops/api/event-scaling?id=<eventId>'
 
 ## References
 
-- **ADR-010 Phase 1+2** — event registration + AI plan generation (current)
-- **ADR-029** — Phase 3 mutating-action gate (Proposed)
 - `src/lib/event-scaling.ts` — data model + JSON persistence
 - `src/lib/event-scaling-prompts.ts` — Bedrock prompts + `PLAN_JSON` parsing
 - `src/lib/event-scaling-scripts.ts` — safe bash script generators

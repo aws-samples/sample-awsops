@@ -116,19 +116,19 @@ Live AWS data is served by **AgentCore MCP Lambda tools** — roughly **160 read
 | **AgentCore MCP tools (live)** | Real-time AWS API queries — the live data source for chat, diagnosis, and pages |
 | **Steampipe (flag-gated)** | The `steampipe_enabled` (default OFF) inventory **sync only**. Not a live query engine, not a local 9193 service |
 
-:::info The gateway count is 9 (ADR-004 as amended, 2026-06-24)
-The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, provisioned and routed as the ninth (ADR-004 as amended 2026-06-24 — 9 provisioned / 9 routed). Other external integrations remain the separate **Integrations axis** (ADR-007/017).
+:::info The gateway count is 9
+The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, provisioned and routed as the ninth (9 provisioned / 9 routed). Other external integrations remain the separate **Integrations axis** .
 :::
 
-## How does AI routing work? (ADR-038 hybrid)
+## How does AI routing work? (hybrid)
 
-AI routing is the **ADR-038 hybrid** scheme, and it is LIVE. It replaces the v1 single-Sonnet 11/18-route registry.
+AI routing is the **hybrid** scheme, and it is LIVE. It replaces the v1 single-Sonnet 11/18-route registry.
 
 ```mermaid
 flowchart TD
   Q["User question"] --> REGEX{"Regex<br/>fast-path match?"}
   REGEX -->|"match"| ROUTE["Resolve section route immediately<br/>(no LLM call)"]
-  REGEX -->|"no match"| HAIKU["Haiku 4.5 classifier<br/>(prompt caching)"]
+  REGEX -->|"no match"| HAIKU["Haiku-class classifier<br/>(prompt caching)"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["Section agent<br/>(AgentCore Runtime → 8 GW)"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### Three core mechanisms
 
 1. **Regex fast-path** — clear keyword patterns route instantly with no LLM call → latency saved.
-2. **Haiku 4.5 classifier** — only questions the fast-path misses go to the lightweight Haiku model.
+2. **Haiku-class classifier** — only questions the fast-path misses go to the lightweight Haiku model.
 3. **Prompt caching** — the classifier prompt is cached (~59% hit rate), cutting tokens and latency.
 
 ### AI assistant behavior
@@ -168,7 +168,7 @@ flowchart LR
 - On every request, verifies the `awsops_token` JWT with **RS256 JWKS** + checks `iss`/`aud`/`token_use`.
 - Unauthenticated requests are redirected to the self-hosted **`/login`** form.
 
-**2. In-app login (ADR-042)**
+**2. In-app login**
 - Login = a **self-hosted `/login` form**. The BFF `POST /api/auth/login` calls the **unsigned public `InitiateAuth(USER_PASSWORD_AUTH)`** (no SDK) → mints the `awsops_token` cookie (id_token, 12 hours).
 - The **Hosted UI PKCE flow (`/_callback`) is retained as a dark fallback only.**
 - Signout clears the cookie → `/login` (no Hosted UI `/logout` round-trip).

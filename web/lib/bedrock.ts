@@ -6,6 +6,10 @@ export interface ModelPricing { input: number; output: number; cacheRead: number
 interface PriceEntry { input: number; output: number; cacheRead?: number; cacheWrite?: number; label: string }
 
 export const MODEL_PRICING: Record<string, PriceEntry> = {
+  // 5.5 rows: AWS Price List AmazonBedrockFoundationModels, ap-northeast-2 global standard (2026-10-29).
+  'anthropic.claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5, label: 'Claude Opus 5.5' },
+  'anthropic.claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50, label: 'Claude Sonnet 5.5' },
+  'anthropic.claude-haiku-5-5': { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125, label: 'Claude Haiku 5.5' },
   'anthropic.claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 5' },
   'anthropic.claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 4.6' },
   'anthropic.claude-sonnet-4-6-v1': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, label: 'Claude Sonnet 4.6' },
@@ -48,6 +52,16 @@ export function getModelPricing(modelId: string): ModelPricing {
   if (modelId.includes('haiku')) return { input: 0.25, output: 1.25, cacheRead: 0, cacheWrite: 0 };
   if (modelId.includes('opus')) return { input: 15, output: 75, cacheRead: 1.50, cacheWrite: 18.75 };
   return { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 };
+}
+
+type ThinkingOff = { additionalModelRequestFields?: { thinking: { type: 'disabled' | 'between_tools' } } };
+
+/** Converse fields that keep fixed output caps thinking-free: Haiku 5.x takes `disabled` (4.5 takes no
+ *  thinking field), Sonnet 5.5 only `between_tools` (`disabled` 400s); Opus 5.5 cannot turn it off. */
+export function thinkingOffFields(modelId: string): ThinkingOff {
+  if (modelId.includes('claude-haiku-5')) return { additionalModelRequestFields: { thinking: { type: 'disabled' } } };
+  if (modelId.includes('claude-sonnet-5-5')) return { additionalModelRequestFields: { thinking: { type: 'between_tools' } } };
+  return {};
 }
 
 export const RANGE_CONFIGS: Record<string, { hours: number; period: number }> = {

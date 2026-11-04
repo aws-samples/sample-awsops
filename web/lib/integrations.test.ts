@@ -12,7 +12,7 @@ beforeEach(() => { query.mockReset(); delete process.env.AURORA_ENDPOINT; });
 describe('integrations catalog', () => {
   it('upsertIntegration: custom-only ON CONFLICT, no version column, disabled-by-default', async () => {
     query.mockResolvedValueOnce({ rows: [{ id: 5 }] });
-    const id = await upsertIntegration({ name: 'grafana-ro', kind: 'grafana', direction: 'egress', endpoint: 'https://g.example', transport: 'api_key', capability: 'read' });
+    const id = await upsertIntegration({ name: 'grafana-ro', kind: 'grafana', direction: 'egress', capability: 'read' });
     expect(id).toBe(5);
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/INSERT INTO integrations/i);
@@ -63,9 +63,9 @@ describe('integrations catalog', () => {
   it('getEnabledIntegrations is per-space scoped (enabled=true AND space membership)', async () => {
     process.env.AURORA_ENDPOINT = 'aurora.example';
     query.mockResolvedValueOnce({ rows: [
-      { id: 2, name: 'grafana-ro', kind: 'grafana', direction: 'egress', description: '', endpoint: 'https://g',
+      { id: 2, name: 'grafana-ro', kind: 'grafana', direction: 'egress', description: '', endpoint: null,
         transport: 'api_key', credentials_ref: null, private_connection_ref: null, capability: 'read',
-        exposed_tools: ['grafana_query'], provided_context: {}, write_action_refs: [], auth_mode: null,
+        exposed_tools: [], provided_context: {}, write_action_refs: [], auth_mode: null,
         receive_path: null, inbound_auth_ref: null, source_allowlist: [], trigger_target: null,
         tier: 'custom', enabled: true },
     ]});
@@ -75,7 +75,7 @@ describe('integrations catalog', () => {
     expect(sql).toMatch(/agent_spaces/i);
     expect(sql).toMatch(/enabled_integration_ids/i);
     expect(params).toEqual(['123456789012']);
-    expect(out[0].exposedTools).toEqual(['grafana_query']);
+    expect(out[0].exposedTools).toEqual([]);
   });
 
   it('getEnabledIntegrations degrades to [] on query error', async () => {

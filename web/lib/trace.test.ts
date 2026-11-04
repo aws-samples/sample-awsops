@@ -22,7 +22,7 @@ describe('recordCustomAgentTrace', () => {
     expect(payload.agentName).toBe('compliance');
     expect(payload.skillHashes).toEqual(['h1', 'h2']);
   });
-  it('carries spaceVersion into the payload (ADR-031 Phase 2)', async () => {
+  it('carries spaceVersion into the payload (ADR-004[legacy 031] Phase 2)', async () => {
     process.env.AURORA_ENDPOINT = 'h';
     query.mockResolvedValue({ rows: [] });
     await recordCustomAgentTrace({ gateway: 'security', userSub: 'u', agentName: 'compliance', agentVersion: 3, tier: 'custom', skillHashes: ['h1'], spaceVersion: 7 });

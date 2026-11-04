@@ -1,10 +1,11 @@
 // web/lib/agent-resolver.ts
-// ADR-031 Phase 1 — turn a selected route/agent into an effective spec. Pure.
-// ADR-031 Phase 2 — custom branch enforces the per-account Agent Space tool cap
+// ADR-004[legacy 031] Phase 1 — turn a selected route/agent into an effective spec. Pure.
+// ADR-004[legacy 031] Phase 2 — custom branch enforces the per-account Agent Space tool cap
 // (server-side, OUTSIDE the model). The built-in branch is byte-identical to Phase 1.
 import type { AgentWithSkills } from '@/lib/catalog';
 import type { AgentSpace } from '@/lib/agent-space';
 import { isReservedAgentName, gatewayToolIdentities, qualifyToolNames } from './skill-validation';
+import { CUSTOM_MCP_ATTESTATION, type McpAttestation, customMcpEnabled, isMcpRegistration, validMcpAttestation } from './custom-mcp-policy';
 export { qualifyToolNames } from './skill-validation';
 
 // Immutable, non-overridable safety boundary prepended to every custom prompt (Addendum #5).
@@ -24,19 +25,27 @@ export interface ResolvedAgentSpec {
   agentVersion?: number;
   skillHashes: string[];
   spaceVersion?: number;          // Phase 2 traceability (custom path only; undefined when no space)
-  // ADR-039 P2-infra inc2: connectable egress-READ integrations (custom path only). agent.py uses these
+  // ADR-007[legacy 039] P2-infra inc2: connectable egress-READ integrations (custom path only). agent.py uses these
   // to live-connect external MCP endpoints; credentialsRef is a Secrets Manager ARN (never plaintext).
   integrations?: ResolvedIntegration[];
 }
 
 // What agent.py needs to live-connect ONE egress-READ integration (the resolver passes only these).
 export interface ResolvedIntegration {
+  id: number;
+  kind: string;
+  direction: 'egress';
+  capability: 'read';
+  accountId: string;
+  accountSelected: true;
+  registeredTools: string[];
+  readOnlyAttestation: McpAttestation;
   name: string;
   endpoint: string;
   transport: string;            // sigv4 | api_key | oauth_client_credentials
   credentialsRef?: string;      // Secrets Manager ARN (runtime fetch); undefined for sigv4
   exposedTools: string[];
-  allowPrivate: boolean;        // per-account ADR-011 allowPrivateDatasource opt-in (SSRF)
+  allowPrivate: boolean;        // per-account ADR-007[legacy 011] allowPrivateDatasource opt-in (SSRF)
   sigv4Service?: string;        // sigv4 only
   sigv4Region?: string;         // sigv4 only
 }
@@ -58,12 +67,16 @@ export function pickCustomAgent(prompt: string, candidates: AgentWithSkills[]): 
  *                   allowlist; has NO effect on the built-in branch. No space (or a DB
  *                   miss from getAgentSpace returning null) ⇒ Phase-1 behavior. Policy read errors propagate.
  */
-// ADR-039 P2 — egress READ integration as the resolver sees it (only these contribute tools/context).
+// ADR-007[legacy 039] P2 — egress READ integration as the resolver sees it (only these contribute tools/context).
 export interface EgressReadIntegration {
+  id?: number;
+  kind?: string;
+  direction?: string;
+  capability?: string;
   name: string;
   exposedTools: string[];
   providedContext?: Record<string, unknown>;
-  // ADR-039 P2-infra inc2 — connection details (only integrations with endpoint+transport are connectable).
+  // ADR-007[legacy 039] P2-infra inc2 — connection details (only integrations with endpoint+transport are connectable).
   endpoint?: string;
   transport?: string;
   credentialsRef?: string;
@@ -72,13 +85,13 @@ export interface EgressReadIntegration {
   sigv4Region?: string;
 }
 
-// ADR-033 — bound the integration context injected into the prompt.
+// ADR-008[legacy 033] — bound the integration context injected into the prompt.
 // PARITY NOTE: the incident federation bridge (scripts/v2/incident/agent_bridge.py) does NOT yet inject
 // integration context — that parity is deferred to P4 (federation is flag-off). Chat (here) and federation
 // intentionally diverge on integration context until P4; keep SAFEGUARD_LINE byte-identical across both.
 export const MAX_PROVIDED_CONTEXT_CHARS = 2000;
 
-// ADR-040/041 — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
+// ADR-007[legacy 040] — a READ_WRITE integration the resolver may SURFACE as propose-only (NOT a live tool).
 export interface ProposableWriteIntegration {
   name: string;
   writeActionRefs: string[];   // action_catalog names the model may PROPOSE (e.g. slack.post_message)
@@ -99,7 +112,12 @@ function renderProposableWrites(items: ProposableWriteIntegration[]): string {
 /** Render enabled egress-READ integrations' provided_context into a single bounded block. */
 function renderIntegrationContext(integrations: EgressReadIntegration[]): string {
   const lines = integrations
-    .filter((i) => i.providedContext && Object.keys(i.providedContext).length > 0)
+    .map((i) => {
+      const context = { ...i.providedContext };
+      delete context[CUSTOM_MCP_ATTESTATION];
+      return { ...i, providedContext: context };
+    })
+    .filter((i) => Object.keys(i.providedContext).length > 0)
     .map((i) => `- ${i.name}: ${JSON.stringify(i.providedContext)}`);
   if (lines.length === 0) return '';
   const block = `## Integration context\n${lines.join('\n')}`;
@@ -118,13 +136,20 @@ export function resolveAgent(
   space?: AgentSpace | null,
   egressReadIntegrations: EgressReadIntegration[] = [],
   proposableWrites: ProposableWriteIntegration[] = [],
+  selection: { mcpSelectionSuppressed?: boolean } = {},
 ): ResolvedAgentSpec {
   const custom = candidates.find((a) => a.name === routeKey && a.enabled && a.tier === 'custom' && !isReservedAgentName(a.name));
   if (custom) {
+    const mcpRequested = selection.mcpSelectionSuppressed === true || egressReadIntegrations.some(isMcpRegistration);
+    // All live MCP endpoints require server-recorded attestation and explicit account membership.
+    // A vendor-kind label cannot turn an administrator's endpoint into an official preset.
+    egressReadIntegrations = egressReadIntegrations.filter((i) =>
+      !isMcpRegistration(i) ||
+      customMcpEnabled() && !!space?.enabledIntegrationIds?.includes(i.id!) && validMcpAttestation(i));
     const ordered = [...custom.skills].sort((a, b) => a.ord - b.ord);
     const skillBlock = ordered.map((s) => s.instructions).filter(Boolean).join('\n\n');
     const integrationBlock = renderIntegrationContext(egressReadIntegrations);
-    // ADR-040/041: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
+    // ADR-007[legacy 040]: READ_WRITE integrations are surfaced as PROPOSE-ONLY prompt metadata — never as
     // live tools (writes go through the human-gated /api/actions path), so they do NOT touch toolAllowlist.
     const proposableBlock = renderProposableWrites(proposableWrites);
     const systemPromptOverride = [SAFEGUARD_LINE, custom.persona.trim(), skillBlock, integrationBlock, proposableBlock]
@@ -139,7 +164,7 @@ export function resolveAgent(
     const integTools = egressReadIntegrations.flatMap((i) => i.exposedTools ?? []).filter(Boolean);
     // Only the legacy unrestricted case inherits gateway reads. An account
     // cap or integration declaration is a ceiling, never an implicit gateway grant.
-    const legacyUnrestricted = !declaredPolicy && !capped && integTools.length === 0;
+    const legacyUnrestricted = !declaredPolicy && !capped && integTools.length === 0 && !mcpRequested;
     const eligible = declaredPolicy ? qualifyToolNames(declared, known) : legacyUnrestricted ? known : [];
     const skillEnforced = eligible.filter((id) => !capped || cap.has(id));
     // Gateway-qualified names are reserved: an external integration cannot grant a gateway
@@ -148,21 +173,27 @@ export function resolveAgent(
       (!capped || space!.toolAllowlist.includes(tool));
     const integEnforced = integTools.filter(integrationAllowed);
     const merged = Array.from(new Set([...skillEnforced, ...integEnforced]));
-    const restricted = capped || declaredPolicy || integTools.length > 0;
-    // ADR-039 P2-infra inc2: surface ONLY connectable integrations (endpoint+transport present) for
+    const restricted = capped || declaredPolicy || integTools.length > 0 || mcpRequested;
+    // ADR-007[legacy 039] P2-infra inc2: surface ONLY connectable integrations (endpoint+transport present) for
     // agent.py to live-connect. Tool/context injection above is independent — a context-only integration
     // (no endpoint) still contributes tools/context but is not in this connect list.
     const connectable: ResolvedIntegration[] = egressReadIntegrations
-      .filter((i) => i.endpoint && i.transport)
+      .filter((i) => isMcpRegistration(i) && i.endpoint && i.transport)
       .map((i) => ({
+        id: i.id!,
+        kind: i.kind!,
+        direction: 'egress',
+        capability: 'read',
+        accountId: space!.accountId,
+        accountSelected: true,
+        registeredTools: i.exposedTools,
+        readOnlyAttestation: i.providedContext![CUSTOM_MCP_ATTESTATION] as McpAttestation,
         name: i.name,
         endpoint: i.endpoint!,
         transport: i.transport!,
         credentialsRef: i.credentialsRef,
         exposedTools: (i.exposedTools ?? []).filter(integrationAllowed),
         allowPrivate: i.allowPrivate ?? false,
-        ...(i.sigv4Service ? { sigv4Service: i.sigv4Service } : {}),
-        ...(i.sigv4Region ? { sigv4Region: i.sigv4Region } : {}),
       }));
     return {
       tier: 'custom',

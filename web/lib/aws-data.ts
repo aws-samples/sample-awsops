@@ -11,14 +11,15 @@
 import { Pool } from 'pg';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { BedrockRuntimeClient, InvokeModelCommand, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { thinkingOffFields } from './bedrock';
 import type { ChatMsg } from './agentcore';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const PROJECT = process.env.PROJECT ?? 'awsops-v2-stg';
-const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+const CODEGEN_MODEL = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 /** Analysis model: SYNTHESIS_MODEL_ID, falling back to CODEGEN_MODEL_ID (exported for the footer). */
 export const AWS_DATA_ANALYSIS_MODEL =
-  process.env.SYNTHESIS_MODEL_ID || process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+  process.env.SYNTHESIS_MODEL_ID || process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
 
 const SECRET_TTL_MS = 10 * 60 * 1000; // password cache — Steampipe secret is static plaintext
 const MAX_ROWS = 200;                 // hard row cap: bounds both memory and the analysis context
@@ -194,6 +195,7 @@ const invokeSend: GenSend = async (system, messages) => {
   const body = JSON.stringify({
     anthropic_version: 'bedrock-2023-05-31',
     max_tokens: 1024, // thinking 블록이 예산을 소모해도 SQL 본문이 잘리지 않게
+    ...(CODEGEN_MODEL.includes('claude-sonnet-5-5') ? { thinking: { type: 'between_tools' } } : {}),
     system,
     messages,
   });
@@ -332,8 +334,9 @@ export async function* analyzeStream(opts: AnalyzeOpts): AsyncGenerator<string> 
     modelId: AWS_DATA_ANALYSIS_MODEL,
     system: [{ text: system }],
     messages: [{ role: 'user', content: [{ text: user }] }],
-    // sonnet-5 rejects `temperature` on ConverseStream (see synthesize.ts / agent.py note) — omit it.
+    // Claude 5.x models reject `temperature`; thinking stays off so the fixed output cap holds the answer.
     inferenceConfig: { maxTokens: 8192 }, // 69행 전량 목록 답변이 4096 상한에 절단되던 실측 — 상향
+    ...thinkingOffFields(AWS_DATA_ANALYSIS_MODEL),
   }), { abortSignal: opts.abortSignal });
   for await (const ev of res.stream ?? []) {
     const d = ev.contentBlockDelta?.delta;

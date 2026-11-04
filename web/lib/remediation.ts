@@ -1,5 +1,5 @@
 // web/lib/remediation.ts
-// ADR-029+036 — Aurora data layer for the remediation substrate. Plan creation is dry-run-only
+// ADR-005[legacy 029] — Aurora data layer for the remediation substrate. Plan creation is dry-run-only
 // (NO mutation); execute enqueues into the P2 ledger. Degrade-safe when AURORA unconfigured.
 import { randomUUID } from 'crypto';
 import { getPool } from '@/lib/db';

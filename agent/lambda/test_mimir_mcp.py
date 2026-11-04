@@ -25,7 +25,7 @@ class TestQuery(_Base):
         # the connector bounded response SIZE only; a caller can now run model-written PromQL through it,
         # so the diag-signal dry run asks for an execution bound (review: it was applied to prometheus but
         # silently ignored here).
-        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "60s"), ("3600s", "60s"), ("0", "1s"), (0, "1s")):
+        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "10s"), ("3600s", "10s"), ("0", "1s"), (0, "1s")):
             cap={}
             with mock.patch.object(mm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"vector","result":[]}}))):
                 mm.lambda_handler({"tool_name":"mimir_query","arguments":{"query":"up","timeout":given}},None)
@@ -33,7 +33,7 @@ class TestQuery(_Base):
         cap={}
         with mock.patch.object(mm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"vector","result":[]}}))):
             mm.lambda_handler({"tool_name":"mimir_query","arguments":{"query":"up"}},None)
-        self.assertNotIn("timeout", _qs(cap["url"]))   # unchanged for callers that ask for no bound
+        self.assertEqual(_qs(cap["url"])["timeout"], ["10s"])
 
     def test_range_seconds_window(self):
         cap={}

@@ -1,5 +1,5 @@
 // web/lib/datasources.ts
-// Multi-instance datasource data layer (ADR-039 hub). A datasource is an `integrations` row with
+// Multi-instance datasource data layer (ADR-007[legacy 039] hub). A datasource is an `integrations` row with
 // category=datasource (direction='egress', capability='read', a query-language kind). This module owns
 // the row lifecycle AND the kind-mirror credential coordination (the agent gateway no-inline path):
 // create/update/setDefault/delete keep the `kind` mirror equal to the current default instance.
@@ -185,11 +185,11 @@ export async function resolveConnConfig(ds: DatasourceRow): Promise<ConnConfig> 
     ...(ds.endpoint ? { endpoint: ds.endpoint } : {}),
     ...(ds.authType ? { authType: ds.authType } : {}),
     // gap L203: the ClickHouse settings ride the conn config — database (identifier-validated
-    // on write AND read) becomes &database=, and timeoutS becomes the connector's DEFAULT
-    // max_execution_time, so the Explore route, the service-graph sources, and the agent
-    // path all get the same bound from one mechanism.
+    // on write AND read) becomes &database=; timeoutS is the connector's query bound for every kind
+    // (execution ceiling or transport deadline), so the Explore route, the service-graph sources and
+    // the agent path all get the same bound from one mechanism.
     ...(ds.kind === 'clickhouse' && ds.settings?.database ? { database: ds.settings.database } : {}),
-    ...(ds.kind === 'clickhouse' && ds.settings?.timeoutS ? { timeoutS: ds.settings.timeoutS } : {}),
+    ...(ds.settings?.timeoutS ? { timeoutS: ds.settings.timeoutS } : {}),
   } as ConnConfig;
 }
 

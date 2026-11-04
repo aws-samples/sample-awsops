@@ -116,19 +116,19 @@ AWSops のライブ AWS データは **AgentCore MCP Lambda ツール**が担当
 | **AgentCore MCP ツール（ライブ）** | リアルタイム AWS API 照会 — チャット・診断・ページのライブデータソース |
 | **Steampipe（flag-gated）** | `steampipe_enabled`（デフォルト OFF）のインベントリ sync **専用**。ライブクエリエンジンではなく、ローカル 9193 サービスでもありません |
 
-:::info ゲートウェイ数は 9 つです（ADR-004 改訂、2026-06-24）
-外部オブザーバビリティコネクタ（Prometheus·ClickHouse）は **external-obs ゲートウェイ**に昇格し、9 番目としてプロビジョニング・ルーティングされます（ADR-004 改訂 — 9 プロビジョニング / 9 ルーティング）。その他の外部連携は独立した **Integrations 軸**（ADR-007/017）です。
+:::info ゲートウェイ数は 9 つです
+外部オブザーバビリティコネクタ（Prometheus·ClickHouse）は **external-obs ゲートウェイ**に昇格し、9 番目としてプロビジョニング・ルーティングされます（9 プロビジョニング / 9 ルーティング）。その他の外部連携は独立した **Integrations 軸**です。
 :::
 
-## AI ルーティングはどのように動作しますか？（ADR-038 ハイブリッド）
+## AI ルーティングはどのように動作しますか？（ハイブリッド）
 
-AI ルーティングは **ADR-038 ハイブリッド**方式で LIVE です。v1 の Sonnet 単一分類器による 11/18-route レジストリを置き換えます。
+AI ルーティングは **ハイブリッド**方式で LIVE です。v1 の Sonnet 単一分類器による 11/18-route レジストリを置き換えます。
 
 ```mermaid
 flowchart TD
   Q["ユーザーの質問"] --> REGEX{"正規表現<br/>fast-path マッチ?"}
   REGEX -->|"マッチ"| ROUTE["セクションルートを即決定<br/>(LLM 呼び出しなし)"]
-  REGEX -->|"非マッチ"| HAIKU["Haiku 4.5 分類器<br/>(プロンプトキャッシング)"]
+  REGEX -->|"非マッチ"| HAIKU["Haiku クラス分類器<br/>(プロンプトキャッシング)"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["セクションエージェント<br/>(AgentCore Runtime → 8 GW)"]
 ```
@@ -136,7 +136,7 @@ flowchart TD
 ### 3 つの中核メカニズム
 
 1. **正規表現 fast-path** — 明確なキーワードパターンは LLM 呼び出しなしで即座にルーティング → レイテンシ削減。
-2. **Haiku 4.5 分類器** — fast-path で捕捉できなかった質問のみ、軽量な Haiku モデルが分類。
+2. **Haiku クラス分類器** — fast-path で捕捉できなかった質問のみ、軽量な Haiku モデルが分類。
 3. **プロンプトキャッシング** — 分類プロンプトをキャッシュ（約 59% ヒット）してトークン・レイテンシを削減。
 
 ### AI アシスタントの動作
@@ -168,7 +168,7 @@ flowchart LR
 - すべてのリクエストで `awsops_token` クッキーの JWT を **RS256 JWKS で署名検証** + `iss`/`aud`/`token_use` を確認。
 - 未認証であれば自前の **`/login`** フォームへ redirect。
 
-**2. アプリ内ログイン（ADR-042）**
+**2. アプリ内ログイン**
 - ログイン = **自前の `/login` フォーム**。BFF の `POST /api/auth/login` が**無署名パブリック `InitiateAuth(USER_PASSWORD_AUTH)`** を呼び出し（SDK 不使用）→ `awsops_token` クッキーを発行（id_token 12 時間）。
 - **Hosted UI PKCE フロー（`/_callback`）はダークフォールバック**としてのみ保持。
 - signout はクッキー削除 → `/login`（Hosted UI `/logout` の往復なし）。

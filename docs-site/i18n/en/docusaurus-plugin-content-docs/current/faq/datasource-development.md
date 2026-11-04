@@ -29,7 +29,7 @@ Currently queryable kinds:
 | Tempo | TraceQL | Distributed tracing |
 | ClickHouse | SQL | Analytics DB |
 
-:::info Read-only posture (ADR-041)
+:::info Read-only posture
 Datasources cover **data reads** (plus governed external record/ticket/message writes) only. AWS-resource mutation and autonomy are permanently frozen (do-not-enable). The tool map in `web/app/api/datasources/query/route.ts` holds **read tools only** (no mutate tool is reachable), and a test asserts this invariant.
 :::
 
@@ -194,8 +194,8 @@ API documentation:
 If you have an OpenAPI (Swagger) YAML/JSON file, even more accurate code can be generated. In Kiro, placing the spec file in the project allows automatic referencing; in Claude Code, include the file path in your prompt.
 :::
 
-:::caution Governed connectors only (ADR-040/041)
-External connectors are allowed only as **governed connectors** — arbitrary-form BYO-MCP is excluded. An administrator-registered `custom_mcp` integration is a separate path with administrator-only registration, per-account enablement and an exposed-tool ceiling; this guide covers adding a new built-in connector kind. Add new kinds only within the SSRF guard, Secrets Manager credentials, read-only tools, DLP/redaction, and `KNOWN_CONNECTOR_SLUGS` allowlist. For the governance detail, see `docs/decisions/ADR-040-governed-external-knowledge-comms-writes.md` and `ADR-041-read-only-means-resource-not-data.md`.
+:::caution Governed connectors only
+External connectors are allowed only as **governed connectors** — arbitrary-form BYO-MCP is excluded. An administrator-registered `custom_mcp` integration is a separate path with administrator-only registration, per-account enablement and an exposed-tool ceiling; this guide covers adding a new built-in connector kind. Add new kinds only within the SSRF guard, Secrets Manager credentials, read-only tools, DLP/redaction, and `KNOWN_CONNECTOR_SLUGS` allowlist.
 :::
 
 ## Verification Checklist

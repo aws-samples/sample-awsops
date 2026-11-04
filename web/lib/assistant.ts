@@ -1,6 +1,7 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { AWSOPS_KB } from './awsops-kb';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
+import { thinkingOffFields } from './bedrock';
 
 // In-app "AWSops Assistant": answers product / how-to questions ABOUT AWSops itself (e.g. how to use
 // /customization, build a custom agent, add a Prometheus integration) — which no AWS-domain section
@@ -17,7 +18,7 @@ export type AssistantSend = (system: string, user: string, modelId: string) => P
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 // Default mirrors CLASSIFIER_MODEL_ID (the model the web role is already allowed to call).
-const MODEL_ID = process.env.ASSISTANT_MODEL_ID || 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
+const MODEL_ID = process.env.ASSISTANT_MODEL_ID || 'global.anthropic.claude-haiku-5-5';
 
 const SYSTEM =
   'You are the in-app AWSops product assistant. Answer the user question about USING AWSops, ' +
@@ -43,7 +44,8 @@ const bedrockSend: AssistantSend = async (system, user, modelId) => {
     modelId,
     system: [{ text: system }],
     messages: [{ role: 'user', content: [{ text: user }] }],
-    inferenceConfig: { maxTokens: 2048, temperature: 0.2 },
+    inferenceConfig: { maxTokens: 2048 },
+    ...thinkingOffFields(modelId),
   }));
   return (res.output?.message?.content ?? [])
     .map((c) => ('text' in c && c.text ? c.text : ''))

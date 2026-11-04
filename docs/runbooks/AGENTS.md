@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: dd43b5cdce3c · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: edea26c8ab7d · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
 
@@ -13,10 +13,13 @@
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
+`datasource-credential-isolation.md` requires native-default credential backfill before stricter
+explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007).
+`privatelink-observability.md` covers cross-account PrivateLink to datasources: acceptance stays manual, each endpoint admits only its own kind's
+connector client security group and no CIDR, and zone/record changes need `allow_dns_changes` and a two-step apply (ADR-007).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
-`docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
-(legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
-legacy runbook's steps as the current operational path).
+`docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
+removed; flag any change that reintroduces a v1 procedure.
 
 `pr-review-head-images.md` defines two comprehensive reviewer reports, complete diff
 admission (6,000 lines/128 KiB), bounded chair input and distinct incomplete-review
@@ -169,9 +172,8 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 
 ## Known false-positives
-- A runbook marked **v1 (legacy)** describing a procedure that no longer matches v2's
-  architecture is intentional — it's kept for reference during the v1 decommission window
-  (ADR-016), not stale content to delete outright.
+- `v1-decommission.md` and `v1-to-v2-aurora-backfill.md` are v2 procedures that act on v1
+  resources and data; they are not v1 remnants.
 
 ## Authenticated development verification
 - Every dev release requires the full gate: apply `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
@@ -273,3 +275,5 @@ see `pr-review-head-images.md`. No new tool or IAM grants.
 `review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
 contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
 It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.
+
+`custom-mcp-governance.md` defines default-off MCP preparation, per-row secret/version attestation, durable audit and required invocation-principal evidence. Source presence is not ADR acceptance or activation. Native query datasource rows retain existing controls; vendor-labelled MCP connections do not bypass governance.

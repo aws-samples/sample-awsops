@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # EKS Overview
 
-View EKS clusters and Kubernetes resources in the selected account and region scope. AWSops queries cloud and cluster resources read-only; registration stores app settings only (ADR-005).
+View EKS clusters and Kubernetes resources in the selected account and region scope. AWSops queries cloud and cluster resources read-only; registration stores app settings only.
 
 <Screenshot src="/screenshots/compute/eks.png" alt="EKS Overview" />
 

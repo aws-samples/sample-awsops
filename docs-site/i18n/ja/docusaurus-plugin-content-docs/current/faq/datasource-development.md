@@ -29,7 +29,7 @@ AWSops のデータソースは**読み取り専用コネクタプラットフ�
 | Tempo | TraceQL | 分散トレーシング |
 | ClickHouse | SQL | 分析 DB |
 
-:::info 読み取り専用姿勢(ADR-041)
+:::info 読み取り専用姿勢
 データソースは**データ read**(+ ガバナンスされた外部 record/ticket/message write)のみを扱います。AWS リソースの変更・自律動作は恒久凍結(do-not-enable)です。`web/app/api/datasources/query/route.ts` のツールマップには**読み取りツールのみ**が存在し(mutate ツールには到達不可)、テストがこの不変条件を検証します。
 :::
 
@@ -194,8 +194,8 @@ API ドキュメント:
 OpenAPI(Swagger) YAML/JSON ファイルがあれば、より正確なコードを生成できます。Kiro は仕様ファイルをプロジェクトに置くと自動参照し、Claude Code はプロンプトにファイルパスを含めれば使えます。
 :::
 
-:::caution コネクタはガバナンス必須 (ADR-040/041)
-外部コネクタは**ガバナンスされたコネクタ**のみ許可されます — 任意形態の BYO-MCP は対象外です。管理者が登録する `custom_mcp` 連携は、管理者専用の登録・アカウントごとの有効化・公開ツール上限を備えた別の経路であり、このガイドは組み込みコネクタの種類を新しく追加する場合を扱います。新しい種類は SSRF ガード・Secrets Manager クレデンシャル・読み取り専用ツール・DLP/リダクション・`KNOWN_CONNECTOR_SLUGS` 許可リストの範囲内でのみ追加してください。詳細なガバナンスは `docs/decisions/ADR-040-governed-external-knowledge-comms-writes.md`、`ADR-041-read-only-means-resource-not-data.md` を参照してください。
+:::caution コネクタはガバナンス必須
+外部コネクタは**ガバナンスされたコネクタ**のみ許可されます — 任意形態の BYO-MCP は対象外です。管理者が登録する `custom_mcp` 連携は、管理者専用の登録・アカウントごとの有効化・公開ツール上限を備えた別の経路であり、このガイドは組み込みコネクタの種類を新しく追加する場合を扱います。新しい種類は SSRF ガード・Secrets Manager クレデンシャル・読み取り専用ツール・DLP/リダクション・`KNOWN_CONNECTOR_SLUGS` 許可リストの範囲内でのみ追加してください。
 :::
 
 ## 追加後の検証チェックリスト

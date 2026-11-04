@@ -56,7 +56,7 @@ export function verifyBearer(authHeader: string | null | undefined, secrets: Arr
   return { ok: false };
 }
 
-// HMAC-SHA256 (ADR-022 active/standby) — moved verbatim from the route for the direct-custom path.
+// HMAC-SHA256 (ADR-013[legacy 022] active/standby) — moved verbatim from the route for the direct-custom path.
 export function verifyHmac(body: string, signature: string, secrets: Array<string | undefined>): AuthResult {
   const sig = (signature || '').replace(/^sha256=/, '');
   let sigBuf: Buffer;

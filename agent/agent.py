@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import os
+import datetime as mcp_datetime
 import functools
 import socket
 import ipaddress
@@ -21,6 +22,7 @@ except ImportError:  # pre-CacheConfig strands
 from strands.tools.mcp.mcp_client import MCPClient
 from botocore.credentials import Credentials
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+import pinned_http
 from streamable_http_sigv4 import streamablehttp_client_with_sigv4, streamablehttp_client_with_headers
 from account_utils import effective_account_id
 import boto3
@@ -116,12 +118,12 @@ def _discover_gateways():
 GATEWAYS = _discover_gateways()
 
 # Bedrock Model / Bedrock 모델
-# ADR-038: deterministic tool selection + prompt caching (verified against strands-agents 1.41.0:
+# ADR-003[legacy 038]: deterministic tool selection + prompt caching (verified against strands-agents 1.48.0:
 # BedrockConfig exposes temperature / cache_config / cache_tools; cache_prompt is deprecated).
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
-MODEL_ID = "global.anthropic.claude-sonnet-5"
+MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 # Explicit output ceiling. Without it ConverseStream uses the model's default output limit, and a
 # live dev root-cause answer (cost follow-up, 5 tool calls, Korean tables) stopped mid-sentence with
 # Strands MaxTokensReachedException (2026-10-12). Env-overridable for a smaller-output model.
@@ -132,20 +134,17 @@ try:
     model = BedrockModel(
         model_id=MODEL_ID,
         region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
-        # NOTE: sonnet-5 rejects `temperature` on ConverseStream ("temperature is deprecated for
-        # this model" — live-verified 2026-07-07, every request failed with a ValidationException
-        # until this was dropped). The ADR-038 determinism rationale (temperature=0.0 for tool
-        # selection) no longer applies to this model generation — omit rather than pass an invalid value.
-        # Rollback contract: if MODEL_ID moves back to a temperature-accepting generation (e.g.
-        # sonnet-4-6), restore temperature=0.0 here AND in the no-cache fallback below — ADR-038
-        # determinism is suspended only while the model rejects the param, not repealed.
+        # NOTE: Claude Sonnet 5 and 5.5 reject `temperature` on ConverseStream (ValidationException,
+        # live-verified 2026-07-07 and 2026-10-28), so it is omitted. Routing determinism is held by
+        # the regex fast path, classifier output validation and the tool allowlist, not sampling
+        # (ADR-003[legacy 038]); do not reintroduce a sampling parameter the model rejects.
         cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
         cache_tools="default",                      # toolConfig cachePoint, 5m TTL
         max_tokens=AGENT_MAX_TOKENS,
     )
 except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConfig missing; or CacheConfig(strategy="auto") rejected (ValueError/pydantic ValidationError)
     # NOTE: this fires once per cold start only. The production cache-degradation detector is
-    # the cacheReadInputTokens usage check (ADR-038 Task 8) — do not rely on this line alone.
+    # the cacheReadInputTokens usage check (ADR-003[legacy 038 Task 8]) — do not rely on this line alone.
     print(f"[Agent] prompt caching unavailable ({e}); falling back to no-cache")
     model = BedrockModel(
         model_id=MODEL_ID,
@@ -446,7 +445,7 @@ def build_skill_prompt(gateway_role, tools):
 
 
 def _filter_tools(tools, allowlist):
-    """ADR-031/ADR-039: enforce the resolver-computed tool allowlist OUTSIDE the model.
+    """ADR-004[legacy 031]/ADR-007[legacy 039]: enforce the resolver-computed tool allowlist OUTSIDE the model.
 
     None is legacy unrestricted; [] or the reserved wire token is deny-all. The BFF resolves gateway aliases
     to exact target-qualified names; NEVER authorize by suffix here. Duplicate
@@ -519,11 +518,38 @@ _METADATA_IPS = frozenset({
 })
 
 
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
+
+
+def _embedded_ipv4(ip):
+    """Classify an IPv6 address by the IPv4 it embeds, so a translator cannot launder a blocked
+    target: IPv4-mapped (::ffff:a.b.c.d), 6to4 (2002::/16), Teredo (2001::/32, client address) and
+    well-known NAT64 (64:ff9b::/96 — low 32 bits). The local-use NAT64 prefix (64:ff9b:1::/48)
+    embeds the IPv4 at a prefix-length-dependent offset (RFC 6052) that cannot be known from the
+    address alone, so it is never decoded and is always blocked instead. Plain addresses are
+    returned unchanged."""
+    if ip.version != 6:
+        return ip
+    mapped = ip.ipv4_mapped or ip.sixtofour
+    if mapped is not None:
+        return mapped
+    teredo = ip.teredo
+    if teredo is not None:
+        return teredo[1]
+    if ip in _NAT64_WELL_KNOWN:
+        return ipaddress.ip_address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
 def _ip_always_blocked(ip_str):
     """Returns True if the IP is metadata, loopback, link-local, multicast, reserved, or unspecified —
     i.e. blocked REGARDLESS of the per-account allowPrivate opt-in."""
     try:
-        ip = ipaddress.ip_address(ip_str)
+        raw = ipaddress.ip_address(ip_str)
+        if raw in _NAT64_LOCAL_USE:
+            return True  # fail closed: the embedded target cannot be verified
+        ip = _embedded_ipv4(raw)
         if ip in _METADATA_IPS:
             return True
         return (ip.is_loopback or ip.is_link_local or ip.is_multicast or
@@ -535,7 +561,7 @@ def _ip_always_blocked(ip_str):
 def _ip_is_private(ip_str):
     """Returns True if the IP is in a private range (RFC1918/ULA) AND not always blocked."""
     try:
-        ip = ipaddress.ip_address(ip_str)
+        ip = _embedded_ipv4(ipaddress.ip_address(ip_str))
         # ipaddress.is_private includes link-local/loopback in some versions; we only want
         # the "opt-in" ranges (RFC1918 + RFC4193 ULA).
         return ip.is_private and not _ip_always_blocked(ip_str)
@@ -547,11 +573,10 @@ def _assert_host_allowed(url, allow_private, resolver=socket.getaddrinfo):
     """Assert the URL host is connectable: require https, resolve the host, and block any resolved IP
     that is always-blocked (metadata/loopback/link-local/...) or private-without-the-opt-in.
 
-    KNOWN LIMITATION (P4 gate, accepted — matches ADR-011 / web/lib/ssrf-guard.ts, both resolve-based):
-    this is resolve-and-recheck; the transport re-resolves at connect time, so a DNS-rebinding host
-    could return a safe IP here and a blocked IP at connect. The layered mitigations are redirect:'manual'
-    (set on both integration transports) + the registration-time literal-host guard (ssrf-guard.ts). True
-    IP-pinning (connect to the validated IP with SNI/Host preserved) is deferred to P3 hardening."""
+    Return all validated IPs for the integration transport, which pins connections while
+    preserving Host, TLS SNI and certificate verification."""
+    if "\\" in str(url):
+        raise SsrfBlocked("SSRF block: endpoint must not contain a backslash")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != 'https':
         raise SsrfBlocked(f"SSRF block: HTTPS required for integration endpoints, got {parsed.scheme}")
@@ -561,20 +586,28 @@ def _assert_host_allowed(url, allow_private, resolver=socket.getaddrinfo):
         raise SsrfBlocked(f"SSRF block: invalid or missing host in URL {url}")
 
     try:
+        port = parsed.port or 443  # ValueError on a malformed port such as https://host:abc/
+    except ValueError:
+        raise SsrfBlocked(f"SSRF block: invalid port in URL {url}")
+    try:
         # Resolve all IPs for the host (could be dual-stack or have multiple A records)
-        addr_info = resolver(host, 443, proto=socket.IPPROTO_TCP)
+        addr_info = resolver(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise SsrfBlocked(f"SSRF block: could not resolve host {host}: {e}")
 
     if not addr_info:
         raise SsrfBlocked(f"SSRF block: could not resolve host {host} (no addresses returned)")
 
+    addresses = []
     for family, type, proto, canonname, sockaddr in addr_info:
         ip_str = sockaddr[0]
         if _ip_always_blocked(ip_str):
             raise SsrfBlocked(f"SSRF block: host {host} resolved to always-blocked IP {ip_str}")
         if _ip_is_private(ip_str) and not allow_private:
             raise SsrfBlocked(f"SSRF block: host {host} resolved to private IP {ip_str} and private access disabled")
+        if ip_str not in addresses:
+            addresses.append(ip_str)
+    return tuple(addresses)
 
 
 def parse_secret(val):
@@ -596,14 +629,25 @@ def auth_headers(transport, secret):
         # {"header": "X-API-KEY", "value": "..."} or {"api_key": "..."} -> Authorization: ...
         header = secret.get("header", "Authorization")
         val = secret.get("value", secret.get("api_key", secret.get("_raw")))
+        val = val.strip() if isinstance(val, str) else val  # a pasted trailing newline is not a secret
         if not val:
             raise ValueError(f"Integration [api_key] missing value in secret")
+        # `authorization` is deliberately allowed here (unlike datasource_http's list): an api_key
+        # integration may legitimately carry its key in the Authorization header.
+        if (not isinstance(header, str) or not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", header)
+                or header.lower() in ("host", "content-length", "transfer-encoding", "connection")):
+            raise ValueError("Integration [api_key] header name is invalid")
+        if not isinstance(val, str) or not val or any(ord(ch) < 32 or ord(ch) > 126 for ch in val):
+            raise ValueError("Integration [api_key] header value contains unsupported characters")
         return {header: val}
     if transport == 'oauth_client_credentials':
         # Bearer-style for this increment: {"token": "..."} or raw
         val = secret.get("token", secret.get("_raw"))
+        val = val.strip() if isinstance(val, str) else val  # same as api_key: strip a pasted newline
         if not val:
             raise ValueError(f"Integration [oauth_client_credentials] missing token in secret")
+        if not isinstance(val, str) or any(ord(ch) < 32 or ord(ch) > 126 for ch in val):
+            raise ValueError("Integration stored bearer token is invalid")
         return {"Authorization": f"Bearer {val}"}
     if transport == 'sigv4':
         return {}
@@ -638,22 +682,80 @@ def sigv4_params(endpoint, service=None, region=None):
 
 # Short per-integration connect/read timeout — chat maxDuration is 120s; a slow or hung external
 # MCP must not dominate the budget (the default 30s transport timeout is too long for N integrations).
-INTEGRATION_CONNECT_TIMEOUT = 8
+INTEGRATION_CONNECT_TIMEOUT = pinned_http.CONNECT_TIMEOUT  # TCP+TLS per pinned address
+INTEGRATION_READ_TIMEOUT = pinned_http.READ_TIMEOUT        # time to headers / between SSE events
 
 _secrets_client = None
 
 
-def _get_secret(ref):
+def custom_secret_name(integration_id):
+    if isinstance(integration_id, bool) or not isinstance(integration_id, int) or not 0 < integration_id <= 2**53 - 1:
+        raise ValueError("invalid integration id")
+    shared = os.environ.get("INTEGRATIONS_SECRET_NAME", "ops/awsops-v2/integrations/credentials")
+    match = re.fullmatch(r"ops/([a-zA-Z0-9_-]+)/integrations/credentials", shared)
+    if not match:
+        raise ValueError("invalid integrations secret namespace")
+    return f"ops/{match[1]}/integrations/custom/{integration_id}"
+
+
+def validate_custom_mcp_spec(spec, account_id):
+    """Return the attested version. Validate before DNS, secret reads, or network access."""
+    if os.environ.get("CUSTOM_MCP_ENABLED") != "true":
+        raise ValueError("custom MCP policy activation is pending")
+    if not isinstance(spec, dict):
+        raise ValueError("invalid MCP spec")
+    if spec.get("direction") != "egress" or spec.get("capability") != "read":
+        raise ValueError("MCP requires egress/read")
+    if spec.get("transport") not in ("api_key", "oauth_client_credentials"):
+        raise ValueError("MCP requires scoped secret authentication")
+    if not isinstance(account_id, str) or not account_id or spec.get("accountSelected") is not True or spec.get("accountId") != account_id:
+        raise ValueError("MCP requires explicit account selection")
+    ref = custom_secret_name(spec.get("id"))
+    if spec.get("credentialsRef") != ref:
+        raise ValueError("MCP credential reference does not match its registration")
+    registered = spec.get("registeredTools")
+    exposed = spec.get("exposedTools")
+    if not isinstance(registered, list) or not 0 < len(registered) <= 128 or any(
+        not isinstance(t, str) or "___" in t or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", t) is None for t in registered
+    ) or len(set(registered)) != len(registered):
+        raise ValueError("MCP requires a nonempty exact registered tool ceiling")
+    if not isinstance(exposed, list) or not exposed or any(t not in registered for t in exposed):
+        raise ValueError("MCP requires a nonempty bounded effective tool ceiling")
+    a = spec.get("readOnlyAttestation")
+    if not isinstance(a, dict) or not isinstance(a.get("actorSub"), str) or not a["actorSub"].strip():
+        raise ValueError("MCP requires administrator read-only attestation")
+    try:
+        timestamp = mcp_datetime.datetime.fromisoformat(a.get("attestedAt", "").replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("invalid MCP attestation timestamp") from exc
+    if a.get("tools") != registered or any(a.get(k) != spec.get(k) for k in ("endpoint", "transport", "credentialsRef")):
+        raise ValueError("MCP attestation does not match current registration")
+    version = a.get("credentialVersionId")
+    if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9-]{32,64}", version):
+        raise ValueError("invalid MCP attested secret version")
+    return version
+
+
+def _get_secret(ref, expected_version=None):
     """Fetch a SecretString from Secrets Manager (lazy, reused client — boto3 auto-refreshes the
     runtime role creds across warm starts). / Secrets Manager에서 SecretString 조회(지연 생성·재사용)."""
     global _secrets_client
     if _secrets_client is None:
         _secrets_client = boto3.client('secretsmanager', region_name=GATEWAY_REGION)
-    return _secrets_client.get_secret_value(SecretId=ref).get('SecretString', '')
+    params = {"SecretId": ref}
+    if expected_version is not None:
+        # Both selectors must identify the same current version; rotation invalidates attestation.
+        params.update(VersionId=expected_version, VersionStage="AWSCURRENT")
+    result = _secrets_client.get_secret_value(**params)
+    if expected_version is not None and result.get("VersionId") != expected_version:
+        raise ValueError("MCP credential version no longer matches attestation")
+    return result.get('SecretString', '')
 
 
 def select_integration_tools(live_tools, exposed_tools):
-    """ADR-039: an egress-READ integration's live tools ∩ its admin ``exposed_tools`` (the ceiling).
+    """ADR-007[legacy 039]: an egress-READ integration's live tools ∩ its admin ``exposed_tools`` (the ceiling).
     Empty ``exposed_tools`` ⇒ ``[]`` — a READ integration that exposes nothing contributes nothing
     (NOT 'all tools'). Output order follows ``live_tools``. The resolver's per-account toolAllowlist
     is then applied on top in the handler (defense-in-depth)."""
@@ -679,7 +781,7 @@ def _dedup_by_tool_name(tools):
 
 
 def gather_integration_tools(specs, connect):
-    """ADR-039 per-integration failure ISOLATION: connect+collect each integration's tools via the
+    """ADR-007[legacy 039] per-integration failure ISOLATION: connect+collect each integration's tools via the
     injected ``connect(spec)``; a failure (SsrfBlocked / unknown-transport ValueError / connect or
     list error) drops ONLY that integration — the gateway tools and the other integrations are
     unaffected — and is logged with the integration name + endpoint. This function NEVER raises, so
@@ -695,30 +797,26 @@ def gather_integration_tools(specs, connect):
     return out
 
 
-def _connect_integration(spec, stack):
+def _connect_integration(spec, stack, account_context=None):
     """Open ONE egress-READ integration MCP session (kept live via ``stack`` for the agent run) and
     return its exposed tools. Raises on SSRF/unknown-transport/connect/list error → the caller
     (gather_integration_tools) isolates it. Credentials are fetched at runtime from Secrets Manager
-    by reference (the payload carries only the ARN, never plaintext — ADR-039 Q3=B)."""
+    by server-bound name (the payload contains no plaintext credential — ADR-007[legacy 039 Q3=B])."""
+    # Deny before DNS, secret fetch, connection and tool listing. Applies to every vendor label.
+    version = validate_custom_mcp_spec(spec, account_context)
     endpoint = spec.get("endpoint")
     transport = spec.get("transport")
     allow_private = bool(spec.get("allowPrivate"))
     exposed = spec.get("exposedTools") or []
-    # Connection-time SSRF (https + DNS resolve-and-recheck + private opt-in) BEFORE any network call.
-    _assert_host_allowed(endpoint, allow_private)
-    if transport == 'sigv4':
-        # service is REQUIRED (sigv4_params raises if absent) — never silently reuse the gateway signer.
-        service, region = sigv4_params(endpoint, spec.get("sigv4Service"), spec.get("sigv4Region"))
-        ak, sk, tok = get_aws_credentials()
-        creds = Credentials(access_key=ak, secret_key=sk, token=tok)
-        client = MCPClient(lambda: streamablehttp_client_with_sigv4(
-            url=endpoint, credentials=creds, service=service, region=region,
-            timeout=INTEGRATION_CONNECT_TIMEOUT))
-    else:
-        secret = parse_secret(_get_secret(spec["credentialsRef"])) if spec.get("credentialsRef") else {}
-        headers = auth_headers(transport, secret)  # ValueError on unknown transport
-        client = MCPClient(lambda: streamablehttp_client_with_headers(
-            url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT))
+    # Connection-time SSRF (https + private opt-in) BEFORE any network call. The validated address
+    # set is invocation-local: resolved once here and pinned for this MCP session only (it may outlive
+    # the DNS TTL by design — the pin is the point); warm invocations never share DNS pins.
+    pinned_ips = _assert_host_allowed(endpoint, allow_private)
+    secret = parse_secret(_get_secret(spec["credentialsRef"], expected_version=version))
+    headers = auth_headers(transport, secret)
+    client = MCPClient(lambda: streamablehttp_client_with_headers(
+        url=endpoint, headers=headers, timeout=INTEGRATION_CONNECT_TIMEOUT,
+        sse_read_timeout=INTEGRATION_READ_TIMEOUT, pinned_ips=pinned_ips))
     stack.enter_context(client)
     live = get_all_tools(client)
     selected = select_integration_tools(live, exposed)
@@ -1320,7 +1418,7 @@ async def handler(payload):
 
     gateway_role = payload.get("gateway", DEFAULT_GATEWAY)
     skill_role = payload.get("skill", gateway_role)  # skill override for SKILL_BASE / SKILL_BASE용 스킬 오버라이드
-    system_prompt_override = payload.get("systemPromptOverride")  # ADR-031: resolver-supplied custom prompt
+    system_prompt_override = payload.get("systemPromptOverride")  # ADR-004[legacy 031]: resolver-supplied custom prompt
     extra_context = payload.get("extraContext")  # bounded BFF-supplied context (e.g. cached datasource schemas)
     # v1-parity (getSystemPrompt(lang)): the UI language wins over question-language guessing —
     # a short/mixed-language prompt must still be answered in the user's UI language.
@@ -1371,7 +1469,7 @@ async def handler(payload):
             "ja": "[回答は必ずすべて日本語で書いてください。質問が韓国語でも日本語で回答し、他言語の単語を混ぜないでください。]",
         }[response_language]
         lang_hooks = [LanguageReminderHook(LANG_TOOL_REMINDER[response_language])]
-    tool_allowlist = payload.get("toolAllowlist")  # ADR-031/039: server-side cap, enforced below (was a no-op)
+    tool_allowlist = payload.get("toolAllowlist")  # ADR-004[legacy 031]/ADR-007[legacy 039]: server-side cap, enforced below (was a no-op)
     gateway_key = _resolve_gateway_key(gateway_role, GATEWAYS)
     # NO eager `GATEWAYS[DEFAULT_GATEWAY]` default — that index is always evaluated and KeyErrors
     # (outside the try → no MCP fallback) when `ops` is absent (v2-only discovery = `v2-ops`).
@@ -1399,7 +1497,7 @@ async def handler(payload):
     if lang_user_suffix:
         user_input = f"{user_input}{lang_user_suffix}"
 
-    # ADR-039 P2-infra inc2: enabled egress-READ integrations the resolver surfaced (live MCP connect).
+    # ADR-007[legacy 039 P2-infra] inc2: enabled egress-READ integrations the resolver surfaced (live MCP connect).
     integrations = payload.get("integrations") or []
 
     logging.info(f"Gateway: {gateway_role} -> {gateway_url} (history: {len(history)} messages, account: {account_id or 'default'}, integrations: {len(integrations)})")
@@ -1421,11 +1519,11 @@ async def handler(payload):
             # helper returns is only needed by the hand-rolled dispatch in anthropic_loop.)
             gateway_tools, clickhouse_stdio_tools, _ = apply_official_mcp_gates(
                 gateway_tools, gateway_key, stack)
-            # ADR-039: live-connect each enabled egress-READ integration. Per-integration failures are
+            # ADR-007[legacy 039]: live-connect each enabled egress-READ integration. Per-integration failures are
             # ISOLATED here (gateway tools always survive) — NOT escalated to the Bedrock-direct fallback.
             integration_tools = gather_integration_tools(
-                integrations, lambda spec: _connect_integration(spec, stack))
-            # ADR-031/039: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
+                integrations, lambda spec: _connect_integration(spec, stack, payload.get("accountId")))
+            # ADR-004[legacy 031]/ADR-007[legacy 039]: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
             # Filter before dedup: ambiguous identities must not silently pick the first source.
             tools = _dedup_by_tool_name(_filter_tools(
@@ -1433,7 +1531,7 @@ async def handler(payload):
             tool_names = [t.tool_name for t in tools]
             logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist is not None else 'off'}): {tool_names}")
 
-            # ADR-031: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
+            # ADR-004[legacy 031]: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
             if system_prompt_override:
                 tool_lines = []
                 for t in tools:

@@ -9,7 +9,7 @@ import json
 import re
 
 from . import invariants as inv
-from .report import _MODEL_OPUS, _MODEL_SONNET, _bedrock_render, _redact
+from .report import _MAX_OUTPUT_TOKENS, _MODEL_OPUS, _MODEL_SONNET, _bedrock_render, _opus_headroom, _redact
 
 PROPOSE_MAX_TOKENS = 1500
 
@@ -81,7 +81,10 @@ def propose(actual, model=None):
     provenance='ai_proposed', status='draft'. The LLM never activates anything."""
     ctx_json = _redact(json.dumps(actual, ensure_ascii=False, default=str))
     model_id = _MODEL_OPUS if model == "opus" else _MODEL_SONNET  # same 'sonnet'|'opus' alias as reports
-    raw = _bedrock_render(_PROPOSE_PROMPT, ctx_json, model_id, PROPOSE_MAX_TOKENS)
+    # Opus 5.5 always thinks and thinking counts toward max_tokens; without headroom the JSON
+    # array truncates and _extract_json_array silently yields no candidates.
+    raw = _bedrock_render(_PROPOSE_PROMPT, ctx_json, model_id,
+                          min(PROPOSE_MAX_TOKENS + _opus_headroom(model_id), _MAX_OUTPUT_TOKENS))
     out = []
     for c in _extract_json_array(raw):
         valid = validate_candidate(c)

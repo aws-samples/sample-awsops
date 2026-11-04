@@ -72,6 +72,8 @@ Compatibility holds are deliberate:
 - MCP 1.30.0 retains the transport/session and HTTPX/SigV4 contracts; MCP 2
   removes those APIs. Its own redirect loop is also disabled with
   `max_redirects=0`, verified against the real SDK rather than only helper stubs.
+- HTTPX 0.28.1 and HTTPcore 1.0.9 retain the tested pinned-address and original
+  Host/SNI transport contract for governed custom MCP connections.
 - Frozen `mcp-clickhouse` remains exactly 0.4.1. Current releases require
   FastMCP 4/MCP 2; no frozen connector is enabled.
 - Security-sensitive CI/provisioner and image-codec Python stays on 3.12 as
@@ -87,7 +89,7 @@ configuration preserves project-relative aliases without deprecated `baseUrl`.
 Verification completed:
 
 - Web production build, including application type checks.
-- Web suite: 355 files and 5,421 tests passed; 3 files/256 tests retain their
+- Web suite: 358 files and 5,510 tests passed; 4 files/279 tests retain their
   existing optional skips.
 - Documentation TypeScript check, all four locale builds and deterministic
   presentation provenance verification, repeated after the security update.
@@ -99,14 +101,16 @@ Verification completed:
 - Offline deployment smoke contracts: 161 passed, no skips.
 - Python release/image/read/deploy/workflow contracts: 125 passed and
   369 subtests passed.
-- Terraform: both roots validate, formatting passes and 25 isolated provider
+- Terraform: both roots validate, formatting passes and 45 isolated provider
   mock plans pass. Runtime/asset/runner tests: 37 passed and 63 subtests passed.
-- Python 3.14.10 agent suite: 1,024 passed and 400 subtests passed, 18 existing skips.
-  Worker suite: 1,694 passed, 106 existing skips. Inventory suite: 256 passed.
+- Python 3.14.10 agent suite: 1,194 passed and 430 subtests passed, 18 existing skips.
+  Worker suite: 1,706 passed, 106 existing skips. Inventory suite: 256 passed.
   Provisioner/assets: 124 passed and 67 subtests passed.
   Incident suites: 119 passed; frozen remediation suites: 57 passed.
 - Real MCP SigV4 handshake/list-tools, redirect denial and actual AgentCore
   `/invocations` streaming with disabled readiness; no live AWS/model calls.
+  Actual Strands/MCP initialization through the pinned-header transport also
+  preserves original Host/SNI, the pinned address and the attested tool ceiling.
 - Exact combined Python 3.12 CI requirements and Python 3.14 workload closures
   install and pass `pip check`; provisioner/layer hash-locked installs verify.
 - Independent integrated code/IaC security review and a focused documentation
@@ -115,6 +119,13 @@ Verification completed:
 - Repository structure checks: all nine groups passed, zero failed.
 - Docker review-codec confinement checks: 17 passed; owned temporary containers
   and the sandbox image were removed after verification.
+
+PR integration includes `dev` at `03d49a53`, preserving its default-off governed
+custom MCP controls, pinned transport, model configuration and PrivateLink gates.
+The web and documentation builds, web/agent/worker suites, required Node and
+PostgreSQL fixtures, Terraform mock plans and affected Mermaid pages were
+verified on that integrated tree. A final source review against `origin/dev`
+found no actionable findings.
 
 Full workload Docker images have not been built or published. No real Terraform
 backend, saved deployment plan, AWS mutation or live readiness claim is included.

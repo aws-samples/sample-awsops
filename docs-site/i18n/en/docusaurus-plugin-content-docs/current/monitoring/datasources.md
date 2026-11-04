@@ -54,7 +54,7 @@ Creating, editing, and deleting datasources requires an admin role. In v2, admin
 | **Type** | Yes | Datasource type (select from 8 types) |
 | **URL** | Yes | Endpoint URL (e.g., `http://prometheus:9090`) |
 | **Authentication** | No | Auth method (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | No | Stored range 1–60 seconds (default 10). ClickHouse applies the `max_execution_time` ceiling on every path, with an effective maximum of 55s (56–60 is shortened to 55). Prometheus/Mimir apply the API `timeout` only on the Explore path, capped at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) store the value but do not apply it today |
+| **Timeout** | No | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Explore further caps Prometheus/Mimir queries at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
 | **Database** | No | Default database name (ClickHouse only, identifier-only) |
 
 :::note Difference from v1
@@ -75,15 +75,15 @@ Clicking **Test Connection** performs the following checks per datasource type:
 
 | Datasource | Test Endpoint | Verification |
 |-----------|--------------|-------------|
-| Prometheus | `/-/healthy` | Server health, response time |
-| Loki | `/ready` | Server readiness, response time |
-| Tempo | `/ready` | Server readiness, response time |
-| ClickHouse | `SELECT 1` | Query execution capability, response time |
-| Jaeger | `/api/services` | Service list retrieval, response time |
-| Dynatrace | `/api/v2/entities` | API accessibility, response time |
-| Datadog | `/api/v1/validate` | API key validity, response time |
+| Prometheus | `query?query=vector(1)` (1s server timeout) | Query access |
+| Loki | `query_range`, 1 min, `limit=1` | Tenant-scoped query access |
+| Tempo | One-trace search, 1 min | Query access |
+| ClickHouse | `SELECT 1`, `readonly=1`, 1s limit | Read-only SQL access |
+| Jaeger | `/api/traces?limit=1`, 1 min | Query access |
+| Dynatrace | Metrics v2 `builtin:host.cpu.usage:avg`, 1 min | Metric-query access |
+| Datadog | Key validation (key pair only), then `/api/v1/query`, 1 min | Metric-query access |
 
-Test results display success/failure status and response latency in milliseconds.
+Test results display success/failure and latency in milliseconds.
 
 ## Query Execution
 
@@ -160,7 +160,7 @@ Stored passwords and tokens are masked in the UI. New values can only be entered
 
 The following security checks are applied to datasource URLs:
 
-- **Blocked targets**: only metadata (169.254.169.254), loopback, and link-local addresses — private (RFC1918) datasource endpoints are ALLOWED per ADR-007 (URLs containing a backslash are rejected to prevent parser-differential abuse)
+- **Blocked targets**: only metadata (169.254.169.254), loopback, and link-local addresses — private (RFC1918) datasource endpoints are ALLOWED (URLs containing a backslash are rejected to prevent parser-differential abuse)
 - **Metadata endpoint blocking**: Blocks `169.254.169.254` (EC2 instance metadata) access
 - **Link-local address blocking**: Blocks the `169.254.x.x` range
 - **Protocol restriction**: Only `http://` and `https://` are allowed
@@ -199,7 +199,7 @@ Datasource-related questions are processed through the `datasource` route. The A
 
 | Setting | Default | Description |
 |------|--------|------|
-| **Timeout** | 10s | Upstream query execution bound (seconds, 1–60). ClickHouse applies it as the CEILING on every path (Explore, service graph, agent — callers can only tighten it) with the connector aligning its own HTTP timeout above it (effective maximum 55s — values 56–60 are shortened to 55s to stay under the Lambda's 60s wall); Prometheus/Mimir apply it as the Explore-path API `timeout` param, capped at 10s under the connector's 12s HTTP timeout |
+| **Timeout** | 10s | Stored range 1–60 seconds (default 10), effective maximum 55s (56–60 is shortened to 55). Prometheus/Mimir/ClickHouse apply it as the server execution limit on every path and align the connector HTTP timeout above it. Explore further caps Prometheus/Mimir queries at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) apply it as the HTTP response limit of their query tools (default 12s); it does not guarantee server-side cancellation. Schema/discovery calls keep the connector's fixed HTTP budget |
 
 ### ClickHouse only
 
@@ -271,7 +271,7 @@ query/schema tools.
 ## Allowed Networks
 
 :::caution v1 documentation
-This section describes v1's Allowed Networks feature, which does not exist in v2 — private (RFC1918) datasource endpoints are allowed by default per ADR-007; only metadata/loopback/link-local addresses are blocked.
+This section describes v1's Allowed Networks feature, which does not exist in v2 — private (RFC1918) datasource endpoints are allowed by default; only metadata/loopback/link-local addresses are blocked.
 :::
 
 Admins can configure an allow list to exempt specific private network addresses from SSRF blocking.

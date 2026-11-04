@@ -8,6 +8,7 @@ COPY requirements-runtime.txt .
 RUN pip install --no-cache-dir -r requirements-runtime.txt
 
 COPY streamable_http_sigv4.py .
+COPY pinned_http.py .
 COPY account_utils.py .
 COPY agent.py .
 COPY readiness.py .

@@ -1,4 +1,4 @@
-"""ADR-034/012 — best-effort secondary Slack thread. PORTED from src/lib/slack-notification.ts
+"""ADR-006[legacy 034]/ADR-013[legacy 012] — best-effort secondary Slack thread. PORTED from src/lib/slack-notification.ts
 (sendSlackResolvedUpdate(threadTs) + thread_ts reuse), ADAPTED to python + SSM creds. Gated behind
 /ops/<project>/writeback/slack/enabled; a no-op when off / unconfigured. Best-effort: never raises."""
 import json
@@ -28,7 +28,7 @@ def post_best_effort(incident_id, body, prior_thread_ts):
     try:
         payload = {"text": body["title"][:3000]}
         if prior_thread_ts:
-            payload["thread_ts"] = prior_thread_ts   # reuse the persistent thread (ADR-012 threadTs)
+            payload["thread_ts"] = prior_thread_ts   # reuse the persistent thread (ADR-013[legacy 012] threadTs)
         req = urllib.request.Request(webhook, data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as resp:

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR-038: live hybrid-routing accuracy gate. Calls real Bedrock (Haiku) — needs AWS creds.
+// ADR-003[legacy 038]: live hybrid-routing accuracy gate. Calls real Bedrock (Haiku) — needs AWS creds.
 // Usage: node scripts/v2/routing-accuracy.mjs
 import { execSync } from 'node:child_process';
 

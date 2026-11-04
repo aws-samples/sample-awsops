@@ -181,7 +181,7 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
    name** (e.g. `*-alb-origin-tls`) + a `terraform apply -replace` so Terraform stands up the new
    `https-only` origin, repoints the distribution, then deletes the old one.
 
-Also: SSE must not buffer at the edge — keep `CACHING_DISABLED` on the dynamic behavior (ADR-028)
+Also: SSE must not buffer at the edge — keep `CACHING_DISABLED` on the dynamic behavior (ADR-014[legacy 028])
 and ensure origin read timeout exceeds the event interval. The real app (P1d) must emit an SSE
 heartbeat at least every ~20s.
 

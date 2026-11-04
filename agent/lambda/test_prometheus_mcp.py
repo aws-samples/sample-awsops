@@ -49,7 +49,7 @@ class TestQuery(_Base):
             cap.update(url=url)
             return 200, {"status": "success", "data": {"resultType": "vector", "result": []}}
 
-        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "60s"), ("3600s", "60s"), ("0", "1s"), (0, "1s")):
+        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "10s"), ("3600s", "10s"), ("0", "1s"), (0, "1s")):
             cap = {}
             with mock.patch.object(pm, "http_json", side_effect=fake):
                 pm.lambda_handler({"tool_name": "prometheus_query",
@@ -58,7 +58,7 @@ class TestQuery(_Base):
         cap = {}
         with mock.patch.object(pm, "http_json", side_effect=fake):
             pm.lambda_handler({"tool_name": "prometheus_query", "arguments": {"query": "up"}}, None)
-        self.assertNotIn("timeout", _qs(cap["url"]))   # unchanged for callers that ask for no bound
+        self.assertEqual(_qs(cap["url"])["timeout"], ["10s"])
 
     def test_range_defaults(self):
         cap = {}

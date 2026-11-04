@@ -569,5 +569,5 @@ those rollout steps automatically.
 `agent/lambda/test_collection_boundaries.py`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
-ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
+ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-010[legacy 043] (graph reads;
 decision bodies are maintained upstream).

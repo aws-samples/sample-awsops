@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 
-// Recursive-CTE traversal over topology_edges (ADR-043). PG 17 CYCLE clause for cycle safety
+// Recursive-CTE traversal over topology_edges (ADR-010[legacy 043]). PG 17 CYCLE clause for cycle safety
 // + a hard depth backstop. Class-scoped (flow|infra). A per-hop LATERAL fan-out cap bounds hub
 // nodes (a large subnet / shared SG can have hundreds of members) so the subgraph stays usable;
 // default security-group nodes are not expanded (unless they are the start node) for the same reason.

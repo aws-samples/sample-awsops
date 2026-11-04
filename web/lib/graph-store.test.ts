@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { rebuildGraph, rebuildInfraGraph } from './graph-store';
 import { INFRA_TYPES } from './graph-inventory';
 
-// ADR-043 Step 1 — Task 1: the topology_graph migration exists and declares the expected shape.
+// ADR-010[legacy 043] Step 1 — Task 1: the topology_graph migration exists and declares the expected shape.
 const MIG_DIR = join(process.cwd(), '..', 'terraform', 'foundation', 'migrations');
 
 describe('topology_graph migration', () => {
@@ -25,7 +25,7 @@ describe('topology_graph migration', () => {
   });
 });
 
-// ADR-043 Step 2 — Task 1: the class-namespace migration (flow|infra) on the graph tables.
+// ADR-010[legacy 043] Step 2 — Task 1: the class-namespace migration (flow|infra) on the graph tables.
 describe('topology_class migration', () => {
   const file = readdirSync(MIG_DIR).find((f) => f.endsWith('_topology_class.sql'));
   it('exists', () => { expect(file, 'topology_class migration present').toBeTruthy(); });

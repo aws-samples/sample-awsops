@@ -96,7 +96,7 @@ The app accesses Aurora via **node-pg** (the shared pool in `web/lib/db.ts`). Th
 Live AWS / Kubernetes data is queried through **AgentCore MCP Lambda tools**. About 160 read-only tools are distributed across **9 section gateways** (network · container · data · security · cost · monitoring · iac · ops · external-obs).
 
 - All tools are read-only.
-- The gateway count is **9** (ADR-004 as amended 2026-06-24) — external-obs, hosting the Prometheus·ClickHouse connectors, is provisioned and routed as the ninth.
+- The gateway count is **9**  — external-obs, hosting the Prometheus·ClickHouse connectors, is provisioned and routed as the ninth.
 - It no longer relies on a local Steampipe service (127.0.0.1:9193) or direct access to 380 tables.
 
 ## Can it query external observability data (Prometheus / Loki / Tempo / ClickHouse / Datadog)?

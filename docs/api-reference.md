@@ -381,7 +381,7 @@ reachability.
 | `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; invalid tool policy → 400; unavailable validation/read → 503 (see below) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[모든 kind 유효 최대 55 — Prometheus/Mimir/ClickHouse는 서버 실행 제한(Explore의 Prometheus/Mimir는 10초 상한), 그 외는 HTTP 응답 제한]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
 | `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |
@@ -401,7 +401,7 @@ reachability.
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
-| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-022 active/standby 로테이션) | 없음 (HMAC 검증) |
+| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-013[legacy 022] active/standby 로테이션) | 없음 (HMAC 검증) |
 | `/api/incidents/[id]` | GET | 인시던트 상세 (admin, read-only, UUID 가드) | verifyUser |
 | `/api/insights` | GET | Overview용 최신 캐시 AI 인사이트 (DB read only) | verifyUser |
 | `/api/insights/refresh` | POST | AI 인사이트 재생성 enqueue (admin) — 플래그 off 시 fail-closed, 중복 job dedup | verifyUser |

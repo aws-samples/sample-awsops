@@ -140,7 +140,7 @@ export default function AgentCoreFlow(): React.ReactElement {
     const routerBoxX = centerX - routerBoxW / 2;
     drawBox(routerBoxX, routerBoxY, routerBoxW, routerBoxH, THEME.purple);
     drawText('AI Router', centerX, routerBoxY + 20 * scale, THEME.text, 14);
-    drawText(`${ROUTES.length}-Section Routing (Haiku 4.5, ADR-038)`, centerX, routerBoxY + 42 * scale, THEME.muted, 10);
+    drawText(`${ROUTES.length}-Section Routing (Haiku-class)`, centerX, routerBoxY + 42 * scale, THEME.muted, 10);
 
     // Arrows: Router -> Routes (fan out)
     for (let i = 0; i < ROUTES.length; i++) {
@@ -198,7 +198,7 @@ export default function AgentCoreFlow(): React.ReactElement {
     const runtimeX = centerX - runtimeW / 2;
     drawBox(runtimeX, runtimeY, runtimeW, runtimeH, THEME.green);
     drawText('AgentCore Runtime', centerX, runtimeY + 25 * scale, THEME.text, 16);
-    drawText('Strands Agent Framework + Claude Sonnet 4.6', centerX, runtimeY + 50 * scale, THEME.muted, 11);
+    drawText('Strands Agent Framework + Claude Sonnet-class', centerX, runtimeY + 50 * scale, THEME.muted, 11);
 
     // Stats badges
     const badge1X = centerX - 80 * scale;

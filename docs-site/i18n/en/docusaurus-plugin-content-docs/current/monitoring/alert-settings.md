@@ -173,8 +173,6 @@ curl -X POST '/awsops/api/alert-webhook?source=generic' \
 
 ## References
 
-- ADR-022: alert correlation policy
-- ADR-026: HMAC active+standby 2-key rotation
 - `src/lib/alert-types.ts` — 5-source normalization
 - `src/lib/alert-correlation.ts` — grouping / dedup / escalation
 - `src/lib/alert-diagnosis.ts` — Bedrock diagnosis orchestration

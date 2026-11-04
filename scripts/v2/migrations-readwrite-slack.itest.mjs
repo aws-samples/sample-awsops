@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // scripts/v2/migrations-readwrite-slack.itest.mjs — idempotency + correctness for the Slack
-// governed-write action_catalog seed (RW-slice T1, ADR-040/041) against a disposable PostgreSQL 17.
+// governed-write action_catalog seed (RW-slice T1, ADR-007[legacy 040/041]) against a disposable PostgreSQL 17.
 //
 //   node scripts/v2/migrations-readwrite-slack.itest.mjs
 //

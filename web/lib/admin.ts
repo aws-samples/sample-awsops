@@ -1,5 +1,5 @@
 // web/lib/admin.ts
-// ADR-031 Phase 1 — minimal v2 admin gate: cognito:groups OR SSM-listed admin emails.
+// ADR-004[legacy 031] Phase 1 — minimal v2 admin gate: cognito:groups OR SSM-listed admin emails.
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { User } from '@/lib/auth';
 

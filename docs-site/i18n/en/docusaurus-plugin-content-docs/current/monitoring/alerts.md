@@ -41,7 +41,7 @@ Ingest alerts from external systems into AWSops and chain **correlation → auto
                           [Slack/SNS dispatch]
 ```
 
-Setup steps live in the server-side [runbook](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md).
+Setup steps live in the server-side [runbook](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md).
 
 ## Webhook Endpoint
 
@@ -179,16 +179,10 @@ curl -X POST https://awsops.example.com/awsops/api/alert-webhook \
 Click the 🚨 badge in the dashboard header to jump to `/ai-diagnosis` and see in-flight incident details.
 
 ### No alerts coming through
-The server-side runbook [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/alert-pipeline-troubleshoot.md) has a symptom-based checklist.
+The server-side runbook [alert-pipeline-troubleshoot.md](https://github.com/aws-samples/sample-awsops/blob/42d2a4d0408a26dba7a5b5307aa790a12bd1a398/docs/runbooks/alert-pipeline-troubleshoot.md) has a symptom-based checklist.
 
 ## Related Pages
 
 - [AI Comprehensive Diagnosis](./ai-diagnosis.md) — full 15-section diagnosis
 - [CloudWatch](./cloudwatch) — alarm origin
 - [External Datasources](./datasources) — Alertmanager/Grafana query sources
-
-## References
-
-- ADR-009: Alert-triggered AI diagnosis
-- ADR-012: SNS notification strategy
-- ADR-013: Auto-collection investigation agent

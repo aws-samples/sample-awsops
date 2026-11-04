@@ -102,7 +102,7 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 - **ADR-001** — Aurora replaces the v1 `data/*.json` state layer (NOT Steampipe).
   Defines the Phase 1 7-table schema and the ECS Fargate + Aurora split.
-  See [`../decisions/001-v2-foundation.md`](../decisions/001-v2-foundation.md).
+  See ADR-001 (private upstream).
 - **ADR-021** — quota-limited inventory collection and the staged Aurora-backed MCP target.
   See ADR-021 (private upstream decision).
 
