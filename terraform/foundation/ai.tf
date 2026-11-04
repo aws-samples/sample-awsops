@@ -994,8 +994,10 @@ resource "aws_lambda_function" "agent" {
   dynamic "vpc_config" {
     for_each = ((each.key == "opensearch-mcp" && var.opensearch_vpc_enabled) || (each.key == "clickhouse-mcp" && var.clickhouse_vpc_enabled) || (each.key == "prometheus-mcp" && var.prometheus_vpc_enabled) || (each.key == "loki-mcp" && var.loki_vpc_enabled) || (each.key == "tempo-mcp" && var.tempo_vpc_enabled) || (each.key == "mimir-mcp" && var.mimir_vpc_enabled) || (each.key == "jaeger-mcp" && var.jaeger_vpc_enabled) || (each.key == "dynatrace-mcp" && var.dynatrace_vpc_enabled) || (each.key == "istio-read" && var.istio_vpc_enabled)) ? [1] : []
     content {
-      subnet_ids         = local.private_subnet_ids
-      security_group_ids = [aws_security_group.service.id]
+      subnet_ids = local.private_subnet_ids
+      # `service` keeps egress/NAT behavior unchanged. The dedicated PrivateLink client group is added ONLY
+      # to the connectors whose kind has a privatelink_endpoints entry (see privatelink.tf).
+      security_group_ids = concat([aws_security_group.service.id], [for k in local.privatelink_kinds : aws_security_group.privatelink_clients[k].id if "${k}-mcp" == each.key])
     }
   }
 }
