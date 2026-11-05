@@ -16,6 +16,9 @@ export const dynamic = 'force-dynamic';
 // docs/superpowers/specs/2026-08-13-network-path-check-design.md) is enqueued ONLY via
 // POST /api/network-paths/[id]/runs, which validates check ownership/access and snapshots the
 // definition server-side before enqueueing — never through this generic route.
+// `connector_target_sync` (the gated ADR-005 owner-override job that writes this stack's own
+// gateway targets) is enqueued ONLY from the admin-gated POST /api/datasources/manage path and must
+// never be added to this generic allowlist.
 const ALLOWED = new Set(['noop', 'noop-heavy']);
 
 // pentest-remediation P0-1: this generic job-submission endpoint had NO verifyUser() call — any

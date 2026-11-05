@@ -105,3 +105,13 @@ jobs:
               ;;
             *) echo "::error::Unexpected codec cleanup path"; exit 1 ;;
           esac
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Python 3.14 runtime tests
+        run: |
+          python3.14 -m venv "$RUNNER_TEMP/py314" && . "$RUNNER_TEMP/py314/bin/activate"
+          pip install -q $(printf -- '-r %s.txt ' agent/requirements scripts/v2/requirements-test scripts/v2/{incident,remediation,steampipe,workers}/requirements)
+          for r in agent scripts/v2/{workers,incident,remediation,steampipe,agentcore}; do MERGE_VERIFY_PY_ROOT=$r MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh || exit 1; done

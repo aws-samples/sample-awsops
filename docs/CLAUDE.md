@@ -37,10 +37,10 @@ published paths.
   are English-only; regenerate them through the skill rather than hand-translating HTML.
 - ADR bodies and the BASELINE decision register are maintained in the **private upstream
   repository**, not in this public tree — docs here cite ADR numbers (e.g. ADR-005) for
-  traceability only. AWS-resource mutation and autonomy remain **ADR-005 FROZEN
+  traceability only. The exception is ADR-023, whose body is in `docs/decisions/`. AWS-resource mutation and autonomy remain **ADR-005 FROZEN
   (do-not-enable)**; historical plans or status records cannot override current gates.
-  Follow root `CLAUDE.md` for the granted ADR-015 exception and the ordinary ADR-019
-  analysis gate; neither permits other mutation or autonomy.
+  Follow root `CLAUDE.md` for the two granted exceptions (ADR-015, ADR-023) and the ordinary
+  ADR-019 analysis gate; none permits other mutation or autonomy.
 - Keep application/runtime implementation outside this documentation tree. Generated
   diagrams and illustrative code remain documentation artifacts. Verify commands and
   route descriptions against current source; reference documents are navigation aids.

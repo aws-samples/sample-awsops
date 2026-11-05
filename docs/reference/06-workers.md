@@ -8,18 +8,23 @@ affecting web availability. P2 shipped the backbone with a synthetic proof workl
 `noop-heavy`); it now also carries real read/compute-only workloads — diagnosis report
 rendering (`report`) and CIS compliance scans (`compliance`) — enqueued through their own
 ownership-scoped routes (`POST /api/diagnosis`, `POST /api/compliance/run`). Every job type on
-this backbone is read-only / computation-only and never mutates AWS resources; AWS-resource
-mutation stays FROZEN per ADR-005 (do-not-enable) — any future async work stays within this
-same read-only substrate, not an escalation path for mutating actions.
+this backbone is read-only / computation-only except the gated `connector_target_sync` job, which
+only creates or updates this stack's own AgentCore gateway targets (it never deletes, and writes
+only the two awsops gateways whose role is this stack's AgentCore role) under the ADR-005
+owner-override exception ADR-023 (2026-11-05). Mutation of observed workloads and every
+other AWS resource stays FROZEN per ADR-005 (do-not-enable), and this backbone is not an
+escalation path for other mutating actions.
 
 **KO** — 무겁거나 오래 걸리거나 OOM 위험이 있는 작업을 web 요청 경로에서 떼어내는 관리형 비동기
 백본. web은 thin BFF로 유지되고, 워커가 OOM·행·크래시로 죽어도 web 가용성은 무영향. P2는 백본 +
 합성 증명 워크로드(`noop`/`noop-heavy`)로 시작했고, 현재는 실제 read/compute-only 작업도 이 위에서
 돈다 — 진단 리포트 렌더링(`report`)과 CIS 컴플라이언스 스캔(`compliance`)이 각자의 소유권-스코프
 전용 라우트(`POST /api/diagnosis`, `POST /api/compliance/run`)로 enqueue된다. 이 백본의 모든 job
-타입은 read-only/계산 전용이며 AWS 리소스를 변경하지 않는다 — AWS 리소스 변경은 ADR-005에 따라
-영구 동결(FROZEN, do-not-enable)이며, 향후 추가되는 비동기 작업도 같은 read-only substrate 안에
-머문다(mutate 작업으로 가는 확장 경로가 아니다).
+타입은 read-only/계산 전용이다 — 단, 게이트된 `connector_target_sync` job만 예외로, ADR-005
+owner-override 예외 ADR-023(2026-11-05)에 따라 이 스택 자신의 AgentCore gateway target을
+생성·갱신만 한다(삭제하지 않으며, role이 이 스택의 AgentCore role인 awsops gateway 두 개에만 쓴다).
+관측 대상 워크로드와 그 밖의 모든 AWS 리소스 변경은 ADR-005에 따라 계속 동결(FROZEN,
+do-not-enable)이며, 이 백본은 다른 mutate 작업으로 가는 확장 경로가 아니다.
 
 ## Development release proof
 
@@ -57,8 +62,11 @@ qualification and account boundaries are in
 Whichever route calls it,
 `enqueueJob()` writes the durable ledger row first (source of truth), then best-effort
 SQS send. The dispatcher Lambda runs outside the VPC (reaches SQS/SFN APIs directly), validates
-the job type against the `handlers.py` registry (read/compute only — mutate/unknown rejected per
-ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
+the job type against the `handlers.py` registry (its read/compute types plus the single
+ADR-023 exception job `connector_target_sync`, whose registry entry is unconditional — the gating
+lives in Terraform, which adds the worker env and an invoke-only grant on the dedicated
+`<project>-connector-target-sync` function (which holds the gateway grant on its own role) only when
+`connector_target_sync_enabled`, plus the job's own env check; unknown types rejected per ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
 idempotency (`ExecutionAlreadyExists` is treated as success). Step Functions Standard routes on
 `$.runtime`: a `RunLambda` state for short jobs, or `ecs:runTask.sync` Fargate for long/OOM-risk
 jobs. The worker claims `running` and writes `succeeded` itself. Because SFN cannot issue SQL to
@@ -73,7 +81,9 @@ pentest-remediation PR #195). 진단 리포트는 `POST /api/diagnosis`, 컴플�
 `POST /api/compliance/run`을 통하며, 둘 다 `/api/jobs`와 동일한 `lib/jobs.ts`의 `enqueueJob()`을
 호출하고 `requestedBy`는 서버 측에서 계산한다. 어느 라우트를 거치든 `enqueueJob()`이 내구성 있는
 ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패처 Lambda는 VPC 밖에서 동작(SQS/SFN API 직접 접근)하고 `handlers.py` 레지스트리로 타입을
-검증(read/compute만 — mutate/unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
+검증(레지스트리의 read/compute 타입과 단일 ADR-023 예외 job `connector_target_sync`만 허용 — 이 job의
+레지스트리 항목 자체는 무조건 등록되며, 게이트는 Terraform(`connector_target_sync_enabled`일 때만 worker
+env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 권한 추가 — gateway 권한은 그 함수의 자체 role이 보유)과 job 자체의 env 검사에 있다; unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
 실행명이 transport 멱등을 제공(`ExecutionAlreadyExists`는 성공 처리). Step Functions Standard가
 `$.runtime`으로 라우팅: 짧은 잡은 `RunLambda`, 길거나 OOM 위험인 잡은 `ecs:runTask.sync` Fargate.
 워커가 직접 `running`을 claim하고 `succeeded`를 쓴다. SFN은 VPC-only Aurora에 직접 SQL을 못 쓰므로
@@ -89,11 +99,15 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
   architecturally reserved, not an implicit escalation path. AWS-resource mutation stays FROZEN per
   ADR-005; turning any of this into live mutating operations (approval workflow, first-class rollback,
   the mutate-action registry itself) requires a new ADR decision, not just implementation work.
+  The only live exception on this backbone is the gated `connector_target_sync` job, an ADR-005
+  owner-override exception (ADR-023, 2026-11-05; see [05 AgentCore](05-agentcore.md)), which does not create a
+  general mutate-action registry.
   / P2가 구현한 안전 훅(멱등 토큰·킬스위치·mutate/unknown 타입 가드·dry-run 통과)은 향후 있을 수 있는
   mutate-action 레지스트리를 위해 architecturally 예약된 dark/inactive substrate일 뿐, 암묵적 확장
   경로가 아니다. AWS 리소스 변경은 ADR-005에 따라 계속 FROZEN이며, 이를 실제 mutate 작업(승인
   워크플로·1급 롤백·mutate-action 레지스트리 자체)으로 전환하려면 구현이 아니라 새 ADR 결정이
-  필요하다.
+  필요하다(유일한 실동작 예외인 게이트된 `connector_target_sync` job — ADR-005 owner-override 예외 ADR-023(2026-11-05),
+  [05 AgentCore](05-agentcore.md) — 도 범용 mutate-action 레지스트리가 아니다).
 - **ADR-001 — v2 foundation (ECS/Fargate + Aurora split)** — the job
   ledger is the Aurora `worker_jobs` table (an infra table orthogonal to the 7 app-state tables); the
   worker_jobs row, not the SFN execution status, is the source of truth.

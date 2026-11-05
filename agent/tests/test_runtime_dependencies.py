@@ -129,3 +129,28 @@ class RuntimeDependencyContracts(unittest.TestCase):
                     assert agent.CLICKHOUSE_OFFICIAL_MCP is False
             asyncio.run(run())
         """)
+
+    def test_anthropic_bedrock_sdk_keeps_the_dark_loop_contract(self):
+        # Pin the installed SDK surface anthropic_loop.py uses; building the manager sends nothing.
+        self.run_contract("""
+            import asyncio
+            import inspect
+            from anthropic import AsyncAnthropicBedrock
+            import anthropic_loop
+
+            async def run():
+                client = AsyncAnthropicBedrock(aws_region="us-east-1")
+                params = inspect.signature(client.messages.stream).parameters
+                for name in ("model", "max_tokens", "thinking", "system", "messages", "tools"):
+                    assert name in params, name
+                system, tools = [{"type": "text", "text": "s"}], [
+                    {"name": "t", "description": "d", "input_schema": {"type": "object"}}]
+                anthropic_loop.apply_cache_control(system, tools)
+                manager = client.messages.stream(
+                    model="global.anthropic.claude-sonnet-5-5", max_tokens=16,
+                    thinking=anthropic_loop.MODEL_THINKING, system=system,
+                    messages=[{"role": "user", "content": "hi"}], tools=tools)
+                assert hasattr(manager, "__aenter__") and hasattr(manager, "__aexit__")
+                await client.close()
+            asyncio.run(run())
+        """)

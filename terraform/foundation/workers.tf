@@ -18,6 +18,26 @@ locals {
   # datasource-diagnosis egress gate (ADR-007[legacy 039]) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
+  # connector_target_sync (ADR-023, owner-override 2026-11-05: one connector target create/update only).
+  # The gateway-target grant lives on a DEDICATED `<project>-connector-target-sync` Lambda with its own IAM
+  # role (outside the VPC; AgentCore control plane only). The worker job stays the ledgered entry point and
+  # only invokes that function (worker role: lambda:InvokeFunction on that one ARN). cts_lambda_keys are the
+  # connector Lambdas with a catalog TARGETS entry (external-obs or monitoring gateway); the function only
+  # ever points a target at one of these ARNs. Default false → 0 resources/IAM and no env/zip diff.
+  cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
+  cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]
+  # WORKER Lambda env: enable flag + the dedicated function name (literal string, not a resource ref → no cycle).
+  cts_env_map = local.cts == 1 ? {
+    CONNECTOR_TARGET_SYNC_ENABLED  = "true"
+    CONNECTOR_TARGET_SYNC_FUNCTION = "${var.project}-connector-target-sync"
+  } : {}
+  # Dedicated connector-target-sync function env.
+  cts_function_env = local.cts == 1 ? {
+    CONNECTOR_TARGET_SYNC_ENABLED     = "true"
+    CONNECTOR_TARGET_GATEWAY_ROLE_ARN = aws_iam_role.agentcore[0].arn
+    CONNECTOR_TARGET_LAMBDAS = jsonencode({ for k in local.cts_lambda_keys :
+    k => aws_lambda_function.agent[k].arn if contains(keys(aws_lambda_function.agent), k) })
+  } : {}
   ds_connector_arns = [for k in ["prometheus", "loki", "tempo", "mimir", "clickhouse"] :
   "arn:aws:lambda:${var.region}:${local.acct}:function:${var.project}-agent-${k}-mcp"]
   # env that turns collect_datasources on (only when the gate is set) — kept as a list/map fragment so
@@ -617,7 +637,7 @@ resource "aws_lambda_function" "worker" {
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
       }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
-    local.dsqg_env_map, local.diagnosis_evidence_env_map)
+    local.dsqg_env_map, local.diagnosis_evidence_env_map, local.cts_env_map)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
   }
@@ -1717,4 +1737,113 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
   function_name = aws_lambda_function.insight_dispatcher[0].function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.insight_dispatcher[0].arn
+}
+
+############################################################
+# connector_target_sync (ADR-023, owner-override 2026-11-05): create/update of the awsops-owned
+# external-obs and monitoring gateways' targets only (the catalog homes for the connector kinds). No Delete
+# action; the gateway ARN is pinned to the provision.py name; ListGateways is a read needed to resolve that
+# name to its id. The grant sits on a DEDICATED function role so no other worker job (datasource_index,
+# insight, LLM querygen, ...) shares it; the shared worker role only gets lambda:InvokeFunction on this
+# one function. The function runs outside the VPC (AgentCore control plane only; no Aurora).
+############################################################
+data "archive_file" "connector_target_sync" {
+  count       = local.cts
+  type        = "zip"
+  output_path = "${path.module}/.build/connector_target_sync.zip"
+  source {
+    content  = file("${local.workers_src}/connector_targets.py")
+    filename = "connector_targets.py"
+  }
+  source {
+    content  = file("${path.module}/../../scripts/v2/agentcore/catalog.py")
+    filename = "catalog.py"
+  }
+}
+
+resource "aws_iam_role" "connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-connector-target-sync"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "connector_target_sync_logs" {
+  count      = local.cts
+  role       = aws_iam_role.connector_target_sync[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-connector-target-sync"
+  role  = aws_iam_role.connector_target_sync[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ResolveOwnGateway"
+        Effect    = "Allow"
+        Action    = ["bedrock-agentcore:ListGateways"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
+      },
+      {
+        Sid    = "ManageOwnGatewayTargets"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:GetGateway",
+          "bedrock-agentcore:ListGatewayTargets",
+          "bedrock-agentcore:GetGatewayTarget",
+          "bedrock-agentcore:CreateGatewayTarget",
+          "bedrock-agentcore:UpdateGatewayTarget",
+        ]
+        Resource = [for g in ["external-obs", "monitoring"] :
+        "arn:aws:bedrock-agentcore:${var.region}:${local.acct}:gateway/awsops-v2-${g}-gateway-*"]
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "connector_target_sync" {
+  count             = local.cts
+  name              = "/aws/lambda/${var.project}-connector-target-sync"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "connector_target_sync" {
+  count            = local.cts
+  function_name    = "${var.project}-connector-target-sync"
+  role             = aws_iam_role.connector_target_sync[0].arn
+  runtime          = "python3.14"
+  architectures    = ["arm64"]
+  handler          = "connector_targets.lambda_handler"
+  filename         = data.archive_file.connector_target_sync[0].output_path
+  source_code_hash = data.archive_file.connector_target_sync[0].output_base64sha256
+  timeout          = 60
+  memory_size      = 256
+  depends_on = [
+    aws_cloudwatch_log_group.connector_target_sync,
+    aws_iam_role_policy_attachment.connector_target_sync_logs,
+  ]
+  environment {
+    variables = local.cts_function_env
+  }
+}
+
+resource "aws_iam_role_policy" "worker_lambda_invoke_connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-worker-lambda-invoke-connector-target-sync"
+  role  = aws_iam_role.worker_lambda[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeConnectorTargetSync"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = aws_lambda_function.connector_target_sync[0].arn
+    }]
+  })
 }
