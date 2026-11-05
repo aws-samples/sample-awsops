@@ -21,6 +21,12 @@ def file_diff(name, payload_bytes, line_bytes=100):
             + body).encode()
 
 
+def strip_header(batch):
+    marker = b"=== END PATHS; THIS BATCH'S DIFF FOLLOWS ===\n"
+    assert batch.startswith(b"=== PR-WIDE CHANGED PATHS IN OTHER BATCHES"), batch[:80]
+    return batch.split(marker, 1)[1]
+
+
 class Fixture:
     def __init__(self, directory):
         self.root = Path(directory)
@@ -75,14 +81,17 @@ class AdmissionTests(unittest.TestCase):
             self.assertGreater(count, 1)
             works = fx.works()
             self.assertEqual(len(works), count)
-            rebuilt = b"".join(Path(diff).read_bytes() for _, diff, _, _ in works)
+            rebuilt = b"".join(strip_header(Path(diff).read_bytes()) for _, diff, _, _ in works)
             self.assertEqual([int(wave) for *_, wave in works],
                              [(i // LIMITS["max_parallel_batches"]) + 1 for i in range(count)])
             self.assertEqual(rebuilt, data, "batches must cover the whole diff, in order, unaltered")
             for work, diff, lenses, _ in works:
-                batch = Path(diff).read_bytes()
-                self.assertLessEqual(len(batch), LIMITS["diff_bytes"])
+                raw = Path(diff).read_bytes()
+                self.assertLessEqual(len(raw), LIMITS["diff_bytes"])
+                batch = strip_header(raw)
                 self.assertTrue(batch.startswith(b"diff --git "))
+                header = raw[: len(raw) - len(batch)].decode()
+                self.assertNotIn(f"diff --git a/", header)
                 common = (Path(lenses) / "COMMON.txt").read_text()
                 self.assertTrue(common.startswith("COMMON PROMPT\n"))
                 self.assertIn(f"of {count} of ONE pull request", common)
@@ -91,6 +100,9 @@ class AdmissionTests(unittest.TestCase):
                 self.assertIn("BATCHED REVIEW", (Path(work) / "batch-note.txt").read_text())
             first_note = (Path(works[0][0]) / "batch-note.txt").read_text()
             self.assertNotIn("scripts/f", first_note, "PR file names must stay out of the prompt")
+            first_header = Path(works[0][1]).read_bytes().split(b"=== END PATHS", 1)[0].decode()
+            self.assertIn("- scripts/f7.py", first_header, "other batches' paths travel as data")
+            self.assertNotIn("- scripts/f0.py", first_header)
 
     def test_one_oversized_file_or_too_many_batches_blocks_before_models(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,11 +124,11 @@ class AdmissionTests(unittest.TestCase):
             result = fx.admit(b"".join(file_diff(name, 30_000) for name in names))
             self.assertEqual(result["ready"], "true")
             parts = [file_diff(name, 30_000) for name in names]
-            rebuilt = [Path(diff).read_bytes() for _, diff, _, _ in fx.works()]
+            rebuilt = [strip_header(Path(diff).read_bytes()) for _, diff, _, _ in fx.works()]
             self.assertEqual(sorted(p for batch in rebuilt for p in batch.split(b"diff --git ")[1:]),
                              sorted(p.split(b"diff --git ")[1] for p in parts),
                              "regrouping must keep every file diff exactly once")
-            first = Path(fx.works()[0][1]).read_bytes().decode()
+            first = strip_header(Path(fx.works()[0][1]).read_bytes()).decode()
             for name in ("terraform/foundation/iam.tf", ".github/workflows/x.yml",
                          "scripts/pr-review/lib.sh"):
                 self.assertIn(f"diff --git a/{name} ", first)
@@ -149,7 +161,12 @@ class AdmissionTests(unittest.TestCase):
             self.assertTrue(module.is_sensitive(header), path)
         self.assertTrue(module.is_sensitive(b"diff --git x y\n@@ -1 +1 @@\n+a\n"),
                         "a header without parseable paths fails closed")
-        for path in ("docs/reference/02-auth.md", "web/lib/graph.ts"):
+        for path in ("scripts/v2/agentcore/provision.py", "scripts/v2/agentcore/catalog.py",
+                     "web/lib/skill-validation.ts", "web/lib/tf-frozen-flags.ts"):
+            header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
+            self.assertTrue(module.is_sensitive(header), path)
+        for path in ("docs/reference/02-auth.md", "web/lib/graph.ts", "agent/lambda/test_x.py",
+                     "web/lib/auth.test.ts", "terraform/CLAUDE.md"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
             self.assertFalse(module.is_sensitive(header), path)
 

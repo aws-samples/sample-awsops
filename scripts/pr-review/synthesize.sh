@@ -227,7 +227,8 @@ fi
 # stderr isn't an error — it's the timeout killing a process that was still generating; the
 # same chair completes normally on a small diff). Worst normal path: (120s fast-fail + 900s
 # retry + 10s hard-kill grace) x2 chair models ~= 34m20s. With the workflow's longest
-# panel cell budget of 40m20s, a 90-minute job leaves about 15 minutes for other steps.
+# panel cell budget of 40m20s, one wave of each phase takes about 75 minutes; batched reviews
+# run up to two waves per phase, and the workflow timeout accounts for both.
 PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-us.anthropic.claude-fable-5}"
 FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5}"
 CHAIR_TIMEOUT="${CHAIR_TIMEOUT:-900}"

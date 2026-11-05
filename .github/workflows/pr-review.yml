@@ -662,7 +662,7 @@ jobs:
         if: always()
         run: |
           # Raw batch diffs and panel slots must not persist on the self-hosted runner.
-          rm -rf /tmp/pr-review/batch-[0-9]*
+          rm -rf /tmp/pr-review/batch-[0-9]* /tmp/pr-review/batch-works.tsv /tmp/review-part.md
 
       - name: Remove current-run HEAD image evidence
         if: always()

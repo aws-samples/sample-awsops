@@ -217,7 +217,8 @@ index or partial PASS.
 
 A filtered diff over one call's limit is reviewed in complete batches
 (`scripts/pr-review/review_batches.py`). Admission splits it at file boundaries into at most
-8 batches, each within 7/8 of the byte and line limits so redaction headroom remains, and admits
+8 batches, each within 7/8 of the byte limit less a 12 KiB paths header (redaction and header
+headroom; lines use the full limit), and admits
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair inside the existing panel and chair steps. At most `max_parallel_batches` (4) batches run at
 once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsops` runner pod
@@ -227,29 +228,36 @@ which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its c
 timeout (180 minutes) covers two worst-case waves of each phase plus staging and publication.
 Admission refuses a filtered diff over 8 × 128 KiB before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
-`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `web/app/api/` and
-`scripts/v2/remediation/`; worker files whose names start with `remediation`, `handlers`,
+`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `scripts/v2/agentcore/`,
+`web/app/api/` and `scripts/v2/remediation/`; worker files whose names start with `remediation`, `handlers`,
 `action_catalog` or `connector_target` or contain `dispatcher`; `web/lib/remediation*` and
 `web/middleware*`; plus non-Markdown files whose own name contains iam, polic, auth, guard,
-cross_account or cross-account, admin, connector, mutat, secret, credential, rbac, redact or
-remediat. Classification reads every header path line (old and new ends); quoted, escaped or
+cross_account or cross-account, admin, connector, mutat, secret, credential, rbac, redact,
+frozen, skill, allowlist or remediat. Markdown and unit-test files (`test_*.py`, `*_test.py`,
+`*.test.ts[x]`/`.js[x]`) are not counted as permission surfaces. Classification reads every header path line (old and new ends); quoted, escaped or
 unparseable headers count as sensitive. More than one batch of sensitive files is rejected.
 
 This list prioritizes the main permission surfaces; it does not guarantee that every
 security-relevant file is in batch 1. Models see only their own batch's diff and the BASE
-checkout. A dependency on another batch's file is reported as an unverified cross-batch
-dependency, and the note never lowers the severity of a security finding. Joint review of
+checkout. Each batch's input starts with a data header (in the stdin data channel, never the
+trusted prompt) listing the sanitized paths changed in the other batches. A dependency that one of
+those paths plausibly provides is reported as an unverified cross-batch dependency; one that no
+listed path provides is missing and stays blocking. The note never lowers the severity of a
+security finding. Joint review of
 changes split across batches is therefore not guaranteed; Merge Verify remains the build and test
 check for the whole PR. Every batch receives the PR-wide HEAD image context and must apply the
 image-coverage rules to it.
 
 Each batch writes its own `GITHUB_ENV` flags. `report_invalid`, `chair_input_failed`,
-`panel_incomplete` and `image_coverage_failed` block if any batch set them. `chair_failed`, which
+`panel_incomplete` and `image_coverage_failed` block if any batch set them; the comment's
+"chair input exceeds allocation" wording then applies to the batch that tripped it. `chair_failed`, which
 only selects the "not a code problem" comment wording, is set only when every batch's chair
 failed (a batch without the key produced a verdict); a failed chair still fails the gate through
 its `VERDICT: FAIL`. Scrubbed per-batch chair reports are printed in "Batch review" log groups
 with workflow commands suspended, so text cut from an over-limit comment (`comment_bytes`, 60,000)
-stays retrievable. Batch work directories are removed at the end of every job. The combined
+stays retrievable; each wave logs its batches before its exit status is checked. Batch work
+directories, the batch index and the gate's scratch file are removed at the end of every job, and
+admission writes batch copies owner-only. The combined
 comment has one section per batch, and the PR passes only if
 every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
 rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;

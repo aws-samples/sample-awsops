@@ -39,6 +39,23 @@ while IFS=$'\t' read -r work _ _ wave; do
   [ "${wave:-1}" = "$WAVE" ] || continue
   [ "$(cat "$work/$PHASE.rc" 2>/dev/null)" = 0 ] || RC=1
 done < "$WORKS"
+if [ "$PHASE" = chair ]; then
+  # Scrubbed chair reports, so text cut from an oversized comment stays retrievable. Model text
+  # must never be parsed as workflow commands: suspend command processing with a fresh token.
+  while IFS=$'\t' read -r work _ _ wave; do
+    [ "${wave:-1}" = "$WAVE" ] || continue
+    echo "::group::Batch review ${work##*/}"
+    STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    echo "::stop-commands::$STOP_TOKEN"
+    if [ -f "$work/review.md" ]; then
+      tr -d '\r' < "$work/review.md" | sed -E 's/^([[:space:]]*)::/\1: :/'
+    else
+      echo "(no review)"
+    fi
+    echo "::$STOP_TOKEN::"
+    echo "::endgroup::"
+  done < "$WORKS"
+fi
 # Aggregate every batch's flags so far (failure flags OR-ed; see review_batches.py env).
 python3 -I "$DIR/review_batches.py" env "$ROOT" >> "$GITHUB_ENV" || RC=1
 [ "$RC" -eq 0 ] || exit 1
@@ -54,20 +71,4 @@ if [ "$PHASE" = panel ]; then
   echo "ready=$READY" >> "$GITHUB_OUTPUT"
 else
   python3 -I "$DIR/review_batches.py" combine "$ROOT" "${REVIEW_OUT:-/tmp/review.md}" || exit 1
-  # Scrubbed chair reports, so text cut from an oversized comment stays retrievable. Model text
-  # must never be parsed as workflow commands: suspend command processing with a fresh token.
-  INDEX=0
-  while IFS=$'\t' read -r work _; do
-    INDEX=$((INDEX + 1))
-    echo "::group::Batch review $INDEX"
-    STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-    echo "::stop-commands::$STOP_TOKEN"
-    if [ -f "$work/review.md" ]; then
-      tr -d '\r' < "$work/review.md" | sed -E 's/^([[:space:]]*)::/\1: :/'
-    else
-      echo "(no review)"
-    fi
-    echo "::$STOP_TOKEN::"
-    echo "::endgroup::"
-  done < "$WORKS"
 fi
