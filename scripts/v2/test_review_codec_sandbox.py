@@ -102,7 +102,7 @@ def test_deadline_removes_the_created_decoder(state, monkeypatch):
     with pytest.raises(codec.SandboxError, match="image_decode_timeout"):
         codec.decode(state, ".png", 8192, 16777216, 8388608, png())
     result = subprocess.run([codec.docker(), "inspect", names[0]], capture_output=True, timeout=5)
-    assert result.returncode != 0 and b"No such" in result.stderr
+    assert result.returncode != 0 and b"no such" in result.stderr.lower()
 
 
 def test_actual_namespace_cannot_write_root_or_read_host_credentials(state, tmp_path):

@@ -116,7 +116,8 @@ def remove_container(name):
         result = subprocess.run([docker(), "rm", "--force", name], capture_output=True, timeout=5, env=client_env())
     except (OSError, subprocess.TimeoutExpired):
         raise SandboxError("image_sandbox_cleanup_failed") from None
-    if result.returncode and b"No such container" not in result.stderr:
+    # Docker's not-found wording varies by version ("No such container", "no such object").
+    if result.returncode and b"no such" not in result.stderr.lower():
         raise SandboxError("image_sandbox_cleanup_failed")
 
 
@@ -184,7 +185,7 @@ def cleanup(value):
     if ids:
         subprocess.run([docker(), "rm", "--force", *ids], check=True, capture_output=True, timeout=15, env=client_env())
     result = subprocess.run([docker(), "image", "rm", value["tag"]], capture_output=True, timeout=15, env=client_env())
-    if result.returncode and b"No such image" not in result.stderr:
+    if result.returncode and b"no such" not in result.stderr.lower():
         raise SandboxError("image_sandbox_cleanup_failed")
 
 
