@@ -10,6 +10,7 @@ const getCredentialById = vi.fn();
 const mirrorDefaultCredential = vi.fn();
 const invokeMcpLambdaTool = vi.fn();
 const upsertSchema = vi.fn();
+const enqueueConnectorTargetSync = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/datasources', () => ({
@@ -37,6 +38,7 @@ vi.mock('@/lib/integration-credentials', () => ({
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...a: unknown[]) => invokeMcpLambdaTool(...a) }));
 vi.mock('@/lib/datasource-schema', () => ({ upsertSchema: (...a: unknown[]) => upsertSchema(...a) }));
 vi.mock('@/lib/account', () => ({ currentAccountId: () => 'self' }));
+vi.mock('@/lib/connector-targets', () => ({ enqueueConnectorTargetSync: (...a: unknown[]) => enqueueConnectorTargetSync(...a) }));
 
 function req(body: unknown, method = 'POST') {
   return new Request('http://x/api/datasources/manage', {
@@ -45,7 +47,8 @@ function req(body: unknown, method = 'POST') {
 }
 
 beforeEach(() => {
-  for (const m of [verifyUser, isAdmin, createDatasource, updateDatasource, getDatasource, setIntegrationCredentialById, getCredentialById, mirrorDefaultCredential, invokeMcpLambdaTool, upsertSchema]) m.mockReset();
+  for (const m of [verifyUser, isAdmin, createDatasource, updateDatasource, getDatasource, setIntegrationCredentialById, getCredentialById, mirrorDefaultCredential, invokeMcpLambdaTool, upsertSchema, enqueueConnectorTargetSync]) m.mockReset();
+  enqueueConnectorTargetSync.mockResolvedValue(undefined);
   invokeMcpLambdaTool.mockResolvedValue({ version: '2.48.0', metrics: ['up'] });
   upsertSchema.mockResolvedValue(undefined);
   process.env.AURORA_ENDPOINT = 'aurora.example';
@@ -73,6 +76,12 @@ describe('POST create', () => {
     expect(await resp.json()).toEqual({ id: 7 });
     expect(setIntegrationCredentialById).toHaveBeenCalledWith(7, { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
     expect(mirrorDefaultCredential).toHaveBeenCalledWith('prometheus', { endpoint: 'http://10.0.0.5:9090', authType: 'bearer', token: 't' });
+  });
+
+  it('asks the worker to register the kind on the chat gateway after a create', async () => {
+    const { POST } = await import('./route');
+    expect((await POST(req({ name: 'ch', kind: 'clickhouse', endpoint: 'http://10.0.0.6:8123' }))).status).toBe(201);
+    expect(enqueueConnectorTargetSync).toHaveBeenCalledWith('clickhouse', 'u');
   });
 
   it('fires a best-effort connect-time introspect (after the 201) and never lets it fail create', async () => {

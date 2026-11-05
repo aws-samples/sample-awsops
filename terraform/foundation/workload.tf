@@ -63,7 +63,7 @@ resource "aws_iam_role_policy" "task_integrations_secret" {
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
       Resource = aws_secretsmanager_secret.integrations[0].arn
-    }, {
+      }, {
       Sid      = "CustomMcpCredentialMetadataRead"
       Effect   = "Allow"
       Action   = ["secretsmanager:DescribeSecret"]
@@ -533,6 +533,9 @@ resource "aws_ecs_task_definition" "web" {
         # routes do not enqueue datasource_index jobs; the worker has the same DIAG_DATASOURCES_ENABLED
         # hard gate, so activation and egress permissions move together.
         { name = "DATASOURCE_DIAGNOSIS_ENABLED", value = "true" },
+        ] : [], local.cts == 1 ? [
+        # connector_target_sync enqueue gate: omitted when off → no web task-def diff.
+        { name = "CONNECTOR_TARGET_SYNC_ENABLED", value = "true" },
         ] : [], var.ai_insights_enabled ? [
         # AI Insights gate: omit the env when off → concat(base, []) == base (no web task-def diff/redeploy).
         # The BFF /api/insights(+refresh) read AI_INSIGHTS_ENABLED and no-op/hide when it's absent.
