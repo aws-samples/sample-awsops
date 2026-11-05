@@ -262,6 +262,41 @@ python3 scripts/v2/ci/runtime-build-provision.test.py
 API contracts: [UpdateGateway](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGateway.html)
 and [UpdateGatewayTarget](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGatewayTarget.html).
 
+### Connector target sync on datasource registration
+
+A connector Lambda created by a later Terraform apply has no gateway target until the provisioner
+runs again, so chat reports zero connector tools for a freshly registered datasource. With
+`connector_target_sync_enabled` (default false; requires `workers_enabled`, `agentcore_enabled` and
+`integrations_enabled`), `POST /api/datasources/manage` enqueues a `connector_target_sync` job
+(`scripts/v2/workers/connector_targets.py`, Lambda runtime) fire-and-forget, only for the five
+connector kinds (ClickHouse, Prometheus, Loki, Tempo, Mimir). Before writing, the job calls
+`GetGateway` and proceeds only when the gateway's `roleArn` is this stack's AgentCore role
+(`CONNECTOR_TARGET_GATEWAY_ROLE_ARN`) and its inbound auth is `AWS_IAM`; otherwise it skips with
+`gateway_owned_by_another_stack` / `gateway_auth_not_iam`. A missing or ambiguous gateway fails the
+job (a `failed` row), every outcome is logged to the dedicated function's log group (`/aws/lambda/<project>-connector-target-sync`), and a concurrent
+create conflict is reported as `exists`. The job creates or updates
+`<kind>-mcp-target` on the kind's catalog gateway — `awsops-v2-external-obs-gateway` for
+ClickHouse/Prometheus, `awsops-v2-monitoring-gateway` for Loki/Tempo/Mimir — with the configuration
+`ensure_targets` writes (packaged `catalog.py`; parity is unit-tested). Vendor MCP presets
+(Datadog/Dynatrace) remain owned by `ensure_mcp_server_targets`; Jaeger has no chat target. The job
+accepts only this stack's connector Lambda ARNs from `CONNECTOR_TARGET_LAMBDAS`, never deletes, and
+leaves a target that invokes another stack's Lambda untouched (gateway names are account-wide).
+IAM: the grant sits on the role of a dedicated `<project>-connector-target-sync` Lambda (runs outside
+the VPC; AgentCore control plane only): `ListGateways` (region-scoped) plus
+Get/List/Create/UpdateGatewayTarget and GetGateway on those two gateway ARN patterns only. The worker
+job invokes that function synchronously; the shared worker role holds only `lambda:InvokeFunction` on
+that one function. Gateway names are account-wide (not `var.project`-scoped), so IAM
+cannot tell two awsops stacks in one account apart; the runtime `GetGateway` role/auth check is the
+stack boundary. This is ADR-023 (owner 2026-11-05), the ADR-005 owner-override exception second
+after ADR-015. `created`/`updated` mean the request was accepted, not that the target is READY (same
+semantics as the provisioner); chat sees the connector once the gateway finishes reconciling the
+target. `make agentcore` remains the full reconciler. In an account shared by several awsops
+stacks, a gateway's `roleArn` follows whichever stack last ran the provisioner, so the check accepts
+the stack that currently owns the gateway; enable the flag on one stack per account. Before its
+first control-plane call the function preflights the runtime SDK's `bedrock-agentcore-control`
+service model and fails with `sdk_model_missing` when the model or a required operation is absent.
+Operations (enable, verify, reason codes, rollback): [connector-target-sync runbook](../runbooks/connector-target-sync.md).
+
 <a id="decisions-adrs--결정"></a>
 
 ## Decisions (ADRs)

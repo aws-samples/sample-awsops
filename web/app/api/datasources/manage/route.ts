@@ -12,6 +12,7 @@ import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 import { invokeMcpLambdaTool, type ConnConfig } from '@/lib/mcp-lambda-invoke';
 import { upsertSchema } from '@/lib/datasource-schema';
 import { enqueueDatasourceIndex } from '@/lib/diag-signals';
+import { enqueueConnectorTargetSync } from '@/lib/connector-targets';
 import { currentAccountId } from '@/lib/account';
 
 export const dynamic = 'force-dynamic';
@@ -60,7 +61,7 @@ async function gate(request: Request) {
   if (!user) return { resp: json({ error: 'unauthenticated' }, 401) };
   if (!(await isAdmin(user))) return { resp: json({ error: 'admin access required' }, 403) };
   if (!process.env.AURORA_ENDPOINT) return { resp: json({ error: 'Aurora not configured' }, 400) };
-  return {};
+  return { user };
 }
 
 async function parseBody(request: Request) {
@@ -69,6 +70,7 @@ async function parseBody(request: Request) {
 
 export async function POST(request: Request) {
   const g = await gate(request); if (g.resp) return g.resp;
+  const user = g.user;
   let body: Record<string, unknown>;
   try { body = await parseBody(request); }
   catch (e) { return e instanceof BodyTooLargeError ? json({ error: 'request body too large' }, 413) : json({ error: 'invalid JSON body' }, 400); }
@@ -106,6 +108,7 @@ export async function POST(request: Request) {
     const ds = await getDatasource(id);
     if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
+    void enqueueConnectorTargetSync(kind, user.sub); // make the kind callable from chat (fire-and-forget like warmSchemaCache; the helper swallows errors, gated)
     return json({ id }, 201);
   } catch (e) {
     const msg = (e as Error).message || 'create failed';
