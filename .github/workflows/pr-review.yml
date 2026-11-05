@@ -399,19 +399,19 @@ jobs:
           cd "$REVIEW_BASE"
           # One panel per admitted batch, in parallel so the batched run keeps the single-run
           # time budget and credential lifetime. Each batch records its own GITHUB_ENV flags;
-          # review_batches.py env ORs every failure flag across batches.
+          # review_batches.py env ORs failure flags across batches (chair_failed only if all failed).
           PIDS=()
           while IFS=$'\t' read -r work diff lenses; do
             : > "$work/github.env"
-            GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/run-panel.sh" "$diff" "$lenses" "$work" &
+            GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/run-panel.sh" "$diff" "$lenses" "$work" < /dev/null &
             PIDS+=("$!")
           done < /tmp/pr-review/batch-works.tsv
           [ "${#PIDS[@]}" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
           PANEL_RC=0
           for pid in "${PIDS[@]}"; do wait "$pid" || PANEL_RC=1; done
-          python3 "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
+          python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
           [ "$PANEL_RC" -eq 0 ] || exit 1
-          echo "panel_responded=$(python3 "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)" >> "$GITHUB_ENV"
+          echo "panel_responded=$(python3 -I "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)" >> "$GITHUB_ENV"
           READY=true
           while IFS=$'\t' read -r work _; do
             [ ! -f "$work/coverage-severe.flag" ] || READY=false
@@ -450,13 +450,21 @@ jobs:
           while IFS=$'\t' read -r work diff _; do
             rm -f "$work/review.md"
             GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/synthesize.sh" "$diff" "$work" \
-              "$PR_NUMBER" "$PR_TITLE" "$work/review.md" &
+              "$PR_NUMBER" "$PR_TITLE" "$work/review.md" < /dev/null &
             PIDS+=("$!")
           done < /tmp/pr-review/batch-works.tsv
           CHAIR_RC=0
           for pid in "${PIDS[@]}"; do wait "$pid" || CHAIR_RC=1; done
-          python3 "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
-          python3 "$SCRIPT_ROOT/review_batches.py" combine /tmp/pr-review /tmp/review.md
+          python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
+          python3 -I "$SCRIPT_ROOT/review_batches.py" combine /tmp/pr-review /tmp/review.md
+          # Scrubbed chair reports, so text cut from an oversized comment stays retrievable.
+          INDEX=0
+          while IFS=$'\t' read -r work _; do
+            INDEX=$((INDEX + 1))
+            echo "::group::Batch review $INDEX"
+            cat "$work/review.md" 2>/dev/null || echo "(no review)"
+            echo "::endgroup::"
+          done < /tmp/pr-review/batch-works.tsv
           [ "$CHAIR_RC" -eq 0 ]
 
       - name: Check for blocking issues
@@ -491,7 +499,7 @@ jobs:
             : > /tmp/review.md
             for work in $WORKS; do
               [ "$work" = /tmp/pr-review ] || [ -f "$work/coverage-severe.flag" ] || continue
-              [ "$work" = /tmp/pr-review ] || echo "## Batch $(basename "$work")" >> /tmp/review.md
+              [ "$work" = /tmp/pr-review ] || echo "## Batch ${work##*/batch-}" >> /tmp/review.md
               if ! bash "${GITHUB_WORKSPACE:-$PWD}/scripts/pr-review/report-panel-failure.sh" "$work" /tmp/review-part.md; then
                 printf '%s\n' "Panel failure diagnostics unavailable. Review remains incomplete." > /tmp/review-part.md
               fi
@@ -575,7 +583,7 @@ jobs:
           fi
           sed '$ { /^VERDICT:/d }' /tmp/review.md > /tmp/review-clean.md
           # GitHub rejects comments over 65,536 characters; batched reviews can exceed it.
-          python3 scripts/pr-review/review_batches.py fit /tmp/review-clean.md 60000
+          python3 -I scripts/pr-review/review_batches.py fit /tmp/review-clean.md
           {
             echo "$MARKER"
             echo "## 🤖 AI Code Review (two independent reviewers)"

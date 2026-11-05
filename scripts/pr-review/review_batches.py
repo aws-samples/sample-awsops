@@ -39,8 +39,14 @@ NOTE_BYTES = 16384
 HEADER = re.compile(rb"^diff --git ", re.M)
 # Security-sensitive paths are always reviewed together in batch 1 so that interactions among
 # them (workflow + review scripts + IAM/Terraform + edge auth) are never split across batches.
-SENSITIVE = re.compile(r"(^|[/\"\s])(\.github/|scripts/pr-review/|terraform/|edge-lambda/)"
-                       r"|iam|polic|auth", re.I)
+# Path prefixes (anchored at a path start) plus source files whose own name marks an IAM,
+# policy, auth, guard, cross-account or remediation surface. Markdown is classified by prefix
+# only, so docs that merely mention these words do not crowd batch 1.
+SENSITIVE_PREFIX = re.compile(
+    r"^(\.github/|scripts/pr-review/|terraform/|edge-lambda/|agent/lambda/|scripts/v2/remediation/"
+    r"|scripts/v2/workers/remediation|web/lib/remediation|web/middleware)")
+SENSITIVE_NAME = re.compile(r"(^|/)[^/]*(iam|polic|auth|guard|cross_account|remediat)[^/]*$", re.I)
+
 PATH_LINE = re.compile(rb"^(diff --git |rename (from|to) |copy (from|to) |--- |\+\+\+ )")
 
 
@@ -55,7 +61,32 @@ def is_sensitive(part):
     text = b"\n".join(header).decode("utf-8", "replace")
     if not header or '"' in text or "\\" in text or "\ufffd" in text:
         return True  # C-quoted, escaped, non-UTF-8 or missing paths: treat as sensitive
-    return bool(SENSITIVE.search(text))
+    for path in _header_paths(text):
+        if SENSITIVE_PREFIX.search(path):
+            return True
+        if not path.endswith(".md") and SENSITIVE_NAME.search(path):
+            return True
+    return False
+
+
+def _header_paths(text):
+    """Every old/new path named by the header lines (a/ and b/ prefixes stripped)."""
+    paths = []
+    for line in text.split("\n"):
+        if line.startswith("diff --git "):
+            rest = line[len("diff --git "):]
+            # Unquoted header: "a/<old> b/<new>"; try every " b/" split so spaces cannot hide a path.
+            if rest.startswith("a/"):
+                body = rest[2:]
+                paths.append(body)
+                for index in [m.start() for m in re.finditer(" b/", body)]:
+                    paths.extend([body[:index], body[index + 3:]])
+        else:
+            for prefix in ("rename from ", "rename to ", "copy from ", "copy to ", "--- ", "+++ "):
+                if line.startswith(prefix):
+                    value = line[len(prefix):]
+                    paths.append(value[2:] if value[:2] in ("a/", "b/") else value)
+    return [path for path in paths if path and path != "/dev/null"]
 
 
 def _label(header):
@@ -111,7 +142,9 @@ def _note(index, total, files, others):
         f"\n\nBATCHED REVIEW: this diff is batch {index} of {total} of ONE pull request. The full "
         "filtered diff exceeds the single-call limit, so it was split at file boundaries; every "
         "batch is reviewed separately with the same checklists and the PR passes only if every "
-        "batch passes. All workflow, review-script, Terraform/IAM and auth changes are in batch 1. "
+        "batch passes. Batch 1 holds every file under .github/, scripts/pr-review/, terraform/, "
+        "edge-lambda/, agent/lambda/ and the remediation/middleware paths, plus source files "
+        "whose names mark IAM, policy, auth, guard, cross-account or remediation code. "
         "Review only the files in this batch.\n"
         "Cross-batch rule: a non-security symbol, import, test or doc that this batch relies on may "
         "be added by a file in another batch. If so, report it as an unverified cross-batch "
@@ -212,10 +245,14 @@ def aggregate_env(root):
         values = _last_values(work / "github.env")
         for key in FAIL_FLAGS:
             if key in values:
-                merged[key] = "1" if values[key] == "1" or merged.get(key) == "1" else "0"
+                merged.setdefault(key, []).append(values[key] == "1")
         if values.get("chair_used") and values["chair_used"] not in chairs:
             chairs.append(values["chair_used"])
-    lines = [f"{key}={merged[key]}" for key in FAIL_FLAGS if key in merged]
+    # chair_failed=1 means "no chair verdict exists" (the comment then says it is not a code
+    # problem), so it holds only if EVERY batch's chair failed; a failed chair still fails the
+    # gate through its own VERDICT: FAIL. Every other flag blocks if any batch set it.
+    lines = [f"{key}={int(all(merged[key]) if key == 'chair_failed' else any(merged[key]))}"
+             for key in FAIL_FLAGS if key in merged]
     if chairs:
         lines.append("chair_used=" + ", ".join(re.sub(r"[^A-Za-z0-9 ._-]", "?", c) for c in chairs))
     return lines
@@ -260,13 +297,17 @@ def combine(root, out):
     Path(out).write_text(body + "\n" + ("VERDICT: PASS" if passed else "VERDICT: FAIL") + "\n")
 
 
-def fit(path, limit):
+def fit(path, limit=None):
+    limit = LIMITS["comment_bytes"] if limit is None else limit
     data = Path(path).read_bytes()
     if len(data) <= limit:
         return
     notice = ("\n\n_Review text truncated to fit the comment size limit; the complete batch "
-              "reports are in the workflow log. The verdict above covers every batch._\n").encode()
-    cut = data[: max(0, limit - len(notice))]
+              "reports are in the workflow log (\"Batch review\" groups of the chair step). "
+              "The verdict above covers every batch._\n").encode()
+    if limit <= len(notice):
+        raise ValueError("comment limit smaller than the truncation notice")
+    cut = data[: limit - len(notice)]
     cut = cut[: cut.rfind(b"\n") + 1] if b"\n" in cut else cut
     Path(path).write_bytes(cut.decode("utf-8", "ignore").encode() + notice)
 
@@ -290,8 +331,8 @@ def main(argv):
         print(responded(argv[2]))
     elif command == "combine" and len(argv) == 4:
         combine(argv[2], argv[3])
-    elif command == "fit" and len(argv) == 4:
-        fit(argv[2], int(argv[3]))
+    elif command == "fit" and len(argv) in (3, 4):
+        fit(argv[2], int(argv[3]) if len(argv) == 4 else None)
     else:
         print(__doc__, file=sys.stderr)
         return 2

@@ -94,10 +94,11 @@ then run offline verification from the repository root:
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
-python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline
+python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline \
+  scripts.v2.test_pr_review_batches
 ```
 
-Merge Verify discovers both suites through isolated pytest execution.
+Merge Verify discovers these suites through isolated pytest execution.
 The local `test-pr-review-panel-prompt.sh` structure check also runs both suites.
 Prepare `AWSOPS_REVIEW_CODEC_STATE` using the [sandbox setup](review-codec-sandbox.md#verification)
 before direct local image tests; Docker is required. The image suite also supports the isolated `scripts/v2` cwd used by pytest:
@@ -218,12 +219,17 @@ A filtered diff over one call's limit is reviewed in complete batches
 8 batches, each within 7/8 of the byte and line limits so redaction headroom remains, and admits
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair, run in parallel inside the existing panel and chair steps, with a scope note listing the
-files in the other batches as untrusted data. Workflow, review-script, Terraform/IAM, edge and
-auth files are always packed together into batch 1, classified on every header path line (old and
-new ends; quoted or unparseable headers count as sensitive). More than one batch of them is
-rejected, and
-the cross-batch note never lowers the severity of a security finding. Each batch writes its own `GITHUB_ENV` flags; any batch's failure
-flag wins over later batches. The combined comment has one section per batch and passes only if
+files in the other batches as untrusted data. Batch 1 holds every file under `.github/`,
+`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/lambda/`, `scripts/v2/remediation/`,
+`scripts/v2/workers/remediation*`, `web/lib/remediation*` and `web/middleware*`, plus non-Markdown
+files whose own name contains iam, polic, auth, guard, cross_account or remediat. Classification
+reads every header path line (old and new ends); quoted or unparseable headers count as sensitive.
+More than one batch of sensitive files is rejected, and the cross-batch note never lowers the
+severity of a security finding. Each batch writes its own `GITHUB_ENV` flags; any batch's failure
+flag wins over later batches, except `chair_failed`, which is set only when every batch's chair
+failed (a failed chair still fails the gate through its `VERDICT: FAIL`). Scrubbed per-batch chair
+reports are printed in "Batch review" log groups, so text cut from an over-limit comment
+(`comment_bytes`, 60,000) stays retrievable. The combined comment has one section per batch and passes only if
 every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
 rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
@@ -237,10 +243,11 @@ attestations remain incomplete coverage, separately from unreadable report bytes
 
 These changes reduce normal review calls from eight panel calls plus a chair to two
 panel calls plus a chair; existing retry/model/timeout choices remain. They do not
-promise a wall-clock speedup or make an oversized promotion review complete. A large
-promotion exceeding these bounds needs complete bounded batches or an independently
-reviewed, exact-commit coverage-reuse design. Neither is implemented here; splitting
-feature PRs alone does not reduce an existing dev-to-main cumulative diff. Do not
+promise a wall-clock speedup. A diff over one call's bounds is reviewed in the complete
+batches described above; a promotion that needs more than 8 batches, or whose sensitive
+files exceed batch 1, is still rejected, and exact-commit coverage reuse is not
+implemented. Splitting feature PRs alone does not reduce an existing dev-to-main
+cumulative diff. Do not
 rerun unchanged oversized input expecting success, raise limits without a resource
 review, reuse historical comments as latest-HEAD proof, or bypass required checks.
 

@@ -130,6 +130,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertTrue(module.is_sensitive(quoted))
         self.assertTrue(module.is_sensitive(b"+no header\n"))
         self.assertFalse(module.is_sensitive(plain), "body text must not drive classification")
+        for path in ("scripts/v2/workers/remediation_executor.py", "web/lib/remediation.ts",
+                     "agent/lambda/cross_account.py", "agent/lambda/sql_readonly_guard.py",
+                     "web/lib/auth-session.ts", "web/middleware.ts"):
+            header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
+            self.assertTrue(module.is_sensitive(header), path)
+        for path in ("docs/reference/02-auth.md", "web/lib/graph.ts"):
+            header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
+            self.assertFalse(module.is_sensitive(header), path)
 
     def test_sensitive_changes_over_one_batch_block_before_models(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -181,6 +189,13 @@ class AggregationTests(unittest.TestCase):
             self.assertIn("chair_failed=0", lines)
             self.assertIn("chair_used=Claude Fable 5", lines)
 
+    def test_chair_failed_holds_only_when_every_batch_chair_failed(self):
+        for envs, expected in ((["chair_failed=1\n", "chair_failed=0\n"], "chair_failed=0"),
+                               (["chair_failed=1\n", "chair_failed=1\n"], "chair_failed=1")):
+            with self.subTest(envs=envs), tempfile.TemporaryDirectory() as directory:
+                fx = self.batches(directory, envs)
+                self.assertIn(expected, fx.run("env", str(fx.review)).splitlines())
+
     def test_within_a_batch_the_last_write_wins_like_the_single_path(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = self.batches(directory, ["image_coverage_failed=1\nimage_coverage_failed=0\n"])
@@ -223,9 +238,9 @@ class AggregationTests(unittest.TestCase):
             fx = Fixture(directory)
             path = fx.root / "clean.md"
             path.write_text("한국어 줄\n" * 20_000)
-            fx.run("fit", str(path), "60000")
+            fx.run("fit", str(path))
             data = path.read_bytes()
-            self.assertLessEqual(len(data), 60000)
+            self.assertLessEqual(len(data), LIMITS["comment_bytes"])
             self.assertIn("truncated", data.decode())
             small = fx.root / "small.md"
             small.write_text("short\n")
@@ -270,7 +285,7 @@ class WorkflowTests(unittest.TestCase):
                            cwd=ROOT, env=env, check=True, capture_output=True)
             text = (root / "review.md").read_text()
             self.assertIn("reason=Panel coverage incomplete", (root / "output").read_text())
-            self.assertIn("## Batch batch-02", text)
+            self.assertIn("## Batch 02", text)
             self.assertNotIn("batch-01", text)
             self.assertNotIn("retained finding", text)
             self.assertEqual(text.rstrip().splitlines()[-1], "VERDICT: FAIL")

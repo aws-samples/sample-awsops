@@ -300,8 +300,8 @@ secrets-manager) — installed by `make deps`.
   admitted the same way and reviewed by both vendors plus its own chair; every batch must pass.
   Both panel reports require substantive sections for every L2–L5 checklist, including
   security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
-  skips chair calls; report truncation cannot approve unseen findings. Oversized
-  promotion diffs still need a separately reviewed complete-batching/reuse design.
+  skips chair calls; report truncation cannot approve unseen findings. Promotions beyond
+  8 batches (or whose sensitive files exceed batch 1) are still rejected; no coverage reuse.
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `image-formats.json` selects detected extensions and the approved codec for both staging
   and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.
