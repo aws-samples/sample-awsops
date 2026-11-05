@@ -14,7 +14,9 @@ provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are 
 owner-override exception 2026-11-04, the second after ADR-015): create/update of awsops's own resources only. It never deletes,
 only writes those two awsops gateways, and only accepts Lambda ARNs supplied by Terraform through
 CONNECTOR_TARGET_LAMBDAS. The tool schema comes from the packaged provision catalog, so the target
-is byte-identical to what provision.py would write.
+is byte-identical to what provision.py would write. It runs as the dedicated
+`<project>-connector-target-sync` function, whose role alone holds the gateway-target grant; the
+worker job only invokes it.
 """
 import copy
 import json
@@ -200,3 +202,8 @@ def _run(payload, ctrl, targets):
                                description=spec["description"], targetConfiguration=cfg,
                                credentialProviderConfigurations=_CREDS, **preserve)
     return {"status": "updated", "target": name}
+
+
+def lambda_handler(event, _context):
+    """Dedicated connector-target-sync function entry point (its own IAM role holds the gateway grant)."""
+    return run(event if isinstance(event, dict) else {})

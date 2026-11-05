@@ -1,4 +1,6 @@
 """connector_target_sync: own-gateway, own-Lambda create/update only; parity with provision.py."""
+import io
+import json
 import os
 import sys
 import unittest
@@ -192,6 +194,68 @@ class ConnectorTargetSyncTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CONNECTOR_TARGET_SYNC_ENABLED": "false"}):
             self.assertEqual(handlers.REGISTRY["connector_target_sync"][0]({"kind": "clickhouse"}, False),
                              ({"status": "skipped", "reason": "disabled"}, None))
+
+    def test_lambda_handler_matches_run(self):
+        with mock.patch.dict(os.environ, {"CONNECTOR_TARGET_SYNC_ENABLED": "false"}):
+            self.assertEqual(ct.lambda_handler({"kind": "clickhouse"}, None), ct.run({"kind": "clickhouse"}))
+            self.assertEqual(ct.lambda_handler({"kind": "clickhouse"}, None)["reason"], "disabled")
+
+
+class FakeLambda:
+    def __init__(self, body, function_error=None):
+        self.body = body
+        self.function_error = function_error
+        self.calls = []
+
+    def invoke(self, **kw):
+        self.calls.append(kw)
+        resp = {"Payload": io.BytesIO(self.body)}
+        if self.function_error:
+            resp["FunctionError"] = self.function_error
+        return resp
+
+
+class ConnectorTargetSyncInvokeTest(unittest.TestCase):
+    FN = "awsops-dev-connector-target-sync"
+
+    def test_invoke_passes_only_kind_and_returns_decoded_result(self):
+        client = FakeLambda(b'{"status":"created"}')
+        out = handlers._invoke_connector_target_sync(
+            self.FN, {"kind": "clickhouse", "integration_id": 7, "extra": "x"}, client=client)
+        self.assertEqual(out, {"status": "created"})
+        self.assertEqual(len(client.calls), 1)
+        call = client.calls[0]
+        self.assertEqual(call["FunctionName"], self.FN)
+        self.assertEqual(call["InvocationType"], "RequestResponse")
+        self.assertEqual(json.loads(call["Payload"]), {"kind": "clickhouse"})
+
+    def test_function_error_raises(self):
+        client = FakeLambda(b'{"errorMessage":"gateway_unavailable: x"}', function_error="Unhandled")
+        with self.assertRaises(RuntimeError) as caught:
+            handlers._invoke_connector_target_sync(self.FN, {"kind": "clickhouse"}, client=client)
+        self.assertIn("gateway_unavailable", str(caught.exception))
+
+    def test_malformed_result_raises(self):
+        client = FakeLambda(b'["not", "a", "dict"]')
+        with self.assertRaises(RuntimeError):
+            handlers._invoke_connector_target_sync(self.FN, {"kind": "clickhouse"}, client=client)
+
+    def test_handler_skips_when_function_not_configured(self):
+        env = {"CONNECTOR_TARGET_SYNC_ENABLED": "true", "CONNECTOR_TARGET_SYNC_FUNCTION": ""}
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(handlers, "_invoke_connector_target_sync") as invoke:
+                self.assertEqual(handlers.REGISTRY["connector_target_sync"][0]({"kind": "clickhouse"}, False),
+                                 ({"status": "skipped", "reason": "function_not_configured"}, None))
+                invoke.assert_not_called()
+
+    def test_handler_invokes_the_configured_function(self):
+        env = {"CONNECTOR_TARGET_SYNC_ENABLED": "true", "CONNECTOR_TARGET_SYNC_FUNCTION": self.FN}
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(handlers, "_invoke_connector_target_sync",
+                                   return_value={"status": "created"}) as invoke:
+                self.assertEqual(handlers.REGISTRY["connector_target_sync"][0]({"kind": "clickhouse"}, False),
+                                 ({"status": "created"}, None))
+                invoke.assert_called_once_with(self.FN, {"kind": "clickhouse"})
 
 
 class ProvisionParityTest(unittest.TestCase):

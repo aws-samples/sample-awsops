@@ -241,7 +241,7 @@ connector kinds (ClickHouse, Prometheus, Loki, Tempo, Mimir). Before writing, th
 `GetGateway` and proceeds only when the gateway's `roleArn` is this stack's AgentCore role
 (`CONNECTOR_TARGET_GATEWAY_ROLE_ARN`) and its inbound auth is `AWS_IAM`; otherwise it skips with
 `gateway_owned_by_another_stack` / `gateway_auth_not_iam`. A missing or ambiguous gateway fails the
-job (a `failed` row), every outcome is logged to the worker's CloudWatch log, and a concurrent
+job (a `failed` row), every outcome is logged to the dedicated function's log group (`/aws/lambda/<project>-connector-target-sync`), and a concurrent
 create conflict is reported as `exists`. The job creates or updates
 `<kind>-mcp-target` on the kind's catalog gateway — `awsops-v2-external-obs-gateway` for
 ClickHouse/Prometheus, `awsops-v2-monitoring-gateway` for Loki/Tempo/Mimir — with the configuration
@@ -249,8 +249,11 @@ ClickHouse/Prometheus, `awsops-v2-monitoring-gateway` for Loki/Tempo/Mimir — w
 (Datadog/Dynatrace) remain owned by `ensure_mcp_server_targets`; Jaeger has no chat target. The job
 accepts only this stack's connector Lambda ARNs from `CONNECTOR_TARGET_LAMBDAS`, never deletes, and
 leaves a target that invokes another stack's Lambda untouched (gateway names are account-wide).
-IAM: `ListGateways` (region-scoped) plus Get/List/Create/UpdateGatewayTarget and GetGateway on those
-two gateway ARN patterns only. Gateway names are account-wide (not `var.project`-scoped), so IAM
+IAM: the grant sits on the role of a dedicated `<project>-connector-target-sync` Lambda (runs outside
+the VPC; AgentCore control plane only): `ListGateways` (region-scoped) plus
+Get/List/Create/UpdateGatewayTarget and GetGateway on those two gateway ARN patterns only. The worker
+job invokes that function synchronously; the shared worker role holds only `lambda:InvokeFunction` on
+that one function. Gateway names are account-wide (not `var.project`-scoped), so IAM
 cannot tell two awsops stacks in one account apart; the runtime `GetGateway` role/auth check is the
 stack boundary. This is an ADR-005 owner-override exception (2026-11-04), the second
 after ADR-015. `created`/`updated` mean the request was accepted, not that the target is READY (same

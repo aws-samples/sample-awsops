@@ -3,6 +3,7 @@ creates/updates this stack's own AgentCore gateway targets (never deletes; ADR-0
 exception 2026-11-04, the second after ADR-015; default off via connector_target_sync_enabled).
 Each handler: (payload: dict, dry_run: bool) -> (result_dict_or_None, artifact_bytes_or_None).
 P2 ships ONE synthetic proof handler ('noop') exercising sleep / memory / optional OOM."""
+import json
 import os
 import time
 
@@ -183,15 +184,36 @@ def _datasource_index(payload, dry_run):
             pass
 
 
+def _invoke_connector_target_sync(function_name, payload, client=None):
+    """Synchronously invoke the dedicated connector-target-sync function. Only `kind` is passed through
+    (never the whole job payload). Raises RuntimeError on a function error or a malformed result."""
+    if client is None:
+        import boto3
+        client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION"))
+    resp = client.invoke(FunctionName=function_name, InvocationType="RequestResponse",
+                         Payload=json.dumps({"kind": payload.get("kind")}).encode())
+    decoded = json.loads(resp["Payload"].read())
+    if resp.get("FunctionError"):
+        detail = decoded.get("errorMessage", "error") if isinstance(decoded, dict) else "error"
+        raise RuntimeError(f"connector_target_sync failed: {detail}")
+    if not isinstance(decoded, dict):
+        raise RuntimeError("connector_target_sync returned a malformed result")
+    return decoded
+
+
 def _connector_target_sync(payload, dry_run):
-    """Create/update this stack's catalog gateway target (external-obs or monitoring) for one datasource kind
-    (connector_targets.py). Short AgentCore control-plane calls → lambda runtime. payload: {kind}."""
+    """Create/update this stack's catalog gateway target (external-obs or monitoring) for one datasource kind.
+    The ledgered job only invokes the dedicated `<project>-connector-target-sync` function
+    (CONNECTOR_TARGET_SYNC_FUNCTION, running connector_targets.py), whose own role holds the gateway-target
+    grant; the worker role holds only lambda:InvokeFunction on it. Short call → lambda runtime. payload: {kind}."""
     if dry_run:
         return {"dry_run": True, "would_sync": payload.get("kind")}, None
     if os.environ.get("CONNECTOR_TARGET_SYNC_ENABLED") != "true":
         return {"status": "skipped", "reason": "disabled"}, None
-    import connector_targets
-    return connector_targets.run(payload), None
+    function_name = os.environ.get("CONNECTOR_TARGET_SYNC_FUNCTION")
+    if not function_name:
+        return {"status": "skipped", "reason": "function_not_configured"}, None
+    return _invoke_connector_target_sync(function_name, payload), None
 
 
 def _sg_rule_scan(payload, dry_run):

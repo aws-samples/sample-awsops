@@ -94,7 +94,7 @@ run "connector_target_sync_is_default_off" {
     workers_enabled      = true
   }
   assert {
-    condition = (length(aws_iam_role_policy.worker_lambda_connector_targets) == 0 &&
+    condition = (length(aws_iam_role_policy.connector_target_sync) == 0 && length(aws_lambda_function.connector_target_sync) == 0 && length(aws_iam_role_policy.worker_lambda_invoke_connector_target_sync) == 0 &&
       !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "CONNECTOR_TARGET_SYNC_ENABLED") &&
     length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "CONNECTOR_TARGET_SYNC_ENABLED"]) == 0)
     error_message = "Connector target sync must add no IAM or env until its flag is set."
@@ -118,9 +118,9 @@ run "connector_target_sync_writes_only_the_own_gateway_without_delete" {
     connector_target_sync_enabled = true
   }
   assert {
-    condition = (length(jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement) == 2 &&
+    condition = (length(jsondecode(aws_iam_role_policy.connector_target_sync[0].policy).Statement) == 2 &&
       alltrue([
-        for s in jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement :
+        for s in jsondecode(aws_iam_role_policy.connector_target_sync[0].policy).Statement :
         !anytrue([for a in s.Action : can(regex("Delete", a))]) &&
         (s.Sid == "ResolveOwnGateway" ? toset(s.Action) == toset(["bedrock-agentcore:ListGateways"]) :
           (s.Sid == "ManageOwnGatewayTargets" &&
@@ -130,10 +130,22 @@ run "connector_target_sync_writes_only_the_own_gateway_without_delete" {
     error_message = "Target sync policy must have exactly two statements: ResolveOwnGateway (ListGateways only) and ManageOwnGatewayTargets (exactly GetGateway, ListGatewayTargets, GetGatewayTarget, CreateGatewayTarget, UpdateGatewayTarget) on the awsops external-obs/monitoring gateways, and never delete."
   }
   assert {
+    condition     = aws_iam_role.connector_target_sync[0].name == "awsops-fixture-connector-target-sync"
+    error_message = "The gateway-target grant must sit on the dedicated connector-target-sync role, not the shared worker role."
+  }
+  assert {
+    condition = (length(jsondecode(aws_iam_role_policy.worker_lambda_invoke_connector_target_sync[0].policy).Statement) == 1 &&
+    alltrue([for s in jsondecode(aws_iam_role_policy.worker_lambda_invoke_connector_target_sync[0].policy).Statement : toset(s.Action) == toset(["lambda:InvokeFunction"])]))
+    error_message = "The shared worker role may only invoke the dedicated connector-target-sync function."
+  }
+  assert {
     condition = (aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_SYNC_ENABLED"] == "true" &&
-      toset(keys(jsondecode(aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_LAMBDAS"]))) == toset(["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]) &&
+      aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_SYNC_FUNCTION"] == "awsops-fixture-connector-target-sync" &&
+      !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "CONNECTOR_TARGET_LAMBDAS") &&
+      !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "CONNECTOR_TARGET_GATEWAY_ROLE_ARN") &&
+      toset(keys(jsondecode(aws_lambda_function.connector_target_sync[0].environment[0].variables["CONNECTOR_TARGET_LAMBDAS"]))) == toset(["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]) &&
     length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "CONNECTOR_TARGET_SYNC_ENABLED" && e.value == "true"]) == 1)
-    error_message = "The worker receives only connector Lambda ARNs and the web task the enqueue gate."
+    error_message = "The worker receives only the enable flag and dedicated function name, the dedicated function only connector Lambda ARNs, and the web task the enqueue gate."
   }
 }
 
