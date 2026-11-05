@@ -214,6 +214,16 @@ variable "datasource_diagnosis_enabled" {
   }
 }
 
+variable "connector_target_sync_enabled" {
+  type        = bool
+  description = "Register a datasource kind's connector (ClickHouse/Prometheus on the external-obs gateway, Loki/Tempo/Mimir on the monitoring gateway) when an administrator adds that datasource (connector_target_sync worker job). ADR-023 (ADR-005 owner-override exception, owner 2026-11-05), the second after ADR-015; enable on at most one awsops stack per account: create/update of this stack's own gateway targets only — the job never deletes, only writes the awsops-v2-external-obs/monitoring gateways, only points targets at this stack's own connector Lambdas, and never repoints a target another stack's Lambda owns. Requires workers_enabled, agentcore_enabled and integrations_enabled. false (default) = 0 resources/IAM, no web/worker env, $0."
+  default     = false
+  validation {
+    condition     = !var.connector_target_sync_enabled || (var.workers_enabled && var.agentcore_enabled && var.integrations_enabled)
+    error_message = "connector_target_sync_enabled=true requires workers_enabled, agentcore_enabled, and integrations_enabled."
+  }
+}
+
 variable "diag_signal_querygen_enabled" {
   type        = bool
   description = "Hybrid LLM fallback for Explore's diag-signal chips (signal_catalog_gen.py, 2026-08-04): when signal_catalog.py's deterministic matchers produce no ready signal for a datasource kind, ask Bedrock (Haiku) for ONE query, then reject it unless it (a) passes a kind-appropriate static read-only check, (b) mentions at least one name from that instance's own schema vocabulary, and (c) returns a non-empty payload on a live dry run. Only a query surviving all three is cached (provenance='generated'). SEPARATE from graph_querygen_enabled on purpose: that flag means 'one ClickHouse graph query', and an operator who consented to that did not consent to LLM generation plus live dry runs across every fallback-eligible kind on every daily run. Requires datasource_diagnosis_enabled (same datasource_index job); bedrock:InvokeModel is already granted via worker_lambda_diagnosis, so this flag adds only the env var. false (default) = no LLM calls, no dry runs, $0 — kinds with no deterministic match simply show no chips."

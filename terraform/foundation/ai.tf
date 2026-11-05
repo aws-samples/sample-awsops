@@ -603,8 +603,10 @@ resource "aws_iam_role_policy" "task_agentcore_ssm" {
 }
 
 # v1-parity AgentCore console (web/app/agentcore + web/lib/agentcore-status.ts): read-only
-# control-plane status (runtime/gateways/targets/memory/interpreter). These List*/Get* control
-# actions have no resource-level scoping in AgentCore → "*", read-only by construction.
+# control-plane status (runtime/gateways/targets/memory/interpreter). List* actions such as
+# ListGateways have no resource type; Get*/ListGatewayTargets do support the `gateway` resource
+# type (Service Authorization Reference), but this read-only status console spans every
+# gateway/runtime/memory, so it keeps "*" — read-only by construction.
 resource "aws_iam_role_policy" "task_agentcore_status" {
   count = local.ac_count
   name  = "${var.project}-task-agentcore-status"
