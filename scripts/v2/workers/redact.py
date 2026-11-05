@@ -6,12 +6,13 @@ different regex set (a PR review caught finops/llm.py sending unredacted ARNs/ac
 Bedrock because it never called this at all).
 CloudTrail Username and other identity fields are stripped at the collector (sources.py) —
 this module only scrubs the assembled prompt text itself."""
+import ipaddress
 import re
 
 # The account-id pattern uses negative lookarounds so it only matches a STANDALONE 12-digit run
 # (an account id), not a slice of a longer/embedded number.
 REDACTORS = [
-    (re.compile(r"arn:aws:[^\s\"']+"), "<arn>"),
+    (re.compile(r"arn:(?:aws|aws-cn|aws-us-gov):[^\s\"']+"), "<arn>"),
     # email BEFORE acct: an email local-part with 12+ digits would otherwise be partially
     # clobbered by the acct rule first.
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
@@ -20,9 +21,25 @@ REDACTORS = [
     (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "<akid>"),
 ]
 
+# Validate candidates rather than treating clock strings or citation IDs as IPs.
+# Run before IPv4 substitution so IPv4-mapped IPv6 is scrubbed as one address.
+IPV6_CANDIDATES = re.compile(
+    r"(?<![A-Za-z0-9_.])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]*"
+    r"(?:%[A-Za-z0-9_.-]+)?(?![A-Za-z0-9_])")
+
+
+def _ipv6(match):
+    value = match.group(0)
+    try:
+        ipaddress.IPv6Address(value)
+    except ValueError:
+        return value
+    return "<ip>"
+
 
 def redact(text):
     """Scrub ARNs/account-ids/emails/IPs/access-keys from `text` before it reaches an LLM."""
+    text = IPV6_CANDIDATES.sub(_ipv6, text)
     for pat, repl in REDACTORS:
         text = pat.sub(repl, text)
     return text

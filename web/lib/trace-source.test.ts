@@ -381,6 +381,49 @@ describe('trace metadata allowlist', () => {
     k8sPod: 'checkout-1', k8sDeployment: 'checkout',
   };
 
+  it('preserves only bounded EC2 identity claims from resource attributes in both backends', () => {
+    const claims = {
+      ...resource,
+      'cloud.resource_id': 'arn:aws:ec2:ap-northeast-2:123456789012:instance/i-0123456789abcdef0',
+      'host.id': 'i-0123456789abcdef0',
+      'service.instance.id': 'i-0123456789abcdef0',
+      'process.command_line': 'password=secret',
+      'db.connection_string': 'postgres://user:secret@db',
+    };
+    const expected = {
+      cloudResourceId: 'arn:aws:ec2:ap-northeast-2:123456789012:instance/i-0123456789abcdef0',
+      hostId: 'i-0123456789abcdef0',
+      serviceInstanceId: 'i-0123456789abcdef0',
+    };
+    const results = [
+      mapOtelRow(otelRow({ ResourceAttributes: claims })),
+      mapTempoTrace('trace', { batches: [{
+        resource: { attributes: attrs(claims) }, scopeSpans: [{ spans: [tempoSpan()] }],
+      }] })[0],
+    ];
+    for (const result of results) {
+      expect(result).toMatchObject(expected);
+      expect(result).not.toHaveProperty('ResourceAttributes');
+      expect(JSON.stringify(result)).not.toContain('secret');
+    }
+  });
+
+  it('does not copy object, oversized or control-bearing EC2 identity claims', () => {
+    const result = mapOtelRow(otelRow({
+      ResourceAttributes: {
+        ...resource,
+        'cloud.resource_id': { nested: 'secret' },
+        'host.id': 'i-' + 'a'.repeat(513),
+        'service.instance.id': 'i-0123456789abcdef0\npassword=secret',
+      },
+      SpanAttributes: { 'host.id': 'i-0123456789abcdef0' },
+    }));
+    expect(result).not.toHaveProperty('cloudResourceId');
+    expect(result).not.toHaveProperty('hostId');
+    expect(result).not.toHaveProperty('serviceInstanceId');
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
   it('ClickHouse preserves scope, operation, status, messaging and links without raw attributes', () => {
     const result = mapOtelRow(otelRow({
       SpanName: 'publish orders', StatusCode: 'Error',

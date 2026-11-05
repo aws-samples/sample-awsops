@@ -62,6 +62,9 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
   for (const key of ['windowStartMs','windowEndMs','nodeDrops','edgeDrops','orphanSpans','invalidSpans','unresolvedMessaging']) {
     if (number(raw[key])) result[key] = raw[key];
   }
+  if (number(raw.instanceObservationDrops) && Number.isSafeInteger(raw.instanceObservationDrops)) {
+    result.instanceObservationDrops = raw.instanceObservationDrops;
+  }
   for (const key of ['retainedPrevious','infraUnavailable','inputTruncated','graphTruncated','sourceAttempted','metadataTruncated']) {
     if (typeof raw[key] === 'boolean') result[key] = raw[key];
   }
@@ -72,7 +75,7 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
   const omitted = (source: Record<string, any>, projected: Record<string, any>, keys: string[]) =>
     keys.some(key => Object.prototype.hasOwnProperty.call(source, key) && !Object.prototype.hasOwnProperty.call(projected, key));
   limited ||= omitted(raw, result, ['windowStartMs','windowEndMs','nodeDrops','edgeDrops',
-    'orphanSpans','invalidSpans','unresolvedMessaging','retainedPrevious','infraUnavailable',
+    'orphanSpans','invalidSpans','unresolvedMessaging','instanceObservationDrops','retainedPrevious','infraUnavailable',
     'inputTruncated','graphTruncated','sourceAttempted','metadataTruncated','failureReason']);
   for (const key of ['sources','publishedSources']) {
     if (Object.prototype.hasOwnProperty.call(raw, key) && !Array.isArray(raw[key])) limited = true;

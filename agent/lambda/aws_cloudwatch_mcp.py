@@ -3,9 +3,77 @@ AWS CloudWatch MCP Lambda - Metrics, Alarms, Logs, Log Insights
 AWS CloudWatch MCP 람다 - 지표, 알람, 로그, 로그 인사이트
 """
 import json
+import math
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cross_account import cap_list, get_client, get_role_arn, resolve_tool_name
+
+
+METRIC_STATISTICS = {"Average", "Minimum", "Maximum", "Sum", "SampleCount", "p50", "p90", "p95", "p99"}
+METRIC_UNITS = {
+    "Seconds", "Microseconds", "Milliseconds", "Bytes", "Kilobytes", "Megabytes",
+    "Gigabytes", "Terabytes", "Bits", "Kilobits", "Megabits", "Gigabits", "Terabits",
+    "Percent", "Count", "Bytes/Second", "Kilobytes/Second", "Megabytes/Second",
+    "Gigabytes/Second", "Terabytes/Second", "Bits/Second", "Kilobits/Second",
+    "Megabits/Second", "Gigabits/Second", "Terabits/Second", "Count/Second", "None",
+}
+
+
+def _metric_text(value, limit=255):
+    return (isinstance(value, str) and bool(value.strip()) and len(value) <= limit
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+
+
+def _metric_dimensions(value):
+    if isinstance(value, dict):
+        dimensions = [{"Name": key, "Value": item} for key, item in value.items()]
+    elif isinstance(value, list):
+        dimensions = value
+    else:
+        raise ValueError("Invalid metric dimensions")
+    if len(dimensions) > 30 or any(
+            not isinstance(item, dict) or set(item) != {"Name", "Value"}
+            or not _metric_text(item["Name"]) or not _metric_text(item["Value"], 1024)
+            for item in dimensions):
+        raise ValueError("Invalid metric dimensions")
+    if len({item["Name"] for item in dimensions}) != len(dimensions):
+        raise ValueError("Duplicate metric dimensions")
+    return dimensions
+
+
+def _metric_request(args, metadata=False):
+    namespace = args.get("namespace", "AWS/EC2")
+    if not _metric_text(namespace):
+        raise ValueError("Invalid metric namespace")
+    request = {"Namespace": namespace}
+    metric_name = args.get("metric_name", "" if metadata else "CPUUtilization")
+    if not metadata or metric_name not in (None, ""):
+        if not _metric_text(metric_name):
+            raise ValueError("Invalid metric name")
+        request["MetricName"] = metric_name
+    dimensions = _metric_dimensions(args.get("dimensions", {}))
+    if not metadata or dimensions:
+        request["Dimensions"] = dimensions
+    if metadata:
+        return request
+    stat, minutes, period = args.get("statistic", "Average"), args.get("minutes", 60), args.get("period", 300)
+    if not isinstance(stat, str) or stat not in METRIC_STATISTICS:
+        raise ValueError("Unsupported metric statistic")
+    if type(minutes) is not int or not 1 <= minutes <= 20160:
+        raise ValueError("Metric minutes must be an integer from 1 to 20160")
+    if type(period) is not int or not 60 <= period <= 2147483647 or period % 60:
+        raise ValueError("Metric period must be a positive multiple of 60 seconds")
+    if math.ceil(minutes * 60 / period) > 1440:
+        raise ValueError("Metric window exceeds 1440 datapoints; increase period")
+    unit = args.get("unit")
+    if unit is not None:
+        if not isinstance(unit, str) or unit not in METRIC_UNITS:
+            raise ValueError("Unsupported metric unit")
+        request["Unit"] = unit
+    end = datetime.now(timezone.utc)
+    request.update(StartTime=end - timedelta(minutes=minutes), EndTime=end, Period=period)
+    request["ExtendedStatistics" if stat.startswith("p") else "Statistics"] = [stat]
+    return request
 
 
 def lambda_handler(event, context):
@@ -30,45 +98,38 @@ def lambda_handler(event, context):
         args = params
 
     try:
+        metric_request = None
+        if t in ("get_metric_data", "get_metric_metadata"):
+            try:
+                metric_request = _metric_request(args, metadata=t == "get_metric_metadata")
+            except ValueError as invalid:
+                return err(str(invalid))
         cw = get_client('cloudwatch', region, role_arn)
         logs = get_client('logs', region, role_arn)
 
         # ========== Metrics / 지표 ==========
         # Get metric statistics for a given time range / 지정 시간 범위의 지표 통계 조회
         if t == "get_metric_data":
-            namespace = args.get("namespace", "AWS/EC2")
-            metric_name = args.get("metric_name", "CPUUtilization")
-            dimensions = args.get("dimensions", {})
             stat = args.get("statistic", "Average")
-            minutes = args.get("minutes", 60)
-            period = args.get("period", 300)
-
-            dim_list = [{"Name": k, "Value": v} for k, v in dimensions.items()] if isinstance(dimensions, dict) else dimensions
-            end = datetime.utcnow()
-            start = end - timedelta(minutes=minutes)
-
             # Retrieve metric statistics from CloudWatch / CloudWatch에서 지표 통계 조회
-            resp = cw.get_metric_statistics(
-                Namespace=namespace, MetricName=metric_name,
-                Dimensions=dim_list, StartTime=start, EndTime=end,
-                Period=period, Statistics=[stat])
+            resp = cw.get_metric_statistics(**metric_request)
             datapoints = sorted(resp.get("Datapoints", []), key=lambda x: x.get("Timestamp", ""))
             # Keep the LATEST 30 points and say when older ones were dropped.
             latest, meta = cap_list(list(reversed(datapoints)), 30)
             latest.reverse()
-            return ok({**meta, "kept": "latest", "region": region, "namespace": namespace,
-                "metricName": metric_name, "statistic": stat, "period": period,
-                "datapoints": [{"timestamp": str(d["Timestamp"]), "value": round(d.get(stat, 0), 4)}
-                    for d in latest]})
+            def metric_value(point):
+                value = point.get("ExtendedStatistics", {}).get(stat) if stat.startswith("p") else point.get(stat)
+                return round(value, 4) if type(value) in (int, float) and math.isfinite(value) else None
+            return ok({**meta, "kept": "latest", "region": region, "namespace": metric_request["Namespace"],
+                "metricName": metric_request["MetricName"], "statistic": stat, "period": metric_request["Period"],
+                "windowStart": metric_request["StartTime"].isoformat(), "windowEnd": metric_request["EndTime"].isoformat(),
+                "datapoints": [{"timestamp": str(d["Timestamp"]), "value": metric_value(d)} for d in latest]})
 
         # Get metric metadata (available dimensions) / 지표 메타데이터 (사용 가능한 차원) 조회
         elif t == "get_metric_metadata":
-            namespace = args.get("namespace", "AWS/EC2")
-            metric_name = args.get("metric_name", "")
-            resp = cw.list_metrics(Namespace=namespace,
-                MetricName=metric_name if metric_name else None)
+            resp = cw.list_metrics(**metric_request)
             metrics, meta = cap_list(resp.get("Metrics", []), 20, bool(resp.get("NextToken")))
-            return ok({**meta, "region": region, "namespace": namespace, "metrics": [
+            return ok({**meta, "region": region, "namespace": metric_request["Namespace"], "metrics": [
                 {"name": m["MetricName"], "dimensions": {d["Name"]: d["Value"] for d in m.get("Dimensions", [])}}
                 for m in metrics]})
 

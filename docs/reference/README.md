@@ -83,6 +83,12 @@ scoped registered-fleet coverage from incomplete wildcard discovery.
 
 **E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
 
+**Diagnosis discovery — [diagnosis-discovery.md](diagnosis-discovery.md).** The
+default-off six-pillar evidence loop combines scoped inventory and graph selection,
+measured EC2 memory and bounded DNS/NFM observations while preserving incomplete
+coverage, account isolation and the distinction between configuration, traffic and
+application calls. Local query caches have explicit capacity and age bounds.
+
 **VPC connectivity — [vpc-connectivity.md](vpc-connectivity.md).** On-demand peering
 and TGW attachment observations on `/inventory/vpc` and the
 `/topology/infra?view=vpc` tab, scoped to an enabled collecting account, region and

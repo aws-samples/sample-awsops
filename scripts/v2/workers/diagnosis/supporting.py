@@ -1,0 +1,211 @@
+"""Bounded account summaries supporting all pillars without resource cost attribution."""
+from copy import deepcopy
+import datetime as dt
+import hashlib
+import math
+import os
+import threading
+
+import boto3
+from botocore.config import Config
+
+_clients = {}
+_lock = threading.Lock()
+_MAX_PAGES = 3
+_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
+
+
+def _client(service, region, budget):
+    remaining = budget.remaining()
+    if remaining < 10:
+        raise TimeoutError("supporting_deadline_exhausted")
+    timeout = min(15, max(1, int(remaining - 5)))
+    key = (service, region, timeout)
+    with _lock:
+        if key not in _clients:
+            _clients[key] = boto3.client(
+                service, region_name=region, config=Config(
+                    connect_timeout=3, read_timeout=timeout,
+                    retries={"total_max_attempts": 1}, max_pool_connections=4))
+        return _clients[key]
+
+
+def _numeric(value, *, percent=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or (percent and not 0 <= number <= 100):
+        return None
+    return number
+
+
+def _mark(bundle, category, value):
+    if value not in bundle[category]:
+        bundle[category].append(value)
+
+
+def _cost(client, account, budget, bundle, now):
+    start, end = now.date().replace(day=1).isoformat(), now.date().isoformat()
+    if start == end:
+        raise ValueError("cost_window_empty")
+    groups, token, seen, complete = [], None, set(), True
+    for page_number in range(_MAX_PAGES):
+        if budget.remaining() < 10:
+            raise TimeoutError("supporting_deadline_exhausted")
+        params = {"TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
+                  "Metrics": ["UnblendedCost"],
+                  "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+                  "Filter": {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [account]}}}
+        if token:
+            params["NextPageToken"] = token
+        result = client.get_cost_and_usage(**params)
+        for period in result.get("ResultsByTime", []):
+            for group in period.get("Groups", []):
+                metric = group.get("Metrics", {}).get("UnblendedCost", {})
+                keys = group.get("Keys", [])
+                amount = _numeric(metric.get("Amount"))
+                if not keys or amount is None or not isinstance(metric.get("Unit"), str):
+                    _mark(bundle, "incomplete", "cost_invalid_group")
+                    complete = False
+                    continue
+                groups.append({"service": str(keys[0])[:160], "amount": amount,
+                               "currency": metric["Unit"][:12],
+                               "estimated": period.get("Estimated") is True})
+        token = result.get("NextPageToken")
+        if not token:
+            break
+        if token in seen:
+            _mark(bundle, "incomplete", "cost_repeated_token")
+            complete = False
+            break
+        seen.add(token)
+        if page_number == _MAX_PAGES - 1:
+            _mark(bundle, "incomplete", "cost_page_cap")
+            complete = False
+    if len(groups) > 40:
+        _mark(bundle, "incomplete", "cost_group_cap")
+        complete = False
+    currencies = {group["currency"] for group in groups}
+    if len(currencies) > 1:
+        _mark(bundle, "gaps", "mixed_currency")
+    # Keep provider service-level amounts. Never infer resource cost or add currencies.
+    return ({"cost_groups": groups[:40], "resource_cost": False, "partial_month": True},
+            {"start": start, "end": end},
+            {"complete": complete, "returned": min(40, len(groups)),
+             "total": len(groups), "omitted": max(0, len(groups) - 40)})
+
+
+def _posture(client, account, bundle):
+    response = client.get_findings(
+        Filters={"AwsAccountId": [{"Value": account, "Comparison": "EQUALS"}],
+                 "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+                 "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
+        MaxResults=100)
+    rows = response.get("Findings", [])[:100]
+    counts = {}
+    for row in rows:
+        if row.get("AwsAccountId") != account:
+            _mark(bundle, "incomplete", "posture_scope_mismatch")
+            continue
+        severity = row.get("Severity", {}).get("Label")
+        if severity not in {"INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            severity = "UNKNOWN"
+        counts[severity] = counts.get(severity, 0) + 1
+    more = bool(response.get("NextToken"))
+    if more:
+        _mark(bundle, "incomplete", "posture_page_cap")
+    return ({"posture_counts": counts, "sampled": True, "continuation": more},
+            {"filter": "ACTIVE_NEW"}, {"complete": not more, "returned": len(rows)})
+
+
+def _changes(client, account, bundle, now):
+    response = client.lookup_events(
+        StartTime=now - dt.timedelta(hours=24), EndTime=now, MaxResults=50,
+        LookupAttributes=[{"AttributeKey": "ReadOnly", "AttributeValue": "false"}])
+    rows = []
+    for event in response.get("Events", [])[:50]:
+        # No CloudTrailEvent JSON, username, raw resource list or message.
+        event_time = event.get("EventTime")
+        if not isinstance(event_time, dt.datetime):
+            _mark(bundle, "incomplete", "change_time_unknown")
+            continue
+        rows.append({"event_name": str(event.get("EventName", ""))[:100],
+                     "event_source": str(event.get("EventSource", ""))[:100],
+                     "event_time": event_time.isoformat()})
+    more = bool(response.get("NextToken"))
+    if more:
+        _mark(bundle, "incomplete", "changes_page_cap")
+    return ({"change_events": rows, "sampled": True, "continuation": more},
+            {"start": (now - dt.timedelta(hours=24)).isoformat(), "end": now.isoformat()},
+            {"complete": not more, "returned": len(rows)})
+
+
+def _commitment(client, account, budget, bundle, now):
+    params = {"TimePeriod": {"Start": (now.date() - dt.timedelta(days=30)).isoformat(),
+                            "End": now.date().isoformat()},
+              "Filter": {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [account]}}}
+    ri = client.get_reservation_coverage(**params)
+    if budget.remaining() < 10:
+        raise TimeoutError("supporting_deadline_exhausted")
+    sp = client.get_savings_plans_coverage(**params, MaxResults=20)
+    ri_percent = _numeric(ri.get("Total", {}).get("CoverageHours", {}).get(
+        "CoverageHoursPercentage"), percent=True)
+    rows = [{"service": "ReservedInstances", "percentage": ri_percent}]
+    for row in sp.get("SavingsPlansCoverages", [])[:20]:
+        rows.append({"service": "SavingsPlans",
+                     "percentage": _numeric(row.get("Coverage", {}).get("CoveragePercentage"),
+                                            percent=True)})
+    more = bool(ri.get("NextPageToken") or sp.get("NextToken"))
+    if more:
+        _mark(bundle, "incomplete", "commitment_page_cap")
+    return ({"commitment_coverage": rows, "sampled": more},
+            {"start": params["TimePeriod"]["Start"], "end": params["TimePeriod"]["End"]},
+            {"complete": not more, "returned": len(rows)})
+
+
+def collect(bundle, budget, *, scope):
+    result = deepcopy(bundle)
+    account = result.get("coverage", {}).get("account")
+    # Applied host identity must match; member reads never use this path.
+    if (scope != "self" or result.get("coverage", {}).get("storage_scope") != "self"
+            or not account or account != os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")):
+        return result
+    now = dt.datetime.now(dt.timezone.utc)
+    plans = [
+        ("cost", "ce", "us-east-1", _cost), ("posture", "securityhub", _REGION, _posture),
+        ("what_changed", "cloudtrail", _REGION, _changes), ("commitment", "ce", "us-east-1", _commitment),
+    ]
+    for key, service, region, fn in plans:
+        if budget.remaining() < 10:
+            _mark(result, "degraded", "supporting_deadline_exhausted")
+            break
+        try:
+            client = _client(service, region, budget)
+            if key == "cost" or key == "commitment":
+                facts, window, coverage = fn(client, account, budget, result, now)
+            elif key == "what_changed":
+                facts, window, coverage = fn(client, account, result, now)
+            else:
+                facts, window, coverage = fn(client, account, result)
+            captured = now.isoformat()
+            record_id = "summary-" + hashlib.sha256(
+                f"{account}:{key}:{captured}".encode()).hexdigest()[:24]
+            result["evidence"].append({
+                "id": record_id, "source": key, "kind": "scope_summary",
+                "resource_ids": [], "account": account,
+                "region": "global" if service == "ce" else region,
+                "facts": facts, "captured_at": captured, "fresh": True,
+                "window": window, "coverage": coverage})
+            result.setdefault("native_sources", {})[key] = {
+                "status": "ok" if coverage.get("complete") else "partial",
+                "window": window, "coverage": coverage}
+            missing = f"{key}_not_collected"
+            if missing in result["gaps"]:
+                result["gaps"].remove(missing)
+        except Exception:  # fixed diagnostics; no provider exception data in reports
+            _mark(result, "degraded", f"{key}_read_failed")
+            result.setdefault("native_sources", {})[key] = {"status": "failed"}
+    # Use the same final byte/citation bound as discovery; no second context budget.
+    from .discovery import _finish
+    return _finish(result)
