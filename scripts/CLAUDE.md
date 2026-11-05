@@ -296,6 +296,8 @@ secrets-manager) — installed by `make deps`.
   named missing vendors and separate lens/image/report diagnostics, never approval.
   `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
   complete hash-valid image evidence before model credentials; no partial review.
+  `review_batches.py` splits a larger diff at file boundaries into at most 8 batches, each
+  admitted the same way and reviewed by both vendors plus its own chair; every batch must pass.
   Both panel reports require substantive sections for every L2–L5 checklist, including
   security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
   skips chair calls; report truncation cannot approve unseen findings. Oversized

@@ -114,7 +114,8 @@ limits, prompt propagation and missing-evidence failures.
 | Decode attempts / staged files | 32; deletions do not consume slots |
 | One source or rendered file | 8 MiB |
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
-| Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB |
+| Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB per review call |
+| Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the call limit; every batch must pass |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
 | Public failure diagnostic | Fixed labels and severity-keyword presence (true/false); no model text |
@@ -201,7 +202,7 @@ Pre-credential workflow preparation, including `input_scope.py`, runs as ordinar
 Python scripts from the trusted default-workflow checkout; this is not a claim
 that every Python invocation in the repository uses isolated mode.
 
-Before issuing model credentials, `input_scope.py` requires the entire filtered diff
+Before issuing model credentials, `input_scope.py` requires each review call's filtered diff
 to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 32-image extraction bound remains. Diff admission is byte-based and counts LF
 boundaries like `wc -l`; raw bytes are passed unchanged to reviewer CLIs without
@@ -210,7 +211,17 @@ that a CLI understood an encoding: unreadable or incomplete model responses stil
 fail the mandatory report checks. Sanitizer and image-evidence faults have separate
 fixed diagnostics. Oversized source lines already omitted by the
 filter also block admission. There is no first-N-lines review, misleading unseen-file
-index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
+index or partial PASS.
+
+A filtered diff over one call's limit is reviewed in complete batches
+(`scripts/pr-review/review_batches.py`). Admission splits it at file boundaries into at most
+8 batches, each within 7/8 of the byte and line limits so redaction headroom remains, and admits
+every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
+chair, run in parallel inside the existing panel and chair steps, with a scope note listing the
+files in the other batches. Each batch writes its own `GITHUB_ENV` flags; any batch's failure
+flag wins over later batches. The combined comment has one section per batch and passes only if
+every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
+rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
 fixed diagnostics and unadjudicated severity-keyword presence booleans; it never asserts
 that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000

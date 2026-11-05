@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eb11950f5d91 · generated-at: 2026-10-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3e3a2e455b4e · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -33,6 +33,7 @@ that IO distinction, not model latency.
 and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
+`review_batches.py` reviews larger diffs in ≤8 complete file batches; all must pass.
 Two independent Codex/Claude reports each cover all four checklists and must declare
 substantive sections for L2–L5, including security L3, plus plain
 `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.

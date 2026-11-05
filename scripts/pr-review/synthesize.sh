@@ -187,6 +187,10 @@ IMPORTANT: the last line must be exactly one of:
 FAIL if any CRITICAL/MAJOR exists or image coverage is unavailable, otherwise PASS.
 An image coverage failure is an incomplete review, not an application code finding.
 PROMPT_EOF
+# Batched reviews (review_batches.py) add the trusted batch scope note written by admission.
+if [ -s "$WORK/batch-note.txt" ]; then
+  cat "$WORK/batch-note.txt" >> "$WORK/synth-prompt.txt"
+fi
 
 # stdin payload ONLY: diff + panel reviews + their short headers.
 # synth-prompt.txt (including HEAD_PNG_PROMPT) is passed separately through argv
