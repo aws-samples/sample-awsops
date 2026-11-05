@@ -34,7 +34,7 @@ if not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16:
 # Headroom inside each batch for secret redaction expanding the scrubbed copy, which
 # admission re-measures against the full limit.
 BATCH_BYTES = MAX_BYTES * 7 // 8
-BATCH_LINES = MAX_LINES * 7 // 8
+BATCH_LINES = MAX_LINES  # line counts do not grow under redaction
 WORKS = "batch-works.tsv"
 FAIL_FLAGS = ("report_invalid", "chair_input_failed", "chair_failed", "panel_incomplete",
               "image_coverage_failed")
@@ -143,7 +143,7 @@ def _note(index, total):
         "filtered diff exceeds the single-call limit, so it was split at file boundaries; every "
         "batch is reviewed separately with the same checklists and the PR passes only if every "
         "batch passes. Batch 1 holds every file under .github/, scripts/pr-review/, terraform/, "
-        "agent/, web/app/api/, scripts/v2/remediation/ and the worker dispatcher, handler, "
+        "edge-lambda/, agent/, web/app/api/, scripts/v2/remediation/ and the worker dispatcher, handler, "
         "action-catalog, connector-target, remediation and web middleware paths, plus source "
         "files whose names mark IAM, policy, auth, guard, cross-account, admin, connector, "
         "mutation, secret, credential, RBAC, redaction or remediation code. That list is a "
@@ -169,6 +169,9 @@ def admit(diff, context, root):
     works = root / WORKS
     works.unlink(missing_ok=True)
     omitted = os.environ.get("omitted_source_paths", "")
+    # Bounded read: never load more than the largest admissible batched input.
+    if Path(diff).stat().st_size > MAX_BATCHES * MAX_BYTES:
+        return False, f"diff exceeds {MAX_BATCHES} review batches; split the change", 0
     data = Path(diff).read_bytes()
     lenses = root / "lenses"
     if len(data) <= MAX_BYTES and data.count(b"\n") <= MAX_LINES:
@@ -177,7 +180,7 @@ def admit(diff, context, root):
             (root / stale).unlink(missing_ok=True)
         ready, reason = admission(diff, context, omitted)
         if ready:
-            works.write_text(f"{root}\t{diff}\t{lenses}\n")
+            works.write_text(f"{root}\t{diff}\t{lenses}\t1\n")
         return ready, reason, 1
     if omitted:
         return False, "source lines were omitted; reformat them into reviewable lines", 0
@@ -207,7 +210,9 @@ def admit(diff, context, root):
                 shutil.copyfile(lens, work / "lenses" / lens.name)
         (work / "lenses" / "COMMON.txt").write_text(common + note, encoding="utf-8")
         (work / "batch-note.txt").write_text(note, encoding="utf-8")
-        rows.append(f"{work}\t{batch_diff}\t{work / 'lenses'}\n")
+        # Waves of max_parallel_batches; each wave gets its own workflow step and AWS session.
+        wave = (index - 1) // LIMITS["max_parallel_batches"] + 1
+        rows.append(f"{work}\t{batch_diff}\t{work / 'lenses'}\t{wave}\n")
     works.write_text("".join(rows))
     return True, f"complete input admitted in {len(batches)} review batches", len(batches)
 
@@ -319,12 +324,13 @@ def main(argv):
     if command == "admit" and len(argv) == 5:
         try:
             ready, reason, count = admit(argv[2], argv[3], argv[4])
-        except (OSError, ValueError, UnicodeError, KeyError):
+        except (OSError, ValueError, UnicodeError, KeyError, MemoryError):
             ready, reason, count = False, "review input unreadable or invalid", 0
         # Fixed messages only: paths, provider errors and PR data never become outputs.
         print(f"ready={str(ready).lower()}")
         print(f"reason={reason}")
         print(f"batches={count}")
+        print(f"waves={-(-count // LIMITS['max_parallel_batches']) if count else 0}")
     elif command == "env" and len(argv) == 3:
         lines = aggregate_env(argv[2])
         if lines:

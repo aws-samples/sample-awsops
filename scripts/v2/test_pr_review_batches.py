@@ -58,7 +58,7 @@ class AdmissionTests(unittest.TestCase):
             (fx.review / "github.env").write_text("report_invalid=0\n")
             result = fx.admit(file_diff("web/a.ts", 4000))
             self.assertEqual((result["ready"], result["batches"]), ("true", "1"))
-            self.assertEqual(fx.works(), [[str(fx.review), str(fx.diff), str(fx.review / "lenses")]])
+            self.assertEqual(fx.works(), [[str(fx.review), str(fx.diff), str(fx.review / "lenses"), "1"]])
             self.assertFalse((fx.review / "review.md").exists(), "stale single-path review must go")
             self.assertFalse((fx.review / "github.env").exists())
             self.assertFalse(list(fx.review.glob("batch-[0-9]*")))
@@ -75,9 +75,11 @@ class AdmissionTests(unittest.TestCase):
             self.assertGreater(count, 1)
             works = fx.works()
             self.assertEqual(len(works), count)
-            rebuilt = b"".join(Path(diff).read_bytes() for _, diff, _ in works)
+            rebuilt = b"".join(Path(diff).read_bytes() for _, diff, _, _ in works)
+            self.assertEqual([int(wave) for *_, wave in works],
+                             [(i // LIMITS["max_parallel_batches"]) + 1 for i in range(count)])
             self.assertEqual(rebuilt, data, "batches must cover the whole diff, in order, unaltered")
-            for work, diff, lenses in works:
+            for work, diff, lenses, _ in works:
                 batch = Path(diff).read_bytes()
                 self.assertLessEqual(len(batch), LIMITS["diff_bytes"])
                 self.assertTrue(batch.startswith(b"diff --git "))
@@ -110,7 +112,7 @@ class AdmissionTests(unittest.TestCase):
             result = fx.admit(b"".join(file_diff(name, 30_000) for name in names))
             self.assertEqual(result["ready"], "true")
             parts = [file_diff(name, 30_000) for name in names]
-            rebuilt = [Path(diff).read_bytes() for _, diff, _ in fx.works()]
+            rebuilt = [Path(diff).read_bytes() for _, diff, _, _ in fx.works()]
             self.assertEqual(sorted(p for batch in rebuilt for p in batch.split(b"diff --git ")[1:]),
                              sorted(p.split(b"diff --git ")[1] for p in parts),
                              "regrouping must keep every file diff exactly once")
@@ -279,7 +281,7 @@ class ContractTests(unittest.TestCase):
         module = __import__("importlib.util").util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertTrue(exported)
-        self.assertLessEqual(exported - {"chair_used"}, set(module.FAIL_FLAGS))
+        self.assertLessEqual(exported - {"chair_used", "panel_responded"}, set(module.FAIL_FLAGS))
 
     def test_batch_note_carries_no_pr_text_and_scopes_images(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -293,26 +295,44 @@ class ContractTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
 
-    def test_every_review_phase_iterates_the_admitted_batches(self):
+    def step(self, identifier):
+        blocks = re.split(r"(?m)^(?=      - )", self.workflow)
+        matches = [block for block in blocks if re.search(rf"(?m)^        id: {identifier}$", block)]
+        self.assertEqual(len(matches), 1, identifier)
+        return matches[0]
+
+    def test_every_review_wave_runs_the_batch_runner_after_fresh_credentials(self):
         self.assertIn("review_batches.py admit /tmp/pr-diff.txt", self.workflow)
-        panel = self.workflow.split("      - name: Run panel", 1)[1].split("      - name:", 1)[0]
-        chair = self.workflow.split("      - name: Synthesize panel", 1)[1].split("      - name:", 1)[0]
-        for block in (panel, chair):
-            self.assertIn("done < /tmp/pr-review/batch-works.tsv", block)
-            self.assertIn('GITHUB_ENV="$work/github.env"', block)
-            self.assertIn('review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"', block)
-        self.assertIn('review_batches.py" combine /tmp/pr-review /tmp/review.md', chair)
-        self.assertNotIn("--add-dir", self.workflow)
-        for block in (panel, chair):
-            self.assertIn('wait -n', block)
-            self.assertIn('max_parallel_batches', block)
-        # Two waves per phase at the parallel cap must still fit the job timeout with 15 minutes spare.
-        waves = -(-LIMITS["max_batches"] // LIMITS["max_parallel_batches"])
-        timeout = int(re.search(r"(?m)^    timeout-minutes:\s*(\d+)\s*$", self.workflow).group(1))
-        self.assertGreaterEqual(timeout * 60 - waves * (2 * 1210 + 2 * 1030), 15 * 60)
+        order = ["panel_credentials", "panel_review", "panel_credentials_2", "panel_review_2",
+                 "chair_credentials", "chair_review", "chair_credentials_2", "chair_review_2"]
+        positions = [self.workflow.index(f"        id: {name}\n") for name in order]
+        self.assertEqual(positions, sorted(positions))
+        for phase, script in (("panel", "run-panel.sh"), ("chair", "synthesize.sh")):
+            for wave, suffix in ((1, ""), (2, "_2")):
+                block = self.step(f"{phase}_review{suffix}")
+                self.assertIn(f'run-batches.sh" {phase} {wave} /tmp/pr-review', block)
+                self.assertIn(script, block)
+                self.assertIn("WAVES: ${{ steps.input_scope.outputs.waves }}", block)
+                creds = self.step(f"{phase}_credentials{suffix}")
+                self.assertIn("role-duration-seconds: 3600", creds)
+            second = self.step(f"{phase}_review_2")
+            self.assertIn("steps.input_scope.outputs.waves == '2'", second)
+            self.assertIn(f"steps.{phase}_review.outcome == 'success'", second)
+        gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1]
+        self.assertIn("steps.panel_review_2.outcome || steps.panel_review.outcome", gate)
+        self.assertIn("steps.chair_review_2.outcome || steps.chair_review.outcome", gate)
+        runner = (ROOT / "scripts/pr-review/run-batches.sh").read_text()
+        self.assertIn("wait -n", runner)
+        self.assertIn("max_parallel_batches", runner)
+        self.assertIn('echo "::stop-commands::$STOP_TOKEN"', runner)
+        self.assertNotIn("--add-dir", self.workflow + runner)
         self.assertIn("Remove batched-review work directories", self.workflow)
-        self.assertIn('echo "::stop-commands::$STOP_TOKEN"', chair)
-        self.assertIn('echo "::$STOP_TOKEN::"', chair)
+        # Each wave is a separate step, so the job timeout must cover two worst-case waves of each
+        # phase plus 15 minutes of image staging and 15 minutes of setup and publication.
+        waves = -(-LIMITS["max_batches"] // LIMITS["max_parallel_batches"])
+        self.assertLessEqual(waves, 2)
+        timeout = int(re.search(r"(?m)^    timeout-minutes:\s*(\d+)\s*$", self.workflow).group(1))
+        self.assertGreaterEqual(timeout * 60 - waves * (2 * 1210 + 2 * 1030), 30 * 60)
 
     def test_gate_reports_every_incomplete_batch_and_still_fails(self):
         gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1].split(

@@ -50,8 +50,9 @@ jobs:
     # Chair primary/fallback total at most 2*(120+900+10)=34m20s, leaving 15m20s
     # for setup, publication, and cleanup. Mint a one-hour AWS session before each model phase.
     # Batched runs execute at most max_parallel_batches (4) batches at once, so a review of up
-    # to 8 batches takes at most two waves per phase: 2*40m20s panel + 2*34m20s chair, plus 15m.
-    timeout-minutes: 165
+    # to 8 batches takes at most two waves per phase, each wave its own step and AWS session:
+    # 2*40m20s panel + 2*34m20s chair = 149m20s, plus 15m image staging and 15m20s setup/publish.
+    timeout-minutes: 180
     concurrency:
       group: pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -390,6 +391,7 @@ jobs:
         env:
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
           HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
+          WAVES: ${{ steps.input_scope.outputs.waves }}
           # Two complete reviews run in parallel with the existing model/budget choices.
           PANEL_TIMEOUT: "1200"
           # Preserve model timeouts and retries; both reports cover all four checklists.
@@ -401,38 +403,49 @@ jobs:
           git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"
           trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
           cd "$REVIEW_BASE"
-          # One panel per admitted batch, in parallel so the batched run keeps the single-run
-          # time budget and credential lifetime. Each batch records its own GITHUB_ENV flags;
-          # review_batches.py env ORs failure flags across batches (chair_failed only if all failed).
-          # At most MAX_PARALLEL batches (two reviewer CLIs each) run at once on the runner pod.
-          MAX_PARALLEL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_parallel_batches"])' "$SCRIPT_ROOT/review-limits.json")
-          STARTED=0
-          while IFS=$'\t' read -r work diff lenses; do
-            while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do wait -n || true; done
-            : > "$work/github.env"; rm -f "$work/panel.rc"
-            ( GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/run-panel.sh" "$diff" "$lenses" "$work"
-              echo "$?" > "$work/panel.rc" ) < /dev/null &
-            STARTED=$((STARTED + 1))
-          done < /tmp/pr-review/batch-works.tsv
-          [ "$STARTED" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
-          wait
-          PANEL_RC=0
-          while IFS=$'\t' read -r work _; do
-            [ "$(cat "$work/panel.rc" 2>/dev/null)" = 0 ] || PANEL_RC=1
-          done < /tmp/pr-review/batch-works.tsv
-          python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
-          [ "$PANEL_RC" -eq 0 ] || exit 1
-          RESPONDED=$(python3 -I "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)
-          echo "panel_responded=$RESPONDED" >> "$GITHUB_ENV"
-          READY=true
-          while IFS=$'\t' read -r work _; do
-            [ ! -f "$work/coverage-severe.flag" ] || READY=false
-          done < /tmp/pr-review/batch-works.tsv
-          echo "ready=$READY" >> "$GITHUB_OUTPUT"
+          # run-panel.sh once per admitted batch of wave 1, at most max_parallel_batches at a
+          # time; each batch keeps its own GITHUB_ENV flags (see run-batches.sh).
+          bash "$SCRIPT_ROOT/run-batches.sh" panel 1 /tmp/pr-review
+
+      # Batches beyond max_parallel_batches form a second wave with its own one-hour session
+      # (the review role's maximum), so no wave outlives its credentials.
+      - name: Renew AWS credentials before the second panel wave
+        id: panel_credentials_2
+        if: steps.input_scope.outputs.ready == 'true' && steps.input_scope.outputs.waves == '2' && steps.panel_review.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+
+      - name: Run panel (two comprehensive reviewers) — second batch wave
+        id: panel_review_2
+        if: steps.input_scope.outputs.ready == 'true' && steps.input_scope.outputs.waves == '2' && steps.panel_review.outcome == 'success'
+        env:
+          BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
+          WAVES: ${{ steps.input_scope.outputs.waves }}
+          # Two complete reviews run in parallel with the existing model/budget choices.
+          PANEL_TIMEOUT: "1200"
+          # Preserve model timeouts and retries; both reports cover all four checklists.
+          CLAUDE_PANEL_TIMEOUT: "1200"
+        run: |
+          set -euo pipefail
+          SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
+          REVIEW_BASE=$(mktemp -d "$RUNNER_TEMP/pr-review-base.XXXXXX")
+          git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"
+          trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
+          cd "$REVIEW_BASE"
+          # run-panel.sh once per admitted batch of wave 2, at most max_parallel_batches at a
+          # time; each batch keeps its own GITHUB_ENV flags (see run-batches.sh).
+          bash "$SCRIPT_ROOT/run-batches.sh" panel 2 /tmp/pr-review
 
       - name: Renew AWS credentials before chair synthesis
         id: chair_credentials
-        if: steps.input_scope.outputs.ready == 'true' && steps.panel_review.outputs.ready == 'true'
+        if: steps.input_scope.outputs.ready == 'true' && (steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outputs.ready || steps.panel_review.outputs.ready) == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
@@ -444,12 +457,13 @@ jobs:
 
       - name: Synthesize panel reviews (Claude chair)
         id: chair_review
-        if: steps.input_scope.outputs.ready == 'true' && steps.panel_review.outputs.ready == 'true'
+        if: steps.input_scope.outputs.ready == 'true' && (steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outputs.ready || steps.panel_review.outputs.ready) == 'true'
         env:
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
           PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
           HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
+          WAVES: ${{ steps.input_scope.outputs.waves }}
         run: |
           set -euo pipefail
           SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
@@ -457,43 +471,41 @@ jobs:
           git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"
           trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
           cd "$REVIEW_BASE"
-          # One chair per batch, in parallel; the combined review passes only if every batch passes.
-          MAX_PARALLEL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_parallel_batches"])' "$SCRIPT_ROOT/review-limits.json")
-          STARTED=0
-          while IFS=$'\t' read -r work diff _; do
-            while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do wait -n || true; done
-            rm -f "$work/review.md" "$work/chair.rc"
-            ( GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/synthesize.sh" "$diff" "$work" \
-                "$PR_NUMBER" "$PR_TITLE" "$work/review.md"
-              echo "$?" > "$work/chair.rc" ) < /dev/null &
-            STARTED=$((STARTED + 1))
-          done < /tmp/pr-review/batch-works.tsv
-          [ "$STARTED" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
-          wait
-          CHAIR_RC=0
-          while IFS=$'\t' read -r work _; do
-            [ "$(cat "$work/chair.rc" 2>/dev/null)" = 0 ] || CHAIR_RC=1
-          done < /tmp/pr-review/batch-works.tsv
-          python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
-          python3 -I "$SCRIPT_ROOT/review_batches.py" combine /tmp/pr-review /tmp/review.md
-          # Scrubbed chair reports, so text cut from an oversized comment stays retrievable.
-          INDEX=0
-          while IFS=$'\t' read -r work _; do
-            INDEX=$((INDEX + 1))
-            echo "::group::Batch review $INDEX"
-            # Model text must never be parsed as workflow commands: suspend command processing
-            # with a fresh random token for the dump, and also strip CRs and indented "::".
-            STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-            echo "::stop-commands::$STOP_TOKEN"
-            if [ -f "$work/review.md" ]; then
-              tr -d '\r' < "$work/review.md" | sed -E 's/^([[:space:]]*)::/\1: :/'
-            else
-              echo "(no review)"
-            fi
-            echo "::$STOP_TOKEN::"
-            echo "::endgroup::"
-          done < /tmp/pr-review/batch-works.tsv
-          [ "$CHAIR_RC" -eq 0 ]
+          # synthesize.sh once per batch of wave 1; after the last wave the combined review
+          # (written to /tmp/review.md) passes only if every batch passes.
+          REVIEW_OUT=/tmp/review.md bash "$SCRIPT_ROOT/run-batches.sh" chair 1 /tmp/pr-review
+
+      - name: Renew AWS credentials before the second chair wave
+        id: chair_credentials_2
+        if: steps.input_scope.outputs.ready == 'true' && (steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outputs.ready || steps.panel_review.outputs.ready) == 'true' && steps.input_scope.outputs.waves == '2' && steps.chair_review.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+
+      - name: Synthesize panel reviews (Claude chair) — second batch wave
+        id: chair_review_2
+        if: steps.input_scope.outputs.ready == 'true' && (steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outputs.ready || steps.panel_review.outputs.ready) == 'true' && steps.input_scope.outputs.waves == '2' && steps.chair_review.outcome == 'success'
+        env:
+          PR_NUMBER: ${{ steps.review_context.outputs.number }}
+          PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
+          BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
+          WAVES: ${{ steps.input_scope.outputs.waves }}
+        run: |
+          set -euo pipefail
+          SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
+          REVIEW_BASE=$(mktemp -d "$RUNNER_TEMP/pr-review-chair-base.XXXXXX")
+          git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"
+          trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
+          cd "$REVIEW_BASE"
+          # synthesize.sh once per batch of wave 2; after the last wave the combined review
+          # (written to /tmp/review.md) passes only if every batch passes.
+          REVIEW_OUT=/tmp/review.md bash "$SCRIPT_ROOT/run-batches.sh" chair 2 /tmp/pr-review
 
       - name: Check for blocking issues
         id: gate
@@ -503,9 +515,11 @@ jobs:
           REVIEW_INPUT_READY: ${{ steps.input_scope.outputs.ready }}
           REVIEW_INPUT_REASON: ${{ steps.input_scope.outputs.reason }}
           IMAGE_STAGE_OUTCOME: ${{ steps.head_images.outcome }}
-          PANEL_READY: ${{ steps.panel_review.outputs.ready }}
-          PANEL_OUTCOME: ${{ steps.panel_review.outcome }}
-          CHAIR_OUTCOME: ${{ steps.chair_review.outcome }}
+          # With two batch waves the second step carries the phase result (it runs only after the
+          # first wave succeeded, so its outcome is skipped/failure whenever either wave failed).
+          PANEL_READY: ${{ steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outputs.ready || steps.panel_review.outputs.ready }}
+          PANEL_OUTCOME: ${{ steps.input_scope.outputs.waves == '2' && steps.panel_review_2.outcome || steps.panel_review.outcome }}
+          CHAIR_OUTCOME: ${{ steps.input_scope.outputs.waves == '2' && steps.chair_review_2.outcome || steps.chair_review.outcome }}
         run: |
           # Fail-closed first: if an oversized line was dropped from a real source/IaC file (not a
           # known generated/export type), no lens saw that content — force BLOCKED regardless of the

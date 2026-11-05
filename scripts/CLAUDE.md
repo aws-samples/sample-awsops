@@ -298,6 +298,7 @@ secrets-manager) — installed by `make deps`.
   complete hash-valid image evidence before model credentials; no partial review.
   `review_batches.py` splits a larger diff at file boundaries into at most 8 batches, each
   admitted the same way and reviewed by both vendors plus its own chair; every batch must pass.
+  `run-batches.sh` runs each wave of at most 4 batches in its own step after fresh credentials.
   Both panel reports require substantive sections for every L2–L5 checklist, including
   security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
   skips chair calls; report truncation cannot approve unseen findings. Promotions beyond

@@ -116,7 +116,7 @@ limits, prompt propagation and missing-evidence failures.
 | One source or rendered file | 8 MiB |
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
 | Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB per review call |
-| Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the call limit, at most 4 in flight; every batch must pass |
+| Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the byte limit, at most 4 in flight per wave (two waves, fresh credentials each); every batch must pass |
 | Published comment body | `comment_bytes` 60,000 (GitHub caps comments at 65,536 characters) |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
@@ -221,8 +221,11 @@ A filtered diff over one call's limit is reviewed in complete batches
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair inside the existing panel and chair steps. At most `max_parallel_batches` (4) batches run at
 once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsops` runner pod
-(2 CPU, 8 GiB request, 12 GiB limit); eight batches take two waves per phase and the job timeout
-(165 minutes) covers two worst-case waves of each. The per-batch scope note added to the trusted
+(2 CPU, 8 GiB request, 12 GiB limit). Batches 5–8 form a second wave: each wave of each phase is
+its own workflow step (`scripts/pr-review/run-batches.sh`) after a fresh one-hour AWS session,
+which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its credentials. The job
+timeout (180 minutes) covers two worst-case waves of each phase plus staging and publication.
+Admission refuses a filtered diff over 8 × 128 KiB before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
 `scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `web/app/api/` and
 `scripts/v2/remediation/`; worker files whose names start with `remediation`, `handlers`,
@@ -345,6 +348,7 @@ See [the diagnostic contract](review-image-capability.md) for its fixed proof fi
 - [Shared review limits](../../scripts/pr-review/review-limits.json)
 - [Input admission](../../scripts/pr-review/input_scope.py)
 - [Batched review admission and aggregation](../../scripts/pr-review/review_batches.py)
+- [Batch wave runner](../../scripts/pr-review/run-batches.sh)
 - [Fixed failure diagnostics](../../scripts/pr-review/report-panel-failure.sh)
 - [Git blob stager](../../scripts/pr-review/stage_head_pngs.py)
 - [Bounded decoder](../../scripts/pr-review/render_head_image.py) and [binary codec lock](../../scripts/pr-review/image-requirements.txt)
