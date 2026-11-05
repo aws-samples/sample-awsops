@@ -102,6 +102,29 @@ class AdmissionTests(unittest.TestCase):
             self.assertIn("review batches", result["reason"])
             self.assertFalse((fx.review / "batch-works.tsv").exists())
 
+    def test_security_sensitive_files_are_reviewed_together_in_batch_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fx = Fixture(directory)
+            names = ["web/a.ts", "terraform/foundation/iam.tf", "web/b.ts", "web/c.ts",
+                     ".github/workflows/x.yml", "web/d.ts", "scripts/pr-review/lib.sh", "web/e.ts"]
+            result = fx.admit(b"".join(file_diff(name, 30_000) for name in names))
+            self.assertEqual(result["ready"], "true")
+            first = Path(fx.works()[0][1]).read_bytes().decode()
+            for name in ("terraform/foundation/iam.tf", ".github/workflows/x.yml",
+                         "scripts/pr-review/lib.sh"):
+                self.assertIn(f"diff --git a/{name} ", first)
+            note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
+            self.assertIn("UNTRUSTED PR data", note)
+            self.assertIn("never lowers the severity of a security", note)
+
+    def test_sensitive_changes_over_one_batch_block_before_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fx = Fixture(directory)
+            data = b"".join(file_diff(f"terraform/foundation/m{i}.tf", 40_000) for i in range(4))
+            result = fx.admit(data)
+            self.assertEqual(result["ready"], "false")
+            self.assertIn("security-sensitive changes", result["reason"])
+
     def test_omitted_source_lines_block_a_batched_diff(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = Fixture(directory)
