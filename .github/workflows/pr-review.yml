@@ -49,7 +49,9 @@ jobs:
     # the runner pod for 6 hours. The longest panel cell is 2*(1200+10)=40m20s.
     # Chair primary/fallback total at most 2*(120+900+10)=34m20s, leaving 15m20s
     # for setup, publication, and cleanup. Mint a one-hour AWS session before each model phase.
-    timeout-minutes: 90
+    # Batched runs execute at most max_parallel_batches (4) batches at once, so a review of up
+    # to 8 batches takes at most two waves per phase: 2*40m20s panel + 2*34m20s chair, plus 15m.
+    timeout-minutes: 165
     concurrency:
       group: pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -293,7 +295,7 @@ jobs:
       - name: Build review checklists (L2-L5)
         run: |
           set -euo pipefail
-          # Whole accepted diffs only. Input admission below rejects oversize diffs.
+          # Whole accepted diffs only. Input admission below batches or rejects oversize diffs.
           rm -rf /tmp/pr-review/lenses
           mkdir -p /tmp/pr-review/lenses
           COMMON="Review the code diff for this PR, in this AWS+Kubernetes ops dashboard repo
@@ -402,15 +404,22 @@ jobs:
           # One panel per admitted batch, in parallel so the batched run keeps the single-run
           # time budget and credential lifetime. Each batch records its own GITHUB_ENV flags;
           # review_batches.py env ORs failure flags across batches (chair_failed only if all failed).
-          PIDS=()
+          # At most MAX_PARALLEL batches (two reviewer CLIs each) run at once on the runner pod.
+          MAX_PARALLEL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_parallel_batches"])' "$SCRIPT_ROOT/review-limits.json")
+          STARTED=0
           while IFS=$'\t' read -r work diff lenses; do
-            : > "$work/github.env"
-            GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/run-panel.sh" "$diff" "$lenses" "$work" < /dev/null &
-            PIDS+=("$!")
+            while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do wait -n || true; done
+            : > "$work/github.env"; rm -f "$work/panel.rc"
+            ( GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/run-panel.sh" "$diff" "$lenses" "$work"
+              echo "$?" > "$work/panel.rc" ) < /dev/null &
+            STARTED=$((STARTED + 1))
           done < /tmp/pr-review/batch-works.tsv
-          [ "${#PIDS[@]}" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
+          [ "$STARTED" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
+          wait
           PANEL_RC=0
-          for pid in "${PIDS[@]}"; do wait "$pid" || PANEL_RC=1; done
+          while IFS=$'\t' read -r work _; do
+            [ "$(cat "$work/panel.rc" 2>/dev/null)" = 0 ] || PANEL_RC=1
+          done < /tmp/pr-review/batch-works.tsv
           python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
           [ "$PANEL_RC" -eq 0 ] || exit 1
           RESPONDED=$(python3 -I "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)
@@ -449,16 +458,22 @@ jobs:
           trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
           cd "$REVIEW_BASE"
           # One chair per batch, in parallel; the combined review passes only if every batch passes.
-          PIDS=()
+          MAX_PARALLEL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_parallel_batches"])' "$SCRIPT_ROOT/review-limits.json")
+          STARTED=0
           while IFS=$'\t' read -r work diff _; do
-            rm -f "$work/review.md"
-            GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/synthesize.sh" "$diff" "$work" \
-              "$PR_NUMBER" "$PR_TITLE" "$work/review.md" < /dev/null &
-            PIDS+=("$!")
+            while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do wait -n || true; done
+            rm -f "$work/review.md" "$work/chair.rc"
+            ( GITHUB_ENV="$work/github.env" bash "$SCRIPT_ROOT/synthesize.sh" "$diff" "$work" \
+                "$PR_NUMBER" "$PR_TITLE" "$work/review.md"
+              echo "$?" > "$work/chair.rc" ) < /dev/null &
+            STARTED=$((STARTED + 1))
           done < /tmp/pr-review/batch-works.tsv
-          [ "${#PIDS[@]}" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
+          [ "$STARTED" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
+          wait
           CHAIR_RC=0
-          for pid in "${PIDS[@]}"; do wait "$pid" || CHAIR_RC=1; done
+          while IFS=$'\t' read -r work _; do
+            [ "$(cat "$work/chair.rc" 2>/dev/null)" = 0 ] || CHAIR_RC=1
+          done < /tmp/pr-review/batch-works.tsv
           python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
           python3 -I "$SCRIPT_ROOT/review_batches.py" combine /tmp/pr-review /tmp/review.md
           # Scrubbed chair reports, so text cut from an oversized comment stays retrievable.

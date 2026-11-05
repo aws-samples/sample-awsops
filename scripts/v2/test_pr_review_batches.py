@@ -88,7 +88,7 @@ class AdmissionTests(unittest.TestCase):
                     self.assertEqual((Path(lenses) / f"{lens}.txt").read_text(), f"LENS {lens}\n")
                 self.assertIn("BATCHED REVIEW", (Path(work) / "batch-note.txt").read_text())
             first_note = (Path(works[0][0]) / "batch-note.txt").read_text()
-            self.assertIn("scripts/f7.py", first_note.split("Files changed in OTHER batches")[1])
+            self.assertNotIn("scripts/f", first_note, "PR file names must stay out of the prompt")
 
     def test_one_oversized_file_or_too_many_batches_blocks_before_models(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,8 +119,8 @@ class AdmissionTests(unittest.TestCase):
                          "scripts/pr-review/lib.sh"):
                 self.assertIn(f"diff --git a/{name} ", first)
             note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
-            self.assertIn("UNTRUSTED PR data", note)
             self.assertIn("never lowers the severity of a security", note)
+            self.assertNotIn("web/a.ts", note)
 
     def test_sensitivity_uses_rename_targets_and_fails_closed_on_quoted_paths(self):
         import importlib.util
@@ -281,13 +281,13 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(exported)
         self.assertLessEqual(exported - {"chair_used"}, set(module.FAIL_FLAGS))
 
-    def test_batch_note_lists_this_batch_first_and_scopes_images(self):
+    def test_batch_note_carries_no_pr_text_and_scopes_images(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = Fixture(directory)
             fx.admit(b"".join(file_diff(f"f{i}.py", 40_000) for i in range(8)))
             note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
-            self.assertLess(note.index("Files in THIS batch"), note.index("Files changed in OTHER"))
             self.assertIn("HEAD image context covers the whole PR", note)
+            self.assertTrue(note.rstrip().endswith("still apply unchanged."))
 
 
 class WorkflowTests(unittest.TestCase):
@@ -303,6 +303,13 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"', block)
         self.assertIn('review_batches.py" combine /tmp/pr-review /tmp/review.md', chair)
         self.assertNotIn("--add-dir", self.workflow)
+        for block in (panel, chair):
+            self.assertIn('wait -n', block)
+            self.assertIn('max_parallel_batches', block)
+        # Two waves per phase at the parallel cap must still fit the job timeout with 15 minutes spare.
+        waves = -(-LIMITS["max_batches"] // LIMITS["max_parallel_batches"])
+        timeout = int(re.search(r"(?m)^    timeout-minutes:\s*(\d+)\s*$", self.workflow).group(1))
+        self.assertGreaterEqual(timeout * 60 - waves * (2 * 1210 + 2 * 1030), 15 * 60)
         self.assertIn("Remove batched-review work directories", self.workflow)
         self.assertIn('echo "::stop-commands::$STOP_TOKEN"', chair)
         self.assertIn('echo "::$STOP_TOKEN::"', chair)

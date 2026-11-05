@@ -37,8 +37,8 @@ complete hash-valid image evidence before model credentials. No truncated review
 Two independent Codex/Claude reports each cover all four checklists and must declare
 substantive sections for L2–L5, including security L3, plus plain
 `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
-Report truncation cannot approve unseen findings. Promotions beyond 8 batches are
-still rejected; no coverage reuse.
+Report truncation cannot approve unseen findings. Promotions beyond 8 batches (or whose
+sensitive files exceed batch 1) are still rejected; no coverage reuse.
 Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both
 comprehensive vendor reports and chair for staged images. Explicit failure overrides PASS even without
 images; examples inside quotes/fences/prose do not count as declarations.

@@ -830,7 +830,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
             root = Path(directory)
             review, output = root / "review.md", root / "output"
             review.write_text("VERDICT: PASS\n")
-            script = script.replace("/tmp/review.md", str(review)).replace("/tmp/", f"{root}/")
+            script = script.replace("/tmp/", f"{root}/")
             for failed, expected in (("1", "fail"), ("0", "pass")):
                 output.write_text("")
                 result = subprocess.run(["bash", "-eu", "-c", script], env={
@@ -854,7 +854,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="stage-gate-") as directory:
             root = Path(directory)
             review, output = root / "review.md", root / "output"
-            script = script.replace("/tmp/review.md", str(review)).replace("/tmp/", f"{root}/")
+            script = script.replace("/tmp/", f"{root}/")
             for stage, panel, chair in (("failure", "skipped", "skipped"),
                                         ("success", "failure", "skipped"), ("success", "success", "failure")):
                 review.write_text("STALE PASS\nVERDICT: PASS\n")
