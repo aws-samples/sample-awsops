@@ -173,6 +173,11 @@ class AdmissionTests(unittest.TestCase):
         renamed_labels = module._labels(renamed)
         self.assertIn("web/x.ts", renamed_labels)
         self.assertIn(".github/workflows/x.yml", renamed_labels)
+        plain_labels = module._labels(plain)
+        self.assertEqual(plain_labels, ["web/a.ts"], "no combined 'old b/new' junk label")
+        header = module.paths_header(1, 2, [f"p/{i}.py" for i in range(2000)]).decode()
+        self.assertLessEqual(header.count("\n"), module.PATHS_LINES)
+        self.assertLessEqual(len(header.encode()), module.PATHS_BYTES)
         for path in ("docs/reference/02-auth.md", "web/lib/graph.ts", "agent/lambda/test_x.py",
                      "web/lib/auth.test.ts", "terraform/CLAUDE.md"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()

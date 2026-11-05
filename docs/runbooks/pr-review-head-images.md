@@ -226,7 +226,8 @@ once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsop
 its own workflow step (`scripts/pr-review/run-batches.sh`) after a fresh one-hour AWS session,
 which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its credentials. The job
 timeout (180 minutes) covers two worst-case waves of each phase plus staging and publication.
-Admission refuses a filtered diff over 8 × 128 KiB before reading it. The per-batch scope note added to the trusted
+Admission refuses a filtered diff larger than 8 batch budgets plus one call limit (928 KiB)
+before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
 `scripts/pr-review/`, `terraform/` (including the edge Lambda), `agent/`, `scripts/v2/agentcore/`,
 `scripts/v2/remediation/`, `scripts/v2/secret-rotation/`, `scripts/v2/eks/`,
@@ -238,8 +239,7 @@ cross_account/cross-account, remediat, admin, connector, mutat, secret, credenti
 frozen, skill, allowlist, assume, writeback or redeploy (at a path, `-`, `_` or `.` boundary).
 Classification reads every header path line (old and new ends); quoted, escaped or unparseable
 headers count as sensitive. Markdown and unit-test files (`test_*.py`, `*_test.py`,
-`*.test.ts[x]`/`.js[x]`) are not counted as permission surfaces. Classification reads every header path line (old and new ends); quoted, escaped or
-unparseable headers count as sensitive. More than one batch of sensitive files is rejected.
+`*.test.ts[x]`/`.js[x]`) are not counted as permission surfaces. More than one batch of sensitive files is rejected.
 
 This list prioritizes the main permission surfaces; it does not guarantee that every
 security-relevant file is in batch 1. Models see only their own batch's diff and the BASE

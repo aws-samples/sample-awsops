@@ -29,7 +29,9 @@ MAX_BYTES = LIMITS["diff_bytes"]
 MAX_LINES = LIMITS["diff_lines"]
 MAX_BATCHES = LIMITS["max_batches"]
 # GitHub rejects issue comments over 65,536 characters; keep headroom for the comment header.
-if not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16:
+if (not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16
+        or type(LIMITS.get("max_parallel_batches")) is not int
+        or not 1 <= LIMITS["max_parallel_batches"] <= MAX_BATCHES):
     raise ValueError("Invalid batched review limits")
 # Headroom inside each batch for secret redaction (bytes) and for the paths data header (at most
 # 12 KiB / 400 lines, see paths_header); admission re-measures each batch against the full limits.
@@ -111,9 +113,17 @@ def _label(header):
 
 def _labels(part):
     """Display labels for every path a file diff names (old and new ends, rename/copy targets)."""
-    text = b"\n".join(line for line in part.split(b"\n")[:12] if PATH_LINE.match(line))
+    header = []
+    for line in part.split(b"\n"):
+        if line.startswith(b"@@") or line.startswith(b"Binary files"):
+            break
+        if PATH_LINE.match(line) and not line.startswith(b"diff --git "):
+            header.append(line)
+    # ---/+++ and rename/copy lines name each end exactly; the ambiguous diff --git split
+    # candidates are for fail-closed classification only, never for the data hint.
+    paths = _header_paths(b"\n".join(header).decode("utf-8", "replace"))
     labels = []
-    for path in _header_paths(text.decode("utf-8", "replace")) or [_label(part.split(b"\n", 1)[0])]:
+    for path in paths or [_label(part.split(b"\n", 1)[0])]:
         label = re.sub(r"[^A-Za-z0-9._/-]", "?", path)[:200]
         if label not in labels:
             labels.append(label)
@@ -133,7 +143,8 @@ def paths_header(index, total, others):
     tail = ["- (list truncated)", "=== END PATHS; THIS BATCH'S DIFF FOLLOWS ==="]
     lines, size = [head], len(head) + 1 + sum(len(line) + 1 for line in tail)
     for path in others:
-        if size + len(path) + 3 > PATHS_BYTES or len(lines) >= PATHS_LINES:
+        # head + paths + truncation marker + end fence stay within PATHS_LINES.
+        if size + len(path) + 3 > PATHS_BYTES or len(lines) + 2 >= PATHS_LINES:
             lines.append(tail[0])
             break
         lines.append(f"- {path}")
