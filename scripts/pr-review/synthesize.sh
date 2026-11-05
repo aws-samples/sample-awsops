@@ -314,6 +314,7 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   ANTHROPIC_MODEL="$1" timeout --kill-after="$CHAIR_KILL_AFTER" "$CHAIR_TIMEOUT" \
     claude -p "$(cat "$WORK/synth-prompt.txt")" --output-format text \
     --strict-mcp-config --allowedTools "Read Grep Glob" \
+    ${REVIEW_HEAD_TREE:+--add-dir "$REVIEW_HEAD_TREE"} \
     < "$WORK/synth-stdin.txt" \
     > "$outfifo" 2> "$errfifo" &
   CHAIR_JOB_PID=$!

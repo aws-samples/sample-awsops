@@ -26,6 +26,11 @@ CODEX_CONFIG_ARGS=()
 if command -v codex >/dev/null 2>&1 && codex -c web_search=disabled features list >/dev/null 2>&1; then
   CODEX_CONFIG_ARGS=(-c web_search=disabled)
 fi
+# Batched reviews may expose the read-only PR HEAD tree (untrusted data) for cross-batch reads.
+CLAUDE_HEAD_TREE_ARGS=()
+if [ -n "${REVIEW_HEAD_TREE:-}" ] && [ -d "$REVIEW_HEAD_TREE" ]; then
+  CLAUDE_HEAD_TREE_ARGS=(--add-dir "$REVIEW_HEAD_TREE")
+fi
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
 KILL_AFTER="${PANEL_KILL_AFTER:-10s}"
@@ -84,7 +89,7 @@ for lens_file in "${LENS_FILES[@]}"; do
         env ANTHROPIC_MODEL="$CLAUDE_MODEL" \
         timeout --kill-after="$KILL_AFTER" "$lens_timeout" claude -p "$LENS_PROMPT" --output-format text \
         --strict-mcp-config --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" \
-        --setting-sources "" ) &
+        --setting-sources "" "${CLAUDE_HEAD_TREE_ARGS[@]}" ) &
   else echo "[skip] claude/$lens (binary absent)" >&2; : > "$SLOT/claude-$lens.md"; fi
 done
 wait

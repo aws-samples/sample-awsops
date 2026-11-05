@@ -88,7 +88,7 @@ class AdmissionTests(unittest.TestCase):
                     self.assertEqual((Path(lenses) / f"{lens}.txt").read_text(), f"LENS {lens}\n")
                 self.assertIn("BATCHED REVIEW", (Path(work) / "batch-note.txt").read_text())
             first_note = (Path(works[0][0]) / "batch-note.txt").read_text()
-            self.assertIn("scripts/f7.py", first_note.split("Files in THIS batch:")[0])
+            self.assertIn("scripts/f7.py", first_note.split("Files changed in OTHER batches")[1])
 
     def test_one_oversized_file_or_too_many_batches_blocks_before_models(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -109,6 +109,11 @@ class AdmissionTests(unittest.TestCase):
                      ".github/workflows/x.yml", "web/d.ts", "scripts/pr-review/lib.sh", "web/e.ts"]
             result = fx.admit(b"".join(file_diff(name, 30_000) for name in names))
             self.assertEqual(result["ready"], "true")
+            parts = [file_diff(name, 30_000) for name in names]
+            rebuilt = [Path(diff).read_bytes() for _, diff, _ in fx.works()]
+            self.assertEqual(sorted(p for batch in rebuilt for p in batch.split(b"diff --git ")[1:]),
+                             sorted(p.split(b"diff --git ")[1] for p in parts),
+                             "regrouping must keep every file diff exactly once")
             first = Path(fx.works()[0][1]).read_bytes().decode()
             for name in ("terraform/foundation/iam.tf", ".github/workflows/x.yml",
                          "scripts/pr-review/lib.sh"):
@@ -191,6 +196,7 @@ class AggregationTests(unittest.TestCase):
 
     def test_chair_failed_holds_only_when_every_batch_chair_failed(self):
         for envs, expected in ((["chair_failed=1\n", "chair_failed=0\n"], "chair_failed=0"),
+                               (["chair_failed=1\n", "chair_used=Claude Fable 5\n"], "chair_failed=0"),
                                (["chair_failed=1\n", "chair_failed=1\n"], "chair_failed=1")):
             with self.subTest(envs=envs), tempfile.TemporaryDirectory() as directory:
                 fx = self.batches(directory, envs)
@@ -199,7 +205,8 @@ class AggregationTests(unittest.TestCase):
     def test_within_a_batch_the_last_write_wins_like_the_single_path(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = self.batches(directory, ["image_coverage_failed=1\nimage_coverage_failed=0\n"])
-            self.assertEqual(fx.run("env", str(fx.review)).split(), ["image_coverage_failed=0"])
+            self.assertEqual(fx.run("env", str(fx.review)).split(),
+                             ["chair_failed=0", "image_coverage_failed=0"])
 
     def test_combined_verdict_passes_only_when_every_batch_passes(self):
         cases = (
@@ -248,6 +255,31 @@ class AggregationTests(unittest.TestCase):
             self.assertEqual(small.read_text(), "short\n")
 
 
+class ContractTests(unittest.TestCase):
+    def test_every_exported_review_flag_is_aggregated(self):
+        exported = set()
+        for script in (ROOT / "scripts/pr-review").glob("*.sh"):
+            exported |= set(re.findall(r'"([a-z_]+)=[^"]*"[^\n]*>> "\$GITHUB_ENV"', script.read_text()))
+            exported |= set(re.findall(r'"([a-z_]+)=[^"]*" "', script.read_text()))
+        spec = __import__("importlib.util").util.spec_from_file_location("rb", SCRIPT)
+        module = __import__("importlib.util").util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertTrue(exported)
+        self.assertLessEqual(exported - {"chair_used"}, set(module.FAIL_FLAGS))
+
+    def test_head_tree_note_is_added_only_when_a_tree_is_given(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fx = Fixture(directory)
+            data = b"".join(file_diff(f"f{i}.py", 40_000) for i in range(8))
+            fx.diff.write_bytes(data)
+            fx.run("admit", str(fx.diff), str(fx.context), str(fx.review), "/runner/head-tree")
+            note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
+            self.assertIn("checked out read-only at /runner/head-tree", note)
+            self.assertLess(note.index("Files in THIS batch"), note.index("Files changed in OTHER"))
+            fx.admit(data)
+            self.assertNotIn("HEAD tree (every batch", (Path(fx.works()[1][0]) / "batch-note.txt").read_text())
+
+
 class WorkflowTests(unittest.TestCase):
     workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
 
@@ -260,6 +292,13 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('GITHUB_ENV="$work/github.env"', block)
             self.assertIn('review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"', block)
         self.assertIn('review_batches.py" combine /tmp/pr-review /tmp/review.md', chair)
+        for block in (panel, chair):
+            self.assertIn("REVIEW_HEAD_TREE: ${{ steps.input_scope.outputs.head_tree }}", block)
+        admission = self.workflow.split("      - name: Admit complete review input", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("-c core.symlinks=false", admission)
+        self.assertIn("-c core.hooksPath=/dev/null", admission)
+        self.assertIn("chmod -R a-w", admission)
+        self.assertIn("Remove batched-review HEAD tree", self.workflow)
 
     def test_gate_reports_every_incomplete_batch_and_still_fails(self):
         gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
