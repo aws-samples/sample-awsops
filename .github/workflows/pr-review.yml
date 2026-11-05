@@ -51,8 +51,9 @@ jobs:
     # for setup, publication, and cleanup. Mint a one-hour AWS session before each model phase.
     # Batched runs execute at most max_parallel_batches (4) batches at once, so a review of up
     # to 8 batches takes at most two waves per phase, each wave its own step and AWS session:
-    # 2*40m20s panel + 2*34m20s chair = 149m20s, plus 15m image staging and 15m20s setup/publish.
-    timeout-minutes: 180
+    # 2*40m20s panel + 2*34m20s chair = 149m20s, plus 15m image staging, 15m20s setup/publish
+    # and about 10 minutes of slack so the gate can still publish a diagnostic.
+    timeout-minutes: 190
     concurrency:
       group: pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -658,12 +659,6 @@ jobs:
           echo "AI Review failed: $GATE_REASON"
           exit 1
 
-      - name: Remove batched-review work directories
-        if: always()
-        run: |
-          # Raw batch diffs and panel slots must not persist on the self-hosted runner.
-          rm -rf /tmp/pr-review/batch-[0-9]* /tmp/pr-review/batch-works.tsv /tmp/review-part.md
-
       - name: Remove current-run HEAD image evidence
         if: always()
         env:
@@ -696,3 +691,9 @@ jobs:
               *) echo "::error::Unexpected HEAD PNG cleanup path"; exit 1 ;;
             esac
           fi
+
+      - name: Remove batched-review work directories
+        if: always()
+        run: |
+          # Raw batch diffs and panel slots must not persist on the self-hosted runner.
+          rm -rf /tmp/pr-review/batch-[0-9]* /tmp/pr-review/batch-works.tsv /tmp/review-part.md

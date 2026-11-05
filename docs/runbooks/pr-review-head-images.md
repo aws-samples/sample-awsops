@@ -225,7 +225,7 @@ once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsop
 (2 CPU, 8 GiB request, 12 GiB limit). Batches 5–8 form a second wave: each wave of each phase is
 its own workflow step (`scripts/pr-review/run-batches.sh`) after a fresh one-hour AWS session,
 which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its credentials. The job
-timeout (180 minutes) covers two worst-case waves of each phase plus staging and publication.
+timeout (190 minutes) covers two worst-case waves of each phase plus staging and publication.
 Admission refuses a filtered diff larger than 8 batch budgets plus one call limit (928 KiB)
 before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,

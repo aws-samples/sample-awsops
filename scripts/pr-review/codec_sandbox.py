@@ -109,6 +109,10 @@ def command(value, suffix, dimension, pixels, byte_limit):
             suffix, str(dimension), str(pixels), str(byte_limit)], name
 
 
+# Docker's not-found wording varies by version; match only an object-level not-found, never a
+# transport or storage error such as "no such host" or "no such file or directory".
+NOT_FOUND = re.compile(rb"(?i)\bno such (container|image|object)\b")
+
 def remove_container(name):
     if not re.fullmatch(f"{PREFIX}-[0-9a-f]{{32}}", name):
         raise SandboxError("image_sandbox_invalid_container")
@@ -116,8 +120,7 @@ def remove_container(name):
         result = subprocess.run([docker(), "rm", "--force", name], capture_output=True, timeout=5, env=client_env())
     except (OSError, subprocess.TimeoutExpired):
         raise SandboxError("image_sandbox_cleanup_failed") from None
-    # Docker's not-found wording varies by version ("No such container", "no such object").
-    if result.returncode and b"no such" not in result.stderr.lower():
+    if result.returncode and not NOT_FOUND.search(result.stderr):
         raise SandboxError("image_sandbox_cleanup_failed")
 
 
@@ -185,7 +188,7 @@ def cleanup(value):
     if ids:
         subprocess.run([docker(), "rm", "--force", *ids], check=True, capture_output=True, timeout=15, env=client_env())
     result = subprocess.run([docker(), "image", "rm", value["tag"]], capture_output=True, timeout=15, env=client_env())
-    if result.returncode and b"no such" not in result.stderr.lower():
+    if result.returncode and not NOT_FOUND.search(result.stderr):
         raise SandboxError("image_sandbox_cleanup_failed")
 
 

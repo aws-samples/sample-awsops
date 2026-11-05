@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,7 +30,7 @@ MAX_BYTES = LIMITS["diff_bytes"]
 MAX_LINES = LIMITS["diff_lines"]
 MAX_BATCHES = LIMITS["max_batches"]
 # GitHub rejects issue comments over 65,536 characters; keep headroom for the comment header.
-if (not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16
+if (type(LIMITS.get("comment_bytes")) is not int or not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16
         or type(LIMITS.get("max_parallel_batches")) is not int
         or not 1 <= LIMITS["max_parallel_batches"] <= MAX_BATCHES):
     raise ValueError("Invalid batched review limits")
@@ -388,7 +389,7 @@ def main(argv):
     if command == "admit" and len(argv) == 5:
         try:
             ready, reason, count = admit(argv[2], argv[3], argv[4])
-        except (OSError, ValueError, UnicodeError, KeyError, MemoryError):
+        except (OSError, ValueError, UnicodeError, KeyError, MemoryError, subprocess.SubprocessError):
             ready, reason, count = False, "review input unreadable or invalid", 0
         # Fixed messages only: paths, provider errors and PR data never become outputs.
         print(f"ready={str(ready).lower()}")
