@@ -12,14 +12,9 @@ or updates exactly one awsops-owned target, `<kind>-mcp-target`, on the kind's c
 Loki/Tempo/Mimir. The target configuration is the same one the provisioner writes (packaged
 `catalog.py`).
 
-This is ADR-023 (`docs/decisions/023-connector-target-registration.md`), the ADR-005 owner-override exception of 2026-11-05, the second after ADR-015. The exact
-write action set is `bedrock-agentcore:CreateGatewayTarget` and `bedrock-agentcore:UpdateGatewayTarget`
-on the two gateway ARN patterns above, plus the read calls `ListGateways`, `GetGateway`,
-`ListGatewayTargets` and `GetGatewayTarget`. The grant sits only on the dedicated
-`<project>-connector-target-sync` function role; the shared worker role holds only
-`lambda:InvokeFunction` on that one function. The job never deletes, never repoints another stack's
-target, and accepts only this stack's connector Lambda ARNs supplied by Terraform
-(`CONNECTOR_TARGET_LAMBDAS`).
+Scope, IAM and limits are defined by ADR-023
+(`docs/decisions/023-connector-target-registration.md`), the second ADR-005 owner-override exception
+after ADR-015. This runbook covers enabling, verifying and stopping it.
 
 ## Prerequisites
 
