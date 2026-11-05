@@ -68,7 +68,7 @@ Models: a Claude Sonnet-class model by default, an Opus-class model only as the 
 ## Prerequisites
 
 - Terraform at the exact version `scripts/v2/terraform-test.sh` checks (`required_version` in `terraform/foundation/backend.tf`; S3 native state locking via `use_lockfile`)
-- Node.js matching `engines` in `web/package.json` (configurator TUI, migration scripts, web)
+- Node.js at the major CI uses (`node-version` in `.github/workflows/merge-verify.yml`; configurator TUI, migration scripts, web)
 - Docker with buildx (arm64 image builds)
 - AWS CLI configured with credentials for the target account
 - kubectl and a kubeconfig, if onboarding EKS clusters
@@ -311,7 +311,7 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 ## 사전 요구 사항
 
 - `scripts/v2/terraform-test.sh`가 검사하는 정확한 버전의 Terraform (`terraform/foundation/backend.tf`의 `required_version`; S3 native state locking, `use_lockfile`)
-- `web/package.json`의 `engines`와 맞는 Node.js (구성 TUI, 마이그레이션 스크립트, web)
+- CI와 같은 메이저 버전의 Node.js (`.github/workflows/merge-verify.yml`의 `node-version`; 구성 TUI, 마이그레이션 스크립트, web)
 - Docker with buildx (arm64 이미지 빌드)
 - 대상 계정 자격 증명이 설정된 AWS CLI
 - EKS 클러스터를 온보딩한다면 kubectl 및 kubeconfig
