@@ -6,6 +6,7 @@ Storage uses ``self`` for the host; every public identity uses the validated
 import copy
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -21,6 +22,7 @@ from finops.guards import guard_hits
 MAX_REGIONS = 8
 MAX_PAGES = 3
 MAX_RESOURCES = 200
+MAX_INVENTORY_RESOURCES = 180  # Reserve space for trace identities and live DB proxies.
 MAX_RELATIONSHIPS = 400
 MAX_EVIDENCE = 1200
 MAX_BYTES = 192 * 1024
@@ -36,7 +38,8 @@ _FACT_KEYS = (
     "publicly_accessible", "storage_encrypted", "encrypted", "backup_retention_period",
     "storage_type", "allocated_storage", "iops", "vpc_id", "subnet_id",
     "read_replica_source_db_instance_identifier", "db_cluster_identifier",
-    "cpu_architecture", "tags",
+    "cpu_architecture", "tags", "class", "status", "endpoint_port", "last_status",
+    "task_arn", "task_group", "cluster_arn", "attachments",
 )
 _TAG_KEYS = {"name", "dr", "disaster-recovery", "compliance", "retention", "do-not-delete", "donotdelete"}
 _NODE_KEYS = ("resourceId", "inventoryAccount", "accountId", "region", "host", "service",
@@ -180,7 +183,18 @@ def _db_read(conn, bundle, budget, sql, **parameters):
                 sock.settimeout(prior_socket)
 
 
-def _facts(data):
+def _address(value):
+    if not isinstance(value, str) or len(value) > 45:
+        return None
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return str(address) if address.version == 4 and not (
+        address.is_unspecified or address.is_loopback or address.is_multicast) else None
+
+
+def _facts(data, *, account=None, region=None):
     out = {}
     for key in _FACT_KEYS:
         value = data.get(key)
@@ -188,6 +202,32 @@ def _facts(data):
             tags = value if isinstance(value, dict) else {}
             out["tags"] = {k: _text(str(v), 100) for k, v in tags.items()
                            if isinstance(k, str) and k.lower() in _TAG_KEYS}
+        elif key == "attachments" and isinstance(value, list):
+            # Only ENI identifiers; container environment/credentials stay outside SQL projection.
+            if len(value) > 4 or any(isinstance(a, dict) and a.get("Type") == "ElasticNetworkInterface"
+                    and (not isinstance(a.get("Details"), list) or len(a["Details"]) > 8) for a in value):
+                out[key] = []
+                out["attachments_complete"] = False
+                continue
+            out[key] = [{"Type": a.get("Type"), "Details": [
+                {"Name": x.get("Name"), "Value": (
+                    _address(x.get("Value")) if x.get("Name") == "privateIPv4Address"
+                    else _text(x.get("Value"), 100))}
+                for x in a.get("Details", [])[:8] if isinstance(x, dict)
+                and x.get("Name") in ("subnetId", "privateIPv4Address", "networkInterfaceId")
+                and isinstance(x.get("Value"), str)]}
+                for a in value if isinstance(a, dict) and isinstance(a.get("Details"), list)]
+        elif key == "private_ip_address":
+            address = _address(value)
+            if address is not None:
+                out[key] = address
+        elif key in ("arn", "task_arn", "cluster_arn") and isinstance(value, str):
+            match = re.fullmatch(
+                r"arn:(aws|aws-cn|aws-us-gov):(ec2|rds|ecs|lambda|elasticloadbalancing|eks):"
+                r"([a-z0-9-]+):(\d{12}):[A-Za-z0-9_+=,.@:/-]{1,512}", value)
+            # Keep code-level identities until correlation; the specialist
+            # prompt boundary scrubs source strings before every model call.
+            out[key] = value if match and match[3] == region and match[4] == account else _text(value)
         elif isinstance(value, (bool, int, float)) and (isinstance(value, bool) or _number(value) is not None):
             out[key] = value
         elif isinstance(value, str):
@@ -265,33 +305,40 @@ def _read_inventory(conn, bundle, budget, scope):
         # Projection happens inside SQL, before provider JSON crosses the pg8000
         # boundary. No environment, policy, user-data or credentials are selected.
         rows = _db_read(conn, bundle, budget,
+            "WITH seeds AS (SELECT *, row_number() OVER(PARTITION BY resource_type "
+            "ORDER BY region,resource_id) AS seed_rank FROM inventory_resources "
+            "WHERE account_id=:scope AND region=ANY(:regions)) "
             "SELECT account_id, region, resource_type, resource_id, "
             "(SELECT coalesce(jsonb_object_agg(key,value),'{}'::jsonb) FROM jsonb_each(data) "
-            " WHERE key=ANY(:keys)), captured_at FROM inventory_resources "
-            "WHERE account_id=:scope AND region=ANY(:regions) "
-            "ORDER BY CASE resource_type WHEN 'ec2' THEN 0 WHEN 'rds' THEN 1 ELSE 2 END, "
-            "region, resource_type, resource_id LIMIT 201",
+            " WHERE key=ANY(:keys)), captured_at FROM seeds "
+            "ORDER BY seed_rank,resource_type,region,resource_id LIMIT 201",
             scope=scope, keys=list(_FACT_KEYS), regions=selected)
-        rows = sorted(rows, key=lambda r: ({"ec2": 0, "rds": 1}.get(r[2], 2), r[1], r[2], r[3]))
+        # Preserve SQL fairness even for adapters returning an unordered batch.
+        groups = {}
+        for row in sorted(rows, key=lambda r: (r[2], r[1], r[3])):
+            groups.setdefault(row[2], []).append(row)
+        rows = [row for i in range(max((len(g) for g in groups.values()), default=0))
+                for g in groups.values() if i < len(g) for row in [g[i]]][:MAX_INVENTORY_RESOURCES]
         runs = _db_read(conn, bundle, budget,
             "SELECT resource_type,status,finished_at,last_success_at,row_count,unknown_attribute_count,started_at "
-            "FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY(:types)",
-            types=sorted({r[2] for r in rows}))
+            "FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY(:resource_types)",
+            resource_types=sorted({r[2] for r in rows}))
         points = _db_read(conn, bundle, budget,
             "SELECT DISTINCT ON(resource_type) resource_type,resource_count,captured_at "
-            "FROM inventory_snapshots WHERE account_id=:scope AND resource_type=ANY(:types) "
-            "ORDER BY resource_type,captured_at DESC", scope=scope, types=sorted({r[2] for r in rows}))
+            "FROM inventory_snapshots WHERE account_id=:scope AND resource_type=ANY(:resource_types) "
+            "ORDER BY resource_type,captured_at DESC", scope=scope, resource_types=sorted({r[2] for r in rows}))
         scoped_counts = dict(_db_read(conn, bundle, budget,
             "SELECT resource_type,count(*) FROM inventory_resources "
-            "WHERE account_id=:scope AND resource_type=ANY(:types) GROUP BY resource_type",
-            scope=scope, types=sorted({r[2] for r in rows})))
+            "WHERE account_id=:scope AND resource_type=ANY(:resource_types) GROUP BY resource_type",
+            scope=scope, resource_types=sorted({r[2] for r in rows})))
         run_by_type, point_by_type = {r[0]: r for r in runs}, {r[0]: r for r in points}
         matched = 0
         for storage, region, kind, native_id, data, captured in rows:
             if storage != scope or region not in selected or not isinstance(native_id, str):
                 continue
             matched += 1
-            r = _resource(bundle, account, region, kind, native_id, _facts(_dict(data)))
+            r = _resource(bundle, account, region, kind, native_id,
+                          _facts(_dict(data), account=account, region=region))
             if r is None:
                 continue
             run, point = run_by_type.get(kind), point_by_type.get(kind)
@@ -310,6 +357,8 @@ def _read_inventory(conn, bundle, budget, scope):
                       region=region, fresh=fresh, coverage={"complete": complete,
                       "producer_status": run[1] if run else "unknown",
                       "unknown_attributes": run[5] if run else None})
+        from .workload_identities import project_tasks
+        project_tasks(bundle)
         returned = len(bundle["resources"])
         bundle["coverage"]["inventory"] = {"total": int(total), "matched": matched,
                                            "returned": returned, "omitted": max(0, int(total) - returned)}
@@ -371,6 +420,7 @@ def _node_inventory(meta, resources, account, kind=None, *, scope="self"):
     storage = meta.get("inventoryAccount", meta.get("accountId"))
     if storage not in (scope, account):
         return None
+    kind = kind or meta.get("invType")
     matches = [r for r in resources if r["resource_id"] == meta.get("resourceId")
                and r["region"] == meta.get("region") and r["account"] == account
                and (kind is None or r["kind"] == kind)]
@@ -412,20 +462,43 @@ def _read_graph(conn, bundle, budget, scope):
         by_class = {r[0]: {"status": r[1], "attempted": r[2], "captured": r[3], "details": r[4]} for r in states}
         # The edge's explicit observed pairs are projected separately from raw
         # meta. SQL caps prevent a large source graph from becoming unbounded IO.
+        focus_ids = sorted({r["resource_id"] for r in bundle["resources"] if r["account"] == account})
         nodes = _db_read(conn, bundle, budget,
+            "WITH RECURSIVE seeds AS (SELECT class,id FROM topology_nodes WHERE "
+            "account_id=:scope AND class=ANY(:classes) AND meta->>'resourceId'=ANY(:focus_ids) "
+            "AND coalesce(meta->>'inventoryAccount',meta->>'accountId') IN (:scope,:account)), "
+            "focused(class,id,depth) AS (SELECT class,id,0 FROM seeds UNION ALL "
+            "SELECT f.class,e.neighbor,f.depth+1 FROM focused f CROSS JOIN LATERAL "
+            "(SELECT CASE WHEN source=f.id THEN target ELSE source END AS neighbor "
+            "FROM topology_edges WHERE account_id=:scope AND class=f.class "
+            "AND (source=f.id OR target=f.id) ORDER BY source,target,rel LIMIT 20) e "
+            "WHERE f.depth<2), depths AS (SELECT class,id,min(depth) AS depth FROM focused GROUP BY class,id), "
+            "ranked AS (SELECT n.*,row_number() OVER(PARTITION BY class "
+            "ORDER BY coalesce(d.depth,3),id) AS seed_rank FROM topology_nodes n "
+            "LEFT JOIN depths d USING(class,id) WHERE account_id=:scope AND class=ANY(:classes)) "
             "SELECT id,kind,label,(SELECT coalesce(jsonb_object_agg(key,value),'{}'::jsonb) "
             "FROM jsonb_each(meta) WHERE key=ANY(:keys)),captured_at,class "
-            "FROM topology_nodes WHERE account_id=:scope AND class=ANY(:classes) "
-            "ORDER BY class,id LIMIT 601", scope=scope, classes=classes, keys=list(_NODE_KEYS))
+            "FROM ranked ORDER BY seed_rank,class,id LIMIT 601", scope=scope, account=account,
+            classes=classes, keys=list(_NODE_KEYS), focus_ids=focus_ids)
+        selected_nodes = [r[5] + "|" + r[0] for r in nodes[:600]]
+        bound_nodes = [r[5] + "|" + r[0] for r in nodes[:600]
+                       if _node_inventory(_dict(r[3]), bundle["resources"], account, scope=scope)]
         edges = _db_read(conn, bundle, budget,
+            "WITH ranked AS (SELECT *,row_number() OVER(PARTITION BY class ORDER BY "
+            "CASE WHEN class||'|'||source=ANY(:bound_nodes) OR class||'|'||target=ANY(:bound_nodes) "
+            "THEN 0 WHEN class='trace' AND jsonb_typeof(meta->'instance_observations')='array' "
+            "AND meta->'instance_observations'!='[]'::jsonb THEN 1 "
+            "WHEN class||'|'||source=ANY(:nodes) AND class||'|'||target=ANY(:nodes) "
+            "THEN 2 ELSE 3 END,source,target,rel) AS seed_rank FROM topology_edges "
+            "WHERE account_id=:scope AND class=ANY(:classes)) "
             "SELECT source,target,rel,confidence,jsonb_build_object("
             "'spanCount',meta->'spanCount','metricCount',meta->'metricCount',"
             "'instance_observations',(SELECT coalesce(jsonb_agg(pair),'[]'::jsonb) FROM "
             "(SELECT pair FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'instance_observations')='array' "
             "THEN meta->'instance_observations' ELSE '[]'::jsonb END) AS p(pair) LIMIT 200) pairs),"
             "'instance_observations_omitted',meta->'instance_observations_omitted'),captured_at,class "
-            "FROM topology_edges WHERE account_id=:scope AND class=ANY(:classes) "
-            "ORDER BY class,source,target,rel LIMIT 401", scope=scope, classes=classes)
+            "FROM ranked ORDER BY seed_rank,class,source,target,rel LIMIT 401",
+            scope=scope, classes=classes, nodes=selected_nodes, bound_nodes=bound_nodes)
         metadata = {(r[5], r[0]): {k: v for k, v in _dict(r[3]).items() if k in _NODE_KEYS
                                  and isinstance(v, str) and len(v) <= 512} for r in nodes[:600]}
         graph_resources = {}
@@ -629,7 +702,7 @@ def _summary(values):
     return {"min": min(values), "max": max(values), "mean": sum(values) / len(values), "samples": len(values)}
 
 
-def _metrics(bundle, budget, resources):
+def _metrics(bundle, budget, resources, *, client_factory=None):
     for region in sorted({r["region"] for r in resources}):
         scoped = [r for r in resources if r["region"] == region and r["kind"] in _METRICS]
         for offset in range(0, len(scoped), 8):  # <=88 query IDs, <=29,568 hourly datapoints/page
@@ -656,11 +729,12 @@ def _metrics(bundle, budget, resources):
                         "ReturnData": True})
             if not queries:
                 continue
-            end, start = _now(), _now() - dt.timedelta(days=METRIC_DAYS)
-            result = {}
+            end = _now()
+            start = end - dt.timedelta(days=METRIC_DAYS)
+            result, memory = {}, {}
             page_coverage = {"pages": 0, "complete": True}
             try:
-                client = _client("cloudwatch", region, budget)
+                client = (client_factory or _client)("cloudwatch", region, budget)
                 for page in _pages(client, "get_metric_data", {"MetricDataQueries": queries, "StartTime": start,
                         "EndTime": end, "MaxDatapoints": 100800}, bundle, budget, page_coverage):
                     for row in page.get("MetricDataResults", []):
@@ -675,6 +749,9 @@ def _metrics(bundle, budget, resources):
             except Exception:
                 page_coverage["complete"] = False
                 _mark(bundle, "degraded", "metrics_read_failed")
+            else:
+                from .memory_metrics import collect as collect_memory
+                memory = collect_memory(client, batch, start, end, budget)
             for r in batch:
                 metrics, ratios, statuses = {}, [], []
                 for qid, (rid, name, stat) in mapping.items():
@@ -692,7 +769,16 @@ def _metrics(bundle, budget, resources):
                 io_names = ("EBSReadBytes", "EBSWriteBytes") if r["kind"] == "ec2" else ("ReadIOPS", "WriteIOPS")
                 missing_io = any(not any(v.get("samples", 0) > 0 and v.get("status") == "Complete"
                                          for v in metrics.get(name, {}).values()) for name in io_names)
-                missing_memory = r["kind"] == "ec2" or not metrics.get("FreeableMemory", {}).get("Minimum", {}).get("samples")
+                missing_memory = not metrics.get("FreeableMemory", {}).get("Minimum", {}).get("samples")
+                if r["kind"] == "ec2":
+                    observed = memory.get(r["id"], {})
+                    missing_memory = observed.get("complete") is not True
+                    if observed.get("metric"):
+                        metrics["MemoryUtilization"] = {"Maximum": observed["metric"]}
+                        ratios.append(observed["sample_ratio"])
+                        statuses.append(observed["metric"]["status"])
+                    if missing_memory:
+                        _mark(bundle, "gaps", observed.get("reason") or "memory_metric_absent")
                 ratio = min(ratios) if ratios else 0
                 complete = page_coverage["complete"] and ratio >= 0.9 and all(s == "Complete" for s in statuses)
                 if not complete:
@@ -768,7 +854,7 @@ def _provider_row(bundle, r, row, kind):
               "sample_ratio": 1 if memory and io and lookback is not None and lookback >= 14 else 0})
 
 
-def _provider_sizing(bundle, budget, resources):
+def _provider_sizing(bundle, budget, resources, *, client_factory=None):
     if os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true":
         _mark(bundle, "gaps", "provider_sizing_disabled")
         return
@@ -778,7 +864,7 @@ def _provider_sizing(bundle, budget, resources):
             if not selected or not _available(bundle, budget):
                 continue
             try:
-                client = _client("compute-optimizer", region, budget)
+                client = (client_factory or _client)("compute-optimizer", region, budget)
                 operation = client.get_ec2_instance_recommendations if kind == "ec2" else client.get_rds_database_recommendations
                 key = "instanceArns" if kind == "ec2" else "resourceArns"
                 rows_key = "instanceRecommendations" if kind == "ec2" else "rdsDBRecommendations"
@@ -904,7 +990,15 @@ def collect(conn, account, budget, *, scope="self"):
         _finops(conn, bundle, budget)
         _provider_sizing(bundle, budget, resources)
     else:
-        _mark(bundle, "gaps", "member_live_sources_unsupported")
+        try:
+            from .scoped_clients import member_factory
+            client_factory = member_factory(conn, account, budget)
+        except Exception:
+            _mark(bundle, "gaps", "member_live_sources_unsupported")
+        else:
+            _metrics(bundle, budget, resources, client_factory=client_factory)
+            _provider_sizing(bundle, budget, resources, client_factory=client_factory)
+            _mark(bundle, "gaps", "member_trace_network_sources_unsupported")
     # These collectors are deliberately not duplicated from collect_all.
     # Their absence is explicit per pillar rather than a fabricated healthy
     # score. They can gain a bounded projection in a later source adapter.
@@ -948,7 +1042,16 @@ def follow_up(conn, account, bundle, requests, budget):
         elif not _available(merged, budget):
             break
         elif scope != "self":
-            _mark(merged, "gaps", "member_live_sources_unsupported")
+            try:
+                from .scoped_clients import member_factory
+                factory = member_factory(conn, account, budget)
+            except Exception:
+                _mark(merged, "gaps", "member_live_sources_unsupported")
+                continue
+            if key[0] == "resource_metrics":
+                _metrics(merged, budget, resources, client_factory=factory)
+            else:
+                _provider_sizing(merged, budget, resources, client_factory=factory)
         elif key[0] == "resource_metrics":
             _metrics(merged, budget, resources)
         else:

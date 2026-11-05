@@ -36,9 +36,12 @@ locals {
   # Bind self reads to the applied account, independently of datasource flags.
   diagnosis_evidence_roles = var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task", "lambda"]) : toset([])
   diagnosis_evidence_env_map = var.diagnosis_evidence_loop_enabled ? {
-    DIAGNOSIS_EVIDENCE_LOOP_ENABLED = "true"
-    DIAGNOSIS_HOST_ACCOUNT_ID       = local.acct
-    GRAPH_REBUILD_INTERVAL_MINS     = tostring(var.graph_rebuild_interval_mins)
+    DIAGNOSIS_EVIDENCE_LOOP_ENABLED    = "true"
+    DIAGNOSIS_HOST_ACCOUNT_ID          = local.acct
+    GRAPH_REBUILD_INTERVAL_MINS        = tostring(var.graph_rebuild_interval_mins)
+    DIAGNOSIS_MEMBER_ROLE_ARNS         = jsonencode(var.diagnosis_member_role_arns)
+    DIAGNOSIS_NETWORK_EVIDENCE_ENABLED = tostring(var.diagnosis_network_evidence_enabled)
+    DIAGNOSIS_DNS_LOG_GROUP_ARNS       = jsonencode(var.diagnosis_dns_log_group_arns)
   } : {}
   diagnosis_evidence_env_list = [for name, value in local.diagnosis_evidence_env_map : { name = name, value = value }]
   # finops_baseline (ADR-020, extends ADR-012) — deterministic FinOps baseline-recommendations rule
@@ -880,7 +883,7 @@ resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
   role     = each.key == "task" ? aws_iam_role.worker_task[0].id : aws_iam_role.worker_lambda[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = concat([{
       Sid    = "DiagnosisProviderSizingReadOnly"
       Effect = "Allow"
       Action = [
@@ -889,7 +892,57 @@ resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
       ]
       Resource  = "*"
       Condition = local.runtime_read_condition
-    }]
+      }, {
+      Sid       = "DiagnosisMeasuredMemoryReadOnly"
+      Effect    = "Allow"
+      Action    = ["cloudwatch:ListMetrics"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_member_role_arns) > 0 ? [{
+      Sid      = "DiagnosisRegisteredMemberReadOnly"
+      Effect   = "Allow"
+      Action   = ["sts:AssumeRole"]
+      Resource = var.diagnosis_member_role_arns
+      Condition = {
+        StringLike   = { "sts:ExternalId" = "?*" }
+        StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
+      }
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy" "worker_diagnosis_network" {
+  for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task", "lambda"]) : toset([])
+  name     = "${var.project}-worker-${each.key}-diagnosis-network-read"
+  role     = each.key == "task" ? aws_iam_role.worker_task[0].id : aws_iam_role.worker_lambda[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid       = "DiagnosisObservationDiscovery"
+      Effect    = "Allow"
+      Action    = ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }, {
+      # Query creation/cancellation affect analysis jobs only, never monitors or AWS workloads.
+      Sid       = "DiagnosisMonitorObservationQuery"
+      Effect    = "Allow"
+      Action    = ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"]
+      Resource  = [for region in local.runtime_read_regions : "arn:aws:networkflowmonitor:${region}:${local.acct}:monitor/*"]
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
+      Sid       = "DiagnosisApprovedResolverLogRead"
+      Effect    = "Allow"
+      Action    = ["logs:StartQuery", "logs:GetQueryResults", "logs:FilterLogEvents"]
+      Resource  = [for arn in var.diagnosis_dns_log_group_arns : endswith(arn, ":*") ? arn : "${arn}:*"]
+      Condition = local.runtime_read_condition
+      }, {
+      Sid       = "DiagnosisOwnQueryCancellation"
+      Effect    = "Allow"
+      Action    = ["logs:StopQuery"]
+      Resource  = ["*"]
+      Condition = local.runtime_read_condition
+    }] : [])
   })
 }
 

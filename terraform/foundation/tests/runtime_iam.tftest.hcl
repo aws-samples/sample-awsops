@@ -114,6 +114,77 @@ run "diagnosis_evidence_gate_requires_workers" {
   expect_failures = [var.diagnosis_evidence_loop_enabled]
 }
 
+run "diagnosis_network_defaults_remain_dark" {
+  command = plan
+  variables {
+    workers_enabled                 = true
+    diagnosis_evidence_loop_enabled = true
+  }
+  assert {
+    condition     = !var.diagnosis_network_evidence_enabled && length(aws_iam_role_policy.worker_diagnosis_network) == 0
+    error_message = "Network observations must require a separate default-off source gate."
+  }
+}
+
+run "diagnosis_network_requires_evidence_loop" {
+  command = plan
+  variables {
+    workers_enabled                    = true
+    diagnosis_network_evidence_enabled = true
+  }
+  expect_failures = [var.diagnosis_network_evidence_enabled]
+}
+
+run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
+  command = plan
+  variables {
+    workers_enabled                    = true
+    diagnosis_evidence_loop_enabled    = true
+    diagnosis_network_evidence_enabled = true
+    diagnosis_dns_log_group_arns       = ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved"]
+    diagnosis_member_role_arns         = ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"]
+  }
+  assert {
+    condition = length(aws_iam_role_policy.worker_diagnosis_network) == 2 && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
+      jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
+      jsondecode(p.policy).Statement[1].Resource == [for region in ["ap-northeast-2", "eu-west-1", "us-east-1"] : "arn:aws:networkflowmonitor:${region}:123456789012:monitor/*"] &&
+      alltrue([for s in jsondecode(p.policy).Statement : can(s.Condition.StringEquals["aws:RequestedRegion"])])
+    ])
+    error_message = "Observation permissions must remain host/account/region scoped with explicit Resolver groups."
+  }
+  assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      jsondecode(p.policy).Statement[2].Resource == ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"] &&
+      jsondecode(p.policy).Statement[2].Condition.StringLike["sts:ExternalId"] == "?*"
+    ])
+    error_message = "Member reads require an explicit role and an external ID."
+  }
+  assert {
+    condition = (aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_NETWORK_EVIDENCE_ENABLED"] == "true" &&
+      [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED"] == ["true"] &&
+    !var.remediation_enabled && !var.integrations_write_enabled)
+    error_message = "Both worker paths receive the analysis gate without enabling mutation."
+  }
+}
+
+run "diagnosis_allowlists_reject_foreign_logs_and_host_roles" {
+  command = plan
+  variables {
+    diagnosis_dns_log_group_arns = ["arn:aws:logs:ap-northeast-2:999900001111:log-group:/foreign"]
+    diagnosis_member_role_arns   = ["arn:aws:iam::123456789012:role/AWSopsReadOnlyRole"]
+  }
+  expect_failures = [var.diagnosis_dns_log_group_arns, var.diagnosis_member_role_arns]
+}
+
+run "diagnosis_allowlists_reject_malformed_arns" {
+  command = plan
+  variables {
+    diagnosis_dns_log_group_arns = ["bad"]
+    diagnosis_member_role_arns   = ["bad"]
+  }
+  expect_failures = [var.diagnosis_dns_log_group_arns, var.diagnosis_member_role_arns]
+}
+
 run "defaults_remain_dark" {
   command = plan
   assert {

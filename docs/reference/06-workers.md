@@ -51,6 +51,9 @@ compliance scans through `POST /api/compliance/run`, both of which call the same
 `enqueueJob()` used by `/api/jobs`, computing `requestedBy` server-side. (The report's per-section
 evidence contract and `partial` rules are in
 [Diagnosis evaluation](../guides/diagnosis-evaluation.md#section-evidence-and-root-cause-contract).)
+The optional six-pillar discovery loop, DNS/NFM source gates, measured-memory
+qualification and account boundaries are in
+[Diagnosis discovery](diagnosis-discovery.md).
 Whichever route calls it,
 `enqueueJob()` writes the durable ledger row first (source of truth), then best-effort
 SQS send. The dispatcher Lambda runs outside the VPC (reaches SQS/SFN APIs directly), validates
