@@ -33,8 +33,7 @@ that IO distinction, not model latency.
 and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
-`review_batches.py` reviews larger diffs in ≤8 complete file batches (`run-batches.sh`:
-≤4 per wave, fresh credentials per wave); all must pass.
+`review_batches.py`: larger diffs in ≤8 file batches, ≤4 per wave (`run-batches.sh`); all pass.
 Two independent Codex/Claude reports each cover all four checklists and must declare
 substantive sections for L2–L5, including security L3, plus plain
 `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
