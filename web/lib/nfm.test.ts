@@ -71,6 +71,55 @@ describe('nfmStatus', () => {
     expect(nfmSend).toHaveBeenCalledTimes(2); // cache hit — no extra send
   });
 
+  it('does not let a reset pending query replace or detach a newer status query', async () => {
+    let finishOld!: (value: unknown) => void;
+    let finishFresh!: (value: unknown) => void;
+    const old = new Promise((resolve) => { finishOld = resolve; });
+    const fresh = new Promise((resolve) => { finishFresh = resolve; });
+    let monitorReads = 0;
+    nfmSend.mockImplementation((cmd: Cmd) => {
+      if (cmd.constructor.name === 'ListMonitorsCommand') return ++monitorReads === 1 ? old : fresh;
+      return Promise.resolve({ scopes: [] });
+    });
+    const { nfmStatus, _resetNfmCacheForTests } = await import('./nfm');
+    const oldRequest = nfmStatus();
+    await Promise.resolve();
+    _resetNfmCacheForTests();
+    const freshRequest = nfmStatus();
+    finishOld(monitorsResponse([]));
+    await oldRequest;
+    const duplicate = nfmStatus();
+    finishFresh(monitorsResponse([{ monitorName: 'nfm-eks-fresh', monitorStatus: 'ACTIVE' }]));
+    const expected = {
+      monitors: [{ name: 'nfm-eks-fresh', status: 'ACTIVE', cluster: 'fresh' }], scopeCount: 0,
+    };
+    expect(await freshRequest).toEqual(expected);
+    expect(await duplicate).toEqual(expected);
+    expect(await nfmStatus()).toEqual(expected);
+  });
+
+  it('retains status for four minutes without extending TTL on access', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let monitorReads = 0;
+    nfmSend.mockImplementation(async (cmd: Cmd) => {
+      if (cmd.constructor.name === 'ListMonitorsCommand') {
+        return monitorsResponse([{ monitorName: `monitor-${++monitorReads}`, monitorStatus: 'ACTIVE' }]);
+      }
+      return { scopes: [] };
+    });
+    try {
+      const { nfmStatus } = await import('./nfm');
+      expect((await nfmStatus()).monitors[0].name).toBe('monitor-1');
+      vi.setSystemTime(239_999);
+      expect((await nfmStatus()).monitors[0].name).toBe('monitor-1');
+      vi.setSystemTime(240_000);
+      expect((await nfmStatus()).monitors[0].name).toBe('monitor-2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('degrades scopeCount to 0 when ListScopes fails', async () => {
     nfmSend.mockImplementation(async (cmd: Cmd) => {
       if (cmd.constructor.name === 'ListMonitorsCommand') return monitorsResponse([]);
