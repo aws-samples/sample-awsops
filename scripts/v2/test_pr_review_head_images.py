@@ -255,8 +255,9 @@ class HeadImageTests(unittest.TestCase):
         self.assertLess(workflow.index("name: Stage changed HEAD PNG evidence"),
                         workflow.index("name: Configure fresh AWS credentials before panel review"))
         self.assertIn('"$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py"', workflow)
-        self.assertEqual(workflow.count("HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}"), 3)
-        self.assertIn('scripts/pr-review/input_scope.py /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT"', workflow)
+        # admission + panel and chair, each with a second batch wave
+        self.assertEqual(workflow.count("HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}"), 5)
+        self.assertIn('scripts/pr-review/review_batches.py admit /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT" /tmp/pr-review', workflow)
         self.assertIn('git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"', workflow)
         self.assertIn("name: Remove current-run HEAD image evidence", workflow)
 
