@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Web framework and runtime refresh: Next.js 16.4.5, React 19.3.1 and Node 26.13.0 retain authentication, ownership checks and standalone deployment; the request body guard uses the Next.js proxy convention. Refresh JavaScript/Python dependencies and AgentCore SDKs with compatibility pins, Terraform 1.17.1/provider locks, and Python 3.14 Lambda/container runtimes. The documentation guide builds and deploys on Node 26. Preserve gateway authentication, feature gates and release safeguards.
+- Web framework and runtime refresh: Next.js 16.4.5, React 19.3.1 and Node 26.13.0 retain authentication, ownership checks and standalone deployment; the request body guard uses the Next.js proxy convention. Refresh JavaScript/Python dependencies and AgentCore SDKs with compatibility pins, Terraform 1.17.1/provider locks, and Python 3.14 Lambda/container runtimes. The documentation guide builds and deploys on Node 26 with refreshed documentation security dependencies and Mermaid 12, preserving all four locales. Preserve gateway authentication, feature gates and release safeguards.
 - Bedrock models: chat, AI Diagnosis, routing, synthesis and the background workers move to Claude Sonnet 5.5, Opus 5.5 (AI Diagnosis Deep tier option) and Haiku 5.5. These models reject `temperature`, so requests no longer send it. Haiku calls and Sonnet calls with fixed output caps run without extended thinking so existing budgets still fit (the chat agent keeps adaptive thinking, as on Sonnet 5); Opus 5.5, which always thinks, gets extra output headroom for Deep report sections and invariant proposals. The web task's classifier and synthesis IAM grants must allow the 5.5 models before this release rolls out.
 
 ### Fixed
@@ -699,7 +699,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Changed
 
-- 웹 프레임워크·런타임 최신화: Next.js 16.4.5, React 19.3.1, Node 26.13.0으로 인증·소유권 검사·standalone 배포를 유지하고 요청 본문 제한을 Next.js proxy 규약으로 옮깁니다. 호환성 버전 고정과 함께 JavaScript/Python 의존성·AgentCore SDK, Terraform 1.17.1·provider 잠금파일, Python 3.14 Lambda·컨테이너 런타임을 갱신합니다. 문서 가이드는 Node 26에서 빌드·배포합니다. Gateway 인증·기능 게이트·릴리스 보호 장치는 유지합니다.
+- 웹 프레임워크·런타임 최신화: Next.js 16.4.5, React 19.3.1, Node 26.13.0으로 인증·소유권 검사·standalone 배포를 유지하고 요청 본문 제한을 Next.js proxy 규약으로 옮깁니다. 호환성 버전 고정과 함께 JavaScript/Python 의존성·AgentCore SDK, Terraform 1.17.1·provider 잠금파일, Python 3.14 Lambda·컨테이너 런타임을 갱신합니다. 문서 가이드는 Node 26에서 빌드·배포하며 문서 사이트의 보안 의존성과 Mermaid 12를 갱신하고 4개 언어를 유지합니다. Gateway 인증·기능 게이트·릴리스 보호 장치는 유지합니다.
 - Bedrock 모델: 채팅, AI 진단, 라우팅, 합성, 백그라운드 워커가 Claude Sonnet 5.5, Opus 5.5(AI 진단 Deep 단계 선택), Haiku 5.5로 바뀝니다. 이 모델들은 `temperature`를 거부하므로 요청에서 더 이상 보내지 않습니다. Haiku 호출과 출력 상한이 고정된 Sonnet 호출은 기존 상한이 유지되도록 확장 사고 없이 실행하고(채팅 에이전트는 Sonnet 5 때처럼 adaptive 사고 유지), 항상 사고하는 Opus 5.5는 Deep 리포트 섹션과 불변식 제안에 출력 여유분을 더 받습니다. 웹 태스크의 분류기·합성 IAM 권한이 이 릴리스 배포 전에 5.5 모델을 허용해야 합니다.
 
 ### 수정
