@@ -9,11 +9,11 @@ const CONNECTOR_TARGET_KINDS = new Set(['clickhouse', 'prometheus', 'loki', 'tem
  * creates/updates awsops-owned targets (ADR-005 owner-override exception 2026-11-04). Best-effort: a
  * failed enqueue never blocks registration; `make agentcore` remains the full reconciler.
  */
-export async function enqueueConnectorTargetSync(kind: string): Promise<void> {
+export async function enqueueConnectorTargetSync(kind: string, requestedBy?: string | null): Promise<void> {
   if (process.env.CONNECTOR_TARGET_SYNC_ENABLED !== 'true') return;
   if (!CONNECTOR_TARGET_KINDS.has(kind)) return;
   try {
-    await enqueueJob('connector_target_sync', { kind });
+    await enqueueJob('connector_target_sync', { kind }, { requestedBy: requestedBy ?? null });
   } catch {
     /* swallow — registration already succeeded */
   }

@@ -118,13 +118,16 @@ run "connector_target_sync_writes_only_the_own_gateway_without_delete" {
     connector_target_sync_enabled = true
   }
   assert {
-    condition = alltrue([
-      for s in jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement :
-      !anytrue([for a in s.Action : can(regex("Delete", a))]) &&
-      (s.Sid == "ResolveOwnGateway" ? s.Action == ["bedrock-agentcore:ListGateways"] :
-      s.Resource == ["arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-external-obs-gateway-*", "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-monitoring-gateway-*"])
-    ])
-    error_message = "Target sync may only create/update targets on the awsops external-obs/monitoring gateways and never delete."
+    condition = (length(jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement) == 2 &&
+      alltrue([
+        for s in jsondecode(aws_iam_role_policy.worker_lambda_connector_targets[0].policy).Statement :
+        !anytrue([for a in s.Action : can(regex("Delete", a))]) &&
+        (s.Sid == "ResolveOwnGateway" ? toset(s.Action) == toset(["bedrock-agentcore:ListGateways"]) :
+          (s.Sid == "ManageOwnGatewayTargets" &&
+            toset(s.Action) == toset(["bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGatewayTargets", "bedrock-agentcore:GetGatewayTarget", "bedrock-agentcore:CreateGatewayTarget", "bedrock-agentcore:UpdateGatewayTarget"]) &&
+        s.Resource == ["arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-external-obs-gateway-*", "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/awsops-v2-monitoring-gateway-*"]))
+    ]))
+    error_message = "Target sync policy must have exactly two statements: ResolveOwnGateway (ListGateways only) and ManageOwnGatewayTargets (exactly GetGateway, ListGatewayTargets, GetGatewayTarget, CreateGatewayTarget, UpdateGatewayTarget) on the awsops external-obs/monitoring gateways, and never delete."
   }
   assert {
     condition = (aws_lambda_function.worker[0].environment[0].variables["CONNECTOR_TARGET_SYNC_ENABLED"] == "true" &&

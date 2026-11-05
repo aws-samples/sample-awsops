@@ -188,6 +188,8 @@ def _connector_target_sync(payload, dry_run):
     (connector_targets.py). Short AgentCore control-plane calls → lambda runtime. payload: {kind}."""
     if dry_run:
         return {"dry_run": True, "would_sync": payload.get("kind")}, None
+    if os.environ.get("CONNECTOR_TARGET_SYNC_ENABLED") != "true":
+        return {"status": "skipped", "reason": "disabled"}, None
     import connector_targets
     return connector_targets.run(payload), None
 

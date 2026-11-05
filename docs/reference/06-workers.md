@@ -59,8 +59,10 @@ evidence contract and `partial` rules are in
 Whichever route calls it,
 `enqueueJob()` writes the durable ledger row first (source of truth), then best-effort
 SQS send. The dispatcher Lambda runs outside the VPC (reaches SQS/SFN APIs directly), validates
-the job type against the `handlers.py` registry (its read/compute types plus the single gated
-owned-resource job `connector_target_sync`; unknown types rejected per ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
+the job type against the `handlers.py` registry (its read/compute types plus the single
+owned-resource job `connector_target_sync`, whose registry entry is unconditional — the gating
+lives in Terraform, which adds the worker env, IAM statement and packaged module only when
+`connector_target_sync_enabled`, plus the job's own env check; unknown types rejected per ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
 idempotency (`ExecutionAlreadyExists` is treated as success). Step Functions Standard routes on
 `$.runtime`: a `RunLambda` state for short jobs, or `ecs:runTask.sync` Fargate for long/OOM-risk
 jobs. The worker claims `running` and writes `succeeded` itself. Because SFN cannot issue SQL to
@@ -75,8 +77,9 @@ pentest-remediation PR #195). 진단 리포트는 `POST /api/diagnosis`, 컴플�
 `POST /api/compliance/run`을 통하며, 둘 다 `/api/jobs`와 동일한 `lib/jobs.ts`의 `enqueueJob()`을
 호출하고 `requestedBy`는 서버 측에서 계산한다. 어느 라우트를 거치든 `enqueueJob()`이 내구성 있는
 ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패처 Lambda는 VPC 밖에서 동작(SQS/SFN API 직접 접근)하고 `handlers.py` 레지스트리로 타입을
-검증(레지스트리의 read/compute 타입과 게이트된 단일 소유 리소스 job `connector_target_sync`만 허용 —
-unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
+검증(레지스트리의 read/compute 타입과 단일 소유 리소스 job `connector_target_sync`만 허용 — 이 job의
+레지스트리 항목 자체는 무조건 등록되며, 게이트는 Terraform(`connector_target_sync_enabled`일 때만 worker
+env·IAM statement·패키징 모듈 추가)과 job 자체의 env 검사에 있다; unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
 실행명이 transport 멱등을 제공(`ExecutionAlreadyExists`는 성공 처리). Step Functions Standard가
 `$.runtime`으로 라우팅: 짧은 잡은 `RunLambda`, 길거나 OOM 위험인 잡은 `ecs:runTask.sync` Fargate.
 워커가 직접 `running`을 claim하고 `succeeded`를 쓴다. SFN은 VPC-only Aurora에 직접 SQL을 못 쓰므로

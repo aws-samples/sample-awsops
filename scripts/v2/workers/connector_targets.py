@@ -169,7 +169,10 @@ def _run(payload, ctrl, targets):
         except Exception as error:
             code = (getattr(error, "response", None) or {}).get("Error", {}).get("Code")
             if code == "ConflictException":
-                return {"status": "exists", "reason": "concurrent_create", "target": name}
+                # Confirm the concurrent create actually produced this target before reporting it.
+                relisted = _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)
+                if any(t.get("name") == name for t in relisted):
+                    return {"status": "exists", "reason": "concurrent_create", "target": name}
             raise
         return {"status": "created", "target": name}
     target_id = existing[name].get("targetId")
@@ -184,10 +187,13 @@ def _run(payload, ctrl, targets):
             == tool_fingerprint(tools)):
         return {"status": "exists", "target": name}
     # The gateway name is account-wide, so another awsops stack in the same account may own this
-    # target. Re-point only a target that already invokes one of THIS stack's connector Lambdas.
+    # target. Update only a target that already invokes THIS kind's own connector Lambda; a target
+    # pointing at another of this stack's connector Lambdas is left alone too (never cross-re-pointed).
     own = set(_connector_lambdas().values())
     if current_lambda.get("lambdaArn") not in own:
         return {"status": "skipped", "reason": "target_owned_by_another_stack", "target": name}
+    if current_lambda.get("lambdaArn") != lambda_arn:
+        return {"status": "skipped", "reason": "target_points_at_another_connector", "target": name}
     preserve = {field: copy.deepcopy(current[field]) for field in ("metadataConfiguration", "privateEndpoint")
                  if current.get(field) is not None}
     ctrl.update_gateway_target(gatewayIdentifier=gw_id, targetId=target_id, name=name,

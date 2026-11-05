@@ -81,7 +81,7 @@ describe('POST create', () => {
   it('asks the worker to register the kind on the chat gateway after a create', async () => {
     const { POST } = await import('./route');
     expect((await POST(req({ name: 'ch', kind: 'clickhouse', endpoint: 'http://10.0.0.6:8123' }))).status).toBe(201);
-    expect(enqueueConnectorTargetSync).toHaveBeenCalledWith('clickhouse');
+    expect(enqueueConnectorTargetSync).toHaveBeenCalledWith('clickhouse', 'u');
   });
 
   it('fires a best-effort connect-time introspect (after the 201) and never lets it fail create', async () => {

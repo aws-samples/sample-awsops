@@ -26,7 +26,8 @@ class ClientError(Exception):
 
 
 class FakeCtrl:
-    def __init__(self, targets=None, current=None, gateways=None, gateway_detail=None, create_error=None):
+    def __init__(self, targets=None, current=None, gateways=None, gateway_detail=None, create_error=None,
+                 conflict_creates=False):
         self.gateways = gateways if gateways is not None else [
             {"name": ct.gateway_name("external-obs"), "gatewayId": "gw-obs"},
             {"name": ct.gateway_name("monitoring"), "gatewayId": "gw-mon"}]
@@ -35,6 +36,7 @@ class FakeCtrl:
         self.gateway_detail = gateway_detail if gateway_detail is not None else {
             "roleArn": ROLE, "authorizerType": "AWS_IAM"}
         self.create_error = create_error
+        self.conflict_creates = conflict_creates  # the racing create landed: target listed after the error
         self.calls = []
 
     def list_gateways(self, **_):
@@ -52,6 +54,8 @@ class FakeCtrl:
 
     def create_gateway_target(self, **kw):
         if self.create_error is not None:
+            if self.conflict_creates:
+                self.targets.append({"name": kw["name"], "targetId": "t9"})
             raise self.create_error
         self.calls.append(("create", kw))
 
@@ -156,9 +160,20 @@ class ConnectorTargetSyncTest(unittest.TestCase):
             self.assertEqual(ctrl.calls, [])
 
     def test_concurrent_create_conflict_reports_exists(self):
-        ctrl = FakeCtrl(create_error=ClientError("ConflictException"))
+        ctrl = FakeCtrl(create_error=ClientError("ConflictException"), conflict_creates=True)
         self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl),
                          {"status": "exists", "reason": "concurrent_create", "target": "clickhouse-mcp-target"})
+
+    def test_conflict_without_a_listed_target_is_reraised(self):
+        ctrl = FakeCtrl(create_error=ClientError("ConflictException"))
+        with self.assertRaises(ClientError):
+            ct.run({"kind": "clickhouse"}, ctrl=ctrl)
+
+    def test_target_pointing_at_another_own_connector_is_not_repointed(self):
+        ctrl = FakeCtrl(targets=[{"name": "clickhouse-mcp-target", "targetId": "t1"}], current=current_for(TEMPO))
+        out = ct.run({"kind": "clickhouse"}, ctrl=ctrl)
+        self.assertEqual(out["reason"], "target_points_at_another_connector")
+        self.assertFalse([c for c in ctrl.calls if c[0] in ("create", "update")])
 
     def test_other_create_errors_are_reraised(self):
         ctrl = FakeCtrl(create_error=ClientError("AccessDeniedException"))
@@ -172,6 +187,11 @@ class ConnectorTargetSyncTest(unittest.TestCase):
     def test_registered_as_lambda_job(self):
         self.assertTrue(handlers.is_allowed("connector_target_sync"))
         self.assertEqual(handlers.runtime_for("connector_target_sync"), "lambda")
+
+    def test_handler_skips_before_importing_when_flag_off(self):
+        with mock.patch.dict(os.environ, {"CONNECTOR_TARGET_SYNC_ENABLED": "false"}):
+            self.assertEqual(handlers.REGISTRY["connector_target_sync"][0]({"kind": "clickhouse"}, False),
+                             ({"status": "skipped", "reason": "disabled"}, None))
 
 
 class ProvisionParityTest(unittest.TestCase):

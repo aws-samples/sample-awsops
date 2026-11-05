@@ -17,8 +17,8 @@ describe('enqueueConnectorTargetSync', () => {
   it('enqueues one connector_target_sync job for the kind', async () => {
     process.env.CONNECTOR_TARGET_SYNC_ENABLED = 'true';
     enqueueJob.mockResolvedValue({ jobId: 'j' });
-    await enqueueConnectorTargetSync('tempo');
-    expect(enqueueJob).toHaveBeenCalledWith('connector_target_sync', { kind: 'tempo' });
+    await enqueueConnectorTargetSync('tempo', 'admin-sub');
+    expect(enqueueJob).toHaveBeenCalledWith('connector_target_sync', { kind: 'tempo' }, { requestedBy: 'admin-sub' });
   });
 
   it('never enqueues for a non-connector kind', async () => {
