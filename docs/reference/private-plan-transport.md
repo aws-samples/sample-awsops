@@ -188,7 +188,7 @@ publication, applied lifecycle configuration or successful deployment.
 ### Offline verification
 
 Use the existing Python test dependencies in `scripts/v2/requirements-test.txt`,
-Node.js, OpenSSL and the repository's Terraform test version (1.17.1). These tests use fake
+Node.js, OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
 GitHub/AWS CLI responses, real local crypto/archive checks and local Terraform fixtures:
 
 ```bash

@@ -48,7 +48,7 @@ AWSops 通过 Amazon Cognito + Lambda@Edge + CloudFront 组合处理认证。
 | 项目 | 设置 |
 |------|------|
 | **区域** | us-east-1（Lambda@Edge 必需） |
-| **运行时** | Python 3.14（部署处理程序；CDK 存根为 Node.js 20） |
+| **运行时** | Python 3.12（部署处理程序；CDK 存根为 Node.js 20） |
 | **触发器** | CloudFront viewer-request |
 | **功能** | 验证 `awsops_token` JWT Cookie，未认证时重定向到 `/awsops/login` |
 

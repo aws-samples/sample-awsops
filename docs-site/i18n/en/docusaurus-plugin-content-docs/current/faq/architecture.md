@@ -164,7 +164,7 @@ flowchart LR
 
 ### Step by step
 
-**1. Lambda@Edge (us-east-1, python3.14, Viewer Request)**
+**1. Lambda@Edge (us-east-1, python3.12, Viewer Request)**
 - On every request, verifies the `awsops_token` JWT with **RS256 JWKS** + checks `iss`/`aud`/`token_use`.
 - Unauthenticated requests are redirected to the self-hosted **`/login`** form.
 

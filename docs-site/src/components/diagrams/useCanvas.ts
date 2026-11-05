@@ -54,7 +54,7 @@ export function useCanvas(draw: DrawFn, height = 500) {
     // every ResizeObserver firing (mount, sidebar toggle, orientation change)
     // wipes the canvas with nothing scheduled to redraw it under
     // reduced-motion (no rAF loop running).
-    const resize = () => {
+    function resize() {
       const parent = canvas.parentElement;
       if (!parent) return false;
       const w = parent.clientWidth;
@@ -67,11 +67,11 @@ export function useCanvas(draw: DrawFn, height = 500) {
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
       return true;
-    };
+    }
 
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    const drawFrame = () => {
+    function drawFrame() {
       const w = canvas.width;
       const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
@@ -83,7 +83,7 @@ export function useCanvas(draw: DrawFn, height = 500) {
         mouse: mouseRef.current,
         dpr,
       });
-    };
+    }
 
     resize();
 

@@ -164,7 +164,7 @@ flowchart LR
 
 ### ステップごとの詳細
 
-**1. Lambda@Edge（us-east-1、python3.14、Viewer Request）**
+**1. Lambda@Edge（us-east-1、python3.12、Viewer Request）**
 - すべてのリクエストで `awsops_token` クッキーの JWT を **RS256 JWKS で署名検証** + `iss`/`aud`/`token_use` を確認。
 - 未認証であれば自前の **`/login`** フォームへ redirect。
 
