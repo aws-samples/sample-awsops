@@ -39,8 +39,23 @@ NOTE_BYTES = 16384
 HEADER = re.compile(rb"^diff --git ", re.M)
 # Security-sensitive paths are always reviewed together in batch 1 so that interactions among
 # them (workflow + review scripts + IAM/Terraform + edge auth) are never split across batches.
-SENSITIVE = re.compile(r"^(\.github/|scripts/pr-review/|terraform/|edge-lambda/)|iam|polic|auth",
-                       re.I)
+SENSITIVE = re.compile(r"(^|[/\"\s])(\.github/|scripts/pr-review/|terraform/|edge-lambda/)"
+                       r"|iam|polic|auth", re.I)
+PATH_LINE = re.compile(rb"^(diff --git |rename (from|to) |copy (from|to) |--- |\+\+\+ )")
+
+
+def is_sensitive(part):
+    """Classify on every header path line (old and new ends); unparseable headers fail closed."""
+    header = []
+    for line in part.split(b"\n"):
+        if line.startswith(b"@@") or line.startswith(b"Binary files"):
+            break
+        if PATH_LINE.match(line):
+            header.append(line)
+    text = b"\n".join(header).decode("utf-8", "replace")
+    if not header or '"' in text or "\\" in text or "\ufffd" in text:
+        return True  # C-quoted, escaped, non-UTF-8 or missing paths: treat as sensitive
+    return bool(SENSITIVE.search(text))
 
 
 def _label(header):
@@ -63,12 +78,12 @@ def chunks(data):
 
 def group_sensitive(parts):
     """Move security-sensitive file diffs first, keeping relative order. None if they overflow."""
-    labels = [_label(part.split(b"\n", 1)[0]) for part in parts]
-    sensitive = [p for p, label in zip(parts, labels) if SENSITIVE.search(label)]
+    flags = [is_sensitive(part) for part in parts]
+    sensitive = [p for p, flag in zip(parts, flags) if flag]
     if (sum(map(len, sensitive)) > BATCH_BYTES
             or sum(p.count(b"\n") for p in sensitive) > BATCH_LINES):
         return None
-    return sensitive + [p for p, label in zip(parts, labels) if not SENSITIVE.search(label)]
+    return sensitive + [p for p, flag in zip(parts, flags) if not flag]
 
 
 def pack(parts):

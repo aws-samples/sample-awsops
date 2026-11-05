@@ -117,6 +117,20 @@ class AdmissionTests(unittest.TestCase):
             self.assertIn("UNTRUSTED PR data", note)
             self.assertIn("never lowers the severity of a security", note)
 
+    def test_sensitivity_uses_rename_targets_and_fails_closed_on_quoted_paths(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("review_batches", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        renamed = (b"diff --git a/web/x.ts b/web/y.ts\nsimilarity index 90%\n"
+                   b"rename from web/x.ts\nrename to .github/workflows/x.yml\n@@ -1 +1 @@\n+a\n")
+        quoted = b'diff --git "a/web/\\303\\251.ts" "b/web/\\303\\251.ts"\n@@ -1 +1 @@\n+a\n'
+        plain = b"diff --git a/web/a.ts b/web/a.ts\n--- a/web/a.ts\n+++ b/web/a.ts\n@@ -1 +1 @@\n+auth\n"
+        self.assertTrue(module.is_sensitive(renamed))
+        self.assertTrue(module.is_sensitive(quoted))
+        self.assertTrue(module.is_sensitive(b"+no header\n"))
+        self.assertFalse(module.is_sensitive(plain), "body text must not drive classification")
+
     def test_sensitive_changes_over_one_batch_block_before_models(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = Fixture(directory)

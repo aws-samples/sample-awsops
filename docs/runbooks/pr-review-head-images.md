@@ -219,7 +219,9 @@ A filtered diff over one call's limit is reviewed in complete batches
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair, run in parallel inside the existing panel and chair steps, with a scope note listing the
 files in the other batches as untrusted data. Workflow, review-script, Terraform/IAM, edge and
-auth files are always packed together into batch 1 (more than one batch of them is rejected), and
+auth files are always packed together into batch 1, classified on every header path line (old and
+new ends; quoted or unparseable headers count as sensitive). More than one batch of them is
+rejected, and
 the cross-batch note never lowers the severity of a security finding. Each batch writes its own `GITHUB_ENV` flags; any batch's failure
 flag wins over later batches. The combined comment has one section per batch and passes only if
 every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
