@@ -223,13 +223,18 @@ files in the other batches as untrusted data. Batch 1 holds every file under `.g
 `scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `web/app/api/`,
 `scripts/v2/remediation/`, the worker `remediation*`, `dispatcher*`, `handlers*`,
 `action_catalog*` and `connector_target*` files, `web/lib/remediation*` and `web/middleware*`,
-plus non-Markdown files whose own name contains iam, polic, auth, guard, cross_account, admin,
-connector, mutat or remediat. Every batch can also read the complete PR HEAD tree, checked out as
+plus non-Markdown files whose own name contains iam, polic, auth, guard, cross_account or
+cross-account, admin, connector, mutat, secret, credential, rbac, redact or remediat. This list is
+a prioritization of the main permission surfaces, not a guarantee that every security-relevant
+file is co-located; headers without a parseable path count as sensitive. Every batch can also read the complete PR HEAD tree, checked out as
 a separate read-only worktree (`core.symlinks=false`, no hooks or LFS smudge; any symlink fails
 the step) and exposed to Claude through `--add-dir`; models still run in BASE. The note tells each
 batch to verify cross-batch dependencies there and to review the producers and consumers of every
-IAM, permission, auth, ownership-check, mutation or secret change in its batch. The tree is
-removed after the job. Classification
+IAM, permission, auth, ownership-check, mutation or secret change in its batch. Codex reads the
+tree through its read-only sandbox, which permits filesystem reads. Unlike the diff, the tree is
+raw HEAD content: it bypasses the diff filter, admission bounds and scrubbing on the way in, while
+published output is still scrubbed. The tree, the batch work directories and their raw panel
+slots are removed after the job. Classification
 reads every header path line (old and new ends); quoted or unparseable headers count as sensitive.
 More than one batch of sensitive files is rejected, and the cross-batch note never lowers the
 severity of a security finding. Each batch writes its own `GITHUB_ENV` flags; any batch's failure

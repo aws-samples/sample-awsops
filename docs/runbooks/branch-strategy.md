@@ -81,10 +81,11 @@ main first. Do not assume this activation path for another repository whose defa
 branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
 must authorize the workflow change under the existing protections.
 
-Before continuing such a promotion, implement and review complete bounded batching
-or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
-exists yet. The same protected workflow must then review the full promotion scope
-and integration changes on its current HEAD. Do not bypass required checks, alter
+Complete bounded batching exists: a promotion diff up to 8 file-boundary batches,
+whose batch-1 file set fits one batch, is reviewed in full by the same protected
+workflow on its current HEAD. A promotion beyond that still needs authenticated
+exact-commit coverage reuse, which is not implemented, through an ordinary PR to dev
+before it can continue. Do not bypass required checks, alter
 main to hide changes, or publish the release tag while this prerequisite is pending.
 Smaller promotion intervals can prevent future accumulation, but cannot repair the
 already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).

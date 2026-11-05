@@ -140,6 +140,13 @@ class AdmissionTests(unittest.TestCase):
                      "web/lib/auth-session.ts", "web/middleware.ts"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
             self.assertTrue(module.is_sensitive(header), path)
+        for path in ("scripts/v2/workers/finops_dispatcher.py", "web/lib/integration-credentials.ts",
+                     "web/lib/custom-mcp-secret.ts", "web/lib/eks-member-rbac.ts",
+                     "web/lib/inventory-redaction.ts"):
+            header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
+            self.assertTrue(module.is_sensitive(header), path)
+        self.assertTrue(module.is_sensitive(b"diff --git x y\n@@ -1 +1 @@\n+a\n"),
+                        "a header without parseable paths fails closed")
         for path in ("docs/reference/02-auth.md", "web/lib/graph.ts"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
             self.assertFalse(module.is_sensitive(header), path)
@@ -215,6 +222,12 @@ class AggregationTests(unittest.TestCase):
             (["ok\nVERDICT: PASS\n", None], "VERDICT: FAIL"),
             (["ok\nVERDICT: PASS\n", "no verdict\n"], "VERDICT: FAIL"),
         )
+        with tempfile.TemporaryDirectory() as directory:
+            fx = Fixture(directory)
+            (fx.review / "batch-works.tsv").write_text("")
+            out = fx.root / "review.md"
+            fx.run("combine", str(fx.review), str(out))
+            self.assertEqual(out.read_text().rstrip().splitlines()[-1], "VERDICT: FAIL")
         for reviews, expected in cases:
             with self.subTest(reviews=reviews), tempfile.TemporaryDirectory() as directory:
                 fx = self.batches(directory, ["", ""], reviews)

@@ -373,14 +373,15 @@ jobs:
           # cross-batch interactions. It is a separate detached worktree; models still run in BASE.
           if grep -qx 'ready=true' /tmp/pr-review-admit.txt && ! grep -qx 'batches=1' /tmp/pr-review-admit.txt; then
             git worktree remove --force "$HEAD_TREE" 2>/dev/null || rm -rf "$HEAD_TREE"
+            git worktree prune
             # core.symlinks=false writes PR symlinks as plain files, so no model read can follow a
             # link out of the tree (for example to runner credentials); no hooks or LFS smudge run.
             GIT_LFS_SKIP_SMUDGE=1 git -c core.symlinks=false -c core.hooksPath=/dev/null \
               -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false \
               worktree add --detach "$HEAD_TREE" "$HEAD_SHA"
-            if find "$HEAD_TREE" -type l -not -path "$HEAD_TREE/.git" | grep -q .; then
-              echo "::error::HEAD tree contains a symlink"; exit 1
-            fi
+            # No pipeline: under pipefail a SIGPIPE from find could invert a `find | grep -q` test.
+            SYMLINK=$(find "$HEAD_TREE" -type l -not -path "$HEAD_TREE/.git" -print -quit)
+            [ -z "$SYMLINK" ] || { echo "::error::HEAD tree contains a symlink"; exit 1; }
             chmod -R a-w "$HEAD_TREE"
             echo "head_tree=$HEAD_TREE" >> "$GITHUB_OUTPUT"
           fi
@@ -431,7 +432,8 @@ jobs:
           for pid in "${PIDS[@]}"; do wait "$pid" || PANEL_RC=1; done
           python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
           [ "$PANEL_RC" -eq 0 ] || exit 1
-          echo "panel_responded=$(python3 -I "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)" >> "$GITHUB_ENV"
+          RESPONDED=$(python3 -I "$SCRIPT_ROOT/review_batches.py" responded /tmp/pr-review)
+          echo "panel_responded=$RESPONDED" >> "$GITHUB_ENV"
           READY=true
           while IFS=$'\t' read -r work _; do
             [ ! -f "$work/coverage-severe.flag" ] || READY=false
@@ -485,7 +487,7 @@ jobs:
             echo "::group::Batch review $INDEX"
             # Model text must never be parsed as workflow commands: suspend command processing
             # with a fresh random token for the dump, and also strip CRs and indented "::".
-            STOP_TOKEN=$(openssl rand -hex 16)
+            STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
             echo "::stop-commands::$STOP_TOKEN"
             tr -d '\r' < "$work/review.md" 2>/dev/null | sed -E 's/^([[:space:]]*)::/\1: :/' || echo "(no review)"
             echo "::$STOP_TOKEN::"
@@ -649,6 +651,9 @@ jobs:
         run: |
           chmod -R u+w "$HEAD_TREE" 2>/dev/null || true
           git worktree remove --force "$HEAD_TREE" 2>/dev/null || rm -rf "$HEAD_TREE"
+          git worktree prune
+          # Raw panel output must not persist on the self-hosted runner after a batched run.
+          rm -rf /tmp/pr-review/batch-[0-9]*
 
       - name: Remove current-run HEAD image evidence
         if: always()

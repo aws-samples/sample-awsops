@@ -37,17 +37,19 @@ FAIL_FLAGS = ("report_invalid", "chair_input_failed", "chair_failed", "panel_inc
               "image_coverage_failed")
 NOTE_BYTES = 16384
 HEADER = re.compile(rb"^diff --git ", re.M)
-# Security-sensitive paths are always reviewed together in batch 1 so that interactions among
-# them (workflow + review scripts + IAM/Terraform + edge auth) are never split across batches.
+# Files matching this literal list are reviewed together in batch 1. It is a prioritization of
+# the main permission surfaces, not a claim that every security-relevant file is co-located:
+# cross-batch interactions are checked by every batch against the read-only PR HEAD tree.
 # Path prefixes (anchored at a path start) plus source files whose own name marks an IAM,
 # policy, auth, guard, cross-account or remediation surface. Markdown is classified by prefix
 # only, so docs that merely mention these words do not crowd batch 1.
 SENSITIVE_PREFIX = re.compile(
     r"^(\.github/|scripts/pr-review/|terraform/|edge-lambda/|agent/|scripts/v2/remediation/"
-    r"|scripts/v2/workers/(remediation|dispatcher|handlers|action_catalog|connector_target)"
+    r"|scripts/v2/workers/([^/]*dispatcher|remediation|handlers|action_catalog|connector_target)"
     r"|web/app/api/|web/lib/remediation|web/middleware)")
 SENSITIVE_NAME = re.compile(
-    r"(^|/)[^/]*(iam|polic|auth|guard|cross_account|remediat|admin|connector|mutat)[^/]*$", re.I)
+    r"(^|/)[^/]*(iam|polic|auth|guard|cross[-_]account|remediat|admin|connector|mutat|secret"
+    r"|credential|rbac|redact)[^/]*$", re.I)
 
 PATH_LINE = re.compile(rb"^(diff --git |rename (from|to) |copy (from|to) |--- |\+\+\+ )")
 
@@ -63,7 +65,10 @@ def is_sensitive(part):
     text = b"\n".join(header).decode("utf-8", "replace")
     if not header or '"' in text or "\\" in text or "\ufffd" in text:
         return True  # C-quoted, escaped, non-UTF-8 or missing paths: treat as sensitive
-    for path in _header_paths(text):
+    paths = _header_paths(text)
+    if not paths:
+        return True  # headers present but no parseable path: fail closed
+    for path in paths:
         if SENSITIVE_PREFIX.search(path):
             return True
         if not path.endswith(".md") and SENSITIVE_NAME.search(path):
@@ -157,8 +162,10 @@ def _note(index, total, files, others, head_tree=None):
         "edge-lambda/, agent/, web/app/api/, scripts/v2/remediation/ and the worker dispatcher, "
         "handler, action-catalog, connector-target, remediation and web middleware paths, plus "
         "source files "
-        "whose names mark IAM, policy, auth, guard, cross-account, admin, connector, mutation or "
-        "remediation code. Review the files in this batch.\n"
+        "whose names mark IAM, policy, auth, guard, cross-account, admin, connector, mutation, "
+        "secret, credential, RBAC, redaction or remediation code. That list is a prioritization, "
+        "not a guarantee that every security-relevant file is in batch 1. Review the files in "
+        "this batch.\n"
         + (HEAD_TREE_NOTE.format(path=head_tree) if head_tree else "")
         + "Cross-batch rule: a non-security symbol, import, test or doc that this batch relies on "
         "may be added by a file in another batch; verify it in the HEAD tree when available, "
@@ -293,6 +300,9 @@ def combine(root, out):
     if len(works) == 1:
         source = works[0] / "review.md"
         shutil.copyfile(source, out) if source.exists() else Path(out).write_text("VERDICT: FAIL\n")
+        return
+    if not works:
+        Path(out).write_text("No admitted review batch.\nVERDICT: FAIL\n")
         return
     sections, passed = [], True
     for index, work in enumerate(works, 1):

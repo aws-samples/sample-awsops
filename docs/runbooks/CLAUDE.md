@@ -50,7 +50,9 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
   filtered diff admission is 6,000 lines/128 KiB per call (larger diffs: at most 8 complete
   file-boundary batches that must all pass) and chair stdin is at most 256 KiB.
   Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
-  output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
+  output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added,
+  except that batched reviews grant the Claude CLI read access (`--add-dir`) to the read-only PR
+  HEAD worktree.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
