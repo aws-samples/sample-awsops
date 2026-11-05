@@ -257,7 +257,9 @@ Each batch writes its own `GITHUB_ENV` flags. `report_invalid`, `chair_input_fai
 "chair input exceeds allocation" wording then applies to the batch that tripped it. `chair_failed`, which
 only selects the "not a code problem" comment wording, is set only when every batch's chair
 failed (a batch without the key produced a verdict); a failed chair still fails the gate through
-its `VERDICT: FAIL`. Scrubbed per-batch chair reports are printed in "Batch review" log groups
+its `VERDICT: FAIL`. When only some chairs failed, `chair_failed_any=1` selects a separate badge
+saying review generation failed for one or more batches and the workflow should be re-run, so an
+infrastructure failure is never published as a code finding. Scrubbed per-batch chair reports are printed in "Batch review" log groups
 with workflow commands suspended, so text cut from an over-limit comment (`comment_bytes`, 60,000)
 stays retrievable; each wave logs its batches before its exit status is checked. Batch work
 directories, the batch index and the gate's scratch file are removed at the end of every job, and

@@ -241,6 +241,17 @@ class AggregationTests(unittest.TestCase):
                 fx = self.batches(directory, envs)
                 self.assertIn(expected, fx.run("env", str(fx.review)).splitlines())
 
+    def test_partial_chair_failure_selects_the_infrastructure_badge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fx = self.batches(directory, ["chair_failed=1\n", "chair_used=Claude Fable 5\n"])
+            lines = fx.run("env", str(fx.review)).splitlines()
+            self.assertIn("chair_failed=0", lines)
+            self.assertIn("chair_failed_any=1", lines)
+        post = WorkflowTests.workflow.split("      - name: Post review comment (upsert)", 1)[1].split("      - name:", 1)[0]
+        any_branch = post.index('"${chair_failed_any:-0}" = "1"')
+        self.assertLess(post.index('"${chair_failed:-0}" = "1"'), any_branch)
+        self.assertLess(any_branch, post.index("CRITICAL/MAJOR issues must be resolved before merge"))
+
     def test_within_a_batch_the_last_write_wins_like_the_single_path(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = self.batches(directory, ["image_coverage_failed=1\nimage_coverage_failed=0\n"])

@@ -619,6 +619,10 @@ jobs:
             # the code has a CRITICAL/MAJOR, so the message says so distinctly
             # (synthesize.sh's chair-failed.flag -> chair_failed).
             STATUS_BADGE="**Status: BLOCKED** — review generation failed (model timeout/error) — not a code problem, re-run the workflow"
+          elif [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed_any:-0}" = "1" ]; then
+            # Batched review: at least one batch's chair failed (model timeout/error) while others
+            # produced verdicts. Not a code finding for the failed batches; re-run the workflow.
+            STATUS_BADGE="**Status: BLOCKED** — review generation failed for one or more batches (model timeout/error, not a code finding for those batches) — re-run the workflow; findings from other batches, if any, are below"
           elif [ "$GATE_RESULT" = "fail" ]; then
             STATUS_BADGE="**Status: BLOCKED** — CRITICAL/MAJOR issues must be resolved before merge"
           else

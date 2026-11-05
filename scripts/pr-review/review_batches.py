@@ -320,6 +320,10 @@ def aggregate_env(root):
     # gate through its own VERDICT: FAIL. Every other flag blocks if any batch set it.
     lines = [f"{key}={int(all(merged[key]) if key == 'chair_failed' else any(merged[key]))}"
              for key in FAIL_FLAGS if key in merged]
+    # A partial chair failure gets its own badge: some batches have no verdict (not a code
+    # finding), while other batches' findings, if any, are still in the comment.
+    if len(work_dirs(root)) > 1 and "chair_failed" in merged:
+        lines.append(f"chair_failed_any={int(any(merged['chair_failed']))}")
     if chairs:
         lines.append("chair_used=" + ", ".join(re.sub(r"[^A-Za-z0-9 ._-]", "?", c) for c in chairs))
     return lines
