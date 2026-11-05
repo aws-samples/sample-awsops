@@ -255,7 +255,7 @@ Get/List/Create/UpdateGatewayTarget and GetGateway on those two gateway ARN patt
 job invokes that function synchronously; the shared worker role holds only `lambda:InvokeFunction` on
 that one function. Gateway names are account-wide (not `var.project`-scoped), so IAM
 cannot tell two awsops stacks in one account apart; the runtime `GetGateway` role/auth check is the
-stack boundary. This is an ADR-005 owner-override exception (2026-11-04), the second
+stack boundary. This is ADR-023 (owner 2026-11-05), the ADR-005 owner-override exception second
 after ADR-015. `created`/`updated` mean the request was accepted, not that the target is READY (same
 semantics as the provisioner); chat sees the connector once the gateway finishes reconciling the
 target. `make agentcore` remains the full reconciler. In an account shared by several awsops

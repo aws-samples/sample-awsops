@@ -12,7 +12,7 @@ or updates exactly one awsops-owned target, `<kind>-mcp-target`, on the kind's c
 Loki/Tempo/Mimir. The target configuration is the same one the provisioner writes (packaged
 `catalog.py`).
 
-This is the ADR-005 owner-override exception of 2026-11-04, the second after ADR-015. The exact
+This is ADR-023 (`docs/decisions/023-connector-target-registration.md`), the ADR-005 owner-override exception of 2026-11-05, the second after ADR-015. The exact
 write action set is `bedrock-agentcore:CreateGatewayTarget` and `bedrock-agentcore:UpdateGatewayTarget`
 on the two gateway ARN patterns above, plus the read calls `ListGateways`, `GetGateway`,
 `ListGatewayTargets` and `GetGatewayTarget`. The grant sits only on the dedicated
@@ -27,7 +27,8 @@ target, and accepts only this stack's connector Lambda ARNs supplied by Terrafor
   rejects `connector_target_sync_enabled=true` otherwise).
 - The provisioner has already run (`make agentcore`), so both catalog gateways exist. The job never
   creates a gateway.
-- **Run one awsops stack per account when enabling the flag.** Gateway names are account-wide (not
+- **Enable the flag on at most one awsops stack per account (ADR-023 limit 7).** Before enabling,
+  confirm no other awsops stack in the account runs `make agentcore`. Gateway names are account-wide (not
   `var.project`-scoped), and `provision.py ensure_gateways` rewrites a gateway's `roleArn` to the
   AgentCore role of whichever stack last ran `make agentcore`. The job's `GetGateway` check therefore
   accepts whichever stack currently owns the gateway, not a fixed stack. With two stacks in one
@@ -74,7 +75,8 @@ Read the outcome from the job row or the function log line, then act as follows.
 | `created` | — | Missing target creation request accepted | Wait for READY |
 | `updated` | — | This stack's target had drift (schema/credential) and the update was accepted | Wait for READY |
 | `exists` | — | Target already matches the expected configuration | None |
-| `exists` | `concurrent_create` | A racing create produced the target; confirmed by relisting | None |
+| `exists` | `concurrent_create` | A racing create produced the target, and its Lambda, credentials and schema match | None |
+| `skipped` | `concurrent_create_mismatch` | A racing create produced a target whose configuration differs | Find the other writer (another stack or a provisioner run); run `make agentcore` from the owning stack |
 | `skipped` | `disabled` | `CONNECTOR_TARGET_SYNC_ENABLED` is not `true` in the runtime | Enable per this runbook, or ignore |
 | `skipped` | `invalid_kind` | Payload kind is missing or malformed | Check the datasource kind; report if it came from the product |
 | `skipped` | `not_a_connector_kind` | Kind is outside ClickHouse/Prometheus/Loki/Tempo/Mimir, or has no catalog target | Expected for other kinds; none |
@@ -91,12 +93,35 @@ Read the outcome from the job row or the function log line, then act as follows.
 | `failed` | `sdk_model_missing` | The Lambda runtime SDK lacks the `bedrock-agentcore-control` model or a required operation (detail = botocore version) | Run `make agentcore` instead and report the runtime SDK version |
 | `failed` | AWS error class name (for example `ClientError`) | A control-plane call failed (access denied, throttling, conflict without a listed target) | Inspect the log and the IAM grant; re-add the datasource or run `make agentcore` |
 
+## Emergency stop
+
+Stop new writes without a Terraform apply by setting the function's reserved concurrency to 0
+(ADR-023 limit 8). Jobs then fail instead of writing; restore by deleting the concurrency setting.
+
+```bash
+aws lambda put-function-concurrency --function-name <project>-connector-target-sync \
+  --reserved-concurrent-executions 0
+aws lambda delete-function-concurrency --function-name <project>-connector-target-sync   # restore
+```
+
 ## Disable and rollback
 
 Set `connector_target_sync_enabled = false` and apply a reviewed saved plan. The apply removes the
-function, its role and the worker invoke grant. It does **not** delete targets the job already
-wrote: the job never deletes. Remove a target only through the provisioner or the operator
-process, never from the product (ADR-005).
+function, its role and the worker invoke grant. Disabling revokes this job's write authority; it
+does **not** delete targets the job already wrote or remove chat's access to them. To withdraw that
+access, an operator checks these targets, which carry no ownership tag distinguishing them from
+provisioner-written ones: `clickhouse-mcp-target` and `prometheus-mcp-target` on
+`awsops-v2-external-obs-gateway`; `loki-mcp-target`, `tempo-mcp-target` and `mimir-mcp-target` on
+`awsops-v2-monitoring-gateway`. Remove a target only through the provisioner or the operator
+process, never from the product (ADR-005, ADR-023).
+
+## Catalog revision (accepted risk)
+
+The function packages `catalog.py` at `terraform apply` time. If `make agentcore` later writes a
+newer tool schema from a newer checkout, the next registration on this stack can rewrite that target
+to the packaged schema (ADR-023 Consequences). Keep Terraform applies and `make agentcore` on the
+same reviewed revision; after a catalog change, apply the stack before or together with the
+provisioner run.
 
 ## Retries
 
@@ -111,4 +136,4 @@ The job does not retry control-plane errors. Re-adding the datasource enqueues a
 - `terraform/foundation/variables.tf` — `connector_target_sync_enabled`
 - `docs/reference/05-agentcore.md` — connector target sync reference
 
-Related ADRs: ADR-005 (owner-override 2026-11-04), ADR-015, ADR-007.
+Related ADRs: ADR-023 (this exception, owner 2026-11-05), ADR-005, ADR-015, ADR-007.

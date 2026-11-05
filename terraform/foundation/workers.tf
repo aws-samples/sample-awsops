@@ -18,7 +18,7 @@ locals {
   # datasource-diagnosis egress gate (ADR-007[legacy 039]) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
-  # connector_target_sync (ADR-005 owner-override exception 2026-11-04: own gateway target create/update only).
+  # connector_target_sync (ADR-023, owner-override 2026-11-05: one connector target create/update only).
   # The gateway-target grant lives on a DEDICATED `<project>-connector-target-sync` Lambda with its own IAM
   # role (outside the VPC; AgentCore control plane only). The worker job stays the ledgered entry point and
   # only invokes that function (worker role: lambda:InvokeFunction on that one ARN). cts_lambda_keys are the
@@ -1659,7 +1659,7 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
 }
 
 ############################################################
-# connector_target_sync (ADR-005 owner-override exception 2026-11-04): create/update of the awsops-owned
+# connector_target_sync (ADR-023, owner-override 2026-11-05): create/update of the awsops-owned
 # external-obs and monitoring gateways' targets only (the catalog homes for the connector kinds). No Delete
 # action; the gateway ARN is pinned to the provision.py name; ListGateways is a read needed to resolve that
 # name to its id. The grant sits on a DEDICATED function role so no other worker job (datasource_index,

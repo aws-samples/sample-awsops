@@ -162,9 +162,18 @@ class ConnectorTargetSyncTest(unittest.TestCase):
             self.assertEqual(ctrl.calls, [])
 
     def test_concurrent_create_conflict_reports_exists(self):
-        ctrl = FakeCtrl(create_error=ClientError("ConflictException"), conflict_creates=True)
+        ctrl = FakeCtrl(create_error=ClientError("ConflictException"), conflict_creates=True,
+                        current=current_for(OWN))
         self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=ctrl),
                          {"status": "exists", "reason": "concurrent_create", "target": "clickhouse-mcp-target"})
+
+    def test_concurrent_create_with_a_different_configuration_is_not_reported_as_exists(self):
+        other = OWN.replace("awsops-dev", "awsops-v2-stg")
+        ctrl = FakeCtrl(create_error=ClientError("ConflictException"), conflict_creates=True,
+                        current=current_for(other))
+        out = ct.run({"kind": "clickhouse"}, ctrl=ctrl)
+        self.assertEqual(out["reason"], "concurrent_create_mismatch")
+        self.assertFalse([c for c in ctrl.calls if c[0] in ("create", "update")])
 
     def test_conflict_without_a_listed_target_is_reraised(self):
         ctrl = FakeCtrl(create_error=ClientError("ConflictException"))

@@ -6,7 +6,7 @@ const CONNECTOR_TARGET_KINDS = new Set(['clickhouse', 'prometheus', 'loki', 'tem
  * Ask the worker to register this datasource kind's connector on its AgentCore catalog
  * gateway (external-obs or monitoring) (connector_target_sync, scripts/v2/workers/connector_targets.py), so chat can use it
  * once the gateway finishes registering the target. The worker is idempotent and only
- * creates/updates awsops-owned targets (ADR-005 owner-override exception 2026-11-04). Best-effort: a
+ * creates/updates one connector target (ADR-023, ADR-005 owner-override exception, 2026-11-05). Best-effort: a
  * failed enqueue never blocks registration; `make agentcore` remains the full reconciler.
  */
 export async function enqueueConnectorTargetSync(kind: string, requestedBy?: string | null): Promise<void> {

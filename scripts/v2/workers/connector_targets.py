@@ -14,8 +14,8 @@ docs/runbooks/connector-target-sync.md).
 It then creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the catalog
 gateway for that kind (external-obs for ClickHouse/Prometheus; monitoring for Loki/Tempo/Mimir),
 pointing at this stack's own connector Lambda. Vendor MCP presets (Datadog/Dynatrace) stay owned by
-provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are out of scope. Scope (ADR-005
-owner-override exception 2026-11-04, the second after ADR-015): create/update of awsops's own resources only. It never deletes,
+provision.ensure_mcp_server_targets, and Jaeger has no chat target, so they are out of scope. Scope (ADR-023,
+the second ADR-005 owner-override exception after ADR-015, owner 2026-11-05): create/update of one connector target only. It never deletes,
 only writes those two awsops gateways, and only accepts Lambda ARNs supplied by Terraform through
 CONNECTOR_TARGET_LAMBDAS. The tool schema comes from the packaged provision catalog, so the target
 is byte-identical to what provision.py would write. It runs as the dedicated
@@ -94,6 +94,16 @@ def _log(result):
     """One CloudWatch line per outcome; status/reason/target/gateway/kind only (no ARNs)."""
     fields = {k: result[k] for k in ("status", "reason", "target", "gateway", "kind") if k in result}
     print(json.dumps({"connector_target_sync": fields}, sort_keys=True))
+
+
+def _matches(target, lambda_arn, tools):
+    """Whether a gateway target already has the configuration this job writes."""
+    current_lambda = (target or {}).get("targetConfiguration", {}).get("mcp", {}).get("lambda", {})
+    credential_types = [c.get("credentialProviderType")
+                        for c in ((target or {}).get("credentialProviderConfigurations") or [])]
+    return (current_lambda.get("lambdaArn") == lambda_arn and credential_types == ["GATEWAY_IAM_ROLE"]
+            and tool_fingerprint(current_lambda.get("toolSchema", {}).get("inlinePayload", []))
+            == tool_fingerprint(tools))
 
 
 def _expected_gateway_role():
@@ -186,10 +196,16 @@ def _run(payload, ctrl, targets):
         except Exception as error:
             code = (getattr(error, "response", None) or {}).get("Error", {}).get("Code")
             if code == "ConflictException":
-                # Confirm the concurrent create actually produced this target before reporting it.
-                relisted = _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)
-                if any(t.get("name") == name for t in relisted):
-                    return {"status": "exists", "reason": "concurrent_create", "target": name}
+                # A racing create produced a target with this name; report `exists` only when its
+                # configuration matches what this job would have written (ADR-023 limit 6).
+                relisted = {t.get("name"): t for t in
+                            _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
+                raced_id = (relisted.get(name) or {}).get("targetId")
+                if isinstance(raced_id, str):
+                    raced = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=raced_id)
+                    if _matches(raced, lambda_arn, tools):
+                        return {"status": "exists", "reason": "concurrent_create", "target": name}
+                    return {"status": "skipped", "reason": "concurrent_create_mismatch", "target": name}
             raise
         return {"status": "created", "target": name}
     target_id = existing[name].get("targetId")
@@ -197,11 +213,7 @@ def _run(payload, ctrl, targets):
         raise _failure("target_id_missing", name, target=name, gateway=gw_name, kind=kind)
     current = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=target_id)
     current_lambda = current.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {})
-    credential_types = [c.get("credentialProviderType")
-                        for c in (current.get("credentialProviderConfigurations") or [])]
-    if (current_lambda.get("lambdaArn") == lambda_arn and credential_types == ["GATEWAY_IAM_ROLE"]
-            and tool_fingerprint(current_lambda.get("toolSchema", {}).get("inlinePayload", []))
-            == tool_fingerprint(tools)):
+    if _matches(current, lambda_arn, tools):
         return {"status": "exists", "target": name}
     # The gateway name is account-wide, so another awsops stack in the same account may own this
     # target. Update only a target that already invokes THIS kind's own connector Lambda; a target

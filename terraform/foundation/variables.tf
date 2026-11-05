@@ -216,7 +216,7 @@ variable "datasource_diagnosis_enabled" {
 
 variable "connector_target_sync_enabled" {
   type        = bool
-  description = "Register a datasource kind's connector (ClickHouse/Prometheus on the external-obs gateway, Loki/Tempo/Mimir on the monitoring gateway) when an administrator adds that datasource (connector_target_sync worker job). ADR-005 owner-override exception (2026-11-04), the second after ADR-015: create/update of this stack's own gateway targets only — the job never deletes, only writes the awsops-v2-external-obs/monitoring gateways, only points targets at this stack's own connector Lambdas, and never repoints a target another stack's Lambda owns. Requires workers_enabled, agentcore_enabled and integrations_enabled. false (default) = 0 resources/IAM, no web/worker env, $0."
+  description = "Register a datasource kind's connector (ClickHouse/Prometheus on the external-obs gateway, Loki/Tempo/Mimir on the monitoring gateway) when an administrator adds that datasource (connector_target_sync worker job). ADR-023 (ADR-005 owner-override exception, owner 2026-11-05), the second after ADR-015; enable on at most one awsops stack per account: create/update of this stack's own gateway targets only — the job never deletes, only writes the awsops-v2-external-obs/monitoring gateways, only points targets at this stack's own connector Lambdas, and never repoints a target another stack's Lambda owns. Requires workers_enabled, agentcore_enabled and integrations_enabled. false (default) = 0 resources/IAM, no web/worker env, $0."
   default     = false
   validation {
     condition     = !var.connector_target_sync_enabled || (var.workers_enabled && var.agentcore_enabled && var.integrations_enabled)
