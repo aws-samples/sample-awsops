@@ -212,7 +212,8 @@ aggregate-run false failures.
 7. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
    initialized with `-backend=false`. A validation or test failure fails CI.
 8. Clean up the owned codec containers and image tag, including after failures.
-9. On Python 3.14 (the Lambda runtime), run the agent, `agent/lambda` and worker pytest suites.
+9. On Python 3.14 (the Lambda/container runtime), run the isolated pytest stage for agent, workers,
+   incident, remediation, Steampipe and AgentCore code.
 
 CI는 **main/dev** 대상 PR에서 Node 26·Python 3.12·Terraform 1.17.1을 설치한다.
 pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을

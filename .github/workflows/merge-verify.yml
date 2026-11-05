@@ -113,5 +113,5 @@ jobs:
       - name: Python 3.14 runtime tests
         run: |
           python3.14 -m venv "$RUNNER_TEMP/py314" && . "$RUNNER_TEMP/py314/bin/activate"
-          pip install -q -r agent/requirements.txt -r scripts/v2/requirements-test.txt -r scripts/v2/workers/requirements.txt
-          (cd agent && pytest -q test_agent.py tests) && pytest -q agent/lambda scripts/v2/workers
+          pip install -q $(printf -- '-r %s.txt ' agent/requirements scripts/v2/requirements-test scripts/v2/{incident,remediation,steampipe,workers}/requirements)
+          for r in agent scripts/v2/{workers,incident,remediation,steampipe,agentcore}; do MERGE_VERIFY_PY_ROOT=$r MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh || exit 1; done
