@@ -6,12 +6,12 @@ Source for the docs-site landing hero video: `docs-site/static/video/product-tou
 
 ## Why this exists as committed binaries
 
-The GitHub Pages build (`.github/workflows/deploy-guide.yml`) runs on Node 20 with no ffmpeg, and the HyperFrames CLI requires Node ≥22 + ffmpeg. CI cannot render this. The mp4/webp are committed static assets; re-render locally when the product UI changes enough to make the tour stale (roughly: a redesign of dashboard/assistant/topology/diagnosis, or a refresh of the underlying `static/showcase/media/*.webp` set).
+The GitHub Pages build (`.github/workflows/deploy-guide.yml`) has no ffmpeg, and the HyperFrames CLI requires ffmpeg (and Node ≥22). CI cannot render this. The mp4/webp are committed static assets; re-render locally when the product UI changes enough to make the tour stale (roughly: a redesign of dashboard/assistant/topology/diagnosis, or a refresh of the underlying `static/showcase/media/*.webp` set).
 
 ## Toolchain (one-time, no sudo)
 
 ```bash
-# Node >=22 (this repo's default runner has Node 20)
+# Node >=22 for the HyperFrames CLI (the repository itself uses Node 26)
 curl -fL -o /tmp/node22.tar.xz https://nodejs.org/dist/v22.18.0/node-v22.18.0-linux-arm64.tar.xz
 tar xf /tmp/node22.tar.xz -C /tmp
 mv /tmp/node-v22.18.0-linux-arm64 ~/.local/node22
