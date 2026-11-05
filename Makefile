@@ -1,7 +1,7 @@
 # AWSops v2 — deployment entrypoints (OSS-portable, consumer-facing).
 #
 # Prerequisites (must be on PATH):
-#   - terraform >= 1.15   (S3 native state locking via use_lockfile)
+#   - terraform >= 1.17.1 (S3 native state locking via use_lockfile)
 #   - node >= 18          (configurator TUI)
 #   - aws CLI (configured credentials for the target account)
 #   - docker w/ buildx    (image build, later phases)
