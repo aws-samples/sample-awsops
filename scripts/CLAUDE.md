@@ -296,10 +296,13 @@ secrets-manager) — installed by `make deps`.
   named missing vendors and separate lens/image/report diagnostics, never approval.
   `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
   complete hash-valid image evidence before model credentials; no partial review.
+  `review_batches.py` splits a larger diff at file boundaries into at most 8 batches, each
+  admitted the same way and reviewed by both vendors plus its own chair; every batch must pass.
+  `run-batches.sh` runs each wave of at most 4 batches in its own step after fresh credentials.
   Both panel reports require substantive sections for every L2–L5 checklist, including
   security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
-  skips chair calls; report truncation cannot approve unseen findings. Oversized
-  promotion diffs still need a separately reviewed complete-batching/reuse design.
+  skips chair calls; report truncation cannot approve unseen findings. Promotions beyond
+  8 batches (or whose sensitive files exceed batch 1) are still rejected; no coverage reuse.
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `image-formats.json` selects detected extensions and the approved codec for both staging
   and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 177c119f8f33 · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ebd7652894d2 · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -33,11 +33,12 @@ that IO distinction, not model latency.
 and separates checklist/image/report diagnoses without implying code safety.
 Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
 complete hash-valid image evidence before model credentials. No truncated reviews.
+`review_batches.py`: larger diffs in ≤8 file batches, ≤4 per wave (`run-batches.sh`); all pass.
 Two independent Codex/Claude reports each cover all four checklists and must declare
 substantive sections for L2–L5, including security L3, plus plain
 `LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
-Report truncation cannot approve unseen findings. Oversized promotion diffs still
-need a separately reviewed complete-batching/reuse design.
+Report truncation cannot approve unseen findings. Promotions beyond 8 batches (or whose
+sensitive files exceed batch 1) are still rejected; no coverage reuse.
 Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both
 comprehensive vendor reports and chair for staged images. Explicit failure overrides PASS even without
 images; examples inside quotes/fences/prose do not count as declarations.
