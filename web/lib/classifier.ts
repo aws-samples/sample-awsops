@@ -1,4 +1,5 @@
-import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { SECTIONS } from './sections';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
 import { thinkingOffFields } from './bedrock';
@@ -36,10 +37,10 @@ export interface RankedKey { key: string; score: number }
 export type SendFn = (system: string, query: string, modelId: string) => Promise<string>;
 export interface ClassifierOpts { send?: SendFn; retryDelayMs?: number }
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 
 const bedrockSend: SendFn = async (system, query, modelId) => {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS); // real aborting timeout (spec §6)
   try {

@@ -1,4 +1,5 @@
-import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { thinkingOffFields } from './bedrock';
 
 // ADR-003[legacy 044, 025]: merge several per-domain agent answers into ONE coherent streamed answer.
@@ -35,10 +36,10 @@ function systemFor(responseLanguage?: string): string {
   return `${SYSTEM} CRITICAL: Write the ENTIRE answer in ${name}, regardless of the languages used inside the <user_query> or <domain_response> tags.`;
 }
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 
 const bedrockSend: SynthSend = async function* (system, user, modelId, abortSignal) {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const res = await client.send(new ConverseStreamCommand({
     modelId,
     system: [{ text: system }],

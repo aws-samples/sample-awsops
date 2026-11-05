@@ -1,4 +1,5 @@
-import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from '@/lib/model-runtime';
 import { parser as traceqlParser } from '@grafana/lezer-traceql';
 import { tempoAttributeIdentity, type TempoAttribute } from '@/lib/tempo-schema';
 import { thinkingOffFields } from '@/lib/bedrock';
@@ -52,9 +53,9 @@ const TRACEQL_RULES = [
   'Keep to basic search syntax supported by the reported Tempo version. Time bounds and result limits belong to the search request, not SQL clauses; generating a query does not change them.',
 ].join('\n');
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 const bedrockSend: QueryGenSend = async (system, user, modelId, abortSignal) => {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const res = await client.send(
     new ConverseCommand({
       modelId,

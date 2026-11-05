@@ -28,6 +28,7 @@ COPY pinned_http.py .
 COPY account_utils.py .
 COPY agent.py .
 COPY readiness.py .
+COPY model_runtime.py .
 # Dark-path agent loop (flag-gated, default OFF) — see ADR-008 (amended) / BASELINE §2.
 COPY anthropic_loop.py .
 # ADR-006 RCA (EoG) — read-only orchestrator reached via payload mode=="rca".

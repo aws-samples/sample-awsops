@@ -10,7 +10,8 @@
 // dead-but-documented v1-parity infrastructure, not a live path.
 import { Pool } from 'pg';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { BedrockRuntimeClient, InvokeModelCommand, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { InvokeModelCommand, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { thinkingOffFields } from './bedrock';
 import type { ChatMsg } from './agentcore';
 
@@ -26,7 +27,7 @@ const MAX_ROWS = 200;                 // hard row cap: bounds both memory and th
 
 let pool: Pool | null = null;
 let sm: SecretsManagerClient | null = null;
-let br: BedrockRuntimeClient | null = null;
+let br: ModelRuntimeClient | null = null;
 let secretCache: { value: string; at: number } | null = null;
 
 /** Steampipe DB password from Secrets Manager (`${PROJECT}-steampipe-db`, SecretString = plaintext),
@@ -191,7 +192,7 @@ Examples:
 export type GenSend = (system: string, messages: { role: string; content: string }[]) => Promise<string>;
 
 const invokeSend: GenSend = async (system, messages) => {
-  if (!br) br = new BedrockRuntimeClient({ region: REGION });
+  if (!br) br = modelRuntimeClient({ region: REGION });
   const body = JSON.stringify({
     anthropic_version: 'bedrock-2023-05-31',
     max_tokens: 1024, // thinking 블록이 예산을 소모해도 SQL 본문이 잘리지 않게
@@ -318,7 +319,7 @@ function rowsToTsv(rows: Record<string, unknown>[]): { text: string; shown: numb
 
 /** Stream the analysis answer grounded in the query result (compact TSV, 24k-char budget). */
 export async function* analyzeStream(opts: AnalyzeOpts): AsyncGenerator<string> {
-  if (!br) br = new BedrockRuntimeClient({ region: REGION });
+  if (!br) br = modelRuntimeClient({ region: REGION });
   const langName = opts.lang ? LANG_NAME[opts.lang] : undefined;
   const system = ANALYSIS_SYSTEM + (langName
     ? ` CRITICAL: Write the ENTIRE answer in ${langName}, regardless of the languages inside the tags.`

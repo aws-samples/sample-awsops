@@ -550,7 +550,7 @@ resource "aws_ecs_task_definition" "worker" {
         # _compliance fails fast with a clear error.
         { name = "STEAMPIPE_HOST", value = "steampipe.${var.project}.internal" },
         { name = "STEAMPIPE_SECRET_ARN", value = try(aws_secretsmanager_secret.steampipe[0].arn, "") }
-      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list) # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
+      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -625,7 +625,7 @@ resource "aws_lambda_function" "worker" {
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
       }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
-    local.dsqg_env_map, local.cts_env_map)
+    local.dsqg_env_map, local.cts_env_map, local.model_env)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
   }
@@ -840,7 +840,7 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
   role  = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.runtime_model_resources) > 0 ? [
       {
         # report.py invokes a global.anthropic.* Sonnet/Opus inference profile from var.region
         # (BEDROCK_REGION=var.region). Scoped to the Claude FM + global cross-region inference profiles.
@@ -848,7 +848,8 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
         Resource = local.runtime_model_resources
-      },
+      }
+      ] : [], [
       {
         # The diagnosis data sources (Cost Explorer, CloudWatch, X-Ray, Security Hub, CloudTrail) —
         # all read-only; each of these APIs requires Resource "*" (no resource-level scoping).
@@ -873,7 +874,7 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.diagnosis_artifacts[0].arn}/diagnosis/*"
       }
-    ]
+    ])
   })
 }
 
@@ -913,13 +914,14 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
   role  = aws_iam_role.worker_lambda[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.runtime_model_resources) > 0 ? [
       {
         Sid      = "BedrockInvokeReadOnly"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
         Resource = local.runtime_model_resources
-      },
+      }
+      ] : [], [
       {
         Sid    = "DiagnosisDataSourcesReadOnly"
         Effect = "Allow"
@@ -941,7 +943,7 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.diagnosis_artifacts[0].arn}/diagnosis/*"
       }
-    ]
+    ])
   })
 }
 

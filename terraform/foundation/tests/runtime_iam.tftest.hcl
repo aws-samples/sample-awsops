@@ -360,7 +360,7 @@ run "host_core_permissions_and_digest_binding" {
     error_message = "The chat runtime may invoke only curated Claude resources plus GPT-6 Luna."
   }
   assert {
-    condition = toset(one(jsondecode(aws_iam_role_policy.task_web_models.policy).Statement).Resource) == toset([
+    condition = toset(one(jsondecode(aws_iam_role_policy.task_web_models[0].policy).Statement).Resource) == toset([
       "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
       "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra-*",
       "arn:aws:bedrock:ap-northeast-2:123456789012:inference-profile/global.openai.gpt-6.1-terra",
@@ -738,5 +738,138 @@ run "privatelink_zone_accepts_an_unrelated_name" {
   assert {
     condition     = var.privatelink_zone_name == "obs.awsops.internal"
     error_message = "An internal zone name unrelated to the public domain must stay valid."
+  }
+}
+
+run "model_provider_mixed_is_the_default_and_adds_no_env" {
+  command = plan
+  variables {
+    agentcore_enabled             = true
+    workers_enabled               = true
+    hybrid_routing_enabled        = true
+    multi_route_synthesis_enabled = true
+  }
+  assert {
+    condition = (var.model_provider == "mixed" &&
+      length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "MODEL_PROVIDER"]) == 0 &&
+      !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "MODEL_PROVIDER") &&
+      length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if e.name == "MODEL_PROVIDER"]) == 0 &&
+    !contains(keys(output.agentcore), "model_env"))
+    error_message = "mixed must keep every task definition, function and the provisioner input unchanged."
+  }
+  assert {
+    condition = (toset(jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement[0].Resource) == toset([
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+      "arn:aws:bedrock:*:123456789012:inference-profile/*anthropic.claude-*",
+      "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna",
+      "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna-*",
+      "arn:aws:bedrock:*:123456789012:inference-profile/global.openai.gpt-6-luna",
+      "arn:aws:bedrock:*:123456789012:inference-profile/global.openai.gpt-6-luna-*",
+      ]) && length(aws_iam_role_policy.task_model_api_key) == 0 && length(aws_iam_role_policy.agentcore_model_api_key) == 0 &&
+    [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "CLASSIFIER_MODEL_ID"] == ["global.anthropic.claude-haiku-5-5"])
+    error_message = "mixed keeps the existing Claude + Luna runtime grant, the Haiku classifier and no API-key access."
+  }
+}
+
+run "model_provider_rejects_unknown_values" {
+  command = plan
+  variables {
+    model_provider = "gpt-everything"
+  }
+  expect_failures = [var.model_provider]
+}
+
+run "model_provider_bedrock_claude_grants_only_claude" {
+  command = plan
+  variables {
+    agentcore_enabled             = true
+    workers_enabled               = true
+    hybrid_routing_enabled        = true
+    multi_route_synthesis_enabled = true
+    model_provider                = "bedrock_claude"
+  }
+  assert {
+    condition = (alltrue([for arn in concat(
+      jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.task_web_models[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.task_classifier_bedrock[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.task_synthesis_bedrock[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.worker_lambda_diagnosis[0].policy).Statement[0].Resource,
+    ) : strcontains(arn, "anthropic.claude-")]) &&
+    contains(jsondecode(aws_iam_role_policy.worker_diagnosis[0].policy).Statement[0].Resource, "arn:aws:bedrock:*:123456789012:inference-profile/global.anthropic.claude-opus-5-5"))
+    error_message = "bedrock_claude must grant Claude models only, including Opus for the Deep diagnosis tier."
+  }
+  assert {
+    condition = (aws_lambda_function.worker[0].environment[0].variables["MODEL_PROVIDER"] == "bedrock_claude" &&
+      aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_MODEL_OPUS"] == "global.anthropic.claude-opus-5-5" &&
+      output.agentcore.model_env["AGENT_MODEL_ID"] == "global.anthropic.claude-sonnet-5-5" &&
+      [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID"] == [""] &&
+    !contains(keys(output.agentcore.model_env), "ANTHROPIC_API_KEY_SECRET_ARN"))
+    error_message = "bedrock_claude must route every role to Claude on Bedrock with no GPT fallback."
+  }
+}
+
+run "model_provider_bedrock_openai_grants_only_gpt" {
+  command = plan
+  variables {
+    agentcore_enabled      = true
+    workers_enabled        = true
+    hybrid_routing_enabled = true
+    model_provider         = "bedrock_openai"
+  }
+  assert {
+    condition = (alltrue([for arn in concat(
+      jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.task_web_models[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.task_classifier_bedrock[0].policy).Statement[0].Resource,
+      jsondecode(aws_iam_role_policy.worker_diagnosis[0].policy).Statement[0].Resource,
+    ) : strcontains(arn, "openai.gpt-6")]) &&
+    [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "CLASSIFIER_MODEL_ID"] == ["global.openai.gpt-6-luna"])
+    error_message = "bedrock_openai must grant GPT-6 Luna/Terra only."
+  }
+  assert {
+    condition = (aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_MODEL_SONNET"] == "global.openai.gpt-6.1-terra" &&
+    aws_lambda_function.worker[0].environment[0].variables["DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID"] == "")
+    error_message = "bedrock_openai must route diagnosis to Terra and disable the Claude query fallback."
+  }
+}
+
+run "model_provider_anthropic_api_requires_a_key_secret" {
+  command = plan
+  variables {
+    model_provider = "anthropic_api"
+  }
+  expect_failures = [var.anthropic_api_key_secret_arn]
+}
+
+run "model_provider_anthropic_api_reads_one_secret_and_drops_bedrock_model_grants" {
+  command = plan
+  variables {
+    agentcore_enabled             = true
+    workers_enabled               = true
+    hybrid_routing_enabled        = true
+    multi_route_synthesis_enabled = true
+    model_provider                = "anthropic_api"
+    anthropic_api_key_secret_arn  = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:awsops/anthropic-AbCdEf"
+  }
+  assert {
+    condition = (length(aws_iam_role_policy.task_web_models) == 0 && length(aws_iam_role_policy.task_classifier_bedrock) == 0 &&
+      length(aws_iam_role_policy.task_synthesis_bedrock) == 0 &&
+      length([for s in jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement : s if try(s.Sid, "") == "BedrockModelInvoke"]) == 0 &&
+    length([for s in jsondecode(aws_iam_role_policy.worker_lambda_diagnosis[0].policy).Statement : s if try(s.Sid, "") == "BedrockInvokeReadOnly"]) == 0)
+    error_message = "anthropic_api must not keep Bedrock model grants."
+  }
+  assert {
+    condition = alltrue([for p in [aws_iam_role_policy.task_model_api_key[0].policy, aws_iam_role_policy.agentcore_model_api_key[0].policy,
+      aws_iam_role_policy.worker_task_model_api_key[0].policy, aws_iam_role_policy.worker_lambda_model_api_key[0].policy] :
+      jsondecode(p).Statement == [{ Sid = "AnthropicApiKeyRead", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"],
+    Resource = ["arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:awsops/anthropic-AbCdEf"] }]])
+    error_message = "anthropic_api must grant GetSecretValue on exactly the configured key secret."
+  }
+  assert {
+    condition = (output.agentcore.model_env["ANTHROPIC_API_KEY_SECRET_ARN"] == var.anthropic_api_key_secret_arn &&
+      output.agentcore.model_env["AGENT_MODEL_ID"] == "claude-sonnet-5-5" &&
+    aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_MODEL_OPUS"] == "claude-opus-5-5")
+    error_message = "anthropic_api must pass Anthropic API model IDs and the secret ARN to the runtime and workers."
   }
 }

@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 def should_use_anthropic_loop(payload):
     """Route decision: env `ANTHROPIC_AGENT_LOOP_ENABLED` is the default; `payload.agentLoop`
     ('anthropic' | 'strands') overrides per-request. Returns True iff the dark path handles it."""
+    # The dark path calls Claude on Bedrock; other deploy-time model families never route here.
+    if os.environ.get("MODEL_PROVIDER", "").strip() not in ("", "mixed", "bedrock_claude"):
+        return False
     override = (payload or {}).get("agentLoop")
     if override == "anthropic":
         return True

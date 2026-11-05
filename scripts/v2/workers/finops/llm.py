@@ -9,6 +9,7 @@ import os
 import re
 
 import boto3
+import model_runtime
 from botocore.config import Config
 
 from redact import redact as _redact
@@ -38,7 +39,7 @@ def _get_client():
     global _client
     if _client is None:
         region = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
-        _client = boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG)
+        _client = model_runtime.wrap(boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG))
     return _client
 
 

@@ -450,3 +450,27 @@ variable "network_path_check_enabled" {
     error_message = "network_path_check_enabled requires workers_enabled=true (reuses the worker role/pg8000 layer/VPC + jobs queue)."
   }
 }
+
+variable "model_provider" {
+  type        = string
+  description = "Model family for chat, query generation, synthesis, routing and AI Diagnosis (models.tf). mixed (default) = GPT-6 Luna chat + GPT-6.1 Terra query generation with Claude fallback + Claude elsewhere, all on Bedrock. bedrock_claude = Claude only on Bedrock. bedrock_openai = GPT-6 Luna/GPT-6.1 Terra only on Bedrock (no Claude fallback). anthropic_api = Claude through the Anthropic API (api.anthropic.com over the existing NAT egress) using the key in anthropic_api_key_secret_arn; no Bedrock model grants."
+  default     = "mixed"
+  validation {
+    condition     = contains(["mixed", "bedrock_claude", "bedrock_openai", "anthropic_api"], var.model_provider)
+    error_message = "model_provider must be one of mixed, bedrock_claude, bedrock_openai, anthropic_api."
+  }
+}
+
+variable "anthropic_api_key_secret_arn" {
+  type        = string
+  description = "Secrets Manager secret ARN holding the Anthropic API key (plain string, or JSON with an api_key field), encrypted with the AWS managed aws/secretsmanager key. Required when model_provider = anthropic_api, ignored otherwise. Only this ARN is readable by the model-calling roles."
+  default     = null
+  validation {
+    condition     = var.anthropic_api_key_secret_arn == null || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.anthropic_api_key_secret_arn))
+    error_message = "anthropic_api_key_secret_arn must be a Secrets Manager secret ARN."
+  }
+  validation {
+    condition     = var.model_provider != "anthropic_api" || var.anthropic_api_key_secret_arn != null
+    error_message = "model_provider = anthropic_api requires anthropic_api_key_secret_arn."
+  }
+}

@@ -23,6 +23,7 @@ from strands.tools.mcp.mcp_client import MCPClient
 from botocore.credentials import Credentials
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 import pinned_http
+import model_runtime
 from streamable_http_sigv4 import streamablehttp_client_with_sigv4, streamablehttp_client_with_headers
 from account_utils import effective_account_id
 import boto3
@@ -142,31 +143,38 @@ def supports_prompt_cache(model_id):
     return "anthropic.claude-" in model_id
 
 
-try:
-    if CacheConfig is None:
-        raise TypeError("CacheConfig unavailable")
-    if not supports_prompt_cache(MODEL_ID):
-        raise TypeError(f"{MODEL_ID} does not support Bedrock prompt caching")
-    model = BedrockModel(
-        model_id=MODEL_ID,
-        region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
-        # NOTE: Claude Sonnet 5 and 5.5 reject `temperature` on ConverseStream (ValidationException,
-        # live-verified 2026-07-07 and 2026-10-28), so it is omitted. Routing determinism is held by
-        # the regex fast path, classifier output validation and the tool allowlist, not sampling
-        # (ADR-003[legacy 038]); do not reintroduce a sampling parameter the model rejects.
-        cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
-        cache_tools="default",                      # toolConfig cachePoint, 5m TTL
-        max_tokens=AGENT_MAX_TOKENS,
-    )
-except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConfig missing; or CacheConfig(strategy="auto") rejected (ValueError/pydantic ValidationError)
-    # NOTE: this fires once per cold start only. The production cache-degradation detector is
-    # the cacheReadInputTokens usage check (ADR-003[legacy 038 Task 8]) — do not rely on this line alone.
-    print(f"[Agent] prompt caching unavailable ({e}); falling back to no-cache")
-    model = BedrockModel(
-        model_id=MODEL_ID,
-        region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
-        max_tokens=AGENT_MAX_TOKENS,
-    )
+if model_runtime.provider() == "anthropic_api":
+    # Terraform model_provider = anthropic_api: Claude through the Anthropic API with the key from
+    # ANTHROPIC_API_KEY_SECRET_ARN (read once per cold start, never logged).
+    from strands.models.anthropic import AnthropicModel
+    model = AnthropicModel(client_args={"api_key": model_runtime.api_key()},
+                           model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
+else:
+    try:
+        if CacheConfig is None:
+            raise TypeError("CacheConfig unavailable")
+        if not supports_prompt_cache(MODEL_ID):
+            raise TypeError(f"{MODEL_ID} does not support Bedrock prompt caching")
+        model = BedrockModel(
+            model_id=MODEL_ID,
+            region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
+            # NOTE: Claude Sonnet 5 and 5.5 reject `temperature` on ConverseStream (ValidationException,
+            # live-verified 2026-07-07 and 2026-10-28), so it is omitted. Routing determinism is held by
+            # the regex fast path, classifier output validation and the tool allowlist, not sampling
+            # (ADR-003[legacy 038]); do not reintroduce a sampling parameter the model rejects.
+            cache_config=CacheConfig(strategy="auto"),  # auto cachePoint injection (system+messages)
+            cache_tools="default",                      # toolConfig cachePoint, 5m TTL
+            max_tokens=AGENT_MAX_TOKENS,
+        )
+    except (TypeError, ValueError) as e:  # older strands: unknown kwarg / CacheConfig missing; or CacheConfig(strategy="auto") rejected (ValueError/pydantic ValidationError)
+        # NOTE: this fires once per cold start only. The production cache-degradation detector is
+        # the cacheReadInputTokens usage check (ADR-003[legacy 038 Task 8]) — do not rely on this line alone.
+        print(f"[Agent] prompt caching unavailable ({e}); falling back to no-cache")
+        model = BedrockModel(
+            model_id=MODEL_ID,
+            region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
+            max_tokens=AGENT_MAX_TOKENS,
+        )
 
 # ============================================================================
 # Skill Base: Static decision patterns + workflows (rarely changes)

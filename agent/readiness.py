@@ -7,6 +7,8 @@ import os
 import re
 import threading
 import time
+
+import model_runtime
 from datetime import timedelta
 
 TOOL_NAMES = ("inventory-read-target___inventory_summary", "inventory-read-target___query_inventory")
@@ -204,7 +206,7 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
             # If session teardown fails, it is not evidence that the known ID was absent.
             progress.record(reason="gateway_unavailable", checks={"knownResource": True})
         progress.record(reason="model_failed")
-        model = _client("bedrock-runtime", region, min(23, progress.remaining()))
+        model = model_runtime.wrap(_client("bedrock-runtime", region, min(23, progress.remaining())))
         progress.remaining()
         # A bounded service-protocol check; inventory and resource data never enter this prompt.
         response = model.converse(

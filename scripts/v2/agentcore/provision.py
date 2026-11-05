@@ -1057,6 +1057,23 @@ def ensure_interpreter(ctrl):
         return ""
 
 
+MODEL_ENV_KEYS = frozenset({
+    "MODEL_PROVIDER", "AGENT_MODEL_ID", "DATASOURCE_QUERYGEN_MODEL_ID",
+    "DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID", "SYNTHESIS_MODEL_ID", "CODEGEN_MODEL_ID",
+    "ASSISTANT_MODEL_ID", "DIAGNOSIS_MODEL_SONNET", "DIAGNOSIS_MODEL_OPUS", "DIAGNOSIS_TITLE_MODEL",
+    "GRAPH_QUERYGEN_MODEL_ID", "FINOPS_EXPLAIN_MODEL_ID", "INSIGHT_MODEL_ID", "RCA_MODEL_ID",
+    "ANTHROPIC_API_KEY_SECRET_ARN"})
+_MODEL_ENV_VALUE = re.compile(r"[A-Za-z0-9._:/+=@-]{0,256}")
+
+
+def runtime_model_env(value):
+    """Validated model_provider env from the Terraform output; anything unexpected is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items()
+            if k in MODEL_ENV_KEYS and isinstance(v, str) and _MODEL_ENV_VALUE.fullmatch(v)}
+
+
 def ensure_runtime(ctrl, ac, gw_ids):
     region = ac["region"]
     gateways_json = json.dumps({k: gateway_url(v, region) for k, v in gw_ids.items()})
@@ -1100,6 +1117,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
            # Where agent.py reads the datasource kind-mirror credentials for the stdio path (same
            # single integrations secret the connector lambdas use).
            "INTEGRATIONS_SECRET_NAME": f"ops/{ac.get('project', 'awsops-v2')}/integrations/credentials"}
+    # Terraform var.model_provider role env (models.tf output agentcore.model_env); absent = mixed,
+    # i.e. the agent's code defaults. Only the known keys with plain model-ID/secret-ARN values pass.
+    env.update(runtime_model_env(ac.get("model_env")))
     # Same fail-closed contract as the readiness poll below (review MINOR, codex/L3): this listing
     # used to sit outside the try (which only catches ClientError), so any exception here crashed
     # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.

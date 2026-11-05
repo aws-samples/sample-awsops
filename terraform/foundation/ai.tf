@@ -199,13 +199,14 @@ resource "aws_iam_role_policy" "agentcore" {
   role  = aws_iam_role.agentcore[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.agentcore_model_resources) > 0 ? [
       {
         Sid      = "BedrockModelInvoke"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
         Resource = local.agentcore_model_resources
-      },
+      }
+      ] : [], [
       {
         Sid       = "DiscoverGateways"
         Effect    = "Allow"
@@ -256,7 +257,7 @@ resource "aws_iam_role_policy" "agentcore" {
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
       }
-    ]
+    ])
   })
 }
 
@@ -1018,7 +1019,7 @@ resource "aws_lambda_permission" "agent_agentcore" {
 # ---- outputs consumed by scripts/v2/agentcore/provision.py ----
 output "agentcore" {
   description = "AgentCore provisioning inputs for scripts/v2/agentcore/provision.py (null when disabled)."
-  value = var.agentcore_enabled ? {
+  value = var.agentcore_enabled ? merge({
     deployment_readiness_enabled = var.ci_readiness_enabled
     region                       = var.region
     project                      = var.project
@@ -1048,5 +1049,6 @@ output "agentcore" {
     # Bedrock/AgentCore/ECR. provision.py emits networkMode=VPC when these are present.
     subnets         = local.private_subnet_ids
     security_groups = [aws_security_group.service.id]
-  } : null
+    # var.model_provider role env (models.tf) for the runtime; omitted for mixed (code defaults).
+  }, local.model_custom ? { model_env = local.model_env } : {}) : null
 }

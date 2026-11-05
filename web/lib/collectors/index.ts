@@ -12,7 +12,8 @@
 //   as '미가용' in the collection summary — a missing source never fails the whole collection.
 // - Analysis streaming mirrors aws-data's analyzeStream: ConverseStream + tagged-DATA injection
 //   containment (collected rows can carry attacker-influenced strings: tags, names, images).
-import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from '../model-runtime';
 import { thinkingOffFields } from '../bedrock';
 import { AWS_DATA_ANALYSIS_MODEL } from '../aws-data';
 import type { ChatLang } from '../chat-i18n';
@@ -107,7 +108,7 @@ export function buildAnalysisInput(opts: Pick<CollectorAnalyzeOpts, 'question' |
   return { system, user };
 }
 
-let br: BedrockRuntimeClient | null = null;
+let br: ModelRuntimeClient | null = null;
 
 /** Test hook: drop the cached Bedrock client. */
 export function _resetForTests(): void {
@@ -116,7 +117,7 @@ export function _resetForTests(): void {
 
 /** Stream the analysis grounded in the collected context (v1 auto-collect used maxTokens 8192). */
 export async function* collectorAnalyzeStream(opts: CollectorAnalyzeOpts): AsyncGenerator<string> {
-  if (!br) br = new BedrockRuntimeClient({ region: REGION });
+  if (!br) br = modelRuntimeClient({ region: REGION });
   const { system, user } = buildAnalysisInput(opts);
   const res = await br.send(new ConverseStreamCommand({
     modelId: AWS_DATA_ANALYSIS_MODEL,

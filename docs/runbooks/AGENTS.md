@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 09cdc810253a · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 10b90dea77ec · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -22,6 +22,8 @@ Graph collection/projection, freshness and retained-evidence rollout contracts l
 removed; flag any change that reintroduces a v1 procedure.
 
 `connector-target-sync.md` covers chat connector target registration (`connector_target_sync_enabled`), the ADR-005 owner-override exception: scope, one-stack-per-account caveat, enable/verify, reason codes and that disabling leaves already-written targets.
+
+`model-provider.md` covers the deploy-time model family (`model_provider`: mixed, bedrock_claude, bedrock_openai, anthropic_api), per-role mapping, scoped Bedrock/secret IAM, enable and rollback.
 
 `pr-review-head-images.md` defines two comprehensive reviewer reports, complete diff
 admission (6,000 lines/128 KiB), bounded chair input and distinct incomplete-review
