@@ -228,11 +228,6 @@ fi
 # same chair completes normally on a small diff). Worst normal path: (120s fast-fail + 900s
 # retry + 10s hard-kill grace) x2 chair models ~= 34m20s. With the workflow's longest
 # panel cell budget of 40m20s, a 90-minute job leaves about 15 minutes for other steps.
-# Batched reviews may expose the read-only PR HEAD tree (untrusted data); only an existing dir.
-CHAIR_HEAD_TREE_ARGS=()
-if [ -n "${REVIEW_HEAD_TREE:-}" ] && [ -d "$REVIEW_HEAD_TREE" ]; then
-  CHAIR_HEAD_TREE_ARGS=(--add-dir "$REVIEW_HEAD_TREE")
-fi
 PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-us.anthropic.claude-fable-5}"
 FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5}"
 CHAIR_TIMEOUT="${CHAIR_TIMEOUT:-900}"
@@ -319,7 +314,6 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   ANTHROPIC_MODEL="$1" timeout --kill-after="$CHAIR_KILL_AFTER" "$CHAIR_TIMEOUT" \
     claude -p "$(cat "$WORK/synth-prompt.txt")" --output-format text \
     --strict-mcp-config --allowedTools "Read Grep Glob" \
-    "${CHAIR_HEAD_TREE_ARGS[@]}" \
     < "$WORK/synth-stdin.txt" \
     > "$outfifo" 2> "$errfifo" &
   CHAIR_JOB_PID=$!

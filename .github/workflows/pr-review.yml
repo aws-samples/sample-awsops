@@ -360,31 +360,13 @@ jobs:
         id: input_scope
         env:
           HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
-          HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
         run: |
           set -euo pipefail
           # A diff within one call's limit keeps the single review path. A larger diff is split
           # at file boundaries into complete batches, each admitted with the same checks
           # (scripts/pr-review/review_batches.py); nothing is truncated or skipped.
-          HEAD_TREE="$RUNNER_TEMP/pr-review-head-tree"
-          python3 scripts/pr-review/review_batches.py admit /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT" /tmp/pr-review "$HEAD_TREE" > /tmp/pr-review-admit.txt
+          python3 scripts/pr-review/review_batches.py admit /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT" /tmp/pr-review > /tmp/pr-review-admit.txt
           cat /tmp/pr-review-admit.txt >> "$GITHUB_OUTPUT"
-          # Batched reviews read the complete PR HEAD tree (untrusted data, never executed) for
-          # cross-batch interactions. It is a separate detached worktree; models still run in BASE.
-          if grep -qx 'ready=true' /tmp/pr-review-admit.txt && ! grep -qx 'batches=1' /tmp/pr-review-admit.txt; then
-            git worktree remove --force "$HEAD_TREE" 2>/dev/null || rm -rf "$HEAD_TREE"
-            git worktree prune
-            # core.symlinks=false writes PR symlinks as plain files, so no model read can follow a
-            # link out of the tree (for example to runner credentials); no hooks or LFS smudge run.
-            GIT_LFS_SKIP_SMUDGE=1 git -c core.symlinks=false -c core.hooksPath=/dev/null \
-              -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false \
-              worktree add --detach "$HEAD_TREE" "$HEAD_SHA"
-            # No pipeline: under pipefail a SIGPIPE from find could invert a `find | grep -q` test.
-            SYMLINK=$(find "$HEAD_TREE" -type l -not -path "$HEAD_TREE/.git" -print -quit)
-            [ -z "$SYMLINK" ] || { echo "::error::HEAD tree contains a symlink"; exit 1; }
-            chmod -R a-w "$HEAD_TREE"
-            echo "head_tree=$HEAD_TREE" >> "$GITHUB_OUTPUT"
-          fi
 
       # Git/CLI/prompt preparation needs no AWS session. Issue credentials only now so
       # even slow setup cannot consume the panel's one-hour credential lifetime.
@@ -404,7 +386,6 @@ jobs:
         id: panel_review
         if: steps.input_scope.outputs.ready == 'true'
         env:
-          REVIEW_HEAD_TREE: ${{ steps.input_scope.outputs.head_tree }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
           HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
           # Two complete reviews run in parallel with the existing model/budget choices.
@@ -456,7 +437,6 @@ jobs:
         id: chair_review
         if: steps.input_scope.outputs.ready == 'true' && steps.panel_review.outputs.ready == 'true'
         env:
-          REVIEW_HEAD_TREE: ${{ steps.input_scope.outputs.head_tree }}
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
           PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
@@ -476,6 +456,7 @@ jobs:
               "$PR_NUMBER" "$PR_TITLE" "$work/review.md" < /dev/null &
             PIDS+=("$!")
           done < /tmp/pr-review/batch-works.tsv
+          [ "${#PIDS[@]}" -gt 0 ] || { echo "::error::no admitted review batch"; exit 1; }
           CHAIR_RC=0
           for pid in "${PIDS[@]}"; do wait "$pid" || CHAIR_RC=1; done
           python3 -I "$SCRIPT_ROOT/review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"
@@ -489,7 +470,11 @@ jobs:
             # with a fresh random token for the dump, and also strip CRs and indented "::".
             STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
             echo "::stop-commands::$STOP_TOKEN"
-            tr -d '\r' < "$work/review.md" 2>/dev/null | sed -E 's/^([[:space:]]*)::/\1: :/' || echo "(no review)"
+            if [ -f "$work/review.md" ]; then
+              tr -d '\r' < "$work/review.md" | sed -E 's/^([[:space:]]*)::/\1: :/'
+            else
+              echo "(no review)"
+            fi
             echo "::$STOP_TOKEN::"
             echo "::endgroup::"
           done < /tmp/pr-review/batch-works.tsv
@@ -644,15 +629,10 @@ jobs:
           echo "AI Review failed: $GATE_REASON"
           exit 1
 
-      - name: Remove batched-review HEAD tree
-        if: always() && steps.input_scope.outputs.head_tree != ''
-        env:
-          HEAD_TREE: ${{ steps.input_scope.outputs.head_tree }}
+      - name: Remove batched-review work directories
+        if: always()
         run: |
-          chmod -R u+w "$HEAD_TREE" 2>/dev/null || true
-          git worktree remove --force "$HEAD_TREE" 2>/dev/null || rm -rf "$HEAD_TREE"
-          git worktree prune
-          # Raw panel output must not persist on the self-hosted runner after a batched run.
+          # Raw batch diffs and panel slots must not persist on the self-hosted runner.
           rm -rf /tmp/pr-review/batch-[0-9]*
 
       - name: Remove current-run HEAD image evidence

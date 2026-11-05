@@ -117,6 +117,7 @@ limits, prompt propagation and missing-evidence failures.
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
 | Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB per review call |
 | Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the call limit; every batch must pass |
+| Published comment body | `comment_bytes` 60,000 (GitHub caps comments at 65,536 characters) |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
 | Public failure diagnostic | Fixed labels and severity-keyword presence (true/false); no model text |
@@ -220,28 +221,30 @@ A filtered diff over one call's limit is reviewed in complete batches
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair, run in parallel inside the existing panel and chair steps, with a scope note listing the
 files in the other batches as untrusted data. Batch 1 holds every file under `.github/`,
-`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `web/app/api/`,
-`scripts/v2/remediation/`, the worker `remediation*`, `dispatcher*`, `handlers*`,
-`action_catalog*` and `connector_target*` files, `web/lib/remediation*` and `web/middleware*`,
-plus non-Markdown files whose own name contains iam, polic, auth, guard, cross_account or
-cross-account, admin, connector, mutat, secret, credential, rbac, redact or remediat. This list is
-a prioritization of the main permission surfaces, not a guarantee that every security-relevant
-file is co-located; headers without a parseable path count as sensitive. Every batch can also read the complete PR HEAD tree, checked out as
-a separate read-only worktree (`core.symlinks=false`, no hooks or LFS smudge; any symlink fails
-the step) and exposed to Claude through `--add-dir`; models still run in BASE. The note tells each
-batch to verify cross-batch dependencies there and to review the producers and consumers of every
-IAM, permission, auth, ownership-check, mutation or secret change in its batch. Codex reads the
-tree through its read-only sandbox, which permits filesystem reads. Unlike the diff, the tree is
-raw HEAD content: it bypasses the diff filter, admission bounds and scrubbing on the way in, while
-published output is still scrubbed. The tree, the batch work directories and their raw panel
-slots are removed after the job. Classification
-reads every header path line (old and new ends); quoted or unparseable headers count as sensitive.
-More than one batch of sensitive files is rejected, and the cross-batch note never lowers the
-severity of a security finding. Each batch writes its own `GITHUB_ENV` flags; any batch's failure
-flag wins over later batches, except `chair_failed`, which is set only when every batch's chair
-failed (a batch without the key produced a verdict) (a failed chair still fails the gate through its `VERDICT: FAIL`). Scrubbed per-batch chair
-reports are printed in "Batch review" log groups, so text cut from an over-limit comment
-(`comment_bytes`, 60,000) stays retrievable. The combined comment has one section per batch and passes only if
+`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `web/app/api/` and
+`scripts/v2/remediation/`; worker files whose names start with `remediation`, `handlers`,
+`action_catalog` or `connector_target` or contain `dispatcher`; `web/lib/remediation*` and
+`web/middleware*`; plus non-Markdown files whose own name contains iam, polic, auth, guard,
+cross_account or cross-account, admin, connector, mutat, secret, credential, rbac, redact or
+remediat. Classification reads every header path line (old and new ends); quoted, escaped or
+unparseable headers count as sensitive. More than one batch of sensitive files is rejected.
+
+This list prioritizes the main permission surfaces; it does not guarantee that every
+security-relevant file is in batch 1. Models see only their own batch's diff and the BASE
+checkout. A dependency on another batch's file is reported as an unverified cross-batch
+dependency, and the note never lowers the severity of a security finding. Joint review of
+changes split across batches is therefore not guaranteed; Merge Verify remains the build and test
+check for the whole PR. Every batch receives the PR-wide HEAD image context and must apply the
+image-coverage rules to it.
+
+Each batch writes its own `GITHUB_ENV` flags. `report_invalid`, `chair_input_failed`,
+`panel_incomplete` and `image_coverage_failed` block if any batch set them. `chair_failed`, which
+only selects the "not a code problem" comment wording, is set only when every batch's chair
+failed (a batch without the key produced a verdict); a failed chair still fails the gate through
+its `VERDICT: FAIL`. Scrubbed per-batch chair reports are printed in "Batch review" log groups
+with workflow commands suspended, so text cut from an over-limit comment (`comment_bytes`, 60,000)
+stays retrievable. Batch work directories are removed at the end of every job. The combined
+comment has one section per batch, and the PR passes only if
 every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
 rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes

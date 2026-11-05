@@ -221,6 +221,7 @@ class AggregationTests(unittest.TestCase):
             (["ok\nVERDICT: PASS\n", "MAJOR x\nVERDICT: FAIL\n"], "VERDICT: FAIL"),
             (["ok\nVERDICT: PASS\n", None], "VERDICT: FAIL"),
             (["ok\nVERDICT: PASS\n", "no verdict\n"], "VERDICT: FAIL"),
+            (["ok\nVERDICT: PASS\n \n", "ok\nVERDICT: PASS\n"], "VERDICT: PASS"),
         )
         with tempfile.TemporaryDirectory() as directory:
             fx = Fixture(directory)
@@ -280,17 +281,13 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(exported)
         self.assertLessEqual(exported - {"chair_used"}, set(module.FAIL_FLAGS))
 
-    def test_head_tree_note_is_added_only_when_a_tree_is_given(self):
+    def test_batch_note_lists_this_batch_first_and_scopes_images(self):
         with tempfile.TemporaryDirectory() as directory:
             fx = Fixture(directory)
-            data = b"".join(file_diff(f"f{i}.py", 40_000) for i in range(8))
-            fx.diff.write_bytes(data)
-            fx.run("admit", str(fx.diff), str(fx.context), str(fx.review), "/runner/head-tree")
+            fx.admit(b"".join(file_diff(f"f{i}.py", 40_000) for i in range(8)))
             note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
-            self.assertIn("checked out read-only at /runner/head-tree", note)
             self.assertLess(note.index("Files in THIS batch"), note.index("Files changed in OTHER"))
-            fx.admit(data)
-            self.assertNotIn("HEAD tree (every batch", (Path(fx.works()[1][0]) / "batch-note.txt").read_text())
+            self.assertIn("HEAD image context covers the whole PR", note)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -305,13 +302,8 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('GITHUB_ENV="$work/github.env"', block)
             self.assertIn('review_batches.py" env /tmp/pr-review >> "$GITHUB_ENV"', block)
         self.assertIn('review_batches.py" combine /tmp/pr-review /tmp/review.md', chair)
-        for block in (panel, chair):
-            self.assertIn("REVIEW_HEAD_TREE: ${{ steps.input_scope.outputs.head_tree }}", block)
-        admission = self.workflow.split("      - name: Admit complete review input", 1)[1].split("      - name:", 1)[0]
-        self.assertIn("-c core.symlinks=false", admission)
-        self.assertIn("-c core.hooksPath=/dev/null", admission)
-        self.assertIn("chmod -R a-w", admission)
-        self.assertIn("Remove batched-review HEAD tree", self.workflow)
+        self.assertNotIn("--add-dir", self.workflow)
+        self.assertIn("Remove batched-review work directories", self.workflow)
         self.assertIn('echo "::stop-commands::$STOP_TOKEN"', chair)
         self.assertIn('echo "::$STOP_TOKEN::"', chair)
 
