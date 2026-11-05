@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7b756ccbca29 · generated-at: 2026-10-29 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 59d627042b2d · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,10 +12,12 @@ consistency, PR review workflow / Steampipe-ExternalId terraform wiring (`tests/
 Full image checks also require Docker and `AWSOPS_REVIEW_CODEC_STATE`; see `docs/runbooks/review-codec-sandbox.md#verification`.
 
 ## Build · Test
-The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv.
+The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv. The agent suite's
+runtime-dependency contracts import the installed SDKs from `agent/requirements.txt` (never combined with the hash-locked file).
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
+python -m pip install -r agent/requirements.txt   # separate install: runtime SDKs for agent/tests/test_runtime_dependencies.py
 bash tests/run-all.sh    # everything: structure + agent unittest, TAP v13 output
 ```
 

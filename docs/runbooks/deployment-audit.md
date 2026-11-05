@@ -164,7 +164,7 @@ session. A dedicated audit role is a separate IAM-owner hardening follow-up, not
 an added grant or an ADR-005 exception in this workflow. Do not infer immutable
 IAM isolation from the audit's read-only behavior.
 
-Offline prerequisites: Python 3.12, Node.js 20 and bash. Install
+Offline prerequisites: Python 3.12, Node.js 26 and bash. Install
 `python3 -m pip install -r scripts/v2/requirements-test.txt`, then run
 `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py` and
 `python3 -m pytest -q scripts/v2/test_ci_verifier_sessions.py`. The audit shares

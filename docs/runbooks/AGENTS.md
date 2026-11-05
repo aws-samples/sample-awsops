@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: edea26c8ab7d · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 93a9f5938725 · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -156,7 +156,7 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
   CLI; standalone health proves liveness only. Every dev Deploy Web release requires the
   authenticated runtime gate before service A publication. Existing-web prepare neither creates
   first web nor bypasses readiness; follow runtime adoption before the first gated release.
-- From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
+- From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.17.1 in an isolated
   tracked-file copy with fresh `TF_DATA_DIR`, `init -backend=false` and mocked providers.
   Never initialize a real backend for tests. Dependencies: `scripts/v2/requirements-test.txt`;
   Node smoke tests are also required by the shared merge script.
@@ -204,7 +204,7 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
   credential directory; normal finalizers own cleanup, which process/runner loss can prevent.
   Expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
-- Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+- Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.17.1; missing tools fail the runner.
 
 Runtime probes accept verify-only full policy and release mode (nominal shared 20min cap vs 10min,
 clipped by absolute/proof budgets; no guaranteed twenty-minute controller wait).

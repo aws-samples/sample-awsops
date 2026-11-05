@@ -22,7 +22,11 @@ trap 'rm -rf "$scratch"' EXIT
 # Preserve relative archive source paths; exclude untracked backend/config/state
 # and .terraform data. Current tracked files may have been deleted or renamed.
 git ls-files -z | python3 -c \
-  'import os,sys; sys.stdout.buffer.write(b"".join(p+b"\0" for p in sys.stdin.buffer.read().split(b"\0") if p and os.path.lexists(p)))' \
+  'import os,sys
+paths=[p for p in sys.stdin.buffer.read().split(b"\0") if p]
+for p in paths:
+    if not os.path.lexists(p): sys.stderr.write("terraform-test: skipping tracked path missing from the working tree: %s\n" % p.decode(errors="replace"))
+sys.stdout.buffer.write(b"".join(p+b"\0" for p in paths if os.path.lexists(p)))' \
   | tar --null --verbatim-files-from -T - -cf - | tar -C "$scratch" -xf -
 cd "$scratch/terraform/foundation"
 export TF_DATA_DIR="$scratch/.terraform"
