@@ -31,12 +31,10 @@ MAX_BATCHES = LIMITS["max_batches"]
 # GitHub rejects issue comments over 65,536 characters; keep headroom for the comment header.
 if not 0 < LIMITS["comment_bytes"] <= 64000 or not 1 <= MAX_BATCHES <= 16:
     raise ValueError("Invalid batched review limits")
-# Headroom inside each batch for secret redaction expanding the scrubbed copy, which
-# admission re-measures against the full limit.
-# Headroom inside each batch for secret redaction expanding the scrubbed copy and for the
-# paths data header (at most PATHS_BYTES); admission re-measures against the full limit.
-BATCH_BYTES = MAX_BYTES * 7 // 8 - 12288  # 12288 = PATHS_BYTES
-BATCH_LINES = MAX_LINES  # line counts do not grow under redaction
+# Headroom inside each batch for secret redaction (bytes) and for the paths data header (at most
+# 12 KiB / 400 lines, see paths_header); admission re-measures each batch against the full limits.
+BATCH_BYTES = MAX_BYTES * 7 // 8 - 12288
+BATCH_LINES = MAX_LINES - 400
 WORKS = "batch-works.tsv"
 FAIL_FLAGS = ("report_invalid", "chair_input_failed", "chair_failed", "panel_incomplete",
               "image_coverage_failed")
@@ -44,18 +42,18 @@ HEADER = re.compile(rb"^diff --git ", re.M)
 # Files matching this literal list are reviewed together in batch 1. It is a prioritization of
 # the main permission surfaces, not a claim that every security-relevant file is co-located;
 # other cross-batch dependencies are reported by each batch as unverified.
-# Path prefixes (anchored at a path start) plus source files whose own name marks an IAM,
-# policy, auth, guard, cross-account or remediation surface. Markdown is classified by prefix
-# only, so docs that merely mention these words do not crowd batch 1.
+# Path prefixes (anchored at a path start) plus any path segment naming a permission surface.
+# Markdown and unit tests are skipped first (NOT_SURFACE) so docs and tests do not crowd batch 1.
 SENSITIVE_PREFIX = re.compile(
-    r"^(\.github/|scripts/pr-review/|terraform/|edge-lambda/|agent/|scripts/v2/agentcore/"
-    r"|scripts/v2/remediation/"
-    r"|scripts/v2/workers/([^/]*dispatcher|remediation|handlers|action_catalog|connector_target)"
-    r"|web/app/api/|web/lib/remediation|web/middleware)")
+    r"^(\.github/|scripts/pr-review/|terraform/|agent/|scripts/v2/agentcore/|scripts/v2/remediation/"
+    r"|scripts/v2/secret-rotation/|scripts/v2/eks/|scripts/v2/incident/"
+    r"|scripts/v2/workers/([^/]*dispatcher|remediation|handlers|action_catalog|connector_target"
+    r"|worker_lambda|fargate_worker|sg_rule)"
+    r"|web/app/api/|web/lib/(remediation|aws)|web/middleware)")
+# Any path segment (directory or file name) naming one of these surfaces.
 SENSITIVE_NAME = re.compile(
-    r"(^|/)[^/]*(iam|polic|auth|guard|cross[-_]account|remediat|admin|connector|mutat|secret"
-    r"|credential|rbac|redact|frozen|skill|allowlist)[^/]*$", re.I)
-
+    r"(^|/|[-_.])(iam|polic|auth|guard|cross[-_]account|remediat|admin|connector|mutat|secret"
+    r"|credential|rbac|redact|frozen|skill|allowlist|assume|writeback|redeploy)", re.I)
 NOT_SURFACE = re.compile(r"(\.md|(^|/)test_[^/]*\.py|_test\.py|\.test\.[jt]sx?)$")
 PATH_LINE = re.compile(rb"^(diff --git |rename (from|to) |copy (from|to) |--- |\+\+\+ )")
 
@@ -111,8 +109,19 @@ def _label(header):
     return re.sub(r"[^A-Za-z0-9._/-]", "?", text)[:200]
 
 
+def _labels(part):
+    """Display labels for every path a file diff names (old and new ends, rename/copy targets)."""
+    text = b"\n".join(line for line in part.split(b"\n")[:12] if PATH_LINE.match(line))
+    labels = []
+    for path in _header_paths(text.decode("utf-8", "replace")) or [_label(part.split(b"\n", 1)[0])]:
+        label = re.sub(r"[^A-Za-z0-9._/-]", "?", path)[:200]
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 PATHS_BYTES = 12288
-assert MAX_BYTES * 7 // 8 - PATHS_BYTES == BATCH_BYTES
+PATHS_LINES = 400
 
 
 def paths_header(index, total, others):
@@ -120,15 +129,16 @@ def paths_header(index, total, others):
 
     It travels in the stdin data channel with the diff, never in the trusted prompt.
     """
-    lines = [f"=== PR-WIDE CHANGED PATHS IN OTHER BATCHES (untrusted data; batch {index}/{total}) ==="]
-    size = len(lines[0]) + 1
+    head = f"=== PR-WIDE CHANGED PATHS IN OTHER BATCHES (untrusted data; batch {index}/{total}) ==="
+    tail = ["- (list truncated)", "=== END PATHS; THIS BATCH'S DIFF FOLLOWS ==="]
+    lines, size = [head], len(head) + 1 + sum(len(line) + 1 for line in tail)
     for path in others:
-        if size + len(path) + 3 > PATHS_BYTES:
-            lines.append("- (list truncated)")
+        if size + len(path) + 3 > PATHS_BYTES or len(lines) >= PATHS_LINES:
+            lines.append(tail[0])
             break
         lines.append(f"- {path}")
         size += len(path) + 3
-    lines.append("=== END PATHS; THIS BATCH'S DIFF FOLLOWS ===")
+    lines.append(tail[1])
     return ("\n".join(lines) + "\n").encode()
 
 
@@ -177,11 +187,13 @@ def _note(index, total):
         "filtered diff exceeds the single-call limit, so it was split at file boundaries; every "
         "batch is reviewed separately with the same checklists and the PR passes only if every "
         "batch passes. Batch 1 holds every file under .github/, scripts/pr-review/, terraform/, "
-        "edge-lambda/, agent/, scripts/v2/agentcore/, web/app/api/, scripts/v2/remediation/ and the worker dispatcher, handler, "
-        "action-catalog, connector-target, remediation and web middleware paths, plus source "
-        "files whose names mark IAM, policy, auth, guard, cross-account, admin, connector, "
-        "mutation, secret, credential, RBAC, redaction, frozen-flag, skill, allowlist or "
-        "remediation code. That list is a "
+        "agent/, scripts/v2/agentcore/, scripts/v2/secret-rotation/, scripts/v2/eks/, "
+        "scripts/v2/incident/, web/app/api/, scripts/v2/remediation/ and the worker dispatcher, handler, "
+        "action-catalog, connector-target, worker entrypoint, SG-rule, remediation, web AWS-client "
+        "and middleware paths, plus non-test source files whose path names an IAM, policy, auth, "
+        "guard, cross-account, assume-role, admin, connector, mutation, writeback, redeploy, "
+        "secret, credential, RBAC, redaction, frozen-flag, skill or allowlist surface. That list "
+        "is a "
         "prioritization, not a guarantee that every security-relevant file is in batch 1. Review "
         "the files in this batch.\n"
         "Cross-batch rule: the input starts with a data header listing the paths this PR changes "
@@ -233,7 +245,7 @@ def admit(diff, context, root):
                        "change"), 0
     if len(batches) > MAX_BATCHES:
         return False, f"diff needs more than {MAX_BATCHES} review batches; split the change", 0
-    labels = [[_label(part.split(b"\n", 1)[0]) for part in batch] for batch in batches]
+    labels = [[label for part in batch for label in _labels(part)] for batch in batches]
     common = (lenses / "COMMON.txt").read_text()
     rows = []
     for index, batch in enumerate(batches, 1):

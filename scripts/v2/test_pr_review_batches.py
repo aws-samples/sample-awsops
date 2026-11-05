@@ -165,6 +165,14 @@ class AdmissionTests(unittest.TestCase):
                      "web/lib/skill-validation.ts", "web/lib/tf-frozen-flags.ts"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
             self.assertTrue(module.is_sensitive(header), path)
+        for path in ("scripts/v2/secret-rotation/redeploy.py", "web/lib/aws-assume.ts",
+                     "scripts/v2/eks/auto_register.py", "scripts/v2/incident/writeback.py",
+                     "scripts/v2/workers/worker_lambda.py", "scripts/v2/workers/sg_rule_scan.py"):
+            header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
+            self.assertTrue(module.is_sensitive(header), path)
+        renamed_labels = module._labels(renamed)
+        self.assertIn("web/x.ts", renamed_labels)
+        self.assertIn(".github/workflows/x.yml", renamed_labels)
         for path in ("docs/reference/02-auth.md", "web/lib/graph.ts", "agent/lambda/test_x.py",
                      "web/lib/auth.test.ts", "terraform/CLAUDE.md"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()

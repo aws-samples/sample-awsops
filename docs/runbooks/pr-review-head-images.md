@@ -217,8 +217,8 @@ index or partial PASS.
 
 A filtered diff over one call's limit is reviewed in complete batches
 (`scripts/pr-review/review_batches.py`). Admission splits it at file boundaries into at most
-8 batches, each within 7/8 of the byte limit less a 12 KiB paths header (redaction and header
-headroom; lines use the full limit), and admits
+8 batches, each within 7/8 of the byte limit less a 12 KiB paths header and within the line
+limit less the header's 400 lines, and admits
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
 chair inside the existing panel and chair steps. At most `max_parallel_batches` (4) batches run at
 once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsops` runner pod
@@ -228,19 +228,23 @@ which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its c
 timeout (180 minutes) covers two worst-case waves of each phase plus staging and publication.
 Admission refuses a filtered diff over 8 × 128 KiB before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
-`scripts/pr-review/`, `terraform/`, `edge-lambda/`, `agent/`, `scripts/v2/agentcore/`,
-`web/app/api/` and `scripts/v2/remediation/`; worker files whose names start with `remediation`, `handlers`,
-`action_catalog` or `connector_target` or contain `dispatcher`; `web/lib/remediation*` and
-`web/middleware*`; plus non-Markdown files whose own name contains iam, polic, auth, guard,
-cross_account or cross-account, admin, connector, mutat, secret, credential, rbac, redact,
-frozen, skill, allowlist or remediat. Markdown and unit-test files (`test_*.py`, `*_test.py`,
+`scripts/pr-review/`, `terraform/` (including the edge Lambda), `agent/`, `scripts/v2/agentcore/`,
+`scripts/v2/remediation/`, `scripts/v2/secret-rotation/`, `scripts/v2/eks/`,
+`scripts/v2/incident/` and `web/app/api/`; worker files whose names start with `remediation`,
+`handlers`, `action_catalog`, `connector_target`, `worker_lambda`, `fargate_worker` or `sg_rule` or
+contain `dispatcher`; `web/lib/remediation*`, `web/lib/aws*` and `web/middleware*`; plus any file
+whose path has a directory or file-name segment starting with iam, polic, auth, guard,
+cross_account/cross-account, remediat, admin, connector, mutat, secret, credential, rbac, redact,
+frozen, skill, allowlist, assume, writeback or redeploy (at a path, `-`, `_` or `.` boundary).
+Classification reads every header path line (old and new ends); quoted, escaped or unparseable
+headers count as sensitive. Markdown and unit-test files (`test_*.py`, `*_test.py`,
 `*.test.ts[x]`/`.js[x]`) are not counted as permission surfaces. Classification reads every header path line (old and new ends); quoted, escaped or
 unparseable headers count as sensitive. More than one batch of sensitive files is rejected.
 
 This list prioritizes the main permission surfaces; it does not guarantee that every
 security-relevant file is in batch 1. Models see only their own batch's diff and the BASE
 checkout. Each batch's input starts with a data header (in the stdin data channel, never the
-trusted prompt) listing the sanitized paths changed in the other batches. A dependency that one of
+trusted prompt) listing the sanitized paths changed in the other batches (both ends of renames and copies). A dependency that one of
 those paths plausibly provides is reported as an unverified cross-batch dependency; one that no
 listed path provides is missing and stays blocking. The note never lowers the severity of a
 security finding. Joint review of
