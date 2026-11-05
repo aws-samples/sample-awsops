@@ -182,6 +182,23 @@ class ConnectorTargetSyncTest(unittest.TestCase):
         with self.assertRaises(ClientError):
             ct.run({"kind": "clickhouse"}, ctrl=ctrl)
 
+    def test_spec_on_an_unsupported_gateway_is_skipped(self):
+        ctrl = FakeCtrl()
+        spec = {**catalog.TARGETS["clickhouse-mcp-target"], "gateway": "network"}
+        out = ct.run({"kind": "clickhouse"}, ctrl=ctrl, targets={"clickhouse-mcp-target": spec})
+        self.assertEqual(out["reason"], "gateway_not_supported")
+        self.assertEqual(ctrl.calls, [])
+
+    def test_missing_sdk_service_model_fails_before_any_call(self):
+        try:
+            import boto3  # noqa: F401
+        except ImportError:
+            self.skipTest("boto3 unavailable in this interpreter")
+        with mock.patch("boto3.session.Session.get_available_services", return_value=[]):
+            with self.assertRaises(RuntimeError) as caught:
+                ct.run({"kind": "clickhouse"})
+        self.assertTrue(str(caught.exception).startswith("sdk_model_missing"))
+
     def test_disabled_flag_skips_everything(self):
         with mock.patch.dict(os.environ, {"CONNECTOR_TARGET_SYNC_ENABLED": "false"}):
             self.assertEqual(ct.run({"kind": "clickhouse"}, ctrl=FakeCtrl())["reason"], "disabled")
@@ -234,6 +251,11 @@ class ConnectorTargetSyncInvokeTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             handlers._invoke_connector_target_sync(self.FN, {"kind": "clickhouse"}, client=client)
         self.assertIn("gateway_unavailable", str(caught.exception))
+
+    def test_function_error_with_non_json_payload_raises_runtime_error(self):
+        client = FakeLambda(b"not json", function_error="Unhandled")
+        with self.assertRaises(RuntimeError):
+            handlers._invoke_connector_target_sync(self.FN, {"kind": "clickhouse"}, client=client)
 
     def test_malformed_result_raises(self):
         client = FakeLambda(b'["not", "a", "dict"]')

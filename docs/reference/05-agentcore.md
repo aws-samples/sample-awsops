@@ -258,7 +258,12 @@ cannot tell two awsops stacks in one account apart; the runtime `GetGateway` rol
 stack boundary. This is an ADR-005 owner-override exception (2026-11-04), the second
 after ADR-015. `created`/`updated` mean the request was accepted, not that the target is READY (same
 semantics as the provisioner); chat sees the connector once the gateway finishes reconciling the
-target. `make agentcore` remains the full reconciler.
+target. `make agentcore` remains the full reconciler. In an account shared by several awsops
+stacks, a gateway's `roleArn` follows whichever stack last ran the provisioner, so the check accepts
+the stack that currently owns the gateway; enable the flag on one stack per account. Before its
+first control-plane call the function preflights the runtime SDK's `bedrock-agentcore-control`
+service model and fails with `sdk_model_missing` when the model or a required operation is absent.
+Operations (enable, verify, reason codes, rollback): [connector-target-sync runbook](../runbooks/connector-target-sync.md).
 
 <a id="decisions-adrs--결정"></a>
 

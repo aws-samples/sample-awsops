@@ -192,10 +192,18 @@ def _invoke_connector_target_sync(function_name, payload, client=None):
         client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION"))
     resp = client.invoke(FunctionName=function_name, InvocationType="RequestResponse",
                          Payload=json.dumps({"kind": payload.get("kind")}).encode())
-    decoded = json.loads(resp["Payload"].read())
+    raw = resp["Payload"].read()
     if resp.get("FunctionError"):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            decoded = None
         detail = decoded.get("errorMessage", "error") if isinstance(decoded, dict) else "error"
         raise RuntimeError(f"connector_target_sync failed: {detail}")
+    try:
+        decoded = json.loads(raw)
+    except ValueError:
+        raise RuntimeError("connector_target_sync returned a malformed result") from None
     if not isinstance(decoded, dict):
         raise RuntimeError("connector_target_sync returned a malformed result")
     return decoded

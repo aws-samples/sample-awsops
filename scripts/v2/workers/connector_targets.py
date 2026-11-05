@@ -7,6 +7,10 @@ created by a later Terraform apply therefore had no target until the next provis
 
 The job first confirms via GetGateway that the catalog gateway runs as this stack's AgentCore role
 (CONNECTOR_TARGET_GATEWAY_ROLE_ARN) with AWS_IAM inbound auth, and skips without writing otherwise.
+In an account shared by several awsops stacks the gateways are account-wide and their roleArn
+follows whichever stack last ran the provisioner, so the GetGateway check identifies "the stack that
+currently owns the gateway", not a fixed stack; enable the flag on one stack per account (see
+docs/runbooks/connector-target-sync.md).
 It then creates or updates exactly one awsops-owned target (`<kind>-mcp-target`) on the catalog
 gateway for that kind (external-obs for ClickHouse/Prometheus; monitoring for Loki/Tempo/Mimir),
 pointing at this stack's own connector Lambda. Vendor MCP presets (Datadog/Dynatrace) stay owned by
@@ -26,6 +30,9 @@ import re
 GATEWAY_KEYS = ("external-obs", "monitoring")
 # Write ceiling pinned in code (not only via the CONNECTOR_TARGET_LAMBDAS env map).
 CONNECTOR_KINDS = ("clickhouse", "prometheus", "loki", "tempo", "mimir")
+# Control-plane operations the job calls; preflighted against the runtime SDK's service model.
+_REQUIRED_OPS = ("list_gateways", "get_gateway", "list_gateway_targets", "get_gateway_target",
+                 "create_gateway_target", "update_gateway_target")
 
 
 def gateway_name(key):
@@ -137,14 +144,22 @@ def _run(payload, ctrl, targets):
         targets = catalog.TARGETS
     name = f"{kind}-mcp-target"
     spec = targets.get(name)
-    if not spec or spec.get("gateway") not in GATEWAY_KEYS:
+    if not spec:
         return {"status": "skipped", "reason": "not_a_connector_kind"}
+    if spec.get("gateway") not in GATEWAY_KEYS:
+        return {"status": "skipped", "reason": "gateway_not_supported"}
     lambda_arn = _connector_lambdas().get(spec["lambda_key"])
     if not lambda_arn:
         return {"status": "skipped", "reason": "connector_lambda_not_deployed"}
     if ctrl is None:
         import boto3
+        import botocore
+        # The Lambda runtime's ambient boto3 may predate the AgentCore control model; fail fast.
+        if "bedrock-agentcore-control" not in boto3.session.Session().get_available_services():
+            raise _failure("sdk_model_missing", botocore.__version__, kind=kind)
         ctrl = boto3.client("bedrock-agentcore-control", region_name=os.environ.get("AWS_REGION"))
+        if not all(hasattr(ctrl, op) for op in _REQUIRED_OPS):
+            raise _failure("sdk_model_missing", botocore.__version__, kind=kind)
 
     gw_name = gateway_name(spec["gateway"])
     gateways = [g for g in _list_all(ctrl.list_gateways) if g.get("name") == gw_name]

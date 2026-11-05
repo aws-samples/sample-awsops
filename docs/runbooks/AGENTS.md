@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: edea26c8ab7d · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 09cdc810253a · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -20,6 +20,8 @@ connector client security group and no CIDR, and zone/record changes need `allow
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
 removed; flag any change that reintroduces a v1 procedure.
+
+`connector-target-sync.md` covers chat connector target registration (`connector_target_sync_enabled`), the ADR-005 owner-override exception: scope, one-stack-per-account caveat, enable/verify, reason codes and that disabling leaves already-written targets.
 
 `pr-review-head-images.md` defines two comprehensive reviewer reports, complete diff
 admission (6,000 lines/128 KiB), bounded chair input and distinct incomplete-review
