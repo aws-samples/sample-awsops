@@ -299,6 +299,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("-c core.hooksPath=/dev/null", admission)
         self.assertIn("chmod -R a-w", admission)
         self.assertIn("Remove batched-review HEAD tree", self.workflow)
+        self.assertIn('echo "::stop-commands::$STOP_TOKEN"', chair)
+        self.assertIn('echo "::$STOP_TOKEN::"', chair)
 
     def test_gate_reports_every_incomplete_batch_and_still_fails(self):
         gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1].split(

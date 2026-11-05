@@ -483,8 +483,12 @@ jobs:
           while IFS=$'\t' read -r work _; do
             INDEX=$((INDEX + 1))
             echo "::group::Batch review $INDEX"
-            # Neutralize workflow commands (::...) inside model text before it reaches the log.
-            sed 's/^::/: :/' "$work/review.md" 2>/dev/null || echo "(no review)"
+            # Model text must never be parsed as workflow commands: suspend command processing
+            # with a fresh random token for the dump, and also strip CRs and indented "::".
+            STOP_TOKEN=$(openssl rand -hex 16)
+            echo "::stop-commands::$STOP_TOKEN"
+            tr -d '\r' < "$work/review.md" 2>/dev/null | sed -E 's/^([[:space:]]*)::/\1: :/' || echo "(no review)"
+            echo "::$STOP_TOKEN::"
             echo "::endgroup::"
           done < /tmp/pr-review/batch-works.tsv
           [ "$CHAIR_RC" -eq 0 ]
