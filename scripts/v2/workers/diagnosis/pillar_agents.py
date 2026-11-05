@@ -17,7 +17,7 @@ from .budget import BudgetExceeded, MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS
 from .evidence import CLAIMS, PILLARS, VERIFICATIONS
 
 
-PROMPT_VERSION = "diagnosis-pillars-2026-11-04-v1"
+PROMPT_VERSION = "diagnosis-pillars-2026-11-05-v2"
 SCHEMA_VERSION = "diagnosis-findings-v1"
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_FINDINGS = 8
@@ -76,6 +76,9 @@ _TRUSTED_RULES = (
     "amounts, resource identifiers or sizing target names in explanation/prerequisites; "
     "code renders those from cited admitted facts. Explanation is a hypothesis, not confirmed "
     "causality. Do not claim a safe downsize or successful SQL from network traffic. "
+    "DNS resolution has unknown TTL and is not an application call. NFM top contributors "
+    "are partial, aggregate and undirected; DNS window correlation is only a dependency "
+    "hypothesis. Prefer the exact same-span trace pair for application-call evidence. "
     "Cite every affected resource and evidence. Use coverage_gap when evidence is missing. "
     "verification selects a controlled read-only capability; do not output CLI/SQL/URLs. "
     "Return concise conclusions and uncertainty; never return private reasoning. "
@@ -85,6 +88,9 @@ _REVIEW_RULES = (
     "You are the read-only cross-pillar diagnosis reviewer. "
     "Check contradictions, duplicate sizing opportunities, unsupported cause, wrong scope, "
     "stale evidence and missing dependency/sizing prerequisites. You cannot promote a "
+    "DNS window correlation or undirected aggregate flow to an application call or SQL success. "
+    "Unknown DNS TTL, IP reuse, partial contributors and absent Pod/shared ENI ownership "
+    "remain gaps. Exact same-span trace evidence is stronger. You cannot promote a "
     "hypothesis or modify finding claims. Select existing finding IDs only; reject unsupported "
     "findings. Request only resource_metrics, provider_sizing or graph_refresh for supplied "
     "admitted resource IDs, with no scope/query/action fields. Request at most four distinct "

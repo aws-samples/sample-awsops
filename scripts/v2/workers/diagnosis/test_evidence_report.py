@@ -17,6 +17,27 @@ def prepare(monkeypatch, *, data=None, findings=None):
                         lambda *a, **kw: pytest.fail("enabled path used free Markdown inference"))
 
 
+def test_network_collector_runs_in_worker_before_six_pillar_analysis(monkeypatch):
+    from diagnosis import discovery, loop, observations
+    prepare(monkeypatch)
+    state = {}
+
+    def collect(data, budget, *, scope, client_factory):
+        state.update(scope=scope, budget=budget, factory=client_factory)
+        data["gaps"].append("network_candidate_unresolved")
+        return data
+
+    def analyze(data, **options):
+        assert "network_candidate_unresolved" in data["gaps"]
+        assert options["budget"] is state["budget"]
+        return analysis()
+
+    monkeypatch.setattr(observations, "collect", collect)
+    monkeypatch.setattr(loop, "run", analyze)
+    report.generate(object(), "self")
+    assert state["scope"] == "self" and state["factory"] is discovery._client
+
+
 @pytest.mark.parametrize("tier,count", [("light", 9), ("mid", 9), ("deep", 16)])
 @pytest.mark.parametrize("lang", ["ko", "en", "zh", "ja"])
 def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(monkeypatch, tier, count, lang):

@@ -12,7 +12,7 @@ PILLARS = (
 CLAIMS = ("observation", "hypothesis", "sizing_candidate", "coverage_gap")
 VERIFICATIONS = ("none", "resource_metrics", "provider_sizing", "graph_refresh")
 KINDS = {
-    "observed_call", "observed_network_flow", "configured_dependency",
+    "observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency",
     "allowed_path", "candidate", "metrics", "provider_sizing", "inventory", "scope_summary",
 }
 FINDING_KEYS = {
@@ -62,6 +62,8 @@ FACT_KEYS = {
     "itemCount", "windowStartMs", "windowEndMs", "capturedAtMs", "lastSuccessAtMs",
     "attemptedAtMs", "finishedAtMs", "reasons", "retained_previous",
     "instance_observations_omitted",
+    "query_name", "dns_timestamp", "answer_ips", "ttl_known", "direction", "destination_category",
+    "dns_source_id",
 }
 _HAN_NUMERALS = "〇零一二三四五六七八九十百千萬万億亿兆兩两壹贰貳叁參肆伍陆陸柒捌玖拾佰仟"
 _NUMBER = re.compile(
@@ -291,6 +293,9 @@ class EvidenceIndex:
             row["kind"] in {"observed_call", "observed_network_flow"}
             and {row["source"], row["target"]} == set(refs)
             and set(row["evidence_ids"]).issubset(finding["evidence_ids"])
+            and all(isinstance(self.evidence[eid]["facts"], dict)
+                    and self.evidence[eid]["facts"].get("binding") != "dns_window_correlation"
+                    for eid in row["evidence_ids"])
             for row in self.relationships.values()
         )
 

@@ -866,7 +866,7 @@ def _evidence_invariant_sources(bundle):
 
 def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope, lang, budget):
     """Gated worker loop; local presentation runs after admitted specialist findings."""
-    from . import discovery, loop, presentation, supporting
+    from . import discovery, loop, observations, presentation, supporting
     from .pillar_agents import validate_language
     validate_language(lang)
     from .budget import ReportBudget
@@ -885,6 +885,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     emit(0, "Discovery", "collect")
     try:
         bundle = discovery.collect(conn, account, budget, scope=scope)
+        bundle = observations.collect(bundle, budget, scope=scope, client_factory=discovery._client)
         bundle = supporting.collect(bundle, budget, scope=scope)
     except Exception as exc:  # a partial artifact is preferable to losing all stage metadata
         print(f"evidence report discovery failed: {type(exc).__name__}", file=sys.stderr)
