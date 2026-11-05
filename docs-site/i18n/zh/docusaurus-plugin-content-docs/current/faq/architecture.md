@@ -164,7 +164,7 @@ flowchart LR
 
 ### 逐步详情
 
-**1. Lambda@Edge（us-east-1，python3.12，Viewer Request）**
+**1. Lambda@Edge（us-east-1，python3.14，Viewer Request）**
 - 对每个请求都通过 **RS256 JWKS 签名校验** `awsops_token` Cookie 中的 JWT，并检查 `iss`/`aud`/`token_use`。
 - 未认证则重定向到自托管的 **`/login`** 表单。
 

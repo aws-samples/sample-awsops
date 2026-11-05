@@ -27,7 +27,7 @@ AWSops v2 is a single-pane operations dashboard for AWS and Kubernetes, rebuilt 
 
 ```
 Internet -> CloudFront (TLS, Lambda@Edge Cognito auth) -> VPC Origin (https-only) -> internal ALB (HTTPS)
-  -> ECS Fargate: Next.js 15 thin-BFF :3000 (arm64, no basePath) -> Aurora Serverless v2 (PG 17.9, node-pg)
+  -> ECS Fargate: Next.js 16 thin-BFF :3000 (arm64, no basePath) -> Aurora Serverless v2 (PG 17.9, node-pg)
   -> Amazon Bedrock AgentCore: Runtime (Strands) + 9 section Gateways + Memory + Code Interpreter
   -> async workers: POST /api/jobs -> SQS -> Step Functions -> Lambda or Fargate worker
 ```
@@ -179,7 +179,7 @@ AgentCore's own config (runtime ARN, Memory ID, Code Interpreter ID) is written 
 
 ```
 awsops/
-  web/                    # Next.js 15 thin-BFF: 41 pages, 104 API routes, 118 components
+  web/                    # Next.js 16 thin-BFF: 41 pages, 104 API routes, 118 components
   agent/                  # Strands Agent (Runtime source) + MCP Lambda tool sources
   terraform/foundation/  # single Terraform root: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/             # configure/deploy/migrate/agentcore/workers tooling (all Node.js/Python)
@@ -191,6 +191,7 @@ awsops/
 ## Testing
 
 Install the dependencies listed in [merge verification](docs/v2-merge-verification.md#runner-usage).
+JavaScript builds and tests require Node 26.13.0 and npm 11.12.1 or newer within Node 26.
 Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; use the [sandbox setup](docs/runbooks/review-codec-sandbox.md#verification).
 
 Image fixtures, including the panel-prompt structure check in `tests/run-all.sh`, require
@@ -203,8 +204,8 @@ The required migration, web connection-phase and agent tool-policy history Postg
 they use bare `docker` on PATH (the documented exceptions to optional legacy itests).
 The web connection and policy suites also require `npm ci --prefix web` for the locked driver and TypeScript.
 These suites and their offline companion use no AWS credentials.
-Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.15.7**;
-their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
+Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.17.1**;
+their offline variable fixture needs no providers. Terraform mock tests require **1.17.1** and installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
 only its final fmt/validate diagnostics are informational.
@@ -227,7 +228,7 @@ bash tests/run-all.sh             # repo-wide hook/structure tests + agent Pytho
 ```
 
 The private migration fixture command includes runtime, controller, workflow and mocked-plan
-checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform **1.15.7**.
+checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform **1.17.1**.
 See [merge verification](docs/v2-merge-verification.md) for the complete CI scope,
 including the conditional documentation build and full presentation archive check.
 
@@ -270,7 +271,7 @@ AWSops v2는 AWS와 Kubernetes를 위한 단일 화면 운영 대시보드로, T
 
 ```
 Internet -> CloudFront (TLS, Lambda@Edge Cognito 인증) -> VPC Origin (https-only) -> 내부 ALB (HTTPS)
-  -> ECS Fargate: Next.js 15 thin-BFF :3000 (arm64, basePath 없음) -> Aurora Serverless v2 (PG 17.9, node-pg)
+  -> ECS Fargate: Next.js 16 thin-BFF :3000 (arm64, basePath 없음) -> Aurora Serverless v2 (PG 17.9, node-pg)
   -> Amazon Bedrock AgentCore: Runtime (Strands) + 9 섹션 Gateway + Memory + Code Interpreter
   -> 비동기 워커: POST /api/jobs -> SQS -> Step Functions -> Lambda 또는 Fargate 워커
 ```
@@ -417,7 +418,7 @@ AgentCore 자체 설정(runtime ARN, Memory ID, Code Interpreter ID)은 provisio
 
 ```
 awsops/
-  web/                      # Next.js 15 thin-BFF: 41 페이지, 104 API 라우트, 118 컴포넌트
+  web/                      # Next.js 16 thin-BFF: 41 페이지, 104 API 라우트, 118 컴포넌트
   agent/                    # Strands Agent(Runtime 소스) + MCP Lambda 도구 소스
   terraform/foundation/  # 단일 Terraform 루트: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/               # configure/deploy/migrate/agentcore/workers 도구(전부 Node.js/Python)
@@ -429,6 +430,7 @@ awsops/
 ## 테스트
 
 [머지 검증](docs/v2-merge-verification.md#runner-usage)의 의존성을 먼저 설치하세요.
+JavaScript 빌드·테스트에는 Node 26 계열의 Node 26.13.0 이상과 npm 11.12.1 이상이 필요합니다.
 Docker와 준비된 `AWSOPS_REVIEW_CODEC_STATE`도 필요합니다. [샌드박스 준비 절차](docs/runbooks/review-codec-sandbox.md#verification)를 따르세요.
 
 `tests/run-all.sh`의 panel-prompt 구조 검사를 포함한 이미지 fixture에는 Linux ARM64/x86-64의
@@ -441,9 +443,9 @@ Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no
 Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 연결·정책 테스트는 잠긴 드라이버와
 TypeScript를 위해 `npm ci --prefix web`도 필요합니다. 이 테스트들과 오프라인 companion은
 AWS 자격증명을 사용하지 않습니다.
-인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
+인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.17.1**을 필수로 요구하며,
 누락 시 공통 러너도 실패합니다. 오프라인 변수 fixture에는 provider가 필요하지 않습니다.
-마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
+마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.17.1**과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
 필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다. 필수 `test_ci_web_workflow.py` 테스트에는 PyYAML과 Bash도 필요합니다. Deploy Web은 컨트롤러를 사용하고 웹 배포가 호출하는 마이그레이션에 자동 SQL 검사를 강제합니다. 자세한 내용은 `docs/runbooks/release-safety-primitives.md`를 참고하세요.
@@ -465,7 +467,7 @@ bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent
 ```
 
 위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
-controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·Terraform **1.15.7**도 필요합니다.
+controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·Terraform **1.17.1**도 필요합니다.
 조건부 문서 빌드와 프레젠테이션 전체 아카이브 검증을 포함한 CI 범위는
 [머지 검증 가이드](docs/v2-merge-verification.md)를 참고하세요.
 
