@@ -131,10 +131,7 @@ class RuntimeDependencyContracts(unittest.TestCase):
         """)
 
     def test_anthropic_bedrock_sdk_keeps_the_dark_loop_contract(self):
-        # anthropic_loop.py (ANTHROPIC_AGENT_LOOP_ENABLED, default off) builds
-        # AsyncAnthropicBedrock(aws_region=...) and calls messages.stream(**kwargs) with model,
-        # max_tokens, thinking, system, messages and tools. Pin that surface on the installed SDK;
-        # building the stream manager must not send a request.
+        # Pin the installed SDK surface anthropic_loop.py uses; building the manager sends nothing.
         self.run_contract("""
             import asyncio
             import inspect

@@ -21,10 +21,8 @@ Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; follow `docs/
 The HEAD image fixtures and panel-prompt structure check (`bash tests/run-all.sh`) need
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Install it separately with
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`;
-do not combine the hash-locked file with unhashed requirements. Its agent suite also runs
-`agent/tests/test_runtime_dependencies.py`, which imports the installed runtime SDKs
-(Strands, MCP, httpx, botocore); install them first with `python3 -m pip install -r agent/requirements.txt`
-(the same set Merge Verify installs).
+do not combine the hash-locked file with unhashed requirements. Its agent suite imports the
+runtime SDKs; install `agent/requirements.txt` first.
 
 The required web-image helper tests need Linux with `/proc`, jq, and curl installed
 on `/usr/local/bin:/usr/bin:/bin`. Run `python3 -m pytest -q scripts/v2/test_ci_web_image.py`;

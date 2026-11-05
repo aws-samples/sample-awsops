@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 18ac3453dc62 · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc624ac7ab05 · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -82,8 +82,8 @@ Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; follow `docs/
 HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh`) require
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
-Never combine this hash-locked file with unhashed requirements. The agent suite in `run-all.sh` also runs
-`agent/tests/test_runtime_dependencies.py` against the installed SDKs: run `python3 -m pip install -r agent/requirements.txt` first.
+Never combine this hash-locked file with unhashed requirements. The agent suite imports the runtime
+SDKs: install `agent/requirements.txt` first.
 
 
 ## BANNED PATTERNS (enforce in review)

@@ -16,12 +16,11 @@ alongside the structure tests above.
 Full image checks also require Docker and `AWSOPS_REVIEW_CODEC_STATE`; see `docs/runbooks/review-codec-sandbox.md#verification`.
 
 ## Running
-The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv. The agent suite's
-runtime-dependency contracts import the installed SDKs from `agent/requirements.txt` (never combined with the hash-locked file).
+The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv.
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
-python -m pip install -r agent/requirements.txt   # separate install: runtime SDKs for agent/tests/test_runtime_dependencies.py
+python -m pip install -r agent/requirements.txt   # runtime SDKs for agent/tests (separate install)
 bash tests/run-all.sh    # everything (TAP format: structure + agent)
 ```
 
