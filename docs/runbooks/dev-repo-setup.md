@@ -1088,7 +1088,7 @@ Plan and Apply migrate together from `tfplan` to `tfplan-<attempt>`; historical 
 retain the old format and inspector. The reference overwrite uses the upload action's
 same-run runtime token, so `GITHUB_TOKEN` remains `actions: read`, not `actions: write`.
 
-Use a trusted checkout at the plan's full SHA with Terraform 1.17.1 provider schemas
+Use a trusted checkout at the plan's full SHA with Terraform 1.15.7 provider schemas
 already installed. Authenticate `gh` and the intended AWS profile. No client encryption
 key is required for this S3 inspection:
 
@@ -1413,7 +1413,7 @@ and preserve all existing migration checksums and `-- since:` headers.
 
 After a successful migration, deploy the reviewed web image and pass the full dev runtime gate, including authenticated database access, before publishing service DNS.
 
-Offline controller checks require Node 26, Python 3 with PyYAML and boto3/botocore, Terraform 1.17.1 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
+Offline controller checks require Node 20, Python 3 with PyYAML and boto3/botocore, Terraform 1.15.7 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
 
 ```bash
 node --test scripts/v2/ci/run-migration*.test.mjs
@@ -1507,7 +1507,7 @@ persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, an
 effective `demo_email` must exactly match that applied username.
 
 The credential must match the existing user's deployed password. Deploy Web uses
-Terraform **1.17.1** to evaluate the restored configuration: the repository secret
+Terraform **1.15.7** to evaluate the restored configuration: the repository secret
 `TF_VAR_DEMO_PASSWORD` is supplied as the lowercase environment variable
 `TF_VAR_demo_password`, a shared **default**. A protected per-stack `demo_password`
 assignment in `TF_TFVARS_DEV` takes precedence, including when the shared secret is
@@ -1554,7 +1554,7 @@ reset a password to make a check pass. Required dev preparation performs its own
 Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
 image pinning or rollout.
 
-Offline checks for this path (Node 26, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.17.1):
+Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):
 
 ```bash
 node --test scripts/v2/deployment-smoke.test.mjs
@@ -1568,7 +1568,7 @@ its backend/state and HTTP boundaries are substituted, with no AWS/provider call
 ### Offline deployment checks
 
 Install test dependencies once with `python3 -m pip install -r scripts/v2/requirements-test.txt`.
-Use Node.js 26, OpenSSL, and Terraform **1.17.1**. For offline provider initialization, set
+Use Node.js 20, OpenSSL, and Terraform **1.15.7**. For offline provider initialization, set
 `TF_CLI_CONFIG_FILE` to a filesystem-mirror configuration with the locked providers and no
 `direct` fallback. The checks use mocked providers and a localhost-only HTTP state backend.
 `terraform-test.sh` copies **tracked working-tree files only** into a disposable directory
