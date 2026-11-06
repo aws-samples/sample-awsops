@@ -8,6 +8,7 @@ import threading
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 _clients = {}
 _lock = threading.Lock()
@@ -104,11 +105,17 @@ def _cost(client, account, budget, bundle, now):
 
 
 def _posture(client, account, bundle):
-    response = client.get_findings(
-        Filters={"AwsAccountId": [{"Value": account, "Comparison": "EQUALS"}],
-                 "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
-                 "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
-        MaxResults=100)
+    try:
+        response = client.get_findings(
+            Filters={"AwsAccountId": [{"Value": account, "Comparison": "EQUALS"}],
+                     "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+                     "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
+            MaxResults=100)
+    except ClientError as error:
+        # Not subscribed is a steady state, not a failure (sources.collect_posture parity).
+        if error.response.get("Error", {}).get("Code") != "InvalidAccessException":
+            raise
+        return {"enabled": False, "posture_counts": {}}, {"filter": "ACTIVE_NEW"}, {"complete": True, "returned": 0}
     rows = response.get("Findings", [])[:100]
     counts = {}
     for row in rows:
@@ -122,7 +129,7 @@ def _posture(client, account, bundle):
     more = bool(response.get("NextToken"))
     if more:
         _mark(bundle, "incomplete", "posture_page_cap")
-    return ({"posture_counts": counts, "sampled": True, "continuation": more},
+    return ({"enabled": True, "posture_counts": counts, "sampled": True, "continuation": more},
             {"filter": "ACTIVE_NEW"}, {"complete": not more, "returned": len(rows)})
 
 

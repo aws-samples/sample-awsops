@@ -281,8 +281,21 @@ def test_metrics_are_14_day_regional_and_use_actual_rds_dimensions(provider):
     assert ec2["coverage"]["sample_ratio"] == 1
     assert ec2["facts"]["metrics"]["CPUUtilization"]["Maximum"]["unit"] == "Percent"
     rds = next(e for e in evidence(bundle, "metrics") if resource(bundle, "orders")["id"] in e["resource_ids"])
+    assert rds["facts"]["replica_source"] == "unknown" and "rds_replica_source_unknown" in bundle["gaps"]
     assert rds["facts"]["metrics"]["ReadIOPS"]["Maximum"]["unit"] == "Count/Second"
     assert rds["facts"]["metrics"]["ReadLatency"]["p95"]["unit"] == "Seconds"
+
+
+def test_synced_replica_source_distinguishes_standalone_from_replica(provider):
+    provider.metrics = metric_response
+    key = "read_replica_source_db_instance_identifier"
+    db = Database([inventory("rds", "solo", {"db_instance_identifier": "solo", key: None}),
+                   inventory("rds", "copy", {"db_instance_identifier": "copy", key: "solo"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    facts = {e["resource_ids"][0]: e["facts"]["replica_source"] for e in evidence(bundle, "metrics")}
+    assert facts[resource(bundle, "solo")["id"]] == "none"
+    assert facts[resource(bundle, "copy")["id"]] == "solo"
+    assert "rds_replica_source_unknown" not in bundle["gaps"]
 
 
 def test_partial_metric_status_never_becomes_complete_sizing_evidence(provider):
@@ -292,6 +305,15 @@ def test_partial_metric_status_never_becomes_complete_sizing_evidence(provider):
     assert item["coverage"]["complete"] is False
     assert item["coverage"]["sample_ratio"] < 1
     assert "metrics_partial" in bundle["incomplete"]
+
+
+def test_failed_metric_read_is_never_fresh(provider):
+    def fail(args):
+        raise TimeoutError("simulated metric read failure")
+    provider.metrics = fail
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert evidence(bundle, "metrics")[0]["fresh"] is False
+    assert "metrics_read_failed" in bundle["degraded"]
 
 
 def recommendation(rid=I1):
@@ -358,6 +380,43 @@ def test_host_scope_requires_applied_exact_host_identity(provider, monkeypatch, 
     assert not db.queries and not provider.client_calls
     assert not bundle["resources"]
     assert "untrusted_host_scope" in bundle["degraded"]
+    assert bundle["native_sources"]["cost"] == {"status": "not_collected"}
+
+
+def test_host_account_is_never_read_through_member_scope(provider):
+    db = Database([inventory("ec2", I1, {}, account=ACCOUNT)])
+    bundle = discovery.collect(db, ACCOUNT, Budget(), scope=ACCOUNT)
+    assert not db.queries and not provider.client_calls
+    assert "host_member_scope_rejected" in bundle["degraded"] and "native_sources" in bundle
+
+
+@pytest.mark.parametrize("reasons", [["invalid_request"], ["future_reason"], "query_failed"])
+def test_any_published_source_reason_disqualifies_the_graph(provider, reasons):
+    db = graph_fixture()
+    assert discovery.collect(db, ACCOUNT, Budget())["coverage"]["graph"]["infra"]["complete"]
+    db.states[1][4]["publishedSources"][0]["reasons"] = reasons
+    assert not discovery.collect(db, ACCOUNT, Budget())["coverage"]["graph"]["infra"]["complete"]
+
+
+@pytest.mark.parametrize("minutes,fresh", [(None, True), ("5", False), ("bogus", True), ("0", True)])
+def test_inventory_freshness_honors_stale_after_minutes(provider, monkeypatch, minutes, fresh):
+    monkeypatch.setattr(discovery, "_now", lambda: NOW + dt.timedelta(minutes=10))
+    if minutes is not None:
+        monkeypatch.setenv("INVENTORY_STALE_AFTER_MINUTES", minutes)
+    bundle = discovery.collect(Database([inventory("ec2", I1, {"architecture": "arm64"})]), ACCOUNT, Budget())
+    assert evidence(bundle, "inventory")[0]["fresh"] is fresh
+    assert resource(bundle, I1)["facts"]["architecture"] == "arm64"
+
+
+def test_byte_cap_evicts_trace_edges_before_sizing_evidence():
+    bundle = {"resources": [], "relationships": [], "gaps": [], "degraded": [], "incomplete": [],
+              "coverage": {"account": ACCOUNT},
+              "evidence": [{"id": f"x{i}", "source": "xray", "facts": "x" * 4000} for i in range(60)]
+              + [{"id": "m", "source": "cloudwatch", "facts": "m" * 4000}]}
+    result = discovery._finish(bundle)
+    assert [e["id"] for e in result["evidence"] if e["source"] == "cloudwatch"] == ["m"]
+    assert result["coverage"]["byte_cap_evicted"]["xray"] > 0
+    assert "context_byte_cap" in result["incomplete"]
 
 
 @pytest.mark.parametrize("fault", ["pre_attempt", "snapshot_count", "ledger_count"])
@@ -449,8 +508,9 @@ def test_database_timeout_restores_existing_policy_after_read_error(provider):
     db = BlockedDatabase()
     bundle = discovery.collect(db, ACCOUNT, Budget(5))
     changes = [args["timeout"] for sql, args in db.queries if "set_config('statement_timeout'" in sql]
-    assert "4000ms" in changes and changes[-1] == "30s"
-    assert db._usock.changes and max(db._usock.changes[:-1]) <= 30
+    # The server cancels before the 4s transport timeout closes the connection.
+    assert "2000ms" in changes and changes[-1] == "30s"
+    assert 4 in db._usock.changes and max(db._usock.changes[:-1]) <= 30
     assert db._usock.timeout == 30
     assert "inventory_read_failed" in bundle["degraded"]
 
@@ -489,6 +549,7 @@ def test_real_provider_utilization_names_preserve_memory_and_both_io_directions(
     facts = evidence(bundle, "provider_sizing")[0]["facts"]
     assert facts["missing_memory"] is False and facts["missing_io"] is False
     assert facts["recommended_type"] == "m7g.large"
+    assert ("replica_source_unknown" in facts["guard_hits"]) is (kind == "rds")
 
 
 def test_inventory_arn_cannot_substitute_a_different_resource(provider):
@@ -606,7 +667,7 @@ def test_xray_facts_survive_admission_and_unresolved_binding_is_not_an_observati
     from diagnosis.evidence import EvidenceIndex
     provider.xray = [{"Services": [{"ReferenceId": 1, "Name": "app", "Edges": [
                         {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 10,
-                         "ErrorStatistics": {"TotalCount": 1}}}]},
+                         "ErrorStatistics": {"TotalCount": 1}, "FaultStatistics": {"TotalCount": 2}}}]},
                      {"ReferenceId": 2, "Name": "database"}]}]
     bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
     index = EvidenceIndex(bundle, ACCOUNT)
@@ -614,6 +675,7 @@ def test_xray_facts_survive_admission_and_unresolved_binding_is_not_an_observati
     assert row["facts"]["resource_binding"] == "unresolved"
     assert (row["facts"]["from_name"], row["facts"]["to_name"], row["facts"]["calls"]) == ("app", "database", 10)
     assert row["facts"]["error_rate"] == 0.1 and row["coverage"]["complete"] is True
+    assert row["facts"]["fault_rate"] == 0.2
     result = index.validate_finding({"id": "finding-xray", "pillar": "reliability", "severity": "medium",
         "resource_ids": row["resource_ids"], "evidence_ids": [row["id"]], "claim": "observation",
         "explanation": "The service edge needs verification.", "prerequisites": [],

@@ -14,7 +14,8 @@ REGION = "ap-northeast-2"
     "매월 오백 달러를 절감할 수 있습니다.", "한 달에 백 개의 요청이 발생합니다.",
     "Savings reach billions of dollars.", "CPU pressure is ２０ percent.",
     "请求发生三次。", "負荷が二倍です。", "请求数为五百。",
-    "CPU使用率为五。", "CPU使用率は百です。",
+    "CPU使用率为五。", "CPU使用率は百です。", "오백 원을 절감합니다.", "삼십 분 동안 지연됩니다.",
+    "삼십분 지연됩니다.", "五百",
 ])
 def test_localized_model_numeric_and_money_claims_are_rejected(prose):
     index = EvidenceIndex(bundle(), ACCOUNT)
@@ -24,6 +25,7 @@ def test_localized_model_numeric_and_money_claims_are_rejected(prose):
 @pytest.mark.parametrize("prose", [
     "数据库配置不一致，需要验证依赖。",
     "設定の一貫性を検証してください。",
+    "조건을 확인하고 이번 사건을 구분하세요.", "만일 실패하면 검토하세요.", "万一の障害に備えてください。",
 ])
 def test_numeral_character_inside_ordinary_words_is_not_numeric_prose(prose):
     index = EvidenceIndex(bundle(), ACCOUNT)

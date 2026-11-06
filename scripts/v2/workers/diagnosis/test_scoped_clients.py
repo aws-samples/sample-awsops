@@ -42,7 +42,7 @@ def test_unregistered_member_makes_no_sts_call(monkeypatch):
         scoped_clients.member_factory(Registry([]), ACCOUNT, Budget())
 
 
-@pytest.mark.parametrize("rows", [[["ReadOnly", None]], [["bad/path", "external"]],
+@pytest.mark.parametrize("rows", [[["ReadOnly", 7]], [["ReadOnly", "x"]], [["bad/path", "external"]],
                                  [["ReadOnly", "external"], ["ReadOnly", "external"]]])
 def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
     monkeypatch.setattr(scoped_clients.boto3, "client", lambda *a, **k: pytest.fail("STS forbidden"))
@@ -50,16 +50,20 @@ def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
         scoped_clients.member_factory(Registry(rows), ACCOUNT, Budget())
 
 
-def test_assumed_principal_must_match_registered_account(monkeypatch):
+@pytest.mark.parametrize("external", ["external", None, ""])
+def test_assumed_principal_must_match_registered_account(monkeypatch, external):
+    called = []
+
     class Sts:
         def assume_role(self, **params):
-            assert params["ExternalId"] == "external"
+            called.append(params.get("ExternalId"))
             assert params["RoleArn"] == f"arn:aws:iam::{ACCOUNT}:role/ReadOnly"
             return {"AssumedRoleUser": {"Arn": "arn:aws:sts::111122223333:assumed-role/ReadOnly/test"},
                     "Credentials": {}}
     monkeypatch.setattr(scoped_clients.boto3, "client", lambda *a, **k: Sts())
     with pytest.raises(scoped_clients.ScopeError):
-        scoped_clients.member_factory(Registry([["ReadOnly", "external"]]), ACCOUNT, Budget())
+        scoped_clients.member_factory(Registry([["ReadOnly", external]]), ACCOUNT, Budget())
+    assert called == [external or None]
 
 
 @pytest.mark.parametrize("reported_account", [ACCOUNT, "111122223333"])

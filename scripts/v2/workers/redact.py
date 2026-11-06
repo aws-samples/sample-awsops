@@ -12,7 +12,7 @@ import re
 # The account-id pattern uses negative lookarounds so it only matches a STANDALONE 12-digit run
 # (an account id), not a slice of a longer/embedded number.
 REDACTORS = [
-    (re.compile(r"arn:(?:aws|aws-cn|aws-us-gov):[^\s\"']+"), "<arn>"),
+    (re.compile(r"arn:aws(?:-cn|-us-gov|-iso(?:-[a-z])?|-eusc)?:[^\s\"']+"), "<arn>"),
     # email BEFORE acct: an email local-part with 12+ digits would otherwise be partially
     # clobbered by the acct rule first.
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
@@ -30,11 +30,15 @@ IPV6_CANDIDATES = re.compile(
 
 def _ipv6(match):
     value = match.group(0)
-    try:
-        ipaddress.IPv6Address(value)
-    except ValueError:
-        return value
-    return "<ip>"
+    # Sentence punctuation ("peer 2001:db8::1.") is eaten by the greedy body: retry without
+    # trailing [.:] characters and re-emit them after the placeholder.
+    for end in range(len(value.rstrip(".:")), len(value) + 1):
+        try:
+            ipaddress.IPv6Address(value[:end])
+        except ValueError:
+            continue
+        return "<ip>" + value[end:]
+    return value
 
 
 def redact(text):

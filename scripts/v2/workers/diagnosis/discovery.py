@@ -33,12 +33,12 @@ _REGION = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d+$")
 _INSTANCE = re.compile(r"^i-(?:[a-f0-9]{8}|[a-f0-9]{17})$")
 _FACT_KEYS = (
     "arn", "name", "instance_type", "instance_state", "private_ip_address",
-    "db_instance_identifier", "db_instance_class", "endpoint_address",
+    "db_instance_identifier", "endpoint_address",
     "engine", "engine_version", "multi_az", "availability_zone",
     "publicly_accessible", "storage_encrypted", "encrypted", "backup_retention_period",
     "storage_type", "allocated_storage", "iops", "vpc_id", "subnet_id",
-    "read_replica_source_db_instance_identifier", "db_cluster_identifier",
-    "cpu_architecture", "tags", "class", "status", "endpoint_port", "last_status",
+    "read_replica_source_db_instance_identifier",
+    "architecture", "tags", "class", "status", "endpoint_port", "last_status",
     "task_arn", "task_group", "cluster_arn", "attachments",
 )
 _TAG_KEYS = {"name", "dr", "disaster-recovery", "compliance", "retention", "do-not-delete", "donotdelete"}
@@ -46,12 +46,17 @@ _NODE_KEYS = ("resourceId", "inventoryAccount", "accountId", "region", "host", "
               "sourceId", "invType", "namespace", "deployment", "environment")
 _REASONS = {"missing_configuration", "configuration_failed", "query_failed", "malformed_payload",
             "malformed_rows", "payload_truncated", "trace_fetch_failed", "cap_reached",
-            "source_failed", "registry_read_failed", "missing_ledger", "incomplete_collection",
+            "invalid_request", "source_failed", "registry_read_failed", "missing_ledger", "incomplete_collection",
             "unknown_attributes", "unknown_capture", "unknown_account_coverage",
             "empty_not_confirmed", "count_not_confirmed"}
 _CAPABILITIES = {"resource_metrics", "provider_sizing", "graph_refresh"}
 _clients = {}
 _client_lock = threading.Lock()
+
+
+def _stale_seconds():
+    """INVENTORY_STALE_AFTER_MINUTES parity with web/lib/graph-state.ts and inventory_read_mcp."""
+    return _bounded_int(os.environ.get("INVENTORY_STALE_AFTER_MINUTES"), 30, 1440, floor=1) * 60
 
 
 def _now():
@@ -147,6 +152,8 @@ def _db_read(conn, bundle, budget, sql, **parameters):
     """
     if not _available(bundle, budget):
         raise TimeoutError("discovery_deadline")
+    # The server cancels (statement_timeout) before the transport gives up, so
+    # a slow read fails cleanly and the pg8000 connection stays usable.
     seconds = min(10, max(0.001, budget.remaining(analysis=True) - 1))
     sock = getattr(conn, "_usock", None)
     prior_socket = None
@@ -162,7 +169,7 @@ def _db_read(conn, bundle, budget, sql, **parameters):
         if sock is not None:
             sock.settimeout(seconds)
         conn.run("SELECT set_config('statement_timeout',:timeout,false)",
-                 timeout=f"{int(seconds * 1000)}ms")
+                 timeout=f"{max(1, int(max(seconds - 2, seconds / 2) * 1000))}ms")
         if not _available(bundle, budget):
             raise TimeoutError("discovery_deadline")
         if sock is not None:
@@ -217,6 +224,9 @@ def _facts(data, *, account=None, region=None):
                 and x.get("Name") in ("subnetId", "privateIPv4Address", "networkInterfaceId")
                 and isinstance(x.get("Value"), str)]}
                 for a in value if isinstance(a, dict) and isinstance(a.get("Details"), list)]
+        elif key == "read_replica_source_db_instance_identifier" and key in data:
+            # Presence matters: a synced null means standalone, an absent key means unknown.
+            out[key] = _text(value, 200) if isinstance(value, str) else ""
         elif key == "private_ip_address":
             address = _address(value)
             if address is not None:
@@ -332,7 +342,7 @@ def _read_inventory(conn, bundle, budget, scope):
             "WHERE account_id=:scope AND resource_type=ANY(:resource_types) GROUP BY resource_type",
             scope=scope, resource_types=sorted({r[2] for r in rows})))
         run_by_type, point_by_type = {r[0]: r for r in runs}, {r[0]: r for r in points}
-        matched = 0
+        matched, stale = 0, _stale_seconds()
         for storage, region, kind, native_id, data, captured in rows:
             if storage != scope or region not in selected or not isinstance(native_id, str):
                 continue
@@ -347,10 +357,10 @@ def _read_inventory(conn, bundle, budget, scope):
                             and point[1] == scoped_counts.get(kind)
                             and _stamp(run[6]) and _stamp(point[2])
                             and _stamp(run[6]) <= _stamp(point[2])
-                            and _fresh(run[3], 30 * 60) and _fresh(point[2], 30 * 60)
+                            and _fresh(run[3], stale) and _fresh(point[2], stale)
                             and _stamp(run[2]) == _stamp(run[3])
                             and _stamp(point[2]) <= _stamp(run[2]))
-            fresh = complete and _fresh(captured, 30 * 60) and _stamp(captured) >= _stamp(run[6])
+            fresh = complete and _fresh(captured, stale) and _stamp(captured) >= _stamp(run[6])
             if not fresh:
                 _mark(bundle, "incomplete", "inventory_unqualified")
             _evidence(bundle, "inventory", "inventory", [r["id"]], r["facts"], captured,
@@ -392,13 +402,16 @@ def _graph_state(value, cls):
                     "windowStartMs", "windowEndMs", "capturedAtMs", "lastSuccessAtMs",
                     "attemptedAtMs", "finishedAtMs") if k in row and
                     ((isinstance(row[k], str) and len(row[k]) <= 128) or _number(row[k]) is not None or row[k] is None)}
-            item["reasons"] = [r for r in row.get("reasons", []) if isinstance(r, str) and r in _REASONS][:16]
+            reasons = row.get("reasons", [])
+            reasons = reasons if isinstance(reasons, list) else [None]
+            item["reasons"] = [r for r in reasons if isinstance(r, str) and r in _REASONS][:16]
             projected.append(item)
-            if row.get("status") not in ("ok", "empty") or item["reasons"]:
+            # An unknown reason is still a reason: fail closed rather than dropping it.
+            if row.get("status") not in ("ok", "empty") or reasons:
                 fresh = False
             if cls != "trace" and (row.get("producerStatus") != "succeeded"
-                    or not _fresh(row.get("lastSuccessAtMs"), 1800)
-                    or (row.get("itemCount", 0) > 0 and not _fresh(row.get("capturedAtMs"), 1800))):
+                    or not _fresh(row.get("lastSuccessAtMs"), _stale_seconds())
+                    or (row.get("itemCount", 0) > 0 and not _fresh(row.get("capturedAtMs"), _stale_seconds()))):
                 fresh = False
         if len(sources) > 128:
             fresh = False
@@ -408,10 +421,10 @@ def _graph_state(value, cls):
                    "instance_observations_omitted": drops}, window
 
 
-def _bounded_int(value, default, ceiling):
+def _bounded_int(value, default, ceiling, floor=0):
     try:
         number = int(value)
-        return number if 0 <= number <= ceiling else default
+        return number if floor <= number <= ceiling else default
     except (TypeError, ValueError):
         return default
 
@@ -666,9 +679,11 @@ def _xray(bundle, budget, regions):
                 stats = _dict(edge.get("SummaryStatistics"))
                 calls = _number(stats.get("TotalCount"))
                 errors = _number(_dict(stats.get("ErrorStatistics")).get("TotalCount"))
+                faults = _number(_dict(stats.get("FaultStatistics")).get("TotalCount"))
                 facts = {"from_ref": ref, "to_ref": target, "from_name": _text(service.get("Name")),
                          "to_name": _text(services.get(target, {}).get("Name")), "calls": calls,
                          "error_rate": errors / calls if errors is not None and calls else None,
+                         "fault_rate": faults / calls if faults is not None and calls else None,
                          "resource_binding": "unresolved"}
                 if target not in services:
                     _mark(bundle, "incomplete", "xray_unresolved_target")
@@ -786,8 +801,9 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     _mark(bundle, "incomplete", "metrics_partial")
                 facts = {"resource_type": r["kind"], "metrics": metrics, "dimensions": dimensions.get(r["id"], []),
                          "window_days": METRIC_DAYS, "missing_memory": bool(missing_memory), "missing_io": missing_io,
-                         "multi_az": r["facts"].get("multi_az"), "replica_source": r["facts"].get("read_replica_source_db_instance_identifier")}
-                _evidence(bundle, "cloudwatch", "metrics", [r["id"]], facts, end, region=region, fresh=True,
+                         "multi_az": r["facts"].get("multi_az"), "replica_source": _replica_source(bundle, r)}
+                _evidence(bundle, "cloudwatch", "metrics", [r["id"]], facts, end, region=region,
+                    fresh=page_coverage["complete"],
                     window={"start": start.isoformat(), "end": end.isoformat()},
                     coverage={**page_coverage, "complete": complete, "lookback_days": METRIC_DAYS, "sample_ratio": ratio})
 
@@ -802,6 +818,17 @@ def _arn(r):
     match = re.fullmatch(r"arn:(aws|aws-cn|aws-us-gov):(ec2|rds):([^:]+):(\d{12}):(.+)", str(arn))
     native_matches = arn == r["resource_id"] if r["resource_id"].startswith("arn:") else bool(match and match[5] == suffix)
     return arn if match and native_matches and match[2] == service and match[3] == r["region"] and match[4] == r["account"] else None
+
+
+def _replica_source(bundle, r):
+    """Replica source from inventory; rows synced before the field existed never imply standalone."""
+    if r["kind"] != "rds":
+        return None
+    key = "read_replica_source_db_instance_identifier"
+    if key in r["facts"]:
+        return r["facts"][key] or "none"
+    _mark(bundle, "gaps", "rds_replica_source_unknown")
+    return "unknown"
 
 
 def _utilization(values):
@@ -840,6 +867,9 @@ def _provider_row(bundle, r, row, kind):
     guards = guard_hits(tags=tags, lookback_days=lookback, stale=not fresh)
     if lookback is None:
         guards.append("unknown_observation_period")
+    replica = _replica_source(bundle, r)
+    if replica == "unknown":
+        guards.append("replica_source_unknown")
     facts = {"resource_type": kind, "current_type": _text(row.get("currentInstanceType" if is_ec2 else "currentDBInstanceClass")),
              "recommended_type": _text(top.get("instanceType" if is_ec2 else "dbInstanceClass")),
              "finding": _text(row.get("finding" if is_ec2 else "instanceFinding")),
@@ -849,7 +879,7 @@ def _provider_row(bundle, r, row, kind):
              "savings_basis": "after_discounts" if top.get("savingsOpportunityAfterDiscounts") else "on_demand",
              "guard_hits": guards, "missing_memory": not memory, "missing_io": not io,
              "utilization": utilization, "projected_utilization": _utilization(top.get("projectedUtilizationMetrics")),
-             "multi_az": r["facts"].get("multi_az"), "replica_source": r["facts"].get("read_replica_source_db_instance_identifier")}
+             "multi_az": r["facts"].get("multi_az"), "replica_source": replica}
     _evidence(bundle, "compute_optimizer", "provider_sizing", [r["id"]], facts, generated,
               region=r["region"], fresh=fresh, coverage={"complete": True, "lookback_days": lookback,
               "sample_ratio": 1 if memory and io and lookback is not None and lookback >= 14 else 0})
@@ -945,6 +975,9 @@ def _finops(conn, bundle, budget):
         _mark(bundle, "degraded", "finops_read_failed")
 
 
+_EVICTION = {"xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer": 3, "finops": 3}
+
+
 def _finish(bundle):
     # Apply the JSON byte bound after all projections. Removing evidence also
     # removes dependent edges; removing a resource removes its evidence. No
@@ -954,7 +987,13 @@ def _finish(bundle):
     while len(json.dumps(bundle, ensure_ascii=False, default=str).encode()) > MAX_BYTES - 512:
         _mark(bundle, "incomplete", "context_byte_cap")
         if bundle["evidence"]:
-            removed = bundle["evidence"].pop()["id"]
+            # Evict the newest low-priority evidence first (X-Ray, then graph);
+            # sizing, metrics and FinOps rows are retained longest.
+            rows = bundle["evidence"]
+            row = rows.pop(min(range(len(rows)), key=lambda i: (_EVICTION.get(rows[i].get("source"), 2), -i)))
+            evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
+            evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
+            removed = row["id"]
             bundle["relationships"] = [r for r in bundle["relationships"] if removed not in r["evidence_ids"]]
         elif bundle["relationships"]:
             bundle["relationships"].pop()
@@ -975,11 +1014,20 @@ def collect(conn, account, budget, *, scope="self"):
     bundle = {"resources": [], "evidence": [], "relationships": [],
               "coverage": {"account": account, "storage_scope": scope},
               "gaps": [], "degraded": [], "incomplete": []}
+    # These collectors are deliberately not duplicated from collect_all.
+    # Their absence is explicit per pillar rather than a fabricated healthy
+    # score. They can gain a bounded projection in a later source adapter.
+    bundle["native_sources"] = {key: {"status": "not_collected"} for key in
+                               ("cost", "posture", "what_changed", "commitment", "idle", "datasources_obs")}
+    for key in bundle["native_sources"]:
+        _mark(bundle, "gaps", f"{key}_not_collected")
     if not isinstance(account, str) or not _ACCOUNT.fullmatch(account) or scope not in ("self", account):
         _mark(bundle, "degraded", "invalid_discovery_scope")
         return _finish(bundle)
-    if scope == "self" and os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID") != account:
-        _mark(bundle, "degraded", "untrusted_host_scope")
+    host = os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")
+    if (scope == "self") != (host == account):
+        # The host is never read through the member path, and vice versa.
+        _mark(bundle, "degraded", "untrusted_host_scope" if scope == "self" else "host_member_scope_rejected")
         return _finish(bundle)
     _read_inventory(conn, bundle, budget, scope)
     _read_graph(conn, bundle, budget, scope)
@@ -1000,13 +1048,6 @@ def collect(conn, account, budget, *, scope="self"):
             _metrics(bundle, budget, resources, client_factory=client_factory)
             _provider_sizing(bundle, budget, resources, client_factory=client_factory)
             _mark(bundle, "gaps", "member_trace_network_sources_unsupported")
-    # These collectors are deliberately not duplicated from collect_all.
-    # Their absence is explicit per pillar rather than a fabricated healthy
-    # score. They can gain a bounded projection in a later source adapter.
-    bundle["native_sources"] = {key: {"status": "not_collected"} for key in
-                               ("cost", "posture", "what_changed", "commitment", "idle", "datasources_obs")}
-    for key in bundle["native_sources"]:
-        _mark(bundle, "gaps", f"{key}_not_collected")
     return _finish(bundle)
 
 
@@ -1016,7 +1057,7 @@ def follow_up(conn, account, bundle, requests, budget):
         _mark(merged, "gaps", "follow_up_rejected")
         return _finish(merged)
     scope = merged["coverage"].get("storage_scope")
-    if (scope not in ("self", account) or (scope == "self" and os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID") != account)
+    if (scope not in ("self", account) or (scope == "self") != (os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID") == account)
             or merged["coverage"].get("follow_up_passes", 0) >= 1):
         _mark(merged, "gaps", "follow_up_rejected")
         return _finish(merged)

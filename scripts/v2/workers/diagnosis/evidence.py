@@ -66,7 +66,8 @@ FACT_KEYS = {
     "dns_source_id",
     # X-Ray service-graph edges: service references/names, call statistics and the
     # explicit binding marker that keeps unresolved service nodes out of observations.
-    "from_ref", "to_ref", "from_name", "to_name", "calls", "error_rate", "resource_binding",
+    "from_ref", "to_ref", "from_name", "to_name", "calls", "error_rate", "fault_rate", "resource_binding",
+    "architecture", "enabled",
 }
 # Compute Optimizer directions that are downsizing opportunities (finops/rules.py parity).
 # Underprovisioned (upsize) and Optimized rows never validate as sizing candidates.
@@ -77,15 +78,16 @@ _NUMBER = re.compile(
     r"\d|[%$€£¥₩¢]"
     # Recognize numeral sequences and measured counts, preserving ordinary words
     # such as 不一致 / 一貫性 that contain an isolated numeral character.
-    rf"|[{_HAN_NUMERALS}]{{2,}}"
+    rf"|(?!万一|萬一)[{_HAN_NUMERALS}]{{2,}}"
     rf"|(?:为|為|是|达到|達到|约|約|共|有|は|が|およそ)\s*[{_HAN_NUMERALS}]+"
     r"(?=[\s。．.!！?？,，;；:：、]|です|だ|程度|左右|以内|以上|以下|$)"
     rf"|[{_HAN_NUMERALS}]\s*(?:个|個|台|次|倍|天|秒|分钟|分鐘|小时|小時|"
     r"毫秒|パーセント|件|回|時間|年間|ヶ月|か月|円)"
     r"|(?:美元|人民币|人民幣|ドル|ユーロ|달러|위안|엔화)"
-    r"|(?<![가-힣])(?:[영일이삼사오육칠팔구십백천만억조]+|한|하나|두|둘|세|셋|네|넷|"
-    r"다섯|여섯|일곱|여덟|아홉|열|스물|서른|마흔|쉰|예순|일흔|여든|아흔)"
-    r"\s*(?:퍼센트|프로|원|개|번|일|시간|분|초|배|건|달)"
+    # A one-syllable numeral glued to a counter is an ordinary word (조건, 이번, 구분, 만일).
+    r"|(?<![가-힣])(?:(?:[영일이삼사오육칠팔구십백천만억조]{2,}|다섯|여섯|일곱|여덟|아홉|스물|서른|"
+    r"마흔|예순|일흔|여든|아흔)\s*|(?:[영일이삼사오육칠팔구십백천만억조]|한|하나|두|둘|세|셋|네|넷|열|쉰)\s+)"
+    r"(?:퍼센트|프로|원|개|번|일|시간|분|초|배|건|달)"
     r"|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
     r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|"

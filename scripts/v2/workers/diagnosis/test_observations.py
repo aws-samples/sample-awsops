@@ -237,9 +237,12 @@ def test_deadline_starts_no_new_query():
 
 
 def test_pending_queries_are_stopped_at_poll_cap(monkeypatch):
-    monkeypatch.setattr(observations, "_sleep", lambda _: None)
+    sleeps = []
+    monkeypatch.setattr(observations, "_sleep", sleeps.append)
     fake = Provider(pending=True)
     data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    # Logs Insights / NFM need seconds: one query waits ~7.75s, never one long sleep.
+    assert sum(sleeps[:observations.MAX_POLLS - 1]) >= 5 and max(sleeps) <= 1.5
     assert any(c == "dns_stop" for c,_ in fake.calls)
     assert any(c == "nfm_stop" for c,_ in fake.calls)
     assert not data["relationships"] and data["incomplete"]

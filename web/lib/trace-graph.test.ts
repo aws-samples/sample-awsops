@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+vi.mock('@/lib/datasources', () => ({}));
+vi.mock('@/lib/mcp-lambda-invoke', () => ({}));
 import { buildInfraGraph } from './infra-topology';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
-import type { TraceSpan } from './trace-source';
+import { mapTempoTrace, type TraceSpan } from './trace-source';
 
 const account = '123456789012';
 const region = 'ap-northeast-2';
@@ -111,6 +113,24 @@ describe('same-span EC2 and DB observations', () => {
     const graph = buildTraceGraph([dbSpan(over)], [], inventory(), account);
     expect(graph.edges.filter(edge => edge.rel === 'queries')).toHaveLength(1);
     expect(graph.edges[0].meta).not.toHaveProperty('instance_observations');
+    // A claimed instance that cannot be bound is disclosed; an absent/non-EC2 claim is not evidence.
+    expect(graph.instanceObservationDrops).toBe(/missing identity|invalid instance ID/.test(_name) ? 0 : 1);
+  });
+
+  it('binds Tempo nanosecond spans at whole-millisecond observation time', () => {
+    const attr = (key: string, value: string) => ({ key, value: { stringValue: value } });
+    const [span] = mapTempoTrace('00112233445566778899aabbccddeeff', { batches: [{
+      resource: { attributes: [attr('service.name', 'checkout'), attr('cloud.account.id', account),
+        attr('cloud.region', region), attr('host.id', instanceA)] },
+      scopeSpans: [{ spans: [{ spanId: '1122334455667788', kind: 3,
+        startTimeUnixNano: '1762000000123456789', endTimeUnixNano: '1762000000128456789',
+        attributes: [attr('db.system', 'postgresql'), attr('server.address', dbHostA)] }] }],
+    }] });
+    const graph = buildTraceGraph([span], [], inventory(), account);
+    expect(graph.edges[0].meta.instance_observations?.[0]).toMatchObject({
+      instance_ref: instanceRefA, observed_at_ms: 1_762_000_000_123, first_observed_at_ms: 1_762_000_000_123,
+    });
+    expect(graph.instanceObservationDrops).toBe(0);
   });
 
   it('rejects duplicate matching instance or endpoint inventory identities', () => {

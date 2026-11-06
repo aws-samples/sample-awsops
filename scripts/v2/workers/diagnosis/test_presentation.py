@@ -122,3 +122,15 @@ def test_failed_pillars_and_rejected_claims_remain_visible():
         SECTIONS, bundle(), data, lang="en", invariant_md=""))
     assert "security" in text and "unknown_evidence" in html.unescape(text)
     assert "healthy" not in text.lower()
+
+
+@pytest.mark.parametrize("field", ["prerequisites", "facts"])
+def test_mutating_commands_in_nonstring_prerequisites_or_facts_degrade_the_section(field):
+    from diagnosis import presentation
+    from diagnosis.report import _MUTATING_MARK
+    data, command = bundle(), {"run": "aws ec2 terminate-instances --instance-ids i-1"}
+    rows = analysis(findings=[finding(prerequisites=[command])]) if field == "prerequisites" else analysis()
+    if field == "facts":
+        data["evidence"][0]["facts"]["note"] = command["run"]
+    result = dict(presentation.render(SECTIONS, data, rows, lang="en", invariant_md=""))
+    assert _MUTATING_MARK["en"].strip() in result["compute_infrastructure"]

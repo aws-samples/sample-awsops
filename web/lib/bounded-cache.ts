@@ -2,6 +2,8 @@ export interface BoundedTtlCacheOptions {
   ttlMs: number;
   maxEntries: number;
   maxInFlight: number;
+  /** Per-load deadline; a hung loader is rejected and frees its in-flight slot. */
+  loadTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -9,6 +11,7 @@ export class BoundedTtlCache<T> {
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly maxInFlight: number;
+  private readonly loadTimeoutMs: number;
   private readonly now: () => number;
   private readonly values = new Map<string, { expiresAt: number; value: T }>();
   private readonly pending = new Map<string, Promise<T>>();
@@ -18,12 +21,14 @@ export class BoundedTtlCache<T> {
   constructor(options: BoundedTtlCacheOptions) {
     if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0
       || !Number.isSafeInteger(options.maxEntries) || options.maxEntries <= 0
-      || !Number.isSafeInteger(options.maxInFlight) || options.maxInFlight <= 0) {
+      || !Number.isSafeInteger(options.maxInFlight) || options.maxInFlight <= 0
+      || !Number.isFinite(options.loadTimeoutMs ?? 60_000) || (options.loadTimeoutMs ?? 60_000) <= 0) {
       throw new RangeError('Cache TTL and capacities must be finite positive values; capacities must be integers');
     }
     this.ttlMs = options.ttlMs;
     this.maxEntries = options.maxEntries;
     this.maxInFlight = options.maxInFlight;
+    this.loadTimeoutMs = options.loadTimeoutMs ?? 60_000;
     this.now = options.now ?? (() => Date.now());
   }
 
@@ -44,7 +49,11 @@ export class BoundedTtlCache<T> {
 
     const generation = this.generation;
     this.activeLoads += 1;
-    const promise = Promise.resolve().then(loader).then((value) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Cache load deadline exceeded')), this.loadTimeoutMs);
+    });
+    const promise = Promise.race([Promise.resolve().then(loader), deadline]).then((value) => {
       if (generation === this.generation) {
         const now = this.now();
         this.pruneExpired(now);
@@ -55,6 +64,7 @@ export class BoundedTtlCache<T> {
       }
       return value;
     }).finally(() => {
+      clearTimeout(timer);
       this.activeLoads -= 1;
       // A clear may have admitted a replacement load under this same key.
       if (this.pending.get(key) === promise) this.pending.delete(key);

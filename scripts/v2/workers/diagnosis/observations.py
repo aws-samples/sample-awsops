@@ -15,7 +15,7 @@ MAX_PAGES = 2
 MAX_ROWS = 50
 MAX_MONITORS = 2
 MAX_QUERIES = 6
-MAX_POLLS = 4
+MAX_POLLS = 8  # Backoff waits up to ~7.75s per query inside the 35s stage deadline.
 CATEGORIES = ("INTRA_AZ", "INTER_AZ", "INTER_VPC")
 MAX_ANSWERS = 8
 # Resolver query logs carry answers as [{"Rdata", "Type", "Class"}]. Logs Insights
@@ -276,9 +276,10 @@ class _Reads:
                 raise TimeoutError("network_evidence_deadline")
         return getattr(client, operation)(**parameters)
 
-    def pause(self):
+    def pause(self, attempt=0):
         if self.available():
-            _sleep(min(0.25, max(0, self.budget.remaining(analysis=True) - 2)))
+            _sleep(max(0, min(0.25 * 2 ** attempt, 1.5, self.budget.remaining(analysis=True) - 2,
+                              self.deadline - time.monotonic())))
 
     def stop(self, service, region, operation, **parameters):
         if self.available():
@@ -346,7 +347,7 @@ def _dns(reads, region, approved, vpcs, start, end):
             query_id = response.get("queryId")
             if not isinstance(query_id, str) or not query_id:
                 raise ValueError("dns_query_id_missing")
-            for _ in range(MAX_POLLS):
+            for attempt in range(MAX_POLLS):
                 result = reads.call("logs", region, "get_query_results", queryId=query_id)
                 status = result.get("status")
                 if status == "Complete":
@@ -366,7 +367,7 @@ def _dns(reads, region, approved, vpcs, start, end):
                     finished = True
                     d._mark(reads.bundle, "gaps", "dns_query_failed")
                     break
-                reads.pause()
+                reads.pause(attempt)
             if not finished:
                 d._mark(reads.bundle, "incomplete", "dns_query_poll_cap")
         finally:
@@ -407,7 +408,7 @@ def _flows(reads, regions, start, end):
                         query_id = response.get("queryId")
                         if not isinstance(query_id, str) or not query_id:
                             raise ValueError("nfm_query_id_missing")
-                        for _ in range(MAX_POLLS):
+                        for attempt in range(MAX_POLLS):
                             result = reads.call("networkflowmonitor", region, "get_query_status_monitor_top_contributors",
                                                 monitorName=name, queryId=query_id)
                             if result.get("status") == "SUCCEEDED":
@@ -427,7 +428,7 @@ def _flows(reads, regions, start, end):
                                 finished = True
                                 d._mark(reads.bundle, "gaps", "nfm_query_failed")
                                 break
-                            reads.pause()
+                            reads.pause(attempt)
                         if not finished:
                             d._mark(reads.bundle, "incomplete", "nfm_query_poll_cap")
                     finally:

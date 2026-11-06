@@ -75,27 +75,31 @@ function exactEndpoint(value: unknown): string | undefined {
 /** Unknown scope and conflicting EC2 claims cannot become a resource binding. */
 function claimedInstance(span: TraceSpan): string | undefined {
   const instances = new Set<string>();
-  for (const claim of [span.cloudResourceId, span.hostId, span.serviceInstanceId]) {
+  for (const [field, claim] of [['cloud', span.cloudResourceId], ['host', span.hostId],
+    ['instance', span.serviceInstanceId]] as const) {
     if (!claim) continue;
     if (INSTANCE_ID.test(claim)) instances.add(claim);
     else if (claim.startsWith('arn:')) {
       const arn = EC2_ARN.exec(claim);
       if (!arn || arn[2] !== span.region || arn[3] !== span.accountId) return undefined;
       instances.add(arn[4]);
-    } else if (claim === span.cloudResourceId) return undefined;
+    } else if (field === 'cloud') return undefined;
   }
   return instances.size === 1 ? [...instances][0] : undefined;
 }
 
 function observedInstanceDatabasePair(
   span: TraceSpan, infraNodes: InfraNodeLike[], trustedHostAccountId?: string,
-): InstanceObservation | undefined {
-  const account = span.accountId, region = span.region;
+): InstanceObservation | null | undefined {
+  // undefined: no EC2 claim to bind; null: a claimed pair that cannot be bound (disclosed as a drop).
+  if (!span.dbHost || ![span.cloudResourceId, span.hostId, span.serviceInstanceId].some(claim =>
+    claim && (INSTANCE_ID.test(claim) || /^arn:[^:]+:ec2:/.test(claim)))) return undefined;
+  const account = span.accountId, region = span.region, observedAt = Math.floor(span.startMs);
   if (!account || !/^\d{12}$/.test(account)
     || !region || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+-\d+$/.test(region)
-    || !Number.isSafeInteger(span.startMs) || span.startMs < 0) return undefined;
+    || !Number.isSafeInteger(observedAt) || observedAt < 0) return null;
   const instanceId = claimedInstance(span), host = exactEndpoint(span.dbHost);
-  if (!instanceId || !host) return undefined;
+  if (!instanceId || !host) return null;
   const scoped = infraNodes.filter(node => {
     const inventoryAccount = node.meta?.inventoryAccount;
     const actualAccount = inventoryAccount === 'self' && /^\d{12}$/.test(trustedHostAccountId ?? '')
@@ -106,7 +110,7 @@ function observedInstanceDatabasePair(
   const databases = scoped.filter(node => node.kind === 'rds'
     && typeof node.meta?.resourceId === 'string' && node.meta.resourceId.length > 0
     && exactEndpoint(node.meta.host) === host);
-  if (instances.length !== 1 || databases.length !== 1) return undefined;
+  if (instances.length !== 1 || databases.length !== 1) return null;
   // A pair is attached to its own DB edge, rather than reconstructed from aggregate service bindings.
   const correlationId = createHash('sha256').update(JSON.stringify([
     span.sourceId ?? '', span.traceId, span.spanId, instances[0].id, databases[0].id,
@@ -114,7 +118,7 @@ function observedInstanceDatabasePair(
   return {
     instance_id: instanceId, instance_ref: instances[0].id, database_ref: databases[0].id,
     correlation_id: correlationId, account, region, db_host: host,
-    observed_at_ms: span.startMs, first_observed_at_ms: span.startMs, observation_count: 1,
+    observed_at_ms: observedAt, first_observed_at_ms: observedAt, observation_count: 1,
     ...(span.sourceId ? { source_id: span.sourceId } : {}),
     provenance: 'trace_span',
   };
@@ -219,7 +223,8 @@ export function buildTraceGraph(
       // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
       const observation = span.kind === 'CLIENT'
         ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
-      if (observation) {
+      if (observation === null) instanceObservationDrops++;
+      else if (observation) {
         const observations = queryEdge.meta.instance_observations ??= [];
         let index = pairIndex.get(queryEdge);
         if (!index) pairIndex.set(queryEdge, index = { kept: new Map(), omitted: new Set() });

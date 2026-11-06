@@ -1,6 +1,7 @@
 """Optional local PostgreSQL contract test; temporary tables only, no AWS calls.
 
-Set AWSOPS_DISCOVERY_PG_PORT to the dedicated localhost fixture's port.
+Set AWSOPS_WORKER_TEST_PG_PORT (as test_db.py; AWSOPS_DISCOVERY_PG_PORT is
+still accepted) to the dedicated localhost fixture's port.
 """
 import datetime as dt
 import json
@@ -13,9 +14,9 @@ from diagnosis.test_discovery import ACCOUNT, REGION, Budget
 
 @pytest.fixture
 def pg():
-    port = os.environ.get("AWSOPS_DISCOVERY_PG_PORT")
+    port = os.environ.get("AWSOPS_WORKER_TEST_PG_PORT") or os.environ.get("AWSOPS_DISCOVERY_PG_PORT")
     if not port:
-        pytest.skip("Dedicated localhost PostgreSQL fixture was not supplied")
+        pytest.skip("Set AWSOPS_WORKER_TEST_PG_PORT for localhost PostgreSQL SQL contracts")
     conn = pg8000.native.Connection(user="postgres", host="127.0.0.1", port=int(port), database="postgres")
     tables = {
         "inventory_resources": "account_id text,region text,resource_type text,resource_id text,data jsonb,captured_at timestamptz",

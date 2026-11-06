@@ -69,6 +69,17 @@ def _cell(value, limit=700):
             .replace("\\", "&#92;"))
 
 
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _swept(body, lang):
+    """Final read-only sweep of an assembled body (render_section parity)."""
+    from .report import _MUTATING_MARK, _has_mutating_cli
+    mark = _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()
+    return body + "\n\n" + mark if mark not in body and _has_mutating_cli(body) else body
+
+
 def _code(value):
     return f"`{_cell(value)}`"
 
@@ -127,10 +138,12 @@ def _finding_body(finding, evidence, resources, copy, *, verification=False, lan
             output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
                           f"| {_cell(scope)} | {_cell(field)} = {_cell(value)} |")
     prerequisites = finding.get("prerequisites", [])
+    prerequisites = [p if isinstance(p, str) else _json(p) for p in
+                     (prerequisites if isinstance(prerequisites, list) else [prerequisites])]
     # Model-authored prerequisites get the base renderer's read-only CLI rule. A
     # mutating command is withheld (never printed) and the section carries the mark.
     from .report import _MUTATING_MARK, _has_mutating_cli
-    safe = [p for p in prerequisites if not (isinstance(p, str) and _has_mutating_cli(p))]
+    safe = [p for p in prerequisites if not _has_mutating_cli(p)]
     if safe:
         output += ["", f"**{copy[8]}:** " + ", ".join(_cell(p) for p in safe)]
     if len(safe) != len(prerequisites):
@@ -181,7 +194,7 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
                                                     lang=lang)
                                        for f in findings[:12]) or copy[7])
             output[key] += "\n\n" + _coverage(bundle, analysis, copy)
-    return [(section["key"], output[section["key"]]) for section in catalog]
+    return [(section["key"], _swept(output[section["key"]], lang)) for section in catalog]
 
 
 def title_and_tags(bundle, analysis, *, lang="ko"):

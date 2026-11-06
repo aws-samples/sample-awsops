@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BoundedTtlCache } from './bounded-cache';
 
 function deferred<T>() {
@@ -145,6 +145,22 @@ describe('BoundedTtlCache', () => {
     await freshRequest;
   });
 
+  it('a never-settling load hits its deadline and frees the slot for later keys', async () => {
+    vi.useFakeTimers();
+    try {
+      const cache = new BoundedTtlCache<string>({ ttlMs: 1000, maxEntries: 2, maxInFlight: 1, loadTimeoutMs: 50 });
+      const hung = cache.get('hung', () => new Promise<string>(() => {}));
+      await expect(cache.get('b', async () => 'blocked')).rejects.toThrow(/in-flight capacity/);
+      const expectation = expect(hung).rejects.toThrow(/deadline/);
+      await vi.advanceTimersByTimeAsync(50);
+      await expectation;
+      expect(await cache.get('b', async () => 'admitted')).toBe('admitted');
+      expect(await cache.get('hung', async () => 'retried')).toBe('retried');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     { ttlMs: 0, maxEntries: 1, maxInFlight: 1 },
     { ttlMs: Infinity, maxEntries: 1, maxInFlight: 1 },
@@ -152,6 +168,7 @@ describe('BoundedTtlCache', () => {
     { ttlMs: 100, maxEntries: 1.5, maxInFlight: 1 },
     { ttlMs: 100, maxEntries: 1, maxInFlight: 0 },
     { ttlMs: 100, maxEntries: 1, maxInFlight: Infinity },
+    { ttlMs: 100, maxEntries: 1, maxInFlight: 1, loadTimeoutMs: 0 },
   ])('rejects nonpositive or unbounded cache options: %j', (options) => {
     expect(() => new BoundedTtlCache<string>(options)).toThrow(RangeError);
   });

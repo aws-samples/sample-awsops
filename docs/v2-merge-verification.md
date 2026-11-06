@@ -137,8 +137,8 @@ discovered path. Override the Python search root for focused checks:
 MERGE_VERIFY_PY_ROOT=/tmp/merge-fixtures MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh
 ```
 
-Set `MERGE_VERIFY_SKIP_WEB=1` only for local fixture or runner development. The CI workflow runs the
-web vitest stage. The deployment Node tests always run in the shared script; a Node failure,
+Set `MERGE_VERIFY_SKIP_WEB=1` only for local fixture or runner development, or (as CI step 9 does) for the
+Python 3.14 rerun after the main stage has already run web vitest. The deployment Node tests always run in the shared script; a Node failure,
 like a Python or web failure, makes the runner fail. To run only that suite:
 
 ```bash

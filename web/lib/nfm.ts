@@ -19,7 +19,9 @@ import { BoundedTtlCache } from './bounded-cache';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let client: NetworkFlowMonitorClient | null = null;
-const nfm = () => (client ??= new NetworkFlowMonitorClient({ region: REGION }));
+const nfm = () => (client ??= new NetworkFlowMonitorClient({
+  region: REGION, requestHandler: { connectionTimeout: 2_000, requestTimeout: 10_000 },
+}));
 
 export const NFM_METRICS = ['DATA_TRANSFERRED', 'RETRANSMISSIONS', 'TIMEOUTS', 'ROUND_TRIP_TIME'] as const;
 export type NfmMetric = (typeof NFM_METRICS)[number];
@@ -55,7 +57,7 @@ export interface NfmFlowRow {
 
 // Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
-const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32 });
+const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
 function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return cache.get(key, fn) as Promise<T>;
 }

@@ -11,12 +11,13 @@ import { BoundedTtlCache } from './bounded-cache';
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let logsClient: CloudWatchLogsClient | null = null;
 let r53Client: Route53ResolverClient | null = null;
-const logs = () => (logsClient ??= new CloudWatchLogsClient({ region: REGION }));
-const r53 = () => (r53Client ??= new Route53ResolverClient({ region: REGION }));
+const SDK = { region: REGION, requestHandler: { connectionTimeout: 2_000, requestTimeout: 10_000 } };
+const logs = () => (logsClient ??= new CloudWatchLogsClient(SDK));
+const r53 = () => (r53Client ??= new Route53ResolverClient(SDK));
 
 // Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
-const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32 });
+const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
 function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return cache.get(key, fn) as Promise<T>;
 }

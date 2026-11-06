@@ -81,6 +81,20 @@ def test_member_scope_and_wrong_host_account_never_use_native_clients(providers,
     assert not providers.collect(member, Budget(), scope="self")["evidence"]
 
 
+def test_unsubscribed_security_hub_is_steady_state_not_degraded(providers, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Unsubscribed(Client):
+        def get_findings(self, **kwargs):
+            raise ClientError({"Error": {"Code": "InvalidAccessException"}}, "GetFindings")
+    monkeypatch.setattr(providers, "_client", lambda *a: Unsubscribed())
+    result = providers.collect(base(), Budget(), scope="self")
+    posture = next(e for e in result["evidence"] if e["source"] == "posture")
+    assert posture["facts"]["enabled"] is False and posture["fresh"] is True
+    assert "posture_read_failed" not in result["degraded"]
+    assert result["native_sources"]["posture"]["status"] == "ok"
+
+
 def test_repeated_cost_page_tokens_stop_at_bound(providers, monkeypatch):
     class Pages(Client):
         def get_cost_and_usage(self, **kwargs):

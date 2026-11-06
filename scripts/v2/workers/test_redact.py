@@ -31,9 +31,11 @@ def test_redact_leaves_non_standalone_digit_runs_alone():
 ])
 def test_redact_valid_ipv6_in_source_strings(address):
     assert redact.redact('answer "' + address + '"') == 'answer "<ip>"'
+    assert redact.redact('peer ' + address + '.') == 'peer <ip>.'
+    assert redact.redact('peer ' + address + ': down') == 'peer <ip>: down'
 
 
-@pytest.mark.parametrize('partition', ['aws-cn', 'aws-us-gov'])
+@pytest.mark.parametrize('partition', ['aws-cn', 'aws-us-gov', 'aws-iso', 'aws-iso-b', 'aws-iso-f', 'aws-eusc'])
 def test_redact_noncommercial_arn(partition):
     assert redact.redact(f'arn:{partition}:rds:region:123456789012:db:orders') == '<arn>'
 
