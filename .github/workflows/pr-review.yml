@@ -49,8 +49,8 @@ jobs:
     # the runner pod for 6 hours. The longest panel cell is 2*(1200+10)=40m20s.
     # Chair primary/fallback total at most 2*(120+900+10)=34m20s, leaving 15m20s
     # for setup, publication, and cleanup. Mint a one-hour AWS session before each model phase.
-    # Batched runs execute at most max_parallel_batches (4) batches at once, so a review of up
-    # to 8 batches takes at most two waves per phase, each wave its own step and AWS session:
+    # Batched runs execute at most max_parallel_batches (5) batches at once, so a review of up
+    # to 10 batches takes at most two waves per phase, each wave its own step and AWS session:
     # 2*40m20s panel + 2*34m20s chair = 149m20s, plus 15m image staging, 15m20s setup/publish
     # and about 10 minutes of slack so the gate can still publish a diagnostic.
     timeout-minutes: 190

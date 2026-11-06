@@ -5,7 +5,7 @@
   "panel_bytes": 120000,
   "stdin_envelope_bytes": 1024,
   "chair_stdin_bytes": 262144,
-  "max_batches": 8,
+  "max_batches": 10,
   "comment_bytes": 60000,
-  "max_parallel_batches": 4
+  "max_parallel_batches": 5
 }
