@@ -1,5 +1,9 @@
 """Code-owned, bounded evidence collection. No model-selected SDK or SQL calls.
 
+Redaction contract: facts are raw (ARNs, IPs, db_host, endpoints). The only
+model-bound accessor is evidence.EvidenceIndex.model_context(redacted=True),
+which applies redact.redact to every non-citation string and masks host fields.
+
 Storage uses ``self`` for the host; every public identity uses the validated
 12-digit report account. Telemetry claims never change this scope.
 """
@@ -27,7 +31,10 @@ except ImportError:  # pragma: no cover - driver absent in unit environments
 MAX_REGIONS = 8
 MAX_PAGES = 3
 MAX_RESOURCES = 200
-MAX_INVENTORY_RESOURCES = 180  # Reserve space for trace identities and live DB proxies.
+MAX_XRAY_RESOURCES = 40  # X-Ray service nodes have their own share; inventory cannot starve it.
+# Reserve space for trace identities and live DB proxies inside the non-X-Ray share.
+MAX_INVENTORY_RESOURCES = MAX_RESOURCES - MAX_XRAY_RESOURCES - 20
+DATABASE_CONNECTION_BROKEN = "database_connection_broken"
 MAX_RELATIONSHIPS = 400
 MAX_EVIDENCE = 1200
 MAX_BYTES = 192 * 1024
@@ -58,6 +65,11 @@ _REASONS = {"missing_configuration", "configuration_failed", "query_failed", "ma
 _CAPABILITIES = {"resource_metrics", "provider_sizing", "graph_refresh"}
 _clients = {}
 _client_lock = threading.Lock()
+
+
+def connection_broken(bundle):
+    """True once a transport failure closed the caller's connection: reconnect before reuse."""
+    return bool(bundle.get("coverage", {}).get(DATABASE_CONNECTION_BROKEN))
 
 
 def _stale_seconds():
@@ -156,8 +168,8 @@ def _db_read(conn, bundle, budget, sql, **parameters):
     The server statement timeout cancels slow reads without closing a healthy
     connection; the transport timeout also bounds a lost server response.
     """
-    if bundle["coverage"].get("database_connection_broken"):
-        raise ConnectionError("database_connection_broken")
+    if connection_broken(bundle):
+        raise ConnectionError(DATABASE_CONNECTION_BROKEN)
     if not _available(bundle, budget):
         raise TimeoutError("discovery_deadline")
     # The server cancels (statement_timeout) before the transport gives up, so
@@ -185,7 +197,7 @@ def _db_read(conn, bundle, budget, sql, **parameters):
         return _run(conn, bundle, sql, **parameters)
     finally:
         try:
-            if prior_statement is not None and not bundle["coverage"].get("database_connection_broken"):
+            if prior_statement is not None and not connection_broken(bundle):
                 if sock is not None:
                     # Restore with at most one second of the reserved export
                     # window, even if the analysis deadline was just exhausted.
@@ -194,7 +206,7 @@ def _db_read(conn, bundle, budget, sql, **parameters):
                      timeout=prior_statement)
         except Exception:
             _mark(bundle, "degraded", "database_timeout_restore_failed")
-        if bundle["coverage"].get("database_connection_broken"):
+        if connection_broken(bundle):
             try:  # Fail closed: no later caller may read a desynced protocol stream.
                 conn.close()
             except Exception:
@@ -208,8 +220,8 @@ def _run(conn, bundle, sql, **parameters):
         return conn.run(sql, **parameters)
     except (OSError, _DriverTransport):
         # A transport failure mid-message desyncs pg8000; the connection is unusable.
-        bundle["coverage"]["database_connection_broken"] = True
-        _mark(bundle, "degraded", "database_connection_broken")
+        bundle["coverage"][DATABASE_CONNECTION_BROKEN] = True
+        _mark(bundle, "degraded", DATABASE_CONNECTION_BROKEN)
         raise
 
 
@@ -274,13 +286,22 @@ def _resource(bundle, account, region, kind, native_id, facts):
     existing = next((r for r in bundle["resources"] if r["id"] == rid), None)
     if existing:
         return existing
-    if len(bundle["resources"]) >= MAX_RESOURCES:
+    used = sum(_is_xray(r) for r in bundle["resources"])
+    if _is_xray({"kind": kind, "resource_id": native_id}):
+        if used >= MAX_XRAY_RESOURCES:
+            _mark(bundle, "incomplete", "xray_resource_cap")
+            return None
+    elif len(bundle["resources"]) - used >= MAX_RESOURCES - MAX_XRAY_RESOURCES:
         _mark(bundle, "incomplete", "resource_cap")
         return None
     item = {"id": rid, "account": account, "region": region, "kind": kind,
             "resource_id": native_id, "facts": facts}
     bundle["resources"].append(item)
     return item
+
+
+def _is_xray(r):
+    return r["kind"] == "service" and str(r["resource_id"]).startswith("xray:")
 
 
 def _evidence(bundle, source, kind, resources, facts, captured, *, region, fresh,
@@ -391,8 +412,6 @@ def _read_inventory(conn, bundle, budget, scope):
                       region=region, fresh=fresh, coverage={"complete": complete,
                       "producer_status": run[1] if run else "unknown",
                       "unknown_attributes": run[5] if run else None})
-        from .workload_identities import project_tasks
-        project_tasks(bundle)
         returned = len(bundle["resources"])
         bundle["coverage"]["inventory"] = {"total": int(total), "matched": matched,
                                            "returned": returned, "omitted": max(0, int(total) - returned)}
@@ -400,6 +419,12 @@ def _read_inventory(conn, bundle, budget, scope):
             _mark(bundle, "incomplete", "inventory_cap")
     except Exception:
         _mark(bundle, "degraded", "inventory_read_failed")
+        return
+    try:  # Task projection failure never retracts the inventory disclosure above.
+        from .workload_identities import project_tasks
+        project_tasks(bundle)
+    except Exception:
+        _mark(bundle, "degraded", "task_projection_failed")
 
 
 def _graph_state(value, cls):
@@ -744,7 +769,8 @@ def _xray(bundle, budget, regions):
                 if target not in services:
                     _mark(bundle, "incomplete", "xray_unresolved_target")
                 item = _evidence(bundle, "xray", "observed_call", [source_r["id"], target_r["id"]],
-                    facts, end, region=region, fresh=True, window={"start": start.isoformat(), "end": end.isoformat()},
+                    facts, end, region=region, fresh=coverage["complete"],
+                    window={"start": start.isoformat(), "end": end.isoformat()},
                     coverage=dict(coverage))
                 _relationship(bundle, source_r["id"], target_r["id"], "observed_call", item)
 
@@ -759,6 +785,8 @@ _METRICS = {
             ("ReadLatency", "p95"), ("WriteLatency", "p95"), ("DiskQueueDepth", "Maximum"),
             ("NetworkReceiveThroughput", "Maximum"), ("NetworkTransmitThroughput", "Maximum")],
 }
+# Pressure metrics every resource publishes: zero samples is coverage loss, never "not published".
+_REQUIRED_METRICS = {"ec2": {"CPUUtilization"}, "rds": {"CPUUtilization", "FreeableMemory"}}
 _UNITS = {
     "CPUUtilization": "Percent", "FreeableMemory": "Bytes",
     "NetworkIn": "Bytes", "NetworkOut": "Bytes",
@@ -835,7 +863,7 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
             for r in batch:
                 if r["id"] not in dimensions:
                     continue  # metric_identity_unresolved: never queried, so no evidence row
-                metrics, ratios, statuses = {}, [], []
+                metrics, ratios, statuses, not_published = {}, [], [], set()
                 for qid, (rid, name, stat) in mapping.items():
                     if rid != r["id"]:
                         continue
@@ -843,7 +871,12 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     vals = list(row.get("samples", {}).values())
                     status = row.get("statuses", [])
                     good = bool(status) and all(s == "Complete" for s in status)
-                    ratios.append(min(1, len(vals) / (METRIC_DAYS * 24)) if good else 0)
+                    if good and not vals and name not in _REQUIRED_METRICS[r["kind"]]:
+                        # A complete, empty series is a metric this resource never publishes
+                        # (EBS* on non-Nitro EC2, engine-specific RDS counters): disclosed, not loss.
+                        not_published.add(name)
+                    else:
+                        ratios.append(min(1, len(vals) / (METRIC_DAYS * 24)) if good else 0)
                     statuses.extend(status or ["missing"])
                     metrics.setdefault(name, {})[stat] = {**(_summary(vals) if vals else {"samples": 0}),
                                                           "status": "Complete" if good else "incomplete",
@@ -867,6 +900,7 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     _mark(bundle, "incomplete", "metrics_partial")
                 facts = {"resource_type": r["kind"], "metrics": metrics, "dimensions": dimensions.get(r["id"], []),
                          "window_days": METRIC_DAYS, "missing_memory": bool(missing_memory), "missing_io": missing_io,
+                         "metrics_not_published": sorted(not_published),
                          "multi_az": r["facts"].get("multi_az"), "replica_source": _replica_source(bundle, r)}
                 _evidence(bundle, "cloudwatch", "metrics", [r["id"]], facts, end, region=region,
                     # Pages read is not data measured: a zero-sample row is never current evidence.
@@ -892,6 +926,11 @@ def _replica_source(bundle, r):
     if r["kind"] != "rds":
         return None
     key = "read_replica_source_db_instance_identifier"
+    if str(r["facts"].get("engine", "")).lower().startswith("aurora"):
+        # Aurora members carry a null instance-level replica source whether writer
+        # or reader; inventory syncs no cluster-role fact, so the role stays unknown.
+        _mark(bundle, "gaps", "rds_aurora_role_unknown")
+        return "unknown"
     if key in r["facts"]:
         return r["facts"][key] or "none"
     _mark(bundle, "gaps", "rds_replica_source_unknown")
@@ -1064,7 +1103,27 @@ def _supersede(bundle, source, resource_ids):
                                "status": "refresh_pending", "retained_previous": True}
 
 
+_COVERAGE_BYTES = MAX_BYTES // 4
+
+
+def _bound_coverage(bundle):
+    """Halve the longest graph source list until coverage fits its share, counting omissions."""
+    graph = bundle["coverage"].get("graph")
+    if not isinstance(graph, dict):
+        return
+    while len(_json(bundle["coverage"]).encode()) > _COVERAGE_BYTES:
+        lists = [c for c in graph.values() if isinstance(c, dict) and c.get("sources")]
+        if not lists:
+            return
+        target = max(lists, key=lambda c: len(c["sources"]))
+        keep = len(target["sources"]) // 2
+        target["sources_omitted"] = target.get("sources_omitted", 0) + len(target["sources"]) - keep
+        target["sources"] = target["sources"][:keep]
+        _mark(bundle, "incomplete", "coverage_byte_cap")
+
+
 def _finish(bundle):
+    _bound_coverage(bundle)
     # Apply the JSON byte bound after all projections. Removing evidence also
     # removes dependent edges; removing a resource removes its evidence. No
     # dangling citations enter the evidence index.
@@ -1130,7 +1189,7 @@ def collect(conn, account, budget, *, scope="self"):
         _metrics(bundle, budget, resources)
         _finops(conn, bundle, budget)
         _provider_sizing(bundle, budget, resources)
-    elif bundle["coverage"].get("database_connection_broken"):
+    elif connection_broken(bundle):
         _mark(bundle, "gaps", "member_live_sources_unsupported")
     else:
         try:
@@ -1156,6 +1215,9 @@ def follow_up(conn, account, bundle, requests, budget):
         _mark(merged, "gaps", "follow_up_rejected")
         return _finish(merged)
     merged["coverage"]["follow_up_passes"] = 1
+    # The flag described the first pass's (now closed) connection; the caller passes a
+    # reconnected one. A still-broken connection fails its first read and is re-flagged.
+    merged["coverage"].pop(DATABASE_CONNECTION_BROKEN, None)
     if not isinstance(requests, list) or len(requests) > 4:
         _mark(merged, "gaps", "follow_up_rejected")
         return _finish(merged)
