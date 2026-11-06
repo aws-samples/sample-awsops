@@ -48,7 +48,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 - HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
   deterministic declaration gate. Two comprehensive vendor reports each attest L2–L5;
-  filtered diff admission is 6,000 lines/128 KiB per call (larger diffs: at most 8 complete
+  filtered diff admission is 6,000 lines/128 KiB per call (larger diffs: at most 10 complete
   file-boundary batches that must all pass) and chair stdin is at most 256 KiB.
   Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
   output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
