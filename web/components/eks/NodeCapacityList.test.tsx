@@ -27,6 +27,12 @@ describe('NodeCapacityList (gap L132)', () => {
     expect(screen.queryByText(/avail .* vCPU \|/)).toBeNull();
   });
 
+  it('EC2-view rows never derive availability from mirrored or unknown capacity', () => {
+    render(<NodeCapacityList rows={[node({ allocatableUnknown: true, capacityUnknown: true, cpuCapacity: 0, cpuAllocatable: 0, memCapacityMiB: 0, memAllocatableMiB: 0 })]} />);
+    expect(screen.getAllByText('avail — | rsv —')).toHaveLength(2);
+    expect(screen.queryByText(/avail 0/)).toBeNull();
+  });
+
   it('caps rendering at 40 nodes with an explicit truncation note', () => {
     const rows = Array.from({ length: 45 }, (_, i) => node({ name: `n-${i}` }));
     render(<NodeCapacityList rows={rows} />);

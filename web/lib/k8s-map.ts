@@ -4,7 +4,7 @@
 // disconnected, and very large (>1000-address) Endpoints objects can be truncated upstream.
 import type { MapGraph, MapNode, MapEdge } from './infra-map';
 import type { IngressRow, ServiceRow, EndpointRow } from './eks-incluster';
-import type { PodRow, NodeRow } from './eks-resources';
+import { isAwsApiNode, nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
 
 export interface K8sMapInput {
   ingresses: IngressRow[]; services: ServiceRow[]; pods: PodRow[];
@@ -91,10 +91,12 @@ export function buildK8sMap(input: K8sMapInput): MapGraph {
   for (const p of input.pods) if (p.node) podCount.set(p.node, (podCount.get(p.node) ?? 0) + 1);
   for (const n of [...input.nodes].sort(bySort((x) => x.name))) {
     const count = podCount.get(n.name) ?? 0;
+    // EC2/node-group rows have no kubelet Ready condition: neutral, labelled, never 'warn'.
+    const ec2 = isAwsApiNode(n);
     nodes.push({
       id: `node:${n.name}`, kind: 'node', column: 3, label: n.name,
-      sub: `${n.instanceType} · ${n.zone}`, badge: `${count} pod${count === 1 ? '' : 's'}`,
-      status: n.status === 'Ready' ? 'ok' : 'warn', meta: { ...n },
+      sub: `${n.instanceType} · ${n.zone}${ec2 ? ` · ${nodeReadyText(n)}` : ''}`, badge: `${count} pod${count === 1 ? '' : 's'}`,
+      status: ec2 ? 'neutral' : n.status === 'Ready' ? 'ok' : 'warn', meta: { ...n },
     });
   }
 

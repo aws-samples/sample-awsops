@@ -29,7 +29,53 @@ export interface NodeRow {
   /** v1 parity (node capacity card): the node's pod CIDR + creation timestamp. */
   podCIDR?: string;
   createdAt?: string;
+  /** 'aws-api' = EC2/node-group view for a member cluster whose AmazonEKSViewPolicy entry
+   *  cannot read the Kubernetes nodes API: no kubelet conditions/labels/taints, and the
+   *  allocatable fields mirror instance-type capacity as an upper bound only — they are NOT
+   *  kubelet allocatable, so reserved-% math must exclude these rows. Absent = nodes API. */
+  source?: 'aws-api';
+  instanceId?: string;
+  /** aws-api rows whose instance type could not be resolved: capacity is unknown, not zero. */
+  capacityUnknown?: boolean;
 }
+/** True for an EC2/node-group (AWS-API) node row — it has no kubelet Ready/Pressure data. */
+export const isAwsApiNode = (n?: Pick<NodeRow, 'source'> | null): boolean => n?.source === 'aws-api';
+
+/** Ready text: the kubelet status, or "EC2 running · Ready unknown" for an EC2/node-group row. */
+export function nodeReadyText(n: Pick<NodeRow, 'status' | 'source'>): string {
+  return isAwsApiNode(n) ? `${n.status} · Ready unknown` : n.status;
+}
+
+/** Fleet node counts with provenance: `nodesReady` is null (unknown) for an 'aws-api' cluster. */
+export interface FleetNodeCountsLike {
+  counts: { nodes: number; nodesReady: number | null; ec2Running?: number };
+  nodesSource?: 'aws-api';
+}
+export interface FleetNodeTotals { k8sNodes: number; ready: number; ec2Nodes: number; ec2Running: number }
+
+/** Sum fleet node counts, keeping EC2/node-group (no Ready condition) clusters separate. */
+export function fleetNodeTotals(clusters: FleetNodeCountsLike[]): FleetNodeTotals {
+  const t: FleetNodeTotals = { k8sNodes: 0, ready: 0, ec2Nodes: 0, ec2Running: 0 };
+  for (const c of clusters) {
+    if (c.nodesSource === 'aws-api' || c.counts.nodesReady == null) {
+      t.ec2Nodes += c.counts.nodes;
+      t.ec2Running += c.counts.ec2Running ?? 0;
+    } else {
+      t.k8sNodes += c.counts.nodes;
+      t.ready += c.counts.nodesReady;
+    }
+  }
+  return t;
+}
+
+/** "3/4 ready", "EC2 running 2 · Ready unknown", or both joined — never "0/N ready" for EC2 views. */
+export function formatFleetNodeReady(t: FleetNodeTotals): string {
+  const parts: string[] = [];
+  if (t.k8sNodes > 0 || t.ec2Nodes === 0) parts.push(`${t.ready}/${t.k8sNodes} ready`);
+  if (t.ec2Nodes > 0) parts.push(`EC2 running ${t.ec2Running} · Ready unknown`);
+  return parts.join(' · ');
+}
+
 export interface PodRow {
   name: string; namespace: string; status: string; node: string; restarts: number; age: string;
   // summed container requests: cpu in cores, memory in MiB, ephemeral-storage in MiB.
@@ -96,6 +142,12 @@ export function isTerminalPodPhase(status: unknown): boolean {
  * Pods are matched to a node by PodRow.node === NodeRow.name. reqPct is clamped 0..100
  * (0 when allocatable is 0/unknown). Nodes with no scheduled pods report zeros.
  */
+/** Pods scheduled on a node: by name, and for EC2-view rows also by instance id (some
+ *  clusters name nodes by instance id while the EC2 view names them by private DNS). */
+export function nodePodKeys(n: NodeRow): string[] {
+  return [n.name, ...(n.source === 'aws-api' && n.instanceId ? [n.instanceId] : [])].filter(Boolean);
+}
+
 export function aggregateNodeResources(nodes: NodeRow[], pods: PodRow[]): NodeResourceAgg[] {
   const byNode = new Map<string, { cpu: number; mem: number; disk: number; count: number }>();
   for (const p of pods) {
@@ -112,7 +164,9 @@ export function aggregateNodeResources(nodes: NodeRow[], pods: PodRow[]): NodeRe
     byNode.set(p.node, e);
   }
   const pct = (req: number, alloc: number) => (alloc > 0 ? Math.min(100, Math.round((req / alloc) * 100)) : 0);
-  return nodes.map((n) => {
+  // EC2-view rows carry no kubelet allocatable (it mirrors capacity, or is unknown), so they
+  // are excluded here: a reserved-% over them would read as "fully free".
+  return nodes.filter((n) => n.source !== 'aws-api').map((n) => {
     const e = byNode.get(n.name) ?? { cpu: 0, mem: 0, disk: 0, count: 0 };
     return {
       name: n.name,

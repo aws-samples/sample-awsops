@@ -27,6 +27,7 @@ const OPERATIONS = {
   'eks-fleet': ['EKS scope could not be loaded', 503],
   'eks-fleet-cluster': ['Kubernetes resource read unavailable', 502],
   'eks-fleet-events': ['Kubernetes events are unavailable.', 502],
+  'eks-fleet-nodes': ['Node details are unavailable.', 502],
   'opencost-config': ['OpenCost configuration is unavailable.', 500],
   'opencost-status': ['OpenCost status is unavailable.', 500],
   'opencost-bundle': ['OpenCost bundle is unavailable.', 500],

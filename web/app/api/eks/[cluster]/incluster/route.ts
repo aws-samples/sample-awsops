@@ -1,6 +1,6 @@
 import { eksReadFailure } from '@/lib/eks-read-error';
 import { verifyUser } from '@/lib/auth';
-import { listInCluster, isKind } from '@/lib/eks-incluster';
+import { listInCluster, listNodes, isKind } from '@/lib/eks-incluster';
 import { isAllowed } from '@/lib/eks-registry';
 import { resolveEksCluster, EksScopeError } from '@/lib/eks-context';
 
@@ -20,6 +20,10 @@ export async function GET(request: Request, { params: pendingParams }: { params:
     const kind = search.get('kind') || '';
     if (!isKind(kind)) {
       return Response.json({ status: 'error', message: 'unknown kind' }, { status: 400 });
+    }
+    if (kind === 'nodes') {
+      const { rows, source } = await listNodes(context.id);
+      return Response.json({ kind, rows, source });
     }
     return Response.json({ kind, rows: await listInCluster(context.id, kind) });
   } catch (e) {

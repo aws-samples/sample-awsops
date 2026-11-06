@@ -630,10 +630,42 @@ export async function describeInCluster(
   return obj;
 }
 
+export type NodeSource = 'kubernetes' | 'aws-api';
+
+/** Node rows plus where they came from, carried out of band: an empty EC2/node-group read
+ *  (all-Fargate or scaled-to-zero member) must still report Ready as unknown, not 0. */
+export async function listNodes(cluster: string): Promise<{ rows: NodeRow[]; source: NodeSource }> {
+  const origin: { source: NodeSource } = { source: 'kubernetes' };
+  const rows = await listInClusterFrom(cluster, 'nodes', origin) as NodeRow[];
+  return { rows, source: origin.source };
+}
+
 export async function listInCluster(cluster: string, kind: Kind): Promise<InClusterRow[]> {
+  return listInClusterFrom(cluster, kind, { source: 'kubernetes' });
+}
+
+async function listInClusterFrom(cluster: string, kind: Kind, origin: { source: NodeSource }): Promise<InClusterRow[]> {
   const { endpoint, caPem } = await clusterConn(cluster);
   const token = await eksToken(cluster);
-  const body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  let body: string;
+  try {
+    body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  } catch (error) {
+    // Member Access Entries use AmazonEKSViewPolicy, which has no `nodes` read. A
+    // Kubernetes 403 on nodes for a member cluster falls back to the EC2/node-group view
+    // from AWS read APIs with the registered member role; host clusters (AdminView) and
+    // every other kind keep the original failure.
+    if (kind === 'nodes' && error instanceof EksKubernetesHttpError && error.statusCode === 403) {
+      const context = await resolveEksCluster(cluster);
+      if (context.accountId !== 'self') {
+        const { listAwsApiNodes } = await import('./eks-aws-nodes');
+        const rows = await listAwsApiNodes(context);
+        origin.source = 'aws-api';
+        return rows;
+      }
+    }
+    throw error;
+  }
   const parsed = JSON.parse(body) as K8sList;
   const norm = NORMALIZERS[kind];
   return (parsed.items ?? []).map(norm);
