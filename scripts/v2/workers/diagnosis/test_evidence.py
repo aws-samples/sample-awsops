@@ -493,3 +493,18 @@ def test_redacted_model_context_carries_no_account_ip_arn_or_db_host():
     assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
     assert "2001:db8" not in text and "fd00::1" not in text and "::ffff" not in text
     assert "arn:" not in text and host not in text and "abc123xyz" not in text
+
+
+def test_redact_context_masks_host_valued_names_but_keeps_service_names():
+    from diagnosis.evidence import redact_context
+    endpoint = "prod-db.cluster-abc123.ap-northeast-2.rds.amazonaws.com"
+    out = redact_context({"evidence": [{"id": "e1", "resource_ids": ["r1"], "facts": {
+        "query_name": endpoint, "dns_source_id": "rqlc-0123", "from_name": "orders-api",
+        "to_name": endpoint, "service_name": "api.partner.example.com",
+        "reason": f"timeout calling {endpoint}", "instance_type": "db.r6g.large"}}]})
+    facts = out["evidence"][0]["facts"]
+    assert facts["query_name"] == facts["to_name"] == facts["service_name"] == "<host>"
+    assert facts["dns_source_id"] == "<host>"
+    assert facts["from_name"] == "orders-api" and facts["instance_type"] == "db.r6g.large"
+    assert endpoint not in facts["reason"] and "<host>" in facts["reason"]
+    assert out["evidence"][0]["id"] == "e1" and out["evidence"][0]["resource_ids"] == ["r1"]

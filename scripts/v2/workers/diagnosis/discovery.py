@@ -878,7 +878,10 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     vals = list(row.get("samples", {}).values())
                     status = row.get("statuses", [])
                     good = bool(status) and all(s == "Complete" for s in status)
-                    if good and not vals and name not in _REQUIRED_METRICS[r["kind"]]:
+                    # ReplicaLag is requested only for confirmed replicas, which always publish it:
+                    # an empty series there is replica-health telemetry loss, not 'not published'.
+                    required = _REQUIRED_METRICS[r["kind"]] | ({"ReplicaLag"} if name == "ReplicaLag" else set())
+                    if good and not vals and name not in required:
                         # A complete, empty series is a metric this resource never publishes
                         # (EBS* on non-Nitro EC2, engine-specific RDS counters): disclosed, not loss.
                         not_published.add(name)
