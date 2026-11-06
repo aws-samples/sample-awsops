@@ -114,7 +114,9 @@ describe('same-span EC2 and DB observations', () => {
     expect(graph.edges.filter(edge => edge.rel === 'queries')).toHaveLength(1);
     expect(graph.edges[0].meta).not.toHaveProperty('instance_observations');
     // A claimed instance that cannot be bound is disclosed; an absent/non-EC2 claim is not evidence.
-    expect(graph.instanceObservationDrops).toBe(/missing identity|invalid instance ID/.test(_name) ? 0 : 1);
+    expect(graph.edges[0].meta.instance_observations_unbound)
+      .toBe(/missing identity|invalid instance ID/.test(_name) ? undefined : 1);
+    expect(graph).not.toHaveProperty('instanceObservationDrops');
   });
 
   it('binds Tempo nanosecond spans at whole-millisecond observation time', () => {
@@ -130,7 +132,7 @@ describe('same-span EC2 and DB observations', () => {
     expect(graph.edges[0].meta.instance_observations?.[0]).toMatchObject({
       instance_ref: instanceRefA, observed_at_ms: 1_762_000_000_123, first_observed_at_ms: 1_762_000_000_123,
     });
-    expect(graph.instanceObservationDrops).toBe(0);
+    expect(graph.edges[0].meta).not.toHaveProperty('instance_observations_unbound');
   });
 
   it('rejects duplicate matching instance or endpoint inventory identities', () => {
@@ -186,7 +188,6 @@ describe('same-span EC2 and DB observations', () => {
     expect(graph.edges[0].meta.spanCount).toBe(202);
     expect(graph.edges[0].meta.instance_observations).toHaveLength(200);
     expect(graph.edges[0].meta.instance_observations_omitted).toBe(1);
-    expect(graph.instanceObservationDrops).toBe(1);
   });
 
   it('dedupes repeated spans per instance/database pair so a chatty instance cannot hide another', () => {
@@ -198,7 +199,6 @@ describe('same-span EC2 and DB observations', () => {
     expect(queries).toHaveLength(1);
     expect(queries[0].meta.spanCount).toBe(501);
     expect(queries[0].meta).not.toHaveProperty('instance_observations_omitted');
-    expect(graph.instanceObservationDrops).toBe(0);
     const observations = queries[0].meta.instance_observations!;
     expect(observations.map(pair => [pair.instance_ref, pair.database_ref])).toEqual([
       [instanceRefA, databaseRefA], [instanceRefB, databaseRefA],
@@ -223,6 +223,6 @@ describe('same-span EC2 and DB observations', () => {
       expect(queries).toHaveLength(1);
       expect(queries[0].meta).toMatchObject({ spanCount: 1, metricCount: 0 });
       expect(queries[0].meta).not.toHaveProperty('instance_observations');
-      expect(graph.instanceObservationDrops).toBe(0);
+      expect(queries[0].meta).not.toHaveProperty('instance_observations_unbound');
     });
 });

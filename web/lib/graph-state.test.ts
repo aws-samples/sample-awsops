@@ -109,12 +109,6 @@ it('rejects future publication clocks and contradictory empty source counts', as
     capturedAtMs: Date.now() - 1000, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
 });
 
-it('preserves instance observation omissions without exposing unrelated trace metadata', () => {
-  expect(projectGraphDetails({ instanceObservationDrops: 3, rawTrace: 'PRIVATE' }))
-    .toMatchObject({ instanceObservationDrops: 3 });
-  expect(projectGraphDetails({ instanceObservationDrops: 3, rawTrace: 'PRIVATE' }))
-    .not.toHaveProperty('rawTrace');
-  for (const value of [-1, '3', 0.5, Number.POSITIVE_INFINITY]) {
-    expect(projectGraphDetails({ instanceObservationDrops: value })).toMatchObject({ metadataTruncated: true });
-  }
+it('keeps edge-level observation counters out of the collection projection (SQL view parity)', () => {
+  expect(projectGraphDetails({ instanceObservationDrops: 3, rawTrace: 'PRIVATE' })).toEqual({ sources: [] });
 });

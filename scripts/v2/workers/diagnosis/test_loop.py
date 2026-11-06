@@ -91,6 +91,21 @@ def test_fabricated_reviewer_selection_and_requests_fail_closed(monkeypatch):
     assert len(events) == 7
     assert result["review"]["status"] == "invalid"
     assert result["degraded"] and result["rejected"]
+    assert result["findings"] == []  # an invalid review never returns unselected findings
+
+
+@pytest.mark.parametrize("review,kept", [
+    ({"issues": ["Confirm only one subnet route"]}, 1),
+    ({"issues": ["CPU at 99"]}, 1),
+    ({"issues": ["CPU at 99"], "finding_ids": [], "reject_ids": ["finding-reliability"]}, 0),
+])
+def test_invalid_review_keeps_only_explicit_selection(monkeypatch, review, kept):
+    install_models(monkeypatch, [review])
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"))
+    assert len(result["findings"]) == kept
+    assert (result["review"]["status"] == "invalid") is ("99" in review["issues"][0])
+    assert ("review:invalid_selection" in result["degraded"]) is ("99" in review["issues"][0])
 
 
 def test_provider_failure_and_invalid_findings_are_visible_per_pillar(monkeypatch):

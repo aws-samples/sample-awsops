@@ -179,13 +179,22 @@ def _run_review(findings, index, *, model_id, budget, lang, stages, degraded, in
         }))
         valid = _validate_review(value, findings, index)
         if valid is None:
+            # Fail closed: an invalid review can only remove findings. Keep only findings the
+            # reviewer explicitly selected and did not also reject.
             degraded.append(f"{stage}:invalid_selection")
-            return findings, {"status": "invalid", "follow_up": [], "rerun_pillars": [], "issues": []}
-        keep = set(valid["finding_ids"])
+            raw = value if isinstance(value, dict) else {}
+            ids = {k: {i for i in raw[k] if isinstance(i, str)} if isinstance(raw.get(k), list) else set()
+                   for k in ("finding_ids", "reject_ids")}
+            keep = ids["finding_ids"] - ids["reject_ids"]
+            valid = {"status": "invalid", "follow_up": [], "rerun_pillars": [], "issues": []}
+        else:
+            keep = set(valid["finding_ids"])
         for row in findings:
             if row["id"] not in keep:
                 index._reject(row["id"], "review_withheld")
         retained = [row for row in findings if row["id"] in keep]
+        if valid.get("status") == "invalid":
+            return retained, valid
         if valid["issues"]:
             degraded.append(f"{stage}:unresolved_issues")
         return retained, {**{key: value for key, value in valid.items() if key != "_stage"}, "status": "completed"}

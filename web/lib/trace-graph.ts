@@ -26,6 +26,8 @@ export interface TraceEdge {
     spanCount: number; metricCount: number;
     instance_observations?: InstanceObservation[];
     instance_observations_omitted?: number;
+    /** Claimed instance→DB pairs that could not be bound to inventory (edge-level disclosure). */
+    instance_observations_unbound?: number;
   };
 }
 export interface InfraNodeLike { id: string; kind?: string; meta?: Record<string, unknown> | null }
@@ -91,7 +93,7 @@ function claimedInstance(span: TraceSpan): string | undefined {
 function observedInstanceDatabasePair(
   span: TraceSpan, infraNodes: InfraNodeLike[], trustedHostAccountId?: string,
 ): InstanceObservation | null | undefined {
-  // undefined: no EC2 claim to bind; null: a claimed pair that cannot be bound (disclosed as a drop).
+  // undefined: no EC2 claim to bind; null: a claimed pair that cannot be bound (disclosed on its edge).
   if (!span.dbHost || ![span.cloudResourceId, span.hostId, span.serviceInstanceId].some(claim =>
     claim && (INSTANCE_ID.test(claim) || /^arn:[^:]+:ec2:/.test(claim)))) return undefined;
   const account = span.accountId, region = span.region, observedAt = Math.floor(span.startMs);
@@ -136,7 +138,6 @@ export function buildTraceGraph(
   let orphanSpans = 0;
   let invalidSpans = 0;
   let unresolvedMessaging = 0;
-  let instanceObservationDrops = 0;
   // Per-edge pair index: the cap bounds distinct (instance, database) pairs, so a chatty
   // instance cannot crowd out another instance that shares the same database.
   const pairIndex = new WeakMap<TraceEdge, { kept: Map<string, InstanceObservation>; omitted: Set<string> }>();
@@ -223,7 +224,7 @@ export function buildTraceGraph(
       // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
       const observation = span.kind === 'CLIENT'
         ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
-      if (observation === null) instanceObservationDrops++;
+      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + 1;
       else if (observation) {
         const observations = queryEdge.meta.instance_observations ??= [];
         let index = pairIndex.get(queryEdge);
@@ -246,7 +247,6 @@ export function buildTraceGraph(
           // Omitted counts distinct pairs, matching the distinct-pair cap.
           index.omitted.add(key);
           queryEdge.meta.instance_observations_omitted = (queryEdge.meta.instance_observations_omitted ?? 0) + 1;
-          instanceObservationDrops++;
         }
       }
     }
@@ -300,5 +300,5 @@ export function buildTraceGraph(
       serviceNode(call.server, call.serverIdentity ?? {}), 'calls', 0, call.count);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
-    unresolvedMessaging, instanceObservationDrops };
+    unresolvedMessaging };
 }

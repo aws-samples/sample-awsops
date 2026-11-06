@@ -104,6 +104,23 @@ def test_cells_rows_and_total_markdown_are_bounded_with_explicit_markers(monkeyp
     bodies = dict(presentation.render(SECTIONS, data, analysis(), lang="en"))
     assert sum(len(b.encode()) for b in bodies.values()) <= 2000
     assert bodies["compute_infrastructure"].endswith("\n…[truncated] (report size bound)")
+    verdicts = "VERDICT " * 100
+    bodies = dict(presentation.render(list(SECTIONS) + [INTENDED_VS_ACTUAL_SECTION], data, analysis(),
+                                      lang="en", invariant_md=verdicts))
+    assert bodies["intended_vs_actual"] == verdicts
+    assert sum(len(b.encode()) for b in bodies.values()) <= 2000
+    assert presentation._trim("a" * 1000, 600, "en") == "a" * 344 + presentation.SIZE_MARK
+
+
+@pytest.mark.parametrize("pillar,deep,shared", [("reliability", "reliability_ha", "network_architecture"),
+                                                 ("cost_optimization", "cost_optimization", "cost_overview")])
+def test_findings_render_in_the_pillar_dedicated_section(pillar, deep, shared):
+    from diagnosis import presentation
+    from diagnosis.sections import DEEP_SECTIONS
+    rows = analysis(findings=[finding(pillar=pillar)])
+    bodies = dict(presentation.render(DEEP_SECTIONS, bundle(), rows, lang="en"))
+    assert "| Evidence |" in bodies[deep] and "| Evidence |" not in bodies[shared]
+    assert "| Evidence |" in dict(presentation.render(SECTIONS, bundle(), rows, lang="en"))[shared]
 
 
 def test_local_title_and_tags_use_pillar_and_native_identity():

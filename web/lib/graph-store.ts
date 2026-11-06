@@ -363,8 +363,7 @@ export async function rebuildTraceGraph(
   const nodeDrops = graph.nodes.length - nodes.length;
   const edgeDrops = graph.edges.length - edges.length;
   const incomplete = partial || infraUnavailable || nodeDrops > 0 || edgeDrops > 0
-    || graph.orphanSpans > 0 || graph.invalidSpans > 0 || graph.unresolvedMessaging > 0
-    || graph.instanceObservationDrops > 0;
+    || graph.orphanSpans > 0 || graph.invalidSpans > 0 || graph.unresolvedMessaging > 0;
   const status = incomplete ? 'partial' : nodes.length ? 'ok' : 'empty';
   return writeGraph(pool, 'trace', TRACE_LOCK, 'self', nodes, edges, runId, {
     status, attemptedAt: new Date(endMs).toISOString(), publish: true,
@@ -372,7 +371,6 @@ export async function rebuildTraceGraph(
       sources: sourceDetails, retainedPrevious: false, windowStartMs: startMs, windowEndMs: endMs,
       nodeDrops, edgeDrops, orphanSpans: graph.orphanSpans, invalidSpans: graph.invalidSpans,
       unresolvedMessaging: graph.unresolvedMessaging,
-      instanceObservationDrops: graph.instanceObservationDrops,
       infraUnavailable,
     },
   });

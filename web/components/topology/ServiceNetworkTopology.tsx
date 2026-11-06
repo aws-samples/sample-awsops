@@ -15,7 +15,7 @@ import { GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
 import PageHeader from '@/components/ui/PageHeader';
 import Button from '@/components/ui/Button';
 import E2eGraphCanvas from './E2eGraphCanvas';
-import GraphCollectionStatus, { COLLECTION_LOSS_KEYS, OPTIONAL_COLLECTION_LOSS_KEYS, isCollectionLossCount, type GraphCollection, type GraphCollectionSource } from './GraphCollectionStatus';
+import GraphCollectionStatus, { COLLECTION_LOSS_KEYS, isCollectionLossCount, type GraphCollection, type GraphCollectionSource } from './GraphCollectionStatus';
 import GraphReadError from './GraphReadError';
 
 export interface ConfigurationStatus {
@@ -120,7 +120,6 @@ function readCollection(value: unknown): ObservedServices['collection'] {
   copy(raw, parsed, ['retainedPrevious', 'inputTruncated', 'graphTruncated', 'infraUnavailable',
     'sourceAttempted', 'metadataTruncated', 'readTruncated'], v => typeof v === 'boolean');
   copy(raw, parsed, COLLECTION_LOSS_KEYS, isCollectionLossCount);
-  copy(raw, parsed, OPTIONAL_COLLECTION_LOSS_KEYS, isCollectionLossCount);
   copy(raw, parsed, ['windowStartMs', 'windowEndMs'], millis);
   copy(raw, parsed, ['attempted_at', 'captured_at'], v => v === null || validTime(v));
   const enums = {

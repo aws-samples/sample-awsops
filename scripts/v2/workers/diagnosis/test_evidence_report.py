@@ -136,8 +136,10 @@ def test_discovery_exception_still_produces_visible_partial_report(monkeypatch):
     assert "private secret detail" not in md
 
 
-@pytest.mark.parametrize("incomplete,expected_status", [([], "succeeded"), (["inventory_cap"], "partial")])
-def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, incomplete, expected_status):
+@pytest.mark.parametrize("extra,expected_status", [
+    ({}, "succeeded"), ({"incomplete": ["inventory_cap", "nfm_categories_omitted"]}, "succeeded"),
+    ({"budget_incomplete": ["discovery_deadline"]}, "partial")])
+def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, extra, expected_status):
     import db as wdb
     import handlers
     from diagnosis import db as ddb
@@ -153,7 +155,7 @@ def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, in
     def generate(*args, **kwargs):
         state["budget"] = kwargs["budget"]
         assert state["budget"].remaining(analysis=False) <= 3300
-        return "# local report", {"degraded": [], "render_degraded": [], "incomplete": incomplete,
+        return "# local report", {"degraded": [], "render_degraded": [], **extra,
                                   "title_and_tags": {"title": "Local title", "tags": ["security"]}}, ["inventory"]
 
     monkeypatch.setattr(report, "generate", generate)
@@ -165,6 +167,39 @@ def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, in
     assert result["status"] == expected_status and state["closed"]
     assert state["finished"]["title"] == "Local title"
     assert state["finished"]["summary"]["budget"]["attempt_count"] == 0
+
+
+@pytest.mark.parametrize("meta", [None, {"title": None}, "x"])
+def test_handler_malformed_local_title_falls_back(monkeypatch, meta):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb
+    state = {}
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
+    monkeypatch.setattr(wdb, "connect", lambda: type("C", (), {"close": lambda self: None})())
+    monkeypatch.setattr(report, "generate", lambda *a, **kw: ("# r", {"title_and_tags": meta}, []))
+    monkeypatch.setattr(report, "make_title_and_tags", lambda *a: {"title": "Fallback", "tags": []})
+    monkeypatch.setattr(handlers, "_upload_markdown", lambda *a: "s3://test/report.md")
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda *a: None)
+    monkeypatch.setattr(ddb, "finish_report", lambda *a, **kw: state.update(kw))
+    assert handlers._report({"account": "self", "report_id": 1}, dry_run=False)[0]["status"] == "succeeded"
+    assert state["title"] == "Fallback"
+
+
+def test_size_bound_truncation_degrades_render(monkeypatch):
+    from diagnosis import presentation
+    prepare(monkeypatch)
+    monkeypatch.setattr(presentation, "MAX_MARKDOWN_BYTES", 600)
+    summary = report.generate(object(), "self", lang="en")[1]
+    assert summary["render_degraded"] and summary["budget_incomplete"] == []
+
+
+def test_evidence_summary_separates_budget_cutoffs_from_caps(monkeypatch):
+    data = bundle()
+    data["incomplete"] = ["inventory_cap", "discovery_deadline"]
+    prepare(monkeypatch, data=data)
+    summary = report.generate(object(), "self")[1]
+    assert summary["budget_incomplete"] == ["discovery_deadline"]
 
 
 def test_payload_cannot_enable_evidence_path(monkeypatch):

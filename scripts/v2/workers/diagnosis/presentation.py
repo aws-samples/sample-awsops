@@ -43,6 +43,8 @@ _SECTION_PILLARS = {
     "observability_coverage": {"operational_excellence"},
     "external_obs_signals": {"operational_excellence", "reliability"},
 }
+# Deep-only sections dedicated to one pillar outrank the shared sections that precede them.
+_DEDICATED = {"reliability": "reliability_ha", "cost_optimization": "cost_optimization"}
 _SEVERITY = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 # Templates are instructions for the operator, never executed and never model supplied.
 _VERIFY = {
@@ -60,6 +62,7 @@ _VERIFY = {
 
 MAX_MARKDOWN_BYTES = 256 * 1024
 _TRUNCATED = "…[truncated]"
+SIZE_MARK = _TRUNCATED + " (report size bound)"  # code-only: cells escape "[" so models cannot forge it
 
 
 def _clip(value, limit):
@@ -203,8 +206,10 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
     findings = _ordered(analysis)
     keys = [s["key"] for s in catalog]
     summary = "executive_summary" if "executive_summary" in keys else keys[0] if keys else None
-    # Primary section: the first catalog section covering the pillar (else the summary).
-    home = {id(f): next((k for k in keys if f.get("pillar") in _SECTION_PILLARS.get(k, ())), summary)
+    # Primary section: the pillar's dedicated section when cataloged, else the first catalog
+    # section covering the pillar (else the summary).
+    home = {id(f): _DEDICATED.get(f.get("pillar")) if _DEDICATED.get(f.get("pillar")) in keys
+            else next((k for k in keys if f.get("pillar") in _SECTION_PILLARS.get(k, ())), summary)
             for f in findings}
     top, output = {id(f) for f in findings[:12]}, {}
     for key in keys:
@@ -225,16 +230,21 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
         if key == summary:
             # Missing discovery/sizing prerequisites are stated once, not per section.
             output[key] += "\n\n" + _coverage(bundle, analysis, copy)
-    rendered, used = [], 0
-    for key in keys:
-        body = _swept(output[key], lang)
-        if used + len(body.encode()) > MAX_MARKDOWN_BYTES:
-            # Reserve room for the marker and a read-only sweep mark; cut at a line boundary.
-            kept = body.encode()[:max(0, MAX_MARKDOWN_BYTES - used - 256)].decode(errors="ignore")
-            body = _swept(kept[:kept.rfind("\n") + 1] + _TRUNCATED + " (report size bound)", lang)
-        used += len(body.encode())
-        rendered.append((key, body))
-    return rendered
+    bodies = {key: _swept(output[key], lang) for key in keys}
+    # Trim the largest sections first; the deterministic intended-vs-actual verdicts go last.
+    for key in sorted(keys, key=lambda k: (k == "intended_vs_actual", -len(bodies[k].encode()))):
+        over = sum(len(b.encode()) for b in bodies.values()) - MAX_MARKDOWN_BYTES
+        if over <= 0:
+            break
+        bodies[key] = _trim(bodies[key], len(bodies[key].encode()) - over, lang)
+    return [(key, bodies[key]) for key in keys]
+
+
+def _trim(body, limit, lang):
+    """Reserve room for the marker and a read-only sweep mark; cut at a line boundary if any."""
+    kept = body.encode()[:max(0, limit - 256)].decode(errors="ignore")
+    cut = kept.rfind("\n")
+    return _swept((kept[:cut + 1] if cut >= 0 else kept) + SIZE_MARK, lang)
 
 
 def title_and_tags(bundle, analysis, *, lang="ko"):

@@ -106,18 +106,20 @@ def _report(payload, dry_run):
                 scope=scope, lang=lang, **budget_kwargs)
             artifact_uri = _upload_markdown(md, report_id)
             _export_artifacts(md, report_id)  # best-effort DOCX+PDF; never fails the report
+            meta = summary.get("title_and_tags") if budget is not None else None
             if budget is not None:
-                meta = summary.get("title_and_tags", {"title": None, "tags": []})
                 # Final ledger includes artifact export and local metadata selection.
                 summary["budget"] = budget.snapshot()
-            else:
+            if not (isinstance(meta, dict) and isinstance(meta.get("title"), str)
+                    and isinstance(meta.get("tags"), list)):
                 try:  # auto title + suggested tags — best-effort, never fails the report
                     meta = rpt.make_title_and_tags(md, lang)
                 except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
                     meta = {"title": None, "tags": []}
             # A failed/cut-off section degrades the report just like a failed collector.
+            # `incomplete` lists by-design caps; only budget/stage cut-offs make the report partial.
             partial = (summary.get("degraded") or summary.get("render_degraded")
-                       or (budget is not None and summary.get("incomplete")))
+                       or summary.get("budget_incomplete"))
             status = "partial" if partial else "succeeded"
             ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
                               summary=summary, artifact_uri=artifact_uri,

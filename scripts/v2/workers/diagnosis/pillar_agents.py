@@ -22,7 +22,13 @@ SCHEMA_VERSION = "diagnosis-findings-v1"
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_FINDINGS = 8
 MAX_MODEL_ATTEMPTS = 2
-REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
+
+
+def _region():
+    """Read per call like report.py/finops: BEDROCK_REGION pins invocation-log attribution."""
+    return os.environ.get("BEDROCK_REGION") or os.environ.get("AWS_REGION") or "ap-northeast-2"
+
+
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Simplified Chinese"}
 MODEL_CAPABILITIES = {
     "anthropic.claude-sonnet-5-5": {"thinking": "adaptive", "effort": "high"},
@@ -349,7 +355,7 @@ def _structured(stage, prompt, index, schema, *, model_id, budget, extra=None):
         attempts.append(attempt)
         usage = None
         try:
-            response = _client(REGION, read_timeout).invoke_model(modelId=model_id, body=body)
+            response = _client(_region(), read_timeout).invoke_model(modelId=model_id, body=body)
             payload = _read_response(response, budget=budget, read_timeout=read_timeout)
             if not isinstance(payload, dict):
                 raise ModelStageError("invalid_output")

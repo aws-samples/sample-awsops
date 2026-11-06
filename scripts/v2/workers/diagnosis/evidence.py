@@ -74,6 +74,9 @@ FACT_KEYS = {
 _DOWNSIZE_FINDINGS = {"ec2": {"Overprovisioned", "NotOptimized"},
                       "rds": {"Overprovisioned"}, "rds_instance": {"Overprovisioned"}}
 _HAN_NUMERALS = "〇零一二三四五六七八九十百千萬万億亿兆兩两壹贰貳叁參肆伍陆陸柒捌玖拾佰仟"
+_EN_NUM = (r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|"
+           r"fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|"
+           r"seventy|eighty|ninety|hundred|thousand|million|billion|trillion)")
 _NUMBER = re.compile(
     r"\d|[%$€£¥₩¢]"
     # Recognize numeral sequences and measured counts, preserving ordinary words
@@ -88,10 +91,11 @@ _NUMBER = re.compile(
     r"|(?<![가-힣])(?:(?:[영일이삼사오육칠팔구십백천만억조]{2,}|다섯|여섯|일곱|여덟|아홉|스물|서른|"
     r"마흔|예순|일흔|여든|아흔)\s*|(?:[영일이삼사오육칠팔구십백천만억조]|한|하나|두|둘|세|셋|네|넷|열|쉰)\s+)"
     r"(?:퍼센트|프로|원|개|번|일|시간|분|초|배|건|달)"
-    r"|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|"
-    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
-    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|"
-    r"millions?|billions?|trillions?|dollars?|euros?|yen|USD|EUR|JPY|KRW)\b",
+    # English number words count only before a unit/counter ("one subnet route" is prose).
+    rf"|\b{_EN_NUM}(?:[\s-]+(?:and[\s-]+)?{_EN_NUM})*[\s-]*(?:percent|per\s*cent|percentage|"
+    r"times|fold|x|ms|milli(?:second)?s?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|"
+    r"[kmgtp]i?b|bytes?|requests?|calls?|errors?|failures?|retries|attempts?|cents?|dollars?|euros?)\b"
+    r"|\b(?:hundreds|thousands|millions|billions|trillions|dollars?|euros?|yen|USD|EUR|JPY|KRW)\b",
     re.IGNORECASE,
 )
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$")

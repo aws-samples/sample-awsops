@@ -3,12 +3,6 @@
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 export const COLLECTION_LOSS_KEYS = ['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging'] as const;
-/**
- * Loss counters that are disclosed when present but are not required for completeness:
- * snapshots written before the counter existed omit it, and absence is not a loss.
- */
-export const OPTIONAL_COLLECTION_LOSS_KEYS = ['instanceObservationDrops'] as const;
-const DISPLAYED_LOSS_KEYS = [...COLLECTION_LOSS_KEYS, ...OPTIONAL_COLLECTION_LOSS_KEYS] as const;
 export function isCollectionLossCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -54,7 +48,6 @@ export interface GraphCollection {
   orphanSpans?: number;
   invalidSpans?: number;
   unresolvedMessaging?: number;
-  instanceObservationDrops?: number;
   infraUnavailable?: boolean;
 }
 
@@ -79,7 +72,6 @@ const COPY = {
     limitedPartial: '처리 한도로 인해 그래프 범위가 불완전합니다.', nodeDrops: '누락 노드', edgeDrops: '누락 엣지',
     infraUnavailable: '인벤토리 정보를 사용할 수 없음', windowStart: '원본 조회 시작', windowEnd: '원본 조회 종료',
     orphanSpans: '부모 또는 링크 미확인 스팬', invalidSpans: '잘못된 스팬', unresolvedMessaging: '메시징 연결 미확인 스팬',
-    instanceObservationDrops: '생략된 인스턴스-DB 관측 쌍',
     attemptSources: '최근 시도 원본', savedSourceCount: '저장 원본',
     counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
@@ -100,7 +92,6 @@ const COPY = {
     limitedPartial: 'Processing limit reached — graph coverage is incomplete.', nodeDrops: 'Nodes omitted', edgeDrops: 'Edges omitted',
     infraUnavailable: 'Inventory context unavailable', windowStart: 'Source window start', windowEnd: 'Source window end',
     orphanSpans: 'Unresolved span parents/links', invalidSpans: 'Invalid spans', unresolvedMessaging: 'Unresolved messaging spans',
-    instanceObservationDrops: 'Instance-to-database observation pairs omitted',
     attemptSources: 'Latest attempt sources', savedSourceCount: 'Saved sources',
     counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
@@ -121,7 +112,6 @@ const COPY = {
     limitedPartial: '処理上限によりグラフの範囲は不完全です。', nodeDrops: '省略ノード', edgeDrops: '省略エッジ',
     infraUnavailable: 'インベントリ情報を利用できません', windowStart: '元データの照会開始', windowEnd: '元データの照会終了',
     orphanSpans: '親またはリンク未解決のスパン', invalidSpans: '無効なスパン', unresolvedMessaging: '接続先未解決のメッセージングスパン',
-    instanceObservationDrops: '省略されたインスタンス-DB観測ペア',
     attemptSources: '最新試行のソース', savedSourceCount: '保存済みソース',
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
@@ -142,7 +132,6 @@ const COPY = {
     limitedPartial: '达到处理上限 — 图的覆盖范围不完整。', nodeDrops: '省略节点', edgeDrops: '省略边',
     infraUnavailable: '资产清单上下文不可用', windowStart: '源查询开始', windowEnd: '源查询结束',
     orphanSpans: '父级或链接未解析的跨度', invalidSpans: '无效跨度', unresolvedMessaging: '消息目标未解析的跨度',
-    instanceObservationDrops: '省略的实例-数据库观测对',
     attemptSources: '最新尝试的数据源', savedSourceCount: '已保存的数据源',
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '不可用', error: '失败', unknown: '未知' },
   },
@@ -162,7 +151,7 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
   const data = record(collection);
   const status = statusOf(data.status);
   const retained = data.retainedPrevious === true;
-  const losses = DISPLAYED_LOSS_KEYS.filter(key =>
+  const losses = COLLECTION_LOSS_KEYS.filter(key =>
     isCollectionLossCount(data[key]) && (data[key] as number) > 0);
   const limited = data.inputTruncated === true || data.graphTruncated === true
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');

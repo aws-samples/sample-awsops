@@ -119,7 +119,7 @@ describe('instance observation publication', () => {
     }
   });
 
-  it('publishes an explicitly partial graph when paired observations exceed their bound', async () => {
+  it('discloses capped observation pairs on the edge without degrading the collection', async () => {
     vi.stubEnv('HOST_ACCOUNT_ID', account);
     const fleetId = (index: number) => `i-${index.toString(16).padStart(17, '0')}`;
     const fleet = [...Array.from({ length: 201 }, (_, index) => ({
@@ -130,10 +130,10 @@ describe('instance observation publication', () => {
       Array.from({ length: 201 }, (_, index) =>
         span({ ...querySpan, spanId: `query-${index}`, hostId: fleetId(index) })),
     )]);
-    expect(result).toMatchObject({ published: 1, degraded: 1 });
+    expect(result).toMatchObject({ published: 1, degraded: 0 });
     const state = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO topology_graph_state'))![1]!;
-    expect(state[1]).toBe('partial');
-    expect(JSON.parse(String(state[4]))).toMatchObject({ instanceObservationDrops: 1 });
+    expect(state[1]).toBe('ok');
+    expect(JSON.parse(String(state[4]))).not.toHaveProperty('instanceObservationDrops');
     const metadata = JSON.parse(String(params.find(p => p[2] === 'queries')![7]));
     expect(metadata.instance_observations).toHaveLength(200);
     expect(metadata.instance_observations_omitted).toBe(1);

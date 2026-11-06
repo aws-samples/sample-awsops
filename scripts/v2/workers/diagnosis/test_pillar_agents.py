@@ -104,8 +104,11 @@ def test_distinct_prompts_and_strict_schemas():
 
 def test_model_call_has_exact_structured_contract_redaction_and_usage(monkeypatch):
     client = FakeClient([response({"findings": [finding(pillar="security", claim="hypothesis")]})])
-    configs = []
-    monkeypatch.setattr(agents, "_client", lambda region, read_timeout: configs.append(read_timeout) or client)
+    configs, regions = [], []
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    monkeypatch.setenv("BEDROCK_REGION", "eu-west-1")  # read per call, after import
+    monkeypatch.setattr(agents, "_client", lambda region, read_timeout: regions.append(region)
+                        or configs.append(read_timeout) or client)
     budget = ReportBudget("mid")
     data = bundle()
     data["resources"][0]["facts"]["endpoint"] = "admin@example.com"
@@ -121,7 +124,7 @@ def test_model_call_has_exact_structured_contract_redaction_and_usage(monkeypatc
     assert "<email>" in request["messages"][0]["content"][0]["text"]
     assert "admin@example.com" not in client.calls[0]["body"]
     assert ACCOUNT not in client.calls[0]["body"]
-    assert configs[0] >= 120
+    assert configs[0] >= 120 and regions == ["eu-west-1"]
     assert "private reasoning" not in json.dumps(result)
     assert result["_stage"]["prompt_version"] == agents.PROMPT_VERSION
     assert budget.snapshot()["actual_usage"] == {"input_tokens": 100, "output_tokens": 200}

@@ -955,8 +955,11 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     incomplete = list(dict.fromkeys(bundle.get("incomplete", []) + analysis.get("incomplete", [])))
     summary = {
         "sections": total, "sources_used": sources_used, "degraded": degraded,
-        "incomplete": incomplete,
-        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating)),
+        "incomplete": incomplete,  # by-design caps; never make the report partial
+        "budget_incomplete": [k for k in incomplete
+                              if k.endswith(("_deadline", ":uncompleted", ":budget_exhausted"))],
+        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + [
+            key for key, body in bodies if presentation.SIZE_MARK in body])),
         "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),
         "evidence_loop": {"enabled": True, "passes": analysis.get("passes", 0),
                           "prompt_version": analysis.get("prompt_version"),

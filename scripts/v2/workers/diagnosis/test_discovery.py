@@ -190,7 +190,8 @@ def test_observed_pairs_are_same_span_and_never_cartesian(provider):
 
 @pytest.mark.parametrize("field,value", [("account", "999900001111"), ("region", "us-east-1"),
                                          ("db_host", "db2.example.test"), ("instance_id", I2),
-                                         ("provenance", "service_aggregate")])
+                                         ("provenance", "service_aggregate"),
+                                         ("correlation_id", "pair <b>user@example.com</b>")])
 def test_independent_pair_validation_rejects_conflicting_claims(provider, field, value):
     db = graph_fixture()
     db.edges[0][4]["instance_observations"][0][field] = value
@@ -419,6 +420,17 @@ def test_byte_cap_evicts_trace_edges_before_sizing_evidence():
     assert "context_byte_cap" in result["incomplete"]
 
 
+def test_byte_cap_evicts_inventory_last():
+    bundle = {"resources": [], "relationships": [], "gaps": [], "degraded": [], "incomplete": [],
+              "coverage": {"account": ACCOUNT},
+              "evidence": [{"id": "inv", "source": "inventory", "facts": "i" * 4000}]
+              + [{"id": f"m{i}", "source": src, "facts": "m" * 4000}
+                 for i, src in enumerate(["cloudwatch", "finops", "compute_optimizer"] * 20)]}
+    result = discovery._finish(bundle)
+    assert [e["id"] for e in result["evidence"] if e["source"] == "inventory"] == ["inv"]
+    assert result["coverage"]["byte_cap_evicted"]["cloudwatch"] > 0
+
+
 @pytest.mark.parametrize("fault", ["pre_attempt", "snapshot_count", "ledger_count"])
 def test_inventory_requires_same_attempt_and_reconciled_count(provider, fault):
     class InconsistentDatabase(Database):
@@ -452,6 +464,18 @@ def test_pair_cannot_use_a_trace_node_with_foreign_scope(provider):
     bundle = discovery.collect(db, ACCOUNT, Budget())
     iid = resource(bundle, I1)["id"]
     assert not any(e["source"] == iid and e["kind"] == "observed_call" for e in bundle["relationships"])
+
+
+@pytest.mark.parametrize("key", ["instance_observations_omitted", "instance_observations_unbound"])
+def test_edge_omitted_or_unbound_pairs_mark_that_edge_observations_incomplete(provider, key):
+    db = graph_fixture()
+    db.edges[0][4][key] = 2
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    pairs = {e["resource_ids"][0]: e for e in evidence(bundle, "observed_call") if e["facts"].get("correlation_id")}
+    capped, other = pairs[resource(bundle, I1)["id"]], pairs[resource(bundle, I2)["id"]]
+    assert capped["coverage"]["complete"] is False and capped["coverage"]["instance_observations_omitted"] == 2
+    assert other["coverage"]["complete"] is True
+    assert "instance_observation_cap" in bundle["incomplete"]
 
 
 def test_pair_omission_counts_are_retained_as_partial_coverage(provider):

@@ -36,6 +36,7 @@ PERIOD = 3600
 _ACCOUNT = re.compile(r"^\d{12}$")
 _REGION = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d+$")
 _INSTANCE = re.compile(r"^i-(?:[a-f0-9]{8}|[a-f0-9]{17})$")
+_CORRELATION = re.compile(r"[A-Za-z0-9._:-]{8,128}")
 _FACT_KEYS = (
     "arn", "name", "instance_type", "instance_state", "private_ip_address",
     "db_instance_identifier", "endpoint_address",
@@ -532,7 +533,8 @@ def _read_graph(conn, bundle, budget, scope):
             "'instance_observations',(SELECT coalesce(jsonb_agg(pair),'[]'::jsonb) FROM "
             "(SELECT pair FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'instance_observations')='array' "
             "THEN meta->'instance_observations' ELSE '[]'::jsonb END) AS p(pair) LIMIT 200) pairs),"
-            "'instance_observations_omitted',meta->'instance_observations_omitted'),captured_at,class "
+            "'instance_observations_omitted',meta->'instance_observations_omitted',"
+            "'instance_observations_unbound',meta->'instance_observations_unbound'),captured_at,class "
             "FROM ranked ORDER BY seed_rank,class,source,target,rel LIMIT 401",
             scope=scope, classes=classes, nodes=selected_nodes, bound_nodes=bound_nodes)
         metadata = {(r[5], r[0]): {k: v for k, v in _dict(r[3]).items() if k in _NODE_KEYS
@@ -571,8 +573,14 @@ def _read_graph(conn, bundle, budget, scope):
                     window=window, coverage=coverage)
                 _relationship(bundle, source_r["id"], target_r["id"], kind, item)
             observations = meta.get("instance_observations") or []
-            if _number(meta.get("instance_observations_omitted")) or (isinstance(observations, list) and len(observations) > 200):
+            # Capped/unbound pairs on this edge leave its own observation coverage incomplete.
+            omitted = sum(_number(meta.get(k)) or 0 for k in
+                          ("instance_observations_omitted", "instance_observations_unbound"))
+            omitted += max(0, len(observations) - 200) if isinstance(observations, list) else 0
+            if omitted:
                 _mark(bundle, "incomplete", "instance_observation_cap")
+            pair_coverage = {**coverage, "complete": False,
+                             "instance_observations_omitted": omitted} if omitted else coverage
             if cls != "trace" or rel != "queries" or not isinstance(observations, list):
                 continue
             for pair in observations[:200]:
@@ -603,14 +611,14 @@ def _read_graph(conn, bundle, budget, scope):
                         and str(r["facts"].get("endpoint_address", "")).lower() == host.lower()
                         for r in bundle["resources"]) == 1
                     and pair.get("provenance") == "trace_span"
-                    and isinstance(pair.get("correlation_id"), str) and 8 <= len(pair["correlation_id"]) <= 128
+                    and isinstance(pair.get("correlation_id"), str) and _CORRELATION.fullmatch(pair["correlation_id"])
                     and observed and start and end and start <= observed <= end
                     and isinstance(pair.get("source_id"), str)
                     and any(s.get("sourceId") == pair["source_id"] for s in coverage["sources"]))
                 if not valid:
                     _mark(bundle, "incomplete", "unresolved_instance_observation")
                     continue
-                facts = {"correlation_id": pair["correlation_id"], "db_host": host,
+                facts = {"correlation_id": _text(pair["correlation_id"], 128), "db_host": host,
                          "instance_id": instance["resource_id"], "relation": "queries",
                          "provenance": "trace_span", "source_id": pair["source_id"],
                          "service": _text(metadata.get((cls, source), {}).get("service") or source)}
@@ -619,7 +627,7 @@ def _read_graph(conn, bundle, budget, scope):
                 item = _evidence(bundle, "stored_graph", "observed_call", [instance["id"], database["id"]],
                     facts, pair["observed_at_ms"], region=instance["region"],
                     fresh=fresh and inventory_fresh and _fresh(observed, 1800),
-                    window=window, coverage=coverage)
+                    window=window, coverage=pair_coverage)
                 _relationship(bundle, instance["id"], database["id"], "observed_call", item)
         if any(row["id"] in retired and row["coverage"].get("status") == "refresh_pending"
                for row in bundle["evidence"]):
@@ -998,7 +1006,8 @@ def _finops(conn, bundle, budget):
         _mark(bundle, "degraded", "finops_read_failed")
 
 
-_EVICTION = {"xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer": 3, "finops": 3}
+_EVICTION = {"xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer": 3, "finops": 3,
+             "inventory": 4}  # inventory anchors every resource; evicted last
 
 
 def _finish(bundle):
@@ -1011,7 +1020,7 @@ def _finish(bundle):
         _mark(bundle, "incomplete", "context_byte_cap")
         if bundle["evidence"]:
             # Evict the newest low-priority evidence first (X-Ray, then graph);
-            # sizing, metrics and FinOps rows are retained longest.
+            # sizing, metrics and FinOps rows outlast them; inventory goes last.
             rows = bundle["evidence"]
             row = rows.pop(min(range(len(rows)), key=lambda i: (_EVICTION.get(rows[i].get("source"), 2), -i)))
             evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
