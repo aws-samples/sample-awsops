@@ -126,8 +126,12 @@ def test_registered_metric_schema_admits_sizing_inputs_and_rejects_invalid_bound
     Draft202012Validator(schema).validate(request)
     for key in ["dimensions", "statistic", "minutes", "period", "unit"]:
         assert key in schema["properties"]
+    # Gateway SchemaDefinition carries no bound keywords, so the server-side request builder is
+    # the enforcement point for every bound the schema descriptions state.
+    cloudwatch._metric_request(request)
     for invalid in [{"minutes": 20161}, {"period": 61}, {"statistic": "arbitrary"}, {"unit": "Invalid"}]:
-        assert list(Draft202012Validator(schema).iter_errors({**request, **invalid}))
+        with pytest.raises(ValueError):
+            cloudwatch._metric_request({**request, **invalid})
     metadata_schema = SCHEMAS["get_metric_metadata"]
     Draft202012Validator(metadata_schema).validate({"namespace": "AWS/RDS"})
     assert "metric_name" in metadata_schema["properties"] and "dimensions" in metadata_schema["properties"]
