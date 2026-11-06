@@ -93,4 +93,14 @@ describe('buildK8sMap', () => {
     expect(node('node:node-a').status).toBe('ok'); // Ready
     expect(node('node:node-a').badge).toContain('1 pod'); // pod count
   });
+
+  it('renders EC2/node-group (aws-api) nodes as neutral "EC2 running · Ready unknown", never warn', () => {
+    const input = base();
+    input.nodes = [{ ...input.nodes[0], status: 'EC2 running', source: 'aws-api' }];
+    const n = buildK8sMap(input).nodes.find((x) => x.id === 'node:node-a')!;
+    expect(n.status).toBe('neutral');
+    expect(n.sub).toContain('EC2 running · Ready unknown');
+    input.nodes = [{ ...input.nodes[0], status: 'NotReady', source: undefined }];
+    expect(buildK8sMap(input).nodes.find((x) => x.id === 'node:node-a')!.status).toBe('warn');
+  });
 });

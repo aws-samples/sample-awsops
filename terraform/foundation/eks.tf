@@ -19,8 +19,9 @@ resource "aws_eks_access_entry" "web" {
 }
 
 # Existing host web-role association. Member roles are onboarded separately by their owner
-# with AmazonEKSViewPolicy plus nodes-only RBAC (web/lib/eks-member-rbac.ts); this Terraform
-# resource does not grant member access. View includes namespaces but cannot list nodes.
+# with an Access Entry + AmazonEKSViewPolicy only (no Secrets, no RBAC step); this Terraform
+# resource does not grant member access. View includes namespaces but cannot list nodes, so
+# member node rows come from EC2/node-group read APIs (web/lib/eks-aws-nodes.ts).
 # The host retains AdminView, whose read rules cover all Kubernetes resources.
 # It can read Secrets, but the BFF only proxies an allow-listed set of kinds
 # (nodes/pods/deployments/services/namespaces/events/endpoints + explorer kinds replicasets/

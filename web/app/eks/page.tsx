@@ -19,7 +19,7 @@ import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
 import EksFilterPanel, { EksCollectionNotice, NO_VPC, type EksCollectionStatus, type EksFilterState } from '@/components/eks/EksFilterPanel';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
-import type { NodeRow, PodRow } from '@/lib/eks-resources';
+import { fleetNodeTotals, formatFleetNodeReady, type NodeRow, type PodRow } from '@/lib/eks-resources';
 
 // EKS fleet overview — v1 /k8s-Overview parity. Access Entry holders register
 // instantly (the v2 equivalent of v1's "Register kubeconfig"); others get the
@@ -33,6 +33,8 @@ interface Cluster {
   authMode?: 'sa-token' | 'assume-role';
   runtime?: boolean;
   guide?: Guide;
+  /** Admin-only GET flag: member Access Entry verified, not registered yet (one-click [조회 등록]). */
+  accessEntryVerified?: boolean;
 }
 interface Guide { commands: string[]; note: string }
 
@@ -50,13 +52,21 @@ interface FleetEvent {
 }
 interface FleetCluster {
   id?: string; name: string; accountId?: string; region?: string; reachable: boolean; error?: string;
-  counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
+  /** nodesReady is null (unknown) and ec2Running is set when nodesSource is 'aws-api'. */
+  counts: { nodes: number; nodesReady: number | null; ec2Running?: number; pods: number; podsRunning: number; deployments: number; services: number };
   nodeAgg: NodeAgg[];
   instanceTypes: Array<{ type: string; count: number }>;
   podStatus: Record<string, number>;
   podsByNamespace: Array<{ namespace: string; count: number }>;
   events: FleetEvent[];
+  /** 'aws-api' = member EC2/node-group view (AmazonEKSViewPolicy has no nodes read). */
+  nodesSource?: 'aws-api';
+  nodesError?: string;
 }
+
+/** Listed-but-unregistered member cluster whose Access Entry the admin GET verified. */
+const isVerifiedCandidate = (c: Cluster, admin: boolean) =>
+  admin && c.accessEntryVerified === true && c.access === 'entry-only' && !c.runtime;
 
 // [PR#40 review MINOR] readable size: GiB at/above 1 GiB, else MiB (avoids tiny nodes showing "0.7").
 const fmtMib = (mib: number): string => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
@@ -108,14 +118,6 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   const listSeqRef = useRef(0);
   const fleetSeqRef = useRef(0);
   const refreshSeqRef = useRef(0);
-  const load = useCallback(() => {
-    const seq = ++listSeqRef.current;
-    const fresh = () => alive.current && seq === listSeqRef.current;
-    return fetch(`/api/eks?${scopeQuery}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (fresh()) { setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr(''); } })
-      .catch((e) => { if (fresh()) setErr(String(e)); });
-  }, [scopeQuery]);
   const loadFleet = useCallback(() => {
     const seq = ++fleetSeqRef.current;
     const fresh = () => alive.current && seq === fleetSeqRef.current;
@@ -123,6 +125,18 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (fresh()) { setFleet(d.clusters ?? []); setFleetLoaded(true); setFleetCollection(d); setFleetErr(''); } })
       .catch((e) => { if (fresh()) setFleetErr(String(e)); });
+  }, [scopeQuery]);
+  const load = useCallback(() => {
+    const seq = ++listSeqRef.current;
+    const fresh = () => alive.current && seq === listSeqRef.current;
+    return fetch(`/api/eks?${scopeQuery}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        if (!fresh()) return;
+        // GET never writes: verified member entries are only surfaced for a one-click admin POST.
+        setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr('');
+      })
+      .catch((e) => { if (fresh()) setErr(String(e)); });
   }, [scopeQuery]);
 
   // Manual refresh: re-fetch both the access list and the live fleet; stamp
@@ -154,7 +168,9 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'POST' });
       if (!alive.current) return;
-      if (res.status === 200) { setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet(); }
+      if (res.status === 200) {
+        setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet();
+      }
       else if (res.status === 409) { const d = await res.json(); if (alive.current) setGuide({ cluster, data: d.guide }); }
       else if (res.status === 403) setNotice(tt('관리자 전용 기능입니다.'));
       else if (res.status === 503) setNotice(tt('등록 저장소(Aurora)가 설정되지 않았습니다.'));
@@ -215,6 +231,13 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     return true;
   }), [rows, facet]);
   const facetNames = useMemo(() => new Set(facetRows.map((c) => c.id ?? c.name)), [facetRows]);
+  // Owner decision 2026-11-06: no automatic registration. Verified member entries (admin-only
+  // GET flag) are surfaced first and registered only when the admin clicks [조회 등록].
+  const verifiedRows = useMemo(() => (rows ?? []).filter((c) => isVerifiedCandidate(c, admin)), [rows, admin]);
+  const cardRows = useMemo(
+    () => [...facetRows].sort((a, b) => Number(isVerifiedCandidate(b, admin)) - Number(isVerifiedCandidate(a, admin))),
+    [facetRows, admin],
+  );
   // The card-click scope must not silently zero every panel when the facet excludes it.
   useEffect(() => {
     if (facetActive && clusterFilter && !facetNames.has(clusterFilter)) setClusterFilter('');
@@ -244,13 +267,14 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   // the access list (rows), not the fleet (fleet only holds allowed clusters).
   const totals = useMemo(() => reachable.reduce(
     (acc, f) => {
-      acc.nodes += f.counts.nodes; acc.nodesReady += f.counts.nodesReady;
+      acc.nodes += f.counts.nodes;
       acc.pods += f.counts.pods; acc.podsRunning += f.counts.podsRunning;
       acc.deployments += f.counts.deployments; acc.services += f.counts.services;
       return acc;
     },
-    { nodes: 0, nodesReady: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
+    { nodes: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
   ), [reachable]);
+  const nodeTotals = useMemo(() => fleetNodeTotals(reachable), [reachable]);
 
   // Pod status merged across the fleet → [{name,value}] for the donut.
   const podStatusData = useMemo(() => {
@@ -322,7 +346,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
         <StatCard label="Clusters" value={(rows ?? []).length} icon={<Container size={16} />} />
         <StatCard label="Connected" value={connected} icon={<CheckCircle2 size={16} />} />
-        <StatCard label="Nodes" value={totals.nodes} trend={`${totals.nodesReady} ready`} icon={<Server size={16} />} href="/eks/nodes" />
+        <StatCard label="Nodes" value={totals.nodes} trend={formatFleetNodeReady(nodeTotals)} icon={<Server size={16} />} href="/eks/nodes" />
         <StatCard label="Pods" value={totals.pods} trend={`${totals.podsRunning} running`} icon={<Boxes size={16} />} href="/eks/pods" />
         <StatCard label="Deployments" value={totals.deployments} icon={<Layers size={16} />} href="/eks/deployments" />
         <StatCard label="Services" value={totals.services} icon={<Network size={16} />} href="/eks/services" />
@@ -358,6 +382,27 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
           >
             {tt('EKS 인증 가이드 문서 →')}
           </a>
+        </div>
+      )}
+
+      {verifiedRows.length > 0 && (
+        <div data-testid="eks-verified-callout" className="rounded-lg border border-brand-300 border-l-[3px] bg-brand-500/5 p-4">
+          <div className="text-[14px] font-semibold text-brand-700">{tt('Access Entry 확인됨 — 등록 대기 중인 멤버 클러스터')}</div>
+          <p className="mt-1 text-[12px] text-ink-500">
+            {tt('멤버 계정 소유자가 읽기 역할의 Access Entry를 만들었습니다. 자동으로 등록되지 않으며, [조회 등록]을 눌러야 조회 대상에 추가됩니다.')}
+          </p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {verifiedRows.map((c) => {
+              const id = c.id ?? c.name;
+              return (
+                <li key={id} className="flex flex-wrap items-center gap-2 text-[12px]">
+                  <span className="font-mono text-ink-700">{eksClusterLabel(id)}</span>
+                  <Badge tone="brand" dot>{tt('Access Entry 확인됨')}</Badge>
+                  <button className={btn} disabled={busyCluster === id} onClick={() => register(id)}>{tt('조회 등록')}</button>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
 
@@ -483,7 +528,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       )}
       {rows && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {facetRows.map((c) => {
+          {cardRows.map((c) => {
             const id = c.id ?? c.name;
             const f = fleetBy.get(id);
             return (
@@ -524,7 +569,10 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
 
                 {f && f.reachable && (
                   <div className="mt-2 text-[12px] text-ink-500">
-                    {f.counts.nodes} nodes · {f.counts.pods} pods · {f.counts.deployments} deploys
+                    {f.nodesError ? tt('노드 정보 없음') : `${f.counts.nodes} nodes`} · {f.counts.pods} pods · {f.counts.deployments} deploys
+                    {f.nodesSource === 'aws-api' && !f.nodesError && (
+                      <span className="ml-2 text-ink-400" title={tt('Kubernetes nodes API 대신 EC2/노드그룹 API 기준 (kubelet 상태 없음)')}>{tt('EC2/노드그룹 기준')}</span>
+                    )}
                   </div>
                 )}
                 {c.access === 'connected' && f && !f.reachable && (
@@ -623,7 +671,12 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
           <div className="flex flex-col gap-4">
             {reachable.filter((f) => f.nodeAgg.length > 0).map((f) => (
               <div key={f.id ?? f.name} className="flex flex-col gap-2">
-                <div className="font-mono text-[12px] text-ink-500">{eksClusterLabel(f.id ?? f.name)}</div>
+                <div className="font-mono text-[12px] text-ink-500">
+                  {eksClusterLabel(f.id ?? f.name)}
+                  {f.nodesSource === 'aws-api' && (
+                    <span className="ml-2 font-sans text-ink-400">{tt('EC2/노드그룹 기준 — allocatable 대신 인스턴스 타입 용량')}</span>
+                  )}
+                </div>
                 {f.nodeAgg.map((n) => (
                   <div
                     key={n.name}

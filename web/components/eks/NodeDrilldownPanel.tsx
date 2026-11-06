@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
-import { isTerminalPodPhase } from '@/lib/eks-resources';
+import { isTerminalPodPhase, nodePodKeys } from '@/lib/eks-resources';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -13,29 +13,54 @@ import type { NodeRow, PodRow } from '@/lib/eks-resources';
 // 자체 조회하고, 요청량(request)은 해당 노드 파드들의 스케줄러 유효 요청 합으로 계산
 // (normalizePod의 eff-request 의미론 — 개요의 fleet agg와 동일한 수치).
 
-export default function NodeDrilldownPanel({ cluster, nodeName, onClose }: {
+// Member EC2/node-group rows (source 'aws-api'): the caller passes the row it already has,
+// so no node re-list is made; a Kubernetes 403 on the node read (View policy) is reported as
+// an explicit "kubelet details unavailable" state instead of a bare status code.
+export const KUBELET_UNAVAILABLE = 'kubelet 상세 정보 없음 (View 정책 — 노드 읽기 권한 없음)';
+
+class NodeReadError extends Error { constructor(readonly status: number, readonly reason = '') { super(String(status)); } }
+/** The incluster route reports a Kubernetes 403 as `reason: 'denied'` (HTTP 502), never as a 403. */
+const nodeReadError = async (r: Response) => {
+  const body = await r.json().catch(() => null) as { reason?: unknown; message?: unknown } | null;
+  return new NodeReadError(r.status, typeof body?.reason === 'string' ? body.reason : '');
+};
+
+export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: knownNode }: {
   cluster: string; nodeName: string; onClose: () => void;
+  /** Row the caller already holds; an 'aws-api' row skips the live node list request. */
+  node?: NodeRow;
 }) {
   const { tt } = useI18n();
   const [detail, setDetail] = useState<{ node: NodeRow | null; pods: PodRow[] | null; err: string }>({ node: null, pods: null, err: '' });
   const seqRef = useRef(0);
 
+  const ec2Known = knownNode?.source === 'aws-api' && knownNode.name === nodeName ? knownNode : null;
   useEffect(() => {
     setDetail({ node: null, pods: null, err: '' });
     const seq = ++seqRef.current;
     Promise.all([
-      fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=nodes`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))),
+      ec2Known
+        ? Promise.resolve({ rows: [ec2Known] })
+        : fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=nodes`).then(async (r) => (r.ok ? r.json() : Promise.reject(await nodeReadError(r)))),
       fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=pods`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
       .then(([nd, pd]) => {
         if (seq !== seqRef.current) return;
         const node = ((nd.rows ?? []) as NodeRow[]).find((n) => n.name === nodeName) ?? null;
-        const pods = pd ? ((pd.rows ?? []) as PodRow[]).filter((x) => x.node === nodeName) : null;
+        // EC2-view rows may be named by private DNS while pods use another node name: join on
+        // both keys, and treat "no pod references this EC2-view node" as unknown, not zero.
+        const keys = node ? nodePodKeys(node) : [nodeName];
+        const matched = pd ? ((pd.rows ?? []) as PodRow[]).filter((x) => keys.includes(x.node)) : null;
+        const pods = matched && node?.source === 'aws-api' && matched.length === 0 ? null : matched;
         setDetail({ node, pods, err: node ? '' : tt('노드를 찾지 못했습니다') });
       })
-      .catch((e) => { if (seq === seqRef.current) setDetail({ node: null, pods: null, err: String(e instanceof Error ? e.message : e) }); });
+      .catch((e) => {
+        if (seq !== seqRef.current) return;
+        const err = e instanceof NodeReadError && e.reason === 'denied' ? tt(KUBELET_UNAVAILABLE) : String(e instanceof Error ? e.message : e);
+        setDetail({ node: null, pods: null, err });
+      });
     return () => { seqRef.current += 1; };
-  }, [cluster, nodeName, tt]);
+  }, [cluster, nodeName, tt, ec2Known]);
 
   const pods = detail.pods;
   // null = the pods fetch failed — the shared StackBar renders its honest unknown mode
@@ -67,8 +92,11 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose }: {
             podPending={(pods ?? []).filter((x) => x.status === 'Pending').length}
             podFailed={(pods ?? []).filter((x) => x.status === 'Failed').length}
             createdAt={detail.node.createdAt}
+            ec2View={detail.node.source === 'aws-api'}
+            capacityUnknown={detail.node.capacityUnknown === true}
+            podsUnknown={pods == null}
           />
-          <NodePodsSection pods={pods} error="" />
+          <NodePodsSection pods={pods} error={pods == null && detail.node.source === 'aws-api' ? tt('이 EC2/노드그룹 노드를 가리키는 Pod를 찾지 못했습니다 (노드 이름 불일치 가능)') : ''} />
           <NodeEniSection nodeName={nodeName} cluster={cluster} />
         </>
       )}

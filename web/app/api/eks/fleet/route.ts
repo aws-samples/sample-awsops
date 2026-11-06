@@ -1,7 +1,7 @@
 import { verifyUser } from '@/lib/auth';
 import { getScopedEksRegistrations, eksErrorStatus, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
 import { eksReadFailure, type EksReadFailure } from '@/lib/eks-read-error';
-import { listInCluster, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
+import { listInCluster, listNodes, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
 import { aggregateNodeResources, instanceTypeDistribution } from '@/lib/eks-resources';
 import { podStatusCounts, podsByNamespace } from '@/lib/eks-tab-stats';
 
@@ -16,6 +16,7 @@ export const dynamic = 'force-dynamic';
 
 const EVENTS_CAP = 25;
 const NS_CAP = 10;
+
 
 const empty = (identity: ScopedEksRegistration) => ({
   ...identity, reachable: false,
@@ -36,9 +37,16 @@ export async function GET(request: Request) {
   const clusters = await mapEksConcurrent(scope.clusters, async (identity) => {
     const name = identity.id;
     let eventsFailure: EksReadFailure | undefined;
+    let nodesFailure: EksReadFailure | undefined;
     try {
-      const [nodes, pods, deployments, services, events] = await Promise.all([
-        listInCluster(name, 'nodes') as Promise<NodeRow[]>,
+      const [nodeRead, pods, deployments, services, events] = await Promise.all([
+        // A forbidden/failed node read degrades only the node fields: pods, deployments and
+        // services still show (member ViewPolicy entries fall back to the AWS-API node view
+        // inside listInCluster; this catch covers that fallback failing too).
+        listNodes(name).catch(error => {
+          nodesFailure = eksReadFailure(error, 'eks-fleet-nodes');
+          return { rows: [] as NodeRow[], source: 'kubernetes' as const };
+        }),
         listInCluster(name, 'pods') as Promise<PodRow[]>,
         listInCluster(name, 'deployments') as Promise<DeploymentRow[]>,
         listInCluster(name, 'services') as Promise<ServiceRow[]>,
@@ -47,12 +55,18 @@ export async function GET(request: Request) {
           return [] as EventRow[];
         }), // events-only failure must not kill the cluster entry
       ]);
+      // Source comes from the read itself, never from row contents (an empty EC2 view stays EC2).
+      const nodes = nodeRead.rows;
+      const source = nodeRead.source === 'aws-api' ? 'aws-api' as const : undefined;
       return {
         ...identity,
         reachable: true,
         counts: {
           nodes: nodes.length,
-          nodesReady: nodes.filter((n) => n.status === 'Ready').length,
+          // EC2/node-group rows carry no kubelet Ready condition: report Ready as unknown
+          // (null) with the EC2 running count, never as 0 Ready.
+          nodesReady: source ? null : nodes.filter((n) => n.status === 'Ready').length,
+          ...(source ? { ec2Running: nodes.filter((n) => n.status === 'EC2 running').length } : {}),
           pods: pods.length,
           podsRunning: pods.filter((p) => p.status === 'Running').length,
           deployments: deployments.length,
@@ -63,6 +77,8 @@ export async function GET(request: Request) {
         podStatus: podStatusCounts(pods),
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
+        ...(source ? { nodesSource: source } : {}),
+        ...(nodesFailure ? { nodesReason: nodesFailure.reason, nodesError: nodesFailure.message } : {}),
         ...(eventsFailure ? { eventsReason: eventsFailure.reason, eventsError: eventsFailure.message } : {}),
       };
     } catch (e) {

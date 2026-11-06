@@ -16,6 +16,7 @@ vi.mock('./eks-access', () => ({
 }));
 vi.mock('./eks-incluster', () => ({
   listInCluster: (...args: unknown[]) => listInCluster(...args),
+  listNodes: async (c: string) => ({ rows: await listInCluster(c, 'nodes'), source: 'kubernetes' as const }),
   isKind: (kind: string) => kind === 'pods',
 }));
 
@@ -115,6 +116,16 @@ describe('strict registration evidence through real EKS routes', () => {
     expect(body.clusters[0]).toMatchObject({ id: MEMBER_ID, accountId: MEMBER, name: 'shared', reachable: true });
     expect(listInCluster).toHaveBeenCalledWith(MEMBER_ID, 'pods');
     expect(listInCluster).not.toHaveBeenCalledWith('shared', expect.anything());
+  });
+
+  it('summary keeps a member reachable when only its node read fails', async () => {
+    failRegistrationRead = false;
+    listInCluster.mockImplementation(async (_id: string, kind: string) => {
+      if (kind === 'nodes') throw new Error('forbidden');
+      return kind === 'pods' ? [{}, {}] : [{}];
+    });
+    const body = await (await collectionResponse('summary', `account=${MEMBER}`)).json();
+    expect(body).toMatchObject({ clusters: 1, reachable: 1, nodes: 0, pods: 2, deployments: 1, services: 1, nodesUnavailable: 1 });
   });
 });
 
