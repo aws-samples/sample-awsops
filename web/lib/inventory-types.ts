@@ -290,6 +290,37 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'amazon_side_asn', 'dns_support'] },
+  // Network-connection inventory (cross-account network topology inputs). The same record id
+  // can be collected under both accounts of a cross-account link; this page lists each row.
+  transit_gateway_attachment: { label: 'TGW Attachments', group: 'Network', stateKey: 'state', distKey: 'state', columns: [
+    { key: 'transit_gateway_id', label: 'TGW' }, { key: 'resource_type', label: 'Type' },
+    { key: 'resource_id', label: 'Resource' }, { key: 'resource_owner_id', label: 'Resource owner' },
+    { key: 'state', label: 'State' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'creation_time'] },
+      { label: 'Connection', keys: ['transit_gateway_id', 'transit_gateway_owner_id', 'resource_type', 'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'resource_type'] },
+  vpc_peering_connection: { label: 'VPC Peering', group: 'Network', stateKey: 'status_code', distKey: 'status_code', columns: [
+    { key: 'requester_vpc_id', label: 'Requester VPC' }, { key: 'requester_owner_id', label: 'Requester owner' },
+    { key: 'accepter_vpc_id', label: 'Accepter VPC' }, { key: 'accepter_owner_id', label: 'Accepter owner' },
+    { key: 'status_code', label: 'Status' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'expiration_time'] },
+      { label: 'Connection', keys: ['status_code', 'requester_owner_id', 'requester_region', 'requester_vpc_id', 'requester_cidr_block', 'accepter_owner_id', 'accepter_region', 'accepter_vpc_id', 'accepter_cidr_block'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'status_code'] },
+  vpc_endpoint: { label: 'VPC Endpoints', group: 'Network', stateKey: 'state', distKey: 'vpc_endpoint_type', columns: [
+    { key: 'service_name', label: 'Service' }, { key: 'vpc_endpoint_type', label: 'Type' },
+    { key: 'vpc_id', label: 'VPC' }, { key: 'state', label: 'State' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'owner_id', 'creation_timestamp'] },
+      { label: 'Connection', keys: ['service_name', 'vpc_endpoint_type', 'vpc_id', 'state', 'subnet_ids', 'route_table_ids', 'private_dns_enabled', 'requester_managed'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'vpc_endpoint_type', 'vpc_id'] },
 
   iam_role: { label: 'IAM Roles', group: 'Security', distKey: 'path', columns: [
     { key: 'description', label: 'Description' }, { key: 'create_date', label: 'Created' }, { key: 'path', label: 'Path' },
@@ -619,7 +650,7 @@ const GROUPS: Record<string, GroupMeta> = {
   },
   'Network': {
     slug: 'network', labelKey: 'group.network', splitKeys: ['sgOpenIngress'],
-    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
+    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
     // Network Flow Monitor (nfm-dashboard 이식): NFM 온보딩(모니터) 시 플로우 top-contributors 조회.
     injected: [
       { key: 'network-flow', href: '/network-flow', labelKey: 'nav.networkFlow' },

@@ -20,6 +20,7 @@ export const TYPE_ICON: Record<string, LucideIcon> = {
   iam_role: KeyRound, iam_user: Users, route53: Globe,
   neptune_cluster: Share2, opensearch_serverless: Search,
   route_table: Route, nat_gateway: ArrowLeftRight, internet_gateway: Globe, transit_gateway: Waypoints,
+  transit_gateway_attachment: Waypoints, vpc_peering_connection: ArrowLeftRight, vpc_endpoint: Lock,
   apigatewayv2_api: Network, apigatewayv2_stage: Network,
 };
 
