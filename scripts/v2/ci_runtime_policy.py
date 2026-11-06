@@ -332,21 +332,52 @@ MEMBER_ATTACHMENT = 'aws_iam_role_policy_attachment.worker_diagnosis_evidence["t
 MEMBER_TASK = "aws_ecs_task_definition.worker[0]"
 
 
+ATTACHMENT_TYPES = {"aws_iam_role_policy_attachment", "aws_iam_policy_attachment",
+                    "aws_iam_user_policy_attachment", "aws_iam_group_policy_attachment",
+                    "aws_iam_role_policy_attachments_exclusive", "aws_iam_role"}
+
+
+def _config_resources(module):
+    """Every configured resource, including child modules (configuration.root_module tree)."""
+    if not isinstance(module, dict):
+        return []
+    found = list(module.get("resources") or [])
+    for call in (module.get("module_calls") or {}).values():
+        found.extend(_config_resources((call or {}).get("module")))
+    return found
+
+
 def _member_policy_attached_only_to_worker(plan, project):
     """The exempt managed policy is attached exactly once, to the worker task role.
 
-    Values pin the designated attachment's role; configuration references prove no other
-    resource (another attachment, group/user attachment) consumes the policy.
+    The designated attachment's value pins the role. Configuration references (all modules)
+    prove no other resource consumes the policy, and no other planned attachment carries its
+    name in a hardcoded ARN or an unknown policy ARN that could resolve to it.
     """
-    changes = {r.get("address"): r for r in plan.get("resource_changes", []) if isinstance(r, dict)}
-    attachment = changes.get(MEMBER_ATTACHMENT, {})
-    after = (attachment.get("change") or {}).get("after")
-    if (attachment.get("type") != "aws_iam_role_policy_attachment" or not isinstance(after, dict)
-            or after.get("role") != f"{project}-worker-task"
-            or (attachment.get("change") or {}).get("actions") not in (["create"], ["update"], ["no-op"])):
+    policy_name = f"{project}-worker-task-diagnosis-evidence-read"
+    changes = [r for r in plan.get("resource_changes", []) if isinstance(r, dict)]
+    designated = [r for r in changes if r.get("address") == MEMBER_ATTACHMENT]
+    if len(designated) != 1:
         return False
-    resources = ((plan.get("configuration") or {}).get("root_module") or {}).get("resources")
-    if not isinstance(resources, list):
+    change = designated[0].get("change") or {}
+    after = change.get("after")
+    if (designated[0].get("type") != "aws_iam_role_policy_attachment" or not isinstance(after, dict)
+            or after.get("role") != f"{project}-worker-task"
+            or change.get("actions") not in (["create"], ["update"], ["no-op"],
+                                             ["delete", "create"], ["create", "delete"])):
+        return False
+    for resource in changes:
+        if resource.get("type") not in ATTACHMENT_TYPES or resource.get("address") == MEMBER_ATTACHMENT:
+            continue
+        other = resource.get("change") or {}
+        if "delete" in (other.get("actions") or []) and other.get("after") is None:
+            continue
+        unknown = other.get("after_unknown") or {}
+        if (policy_name in json.dumps(other.get("after"))
+                or any(unknown.get(key) for key in ("policy_arn", "policy_arns", "managed_policy_arns"))):
+            return False
+    resources = _config_resources((plan.get("configuration") or {}).get("root_module"))
+    if not resources:
         return False
     consumers = set()
     for resource in resources:
@@ -355,7 +386,8 @@ def _member_policy_attached_only_to_worker(plan, project):
         if resource.get("address") == "aws_iam_policy.worker_diagnosis_evidence":
             continue
         body = {k: v for k, v in resource.items() if k not in ("address", "name", "type", "mode")}
-        if "aws_iam_policy.worker_diagnosis_evidence" in json.dumps(body):
+        text = json.dumps(body)
+        if "aws_iam_policy.worker_diagnosis_evidence" in text or policy_name in text:
             consumers.add(resource.get("address"))
     return consumers == {"aws_iam_role_policy_attachment.worker_diagnosis_evidence"}
 
@@ -364,7 +396,8 @@ def member_roles(value, host):
     """diagnosis_member_role_arns: exact foreign AWSopsReadOnlyRole ARNs, as variables.tf validates."""
     if value is None:
         return []
-    if not isinstance(value, list) or len(value) > 32 or len(set(value)) != len(value):
+    if (not isinstance(value, list) or len(value) > 32 or any(not isinstance(v, str) for v in value)
+            or len(set(value)) != len(value)):
         raise ValueError("Invalid diagnosis member roles")
     for arn in value:
         match = MEMBER_ROLE.fullmatch(arn) if isinstance(arn, str) else None
@@ -412,7 +445,7 @@ def _check_member_positions(resource, members, project, expected, attached=False
                 raise ValueError
             scanned = {**after, "policy": policy}
         else:
-            if after.get("family") != f"{project}-worker":
+            if after.get("family") != f"{project}-worker" or not attached:
                 raise ValueError
             containers = json.loads(after["container_definitions"])
             found = 0
@@ -442,6 +475,11 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     readiness = variables.get("ci_readiness_enabled", False)
     targets = verification_targets(variables.get("runtime_verification_targets", []), expected_account)
     members = member_roles(variables.get("diagnosis_member_role_arns"), expected_account)
+    # Same fence as runtime targets: full dev plans with the applied loop only. Elsewhere no foreign
+    # member ARN is exempt, so any that appears still fails the account scan.
+    if members and (target != "dev" or scope != "full" or variables.get("workers_enabled") is not True
+                    or variables.get("diagnosis_evidence_loop_enabled") is not True):
+        members = []
     attached = bool(members) and _member_policy_attached_only_to_worker(plan, variables.get("project"))
     if targets and (target != "dev" or scope != "full" or profile is not True
                     or variables.get("inventory_host_only") is not False

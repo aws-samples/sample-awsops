@@ -54,3 +54,15 @@ def test_redact_region_qualified_aws_endpoints_but_keeps_service_principals():
     s = redact.redact('db orders.cluster-abc123.ap-northeast-2.rds.amazonaws.com lb a-1.us-east-1.elb.amazonaws.com '
                       'via ec2.amazonaws.com')
     assert s == 'db <host> lb <host> via ec2.amazonaws.com'
+
+
+def test_regional_service_endpoints_stay_visible_but_resource_endpoints_are_masked():
+    kept = ['Could not connect to the endpoint URL: "https://sts.ap-northeast-2.amazonaws.com/"',
+            "bedrock-runtime.us-east-1.amazonaws.com", "s3.ap-northeast-2.amazonaws.com", "ec2.amazonaws.com"]
+    for text in kept:
+        assert redact.redact(text) == text
+    for host in ("mybucket.s3.ap-northeast-2.amazonaws.com", "mybucket.s3-us-west-2.amazonaws.com",
+                 "abc123.execute-api.ap-northeast-2.amazonaws.com",
+                 "vpce-0a1b.sts.ap-northeast-2.vpce.amazonaws.com",
+                 "ec2-54-1-2-3.ap-northeast-2.compute.amazonaws.com"):
+        assert redact.redact(f"via {host} failed") == "via <host> failed"

@@ -16,6 +16,9 @@ from .scoped_clients import ScopeError
 _SOURCE_ERRORS = (ClientError, BotoCoreError, ScopeError, ValueError)
 
 
+OBSERVATION_LAG = dt.timedelta(minutes=5)
+
+
 class _NetworkBound(TimeoutError):
     """The stage deadline or analysis budget: already disclosed as incomplete, never a source gap."""
 
@@ -534,7 +537,9 @@ def collect(bundle, budget, *, scope, client_factory):
     approved, invalid = _groups(account, regions)
     if invalid:
         d._mark(bundle, "gaps", "dns_allowlist_invalid")
-    end = d._now()
+    # Resolver query logs and NFM top contributors publish minutes behind real time: ending the
+    # window at "now" would read the not-yet-delivered tail and report empty sources as gaps.
+    end = d._now() - OBSERVATION_LAG
     start = end - dt.timedelta(minutes=5)
     dns_rows = []
     for region in regions:

@@ -781,18 +781,30 @@ def _xray(bundle, budget, regions):
             client = _client("xray", region, budget)
             for page in _pages(client, "get_service_graph", {"StartTime": start, "EndTime": end},
                                bundle, budget, coverage):
-                for service in (page.get("Services") or [])[:MAX_RESOURCES]:
-                    ref = service.get("ReferenceId")
-                    if isinstance(ref, int) and len(services) < MAX_RESOURCES:
+                page_services = page.get("Services") or []
+                if not isinstance(page_services, list):
+                    raise ValueError("xray_services_malformed")
+                for service in page_services:
+                    ref = service.get("ReferenceId") if isinstance(service, dict) else None
+                    if not isinstance(ref, int):
+                        coverage["complete"] = False
+                        _mark(bundle, "incomplete", "xray_node_unresolved")
+                    elif len(services) < MAX_RESOURCES:
                         services[ref] = service
-                    else:
+                    else:  # checked before any slice: a single oversized page is disclosed too
                         coverage["complete"] = False
                         _mark(bundle, "incomplete", "xray_node_cap")
         except Exception:
             coverage["complete"] = False
             _mark(bundle, "degraded", "xray_read_failed")
+        # Decide completeness before emitting any row, so no row claims complete coverage.
+        if any(not isinstance(svc.get("Edges") or [], list) or len(svc.get("Edges") or []) > MAX_RELATIONSHIPS
+               for svc in services.values()):
+            coverage["complete"] = False
+            _mark(bundle, "incomplete", "xray_edge_cap")
         for ref, service in services.items():
-            for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]:
+            edges = service.get("Edges") or []
+            for edge in (edges if isinstance(edges, list) else [])[:MAX_RELATIONSHIPS]:
                 target = edge.get("ReferenceId")
                 if not isinstance(target, int):
                     _mark(bundle, "incomplete", "xray_unresolved_target")
@@ -934,14 +946,21 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                                          for v in metrics.get(name, {}).values()) for name in io_names)
                 missing_memory = not metrics.get("FreeableMemory", {}).get("Minimum", {}).get("samples")
                 if r["kind"] == "ec2":
-                    observed = memory.get(r["id"], {})
+                    observed = memory.get(r["id"], {}) if isinstance(memory, dict) else {}
+                    observed = observed if isinstance(observed, dict) else {}
                     missing_memory = observed.get("complete") is not True
                     if observed.get("metric"):
                         metrics["MemoryUtilization"] = {"Maximum": observed["metric"]}
-                        ratios.append(observed["sample_ratio"])
-                        statuses.append(observed["metric"]["status"])
+                        ratio, status = observed.get("sample_ratio"), _dict(observed["metric"]).get("status")
+                        if _number(ratio) is None or not isinstance(status, str):
+                            # A malformed collector result leaves memory unknown; never fails collect().
+                            _mark(bundle, "degraded", "memory_metrics_read_failed")
+                            ratio, status, missing_memory = 0, "missing", True
+                        ratios.append(ratio)
+                        statuses.append(status)
                     if missing_memory:
-                        _mark(bundle, "gaps", observed.get("reason") or "memory_metric_absent")
+                        reason = observed.get("reason")
+                        _mark(bundle, "gaps", reason if isinstance(reason, str) and reason else "memory_metric_absent")
                 ratio = min(ratios) if ratios else 0
                 complete = page_coverage["complete"] and ratio >= 0.9 and all(s == "Complete" for s in statuses)
                 if not complete:
@@ -1051,7 +1070,11 @@ def _provider_sizing(bundle, budget, resources, *, client_factory=None):
         return
     for region in sorted({r["region"] for r in resources}):
         for kind in ("ec2", "rds"):
-            selected = [r for r in resources if r["region"] == region and r["kind"] == kind and _arn(r)]
+            candidates = [r for r in resources if r["region"] == region and r["kind"] == kind]
+            selected = [r for r in candidates if _arn(r)]
+            if len(selected) < len(candidates):
+                # "Not queried" must stay distinguishable from "no recommendation".
+                _mark(bundle, "incomplete", "provider_identity_unresolved")
             if not selected or not _available(bundle, budget):
                 continue
             try:

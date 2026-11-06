@@ -52,6 +52,8 @@ def scope(monkeypatch):
     monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", ACCOUNT)
     monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP]))
     monkeypatch.setattr(discovery, "_now", lambda: NOW)
+    # Fixtures are dated just before NOW; the publication-lag offset has its own test below.
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(0))
     monkeypatch.setattr(observations, "_sleep", lambda _: None)
 
 
@@ -425,7 +427,7 @@ def test_inventory_scope_and_source_provenance_survive_without_raw_metadata():
 
 def test_node_metadata_and_shared_lambda_addresses_keep_explicit_identity_gaps():
     data = bundle()
-    data["resources"][0]["kind"] = "lambda_function"
+    data["resources"][0]["kind"] = "lambda"  # the inventory kind (sync_lambda.py)
     result = project(data, rows=[dns(instance=None)], flows=[flow(kubernetesMetadata={"localPodName": "p"})])
     assert not result["relationships"]
     assert "lambda_eni_identity_unresolved" in result["gaps"]
@@ -529,3 +531,14 @@ def test_provider_error_is_a_gap_and_projection_defect_is_degraded(monkeypatch):
     fake.start_query_monitor_top_contributors = lambda **params: (_ for _ in ()).throw(KeyError("defect"))
     data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
     assert "nfm_projection_failed" in data["degraded"]
+
+
+
+def test_observation_window_ends_one_publication_lag_before_the_clock(monkeypatch):
+    clock = NOW
+    monkeypatch.setattr(discovery, "_now", lambda: clock)
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(minutes=5))
+    fake = Provider()
+    observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    dns_query = next(p for c, p in fake.calls if c == "dns_start")
+    assert dns_query["endTime"] == int((clock - observations.OBSERVATION_LAG).timestamp())

@@ -504,6 +504,8 @@ class RuntimePolicyTests(unittest.TestCase):
             self.change('aws_iam_role_policy_attachment.worker_diagnosis_evidence["task"]',
                         "aws_iam_role_policy_attachment", {"role": "awsops-dev-worker-task"})])
         plan["variables"]["diagnosis_member_role_arns"] = {"value": [member]}
+        plan["variables"]["workers_enabled"] = {"value": True}
+        plan["variables"]["diagnosis_evidence_loop_enabled"] = {"value": True}
         plan["configuration"] = {"root_module": {"resources": [
             {"address": "aws_iam_policy.worker_diagnosis_evidence", "expressions": {"name": {}}},
             {"address": "aws_iam_role_policy_attachment.worker_diagnosis_evidence", "expressions": {
@@ -541,6 +543,39 @@ class RuntimePolicyTests(unittest.TestCase):
             self.module.check_plan(bad, "dev", "full", ACCOUNT)
         bad = copy.deepcopy(plan)
         del bad["configuration"]
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Fence: only full dev plans with the applied evidence loop honor the exemption.
+        for target, scope, flag in (("atomoh", "full", True), ("dev", "ecr-bootstrap", True), ("dev", "full", False)):
+            bad = copy.deepcopy(plan)
+            bad["variables"]["diagnosis_evidence_loop_enabled"] = {"value": flag}
+            with self.subTest(target=target, scope=scope, flag=flag), self.assertRaises(ValueError):
+                self.module.check_plan(bad, target, scope, ACCOUNT)
+        # A second attachment reaching the policy by hardcoded ARN, unknown ARN or a child module fails.
+        hardcoded = self.change("aws_iam_role_policy_attachment.web_extra", "aws_iam_role_policy_attachment",
+            {"role": "awsops-dev-web-task",
+             "policy_arn": f"arn:aws:iam::{ACCOUNT}:policy/awsops-dev-worker-task-diagnosis-evidence-read"})
+        unknown = self.change("aws_iam_role_policy_attachment.web_unknown", "aws_iam_role_policy_attachment",
+            {"role": "awsops-dev-web-task"})
+        unknown["change"]["after_unknown"] = {"policy_arn": True}
+        for extra in (hardcoded, unknown):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"].append(extra)
+            with self.subTest(extra=extra["address"]), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["configuration"]["root_module"]["module_calls"] = {"x": {"module": {"resources": [
+            {"address": "aws_iam_role_policy_attachment.other", "expressions": {"policy_arn": {"references": [
+                "aws_iam_policy.worker_diagnosis_evidence[\"task\"].arn"]}}}]}}}
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Replacing the designated attachment is accepted.
+        replaced = copy.deepcopy(plan)
+        replaced["resource_changes"][2]["change"]["actions"] = ["delete", "create"]
+        self.module.check_plan(replaced, "dev", "full", ACCOUNT)
+        # The task definition exemption also requires the attachment proof.
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"] = [r for r in bad["resource_changes"] if "attachment" not in r["address"]]
         with self.assertRaises(ValueError):
             self.module.check_plan(bad, "dev", "full", ACCOUNT)
         bad = copy.deepcopy(plan)

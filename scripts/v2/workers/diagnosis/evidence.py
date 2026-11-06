@@ -181,16 +181,27 @@ _REFERENCE_FIELDS = {
 # dotted hostname is masked, except code-owned type/version vocabularies such as
 # db.r6g.large; AWS service DNS names are masked wherever they appear inside text.
 _HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host", "query_name", "dns_source_id"}
-_TYPE_KEYS = {"instance_type", "class", "current_type", "recommended_type", "storage_type",
-              "storageType", "engine", "version", "unit", "metric_name", "namespace", "statistic"}
+_TYPE_KEYS = {"instance_type", "class", "db_instance_class", "current_type", "recommended_type",
+              "storage_type", "storageType", "engine", "version", "unit", "metric_name", "namespace",
+              "statistic", "graph_class"}
+_IP_KEYS = {"answer_ips", "private_ip", "private_ips", "private_ip_address"}
+# Regional service endpoints and service principals name an AWS service, not an account resource:
+# kept so a connectivity error still says which service was unreachable (redact.py parity).
+_SERVICE_ENDPOINT = re.compile(r"(?i)[a-z0-9-]+(?:\.[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d)?\.amazonaws\.com(?:\.cn)?\.?")
 _HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?")
-_AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
+# amazonaws.com resource endpoints are masked by redact(); these suffixes are always resource-named.
+_AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:on\.aws|cloudfront\.net)\b\.?")
 
 
 def _scrub_text(value, key):
     if not value:
         return value
-    if key in _HOST_KEYS or (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())):
+    if key in _IP_KEYS:
+        return "<ip>"
+    if key in _HOST_KEYS:
+        return "<host>"
+    if (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())
+            and not _SERVICE_ENDPOINT.fullmatch(value.strip())):
         return "<host>"
     return _AWS_HOST.sub("<host>", redact(value))
 

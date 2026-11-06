@@ -1118,3 +1118,31 @@ def test_non_eni_attachments_are_disclosed_not_reported_unattached(provider):
     bundle = discovery.collect(db, ACCOUNT, Budget())
     facts = resource(bundle, "vol-1")["facts"]
     assert facts["attachments"] == [] and facts["attachments_complete"] is False
+
+
+def test_single_oversized_xray_page_and_edge_list_are_disclosed(provider):
+    services = [{"ReferenceId": i, "Name": f"s{i}", "Edges": []} for i in range(discovery.MAX_RESOURCES + 5)]
+    services[0]["Edges"] = [{"ReferenceId": 1} for _ in range(discovery.MAX_RELATIONSHIPS + 1)]
+    provider.xray = [{"Services": services}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert {"xray_node_cap", "xray_edge_cap"} <= set(bundle["incomplete"])
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["coverage"]["complete"] is False and e["fresh"] is False for e in rows)
+
+
+def test_unsized_resources_are_disclosed_not_silently_skipped(provider):
+    db = Database([inventory("ec2", I1, {"arn": f"arn:aws:ec2:{REGION}:999900001111:instance/{I1}"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "provider_identity_unresolved" in bundle["incomplete"]
+
+
+def test_malformed_memory_result_never_fails_collection(provider, monkeypatch):
+    from diagnosis import memory_metrics
+    provider.metrics = metric_response
+    monkeypatch.setattr(memory_metrics, "collect", lambda client, batch, start, end, budget: {
+        r["id"]: {"metric": {"unit": "Percent"}, "complete": True} for r in batch})
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert bundle["coverage"]["inventory"]["total"] == 1
+    assert "memory_metrics_read_failed" in bundle["degraded"]
+    row = next(e for e in bundle["evidence"] if e["kind"] == "metrics")
+    assert row["facts"]["missing_memory"] is True and row["coverage"]["complete"] is False

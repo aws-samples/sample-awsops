@@ -92,8 +92,9 @@ env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 �
 ### Diagnosis evidence core (default-off, not yet routed)
 
 `scripts/v2/workers/diagnosis/` contains a bounded discovery and evidence core:
-`discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`
-and `scoped_clients.py`. `report.generate` does not call these modules yet. A later change
+`discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`,
+`scoped_clients.py`, and the DNS/NFM and supporting-source collectors `observations.py` and
+`supporting.py`. `report.generate` does not call these modules yet. A later change
 wires them in, and until then the `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` check inside
 `discovery.collect()` and `discovery.follow_up()` is the only gate.
 
