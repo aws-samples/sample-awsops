@@ -252,7 +252,7 @@ resource "aws_iam_role_policy" "task_killswitch_ssm" {
 
 # ADR-003[legacy 038]: BFF Haiku routing classifier. Scoped to Haiku FM + global inference profile only.
 resource "aws_iam_role_policy" "task_classifier_bedrock" {
-  count = var.hybrid_routing_enabled ? 1 : 0
+  count = var.hybrid_routing_enabled && !local.model_on_api ? 1 : 0
   name  = "${var.project}-task-classifier-bedrock"
   role  = aws_iam_role.task.id
   policy = jsonencode({
@@ -260,7 +260,7 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
     Statement = [{
       Effect = "Allow"
       Action = ["bedrock:InvokeModel"]
-      Resource = [
+      Resource = local.model_custom ? local.model_regional_arns.fast : [
         # global cross-region profile fans out to per-region FMs → wildcard region on the FM ARN
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-*",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-4-5-*",
@@ -282,15 +282,16 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
 # IAM backstop in the gated task_synthesis_bedrock policy. Synthesis remains gated in code.
 # Bare IDs and dated suffixes follow the classifier grant.
 resource "aws_iam_role_policy" "task_web_models" {
-  name = "${var.project}-task-web-models"
-  role = aws_iam_role.task.id
+  count = local.model_on_api ? 0 : 1
+  name  = "${var.project}-task-web-models"
+  role  = aws_iam_role.task.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Sid    = "WebDirectModels"
       Effect = "Allow"
       Action = ["bedrock:InvokeModel"]
-      Resource = [
+      Resource = local.model_custom ? local.model_regional_arns.web : [
         "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
         "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra-*",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6.1-terra",
@@ -312,7 +313,7 @@ resource "aws_iam_role_policy" "task_web_models" {
 # task, not via AgentCore's unrestricted role). PR #153 review: this had no matching IAM grant —
 # only the Haiku classifier policy above existed on this role, so a live invoke would AccessDenied.
 resource "aws_iam_role_policy" "task_synthesis_bedrock" {
-  count = var.multi_route_synthesis_enabled ? 1 : 0
+  count = var.multi_route_synthesis_enabled && !local.model_on_api ? 1 : 0
   name  = "${var.project}-task-synthesis-bedrock"
   role  = aws_iam_role.task.id
   policy = jsonencode({
@@ -320,7 +321,7 @@ resource "aws_iam_role_policy" "task_synthesis_bedrock" {
     Statement = [{
       Effect = "Allow"
       Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-      Resource = [
+      Resource = local.model_custom ? local.model_regional_arns.standard : [
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5",
         # Claude Sonnet 5.5 (bare id and any dated suffix); the Sonnet 5 entries stay until the 5.5 web rollout is verified.
@@ -549,7 +550,7 @@ resource "aws_ecs_task_definition" "web" {
         ] : [], var.hybrid_routing_enabled ? [
         # ADR-003[legacy 038]: hybrid routing flag + classifier model (BFF reads both at runtime).
         { name = "HYBRID_ROUTING_ENABLED", value = "true" },
-        { name = "CLASSIFIER_MODEL_ID", value = "global.anthropic.claude-haiku-5-5" }
+        { name = "CLASSIFIER_MODEL_ID", value = local.models.fast }
         ] : [], var.multi_route_synthesis_enabled ? [
         # ADR-003[legacy 044]: cross-domain auto-synthesis — matches the aws_iam_role_policy.task_synthesis_bedrock gate above.
         { name = "MULTI_ROUTE_SYNTHESIS_ENABLED", value = "true" }
@@ -561,7 +562,7 @@ resource "aws_ecs_task_definition" "web" {
         # with our own Haiku (fact analyzer_result vs hypothesis llm_explanation kept separate).
         { name = "K8SGPT_ENABLED", value = "true" },
         { name = "K8SGPT_STALE_MINUTES", value = "5" },
-        { name = "K8SGPT_NARRATION_MODEL", value = "global.anthropic.claude-haiku-5-5" },
+        { name = "K8SGPT_NARRATION_MODEL", value = local.models.fast },
         ] : [], var.datasource_diagnosis_enabled ? [
         # External datasource diagnosis enqueue gate. False/default omits the env so add/schema-refresh
         # routes do not enqueue datasource_index jobs; the worker has the same DIAG_DATASOURCES_ENABLED
@@ -598,7 +599,7 @@ resource "aws_ecs_task_definition" "web" {
         ] : [],
         # Scheduled-diagnosis mailing list (gated): empty list when diagnosis_notify_enabled=false →
         # concat(base, []) == base → byte-identical web task def (no redeploy when off).
-      local.notify_web_env_list)
+      local.notify_web_env_list, local.model_env_list) # + model_provider role env (models.tf); empty for mixed
       # No `secrets` block: the web task no longer injects the Aurora master secret at all (IAM DB
       # auth above replaces it) — removes the class of bug where a long-running task holds a
       # password that goes stale on the master secret's next auto-rotation.

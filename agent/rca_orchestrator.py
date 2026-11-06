@@ -26,21 +26,21 @@ def _bedrock_invoke(prompt):
     import boto3
     import json
 
-    client = boto3.client(
-        "bedrock-runtime",
-        region_name=os.environ.get("AWS_REGION", "ap-northeast-2"),
-    )
+    import model_runtime
+
+    client = model_runtime.client(os.environ.get("AWS_REGION", "ap-northeast-2"))
+    model_id = os.environ.get("RCA_MODEL_ID", "").strip() or "global.anthropic.claude-sonnet-5-5"
     response = client.invoke_model(
         # sonnet-5-5 rejects `temperature` (ValidationException), so ADR-003[legacy 038]'s temperature=0 is
         # suspended on this path; `between_tools` keeps the short label call thinking-free.
-        modelId="global.anthropic.claude-sonnet-5-5",
+        modelId=model_id,
         contentType="application/json",
         accept="application/json",
         body=json.dumps(
             {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 512,
-                "thinking": {"type": "between_tools"},
+                **({"thinking": {"type": "between_tools"}} if "claude-sonnet-5-5" in model_id else {}),
                 "messages": [
                     {"role": "user", "content": [{"type": "text", "text": prompt}]}
                 ],

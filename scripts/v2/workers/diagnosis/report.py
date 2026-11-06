@@ -11,6 +11,7 @@ import random
 import threading
 import time
 import boto3
+import model_runtime
 from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, ConnectionClosedError, EndpointConnectionError
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -219,8 +220,8 @@ def _get_bedrock_client(region, read_timeout=_BEDROCK_READ_TIMEOUT_S):
         with _bedrock_lock:
             client = _bedrock_clients.get(key)
             if client is None:
-                client = boto3.client("bedrock-runtime", region_name=region,
-                                      config=_bedrock_config(read_timeout))
+                client = model_runtime.wrap(boto3.client("bedrock-runtime", region_name=region,
+                                                         config=_bedrock_config(read_timeout)))
                 _bedrock_clients[key] = client
     return client
 

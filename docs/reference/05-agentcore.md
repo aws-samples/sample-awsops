@@ -30,8 +30,8 @@ Sonnet fallback without the web grant, or Luna without the runtime grant; model
 fallback cannot recover missing IAM permissions. Complete the release's required
 migrations before AgentCore provisioning.
 
-The supported rollback is the Terraform variable `agentcore_chat_model_id`
-(empty by default; validated to `global.openai.gpt-6-luna` or
+Under the default `model_provider = mixed`, the supported rollback is the Terraform
+variable `agentcore_chat_model_id` (empty by default; other providers reject it; validated to `global.openai.gpt-6-luna` or
 `global.anthropic.claude-sonnet-5-5`, both granted by the runtime role). The applied
 value reaches `scripts/v2/agentcore/provision.py` through `output.agentcore.model_env`,
 so every provisioning run, including Dev Deploy AgentCore, writes the same
@@ -49,6 +49,25 @@ The two GPT pricing rows are provisional third-party estimates: recheck the AWS
 Price List API when those models appear for the selected region and inference
 profile, including cache-read/write billing. No live caching or pricing verification
 is claimed by the local regression tests.
+
+### Deploy-time model provider
+
+`model_provider` (`terraform/foundation/models.tf`) chooses the model family for chat,
+query generation, synthesis, routing and the diagnosis workers: `mixed` (default; the
+behavior above, no role env), `bedrock_claude` (Claude only on Bedrock), `bedrock_openai`
+(GPT-6 Luna / GPT-6.1 Terra only on Bedrock, no Claude fallback) or `anthropic_api`
+(Claude through the Anthropic Messages API with the key in
+`anthropic_api_key_secret_arn`). Non-default values set `MODEL_PROVIDER` and one model
+ID per role on the web task, worker Lambda/Fargate task and, through the `agentcore`
+output's `model_env` (allowlisted keys only, `provision.py runtime_model_env`), the
+AgentCore runtime. Bedrock model grants shrink to the chosen family; `anthropic_api`
+removes them and grants `secretsmanager:GetSecretValue` on that one secret ARN to the
+web task, AgentCore, worker task and worker Lambda roles. Code keeps the Bedrock request
+shapes: `web/lib/model-runtime.ts` and `model_runtime.py` (identical copies in `agent/`
+and `scripts/v2/workers/`) translate Converse / Anthropic-format InvokeModel calls for
+GPT models on Bedrock and for the Anthropic API; the chat agent uses Strands
+`AnthropicModel` for `anthropic_api`. The default-off Anthropic loop runs only under
+`mixed` or `bedrock_claude`. See [model-provider.md](../runbooks/model-provider.md).
 
 <a id="current-design--현행-설계"></a>
 

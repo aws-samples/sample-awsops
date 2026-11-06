@@ -81,6 +81,30 @@ class ChatModelTest(unittest.TestCase):
         self.assertTrue(agent.supports_prompt_cache("global.anthropic.claude-sonnet-5-5"))
 
 
+class AnthropicApiKeyRotationTest(unittest.TestCase):
+    def test_rotated_key_rebuilds_the_chat_model_and_auth_errors_drop_the_cache(self):
+        built = []
+        rt = types.SimpleNamespace(provider=lambda: "anthropic_api", api_key=lambda: "sk-new",
+                                   reset_api_key=lambda: built.append("reset"))
+        fake = lambda **kw: built.append(kw["client_args"]["api_key"]) or "model-new"  # noqa: E731
+        with patch.object(agent, "model_runtime", rt), patch.object(agent, "_MODEL_KEY", "sk-old", create=True), \
+                patch.object(agent, "AnthropicModel", fake, create=True), patch.object(agent, "model", "model-old"):
+            self.assertEqual(agent._current_model(), "model-new")
+            self.assertEqual(agent._current_model(), "model-new")
+        with patch.object(agent, "model_runtime", rt), patch.object(agent, "_MODEL_KEY", None, create=True), \
+                patch.object(agent, "AnthropicModel", fake, create=True), patch.object(agent, "model", None):
+            self.assertEqual(agent._current_model(), "model-new")  # lazily built on first use
+            sdk_auth = type("AuthenticationError", (Exception,), {"__module__": "anthropic._exceptions"})
+            connector_auth = type("AuthenticationError", (Exception,), {"__module__": "mcp.client"})
+            try:
+                raise RuntimeError("model stream failed") from sdk_auth("401")
+            except RuntimeError as wrapped:
+                agent._drop_key_on_auth_error(wrapped)  # SDK auth error in the cause chain
+            agent._drop_key_on_auth_error(connector_auth("connector 401"))
+            agent._drop_key_on_auth_error(RuntimeError("authentication_error from a gateway"))
+        self.assertEqual(built, ["sk-new", "sk-new", "reset"])
+
+
 class ReadinessEntrypointTest(unittest.TestCase):
     def test_failure_is_one_structured_event_and_never_chat_fallback(self):
         import readiness
