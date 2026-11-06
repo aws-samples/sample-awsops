@@ -450,3 +450,13 @@ variable "network_path_check_enabled" {
     error_message = "network_path_check_enabled requires workers_enabled=true (reuses the worker role/pg8000 layer/VPC + jobs queue)."
   }
 }
+
+variable "agentcore_chat_model_id" {
+  type        = string
+  default     = ""
+  description = "Chat runtime model override delivered to AgentCore on every provisioning run. Empty keeps the GPT-6 Luna default; global.anthropic.claude-sonnet-5-5 is the reviewed rollback. Both are granted by local.agentcore_model_resources."
+  validation {
+    condition     = contains(["", "global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5"], var.agentcore_chat_model_id)
+    error_message = "Use an empty value, global.openai.gpt-6-luna or global.anthropic.claude-sonnet-5-5."
+  }
+}

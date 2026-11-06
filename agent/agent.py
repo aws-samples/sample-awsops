@@ -123,7 +123,7 @@ GATEWAYS = _discover_gateways()
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance
 # ({"model": ...} frame), so the chat footer never goes stale when this migrates.
-# Chat answers with GPT-6 Luna; AGENT_MODEL_ID may roll back to a Claude profile. The runtime role
+# Chat answers with GPT-6 Luna; AGENT_MODEL_ID (set only from Terraform var.agentcore_chat_model_id) may roll back to Sonnet 5.5. The runtime role
 # (terraform local.agentcore_model_resources) grants exactly Claude plus this Luna profile.
 MODEL_ID = os.environ.get("AGENT_MODEL_ID", "").strip() or "global.openai.gpt-6-luna"
 print(f"[Agent] resolved chat model: {MODEL_ID}", flush=True)

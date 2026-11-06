@@ -1108,15 +1108,18 @@ def ensure_runtime(ctrl, ac, gw_ids):
     # used to sit outside the try (which only catches ClientError), so any exception here crashed
     # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.
     # ensure_runtime must never raise; "" (unconfirmed) always lets teardown proceed.
-    # Reviewed chat-model rollback lever: `AGENT_MODEL_ID=<id> make agentcore` forwards only an
-    # allowlisted id the runtime role is granted (terraform local.agentcore_model_resources). Absent
-    # or blank keeps agent.py's Luna default; any other value refuses the runtime update.
-    agent_model = os.environ.get("AGENT_MODEL_ID", "").strip()
+    # Durable chat-model rollback: only the applied Terraform value (agentcore.model_env from
+    # var.agentcore_chat_model_id) reaches the runtime, so every provisioning run — CI included —
+    # writes the same model. The deployer's shell cannot change it. A value outside the reviewed
+    # allowlist refuses the runtime update.
+    model_env = ac.get("model_env") if isinstance(ac.get("model_env"), dict) else {}
+    agent_model = model_env.get("AGENT_MODEL_ID", "")
     if agent_model:
-        if agent_model not in AGENT_MODEL_IDS:
-            log("runtime", "ERR", "AGENT_MODEL_ID is not a reviewed chat model; runtime not updated")
+        if not isinstance(agent_model, str) or agent_model not in AGENT_MODEL_IDS:
+            log("runtime", "ERR", "agentcore.model_env AGENT_MODEL_ID is not a reviewed chat model; runtime not updated")
             return ""
         env["AGENT_MODEL_ID"] = agent_model
+    log("runtime", "OK", f"chat model {agent_model or 'default (global.openai.gpt-6-luna)'}")
     try:
         existing = {r.get("agentRuntimeName"): r for r in _list_all(ctrl.list_agent_runtimes)}
     except Exception as e:  # noqa: BLE001 — anything here means runtime state is unknowable

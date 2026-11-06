@@ -45,7 +45,7 @@ AgentCore は Amazon Bedrock AgentCore Runtime と Gateway をベースに、AI 
 | **エンジン** | Strands Agent Framework |
 | **コンテナ** | Docker arm64（ECR に保存、`make agentcore`） |
 | **実行環境** | AgentCore マネージドサービス（Bedrock AgentCore Runtime） |
-| **モデル** | チャット Runtime の既定は **GPT-6 Luna** で、`AGENT_MODEL_ID` で Claude Sonnet 5.5 に戻せます(デプロイヤーはレビュー済みのチャットモデルのみ転送)。Explore のクエリ生成は GPT-6.1 Terra → Claude Sonnet 5.5 fallback、AI 診断は Sonnet 5.5 / Deep の選択肢は Opus 5.5、ルーティング・ヘルプは Haiku 5.5 を使用します |
+| **モデル** | チャット Runtime の既定は **GPT-6 Luna** で、Terraform 変数 `agentcore_chat_model_id` で Claude Sonnet 5.5 に戻せます(適用済みの値が毎回のプロビジョニングで反映)。Explore のクエリ生成は GPT-6.1 Terra → Claude Sonnet 5.5 fallback、AI 診断は Sonnet 5.5 / Deep の選択肢は Opus 5.5、ルーティング・ヘルプは Haiku 5.5 を使用します |
 
 ### ステータス
 

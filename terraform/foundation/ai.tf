@@ -1048,5 +1048,7 @@ output "agentcore" {
     # Bedrock/AgentCore/ECR. provision.py emits networkMode=VPC when these are present.
     subnets         = local.private_subnet_ids
     security_groups = [aws_security_group.service.id]
+    # Durable chat-model rollback (var.agentcore_chat_model_id); empty = agent.py's Luna default.
+    model_env = tomap(var.agentcore_chat_model_id == "" ? {} : { AGENT_MODEL_ID = var.agentcore_chat_model_id })
   } : null
 }
