@@ -625,7 +625,7 @@ def _read_graph(conn, bundle, budget, scope):
                         facts[key] = meta[key]
                 item = _evidence(bundle, "stored_graph", kind, [source_r["id"], target_r["id"]],
                     facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, 1800),
-                    window=window, coverage=coverage)
+                    window=window, coverage=_row_coverage(coverage, cls))
                 _relationship(bundle, source_r["id"], target_r["id"], kind, item)
             observations = meta.get("instance_observations") or []
             # Capped/unbound pairs on this edge leave its own observation coverage incomplete.
@@ -635,8 +635,8 @@ def _read_graph(conn, bundle, budget, scope):
             omitted += max(0, len(observations) - 200) if isinstance(observations, list) else 0
             if omitted:
                 _mark(bundle, "incomplete", "instance_observation_cap")
-            pair_coverage = {**coverage, "complete": False,
-                             "instance_observations_omitted": omitted} if omitted else coverage
+            pair_coverage = {**_row_coverage(coverage, cls), "complete": False,
+                             "instance_observations_omitted": omitted} if omitted else _row_coverage(coverage, cls)
             if cls != "trace" or rel != "queries" or not isinstance(observations, list):
                 continue
             for pair in observations[:200]:
@@ -651,8 +651,8 @@ def _read_graph(conn, bundle, budget, scope):
                                            bundle["resources"], account, "ec2", scope=scope)
                 database = _node_inventory(metadata.get(("infra", pair.get("database_ref")), {}),
                                            bundle["resources"], account, "rds", scope=scope)
-                host = pair.get("db_host")
-                target_host = metadata.get((cls, target), {}).get("host")
+                host = _endpoint(pair.get("db_host"))
+                target_host = _endpoint(metadata.get((cls, target), {}).get("host"))
                 observed = _stamp(pair.get("observed_at_ms"))
                 start, end = _stamp(window.get("windowStartMs")), _stamp(window.get("windowEndMs"))
                 valid = (confidence == "observed" and instance and database and pair.get("account") == account
@@ -661,10 +661,10 @@ def _read_graph(conn, bundle, budget, scope):
                     and pair.get("region") == instance["region"] == database["region"]
                     and pair.get("instance_id") == instance["resource_id"]
                     and _INSTANCE.fullmatch(instance["resource_id"])
-                    and isinstance(host, str) and host.lower() == str(database["facts"].get("endpoint_address", "")).lower()
-                    and host.lower() == str(target_host or "").lower()
+                    and host and host == _endpoint(database["facts"].get("endpoint_address"))
+                    and host == target_host
                     and sum(r["kind"] == "rds" and r["account"] == account and r["region"] == pair.get("region")
-                        and str(r["facts"].get("endpoint_address", "")).lower() == host.lower()
+                        and _endpoint(r["facts"].get("endpoint_address")) == host
                         for r in bundle["resources"]) == 1
                     and pair.get("provenance") == "trace_span"
                     and isinstance(pair.get("correlation_id"), str) and _CORRELATION.fullmatch(pair["correlation_id"])
@@ -692,6 +692,18 @@ def _read_graph(conn, bundle, budget, scope):
         _invalidate_graph(bundle, classes, "read_failed")
         _mark(bundle, "degraded", "graph_read_failed")
         _mark(bundle, "incomplete", "graph_refresh_failed")
+
+
+def _endpoint(value):
+    """Canonical endpoint host, matching web/lib/trace-graph.ts exactEndpoint (trim, lower, no root dot)."""
+    return value.strip().lower().rstrip(".") if isinstance(value, str) else ""
+
+
+def _row_coverage(coverage, cls):
+    """Per-row coverage without the class source list, which lives once in coverage.graph[cls]."""
+    row = {k: v for k, v in coverage.items() if k != "sources"}
+    row["sources_ref"] = f"coverage.graph.{cls}"
+    return row
 
 
 def _pages(client, operation, arguments, bundle, budget, coverage, token_key="NextToken"):
