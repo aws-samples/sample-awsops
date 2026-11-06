@@ -12,18 +12,29 @@ import { thinkingOffFields } from '@/lib/bedrock';
 // rejected by the read-only SQL guard. Here there are NO tools and NO markdown footer: only a strict
 // translate-to-query system prompt + the cached schema (real table/column names) injected as DATA.
 //
-// Model = Haiku via ConverseCommand (NON-stream), same IAM surface the classifier/assistant already use
-// (the web task role's Bedrock policy grants InvokeModel ONLY on the Haiku model). Injectable send for
-// tests. UNLIKE the assistant, this THROWS on failure (no sensible fallback query → the route returns 502).
+// Models via ConverseCommand (NON-stream): GPT-6.1 Terra first, Claude Sonnet 5.5 as the fallback when
+// the primary call fails or its draft fails validation. The web task role's `task_web_models` policy
+// (terraform/foundation/workload.tf) grants exactly these two plus the assistant's Haiku — an env
+// override outside that list AccessDenies. Injectable send for tests. UNLIKE the assistant, this
+// THROWS on failure (no sensible fallback query → the route returns 502).
 
-export type QueryGenSend = (system: string, user: string, modelId: string) => Promise<string>;
+export type QueryGenSend = (system: string, user: string, modelId: string, abortSignal?: AbortSignal) => Promise<string>;
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-// Haiku only — the web task role's Bedrock policy grants InvokeModel on Haiku alone. Do NOT fall back to
-// ASSISTANT_MODEL_ID (often Sonnet/Opus) → that would AccessDenied → every generate 502s.
-const MODEL_ID =
-  process.env.DATASOURCE_QUERYGEN_MODEL_ID ||
-  'global.anthropic.claude-haiku-5-5';
+export const QUERYGEN_PRIMARY_MODEL_ID =
+  process.env.DATASOURCE_QUERYGEN_MODEL_ID?.trim() || 'global.openai.gpt-6.1-terra';
+export const QUERYGEN_FALLBACK_MODEL_ID =
+  process.env.DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID?.trim() ?? 'global.anthropic.claude-sonnet-5-5';
+
+/** Missing or bounded schema evidence. Deterministic for the cached schema, so a second model cannot
+ *  fix it and the fallback is skipped. */
+export class SchemaEvidenceError extends Error {}
+
+export class QueryGenerationDeadlineError extends Error {
+  constructor() {
+    super('Query generation time budget exhausted; simplify the request and try again. (쿼리 생성 제한 시간이 지났습니다. 요청을 줄인 뒤 다시 시도하세요.)');
+  }
+}
 
 const MAX_QUERY = 8_000;
 const TEMPO_SCHEMA_REQUIRED = 'Tempo schema is not available for the requested attributes. Refresh the datasource schema and try again. (Tempo 스키마를 새로고침한 뒤 다시 생성하세요.)';
@@ -42,7 +53,7 @@ const TRACEQL_RULES = [
 ].join('\n');
 
 let client: BedrockRuntimeClient | null = null;
-const bedrockSend: QueryGenSend = async (system, user, modelId) => {
+const bedrockSend: QueryGenSend = async (system, user, modelId, abortSignal) => {
   if (!client) client = new BedrockRuntimeClient({ region: REGION });
   const res = await client.send(
     new ConverseCommand({
@@ -52,6 +63,7 @@ const bedrockSend: QueryGenSend = async (system, user, modelId) => {
       inferenceConfig: { maxTokens: 1536 }, // query-sized (headroom so SQL isn't truncated mid-fence)
       ...thinkingOffFields(modelId),
     }),
+    { abortSignal },
   );
   return (res.output?.message?.content ?? [])
     .map((c) => ('text' in c && c.text ? c.text : ''))
@@ -157,6 +169,8 @@ export interface GenerateQueryInput {
    *  metrics past the cap and return that wrong answer clean) and softens the warning wording;
    *  the advisory (return-with-warning) semantics never change. */
   vocabularyComplete?: boolean;
+  /** Absolute request deadline; schema discovery and all model attempts share the route's budget. */
+  deadlineMs?: number;
   send?: QueryGenSend;
 }
 
@@ -209,7 +223,7 @@ function requestedHttpStatus(nl: string): number | null {
   const request = nl.trim().replace(/\s+/g, ' ')
     .replace(new RegExp(`^${temporal} `, 'i'), '')
     .replace(new RegExp(` ${temporal}([.!?]?)$`, 'i'), '$1');
-  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(request);
+  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?(?:\s+spans?)?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(request);
   return match ? Number(match[1]) : null;
 }
 
@@ -387,18 +401,18 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
 
 function tempoSchemaError(input: GenerateQueryInput): Error {
   if (input.tempoSchemaIncomplete) {
-    return new Error('Tempo schema discovery was incomplete; an empty result does not confirm an idle window. Refresh the datasource schema and check the Tempo connection or proxy response if this persists. (스키마 수집이 불완전합니다. 스키마를 새로고침하고 문제가 계속되면 Tempo 연결 또는 프록시 응답을 확인하세요.)');
+    return new SchemaEvidenceError('Tempo schema discovery was incomplete; an empty result does not confirm an idle window. Refresh the datasource schema and check the Tempo connection or proxy response if this persists. (스키마 수집이 불완전합니다. 스키마를 새로고침하고 문제가 계속되면 Tempo 연결 또는 프록시 응답을 확인하세요.)');
   }
   if (input.tempoSchemaNamesTruncated) {
-    return new Error('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 kB (64,000 bytes) from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 kB(64,000바이트)를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
+    return new SchemaEvidenceError('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 kB (64,000 bytes) from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 kB(64,000바이트)를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
   }
   if (input.tempoSchemaEmpty) {
-    return new Error('The cached Tempo schema has no usable attributes in its observation window. Run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range. AWSops supports intrinsic-only filters such as duration for recent traces; refresh after new traces arrive. (관측 구간에 속성이 없습니다. 과거 데이터는 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하세요. AWSops의 최근 조회는 내장 필터를 사용하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
+    return new SchemaEvidenceError('The cached Tempo schema has no usable attributes in its observation window. Run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range. AWSops supports intrinsic-only filters such as duration for recent traces; refresh after new traces arrive. (관측 구간에 속성이 없습니다. 과거 데이터는 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하세요. AWSops의 최근 조회는 내장 필터를 사용하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
   }
   if (input.schemaBlock.trim()) {
-    return new Error('The requested Tempo attributes were not observed in the cached schema. Verify their names and run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range, or refresh after new traces arrive. (요청한 속성이 캐시에서 관측되지 않았습니다. 과거 데이터는 속성명을 확인해 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
+    return new SchemaEvidenceError('The requested Tempo attributes were not observed in the cached schema. Verify their names and run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range, or refresh after new traces arrive. (요청한 속성이 캐시에서 관측되지 않았습니다. 과거 데이터는 속성명을 확인해 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
   }
-  return new Error(TEMPO_SCHEMA_REQUIRED);
+  return new SchemaEvidenceError(TEMPO_SCHEMA_REQUIRED);
 }
 
 export interface GeneratedQuery {
@@ -502,7 +516,58 @@ export function nearMissCandidates(unknown: string[], metricNames: ReadonlySet<s
   return [...out];
 }
 
+/** Primary model first; on an invocation failure or a draft that fails validation, the whole
+ *  generation reruns once on the fallback model. Schema-evidence errors are returned as-is. */
 export async function generateQuery(input: GenerateQueryInput): Promise<GeneratedQuery> {
+  const deadlineMs = input.deadlineMs ?? Date.now() + 45_000;
+  const controller = new AbortController();
+  const assertBudget = () => {
+    if (controller.signal.aborted || Date.now() >= deadlineMs) throw new QueryGenerationDeadlineError();
+  };
+  assertBudget();
+  let timeout: ReturnType<typeof setTimeout>;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new QueryGenerationDeadlineError());
+    }, deadlineMs - Date.now());
+  });
+  const baseSend = input.send ?? bedrockSend;
+  let failureReason = 'primary_draft_invalid';
+  const send: QueryGenSend = async (system, user, modelId) => {
+    assertBudget();
+    failureReason = 'primary_draft_invalid';
+    try {
+      const result = await Promise.race([baseSend(system, user, modelId, controller.signal), expired]);
+      assertBudget();
+      return result;
+    } catch (error) {
+      assertBudget();
+      failureReason = 'primary_invoke_failed';
+      throw error;
+    }
+  };
+  const boundedInput = { ...input, send };
+  try {
+    try {
+      return await generateWith(boundedInput, QUERYGEN_PRIMARY_MODEL_ID);
+    } catch (error) {
+      if (error instanceof SchemaEvidenceError || error instanceof QueryGenerationDeadlineError
+          || !QUERYGEN_FALLBACK_MODEL_ID || QUERYGEN_FALLBACK_MODEL_ID === QUERYGEN_PRIMARY_MODEL_ID) throw error;
+      assertBudget();
+      console.warn('[querygen] retrying with fallback model', {
+        primaryModelId: QUERYGEN_PRIMARY_MODEL_ID,
+        fallbackModelId: QUERYGEN_FALLBACK_MODEL_ID,
+        reason: failureReason,
+      });
+      return await generateWith(boundedInput, QUERYGEN_FALLBACK_MODEL_ID);
+    }
+  } finally {
+    clearTimeout(timeout!);
+  }
+}
+
+async function generateWith(input: GenerateQueryInput, MODEL_ID: string): Promise<GeneratedQuery> {
   const send = input.send ?? bedrockSend;
   const system = buildQueryGenSystem(input.lang, input.schemaBlock);
   const validate = (query: string): void => {
@@ -612,6 +677,9 @@ export async function generateQuery(input: GenerateQueryInput): Promise<Generate
         if (retriedUnknown.length < unknown.length) return { query: retried, warning: warn(retriedUnknown) };
         return fallback;
       } catch {
+        // Deliberate exception to the shared deadline: the first draft already validated, so a
+        // failed or timed-out rewrite (QueryGenerationDeadlineError included) returns it warned
+        // instead of discarding a usable answer as a 502.
         return fallback;
       }
     }

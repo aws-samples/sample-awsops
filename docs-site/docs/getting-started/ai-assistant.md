@@ -113,7 +113,7 @@ AI 어시스턴트는 질문을 분석하여 11개의 전문 라우트 중 가�
 │  - 테이블, 리스트, 코드 블록 지원                      │
 │                                                        │
 ├────────────────────────────────────────────────────────┤
-│  Network Gateway (17 tools)  │  Claude Sonnet급    │ 3.2s │
+│  Network Gateway (17 tools)  │  GPT-6 Luna         │ 3.2s │
 ├────────────────────────────────────────────────────────┤
 │  Tools: list_vpcs, get_vpc_network_details, ...        │
 │  Queried: aws_vpc, aws_vpc_subnet                      │
@@ -123,7 +123,7 @@ AI 어시스턴트는 질문을 분석하여 11개의 전문 라우트 중 가�
 ### 표시 정보
 
 - **라우트 경로**: 어떤 Gateway가 처리했는지
-- **모델**: 사용된 Claude 모델 (Sonnet/Opus)
+- **모델**: 답변에 사용된 Bedrock 모델 (예: GPT-6 Luna)
 - **응답 시간**: 처리에 걸린 시간
 - **사용된 도구**: 호출된 MCP 도구 목록
 - **조회된 리소스**: Steampipe에서 쿼리한 테이블
@@ -138,7 +138,7 @@ AI 어시스턴트는 질문을 분석하여 11개의 전문 라우트 중 가�
 
 ## 모델 선택
 
-채팅에는 모델 선택 드롭다운이 없습니다. 에이전트 답변은 Claude Sonnet급 모델이, 질문 라우팅 분류는 Haiku급 모델이 맡습니다. Opus급 모델은 [AI 진단](../monitoring/ai-diagnosis.md)의 Deep 단계에서만 선택할 수 있습니다. 정확한 모델 ID는 코드가 기준입니다.
+채팅에는 모델 선택 드롭다운이 없습니다. 에이전트 답변은 GPT-6 Luna가, 질문 라우팅 분류는 Haiku급 모델이 맡습니다. Opus급 모델은 [AI 진단](../monitoring/ai-diagnosis.md)의 Deep 단계에서만 선택할 수 있습니다. 정확한 모델 ID는 코드가 기준입니다.
 
 ## 연관 질문
 

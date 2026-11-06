@@ -116,10 +116,10 @@ describe('MessageList answer-provenance footer (design handoff 개선안 ③)', 
     expect(screen.getByText('+1')).toBeTruthy(); // 5 tools, only top 4 shown
   });
 
-  it('falls back to the default model label and hides elapsed/tools when absent (legacy agent image)', () => {
+  it('omits model attribution and hides elapsed/tools when provenance is absent', () => {
     const msgs: Msg[] = [doneMsg({ gateway: 'network' })];
     render(<MessageList msgs={msgs} />);
-    expect(screen.getByText('Claude Sonnet 5.5')).toBeTruthy(); // fallback constant
+    expect(screen.queryByText(/Claude|GPT-6/)).toBeNull();
     expect(screen.queryByText(/^\d+\.\ds$/)).toBeNull();
     expect(screen.queryByText('Tools')).toBeNull();
   });

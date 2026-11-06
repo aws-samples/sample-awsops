@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import { buildQueryGenSystem, extractQuery, looksReadOnlySql, looksLikeProse, stripLeadingSqlComments, generateQuery, unknownPromqlNames, nearMissCandidates, ruleCore, confidentNearMisses, type QueryGenSend } from './datasource-querygen';
 
 describe('buildQueryGenSystem', () => {
@@ -63,6 +64,115 @@ describe('looksLikeProse [1]', () => {
     expect(looksLikeProse('a\nb\nc\nd\ne\nf', false)).toBe(true); // >5 lines
     expect(looksLikeProse('rate(node_cpu_seconds_total[5m])', false)).toBe(false); // a real PromQL query
     expect(looksLikeProse('SELECT a\nFROM t\nWHERE x\nGROUP BY a\nHAVING 1\nORDER BY a', true)).toBe(false); // multi-line SQL is fine
+  });
+});
+
+describe('generateQuery model fallback', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
+  it('uses the default primary model for a whitespace-only override', async () => {
+    vi.stubEnv('DATASOURCE_QUERYGEN_MODEL_ID', '   ');
+    vi.resetModules();
+    const isolated = await import('./datasource-querygen');
+    expect(isolated.QUERYGEN_PRIMARY_MODEL_ID).toBe('global.openai.gpt-6.1-terra');
+  });
+  it('does not invoke either model after the request deadline', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() - 1, send })).rejects.toThrow(/time budget/i);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('aborts a slow invocation and skips fallback when the shared budget expires', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const send = vi.fn<QueryGenSend>().mockImplementation((_system, _user, _model, abortSignal) => {
+      signal = abortSignal;
+      return new Promise(() => {});
+    });
+    const result = generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() + 1_000, send });
+    const rejected = expect(result).rejects.toThrow(/time budget/i);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(signal?.aborted).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('does not reset the deadline when switching to fallback', async () => {
+    vi.useFakeTimers();
+    const send = vi.fn<QueryGenSend>()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('throttled')), 600);
+      }))
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const result = generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true,
+      deadlineMs: Date.now() + 1_000, send });
+    const rejected = expect(result).rejects.toThrow(/time budget/i);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0][3]).toBe(send.mock.calls[1][3]);
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+    expect(send.mock.calls[1][3]?.aborted).toBe(true);
+  });
+  it('passes cancellation to the real Bedrock SDK send boundary', async () => {
+    const sdkSend = vi.spyOn(BedrockRuntimeClient.prototype, 'send').mockResolvedValue({
+      output: { message: { role: 'assistant', content: [{ text: 'SELECT 1' }] } },
+    });
+    await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(sdkSend).toHaveBeenCalledWith(expect.anything(), { abortSignal: expect.any(AbortSignal) });
+  });
+  it('allows an explicit empty fallback override to disable retries', async () => {
+    vi.stubEnv('DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID', '');
+    vi.resetModules();
+    const isolated = await import('./datasource-querygen');
+    const send = vi.fn<QueryGenSend>().mockRejectedValue(new Error('throttled'));
+    await expect(isolated.generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .rejects.toThrow('throttled');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('logs only a bounded reason before fallback, excluding provider errors and request data', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = new Error('private-query secret-provider-payload');
+    error.name = 'private-error-name';
+    const send = vi.fn<QueryGenSend>().mockRejectedValueOnce(error).mockResolvedValue('SELECT 1');
+    await generateQuery({ nl: 'private-query', lang: 'ClickHouse SQL', schemaBlock: 'secret-schema', isSql: true, send });
+    expect(warn).toHaveBeenCalledWith('[querygen] retrying with fallback model', {
+      primaryModelId: 'global.openai.gpt-6.1-terra', fallbackModelId: 'global.anthropic.claude-sonnet-5-5',
+      reason: 'primary_invoke_failed',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private|secret/);
+  });
+  it('uses fallback for a draft that drops HTTP status despite complete observed evidence', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValueOnce('{ status = error }')
+      .mockResolvedValue('{ span.custom_status = 500 }');
+    await expect(generateQuery({ nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed', isSql: false,
+      tempoAttributes: [{ name: 'span.custom_status', types: ['int'], typesTruncated: false }], send }))
+      .resolves.toEqual({ query: '{ span.custom_status = 500 }' });
+    expect(send.mock.calls.map(c => c[2])).toEqual(['global.openai.gpt-6.1-terra', 'global.anthropic.claude-sonnet-5-5']);
+  });
+  it('uses GPT-6.1 Terra first', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send.mock.calls.map((c) => c[2])).toEqual(['global.openai.gpt-6.1-terra']);
+  });
+  it('retries on Claude Sonnet 5.5 when the primary call fails', async () => {
+    const send = vi.fn<QueryGenSend>().mockRejectedValueOnce(new Error('throttled')).mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send.mock.calls.map((c) => c[2])).toEqual(['global.openai.gpt-6.1-terra', 'global.anthropic.claude-sonnet-5-5']);
+  });
+  it('retries on the fallback when the primary draft fails validation', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValueOnce('DROP TABLE t').mockResolvedValue('SELECT 1');
+    await expect(generateQuery({ nl: 'x', lang: 'ClickHouse SQL', schemaBlock: '', isSql: true, send }))
+      .resolves.toEqual({ query: 'SELECT 1' });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('does not retry schema-evidence errors on the fallback', async () => {
+    const send = vi.fn<QueryGenSend>().mockResolvedValue('SCHEMA_REQUIRED');
+    await expect(generateQuery({ nl: 'x', lang: 'TraceQL', schemaBlock: '', isSql: false, send }))
+      .rejects.toThrow(/Tempo schema is not available/);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -181,7 +291,7 @@ describe('generateQuery', () => {
       nl: 'traces', lang: 'TraceQL', schemaBlock: 'span.http.status_code (int)',
       tempoAttributes: typedTempo, isSql: false, send,
     })).rejects.toThrow(/TraceQL.*schema/i);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([
@@ -246,7 +356,7 @@ describe('generateQuery', () => {
       nl: 'HTTP 500 traces', lang: 'TraceQL', schemaBlock: 'observed',
       tempoAttributes: typedTempo, isSql: false, send,
     })).rejects.toThrow(/HTTP-status filter/);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([
@@ -356,7 +466,7 @@ describe('generateQuery', () => {
     await expect(generateQuery({
       nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'tags: .http.status_code', isSql: false, send,
     })).rejects.toThrow(/TraceQL.*syntax/i);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(4); // primary draft+correction, then the fallback model
   });
 
   it.each([

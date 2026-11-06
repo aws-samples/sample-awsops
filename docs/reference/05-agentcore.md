@@ -14,6 +14,42 @@ Interpreter**. v2 replaces v1's hand-run CLI/`06*` scripts and `config.json` ARN
 injection with a single **idempotent boto3 provisioner** driven from Terraform outputs,
 with all config delivered through SSM.
 
+## Chat model configuration
+
+The Strands chat runtime defaults to `global.openai.gpt-6-luna`. `AGENT_MODEL_ID`
+is a process environment override read when `agent/agent.py` loads; an absent or
+blank value retains Luna. It does not change the separate Claude diagnosis workers
+or the default-off Anthropic loop, which retains Sonnet 5.5. The resolved chat
+model is logged at startup. IAM permits the curated Claude namespace and Luna,
+including their dated suffixes; other overrides require a separately reviewed grant.
+
+Before deploying either the web or AgentCore image, the controller must review and
+apply the saved Terraform plan containing `task_web_models` and
+`agentcore_model_resources`. Deploying images first leaves both Terra and its
+Sonnet fallback without the web grant, or Luna without the runtime grant; model
+fallback cannot recover missing IAM permissions. Complete the release's required
+migrations before AgentCore provisioning.
+
+The supported rollback is the Terraform variable `agentcore_chat_model_id`
+(empty by default; validated to `global.openai.gpt-6-luna` or
+`global.anthropic.claude-sonnet-5-5`, both granted by the runtime role). The applied
+value reaches `scripts/v2/agentcore/provision.py` through `output.agentcore.model_env`,
+so every provisioning run, including Dev Deploy AgentCore, writes the same
+`AGENT_MODEL_ID`; each run also records the effective chat model in its result log. The
+deployer's shell cannot change the model, and an output value outside the reviewed
+allowlist refuses the runtime update (`runtime` `ERR`). Each reconciliation rewrites
+the whole environment map, so a manual runtime environment change does not survive
+it. Rolling back is a reviewed saved-plan apply followed by provisioning, never
+autonomous.
+
+Luna requests omit explicit `cachePoint` blocks and `cache_tools`; any automatic
+cache benefit must be verified before rollout using a multi-turn tool-using session
+and its `cacheReadInputTokens`. A prompt-only probe does not establish tool caching.
+The two GPT pricing rows are provisional third-party estimates: recheck the AWS
+Price List API when those models appear for the selected region and inference
+profile, including cache-read/write billing. No live caching or pricing verification
+is claimed by the local regression tests.
+
 <a id="current-design--현행-설계"></a>
 
 ## Current design

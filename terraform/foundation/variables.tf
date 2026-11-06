@@ -310,7 +310,7 @@ variable "hybrid_routing_enabled" {
 
 variable "multi_route_synthesis_enabled" {
   type        = bool
-  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no direct Sonnet Bedrock call from the web task, no extra IAM. PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
+  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no synthesis Sonnet call from the web task and no synthesis-specific IAM (the always-on task_web_models grant still covers Sonnet 5.5 InvokeModel for query generation and help). PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
   default     = false
 }
 
@@ -448,5 +448,15 @@ variable "network_path_check_enabled" {
   validation {
     condition     = !var.network_path_check_enabled || var.workers_enabled
     error_message = "network_path_check_enabled requires workers_enabled=true (reuses the worker role/pg8000 layer/VPC + jobs queue)."
+  }
+}
+
+variable "agentcore_chat_model_id" {
+  type        = string
+  default     = ""
+  description = "Chat runtime model override delivered to AgentCore on every provisioning run. Empty keeps the GPT-6 Luna default; global.anthropic.claude-sonnet-5-5 is the reviewed rollback. Both are granted by local.agentcore_model_resources."
+  validation {
+    condition     = contains(["", "global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5"], var.agentcore_chat_model_id)
+    error_message = "Use an empty value, global.openai.gpt-6-luna or global.anthropic.claude-sonnet-5-5."
   }
 }

@@ -76,10 +76,6 @@ function statusLabel(s: { phase: string; elapsedMs?: number }, tt: (s: string) =
   }
 }
 
-// Mirrors agent.py's MODEL_ID label for the (rare) legacy-image case where the stream carries
-// no `{"model": ...}` provenance frame — never shown once a redeployed agent reports its own.
-const FALLBACK_MODEL_LABEL = 'Claude Sonnet 5.5';
-
 export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[]; onSwitch?: (key: string) => void; onFollowUp?: (q: string) => void }) {
   const { tt } = useI18n();
   return (
@@ -150,7 +146,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                   <span className="rounded-md border border-brand-200 bg-brand-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-brand-700">
                     AgentCore → {sec.label} Gateway
                   </span>
-                  <span className="font-mono text-[11px] text-ink-500">{m.model ?? FALLBACK_MODEL_LABEL}</span>
+                  {m.model && <span className="font-mono text-[11px] text-ink-500">{m.model}</span>}
                   {m.elapsedMs !== undefined && (
                     <span className="tabular-nums text-[11px] text-ink-300">{(m.elapsedMs / 1000).toFixed(1)}s</span>
                   )}
