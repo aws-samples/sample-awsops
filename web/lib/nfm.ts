@@ -9,7 +9,7 @@ import {
   type MonitorMetric,
   type DestinationCategory,
 } from '@aws-sdk/client-networkflowmonitor';
-import { BoundedTtlCache } from './bounded-cache';
+import { BoundedTtlCache, abortableSleep } from './bounded-cache';
 
 // CloudWatch Network Flow Monitor (NFM) — nfm-dashboard 주요 기능 이식의 데이터 계층.
 // nfm-dashboard와 달리 수집 파이프라인(DDB) 없이 NFM 비동기 쿼리를 라이브로 실행한다:
@@ -58,17 +58,17 @@ export interface NfmFlowRow {
 // Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
 const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
-function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+function cached<T>(key: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   return cache.get(key, fn) as Promise<T>;
 }
 export function _resetNfmCacheForTests() { cache.clear(); client = null; }
 
 // ── Status (menu gate) ──────────────────────────────────────────────────────
 export async function nfmStatus(): Promise<NfmStatus> {
-  return cached('status', async () => {
+  return cached('status', async (abortSignal) => {
     const [mon, sc] = await Promise.all([
-      nfm().send(new ListMonitorsCommand({})),
-      nfm().send(new ListScopesCommand({})).catch(() => ({ scopes: [] })),
+      nfm().send(new ListMonitorsCommand({}), { abortSignal }),
+      nfm().send(new ListScopesCommand({}), { abortSignal }).catch(() => ({ scopes: [] })),
     ]);
     const monitors: NfmMonitorInfo[] = (mon.monitors ?? []).map((m) => {
       const name = m.monitorName ?? '';
@@ -132,7 +132,6 @@ const UNIT_FALLBACK: Record<NfmMetric, string> = {
   DATA_TRANSFERRED: 'Bytes', ROUND_TRIP_TIME: 'Milliseconds', RETRANSMISSIONS: 'Count', TIMEOUTS: 'Count',
 };
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface NfmQueryResult {
   rows: NfmFlowRow[]; unit: string; tookMs: number;
@@ -151,7 +150,7 @@ export async function nfmTopContributors(
   monitor: string, metric: NfmMetric, category: NfmCategory, rangeSec: number, limit = 50,
 ): Promise<NfmQueryResult> {
   if (rangeSec > NFM_MAX_RANGE_SEC) throw new Error(`NFM query range max ${NFM_MAX_RANGE_SEC}s (API limit)`);
-  return cached(`q|${monitor}|${metric}|${category}|${rangeSec}|${limit}`, async () => {
+  return cached(`q|${monitor}|${metric}|${category}|${rangeSec}|${limit}`, async (abortSignal) => {
     const t0 = Date.now();
     const end = new Date();
     const start = new Date(end.getTime() - rangeSec * 1000);
@@ -159,23 +158,29 @@ export async function nfmTopContributors(
       monitorName: monitor, metricName: metric as MonitorMetric,
       destinationCategory: category as DestinationCategory,
       startTime: start, endTime: end, limit,
-    }));
-    // Poll to SUCCEEDED (≤ ~40s), then stop the query on timeout so it doesn't linger.
-    for (let i = 0; ; i++) {
-      const { status } = await nfm().send(new GetQueryStatusMonitorTopContributorsCommand({ monitorName: monitor, queryId }));
-      if (status === 'SUCCEEDED') break;
-      if (status === 'FAILED' || status === 'CANCELED') throw new Error(`NFM query ${status}`);
-      if (i >= 26) {
-        await nfm().send(new StopQueryMonitorTopContributorsCommand({ monitorName: monitor, queryId })).catch(() => {});
-        throw new Error('NFM query timeout');
+    }), { abortSignal });
+    // Poll to SUCCEEDED (≤ ~40s); stop the query on timeout or deadline abort so it doesn't linger.
+    const stop = () => nfm().send(new StopQueryMonitorTopContributorsCommand({ monitorName: monitor, queryId })).catch(() => {});
+    try {
+      for (let i = 0; ; i++) {
+        const { status } = await nfm().send(new GetQueryStatusMonitorTopContributorsCommand({ monitorName: monitor, queryId }), { abortSignal });
+        if (status === 'SUCCEEDED') break;
+        if (status === 'FAILED' || status === 'CANCELED') throw new Error(`NFM query ${status}`);
+        if (i >= 26) {
+          await stop();
+          throw new Error('NFM query timeout');
+        }
+        await abortableSleep(1500, abortSignal);
       }
-      await sleep(1500);
+    } catch (e) {
+      if (abortSignal.aborted) await stop();
+      throw e;
     }
     const rows: NfmFlowRow[] = [];
     let unit = UNIT_FALLBACK[metric];
     let nextToken: string | undefined;
     do {
-      const res = await nfm().send(new GetQueryResultsMonitorTopContributorsCommand({ monitorName: monitor, queryId, nextToken }));
+      const res = await nfm().send(new GetQueryResultsMonitorTopContributorsCommand({ monitorName: monitor, queryId, nextToken }), { abortSignal });
       unit = res.unit ?? unit;
       for (const raw of res.topContributors ?? []) rows.push(toRow(raw as RawContributor, category, res.unit ?? UNIT_FALLBACK[metric]));
       nextToken = res.nextToken;

@@ -11,9 +11,11 @@ const req = () => new Request('http://x/api/dns-logs', { headers: { cookie: 'aws
 beforeEach(() => { vi.resetModules(); verifyUser.mockReset().mockResolvedValue({ email: 'u@example.com' }); dnsLogStatus.mockReset(); });
 
 describe('GET /api/dns-logs', () => {
-  it('a saturated cache or load deadline is a retryable 503, never "not configured"', async () => {
+  it('a saturated cache, deadline, throttle or 5xx is a retryable 503, never "not configured"', async () => {
     const { GET } = await import('./route');
-    for (const error of [new CacheUnavailableError('capacity'), new CacheUnavailableError('deadline')]) {
+    for (const error of [new CacheUnavailableError('capacity'), new CacheUnavailableError('deadline'),
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException', $retryable: { throttling: true } }),
+      Object.assign(new Error('x'), { name: 'ServiceUnavailable', $metadata: { httpStatusCode: 503 } })]) {
       dnsLogStatus.mockRejectedValueOnce(error);
       const res = await GET(req());
       expect(res.status).toBe(503);

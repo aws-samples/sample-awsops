@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BoundedTtlCache, CacheUnavailableError } from './bounded-cache';
+import { BoundedTtlCache, CacheUnavailableError, abortableSleep, isTransientRead } from './bounded-cache';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -145,22 +145,69 @@ describe('BoundedTtlCache', () => {
     await freshRequest;
   });
 
-  it('a never-settling load hits its deadline and frees the slot for later keys', async () => {
+  it('a deadline aborts the loader signal; the slot frees once the aborted loader settles', async () => {
     vi.useFakeTimers();
     try {
       const cache = new BoundedTtlCache<string>({ ttlMs: 1000, maxEntries: 2, maxInFlight: 1, loadTimeoutMs: 50 });
-      const hung = cache.get('hung', () => new Promise<string>(() => {}));
+      let seen: AbortSignal | undefined;
+      const hung = cache.get('hung', (signal) => {
+        seen = signal;
+        return new Promise<string>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
       await expect(cache.get('b', async () => 'blocked')).rejects.toThrow(/in-flight capacity/);
       await expect(cache.get('b', async () => 'blocked')).rejects.toBeInstanceOf(CacheUnavailableError);
       const expectation = expect(hung).rejects.toSatisfy(
         (e: unknown) => e instanceof CacheUnavailableError && e.reason === 'deadline' && /deadline/.test(e.message));
       await vi.advanceTimersByTimeAsync(50);
       await expectation;
+      expect(seen?.aborted).toBe(true);
       expect(await cache.get('b', async () => 'admitted')).toBe('admitted');
       expect(await cache.get('hung', async () => 'retried')).toBe('retried');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a loader that ignores abort keeps its slot until it settles, and its late value is not retained', async () => {
+    vi.useFakeTimers();
+    try {
+      const cache = new BoundedTtlCache<string>({ ttlMs: 1000, maxEntries: 2, maxInFlight: 1, loadTimeoutMs: 50 });
+      let finish!: (v: string) => void;
+      const slow = cache.get('slow', () => new Promise<string>((resolve) => { finish = resolve; }));
+      const expectation = expect(slow).rejects.toBeInstanceOf(CacheUnavailableError);
+      await vi.advanceTimersByTimeAsync(50);
+      await expectation;
+      await expect(cache.get('b', async () => 'blocked')).rejects.toThrow(/in-flight capacity/);
+      finish('late');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await cache.get('b', async () => 'admitted')).toBe('admitted');
+      expect(await cache.get('slow', async () => 'fresh')).toBe('fresh');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('abortableSleep rejects with the abort reason', async () => {
+    const controller = new AbortController();
+    const sleeping = abortableSleep(60_000, controller.signal);
+    controller.abort(new CacheUnavailableError('deadline'));
+    await expect(sleeping).rejects.toBeInstanceOf(CacheUnavailableError);
+    await expect(abortableSleep(1, controller.signal)).rejects.toBeInstanceOf(CacheUnavailableError);
+    await expect(abortableSleep(1)).resolves.toBeUndefined();
+  });
+
+  it('isTransientRead classifies throttling, 429 and 5xx as transient but not permanent errors', () => {
+    const err = (name: string, extra: Record<string, unknown> = {}) => Object.assign(new Error(name), { name, ...extra });
+    expect(isTransientRead(new CacheUnavailableError('capacity'))).toBe(true);
+    expect(isTransientRead(err('ThrottlingException'))).toBe(true);
+    expect(isTransientRead(err('TooManyRequestsException'))).toBe(true);
+    expect(isTransientRead(err('Whatever', { $retryable: { throttling: true } }))).toBe(true);
+    expect(isTransientRead(err('Whatever', { $metadata: { httpStatusCode: 503 } }))).toBe(true);
+    expect(isTransientRead(err('Whatever', { $metadata: { httpStatusCode: 429 } }))).toBe(true);
+    expect(isTransientRead(err('AccessDeniedException', { $metadata: { httpStatusCode: 403 } }))).toBe(false);
+    expect(isTransientRead(err('ValidationException', { $metadata: { httpStatusCode: 400 } }))).toBe(false);
+    expect(isTransientRead(new Error('boom'))).toBe(false);
+    expect(isTransientRead(null)).toBe(false);
   });
 
   it.each([

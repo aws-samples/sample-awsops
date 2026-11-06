@@ -27,10 +27,13 @@ export async function GET(request: Request) {
   let status;
   try {
     status = await nfmStatus();
-  } catch {
-    // A failed/saturated allow-list lookup is not proof the monitor is unknown: retryable 503.
-    return Response.json({ status: 'error', message: 'monitor lookup temporarily unavailable', retryable: true },
-      { status: 503, headers: { 'Retry-After': '5' } });
+  } catch (e) {
+    // A saturated/throttled allow-list lookup is not proof the monitor is unknown: retryable 503.
+    if (isTransientRead(e)) {
+      return Response.json({ status: 'error', message: 'monitor lookup temporarily unavailable', retryable: true },
+        { status: 503, headers: { 'Retry-After': '5' } });
+    }
+    return Response.json({ status: 'error', message: 'monitor lookup failed', retryable: false }, { status: 502 });
   }
   if (!status.monitors.some((m) => m.name === monitor)) {
     return Response.json({ status: 'error', message: 'unknown monitor' }, { status: 404 });

@@ -10,9 +10,11 @@ const req = () => new Request('http://x/api/nfm', { headers: { cookie: 'awsops_t
 beforeEach(() => { vi.resetModules(); verifyUser.mockReset().mockResolvedValue({ email: 'u@example.com' }); nfmStatus.mockReset(); });
 
 describe('GET /api/nfm', () => {
-  it('a saturated cache or request timeout is a retryable 503, never "not onboarded"', async () => {
+  it('a saturated cache, timeout, throttle or 5xx is a retryable 503, never "not onboarded"', async () => {
     const { GET } = await import('./route');
-    for (const error of [new CacheUnavailableError('capacity'), Object.assign(new Error('t'), { name: 'TimeoutError' })]) {
+    for (const error of [new CacheUnavailableError('capacity'), Object.assign(new Error('t'), { name: 'TimeoutError' }),
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException', $retryable: { throttling: true } }),
+      Object.assign(new Error('x'), { name: 'InternalServerException', $metadata: { httpStatusCode: 500 } })]) {
       nfmStatus.mockRejectedValueOnce(error);
       const res = await GET(req());
       expect(res.status).toBe(503);

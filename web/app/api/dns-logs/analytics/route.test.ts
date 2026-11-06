@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheUnavailableError } from '@/lib/bounded-cache';
 
+const sdkError = (name: string, extra: Record<string, unknown> = {}) => Object.assign(new Error(name), { name, ...extra });
+const throttled = () => sdkError('ThrottlingException', { $retryable: { throttling: true }, $metadata: { httpStatusCode: 400 } });
+const serverError = () => sdkError('InternalServerException', { $metadata: { httpStatusCode: 500 } });
+const denied = () => sdkError('AccessDeniedException', { $metadata: { httpStatusCode: 403 } });
+
 const verifyUser = vi.fn();
 const dnsLogStatus = vi.fn();
 const dnsAnalytics = vi.fn();
@@ -29,7 +34,7 @@ describe('GET /api/dns-logs/analytics', () => {
     ['coredns', () => coreDnsGroups],
   ])('maps a %s allow-list lookup failure to a retryable 503, not unknown log group', async (source, lookup) => {
     const { GET } = await import('./route');
-    for (const error of [new CacheUnavailableError('capacity'), new CacheUnavailableError('deadline'), new Error('throttled')]) {
+    for (const error of [new CacheUnavailableError('capacity'), new CacheUnavailableError('deadline'), throttled(), serverError()]) {
       lookup().mockRejectedValueOnce(error);
       const res = await GET(req(`source=${source}&group=/g`));
       expect(res.status).toBe(503);
@@ -40,6 +45,20 @@ describe('GET /api/dns-logs/analytics', () => {
     }
     expect(dnsAnalytics).not.toHaveBeenCalled();
     expect(coreDnsAnalytics).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['resolver', () => dnsLogStatus],
+    ['coredns', () => coreDnsGroups],
+  ])('a permanent %s lookup failure is a non-retryable error, not a 503', async (source, lookup) => {
+    lookup().mockRejectedValue(denied());
+    const { GET } = await import('./route');
+    const res = await GET(req(`source=${source}&group=/g`));
+    expect(res.status).toBe(502);
+    expect(res.headers.get('Retry-After')).toBeNull();
+    const body = await res.json();
+    expect(body).toMatchObject({ status: 'error', retryable: false, message: 'log group lookup failed' });
+    expect(JSON.stringify(body)).not.toContain('AccessDenied');
   });
 
   it('a saturated analytics read is a retryable 503 without the internal message', async () => {
