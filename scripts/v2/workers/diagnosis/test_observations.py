@@ -344,6 +344,46 @@ def test_cached_sdk_timeout_cannot_exceed_remaining_query_budget(monkeypatch):
     assert not any(c in {"dns_start", "nfm_start"} for c,_ in fake.calls)
 
 
+def test_resolution_and_window_uncertainty_survive_deterministic_presentation():
+    import html
+    from diagnosis import presentation
+    from diagnosis.sections import SECTIONS
+    data = project()
+    index = EvidenceIndex(data, ACCOUNT)
+    row = next(e for e in data["evidence"] if e["kind"] == "observed_network_flow")
+    finding = index.validate_finding({"id": "finding-network", "pillar": "reliability",
+        "severity": "medium", "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [row["id"]],
+        "claim": "observation", "explanation": "The peer needs trace verification.",
+        "prerequisites": [], "verification": "graph_refresh"})
+    text = html.unescape("\n".join(value for _, value in presentation.render(SECTIONS,
+        index.admitted_bundle(), {"findings": [finding]}, lang="en")))
+    assert "ttl&#95;known" in text or "ttl_known" in text
+    assert "dns&#95;window&#95;correlation" in text or "dns_window_correlation" in text
+    assert "undirected" in text and "orders.example.test" in text
+    assert START.isoformat() in text and "Hypothesis" in text
+    assert "raw_sql" not in text and "srcport" not in text
+
+
+@pytest.mark.parametrize("stage", ["specialist", "review"])
+def test_provider_prompts_distinguish_dns_and_aggregate_traffic_from_calls(monkeypatch, stage):
+    from diagnosis import pillar_agents as agents
+    from diagnosis.budget import ReportBudget
+    from diagnosis.test_pillar_agents import FakeClient, response
+    payload = ({"findings": []} if stage == "specialist" else
+        {"finding_ids": [], "reject_ids": [], "follow_up": [], "rerun_pillars": [], "issues": []})
+    fake = FakeClient([response(payload)])
+    monkeypatch.setattr(agents, "_client", lambda *a: fake)
+    options = {"model_id": "global.anthropic.claude-sonnet-5-5", "budget": ReportBudget("mid")}
+    index = EvidenceIndex(project(), ACCOUNT)
+    if stage == "specialist":
+        agents.analyze("reliability", index, **options)
+    else:
+        agents.review([], index, **options)
+    prompt = json.loads(fake.calls[0]["body"])["system"].lower()
+    assert "dns" in prompt and "ttl" in prompt and "undirected" in prompt
+    assert "same-span trace" in prompt and "sql" in prompt
+
+
 def test_evidence_loop_gate_off_invokes_neither_sdk_nor_proxy_helper(monkeypatch):
     from diagnosis import workload_identities
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "false")

@@ -307,3 +307,112 @@ synthetic 표시는 선언일 뿐 자동 비식별화가 아닙니다. 원격 �
 
 API reference / API 참고:
 [Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).
+
+## Discovery-driven six-pillar report acceptance
+
+The worker's `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` environment variable selects a
+separate report path. Terraform's `diagnosis_evidence_loop_enabled` defaults to
+false; a report payload cannot enable it. The disabled path retains the section
+renderer described above. Ordinary chat and the dark Anthropic chat loop are
+unaffected.
+
+The enabled report collects scoped inventory and graph evidence, representative
+14-day EC2/RDS utilization and guarded provider sizing candidates. Six specialist
+agents cover Operational Excellence, Security, Reliability, Performance
+Efficiency, Cost Optimization and Sustainability. A structured cross-pillar
+review follows semantic admission. Light has one pass; mid/deep may collect one
+validated follow-up and rerun at most two affected specialists before final review.
+Unknown evidence, failed stages and uncompleted pillars remain visible.
+
+Model output selects admitted resource/evidence IDs and controlled claims.
+Code renders values, resource identities, scope, windows and provenance; it also
+selects the title/tags locally. Model explanations remain hypotheses. Neither
+valid JSON nor a reviewer citation establishes causality. Final summary and
+recommendations cannot introduce targets or savings absent from admitted facts.
+The existing 9/16 section catalogs, four report languages and deterministic
+Intended vs Actual verdicts remain unchanged. Scoped dependency pairs do not
+certify the unresolved name-based invariant graph or an encryption aggregate;
+those live invariant inputs remain unassessed.
+
+Trusted specialist and reviewer instructions carry the validated report locale,
+including reruns and final review. JSON keys, claim enums and opaque references
+stay fixed across languages. Redaction preserves code-owned references while
+scrubbing source strings. Semantic admission and the defensive renderer reject
+numeric model prose, including localized currency and numeral forms; displayed
+measurements come from admitted facts. This conservative prose guard can also
+withhold legitimate numerical wording. Incomplete enabled reports finish as
+`partial`, even when no separate degraded condition was recorded.
+
+### Connection criteria
+
+| Fixture | Required result |
+| --- | --- |
+| Fresh span with scoped EC2 identity and exact unique inventory DB endpoint | Preserve the observed instance/service/DB pair with opaque correlation ID, provenance and observation window |
+| One service, instance A calling DB1 and instance B calling DB2 | Exactly the observed pairs; never A→DB2 or B→DB1 |
+| Shared security group, VPC, tag or service name only | Configuration/allowed path/candidate; no confirmed application connection |
+| Ambiguous identity, conflicting instance claims or same endpoint in another region | Keep binding unresolved |
+| Stale retained graph or missing collection state | Historical/unknown coverage; no current healthy connection |
+| Graph refresh fails, returns partial state or removes a former edge | Invalidate prior graph freshness before reading; a retained former edge cannot remain a current observation |
+| Later X-Ray reference, repeated cursor, truncated sample or region cap | Preserve references and explicitly incomplete coverage |
+| Member report | Own scoped inventory/configuration only; no host credentials, trace graph or FinOps substitution |
+
+Trace adapters project only `cloud.resource_id`, `host.id` and
+`service.instance.id` identity claims in addition to their existing allowlist.
+Claims are independently checked against inventory participation. Same-span
+pair metadata travels through existing graph JSON storage; no schema migration
+or connection-string inspection is involved. Sampled traffic does not prove
+successful SQL or a causal bottleneck.
+
+### Right sizing criteria
+
+| Fixture | Required result |
+| --- | --- |
+| Fresh provider option with known rank, generation time, lookback and scoped metrics | Named provider candidate, risk and manual verification prerequisites |
+| Short CPU-only sample, missing memory/I/O or inadequate sample coverage | Investigation candidate; no safe downsize assertion |
+| RDS request | Correct region and `DBInstanceIdentifier` dimension, DB pressure/connection/HA caveats |
+| Lookback below 14 days, stale recommendation or protected tags | Withhold definitive sizing; disclose guard |
+| Missing provider risk/utilization or partial provider page | Unknown/partial evidence rather than zero risk |
+| Service-level cost, partial month or mixed currencies | No fabricated resource savings or cross-currency sum |
+| Duplicate resource recommendations across pillars | Avoid duplicate savings; retain one guarded candidate |
+
+Discovery is bounded to eight inventory regions, three X-Ray pages per region,
+200 resources, 400 relationships and 192 KiB of normalized context. Omissions are
+coverage gaps, not evidence of absence. Compute Optimizer access adds only the
+gated EC2/RDS recommendation reads and does not turn on FinOps.
+
+### Allocation and stage criteria
+
+The handler owns a thread-safe ledger from entry through artifact export and
+local title selection. Analysis leaves the existing 600-second artifact reserve
+inside a 3,300-second worker deadline. Every model HTTP attempt, including
+failures and retries, reserves serialized input and requested output plus
+thinking before dispatch. Per-attempt caps are 96 KiB and 8,192 tokens; report
+attempt caps are 20/24/32, input caps 2/3/4 MiB and output allocation caps
+100,000/120,000/200,000 tokens for light/mid/deep. Actual usage is recorded when
+provided; missing usage stays unknown. These are allocation limits, not an
+enforced dollar budget.
+
+Offline tests must reject fabricated references, wrong scope, configuration
+misrepresented as observed traffic, numerical prose injection, malformed or
+truncated JSON, unsupported model overrides and invalid discovery requests.
+They also cover stage order, concurrency, deadline exhaustion, deduplicated
+follow-up, no progress and local presentation. Provider/model responses are
+fixtures. No test result demonstrates deployed discovery, model accuracy,
+real AWS permissions, measured savings or successful runtime rollout.
+No-progress checks compare scoped facts, windows and qualification, rather than
+capture timestamps or generated evidence IDs. A timestamp-only refresh ends
+without specialist reruns; a changed fact, window, coverage or freshness can
+justify the remaining bounded pass.
+
+Run from the repository root:
+
+```bash
+python3 -m pytest -q scripts/v2/workers/diagnosis
+cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts \
+  lib/graph-store-trace.test.ts lib/graph-state.test.ts
+```
+
+Deployment remains an operator action. Apply reviewed worker IAM/configuration,
+ship the trace adapter and worker image, then obtain explicit authorization for
+live discovery/model acceptance; source verification alone does not activate
+the flag or establish release readiness.
