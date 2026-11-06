@@ -223,7 +223,7 @@ function requestedHttpStatus(nl: string): number | null {
   const request = nl.trim().replace(/\s+/g, ' ')
     .replace(new RegExp(`^${temporal} `, 'i'), '')
     .replace(new RegExp(` ${temporal}([.!?]?)$`, 'i'), '$1');
-  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(request);
+  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?(?:\s+spans?)?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(request);
   return match ? Number(match[1]) : null;
 }
 
@@ -677,6 +677,9 @@ async function generateWith(input: GenerateQueryInput, MODEL_ID: string): Promis
         if (retriedUnknown.length < unknown.length) return { query: retried, warning: warn(retriedUnknown) };
         return fallback;
       } catch {
+        // Deliberate exception to the shared deadline: the first draft already validated, so a
+        // failed or timed-out rewrite (QueryGenerationDeadlineError included) returns it warned
+        // instead of discarding a usable answer as a 502.
         return fallback;
       }
     }
