@@ -19,6 +19,10 @@ REDACTORS = [
     (re.compile(r"(?<!\d)\d{12}(?!\d)"), "<acct>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
     (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "<akid>"),
+    # Region-qualified AWS DNS names (RDS/ELB/cache endpoints) name account resources;
+    # service principals such as ec2.amazonaws.com carry no region label and are kept.
+    (re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[a-z]{2}(?:-gov)?-[a-z]+-\d\.(?:[A-Za-z0-9-]+\.)*"
+                r"amazonaws\.com(?:\.cn)?\b", re.IGNORECASE), "<host>"),
 ]
 
 # Validate candidates rather than treating clock strings or citation IDs as IPs.

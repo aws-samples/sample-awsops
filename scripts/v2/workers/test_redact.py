@@ -43,3 +43,14 @@ def test_redact_noncommercial_arn(partition):
 def test_ipv6_redaction_preserves_timestamps_units_and_opaque_identifiers():
     text = '2026-11-05T12:00:00+00:00 12:00:00 e:abc123 r:123abc Count/Second bad:de:ad'
     assert redact.redact(text) == text
+
+
+def test_redact_dns_answer_ip_lists_including_ipv6():
+    s = redact.redact('answer_ips ["2001:db8::7", "fd00:1234::7", "192.0.2.9", "::ffff:192.0.2.7"]')
+    assert s == 'answer_ips ["<ip>", "<ip>", "<ip>", "<ip>"]'
+
+
+def test_redact_region_qualified_aws_endpoints_but_keeps_service_principals():
+    s = redact.redact('db orders.cluster-abc123.ap-northeast-2.rds.amazonaws.com lb a-1.us-east-1.elb.amazonaws.com '
+                      'via ec2.amazonaws.com')
+    assert s == 'db <host> lb <host> via ec2.amazonaws.com'

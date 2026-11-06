@@ -541,12 +541,14 @@ def test_followup_is_single_pass_and_revalidates_host_identity(provider, monkeyp
 
 
 def test_provider_requests_respect_sdk_resource_list_bound(provider):
-    rows = [inventory("ec2", f"i-{i:017x}", {}) for i in range(180)]
+    count = discovery.MAX_INVENTORY_RESOURCES
+    assert count > 100
+    rows = [inventory("ec2", f"i-{i:017x}", {}) for i in range(count)]
     discovery.collect(Database(rows), ACCOUNT, Budget())
     calls = [args for op, args in provider.calls if op == "ec2"]
     assert calls and all(len(args["instanceArns"]) <= 100 for args in calls)
     assert {arn for args in calls for arn in args["instanceArns"]} == {
-        f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-{i:017x}" for i in range(180)}
+        f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-{i:017x}" for i in range(count)}
 
 
 def test_database_timeout_restores_existing_policy_after_read_error(provider):
@@ -866,3 +868,105 @@ def test_followup_supersedes_prior_metrics_and_eviction_keeps_current_row(provid
               "evidence": [{"id": "old", "source": "cloudwatch", "fresh": False, "facts": "m" * 120000},
                            {"id": "new", "source": "cloudwatch", "fresh": True, "facts": "m" * 120000}]}
     assert [e["id"] for e in discovery._finish(capped)["evidence"]] == ["new"]
+
+
+def metric_series(kwargs, empty=()):
+    """Complete series; metric names in ``empty`` return Complete with no datapoints."""
+    end = kwargs["EndTime"]
+    return {"MetricDataResults": [
+        {"Id": q["Id"], "StatusCode": "Complete",
+         **({"Values": [], "Timestamps": []} if q["MetricStat"]["Metric"]["MetricName"] in empty else
+            {"Values": [25.0] * 336, "Timestamps": [end - dt.timedelta(hours=i + 1) for i in range(336)]})}
+        for q in kwargs["MetricDataQueries"]]}
+
+
+def test_unpublished_metrics_are_disclosed_not_coverage_loss(provider):
+    provider.metrics = lambda args: metric_series(args, empty={"EBSReadBytes", "EBSWriteBytes"})
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    item = evidence(bundle, "metrics")[0]
+    assert item["facts"]["metrics_not_published"] == ["EBSReadBytes", "EBSWriteBytes"]
+    assert item["coverage"]["sample_ratio"] == 1 and item["fresh"] is True
+    assert item["facts"]["missing_io"] is True  # unpublished I/O still never proves I/O headroom
+    # Required pressure metrics with no samples stay coverage loss.
+    provider.metrics = lambda args: metric_series(args, empty={"CPUUtilization"})
+    item = evidence(discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget()), "metrics")[0]
+    assert item["coverage"]["sample_ratio"] == 0 and "CPUUtilization" not in item["facts"]["metrics_not_published"]
+
+
+def test_oversized_graph_coverage_is_bounded_with_omitted_counts():
+    source = {"sourceId": "s" * 128, "status": "o" * 128, "producerStatus": "p" * 128, "scope": "x" * 128,
+              "reasons": ["query_failed"] * 16}
+    bundle = {"resources": [], "evidence": [], "relationships": [], "gaps": [], "degraded": [], "incomplete": [],
+              "coverage": {"account": ACCOUNT, "graph": {cls: {"status": "ok", "complete": False,
+                           "sources": [dict(source) for _ in range(128)]} for cls in ("flow", "infra", "trace")}}}
+    result = discovery._finish(bundle)
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= discovery.MAX_BYTES
+    assert all(c["sources_omitted"] + len(c["sources"]) == 128 for c in result["coverage"]["graph"].values())
+    assert "coverage_byte_cap" in result["incomplete"]
+
+
+def test_task_projection_failure_keeps_inventory_disclosure(provider, monkeypatch):
+    from diagnosis import workload_identities
+
+    def broken(bundle):
+        raise KeyError("simulated projection defect")
+    monkeypatch.setattr(workload_identities, "project_tasks", broken)
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert bundle["coverage"]["inventory"]["total"] == 1
+    assert "task_projection_failed" in bundle["degraded"]
+    assert "inventory_read_failed" not in bundle["degraded"]
+
+
+@pytest.mark.parametrize("pages", [
+    [{"Services": [{"ReferenceId": 1, "Name": "app", "Edges": [{"ReferenceId": 2}]},
+                   {"ReferenceId": 2, "Name": "db"}], "NextToken": "repeat"}] * 3,
+    [{"Services": [{"ReferenceId": 1, "Name": "app", "Edges": [{"ReferenceId": 2}]},
+                   {"ReferenceId": 2, "Name": "db"}, {"ReferenceId": "bad"}]}],
+])
+def test_incomplete_xray_reads_are_never_fresh(provider, pages):
+    provider.xray = pages
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["fresh"] is False and e["coverage"]["complete"] is False for e in rows)
+
+
+def test_aurora_members_never_imply_standalone(provider):
+    provider.metrics = metric_response
+    key = "read_replica_source_db_instance_identifier"
+    db = Database([inventory("rds", "reader", {"db_instance_identifier": "reader", "engine": "aurora-postgresql",
+                                               key: None})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    item = evidence(bundle, "metrics")[0]
+    assert item["facts"]["replica_source"] == "unknown"
+    assert "rds_aurora_role_unknown" in bundle["gaps"]
+
+
+def test_inventory_cannot_starve_xray_service_nodes():
+    bundle = {"resources": [], "gaps": [], "degraded": [], "incomplete": []}
+    shared = discovery.MAX_RESOURCES - discovery.MAX_XRAY_RESOURCES
+    for i in range(shared + 5):  # inventory, trace identities and proxies share one pool
+        discovery._resource(bundle, ACCOUNT, REGION, "ec2", f"i-{i:017x}", {})
+    assert len(bundle["resources"]) == shared and "resource_cap" in bundle["incomplete"]
+    for ref in range(discovery.MAX_XRAY_RESOURCES + 5):
+        discovery._resource(bundle, ACCOUNT, REGION, "service", f"xray:{ref}", {})
+    assert len(bundle["resources"]) == discovery.MAX_RESOURCES
+    assert "xray_resource_cap" in bundle["incomplete"]
+
+
+def test_follow_up_can_use_a_reconnected_database_after_transport_failure(provider):
+    class BrokenDatabase(Database):
+        def run(self, sql, **kwargs):
+            if "FROM finops_findings" in sql:
+                raise TimeoutError("socket timed out mid-message")
+            return super().run(sql, **kwargs)
+        def close(self):
+            pass
+
+    first = discovery.collect(BrokenDatabase(graph_fixture().rows), ACCOUNT, Budget())
+    assert discovery.connection_broken(first)
+    assert discovery.DATABASE_CONNECTION_BROKEN in first["degraded"]
+    reconnected = graph_fixture()
+    merged = discovery.follow_up(reconnected, ACCOUNT, first, [
+        {"capability": "graph_refresh", "resource_ids": [resource(first, I1)["id"]]}], Budget())
+    assert any("FROM topology_graph_state" in sql for sql, _ in reconnected.queries)
+    assert "graph_read_failed" not in merged["degraded"] and not discovery.connection_broken(merged)
