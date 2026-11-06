@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d4c130e95954 · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c9479f3606fe · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -18,9 +18,9 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 - **Flag any PR that enables mutation/autonomy/BYO-MCP** by flipping a frozen flag or wiring dark substrate live. Hardening an already-shipped connection path does not grant a new policy exception. `CUSTOM_MCP_ENABLED` defaults OFF in web and runtime until dated acceptance and a separately reviewed release. Flag weakened administrator authorization, egress/read, explicit account membership, exact tool ceilings, locked confirmation, durable audit, current row-bound Secret versions or SSRF guards, and alternate live MCP endpoint paths that bypass them.
 
 ## Stack / runtime
-- **Web:** Next.js 15 / React 19 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, ADR-009).
+- **Web:** Next.js 16 / React 19 thin-BFF (`web/`), standalone **arm64**, root path `/` — no basePath. Fetch is `/api/*` (never `/awsops/api/*`). Heavy/long/OOM work is enqueued to the worker tier — BUT the generic `POST /api/jobs` accepts **only allowlisted noop job types**; domain jobs (`report`, `compliance`, etc.) are submitted only via their ownership-checked dedicated routes (`/api/diagnosis`, `/api/compliance/run` — IDOR fix, ADR-009).
 - **Data:** Aurora Serverless v2 (PG 17.9) via node-pg (`web/lib/db.ts`, shared `getPool`). App state in Aurora, **not `data/*.json`** (v1 pattern). Schema = `terraform/foundation/data/schema.sql` + ULID migrations (`migrations/<ULID>_*.sql`, never append to schema.sql — a migration's `-- since:` header is checksum-immutable once merged, never retag it).
-- **IaC:** Terraform only (CDK dropped). Single root `terraform/foundation/`, partial S3 backend (`backend.hcl`, no DynamoDB), TF ≥1.15, provider `~>6.0`.
+- **IaC:** Terraform only (CDK dropped). Single root `terraform/foundation/`, partial S3 backend (`backend.hcl`, no DynamoDB), TF ≥1.17.1, provider `~>6.0`.
 - **Edge:** CloudFront(TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only → 504).
 - **AI:** Bedrock GPT-6 Luna chat (Terraform `model_provider` picks the model family; under `mixed`, `agentcore_chat_model_id` rolls chat back to Sonnet 5.5 on every provisioning run), GPT-6.1 Terra query generation with Sonnet 5.5 fallback, Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5 for diagnosis and helpers (model IDs: `agent/agent.py`, `web/lib/datasource-querygen.ts`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`) + AgentCore (Strands, `agent/agent.py`, routes via `GATEWAYS_JSON`). Live AWS queries via AgentCore MCP Lambda tools (`agent/lambda/*.py`), never inline in the BFF. Config source of truth = SSM `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` (runtime read; no ECS `valueFrom`).
 - **Chat routing (LIVE):** regex fast-path (`web/lib/route.ts`, first-match-wins RULES) → Haiku classifier fallback; gated by `hybrid_routing_enabled`. **16 routing keys are registered** = 9 gateway-routed sections + `aws-data` + 6 auto-collect collectors (`web/lib/collectors/`); the latter 7 are web-BFF-local (not via AgentCore) and their Steampipe-backed execution is hard-disabled — they fail-open to normal routing at runtime.
@@ -41,7 +41,7 @@ node --test scripts/v2/ci/*.test.mjs
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py test_custom_mcp_policy.py test_pinned_http.py tests/test_runtime_dependencies.py -q  # needs agent/requirements.txt
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl
@@ -56,7 +56,7 @@ make workers     # arm64 worker image push (after apply with workers_enabled=tru
 ```
 Dev Deploy Web requires readonly producer/ECR proof before migrations and promotes only that same digest. Dev Deploy AgentCore and current-source dev Deploy Web require the reusable private `deploy-migrations.yml` workflow before provisioning or image promotion. Guarded dev web pushes run it automatically; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release verifies the exact ECS/image deployment, then full runtime readiness including login/DB; the compatibility input cannot disable these checks. This is operator CI under ADR-005, not product autonomy. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before release. Main/preview and direct private-host CLI retain `make migrate`
 before `make agentcore`. Migrations and reader password sync always precede AgentCore provisioning. Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform
-1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. The three PostgreSQL suites above require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase and policy suites
+1.17.1; runtime/controller/workflow and mock-plan checks make no AWS calls. The three PostgreSQL suites above require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase and policy suites
 additionally use the locked web driver and TypeScript dependencies. All three PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
@@ -82,7 +82,8 @@ Docker and prepared `AWSOPS_REVIEW_CODEC_STATE` are also required; follow `docs/
 HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh`) require
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
-Never combine this hash-locked file with unhashed requirements.
+Never combine this hash-locked file with unhashed requirements. The agent suite imports the runtime
+SDKs: install `agent/requirements.txt` first.
 
 
 ## BANNED PATTERNS (enforce in review)

@@ -15,7 +15,7 @@ done
 export CHECKPOINT_DISABLE=1 AWS_EC2_METADATA_DISABLED=true
 export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
 terraform version -json | python3 -c \
-  'import json,sys; v=json.load(sys.stdin)["terraform_version"]; sys.exit(0 if v == "1.15.7" else "Terraform 1.15.7 is required")'
+  'import json,sys; v=json.load(sys.stdin)["terraform_version"]; sys.exit(0 if v == "1.17.1" else "Terraform 1.17.1 is required")'
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/awsops-terraform-test.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT

@@ -6,6 +6,7 @@ cd "$ROOT" || exit 1
 
 python_failures=()
 web_failed=0
+web_typecheck_failed=0
 node_failed=0
 
 if [[ -n "${MERGE_VERIFY_PY_ROOT:-}" ]]; then
@@ -47,10 +48,13 @@ else
   done
 fi
 
-echo "== Stage 2: web vitest =="
+echo "== Stage 2: web typecheck + vitest =="
 if [[ "${MERGE_VERIFY_SKIP_WEB:-0}" == "1" ]]; then
   echo "SKIP MERGE_VERIFY_SKIP_WEB=1"
 else
+  if ! (cd web && npm run --silent typecheck); then
+    web_typecheck_failed=1
+  fi
   if ! (cd web && npx vitest run); then
     web_failed=1
   fi
@@ -91,6 +95,14 @@ else
 fi
 
 if [[ "${MERGE_VERIFY_SKIP_WEB:-0}" == "1" ]]; then
+  echo "Web typecheck: SKIP"
+elif [[ "$web_typecheck_failed" -eq 0 ]]; then
+  echo "Web typecheck: PASS"
+else
+  echo "Web typecheck: FAIL"
+fi
+
+if [[ "${MERGE_VERIFY_SKIP_WEB:-0}" == "1" ]]; then
   echo "Web vitest: SKIP"
 elif [[ "$web_failed" -eq 0 ]]; then
   echo "Web vitest: PASS"
@@ -105,7 +117,7 @@ else
   echo "Deployment Node tests: FAIL"
 fi
 
-if [[ ${#python_failures[@]} -gt 0 || "$web_failed" -ne 0 || "$node_failed" -ne 0 ]]; then
+if [[ ${#python_failures[@]} -gt 0 || "$web_failed" -ne 0 || "$web_typecheck_failed" -ne 0 || "$node_failed" -ne 0 ]]; then
   exit 1
 fi
 exit 0

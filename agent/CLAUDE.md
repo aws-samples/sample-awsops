@@ -17,8 +17,10 @@ Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP proto
   alias and the canonical-vs-`v2-`-prefixed key coexistence shim (see the do-not-"fix" note in
   root `AGENTS.md`).
 - `streamable_http_sigv4.py` — MCP StreamableHTTP with AWS SigV4 signing
-- `Dockerfile` — Python 3.11-slim, arm64, port 8080
-- `requirements.txt` — strands-agents, boto3, bedrock-agentcore, psycopg2-binary
+- `Dockerfile` — Python 3.14-slim, arm64, port 8080
+- `requirements-runtime.txt` — shared exact image/runtime pins for Strands, AgentCore,
+  boto3/botocore and MCP; MCP 1.x retains the SigV4 transport contract and rejects redirects.
+- `requirements.txt` — runtime requirements plus the host-only AgentCore starter toolkit.
 - `lambda/` — Lambda source files (see `agent/lambda/CLAUDE.md` for the current provisioner and
   tool-inventory sources)
 

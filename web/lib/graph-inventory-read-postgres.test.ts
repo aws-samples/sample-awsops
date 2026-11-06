@@ -132,7 +132,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     for (const [type, id, data] of rows) await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
       VALUES ($1,$2,'fixture',$3::jsonb,$4)`, [type, id, JSON.stringify(data), at()]);
     const snapshot = await inventorySnapshot(pool, 'flow', 'self', [...new Set(rows.map(row => row[0]))]);
-    const items = (type: string) => snapshot.rows.filter(row => row.resource_type === type).map(row => ({ ...row.data, resource_id: row.resource_id }));
+    const items = (type: string) => snapshot.rows.filter(row => row.resource_type === type).map(row => ({ ...(row.data as object), resource_id: row.resource_id }));
     const graph = buildFlowGraph({ alb: items('alb'), tg: items('target_group'), alb_listener_rule: items('alb_listener_rule'),
       apigatewayv2_api: items('apigatewayv2_api'), apigatewayv2_integration: items('apigatewayv2_integration'), apigatewayv2_route: items('apigatewayv2_route') });
     expect(graph.edges.find(edge => edge.source === 'alb:arn:lb' && edge.target === 'tg:tg')?.label).toMatch(/default :8443/);
@@ -149,9 +149,9 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     const row = snapshot.rows[0];
     expect((row.data as { target_health_descriptions: unknown[] }).target_health_descriptions).toHaveLength(400);
     expect(JSON.stringify(row.data)).not.toContain('Description');
-    const graph = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{ ...row.data, resource_id: row.resource_id, region: 'fixture' }] });
+    const graph = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{ ...(row.data as object), resource_id: row.resource_id, region: 'fixture' }] });
     expect(graph.nodes.find(node => node.kind === 'target')?.meta).toMatchObject({ count: 400, health: 'unhealthy' });
-    expect(Object.values(graph.targetMembers)[0]).toHaveLength(400);
+    expect(Object.values(graph.targetMembers!)[0]).toHaveLength(400);
   });
   it('does not charge a withheld row against later rows and localizes the incomplete source', async () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at) VALUES
@@ -184,8 +184,8 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       VALUES ('target_group','tg','fixture',$1::jsonb,$2)`, [JSON.stringify({ ...detail, target_type: 'ip' }), at()]);
     const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['target_group']);
     const row = snapshot.rows[0];
-    const graph = buildFlowGraph({ tg: [{ ...row.data, resource_id: row.resource_id }] });
-    expect(graph.nodes.find(node => node.kind === 'tg')?.meta.row).toMatchObject(detail);
+    const graph = buildFlowGraph({ tg: [{ ...(row.data as object), resource_id: row.resource_id }] });
+    expect(graph.nodes.find(node => node.kind === 'tg')?.meta?.row).toMatchObject(detail);
   });
   it.each(['running','partial'])('a member %s sync reports collection incompleteness before coverage uncertainty', async status => {
     const point = await seed();

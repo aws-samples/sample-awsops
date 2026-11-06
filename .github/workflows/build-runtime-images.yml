@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
       - name: Validate independent development account before OIDC
         run: node scripts/v2/ci/runtime-build.mjs check-role
       - uses: docker/setup-qemu-action@v3

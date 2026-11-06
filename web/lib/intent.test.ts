@@ -10,7 +10,7 @@ import {
 } from './intent';
 
 // Mirror the diagnosis.test.ts mock idiom: a single query spy whose return is shaped by the SQL.
-const query = vi.fn(async (sql: string = '') => {
+const query = vi.fn(async (sql: string = '', _args?: unknown[]) => {
   if (sql.includes('SELECT') && sql.includes('inventory_resources'))
     return { rows: [{ resource_type: 'rds' }, { resource_type: 'elasticache' }, { resource_type: 's3' }] };
   if (sql.includes('SELECT') && sql.includes('architecture_intent') && sql.includes('md5'))

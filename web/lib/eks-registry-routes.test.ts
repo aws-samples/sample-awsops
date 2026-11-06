@@ -131,7 +131,7 @@ describe('single-cluster routes reject collection selectors before host data acc
     const { GET } = await import('../app/api/eks/[cluster]/incluster/route');
     const response = await GET(
       new Request(`http://x/api/eks/shared/incluster?kind=pods&${search}`),
-      { params: { cluster: 'shared' } },
+      { params: Promise.resolve({ cluster: 'shared' }) },
     );
     expect(response.status).toBe(400);
     expect(query).not.toHaveBeenCalled();

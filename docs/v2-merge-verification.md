@@ -10,7 +10,7 @@
   `observability`→`external-obs` 별칭이 라우팅 양쪽(카탈로그+에이전트 런타임)에 있는지,
   v1 `/awsops/` 경로 리터럴이 web 소스에 누출되지 않는지 확인 (`web/lib/merge-invariants.ts`).
 - **S3**: 파일 격리 pytest + web vitest + 배포 Node 테스트를 필수 실행한다. 배포 Node 테스트는
-  PyYAML과 Terraform **1.15.7**이 필수이며 누락 시 실패한다. 마지막 fmt/validate 진단만
+  PyYAML과 Terraform **1.17.1**이 필수이며 누락 시 실패한다. 마지막 fmt/validate 진단만
   참고용이다. PR CI는 private migration 오프라인 테스트, 실제 PostgreSQL runner·웹 연결 단계 테스트,
   별도 복사본의 backend 비활성 Terraform mock 테스트도 필수로 실행한다
   (`scripts/v2/merge-verify.sh`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml`).
@@ -49,14 +49,14 @@ The image-codec confinement tests require Docker and a prepared
 [the codec sandbox runbook](runbooks/review-codec-sandbox.md) before running the full
 Python suite locally. Merge Verify prepares and cleans this state automatically.
 
-Use Node.js 20 (CI and web runtime; migration runtime image uses 22), Python 3.12, curl, OpenSSL, jq, Terraform **1.15.7**
+Use Node.js 26 (CI, web runtime and migration runtime image), Python 3.12 (plus Python 3.14 for the runtime test stage), curl, OpenSSL, jq, Terraform **1.17.1**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
 The required web-image helper suite also needs Linux `/proc` and curl installed
 on its fixed provider PATH, `/usr/local/bin:/usr/bin:/bin`; its network fixture is localhost-only.
 The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Deploy Web uses the controller and forces automatic SQL admission for web-driven migrations; see `docs/runbooks/release-safety-primitives.md`.
-CI·웹 런타임 Node 20(migration 런타임 이미지 22)·Python 3.12·curl·OpenSSL·jq·Terraform **1.15.7**·접근 가능한 Docker를
+CI·웹 런타임·migration 런타임 이미지 Node 26·Python 3.12(런타임 테스트 단계는 Python 3.14 추가)·curl·OpenSSL·jq·Terraform **1.17.1**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을,
 웹 연결 단계 테스트는 `web/`의 잠긴 드라이버·TypeScript를 사용한다.
 
@@ -98,7 +98,7 @@ For changes under `docs-site/` or to `.github/workflows/merge-verify.yml`, also 
 
 This validates the locked documentation dependencies, all locale builds and full
 presentation archive parity with the reviewed generator. Use the Linux tools
-available in CI: Bash, GNU coreutils/grep/sed, unzip and Python 3, plus Node.js 20
+available in CI: Bash, GNU coreutils/grep/sed, unzip and Python 3, plus Node.js 26
 and npm. A documentation check failure fails the required Merge Verify job.
 
 **Required PostgreSQL CI suites:** `scripts/v2/ci/migration.itest.mjs` (including initializer
@@ -137,8 +137,8 @@ discovered path. Override the Python search root for focused checks:
 MERGE_VERIFY_PY_ROOT=/tmp/merge-fixtures MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh
 ```
 
-Set `MERGE_VERIFY_SKIP_WEB=1` only for local fixture or runner development. The CI workflow runs the
-web vitest stage. The deployment Node tests always run in the shared script; a Node failure,
+Set `MERGE_VERIFY_SKIP_WEB=1` only for local fixture or runner development, or (as CI step 9 does) for the
+Python 3.14 rerun after the main stage has already run web vitest. The deployment Node tests always run in the shared script; a Node failure,
 like a Python or web failure, makes the runner fail. To run only that suite:
 
 ```bash
@@ -146,7 +146,7 @@ node --test scripts/v2/deployment-smoke.test.mjs
 ```
 
 This required deployment suite loads workflow YAML using Python 3 with **PyYAML** and evaluates
-an offline variable fixture with Terraform **1.15.7**. Real curl/HTTPS cases also require curl and
+an offline variable fixture with Terraform **1.17.1**. Real curl/HTTPS cases also require curl and
 OpenSSL; they use only a loopback server and local test certificates. Missing prerequisites fail the suite and
 the shared runner; these tests never skip. The fixture uses no providers, deployment backend or AWS.
 
@@ -154,7 +154,7 @@ The script's later formatting/validation diagnostics remain informational: it ru
 `terraform -chdir=terraform/foundation fmt -check` when the binary is available and `validate`
 when `terraform/foundation/.terraform` exists. A `SKIP` from this final stage does not waive
 the deployment suite's Terraform requirement. The **required CI mock-test step** is also separate.
-`terraform-test.sh` requires 1.15.7, copies tracked working-tree files into a disposable directory,
+`terraform-test.sh` requires 1.17.1, copies tracked working-tree files into a disposable directory,
 strips deployment credentials/TF variables, initializes with
 `-backend=false -input=false -lockfile=readonly` in a fresh `TF_DATA_DIR`, validates and runs
 the three suites: `tests/dns_deferred.tftest.hcl`, `tests/runtime_iam.tftest.hcl` and
@@ -163,7 +163,7 @@ AWS/DNS API is called. Local `.terraform`, backend config, tfvars and state are 
 Initialization installs locked providers; for fully offline use, point `TF_CLI_CONFIG_FILE`
 at an existing filesystem mirror containing them with no `direct` fallback.
 
-배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구한다.
+배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.17.1**을 필수로 요구한다.
 HTTPS 사례는 loopback 서버와 로컬 테스트 인증서만 사용한다. 의존성이 누락하면
 공통 러너도 실패하며 skip하지 않는다. 변수 fixture는 provider·배포 backend·AWS를 사용하지 않는다.
 마지막 fmt/validate 참고용 진단과 CI 필수 mock 검사는 별개이며 참고 진단의 SKIP으로
@@ -188,19 +188,19 @@ aggregate-run false failures.
 1. Check out the PR merge ref with `fetch-depth: 2`. Compare `HEAD^` with `HEAD`
    for changes under `docs-site/` or to `.github/workflows/merge-verify.yml`;
    comparison errors fail the job.
-2. Set up Node.js 20 and Python 3.12. When those paths changed, run `npm ci`,
+2. Set up Node.js 26 and Python 3.12. When those paths changed, run `npm ci`,
    `npm run typecheck`, `npm run build`, and
    `bash scripts/verify-deck.sh static/presentation/awsops-intro/awsops-intro.pptx`
    from `docs-site/`. The documentation gate includes full presentation archive
    parity, not just a file-existence check.
-3. Set up Terraform **1.15.7** (wrapper disabled). Install web dependencies,
+3. Set up Terraform **1.17.1** (wrapper disabled). Install web dependencies,
    `scripts/v2/requirements-test.txt` (**pytest and PyYAML**) and
    the existing agent/incident/remediation/Steampipe/worker requirements. Separately install
    `scripts/pr-review/image-requirements.txt` with `--require-hashes --only-binary=:all:`.
 4. Prepare the isolated image codec, then run `bash scripts/v2/merge-verify.sh`:
    file-isolated pytest (including workflow fixtures and
    the localhost Terraform state-read test), web vitest, required deployment Node tests
-   (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
+   (PyYAML and Terraform 1.17.1), then informational fmt/validate diagnostics.
 5. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
    `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
    The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
@@ -212,8 +212,15 @@ aggregate-run false failures.
 7. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
    initialized with `-backend=false`. A validation or test failure fails CI.
 8. Clean up the owned codec containers and image tag, including after failures.
+9. Set up Python 3.14 (the Lambda and worker container runtime), create a virtualenv, install
+   `agent/requirements.txt`, `scripts/v2/requirements-test.txt` and the incident, remediation,
+   Steampipe and workers requirements, then run
+   `MERGE_VERIFY_PY_ROOT=<root> MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh` for each
+   root `agent`, `scripts/v2/workers`, `scripts/v2/incident`, `scripts/v2/remediation`,
+   `scripts/v2/steampipe` and `scripts/v2/agentcore`. The AgentCore root is included for interpreter
+   compatibility only; the provisioner itself still deploys from a Python 3.12 virtualenv.
 
-CI는 **main/dev** 대상 PR에서 Node 20·Python 3.12·Terraform 1.15.7을 설치한다.
+CI는 **main/dev** 대상 PR에서 Node 26·Python 3.12·Terraform 1.17.1을 설치하고, agent·workers·incident·remediation·Steampipe·AgentCore 테스트를 Python 3.14 가상환경에서 한 번 더 실행한다.
 pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을
 `--ignore-scripts`로 설치한다. migration offline 테스트·Docker PG migration/웹 연결 단계 테스트·별도 복사본의
 backend 비활성 Terraform validate/mock 테스트 모두 필수다.

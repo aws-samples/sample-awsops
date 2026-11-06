@@ -196,7 +196,7 @@ describe('sample topology evidence', () => {
     expect((await ready()).textContent).toBe(ip);
     expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain(expected);
   });
-  it.each([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
+  it.each<{ accounts: string[] | typeof ALL_ACCOUNTS }>([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
     setActiveScope({ ...DEFAULT_SCOPE, accounts });
     serve({ runStatus: 'succeeded' });
     await ready();

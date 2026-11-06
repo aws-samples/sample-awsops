@@ -1,8 +1,5 @@
-# Pinned to bookworm (Debian 12): playwright recognizes it and `install --with-deps` pulls the
-# correct Debian chromium libs. The floating `python:3.12-slim` rolled to Debian trixie (13), which
-# playwright doesn't recognize → it falls back to Ubuntu packages (ttf-unifont/ttf-ubuntu-font-family)
-# absent on Debian → the browser install fails.
-FROM python:3.12-slim-bookworm
+# Pin Debian 12 so Playwright installs the matching Chromium system libraries.
+FROM python:3.14-slim-bookworm
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
