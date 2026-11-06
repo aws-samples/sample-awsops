@@ -126,8 +126,9 @@ _RENDER_BUDGET_S = int(os.environ.get("DIAGNOSIS_RENDER_BUDGET_S", "2400"))
 # The 3600 s Step Functions limit covers the WHOLE task, so the render deadline is also capped against
 # the start of generate() (collection included), leaving room for assembly, upload, export and the
 # title call. A slow collection phase shortens the render phase instead of pushing the task past the limit.
-_TASK_BUDGET_S = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))  # 3600 minus process start-up margin
-_POST_RENDER_RESERVE_S = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
+# DIAGNOSIS_TASK_BUDGET_S (3600 minus process start-up margin) / DIAGNOSIS_POST_RENDER_RESERVE_S,
+# parsed once in budget.py so the render deadline and the ReportBudget ledger share one value.
+from .budget import TASK_SECONDS as _TASK_BUDGET_S, EXPORT_RESERVE_SECONDS as _POST_RENDER_RESERVE_S  # noqa: E402
 _MIN_CALL_S = 30            # a call with less than this left in the budget cannot finish a section
 _CALL_TIMEOUT_STEP_S = 30   # quantize remaining time so the client cache stays small
 _CALL_ATTEMPTS = 3          # initial call + throttling/5xx retries

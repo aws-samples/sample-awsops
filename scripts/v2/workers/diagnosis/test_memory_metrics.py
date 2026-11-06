@@ -199,6 +199,9 @@ def test_integration_enables_guarded_sizing_and_keeps_original_metric_scope(prov
              ("Memory", "EBS_READ_OPS_PER_SECOND", "EBS_WRITE_OPS_PER_SECOND")]}]}]
     bundle = {"resources": [copy.deepcopy(RESOURCE)], "evidence": [], "relationships": [],
               "coverage": {"account": ACCOUNT}, "gaps": [], "degraded": [], "incomplete": []}
+    # Sizing also requires the resource's own current, complete inventory row.
+    discovery._evidence(bundle, "inventory", "inventory", [RESOURCE["id"]], RESOURCE["facts"], NOW,
+                        region=REGION, fresh=True, coverage={"complete": True})
     used = []
     factory = lambda service, region, budget: used.append((service, region)) or cw
     discovery._metrics(bundle, Budget(), bundle["resources"], client_factory=factory)

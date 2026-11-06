@@ -15,6 +15,10 @@ KINDS = {
     "observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency",
     "allowed_path", "candidate", "metrics", "provider_sizing", "inventory", "scope_summary",
 }
+_RELATIONSHIP_KINDS = {
+    "observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency",
+    "allowed_path",
+}
 FINDING_KEYS = {
     "id", "pillar", "severity", "resource_ids", "evidence_ids", "claim",
     "explanation", "prerequisites", "verification",
@@ -248,7 +252,11 @@ class EvidenceIndex:
                 self._reject(row["id"], "wrong_account", "evidence")
                 continue
             regions = {self.resources[ref]["region"] for ref in refs}
-            if refs and row.get("region") is not None and regions != {row["region"]}:
+            # A relationship (e.g. CloudFront -> regional origin) may span regions;
+            # its stated region must still be one of its endpoints'. Others stay strict.
+            spans = row.get("kind") in _RELATIONSHIP_KINDS and len(refs) > 1
+            if refs and row.get("region") is not None and (
+                    row["region"] not in regions if spans else regions != {row["region"]}):
                 self._reject(row["id"], "wrong_region", "evidence")
                 continue
             if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("source"), str):
@@ -329,6 +337,10 @@ class EvidenceIndex:
             return False
         resource = self.resources[finding["resource_ids"][0]]
         if resource["kind"] not in {"ec2", "rds", "rds_instance"}:
+            return False
+        # The resource identity/type comparison below needs a current, complete inventory row.
+        if not any(row["kind"] == "inventory" and row["resource_ids"] == [resource["id"]]
+                   and row["fresh"] and self._complete(row) for row in self.evidence.values()):
             return False
         rows = [self.evidence[ref] for ref in finding["evidence_ids"]]
         provider = [row for row in rows if row["kind"] == "provider_sizing"]
@@ -473,7 +485,9 @@ class EvidenceIndex:
                 or any(ref not in self.resources for ref in request["resource_ids"])):
             return self._reject("", "invalid_follow_up", "request")
         if request["capability"] in {"resource_metrics", "provider_sizing"}:
-            if any(self.resources[ref]["kind"] not in {"ec2", "rds", "rds_instance", "rds_cluster"}
+            # discovery._METRICS/_arn() collect only these kinds; any other kind
+            # would spend the single follow-up pass with neither evidence nor a gap.
+            if any(self.resources[ref]["kind"] not in {"ec2", "rds"}
                    for ref in request["resource_ids"]):
                 return self._reject("", "unsupported_resource_capability", "request")
         return {"capability": request["capability"], "resource_ids": sorted(request["resource_ids"])}

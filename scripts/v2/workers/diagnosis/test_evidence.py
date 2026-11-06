@@ -69,6 +69,10 @@ def bundle():
                  "generation_time": "2026-11-04T00:00:00Z", "guard_hits": [],
                  "missing_memory": False, "missing_io": False, "finding": "Overprovisioned"},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}},
+            *({"id": f"e-inventory-{ref}", "source": "inventory", "resource_ids": [ref],
+               "kind": "inventory", "facts": {}, "fresh": True,
+               "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}}
+              for ref in ("r-instance", "r-db")),
         ],
         "relationships": [
             {"id": "edge", "source": "r-instance", "target": "r-db", "kind": "observed_call",
@@ -163,6 +167,14 @@ def test_sizing_requires_representative_metrics_and_deduplicates_resource():
         index = EvidenceIndex(data, ACCOUNT)
         assert index.validate_finding(candidate)["claim"] == "hypothesis"
         assert index.downgraded[-1]["reason"] == "unsupported_sizing"
+    # The type/identity comparison needs a current, complete inventory row.
+    for change in ({"fresh": False}, {"coverage": {"complete": False}}, None):
+        data = bundle()
+        if change is None:
+            data["evidence"] = [e for e in data["evidence"] if e["id"] != "e-inventory-r-instance"]
+        else:
+            data["evidence"][4].update(change)
+        assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
 
 
 def test_model_context_contains_projected_data_not_instruction_sources():
@@ -188,6 +200,18 @@ def test_review_request_can_only_use_admitted_resource_and_capability():
         {"capability": "resource_metrics", "resource_ids": ["r-instance"], "region": "us-east-1"},
     ]:
         assert index.validate_request(request) is None
+    data = bundle()
+    data["resources"] += [
+        {"id": "r-cluster", "account": ACCOUNT, "region": REGION, "kind": "rds_cluster",
+         "resource_id": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:aurora", "facts": {}},
+        {"id": "r-legacy", "account": ACCOUNT, "region": REGION, "kind": "rds_instance",
+         "resource_id": "legacy-db", "facts": {}}]
+    index = EvidenceIndex(data, ACCOUNT)
+    for capability in ("resource_metrics", "provider_sizing"):
+        for ref in ("r-cluster", "r-legacy"):
+            # Discovery has no collector for these kinds: never spend the pass.
+            assert index.validate_request({"capability": capability, "resource_ids": [ref]}) is None
+    assert index.validate_request({"capability": "graph_refresh", "resource_ids": ["r-cluster"]})
 
 
 @pytest.mark.parametrize("field,value", [("pillar", []), ("severity", {}),
@@ -300,7 +324,7 @@ def test_declared_coverage_does_not_override_missing_or_wrong_metrics(fault):
 
 def test_rds_sizing_uses_database_dimensions_and_representative_pressure():
     data = bundle()
-    metrics, provider = data["evidence"][2:]
+    metrics, provider = data["evidence"][2:4]
     metrics["resource_ids"] = provider["resource_ids"] = ["r-db"]
     metrics["facts"].update({
         "dimensions": {"DBInstanceIdentifier": "database"},
@@ -350,3 +374,17 @@ def test_paginated_or_partial_observed_edge_is_not_confirmed():
     assert EvidenceIndex(data, ACCOUNT).validate_finding(finding())["claim"] == "observation"
     data["evidence"][1]["coverage"] = {"complete": False, "pages": 3, "continuation": True}
     assert EvidenceIndex(data, ACCOUNT).validate_finding(finding())["claim"] == "hypothesis"
+
+
+def test_relationship_evidence_may_span_regions_but_single_resource_stays_strict():
+    data = bundle()
+    data["resources"].append({"id": "r-edge", "account": ACCOUNT, "region": "global",
+                              "kind": "cloudfront", "resource_id": "E123EXAMPLE", "facts": {}})
+    data["evidence"].append({"id": "e-origin", "source": "stored_graph", "resource_ids": ["r-edge", "r-instance"],
+                             "kind": "configured_dependency", "region": "global", "facts": {},
+                             "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}})
+    data["evidence"].append({**deepcopy(data["evidence"][2]), "id": "e-far-metrics", "region": "us-east-1"})
+    data["evidence"].append({**deepcopy(data["evidence"][-2]), "id": "e-foreign-region", "region": "us-east-1"})
+    index = EvidenceIndex(data, ACCOUNT)
+    assert index.evidence["e-origin"]["regions"] == ["ap-northeast-2", "global"]
+    assert "e-far-metrics" not in index.evidence and "e-foreign-region" not in index.evidence

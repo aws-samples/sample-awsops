@@ -732,3 +732,69 @@ def test_xray_facts_survive_admission_and_unresolved_binding_is_not_an_observati
         "explanation": "The service edge needs verification.", "prerequisites": [],
         "verification": "graph_refresh"})
     assert result["claim"] == "hypothesis"
+
+
+def test_late_graph_refresh_keeps_prior_qualification_and_dedupes_on_capability(provider):
+    db = graph_fixture()
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    fresh_ids = {e["id"] for e in bundle["evidence"] if e["source"] == "stored_graph" and e["fresh"]}
+    assert fresh_ids
+    i1, i2 = resource(bundle, I1)["id"], resource(bundle, I2)["id"]
+    # Past the deadline no graph IO happens, so nothing first-pass is retired.
+    late = discovery.follow_up(db, ACCOUNT, bundle, [
+        {"capability": "graph_refresh", "resource_ids": [i1]}], Budget(0))
+    assert fresh_ids == {e["id"] for e in late["evidence"] if e["source"] == "stored_graph" and e["fresh"]}
+    assert "discovery_deadline" in late["incomplete"]
+    db.queries.clear()
+    discovery.follow_up(db, ACCOUNT, bundle, [
+        {"capability": "graph_refresh", "resource_ids": [i1]},
+        {"capability": "graph_refresh", "resource_ids": [i2]}], Budget())
+    assert sum("FROM topology_graph_state" in sql for sql, _ in db.queries) == 1
+
+
+def test_memory_collection_failure_degrades_one_source_not_collect(provider, monkeypatch):
+    from diagnosis import memory_metrics
+
+    def broken(*args, **kwargs):
+        raise KeyError("simulated memory collector defect")
+    monkeypatch.setattr(memory_metrics, "collect", broken)
+    provider.metrics = metric_response
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    item = evidence(bundle, "metrics")[0]
+    assert item["facts"]["missing_memory"] is True
+    assert "memory_metrics_read_failed" in bundle["degraded"]
+    assert "metrics_read_failed" not in bundle["degraded"]
+
+
+def test_collect_refuses_when_evidence_loop_is_disabled(provider, monkeypatch):
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "false")
+    db = graph_fixture()
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "evidence_loop_disabled" in bundle["gaps"]
+    assert not db.queries and not provider.client_calls and not bundle["evidence"]
+
+
+@pytest.mark.parametrize("detail", [
+    {"nodeDrops": 1}, {"edgeDrops": 2}, {"orphanSpans": 1}, {"invalidSpans": 1},
+    {"unresolvedMessaging": 3}, {"infraUnavailable": True}, {"failureReason": "source_read_failed"},
+    {"nodeDrops": "many"},
+])
+def test_trace_loss_counters_and_failure_reason_disqualify_the_graph(provider, detail):
+    db = graph_fixture()
+    db.states[0][4].update({"nodeDrops": 0, "edgeDrops": 0, "instanceObservationDrops": 0})
+    assert discovery.collect(db, ACCOUNT, Budget())["coverage"]["graph"]["trace"]["complete"]
+    db.states[0][4].update(detail)
+    assert not discovery.collect(db, ACCOUNT, Budget())["coverage"]["graph"]["trace"]["complete"]
+
+
+def test_provider_guards_separate_inventory_row_and_provider_staleness(provider):
+    provider.ec2 = [{"instanceRecommendations": [{**recommendation(), "tags": []}]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {}, captured=NOW - dt.timedelta(days=2))]),
+                               ACCOUNT, Budget())
+    guards = evidence(bundle, "provider_sizing")[0]["facts"]["guard_hits"]
+    assert "stale_inventory_data" in guards and "stale_provider_recommendation" not in guards
+    provider.ec2 = [{"instanceRecommendations": [{**recommendation(), "tags": [],
+                                                  "lastRefreshTimestamp": NOW - dt.timedelta(days=3)}]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    guards = evidence(bundle, "provider_sizing")[0]["facts"]["guard_hits"]
+    assert "stale_provider_recommendation" in guards and "stale_inventory_data" not in guards

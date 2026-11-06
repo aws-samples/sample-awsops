@@ -1,12 +1,15 @@
 """One thread-safe allocation ledger from handler entry through artifact export."""
 from copy import deepcopy
 import math
+import os
 import threading
 import time
 
 
-TASK_SECONDS = 3300
-EXPORT_RESERVE_SECONDS = 600
+# The single parse of the task ledger; report.py imports these so the render
+# deadline and this analysis ledger cannot desynchronize.
+TASK_SECONDS = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))
+EXPORT_RESERVE_SECONDS = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
 MAX_INPUT_BYTES = 96 * 1024
 MAX_OUTPUT_TOKENS = 8192
 TIER_LIMITS = {

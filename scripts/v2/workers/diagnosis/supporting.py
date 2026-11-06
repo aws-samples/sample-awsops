@@ -162,15 +162,31 @@ def _commitment(client, account, budget, bundle, now):
     ri = client.get_reservation_coverage(**params)
     if budget.remaining() < 10:
         raise TimeoutError("supporting_deadline_exhausted")
-    sp = client.get_savings_plans_coverage(**params, MaxResults=20)
     ri_percent = _numeric(ri.get("Total", {}).get("CoverageHours", {}).get(
         "CoverageHoursPercentage"), percent=True)
     rows = [{"service": "ReservedInstances", "percentage": ri_percent}]
-    for row in sp.get("SavingsPlansCoverages", [])[:20]:
-        rows.append({"service": "SavingsPlans",
-                     "percentage": _numeric(row.get("Coverage", {}).get("CoveragePercentage"),
-                                            percent=True)})
-    more = bool(ri.get("NextPageToken") or sp.get("NextToken"))
+    # MONTHLY rows each carry their own TimePeriod; bounded continuation keeps
+    # completeness honest instead of treating any first-page token as permanent.
+    more, token, seen = bool(ri.get("NextPageToken")), None, set()
+    for page_number in range(_MAX_PAGES):
+        if budget.remaining() < 10:
+            raise TimeoutError("supporting_deadline_exhausted")
+        sp = client.get_savings_plans_coverage(**params, Granularity="MONTHLY", MaxResults=20,
+                                               **({"NextToken": token} if token else {}))
+        for row in sp.get("SavingsPlansCoverages", [])[:20]:
+            period = row.get("TimePeriod") if isinstance(row.get("TimePeriod"), dict) else {}
+            rows.append({"service": "SavingsPlans",
+                         "start": str(period.get("Start"))[:32] if period.get("Start") else None,
+                         "end": str(period.get("End"))[:32] if period.get("End") else None,
+                         "percentage": _numeric(row.get("Coverage", {}).get("CoveragePercentage"),
+                                                percent=True)})
+        token = sp.get("NextToken")
+        if not token:
+            break
+        if token in seen or page_number == _MAX_PAGES - 1:
+            more = True
+            break
+        seen.add(token)
     if more:
         _mark(bundle, "incomplete", "commitment_page_cap")
     return ({"commitment_coverage": rows, "sampled": more},

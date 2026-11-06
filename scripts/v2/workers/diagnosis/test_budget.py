@@ -81,3 +81,18 @@ def test_snapshot_is_detached_and_unknown_tier_rejected():
         budget.record("fabricated", "succeeded")
     budget.record(attempt, "invalid_output", {"input_tokens": -1, "output_tokens": 2})
     assert budget.snapshot()["actual_usage"] is None
+
+
+def test_ledger_reads_the_same_task_and_reserve_env_as_report():
+    # A fresh interpreter: reloading modules in-process would fork exception classes.
+    import os
+    import subprocess
+    import sys
+    code = ("import time; from diagnosis import budget, report; "
+            "assert (budget.TASK_SECONDS, budget.EXPORT_RESERVE_SECONDS) == (1800, 300); "
+            "assert (report._TASK_BUDGET_S, report._POST_RENDER_RESERVE_S) == (1800, 300); "
+            "b = budget.ReportBudget('mid', started_at=time.monotonic()); "
+            "assert 1490 < b.remaining() <= 1500 and 1790 < b.remaining(analysis=False) <= 1800")
+    env = {**os.environ, "DIAGNOSIS_TASK_BUDGET_S": "1800", "DIAGNOSIS_POST_RENDER_RESERVE_S": "300"}
+    workers = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    subprocess.run([sys.executable, "-c", code], cwd=workers, env=env, check=True)

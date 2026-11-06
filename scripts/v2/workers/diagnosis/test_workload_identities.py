@@ -92,3 +92,30 @@ def test_incomplete_attachment_list_refuses_task_binding(monkeypatch):
     assert not any(e["source"] == "inventory_workload_binding" for e in capped["evidence"])
     assert "private_ip_address" not in capped["resources"][0]["facts"]
     assert "workload_attachment_cap" in capped["incomplete"]
+
+
+def test_missing_vpc_never_matches_inventory_rows_without_vpc(monkeypatch):
+    from diagnosis import discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+    cluster = f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:orders"
+    db = {"id": "r:orders", "kind": "rds", "account": ACCOUNT, "region": REGION,
+          "resource_id": "orders", "facts": {"arn": arn}}
+    assert identities.proxy_target({"TargetArn": arn}, [db], ACCOUNT, REGION, None) is None
+    assert identities._cluster_target({}, Budget(), None, {"TargetArn": cluster}, [db], ACCOUNT, REGION, None) is None
+    bundle = {"resources": [db], "relationships": [], "coverage": {"account": ACCOUNT},
+              "gaps": [], "incomplete": [], "degraded": [], "evidence": [
+        {"id": "e:db", "kind": "inventory", "source": "inventory", "resource_ids": [db["id"]],
+         "fresh": True, "coverage": {"complete": True}}]}
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "orders-proxy", "Status": "available",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": arn, "Type": "RDS_INSTANCE", "Port": 5432}]}
+
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert [r["kind"] for r in bundle["resources"]] == ["rds"] and not bundle["relationships"]
+    assert "proxy_target_unresolved" in bundle["gaps"]

@@ -38,9 +38,15 @@ def task_address(task, subnet_vpcs):
     return {"private_ip_address": address, "subnet_id": subnet, "vpc_id": vpc}
 
 
+def _vpc(value):
+    return isinstance(value, str) and bool(value)
+
+
 def proxy_target(target, resources, account, region, vpc):
     arn = target.get("TargetArn")
-    if not isinstance(arn, str) or not arn.startswith(f"arn:aws:rds:{region}:{account}:db:"):
+    # A missing VPC never matches rows that also lack one (None == None).
+    if (not _vpc(vpc) or not isinstance(arn, str)
+            or not arn.startswith(f"arn:aws:rds:{region}:{account}:db:")):
         return None
     matches = [r for r in resources if r["kind"] == "rds" and r["account"] == account
                and r["region"] == region and r["facts"].get("vpc_id") == vpc
@@ -103,6 +109,9 @@ def collect_proxies(bundle, budget, client_factory):
                 if not d._available(bundle, budget):
                     return
                 name, vpc, arn = row.get("DBProxyName"), row.get("VpcId"), row.get("DBProxyArn", "")
+                if not _vpc(vpc):
+                    d._mark(bundle, "gaps", "proxy_target_unresolved")
+                    continue
                 if (row.get("Status") != "available" or not isinstance(name, str)
                         or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", name)
                         or not arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
@@ -138,7 +147,7 @@ def collect_proxies(bundle, budget, client_factory):
 def _cluster_target(bundle, budget, read, target, databases, account, region, vpc):
     from . import discovery as d
     arn = target.get("TargetArn", "")
-    if not isinstance(arn, str) or not re.fullmatch(
+    if not _vpc(vpc) or not isinstance(arn, str) or not re.fullmatch(
             rf"arn:aws:rds:{re.escape(region)}:{account}:cluster:[A-Za-z0-9-]+", arn):
         return None
     if not d._available(bundle, budget):

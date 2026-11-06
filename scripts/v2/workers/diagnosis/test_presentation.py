@@ -175,3 +175,17 @@ def test_mutating_commands_in_nonstring_prerequisites_or_facts_degrade_the_secti
         data["evidence"][0]["facts"]["note"] = command["run"]
     result = dict(presentation.render(SECTIONS, data, rows, lang="en", invariant_md=""))
     assert _MUTATING_MARK["en"].strip() in result["compute_infrastructure"]
+
+
+@pytest.mark.parametrize("unsafe", [
+    "See https://example.test/runbook", "Paste ```sh check``` output", "Run aws cloudwatch describe-alarms",
+    "Use kubectl get pods", "Wait 30 minutes",
+])
+def test_unsafe_prerequisite_prose_is_withheld_like_the_explanation(unsafe):
+    from diagnosis import presentation
+    text = "\n".join(body for _, body in presentation.render(
+        SECTIONS, bundle(), analysis(findings=[finding(prerequisites=["memory_unknown", unsafe])]),
+        lang="en", invariant_md=""))
+    plain = html.unescape(text)
+    assert "memory_unknown" in plain
+    assert unsafe not in plain and "example.test" not in plain and "kubectl" not in plain

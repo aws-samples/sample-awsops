@@ -169,3 +169,25 @@ def test_first_day_of_month_summarizes_previous_full_month(providers, monkeypatc
     monkeypatch.setattr(providers, "_now", lambda: dt.datetime(2027, 1, 1, tzinfo=dt.timezone.utc))
     providers.collect(base(), Budget(), scope="self")
     assert windows[-1] == {"Start": "2026-12-01", "End": "2027-01-01"}
+
+
+def test_savings_plans_coverage_is_monthly_period_labelled_and_paginated(providers, monkeypatch):
+    calls = []
+
+    class Paged(Client):
+        def get_savings_plans_coverage(self, **kwargs):
+            calls.append(kwargs)
+            assert kwargs["Granularity"] == "MONTHLY"
+            month = "10" if "NextToken" not in kwargs else "11"
+            page = {"SavingsPlansCoverages": [{
+                "TimePeriod": {"Start": f"2026-{month}-01", "End": f"2026-{month}-28"},
+                "Coverage": {"CoveragePercentage": "60.0"}}]}
+            return {**page, "NextToken": "p2"} if "NextToken" not in kwargs else page
+
+    monkeypatch.setattr(providers, "_client", lambda *a: Paged())
+    result = providers.collect(base(), Budget(), scope="self")
+    commitment = next(e for e in result["evidence"] if e["source"] == "commitment")
+    plans = [r for r in commitment["facts"]["commitment_coverage"] if r["service"] == "SavingsPlans"]
+    assert [(r["start"], r["end"]) for r in plans] == [("2026-10-01", "2026-10-28"), ("2026-11-01", "2026-11-28")]
+    assert [c.get("NextToken") for c in calls] == [None, "p2"]
+    assert commitment["coverage"]["complete"] is True and "commitment_page_cap" not in result["incomplete"]

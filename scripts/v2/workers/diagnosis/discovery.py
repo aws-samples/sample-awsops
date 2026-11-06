@@ -409,9 +409,14 @@ def _graph_state(value, cls):
     fresh = _fresh(state.get("captured"), max_age)
     complete = state.get("status") in ("ok", "empty")
     fresh = fresh and complete and not any(details.get(k) is True for k in
-                ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated"))
+                ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated",
+                 "infraUnavailable"))
+    # Positive trace loss counters (docs/api-reference.md) and any failureReason
+    # disqualify; instanceObservationDrops is a legacy counter kept harmless.
     drops = _number(details.get("instanceObservationDrops")) or 0
-    if drops > 0:
+    losses = ("nodeDrops", "edgeDrops", "orphanSpans", "invalidSpans", "unresolvedMessaging")
+    if (drops > 0 or any(details.get(k) is not None and _number(details[k]) != 0 for k in losses)
+            or details.get("failureReason") not in (None, "")):
         fresh = False
     sources = details.get("sources" if cls == "trace" else "publishedSources")
     projected = []
@@ -489,9 +494,13 @@ def _invalidate_graph(bundle, classes, status):
 def _read_graph(conn, bundle, budget, scope):
     account = bundle["coverage"]["account"]
     classes = ["flow", "infra", "trace"] if scope == "self" else ["flow", "infra"]
-    retired = _invalidate_graph(bundle, classes, "refresh_pending")
     if not _available(bundle, budget):
+        # No refresh IO happens: keep any earlier qualification rather than
+        # retiring it for a read that never ran (discovery_deadline is marked).
+        bundle["coverage"].setdefault("graph", {
+            cls: {"status": "not_read", "complete": False, "sources": []} for cls in classes})
         return
+    retired = _invalidate_graph(bundle, classes, "refresh_pending")
     try:
         states = _db_read(conn, bundle, budget,
             "SELECT class,status,attempted_at,captured_at,details FROM topology_graph_state "
@@ -797,8 +806,12 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                 page_coverage["complete"] = False
                 _mark(bundle, "degraded", "metrics_read_failed")
             else:
-                from .memory_metrics import collect as collect_memory
-                memory = collect_memory(client, batch, start, end, budget)
+                try:  # Memory is one source: its failure leaves EC2 memory unknown, never fails collect().
+                    from .memory_metrics import collect as collect_memory
+                    memory = collect_memory(client, batch, start, end, budget)
+                except Exception:
+                    memory = {}
+                    _mark(bundle, "degraded", "memory_metrics_read_failed")
             for r in batch:
                 metrics, ratios, statuses = {}, [], []
                 for qid, (rid, name, stat) in mapping.items():
@@ -895,7 +908,13 @@ def _provider_row(bundle, r, row, kind):
             if isinstance(t, dict) and isinstance(t.get("key"), str) and t["key"].lower() in _TAG_KEYS}
     tags.update(r["facts"].get("tags", {}))
     fresh = _fresh(generated, 24 * 3600)
-    guards = guard_hits(tags=tags, lookback_days=lookback, stale=not fresh)
+    # stale_inventory_data is the inventory row's own captured_at; the provider
+    # generation clock is a separate guard.
+    row_stamp = next((e.get("captured_at") for e in bundle["evidence"] if e.get("source") == "inventory"
+                      and r["id"] in e.get("resource_ids", [])), None)
+    guards = guard_hits(tags=tags, lookback_days=lookback, stale=not _fresh(row_stamp, _stale_seconds()))
+    if not fresh:
+        guards.append("stale_provider_recommendation")
     if lookback is None:
         guards.append("unknown_observation_period")
     replica = _replica_source(bundle, r)
@@ -1053,6 +1072,10 @@ def collect(conn, account, budget, *, scope="self"):
                                ("cost", "posture", "what_changed", "commitment", "idle", "datasources_obs")}
     for key in bundle["native_sources"]:
         _mark(bundle, "gaps", f"{key}_not_collected")
+    if os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true":
+        # Defense in depth: report.generate only routes here when this flag is applied.
+        _mark(bundle, "gaps", "evidence_loop_disabled")
+        return _finish(bundle)
     if not isinstance(account, str) or not _ACCOUNT.fullmatch(account) or scope not in ("self", account):
         _mark(bundle, "degraded", "invalid_discovery_scope")
         return _finish(bundle)
@@ -1109,9 +1132,11 @@ def follow_up(conn, account, bundle, requests, budget):
             _mark(merged, "gaps", "follow_up_rejected")
             continue
         key = (request["capability"], tuple(sorted(set(request["resource_ids"]))))
-        if key in seen:
+        # graph_refresh reads the whole scoped graph; resource_ids do not narrow it.
+        dedupe = key[0] if key[0] == "graph_refresh" else key
+        if dedupe in seen:
             continue
-        seen.add(key)
+        seen.add(dedupe)
         resources = [by_id[r] for r in key[1]]
         if key[0] == "graph_refresh":
             _read_graph(conn, merged, budget, scope)

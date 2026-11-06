@@ -166,11 +166,15 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
                      (prerequisites if isinstance(prerequisites, list) else [prerequisites])]
     # Model-authored prerequisites get the base renderer's read-only CLI rule. A
     # mutating command is withheld (never printed) and the section carries the mark.
+    # Each remaining one passes the explanation prose guard (URLs, numerals, fences,
+    # CLI words); an unsafe prerequisite is withheld exactly like an unsafe explanation.
     from .report import _MUTATING_MARK, _has_mutating_cli
-    safe = [p for p in prerequisites if not _has_mutating_cli(p)]
+    mutating = [p for p in prerequisites if _has_mutating_cli(p)]
+    safe = [cell for p in prerequisites if not _has_mutating_cli(p)
+            for cell in [_safe_explanation(p)] if cell]
     if safe:
-        output += ["", f"**{copy[8]}:** " + ", ".join(_cell(p) for p in safe)]
-    if len(safe) != len(prerequisites):
+        output += ["", f"**{copy[8]}:** " + ", ".join(safe)]
+    if mutating:
         output += ["", _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()]
     return "\n".join(output)
 
