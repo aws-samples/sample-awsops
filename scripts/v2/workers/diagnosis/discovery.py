@@ -118,7 +118,14 @@ def _dict(value):
 
 
 def _text(value, limit=240):
-    return redact(value[:limit]) if isinstance(value, str) else None
+    # Redact first: truncation must never cut a sensitive token below a pattern's shape.
+    return redact(value)[:limit] if isinstance(value, str) else None
+
+
+# Exact provider identities used as CloudWatch dimensions and join keys. Kept raw (bounded and
+# shape-checked) like scope-matching ARNs; the model boundary (evidence.redact_context) scrubs them.
+_IDENTITY_KEYS = {"db_instance_identifier": re.compile(r"[A-Za-z][A-Za-z0-9-]{0,62}"),
+                  "endpoint_address": re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}")}
 
 
 def _number(value):
@@ -262,6 +269,11 @@ def _facts(data, *, account=None, region=None):
         elif key == "read_replica_source_db_instance_identifier" and key in data:
             # Presence matters: a synced null means standalone, an absent key means unknown.
             out[key] = _text(value, 200) if isinstance(value, str) else ""
+        elif key in _IDENTITY_KEYS and isinstance(value, str):
+            if _IDENTITY_KEYS[key].fullmatch(value):
+                out[key] = value
+            else:
+                out[key] = _text(value)
         elif key == "private_ip_address":
             address = _address(value)
             if address is not None:
@@ -607,7 +619,10 @@ def _read_graph(conn, bundle, budget, scope):
             inventory_r = _node_inventory(meta, bundle["resources"], account, scope=scope)
             if inventory_r:
                 graph_resources[(cls, node_id)] = inventory_r
-            elif cls == "trace" and meta.get("accountId") == account and meta.get("region") in bundle["coverage"].get("regions", {}).get("selected", []):
+            # Host spans may carry no account or the 'self' sentinel (web/lib/trace-graph.ts isHost).
+            elif cls == "trace" and (meta.get("accountId") == account or (
+                    scope == "self" and meta.get("accountId") in (None, "self"))) \
+                    and meta.get("region") in bundle["coverage"].get("regions", {}).get("selected", []):
                 graph_resources[(cls, node_id)] = _resource(bundle, account, meta["region"], kind, node_id,
                     {k: _text(v) for k, v in meta.items() if k in ("host", "service", "sourceId", "namespace", "deployment")})
         if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
@@ -627,6 +642,9 @@ def _read_graph(conn, bundle, budget, scope):
                     facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, 1800),
                     window=window, coverage=_row_coverage(coverage, cls))
                 _relationship(bundle, source_r["id"], target_r["id"], kind, item)
+            else:
+                # An edge whose endpoints cannot be bound to scoped resources is disclosed, never dropped silently.
+                _mark(bundle, "incomplete", "unresolved_graph_edge")
             observations = meta.get("instance_observations") or []
             # Capped/unbound pairs on this edge leave its own observation coverage incomplete.
             omitted = sum(_number(meta.get(k)) or 0 for k in

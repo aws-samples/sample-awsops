@@ -300,6 +300,14 @@ variable "diagnosis_member_role_arns" {
     ])
     error_message = "Use at most 32 foreign-account AWSopsReadOnlyRole ARNs without wildcards or paths."
   }
+  validation {
+    condition     = length(distinct(var.diagnosis_member_role_arns)) == length(var.diagnosis_member_role_arns)
+    error_message = "diagnosis_member_role_arns must not repeat an ARN."
+  }
+  validation {
+    condition     = length(var.diagnosis_member_role_arns) == 0 || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_member_role_arns requires diagnosis_evidence_loop_enabled; clear it before turning the loop off."
+  }
 }
 
 variable "ai_insights_enabled" {

@@ -1030,3 +1030,45 @@ def test_graph_rows_reference_class_sources_instead_of_copying_them(provider):
     assert rows and all("sources" not in e["coverage"] for e in rows)
     assert all(e["coverage"]["sources_ref"].startswith("coverage.graph.") for e in rows)
     assert bundle["coverage"]["graph"]["trace"]["sources"]
+
+
+def test_identity_keys_stay_exact_for_dimensions_and_joins(provider):
+    provider.metrics = metric_response
+    ident = "db-123456789012"  # a legal identifier containing a 12-digit run
+    db = Database([inventory("rds", ident, {"db_instance_identifier": ident,
+                                            "endpoint_address": f"{ident}.abc.{REGION}.rds.amazonaws.com"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    r = resource(bundle, ident)
+    assert r["facts"]["db_instance_identifier"] == ident
+    assert r["facts"]["endpoint_address"].startswith(ident)
+    calls = [args for op, args in provider.calls if op == "metrics"]
+    dims = [q["MetricStat"]["Metric"]["Dimensions"] for c in calls for q in c["MetricDataQueries"]]
+    assert [{"Name": "DBInstanceIdentifier", "Value": ident}] in dims
+
+
+def test_model_boundary_carries_no_raw_identity_strings(provider):
+    from diagnosis.evidence import EvidenceIndex
+    provider.metrics = metric_response
+    ident = "orders-db"
+    endpoint = f"{ident}.abc123.{REGION}.rds.amazonaws.com"
+    db = Database([inventory("rds", ident, {"db_instance_identifier": ident, "endpoint_address": endpoint,
+                                            "arn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db:{ident}"}),
+                   inventory("ec2", I1, {"private_ip_address": "10.0.0.7"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    text = json.dumps(EvidenceIndex(bundle, ACCOUNT).model_context(redacted=True))
+    assert endpoint not in text and "10.0.0.7" not in text and ACCOUNT not in text
+    assert "<host>" in text and ident in text  # facts were present, only the identities were masked
+
+
+def test_host_trace_nodes_without_account_bind_and_unbound_edges_are_disclosed(provider):
+    db = graph_fixture()
+    for node in db.nodes:
+        if node[5] == "trace":
+            node[3]["accountId"] = None if node[0] == "svc:orders" else "self"
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    kinds = {r["kind"] for r in bundle["resources"]}
+    assert {"service", "db"} <= kinds
+    db = graph_fixture()
+    db.nodes[-1][3]["region"] = "eu-west-1"  # db:two cannot be scoped
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "unresolved_graph_edge" in bundle["incomplete"]

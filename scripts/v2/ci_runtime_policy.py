@@ -353,7 +353,8 @@ def _check_member_positions(resource, members, project, expected):
         return False
     try:
         if kind == "aws_iam_role_policy":
-            if after.get("name") != f"{project}-worker-task-diagnosis-evidence-read":
+            if (after.get("name") != f"{project}-worker-task-diagnosis-evidence-read"
+                    or after.get("role") != f"{project}-worker-task"):
                 raise ValueError
             policy = json.loads(after["policy"])
             found = 0
@@ -369,8 +370,12 @@ def _check_member_positions(resource, members, project, expected):
                     if (statement.get("Sid") != "DiagnosisRegisteredMemberReadOnly" or actions != ["sts:AssumeRole"]
                             or statement.get("Effect") != "Allow"
                             or set(statement) != {"Sid", "Effect", "Action", "Resource", "Condition"}
-                            or not isinstance(condition, dict)
+                            or not isinstance(condition, dict) or set(condition) != {"StringLike", "StringEquals"}
                             or condition.get("StringLike") != {"sts:ExternalId": "?*"}
+                            or not isinstance(condition.get("StringEquals"), dict)
+                            or set(condition["StringEquals"]) != {"aws:RequestedRegion"}
+                            or not isinstance(condition["StringEquals"]["aws:RequestedRegion"], (str, list))
+                            or not condition["StringEquals"]["aws:RequestedRegion"]
                             or statement.get("Resource") != members):
                         raise ValueError
                     found += 1
@@ -379,6 +384,8 @@ def _check_member_positions(resource, members, project, expected):
                 raise ValueError
             scanned = {**after, "policy": policy}
         else:
+            if after.get("family") != f"{project}-worker":
+                raise ValueError
             containers = json.loads(after["container_definitions"])
             found = 0
             for container in containers:
@@ -388,7 +395,8 @@ def _check_member_positions(resource, members, project, expected):
                             raise ValueError
                         found += 1
                         entry["value"] = "[]"  # Local parsed copy only.
-            if found != 1:
+            # Absent when the evidence loop is off: nothing foreign remains to exempt.
+            if found > 1:
                 raise ValueError
             scanned = {**after, "container_definitions": containers}
     except (KeyError, TypeError, ValueError, AttributeError):
