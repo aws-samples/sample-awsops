@@ -1012,3 +1012,21 @@ def test_empty_replica_lag_on_a_known_replica_is_coverage_loss_not_unpublished(p
     row = next(e for e in evidence(bundle, "metrics") if resource(bundle, "copy")["id"] in e["resource_ids"])
     assert "ReplicaLag" not in row["facts"]["metrics_not_published"]
     assert row["coverage"]["complete"] is False
+
+
+def test_noncanonical_trace_host_still_binds_its_exact_endpoint(provider):
+    db = graph_fixture()
+    db.nodes[-2][3]["host"] = " DB1.example.test. "  # raw span server.address in root/upper form
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    reverse = {r["id"]: r["resource_id"] for r in bundle["resources"]}
+    pairs = {(reverse[e["source"]], reverse[e["target"]]) for e in bundle["relationships"]
+             if e["kind"] == "observed_call" and reverse[e["source"]].startswith("i-")}
+    assert (I1, "db1") in pairs
+
+
+def test_graph_rows_reference_class_sources_instead_of_copying_them(provider):
+    bundle = discovery.collect(graph_fixture(), ACCOUNT, Budget())
+    rows = [e for e in bundle["evidence"] if e["source"] == "stored_graph"]
+    assert rows and all("sources" not in e["coverage"] for e in rows)
+    assert all(e["coverage"]["sources_ref"].startswith("coverage.graph.") for e in rows)
+    assert bundle["coverage"]["graph"]["trace"]["sources"]
