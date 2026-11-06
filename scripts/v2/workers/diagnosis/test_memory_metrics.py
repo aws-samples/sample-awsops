@@ -91,8 +91,15 @@ def test_measured_scoped_series_preserves_dimensions_and_enables_memory():
     assert query["MetricDataQueries"][0]["MetricStat"]["Metric"]["Dimensions"] == DIMS
 
 
+def test_exact_instance_series_is_preferred_over_appended_dimension_sets():
+    exact = {**METRIC, "Dimensions": [{"Name": "InstanceId", "Value": I1}]}
+    cw = CloudWatch(listings=[{"Metrics": [METRIC, exact, {**METRIC, "Dimensions": DIMS[::-1]}]}])
+    item = result(cw)
+    assert item["complete"] is True and item["metric"]["dimensions"] == exact["Dimensions"]
+
+
 @pytest.mark.parametrize("metrics", [[], [METRIC, METRIC],
-    [METRIC, {**METRIC, "Dimensions": [{"Name": "InstanceId", "Value": I1}]}],
+    [METRIC, {**METRIC, "Dimensions": DIMS + [{"Name": "InstanceType", "Value": "m7g.xlarge"}]}],
     [{**METRIC, "Dimensions": [{"Name": "InstanceId", "Value": I2}]}],
     [{**METRIC, "Dimensions": [{"Name": "AutoScalingGroupName", "Value": "fleet"}]}],
     [{**METRIC, "Namespace": "AWS/EC2"}],

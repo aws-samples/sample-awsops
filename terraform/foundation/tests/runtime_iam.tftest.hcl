@@ -82,7 +82,7 @@ run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
     diagnosis_evidence_loop_enabled = true
   }
   assert {
-    condition     = length(aws_iam_role_policy.worker_diagnosis_evidence) == 2 && length(aws_iam_role_policy.worker_finops_baseline) == 0
+    condition     = keys(aws_iam_role_policy.worker_diagnosis_evidence) == ["task"] && length(aws_iam_role_policy.worker_finops_baseline) == 0
     error_message = "Diagnosis provider reads must be separately gated from FinOps on each worker role."
   }
   assert {
@@ -95,11 +95,11 @@ run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
     error_message = "Only the two provider reads in supported runtime regions may be added."
   }
   assert {
-    condition     = [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_HOST_ACCOUNT_ID"] == ["123456789012"] && aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_HOST_ACCOUNT_ID"] == "123456789012"
-    error_message = "Both worker runtimes must bind discovery to the applied host account."
+    condition     = [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_HOST_ACCOUNT_ID"] == ["123456789012"] && length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if contains(["INVENTORY_STALE_AFTER_MINUTES", "GRAPH_REBUILD_INTERVAL_MINS"], e.name)]) == 2 && !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_HOST_ACCOUNT_ID")
+    error_message = "The Fargate report worker binds discovery to the applied host account; the Lambda runs no diagnosis."
   }
   assert {
-    condition     = aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == "true" && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == ["true"] && [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == []
+    condition     = !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_EVIDENCE_LOOP_ENABLED") && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == ["true"] && [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == []
     error_message = "The gate must enable worker discovery without adding a web/BFF execution path."
   }
   assert {
@@ -145,7 +145,7 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
     diagnosis_member_role_arns         = ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"]
   }
   assert {
-    condition = length(aws_iam_role_policy.worker_diagnosis_network) == 2 && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
+    condition = keys(aws_iam_role_policy.worker_diagnosis_network) == ["task"] && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
       jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery", "logs:FilterLogEvents"] &&
       jsondecode(p.policy).Statement[3].Action == ["logs:GetQueryResults", "logs:StopQuery"] &&
@@ -162,10 +162,10 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
     error_message = "Member reads require an explicit role and an external ID."
   }
   assert {
-    condition = (aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_NETWORK_EVIDENCE_ENABLED"] == "true" &&
+    condition = (!contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED") &&
       [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED"] == ["true"] &&
     !var.remediation_enabled && !var.integrations_write_enabled)
-    error_message = "Both worker paths receive the analysis gate without enabling mutation."
+    error_message = "Only the Fargate report worker receives the analysis gate, without enabling mutation."
   }
 }
 

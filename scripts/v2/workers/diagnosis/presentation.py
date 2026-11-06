@@ -58,11 +58,34 @@ _VERIFY = {
 }
 
 
+MAX_MARKDOWN_BYTES = 256 * 1024
+_TRUNCATED = "…[truncated]"
+
+
+def _clip(value, limit):
+    """Bound text/JSON at a token or element boundary, never inside a number."""
+    if isinstance(value, (list, dict)):
+        items = sorted(value.items()) if isinstance(value, dict) else list(value)
+        size, kept = 2, 0
+        for item in items:
+            size += len(_json(dict([item]) if isinstance(value, dict) else item)) + 2
+            if size > limit:
+                break
+            kept += 1
+        if kept == len(items):
+            return _json(value)
+        part = dict(items[:kept]) if isinstance(value, dict) else items[:kept]
+        return f"{_json(part)}{_TRUNCATED} {len(items) - kept} more"
+    value = value if isinstance(value, str) else _json(value)
+    if len(value) <= limit:
+        return value
+    cut = re.search(r"[\w.+-]*$", value[:limit]).start() if re.match(r"[\w.+-]", value[limit]) else limit
+    return value[:cut] + _TRUNCATED
+
+
 def _cell(value, limit=700):
     """Literal table text: never allow telemetry/model text to become Markdown/HTML."""
-    if not isinstance(value, str):
-        value = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    return (html.escape(value[:limit], quote=True).replace("|", "&#124;")
+    return (html.escape(_clip(value, limit), quote=True).replace("|", "&#124;")
             .replace("\n", " ").replace("\r", " ").replace("`", "&#96;")
             .replace("[", "&#91;").replace("]", "&#93;")
             .replace("*", "&#42;").replace("_", "&#95;")
@@ -100,16 +123,12 @@ def _safe_explanation(value):
 
 def _facts(value, prefix="", depth=0):
     if isinstance(value, dict) and depth < 4:
-        rows = []
-        for key, item in sorted(value.items()):
-            rows.extend(_facts(item, f"{prefix}.{key}" if prefix else str(key), depth + 1))
-            if len(rows) >= 40:
-                break
-        return rows[:40]
+        return [row for key, item in sorted(value.items())
+                for row in _facts(item, f"{prefix}.{key}" if prefix else str(key), depth + 1)]
     return [(prefix, value)]
 
 
-def _finding_body(finding, evidence, resources, copy, *, verification=False, lang="ko"):
+def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
     claims = {"observation": copy[3], "hypothesis": copy[4],
               "sizing_candidate": copy[5], "coverage_gap": copy[6]}
     claim = finding.get("claim", "hypothesis")
@@ -134,6 +153,8 @@ def _finding_body(finding, evidence, resources, copy, *, verification=False, lan
                  "coverage": record.get("coverage"), "fresh": record.get("fresh"),
                  "kind": record.get("kind"), "resource_ids": record.get("resource_ids")}
         rows = _facts(record.get("facts", {})) or [("unknown", None)]
+        if len(rows) > 40:
+            rows = rows[:40] + [(_TRUNCATED, f"{len(rows) - 40} rows omitted")]
         for field, value in rows:
             output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
                           f"| {_cell(scope)} | {_cell(field)} = {_cell(value)} |")
@@ -148,10 +169,14 @@ def _finding_body(finding, evidence, resources, copy, *, verification=False, lan
         output += ["", f"**{copy[8]}:** " + ", ".join(_cell(p) for p in safe)]
     if len(safe) != len(prerequisites):
         output += ["", _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()]
-    capability = finding.get("verification")
-    if verification and capability in _VERIFY:
-        output += ["", f"**{copy[9]}:**", "", f"`{_VERIFY[capability]}`"]
     return "\n".join(output)
+
+
+def withheld(analysis):
+    """Code-owned {id, reason} only; model prose never reaches rendering or persistence."""
+    return [{"id": r["id"] if re.fullmatch(r"[\w:.-]{1,128}", str(r.get("id"))) else "invalid",
+             "reason": str(r.get("reason"))[:64]}
+            for r in analysis.get("rejected", [])[:200] if isinstance(r, dict)]
 
 
 def _coverage(bundle, analysis, copy):
@@ -159,42 +184,57 @@ def _coverage(bundle, analysis, copy):
                    "degraded": list(bundle.get("degraded", [])) + list(analysis.get("degraded", [])),
                    "incomplete": list(bundle.get("incomplete", [])) + list(analysis.get("incomplete", [])),
                    "pillar_coverage": analysis.get("pillar_coverage", {}),
-                   "withheld": analysis.get("rejected", [])}
+                   "withheld": withheld(analysis)}
     rows = [f"**{copy[10]}**", "", "| Field | Value |", "| --- | --- |"]
     rows.extend(f"| {_cell(k)} | {_cell(v, 2500)} |" for k, v in diagnostics.items())
     return "\n".join(rows)
 
 
+def _reference(finding, copy):
+    return (f"- {copy[0]} {_code(finding.get('id', ''))} — "
+            f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}")
+
+
 def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
-    """Return catalog-ordered section bodies, rendering only admitted finding facts."""
+    """Return catalog-ordered bodies; each admitted finding renders in full exactly once."""
     copy = _COPY.get(lang, _COPY["ko"])
     evidence = {e["id"]: e for e in bundle.get("evidence", [])}
     resources = {r["id"]: r for r in bundle.get("resources", [])}
     findings = _ordered(analysis)
-    output = {}
-    # Details first. The final two selections reuse exactly these admitted records.
-    for section in catalog:
-        key = section["key"]
-        if key in {"executive_summary", "recommendations"}:
-            continue
+    keys = [s["key"] for s in catalog]
+    summary = "executive_summary" if "executive_summary" in keys else keys[0] if keys else None
+    # Primary section: the first catalog section covering the pillar (else the summary).
+    home = {id(f): next((k for k in keys if f.get("pillar") in _SECTION_PILLARS.get(k, ())), summary)
+            for f in findings}
+    top, output = {id(f) for f in findings[:12]}, {}
+    for key in keys:
         if key == "intended_vs_actual":
             output[key] = invariant_md
             continue
-        selected = [f for f in findings if f.get("pillar") in _SECTION_PILLARS.get(key, set())]
-        output[key] = "\n\n".join(_finding_body(f, evidence, resources, copy, lang=lang)
-                                  for f in selected)
-        if not output[key]:
-            output[key] = copy[7]
-        # Missing discovery/sizing prerequisites remain explicit in every detail section.
-        output[key] += "\n\n" + _coverage(bundle, analysis, copy)
-    for key in ("executive_summary", "recommendations"):
-        if any(s["key"] == key for s in catalog):
-            output[key] = ("\n\n".join(_finding_body(f, evidence, resources, copy,
-                                                    verification=key == "recommendations",
-                                                    lang=lang)
-                                       for f in findings[:12]) or copy[7])
+        parts = []
+        for f in findings:
+            if home[id(f)] == key:
+                parts.append(_finding_body(f, evidence, resources, copy, lang=lang))
+            elif (key in {"executive_summary", "recommendations"} and id(f) in top
+                    or f.get("pillar") in _SECTION_PILLARS.get(key, ())):
+                parts.append(_reference(f, copy))
+                capability = f.get("verification")
+                if key == "recommendations" and capability in _VERIFY:
+                    parts.append(f"**{copy[9]}:** `{_VERIFY[capability]}`")
+        output[key] = "\n\n".join(parts) or copy[7]
+        if key == summary:
+            # Missing discovery/sizing prerequisites are stated once, not per section.
             output[key] += "\n\n" + _coverage(bundle, analysis, copy)
-    return [(section["key"], _swept(output[section["key"]], lang)) for section in catalog]
+    rendered, used = [], 0
+    for key in keys:
+        body = _swept(output[key], lang)
+        if used + len(body.encode()) > MAX_MARKDOWN_BYTES:
+            # Reserve room for the marker and a read-only sweep mark; cut at a line boundary.
+            kept = body.encode()[:max(0, MAX_MARKDOWN_BYTES - used - 256)].decode(errors="ignore")
+            body = _swept(kept[:kept.rfind("\n") + 1] + _TRUNCATED + " (report size bound)", lang)
+        used += len(body.encode())
+        rendered.append((key, body))
+    return rendered
 
 
 def title_and_tags(bundle, analysis, *, lang="ko"):

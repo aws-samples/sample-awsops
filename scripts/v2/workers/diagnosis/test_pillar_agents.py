@@ -1,5 +1,6 @@
 import io
 import json
+import re
 
 import pytest
 from botocore.exceptions import ClientError
@@ -231,8 +232,9 @@ def test_response_read_checks_shared_deadline_between_chunks(monkeypatch):
 def test_source_redaction_preserves_real_opaque_citation_ids(monkeypatch):
     from diagnosis.discovery import _id
 
-    opaque = _id("r", "111122223333", "ap-northeast-2", "ec2", "i-00000000000000000")
-    assert opaque == "r:5015622d33a2b769771569412dcc5489"
+    opaque = _id("r", "ap-northeast-2", "ec2", "i-00000000000000000")
+    assert opaque == _id("r", "ap-northeast-2", "ec2", "i-00000000000000000")  # stable within a report
+    assert re.fullmatch(r"r:[0-9a-f]{32}", opaque)
     data = bundle()
     data["resources"][0]["id"] = opaque
     data["resources"][0]["facts"]["endpoint"] = "admin@example.com"

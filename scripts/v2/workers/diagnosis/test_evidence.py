@@ -60,7 +60,7 @@ def bundle():
                      "EBSWriteBytes": {"Sum": {"max": 30, "samples": 330, "status": "Complete"}},
                  }},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z",
-             "coverage": {"lookback_days": 14, "sample_ratio": 0.95}},
+             "coverage": {"complete": True, "lookback_days": 14, "sample_ratio": 0.95}},
             {"id": "e-provider", "source": "compute_optimizer", "resource_ids": ["r-instance"],
              "kind": "provider_sizing", "facts": {"current_type": "m7g.large",
                  "recommended_type": "m7g.medium", "lookback_days": 14, "rank": 1,
@@ -156,11 +156,12 @@ def test_sizing_requires_representative_metrics_and_deduplicates_resource():
     assert index.validate_finding(candidate)["claim"] == "sizing_candidate"
     assert index.validate_finding(dict(candidate, id="other", pillar="performance_efficiency")) is None
     assert index.rejected[-1]["reason"] == "duplicate_sizing"
-    data = bundle()
-    data["evidence"][2]["coverage"]["sample_ratio"] = 0.1
-    index = EvidenceIndex(data, ACCOUNT)
-    assert index.validate_finding(candidate)["claim"] == "hypothesis"
-    assert index.downgraded[-1]["reason"] == "unsupported_sizing"
+    for row, change in ((2, {"sample_ratio": 0.1}), (2, {"complete": False}), (3, {"complete": False})):
+        data = bundle()
+        data["evidence"][row]["coverage"].update(change)
+        index = EvidenceIndex(data, ACCOUNT)
+        assert index.validate_finding(candidate)["claim"] == "hypothesis"
+        assert index.downgraded[-1]["reason"] == "unsupported_sizing"
 
 
 def test_model_context_contains_projected_data_not_instruction_sources():

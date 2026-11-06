@@ -202,6 +202,11 @@ def collect(bundle, budget, *, scope):
                 facts, window, coverage = fn(client, account, result, now)
             else:
                 facts, window, coverage = fn(client, account, result)
+            regions = result.get("coverage", {}).get("regions")
+            others = sorted(set(regions.get("selected", []) if isinstance(regions, dict) else []) - {region})
+            if service != "ce" and others:  # single-region API; never claim scope-wide coverage
+                coverage = {**coverage, "complete": False, "regions_not_queried": others}
+                _mark(result, "gaps", ("posture" if key == "posture" else "changes") + "_single_region")
             captured = now.isoformat()
             record_id = "summary-" + hashlib.sha256(
                 f"{account}:{key}:{captured}".encode()).hexdigest()[:24]

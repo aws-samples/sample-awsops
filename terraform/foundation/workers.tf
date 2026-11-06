@@ -54,11 +54,12 @@ locals {
   } : {}
   # The diagnosis loop is analysis-only and has a separate default-off gate.
   # Bind self reads to the applied account, independently of datasource flags.
-  diagnosis_evidence_roles = var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task", "lambda"]) : toset([])
+  diagnosis_evidence_roles = var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([]) # report runs on Fargate only
   diagnosis_evidence_env_map = var.diagnosis_evidence_loop_enabled ? {
     DIAGNOSIS_EVIDENCE_LOOP_ENABLED    = "true"
     DIAGNOSIS_HOST_ACCOUNT_ID          = local.acct
     GRAPH_REBUILD_INTERVAL_MINS        = tostring(var.graph_rebuild_interval_mins)
+    INVENTORY_STALE_AFTER_MINUTES      = tostring(var.inventory_stale_after_minutes)
     DIAGNOSIS_MEMBER_ROLE_ARNS         = jsonencode(var.diagnosis_member_role_arns)
     DIAGNOSIS_NETWORK_EVIDENCE_ENABLED = tostring(var.diagnosis_network_evidence_enabled)
     DIAGNOSIS_DNS_LOG_GROUP_ARNS       = jsonencode(var.diagnosis_dns_log_group_arns)
@@ -637,7 +638,7 @@ resource "aws_lambda_function" "worker" {
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
       }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
-    local.dsqg_env_map, local.diagnosis_evidence_env_map, local.cts_env_map)
+    local.dsqg_env_map, local.cts_env_map)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
   }
@@ -900,7 +901,7 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
 resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
   for_each = local.diagnosis_evidence_roles
   name     = "${var.project}-worker-${each.key}-diagnosis-evidence-read"
-  role     = each.key == "task" ? aws_iam_role.worker_task[0].id : aws_iam_role.worker_lambda[0].id
+  role     = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([{
@@ -932,9 +933,9 @@ resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
 }
 
 resource "aws_iam_role_policy" "worker_diagnosis_network" {
-  for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task", "lambda"]) : toset([])
+  for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
   name     = "${var.project}-worker-${each.key}-diagnosis-network-read"
-  role     = each.key == "task" ? aws_iam_role.worker_task[0].id : aws_iam_role.worker_lambda[0].id
+  role     = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([{

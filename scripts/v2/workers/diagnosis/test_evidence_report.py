@@ -6,9 +6,15 @@ from diagnosis.test_presentation import bundle, analysis
 
 
 def prepare(monkeypatch, *, data=None, findings=None):
-    from diagnosis import discovery, loop
+    from diagnosis import discovery, loop, observations, supporting
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
+    monkeypatch.setenv("DIAGNOSIS_NETWORK_EVIDENCE_ENABLED", "false")
     monkeypatch.setattr(discovery, "collect", lambda *a, **kw: data or bundle())
+    # Offline: later stages are identity and any SDK client creation fails the test.
+    monkeypatch.setattr(observations, "collect", lambda value, *a, **kw: value)
+    monkeypatch.setattr(supporting, "collect", lambda value, *a, **kw: value)
+    monkeypatch.setattr(discovery, "_client", lambda *a: pytest.fail("offline test created an SDK client"))
+    monkeypatch.setattr(supporting, "_client", lambda *a: pytest.fail("offline test created an SDK client"))
     monkeypatch.setattr(loop, "run", lambda *a, **kw: findings or analysis())
     monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
     monkeypatch.setattr(report.src, "collect_all",
@@ -36,6 +42,20 @@ def test_network_collector_runs_in_worker_before_six_pillar_analysis(monkeypatch
     monkeypatch.setattr(loop, "run", analyze)
     report.generate(object(), "self")
     assert state["scope"] == "self" and state["factory"] is discovery._client
+
+
+def test_broken_discovery_connection_is_never_reused(monkeypatch):
+    data = bundle()
+    data["coverage"]["database_connection_broken"] = True
+    prepare(monkeypatch, data=data)
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: pytest.fail("reused conn"))
+    with pytest.raises(RuntimeError, match="database_connection_broken"):
+        report.generate(object(), "self")
+
+
+def test_summary_persists_only_projected_rejections(monkeypatch):
+    prepare(monkeypatch, findings=analysis(rejected=[{"id": "x", "reason": "r", "explanation": "prose"}]))
+    assert report.generate(object(), "self")[1]["rejected_findings"] == [{"id": "x", "reason": "r"}]
 
 
 @pytest.mark.parametrize("tier,count", [("light", 9), ("mid", 9), ("deep", 16)])
@@ -336,7 +356,7 @@ def test_model_prerequisite_with_mutating_cli_is_withheld_and_degrades(monkeypat
     assert "delete-db-instance" not in md
     assert "Confirm owner approval." in md
     assert report._MUTATING_MARK["en"].strip() in md
-    assert summary["render_degraded"] and "executive_summary" in summary["render_degraded"]
+    assert summary["render_degraded"] == ["compute_infrastructure"]
 
 
 def test_read_only_prerequisites_do_not_degrade_render(monkeypatch):

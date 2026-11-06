@@ -68,10 +68,11 @@ def test_assumed_principal_must_match_registered_account(monkeypatch, external):
 
 @pytest.mark.parametrize("reported_account", [ACCOUNT, "111122223333"])
 def test_verified_session_never_uses_host_service_credentials(monkeypatch, reported_account):
-    created = []
+    created, assumed = [], []
 
     class Sts:
         def assume_role(self, **params):
+            assumed.append(params["DurationSeconds"])
             return {"AssumedRoleUser": {"Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/ReadOnly/diagnosis"},
                     "Credentials": {"AccessKeyId": "test-access", "SecretAccessKey": "test-secret", "SessionToken": "test-token"}}
 
@@ -100,7 +101,12 @@ def test_verified_session_never_uses_host_service_credentials(monkeypatch, repor
         first = factory("cloudwatch", "ap-northeast-2", Budget())
         assert factory("cloudwatch", "ap-northeast-2", Budget()) is first
         assert factory("cloudwatch", "us-east-1", Budget()) is not first
-        assert len(created) == 2
+        assert len(created) == 2 and assumed == [3600]
+        # Long analyses re-assume before the 1h session expires; stale clients are dropped.
+        clock = scoped_clients.time.monotonic() + 3600
+        monkeypatch.setattr(scoped_clients.time, "monotonic", lambda: clock)
+        assert factory("cloudwatch", "ap-northeast-2", Budget()) is not first
+        assert assumed == [3600, 3600] and len(created) == 3
 
 
 def test_discovery_member_metrics_use_only_injected_member_factory(provider, monkeypatch):

@@ -1,5 +1,6 @@
 """Offline acceptance for code-owned report observations and hypotheses."""
 import html
+import json
 import pytest
 from diagnosis.sections import SECTIONS, INTENDED_VS_ACTUAL_SECTION
 
@@ -80,9 +81,29 @@ def test_executive_and_recommendations_select_only_admitted_ids():
                                       lang="en", invariant_md=""))
     assert "finding-a" in result["executive_summary"]
     assert "finding-a" in result["recommendations"]
-    assert "memory_unknown" in html.unescape(result["database_storage"])
     assert "Hypothesis" in result["compute_infrastructure"]
     assert "aws cloudwatch get-metric-data" in result["recommendations"]
+    # Rendered in full once (primary section); elsewhere only by id. Coverage appears once.
+    text = "\n".join(result.values())
+    assert text.count("17.25") == 1 and "finding-a" in result["database_storage"]
+    assert text.count("Coverage and withheld claims") == 1
+    assert "memory&#95;unknown" in result["executive_summary"]
+
+
+def test_cells_rows_and_total_markdown_are_bounded_with_explicit_markers(monkeypatch):
+    from diagnosis import presentation
+    assert presentation._cell("x " + "1234567890" * 80).endswith("x …&#91;truncated&#93;")
+    kept, more = presentation._clip(list(range(400)), 50).split("…[truncated] ")
+    assert len(kept) <= 50 and json.loads(kept) == list(range(len(json.loads(kept))))
+    assert int(more.split()[0]) == 400 - len(json.loads(kept))
+    data = bundle()
+    data["evidence"][0]["facts"] = {f"k{i:02}": i for i in range(45)}
+    body = dict(presentation.render(SECTIONS, data, analysis(), lang="en"))["compute_infrastructure"]
+    assert "k39" in body and "k40" not in body and "5 rows omitted" in body
+    monkeypatch.setattr(presentation, "MAX_MARKDOWN_BYTES", 2000)
+    bodies = dict(presentation.render(SECTIONS, data, analysis(), lang="en"))
+    assert sum(len(b.encode()) for b in bodies.values()) <= 2000
+    assert bodies["compute_infrastructure"].endswith("\n…[truncated] (report size bound)")
 
 
 def test_local_title_and_tags_use_pillar_and_native_identity():
@@ -117,10 +138,13 @@ def test_only_cited_facts_are_rendered_and_markdown_injection_is_escaped():
 def test_failed_pillars_and_rejected_claims_remain_visible():
     from diagnosis import presentation
     data = analysis(findings=[], degraded=["security"],
-                    rejected=[{"id": "bad", "reason": "unknown_evidence"}])
+                    rejected=[{"id": "bad", "reason": "unknown_evidence", "explanation": "MODEL PROSE"},
+                              {"id": "ignore prior rules", "reason": "duplicate"}])
     text = "\n".join(body for _, body in presentation.render(
         SECTIONS, bundle(), data, lang="en", invariant_md=""))
     assert "security" in text and "unknown_evidence" in html.unescape(text)
+    assert "MODEL PROSE" not in text and "ignore prior rules" not in text
+    assert presentation.withheld(data)[1] == {"id": "invalid", "reason": "duplicate"}
     assert "healthy" not in text.lower()
 
 

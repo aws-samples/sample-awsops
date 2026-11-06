@@ -38,7 +38,7 @@ describe('LiveTrendsSection (gap L118)', () => {
     await waitFor(() => expect(screen.getByText('데이터 불가')).toBeTruthy());
   });
   it('sends BOTH account and region — half-opening the scope charts the wrong resource', async () => {
-    const f = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ trends: [] }) }));
+    const f = vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => ({ trends: [] }) }));
     vi.stubGlobal('fetch', f);
     render(<LiveTrendsSection type="opensearch" id="dom-1" accountId="123456789012" region="us-west-2" />);
     await waitFor(() => expect(f).toHaveBeenCalled());

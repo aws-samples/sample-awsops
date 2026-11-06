@@ -19,6 +19,11 @@ from botocore.config import Config
 from redact import redact
 from finops.guards import guard_hits
 
+try:
+    from pg8000.exceptions import InterfaceError as _DriverTransport
+except ImportError:  # pragma: no cover - driver absent in unit environments
+    _DriverTransport = OSError
+
 MAX_REGIONS = 8
 MAX_PAGES = 3
 MAX_RESOURCES = 200
@@ -150,6 +155,8 @@ def _db_read(conn, bundle, budget, sql, **parameters):
     The server statement timeout cancels slow reads without closing a healthy
     connection; the transport timeout also bounds a lost server response.
     """
+    if bundle["coverage"].get("database_connection_broken"):
+        raise ConnectionError("database_connection_broken")
     if not _available(bundle, budget):
         raise TimeoutError("discovery_deadline")
     # The server cancels (statement_timeout) before the transport gives up, so
@@ -162,32 +169,47 @@ def _db_read(conn, bundle, budget, sql, **parameters):
         sock.settimeout(min(seconds, prior_socket) if prior_socket is not None else seconds)
     prior_statement = None
     try:
-        prior_statement = conn.run("SHOW statement_timeout")[0][0]
+        prior_statement = _run(conn, bundle, "SHOW statement_timeout")[0][0]
         if not _available(bundle, budget):
             raise TimeoutError("discovery_deadline")
         seconds = min(seconds, budget.remaining(analysis=True) - 1)
         if sock is not None:
             sock.settimeout(seconds)
-        conn.run("SELECT set_config('statement_timeout',:timeout,false)",
-                 timeout=f"{max(1, int(max(seconds - 2, seconds / 2) * 1000))}ms")
+        _run(conn, bundle, "SELECT set_config('statement_timeout',:timeout,false)",
+             timeout=f"{max(1, int(max(seconds - 2, seconds / 2) * 1000))}ms")
         if not _available(bundle, budget):
             raise TimeoutError("discovery_deadline")
         if sock is not None:
             sock.settimeout(min(seconds, budget.remaining(analysis=True) - 1))
-        return conn.run(sql, **parameters)
+        return _run(conn, bundle, sql, **parameters)
     finally:
         try:
-            if prior_statement is not None:
+            if prior_statement is not None and not bundle["coverage"].get("database_connection_broken"):
                 if sock is not None:
                     # Restore with at most one second of the reserved export
                     # window, even if the analysis deadline was just exhausted.
                     sock.settimeout(min(1, seconds))
-                conn.run("SELECT set_config('statement_timeout',:timeout,false)", timeout=prior_statement)
+                _run(conn, bundle, "SELECT set_config('statement_timeout',:timeout,false)",
+                     timeout=prior_statement)
         except Exception:
             _mark(bundle, "degraded", "database_timeout_restore_failed")
-        finally:
-            if sock is not None:
-                sock.settimeout(prior_socket)
+        if bundle["coverage"].get("database_connection_broken"):
+            try:  # Fail closed: no later caller may read a desynced protocol stream.
+                conn.close()
+            except Exception:
+                pass
+        elif sock is not None:
+            sock.settimeout(prior_socket)
+
+
+def _run(conn, bundle, sql, **parameters):
+    try:
+        return conn.run(sql, **parameters)
+    except (OSError, _DriverTransport):
+        # A transport failure mid-message desyncs pg8000; the connection is unusable.
+        bundle["coverage"]["database_connection_broken"] = True
+        _mark(bundle, "degraded", "database_connection_broken")
+        raise
 
 
 def _address(value):
@@ -246,7 +268,8 @@ def _facts(data, *, account=None, region=None):
 
 
 def _resource(bundle, account, region, kind, native_id, facts):
-    rid = _id("r", account, region, kind, native_id)
+    # Reports are single-account, so the digest omits the account (not enumerable from ids).
+    rid = _id("r", region, kind, native_id)
     existing = next((r for r in bundle["resources"] if r["id"] == rid), None)
     if existing:
         return existing
@@ -1038,6 +1061,8 @@ def collect(conn, account, budget, *, scope="self"):
         _metrics(bundle, budget, resources)
         _finops(conn, bundle, budget)
         _provider_sizing(bundle, budget, resources)
+    elif bundle["coverage"].get("database_connection_broken"):
+        _mark(bundle, "gaps", "member_live_sources_unsupported")
     else:
         try:
             from .scoped_clients import member_factory

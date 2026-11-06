@@ -55,7 +55,7 @@ async function renderApi(states: (string | undefined)[], metrics: (number | null
 }
 
 async function downTile() {
-  return (await screen.findByText('다운 감지 (배포된 커넥션·VIF)')).closest('.rounded-lg')!;
+  return (await screen.findByText('다운 감지 (배포된 커넥션·VIF)')).closest<HTMLElement>('.rounded-lg')!;
 }
 
 describe('DX API totals and rendered health share the same scope', () => {

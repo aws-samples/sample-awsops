@@ -329,7 +329,9 @@ class EvidenceIndex:
         rows = [self.evidence[ref] for ref in finding["evidence_ids"]]
         provider = [row for row in rows if row["kind"] == "provider_sizing"]
         metrics = [row for row in rows if row["kind"] == "metrics"]
-        if len(provider) != 1 or not metrics or any(not row["fresh"] for row in rows):
+        if (len(provider) != 1 or not metrics or any(not row["fresh"] for row in rows)
+                or not self._complete(provider[0])
+                or not all(self._complete(row, sampled=True) for row in metrics)):
             return False
         facts = provider[0]["facts"]
         if not isinstance(facts, dict):
@@ -362,8 +364,6 @@ class EvidenceIndex:
             coverage = row["coverage"]
             if (not isinstance(details, dict) or not isinstance(coverage, dict)
                     or not _finite(details.get("window_days", coverage.get("lookback_days")), 14)
-                    or not _finite(coverage.get("sample_ratio"), MIN_SAMPLE_RATIO)
-                    or coverage.get("sample_ratio", 0) > 1
                     or details.get("missing_memory") is not False
                     or details.get("missing_io") is not False):
                 return False

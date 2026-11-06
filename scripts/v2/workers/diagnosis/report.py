@@ -890,6 +890,9 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         print(f"evidence report discovery failed: {type(exc).__name__}", file=sys.stderr)
         bundle = {"resources": [], "evidence": [], "relationships": [], "coverage": {},
                   "gaps": ["discovery_failed"], "degraded": ["discovery_failed"], "incomplete": []}
+    if bundle.get("coverage", {}).get("database_connection_broken"):
+        # Discovery closed a desynced connection; never reuse it for reads or the report write.
+        raise RuntimeError("database_connection_broken")
     # Later stages only add evidence. A failure keeps the prior stage's bundle (observations
     # mutate in place, so restore a snapshot) and records the failed stage explicitly.
     for stage, collect_stage in (
@@ -962,7 +965,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
                       "resources": len(bundle.get("resources", [])),
                       "relationships": len(bundle.get("relationships", []))},
         "pillar_coverage": analysis.get("pillar_coverage", {}),
-        "rejected_findings": analysis.get("rejected", []),
+        "rejected_findings": presentation.withheld(analysis),
         "model_stages": analysis.get("model_stages", []),
         "title_and_tags": presentation.title_and_tags(bundle, analysis, lang=lang),
         "budget": budget.snapshot(),

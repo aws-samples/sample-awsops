@@ -115,8 +115,12 @@ def collect(client, resources, start, end, budget):
                     if metric is None:
                         raise CollectionGap("memory_metric_identity_unresolved")
                     candidates.append(metric)
-                    if len(candidates) > 1:
-                        raise CollectionGap("memory_metric_ambiguous")
+            # ListMetrics matches every set containing InstanceId; CWAgent aggregation
+            # publishes the exact {InstanceId} series beside the appended-dimension one.
+            exact = [m for m in candidates if m["Dimensions"] == [{"Name": "InstanceId", "Value": resource["resource_id"]}]]
+            candidates = exact[:1] or candidates
+            if len(candidates) > 1:
+                raise CollectionGap("memory_metric_ambiguous")
         except CollectionGap as exc:
             output[rid]["reason"] = str(exc)
             continue

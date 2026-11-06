@@ -51,6 +51,16 @@ def scope(monkeypatch):
     monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", ACCOUNT)
     monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP]))
     monkeypatch.setattr(discovery, "_now", lambda: NOW)
+    monkeypatch.setattr(observations, "_sleep", lambda _: None)
+
+
+def test_out_of_region_dns_group_is_skipped_but_malformed_or_foreign_invalidates(monkeypatch):
+    other = GROUP.replace(REGION, "eu-west-1")
+    monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP, other]))
+    assert observations._groups(ACCOUNT, [REGION]) == ({REGION: {GROUP: "/resolver/test"}}, False)
+    for bad in (GROUP.replace(ACCOUNT, "999900001111"), "arn:aws:logs:bad"):
+        monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP, bad]))
+        assert observations._groups(ACCOUNT, [REGION]) == ({}, True)
 
 
 def project(data=None, rows=None, flows=None):

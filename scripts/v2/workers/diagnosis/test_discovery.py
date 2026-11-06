@@ -502,7 +502,7 @@ def test_database_timeout_restores_existing_policy_after_read_error(provider):
             self._usock = Socket()
         def run(self, sql, **kwargs):
             if "FROM inventory_resources" in sql:
-                raise TimeoutError("simulated blocked read")
+                raise RuntimeError("server canceled statement")  # protocol stays in sync
             return super().run(sql, **kwargs)
 
     db = BlockedDatabase()
@@ -513,6 +513,33 @@ def test_database_timeout_restores_existing_policy_after_read_error(provider):
     assert 4 in db._usock.changes and max(db._usock.changes[:-1]) <= 30
     assert db._usock.timeout == 30
     assert "inventory_read_failed" in bundle["degraded"]
+
+
+def test_transport_timeout_closes_connection_and_skips_later_database_reads(provider):
+    class BrokenDatabase(Database):
+        closed = False
+        def run(self, sql, **kwargs):
+            self.queries.append((sql, kwargs))
+            if "count(*)" in sql:
+                raise TimeoutError("socket timed out mid-message")
+            return super().run(sql, **kwargs)
+        def close(self):
+            self.closed = True
+
+    db = BrokenDatabase([inventory("ec2", I1, {})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    # No restore SET or later collector query is sent on the desynced stream.
+    assert "count(*)" in db.queries[-1][0] and db.closed
+    assert bundle["coverage"]["database_connection_broken"] is True
+    assert "database_connection_broken" in bundle["degraded"]
+    assert "database_timeout_restore_failed" not in bundle["degraded"]
+
+
+def test_resource_ids_are_deterministic_and_do_not_encode_the_account():
+    one, other = ({"resources": [], "gaps": [], "degraded": [], "incomplete": []} for _ in range(2))
+    rid = discovery._resource(one, ACCOUNT, REGION, "ec2", I1, {})["id"]
+    assert discovery._resource(one, ACCOUNT, REGION, "ec2", I1, {})["id"] == rid
+    assert discovery._resource(other, "999900001111", REGION, "ec2", I1, {})["id"] == rid
 
 
 def test_followup_rejects_more_than_four_requests(provider):

@@ -63,6 +63,14 @@ def test_supporting_sources_are_host_scoped_and_never_leak_raw_events(providers)
     assert "ModifyDBInstance" in text
     assert "posture_page_cap" in result["incomplete"]
     assert result["native_sources"]["cost"]["status"] == "ok"
+    assert not {"posture_single_region", "changes_single_region"} & set(result["gaps"])
+    data = base()
+    data["coverage"]["regions"] = {"selected": [providers._REGION, "us-west-2"]}
+    result = providers.collect(data, Budget(), scope="self")
+    assert {"posture_single_region", "changes_single_region"} <= set(result["gaps"])
+    changes = result["native_sources"]["what_changed"]
+    assert changes["status"] == "partial" and changes["coverage"]["regions_not_queried"] == ["us-west-2"]
+    assert result["native_sources"]["cost"]["status"] == "ok"
 
 
 def test_mixed_currency_costs_stay_per_service_and_partial_month(providers):

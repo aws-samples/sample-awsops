@@ -321,8 +321,10 @@ def _groups(account, regions):
         if not isinstance(value, str):
             return {}, True
         match = re.fullmatch(r"arn:aws:logs:([a-z0-9-]+):(\d{12}):log-group:([A-Za-z0-9_./#-]{1,512})(?::\*)?", value)
-        if not match or match[2] != account or match[1] not in regions:
+        if not match or match[2] != account:
             return {}, True
+        if match[1] not in regions:  # another run's region; not a malformed allowlist
+            continue
         groups.setdefault(match[1], {})[value.removesuffix(":*")] = match[3]
     return groups, False
 
