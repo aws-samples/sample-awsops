@@ -485,3 +485,11 @@ def test_duplicate_dns_rows_dedupe_and_correlation_output_is_capped(monkeypatch)
     capped = project(flows=[flow(value=v) for v in range(1, 40)])
     assert len([e for e in capped["evidence"] if e["kind"].startswith("observed_")]) == 5
     assert "observation_cap" in capped["incomplete"]
+
+
+def test_facts_less_inventory_rows_do_not_crash_dns_binding():
+    data = bundle()
+    bare = {"id": oid("r-bare"), "account": ACCOUNT, "region": REGION, "kind": "ec2", "resource_id": "i-bare"}
+    data["resources"].append(bare)
+    data["evidence"].append({**data["evidence"][0], "id": oid("e-bare"), "resource_ids": [bare["id"]], "facts": {}})
+    assert not project(data, rows=[dns(vpc_id=None)])["relationships"]
