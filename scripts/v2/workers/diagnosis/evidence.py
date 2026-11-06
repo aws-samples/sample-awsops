@@ -1,4 +1,9 @@
-"""Code-owned evidence admission and semantic checks for untrusted model selections."""
+"""Code-owned evidence admission and semantic checks for untrusted model selections.
+
+Redaction contract: facts are raw (ARNs, IPs, db_host, endpoints). The only
+model-bound accessor is EvidenceIndex.model_context(redacted=True), which applies
+redact.redact to every non-citation string and masks host-valued fields.
+"""
 from copy import deepcopy
 from datetime import datetime
 import math
@@ -42,7 +47,7 @@ FACT_KEYS = {
     "metrics", "dimensions", "metric_name", "namespace", "statistic", "period",
     "average", "maximum", "minimum", "p95", "peak", "value", "unit",
     "min", "max", "mean", "samples", "Name", "Value", "name",
-    "sample_count", "expected_samples", "sample_ratio", "missing_metrics",
+    "sample_count", "expected_samples", "sample_ratio", "missing_metrics", "metrics_not_published",
     "finding", "reason", "risk", "prerequisites", "correlation_id", "order",
     "source_ref", "target_ref", "instance_ref", "database_ref", "instance_observations",
     "account", "region", "instance_id", "observed_pairs", "service_ref",
@@ -170,15 +175,20 @@ _REFERENCE_FIELDS = {
 }
 
 
+# DNS names (RDS endpoints, trace hosts) identify the account's resources but carry no
+# ARN/IP shape that redact() recognizes: their values never reach a model.
+_HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host"}
+
+
 def redact_context(context):
     """Scrub source strings while keeping admitted citation IDs byte-for-byte."""
-    def scrub(value):
+    def scrub(value, key=None):
         if isinstance(value, str):
-            return redact(value)
+            return "<host>" if key in _HOST_KEYS and value else redact(value)
         if isinstance(value, list):
-            return [scrub(item) for item in value]
+            return [scrub(item, key) for item in value]
         if isinstance(value, dict):
-            return {key: scrub(item) for key, item in value.items()}
+            return {k: scrub(item, k) for k, item in value.items()}
         return value
 
     result = scrub(context)
@@ -359,7 +369,7 @@ class EvidenceIndex:
         if not cited or any(not row["fresh"] for row in cited):
             return False
         if len(refs) == 1:
-            return any(row["kind"] == "metrics" and refs[0] in row["resource_ids"]
+            return any(row["kind"] == "metrics" and row["resource_ids"] == refs
                        and self._complete(row, sampled=True) for row in cited)
         # A referenced scoped edge must preserve the actual pair. Sharing a
         # service/SG or joining independent aggregates never creates an observed edge.

@@ -460,3 +460,36 @@ def test_reference_ids_must_be_opaque_so_restore_cannot_reintroduce_scope(collec
     assert leaked not in repr(index.model_context(redacted=True))
     kinds = {"resources": "resource", "evidence": "evidence", "relationships": "relationship"}
     assert {"id": "", "reason": "invalid_id", "type": kinds[collection]} in index.rejected
+
+
+def test_singleton_observation_requires_that_resources_own_metrics_row():
+    data = bundle()
+    # One metrics row naming both resources cannot confirm a single-resource observation.
+    data["evidence"][2]["resource_ids"] = [oid("r-instance"), oid("r-db")]
+    data["evidence"][2]["region"] = REGION
+    index = EvidenceIndex(data, ACCOUNT)
+    result = index.validate_finding(finding(resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))
+    assert result["claim"] == "hypothesis"
+    assert EvidenceIndex(bundle(), ACCOUNT).validate_finding(finding(
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))["claim"] == "observation"
+
+
+def test_redacted_model_context_carries_no_account_ip_arn_or_db_host():
+    import re
+    data = bundle()
+    host = "orders.cluster-abc123xyz.ap-northeast-2.rds.amazonaws.com"
+    data["resources"][0]["facts"].update({"private_ip_address": "10.0.1.5",
+                                          "arn": f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-0123456789abcdef0"})
+    data["resources"][1]["facts"].update({"endpoint_address": host, "name": f"owner {ACCOUNT}"})
+    data["evidence"][1]["facts"].update({"db_host": host, "answer_ips": ["2001:db8::7", "::ffff:192.0.2.9", "10.0.0.8"],
+                                         "service": f"calls {host} from fd00::1"})
+    index = EvidenceIndex(data, ACCOUNT)
+    redacted = index.model_context(redacted=True)
+    ids = {row["id"] for key in ("resources", "evidence", "relationships") for row in redacted[key]}
+    text = repr(redacted)
+    for cited in ids:
+        text = text.replace(cited, "")
+    assert not re.search(r"(?<!\d)\d{12}(?!\d)", text)
+    assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+    assert "2001:db8" not in text and "fd00::1" not in text and "::ffff" not in text
+    assert "arn:" not in text and host not in text and "abc123xyz" not in text
