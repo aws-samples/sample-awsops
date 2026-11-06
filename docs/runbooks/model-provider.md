@@ -53,8 +53,8 @@ runtime. Bedrock `InvokeModel*` grants shrink to the chosen family; `anthropic_a
 Rotate by writing a new value to the same secret (`aws secretsmanager put-secret-value
 --secret-id <arn> --secret-string file://<path>`). The web task and the worker Lambda/Fargate
 calls drop their cached key and read the secret again on the first `401` from the API, then retry
-once, so no redeploy is needed. The AgentCore chat runtime reads the key once per cold start; run
-`make agentcore` (or wait for the next runtime restart) after rotating. Revoke the old key in the
+once, so no redeploy is needed. The AgentCore chat runtime drops its cached key on an
+authentication error and rebuilds its Anthropic client with the new key on the next request. Revoke the old key in the
 Anthropic console only after the new one is in the secret.
 
 ## Rollback

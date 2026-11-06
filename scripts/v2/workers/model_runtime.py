@@ -15,6 +15,7 @@ import io
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -69,32 +70,63 @@ def _timeout(config):
     return value if isinstance(value, (int, float)) and value > 0 else 300
 
 
-def anthropic_messages(body, model_id, timeout=300, _retry=True):
+def reset_api_key():
+    """Forget the cached key so the next call re-reads the secret (rotation)."""
+    global _API_KEY
+    with _KEY_LOCK:
+        _API_KEY = None
+
+
+_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+_ATTEMPTS = 3
+
+
+def anthropic_messages(body, model_id, timeout=300):
     """POST an Anthropic Messages request; returns the decoded JSON reply.
 
-    A 401 drops the cached key and retries once, so a rotated secret takes effect without a redeploy.
+    A 401 drops the cached key and retries once (rotated secret). Throttling, overload, 5xx and
+    network errors retry up to three attempts with bounded backoff (Retry-After capped at 10 s).
     """
-    global _API_KEY
     payload = {k: v for k, v in body.items() if k != "anthropic_version"}
     payload["model"] = model_id
-    request = urllib.request.Request(
-        ANTHROPIC_URL, data=json.dumps(payload).encode(), method="POST",
-        headers={"content-type": "application/json", "anthropic-version": ANTHROPIC_VERSION,
-                 "x-api-key": api_key()})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        if error.code == 401 and _retry:
-            with _KEY_LOCK:
-                _API_KEY = None
-            return anthropic_messages(body, model_id, timeout, _retry=False)
+    data = json.dumps(payload).encode()
+    refreshed = False
+    attempt = 0
+    while True:
+        attempt += 1
+        request = urllib.request.Request(
+            ANTHROPIC_URL, data=data, method="POST",
+            headers={"content-type": "application/json", "anthropic-version": ANTHROPIC_VERSION,
+                     "x-api-key": api_key()})
         try:
-            kind = json.loads(error.read()).get("error", {}).get("type", "")
-        except (ValueError, AttributeError):
-            kind = ""
-        raise RuntimeError(f"anthropic_api_error:{error.code}:{kind}"[:120]) from None
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if error.code == 401 and not refreshed:
+                refreshed = True
+                reset_api_key()
+                continue
+            try:
+                kind = json.loads(error.read()).get("error", {}).get("type", "")
+            except (ValueError, AttributeError):
+                kind = ""
+            if error.code in _RETRYABLE_STATUS and attempt < _ATTEMPTS:
+                _pause(attempt, error.headers.get("retry-after") if error.headers else None)
+                continue
+            raise RuntimeError(f"anthropic_api_error:{error.code}:{kind}"[:120]) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            if attempt < _ATTEMPTS:
+                _pause(attempt, None)
+                continue
+            raise RuntimeError(f"anthropic_api_unreachable:{type(error).__name__}"[:120]) from None
 
+
+def _pause(attempt, retry_after):
+    try:
+        delay = float(retry_after)
+    except (TypeError, ValueError):
+        delay = 0.5 * 2 ** attempt
+    time.sleep(min(max(delay, 0.0), 10.0))
 
 def _text_blocks(content):
     if isinstance(content, str):

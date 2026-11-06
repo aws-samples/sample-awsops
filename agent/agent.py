@@ -146,10 +146,11 @@ def supports_prompt_cache(model_id):
 
 if model_runtime.provider() == "anthropic_api":
     # Terraform model_provider = anthropic_api: Claude through the Anthropic API with the key from
-    # ANTHROPIC_API_KEY_SECRET_ARN (read once per cold start, never logged).
+    # ANTHROPIC_API_KEY_SECRET_ARN (cached, never logged). _current_model() rebuilds the client when
+    # the key changes; an authentication error drops the cached key so the next request re-reads it.
     from strands.models.anthropic import AnthropicModel
-    model = AnthropicModel(client_args={"api_key": model_runtime.api_key()},
-                           model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
+    _MODEL_KEY = model_runtime.api_key()
+    model = AnthropicModel(client_args={"api_key": _MODEL_KEY}, model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
 else:
     try:
         if CacheConfig is None:
@@ -176,6 +177,25 @@ else:
             region_name="ap-northeast-2",  # global.* profile invoked from the home region so calls land in /aws/bedrock/invocation-logs (ap-northeast-2) for awsops-only cost attribution
             max_tokens=AGENT_MAX_TOKENS,
         )
+
+
+def _current_model():
+    """The chat model; under anthropic_api, rebuilt once the cached API key has been refreshed."""
+    global model, _MODEL_KEY
+    if model_runtime.provider() == "anthropic_api":
+        key = model_runtime.api_key()
+        if key != _MODEL_KEY:
+            model = AnthropicModel(client_args={"api_key": key}, model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
+            _MODEL_KEY = key
+    return model
+
+
+def _drop_key_on_auth_error(error):
+    """A rejected Anthropic API key (rotation/revocation) is re-read on the next request."""
+    if model_runtime.provider() == "anthropic_api" and (
+            "authentication_error" in str(error) or type(error).__name__ == "AuthenticationError"):
+        model_runtime.reset_api_key()
+
 
 # ============================================================================
 # Skill Base: Static decision patterns + workflows (rarely changes)
@@ -1579,7 +1599,7 @@ async def handler(payload):
                   f"suffix={user_input.endswith(']')} tools={len(tools)} sys_len={len(system_prompt)}", flush=True)
 
             agent = Agent(
-                model=model,
+                model=_current_model(),
                 tools=tools,
                 system_prompt=system_prompt,
                 messages=history if history else None,
@@ -1593,6 +1613,7 @@ async def handler(payload):
         return
 
     except Exception as e:
+        _drop_key_on_auth_error(e)
         logging.error(f"Gateway MCP error [{gateway_role}]: {e}")
         if started:
             # We already streamed a partial answer; re-running would duplicate it. End gracefully,
@@ -1610,7 +1631,7 @@ async def handler(payload):
     # streamed, so the BFF's Bedrock-direct ladder (empty-answer only) still recovers.
     notice = TOOLS_UNAVAILABLE_NOTICE.get(response_language, TOOLS_UNAVAILABLE_NOTICE["ko"])
     agent = Agent(
-        model=model,
+        model=_current_model(),
         system_prompt=base_prompt,
         messages=history if history else None,
         callback_handler=None,

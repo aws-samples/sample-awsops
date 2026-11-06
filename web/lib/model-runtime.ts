@@ -39,6 +39,10 @@ export function modelRuntimeClient(config: { region: string }): ModelRuntimeClie
 
 type Json = Record<string, unknown>;
 type TextBlock = { text?: string };
+type AnthropicStreamEvent = {
+  type?: string; index?: number; delta?: { type?: string; text?: string; stop_reason?: string };
+  message?: AnthropicReply; usage?: { output_tokens?: number };
+};
 
 let apiKey: Promise<string> | null = null;
 /** Forget the cached key (401 from the API, or tests). */
@@ -179,31 +183,37 @@ class AnthropicApiClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let inputTokens = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let cut: number;
-      while ((cut = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, cut);
-        buffer = buffer.slice(cut + 2);
+    const events = function* (frames: string[]) {
+      for (const frame of frames) {
         const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
         if (!data) continue;
-        const event = JSON.parse(data) as {
-          type?: string; index?: number; delta?: { type?: string; text?: string; stop_reason?: string };
-          message?: AnthropicReply; usage?: { output_tokens?: number };
-        };
-        if (event.type === 'message_start') inputTokens = event.message?.usage?.input_tokens ?? 0;
-        else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-          yield { contentBlockDelta: { contentBlockIndex: event.index ?? 0, delta: { text: event.delta.text ?? '' } } };
-        } else if (event.type === 'message_delta') {
-          if (event.delta?.stop_reason) yield { messageStop: { stopReason: event.delta.stop_reason as never } };
-          const outputTokens = event.usage?.output_tokens ?? 0;
-          yield { metadata: { usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }, metrics: { latencyMs: 0 } } };
-        } else if (event.type === 'error') {
-          throw new Error('anthropic_api_stream_error');
-        }
+        try { yield JSON.parse(data) as AnthropicStreamEvent; } catch { /* skip an unparseable frame */ }
       }
+    };
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        // CRLF-tolerant framing; at EOF a final frame without a trailing blank line still counts.
+        buffer = (buffer + (done ? decoder.decode() : decoder.decode(value, { stream: true }))).replace(/\r\n/g, '\n');
+        const frames = buffer.split('\n\n');
+        buffer = done ? '' : frames.pop() ?? '';
+        for (const event of events(frames)) {
+          if (event.type === 'message_start') inputTokens = event.message?.usage?.input_tokens ?? 0;
+          else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+            yield { contentBlockDelta: { contentBlockIndex: event.index ?? 0, delta: { text: event.delta.text ?? '' } } };
+          } else if (event.type === 'message_delta') {
+            if (event.delta?.stop_reason) yield { messageStop: { stopReason: event.delta.stop_reason as never } };
+            const outputTokens = event.usage?.output_tokens ?? 0;
+            yield { metadata: { usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }, metrics: { latencyMs: 0 } } };
+          } else if (event.type === 'error') {
+            throw new Error('anthropic_api_stream_error');
+          }
+        }
+        if (done) break;
+      }
+    } finally {
+      // A consumer that stops early must not leak the locked response body.
+      await reader.cancel().catch(() => undefined);
     }
   }
 }

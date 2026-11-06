@@ -122,6 +122,34 @@ class ProviderTests(unittest.TestCase):
                 model_runtime.client("r").converse(modelId="claude-haiku-5-5", messages=[])
         self.assertEqual(str(ctx.exception), "anthropic_api_error:403:permission_error")
 
+    def test_throttling_and_network_errors_retry_with_bounded_backoff(self):
+        import urllib.error
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(1)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(request.full_url, 429, "x", {"retry-after": "30"}, io.BytesIO(b"{}"))
+            if len(calls) == 2:
+                raise urllib.error.URLError("reset")
+            return io.BytesIO(b'{"content": [], "stop_reason": "end_turn"}')
+        model_runtime._API_KEY = "sk"
+        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep") as sleep:
+            model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_args_list[0].args, (10.0,))
+
+    def test_persistent_network_failure_is_a_bounded_runtime_error(self):
+        import urllib.error
+
+        def urlopen(request, timeout):
+            raise urllib.error.URLError("down")
+        model_runtime._API_KEY = "sk"
+        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep"), \
+                self.assertRaises(RuntimeError) as ctx:
+            model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
+        self.assertEqual(str(ctx.exception), "anthropic_api_unreachable:URLError")
+
     def test_rotated_key_is_refetched_once_after_401(self):
         import urllib.error
         keys = []

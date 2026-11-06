@@ -121,6 +121,23 @@ describe('model runtime client', () => {
     expect(usage).toEqual([{ inputTokens: 7, outputTokens: 2, totalTokens: 9 }]);
   });
 
+  it('anthropic_api stream tolerates CRLF framing, bad frames and a final frame without a blank line', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
+    vi.spyOn(SecretsManagerClient.prototype, 'send').mockResolvedValue({ SecretString: 'sk-plain' } as never);
+    const body = ['data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+      'data: {not json', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}'].join('\r\n\r\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new TextEncoder().encode(body), { status: 200 })));
+    const { modelRuntimeClient } = await load();
+    const res = await modelRuntimeClient({ region: 'x' }).send(new ConverseStreamCommand({ modelId: 'claude-sonnet-5-5', messages: [] }));
+    const seen: string[] = [];
+    for await (const ev of res.stream ?? []) {
+      if (ev.contentBlockDelta) seen.push(ev.contentBlockDelta.delta?.text ?? '');
+      if (ev.messageStop) seen.push(`stop:${ev.messageStop.stopReason}`);
+    }
+    expect(seen).toEqual(['Hi', 'stop:end_turn']);
+  });
+
   it('anthropic_api errors carry only status and error type, never the key', async () => {
     process.env.MODEL_PROVIDER = 'anthropic_api';
     process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
