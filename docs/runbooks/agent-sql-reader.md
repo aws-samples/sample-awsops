@@ -402,6 +402,12 @@ copies stay absent for trace queues. SELECT is granted only on the view, never t
 `scripts/v2/workers/test_graph_collection.py` exercises this contract on disposable PostgreSQL,
 including grant restoration, reapplication, denied base-table reads and denied view writes.
 
+Trace edge instance observations (`instance_observations[]`, `instance_observations_omitted`,
+`instance_observations_unbound`; see [API reference](../api-reference.md#trace-edge-instance-observations))
+are not part of the agent evidence contract: `sql_reader.topology_edges` projects only numeric
+`spanCount` and `metricCount` from edge `meta`, so `execute_sql` cannot read them. Exposing them
+requires a new reviewed view migration; never grant the base table.
+
 그래프 근거 마이그레이션 이후 `01M27B...`가 노드 투영을 갱신한다. 적용 후 보존된 행을 포함해
 큐 claim이 destination ARN의 한정자와만 일치하는지 확인한다. 비-ARN·잘못된 ARN은 null이고
 호출자 폴백은 없어야 한다. 출처는 항상 `telemetry_claim`이며 trace 큐의 `accountId`·`region`·

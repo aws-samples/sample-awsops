@@ -53,7 +53,10 @@ def _recommendation_evidence(record, option, resource_type):
     names = {metric["name"] for metric in metrics}
     coverage = {
         "cpu": bool(names & {"Cpu", "CPU"}), "memory": "Memory" in names,
-        "io": any(name.startswith(("EBS_", "DISK_", "NETWORK_", "EBSVolume", "Network", "StorageNetwork"))
+        # I/O pressure only: storage *capacity* (EBSVolumeStorageSpaceUtilization, VolumeBytesUsed)
+        # is not I/O evidence and must not satisfy the downsize gate.
+        "io": any((name.startswith(("EBS_", "DISK_", "NETWORK_", "EBSVolume", "Network", "StorageNetwork"))
+                   and name != "EBSVolumeStorageSpaceUtilization")
                   or name in {"VolumeReadIOPs", "VolumeWriteIOPs", "ReadIOPSEphemeralStorage", "WriteIOPSEphemeralStorage"}
                   for name in names),
     }
