@@ -72,7 +72,7 @@ Cognito + Lambda@Edge 구성은 최소 권한(REFRESH 미부여)을 따릅니다
 AWSops는 v1의 **단일 EC2 모놀리식**을 **Terraform 기반 MSA**로 재구축했습니다.
 
 - **IaC**: Terraform(부분 S3 backend). CDK는 폐기되었습니다.
-- **컴퓨트**: ECS Fargate(arm64). web은 Next.js 15 thin-BFF로 루트 경로에서 서빙됩니다.
+- **컴퓨트**: ECS Fargate(arm64). web은 Next.js 16 thin-BFF로 루트 경로에서 서빙됩니다.
 - **비동기 워커**: 무겁거나 긴/OOM 위험 작업은 web이 직접 처리하지 않고 SQS → ESM(킬스위치) → dispatcher Lambda(멱등) → Step Functions → Lambda 또는 `ecs:runTask.sync` Fargate로 보냅니다.
 
 라이브 Steampipe 쿼리 경로는 없으며, flag-gated 인벤토리 sync만 있습니다.
@@ -113,7 +113,7 @@ OpsCenter / Incident Manager 양방향 라이트백으로 기록하도록 설계
 
 **프롬프트 캐싱과 작업 깊이별 모델 선택으로 최적화**됩니다.
 
-- **프롬프트 캐싱** — 약 59% 히트율로 반복 컨텍스트 재계산을 줄입니다.
+- **프롬프트 캐싱** — Claude 경로에서만 명시적 캐시 포인트로 반복 컨텍스트 재계산을 줄입니다(GPT-6 Luna 채팅은 명시적 캐시 포인트를 보내지 않음).
 - **작업 깊이별 모델** — AI 진단은 Light·Mid(8+1섹션)는 Sonnet 기본, Deep(15+1섹션)은 Sonnet 기본·Opus 선택(cost-gate). 분류·라우팅에는 저렴한 Haiku급 모델을 사용합니다.
 - Aurora durable token budget(예산 영속)은 v1에 구현돼 있고, 현재 웹 챗 경로 연동은 후속 과제입니다.
 

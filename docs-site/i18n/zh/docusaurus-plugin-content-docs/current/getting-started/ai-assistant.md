@@ -113,7 +113,7 @@ AI 助手会分析问题，并自动将其分类到 11 条专业路由中最合�
 │  - 支持表格、列表、代码块                              │
 │                                                        │
 ├────────────────────────────────────────────────────────┤
-│  Network Gateway (17 tools)  │  Claude Sonnet-class│ 3.2s │
+│  Network Gateway (17 tools)  │  GPT-6 Luna         │ 3.2s │
 ├────────────────────────────────────────────────────────┤
 │  Tools: list_vpcs, get_vpc_network_details, ...        │
 │  Queried: aws_vpc, aws_vpc_subnet                      │
@@ -123,7 +123,7 @@ AI 助手会分析问题，并自动将其分类到 11 条专业路由中最合�
 ### 显示信息
 
 - **路由路径**：由哪个 Gateway 处理
-- **模型**：使用的 Claude 模型（Sonnet/Opus）
+- **模型**：回答使用的 Bedrock 模型（例如 GPT-6 Luna）
 - **响应时间**：处理所耗费的时间
 - **使用的工具**：被调用的 MCP 工具列表
 - **查询的资源**：在 Steampipe 中查询的表
@@ -138,7 +138,7 @@ AI 助手会分析问题，并自动将其分类到 11 条专业路由中最合�
 
 ## 模型选择
 
-聊天中没有模型选择下拉框。代理回答使用 Claude Sonnet 级模型，问题路由分类使用 Haiku 级模型；Opus 级模型仅可在 [AI 诊断](../monitoring/ai-diagnosis.md) 的 Deep 阶段选择。确切的模型 ID 以代码为准。
+聊天中没有模型选择下拉框。代理回答使用 GPT-6 Luna，问题路由分类使用 Haiku 级模型；Opus 级模型仅可在 [AI 诊断](../monitoring/ai-diagnosis.md) 的 Deep 阶段选择。确切的模型 ID 以代码为准。
 
 ## 关联问题
 

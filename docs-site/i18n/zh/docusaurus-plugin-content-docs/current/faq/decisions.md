@@ -72,7 +72,7 @@ Cognito + Lambda@Edge 的配置遵循最小权限（不授予 REFRESH）。
 AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA**。
 
 - **IaC**：Terraform（部分 S3 backend）。CDK 已废弃。
-- **计算**：ECS Fargate（arm64）。web 作为 Next.js 15 thin-BFF 在根路径提供服务。
+- **计算**：ECS Fargate（arm64）。web 作为 Next.js 16 thin-BFF 在根路径提供服务。
 - **异步 worker**：繁重或长时/有 OOM 风险的任务不由 web 直接处理，而是发送到 SQS → ESM（kill-switch）→ dispatcher Lambda（幂等）→ Step Functions → Lambda 或 `ecs:runTask.sync` Fargate。
 
 没有实时 Steampipe 查询路径，仅有 flag-gated 库存 sync。
@@ -113,7 +113,7 @@ AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA*
 
 **通过提示词缓存与按任务深度选择模型进行优化**。
 
-- **提示词缓存** — 以约 59% 命中率减少重复上下文的重新计算。
+- **提示词缓存** — 仅 Claude 路径使用显式缓存点减少重复上下文的重新计算（GPT-6 Luna 聊天不发送）。
 - **按任务深度选择模型** — AI 诊断的 Light·Mid（8+1 章节，共 9）默认 Sonnet，Deep（15+1 章节，共 16）默认 Sonnet·可选 Opus（cost-gate）。分类·路由使用低成本的 Haiku 级模型。
 - Aurora durable token budget（预算持久化）已在 v1 实现，与当前 web 聊天路径的对接是后续课题。
 

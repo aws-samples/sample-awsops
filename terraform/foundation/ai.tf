@@ -204,7 +204,7 @@ resource "aws_iam_role_policy" "agentcore" {
         Sid      = "BedrockModelInvoke"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = local.runtime_model_resources
+        Resource = local.agentcore_model_resources
       },
       {
         Sid       = "DiscoverGateways"
@@ -1048,5 +1048,7 @@ output "agentcore" {
     # Bedrock/AgentCore/ECR. provision.py emits networkMode=VPC when these are present.
     subnets         = local.private_subnet_ids
     security_groups = [aws_security_group.service.id]
+    # Durable chat-model rollback (var.agentcore_chat_model_id); empty = agent.py's Luna default.
+    model_env = tomap(var.agentcore_chat_model_id == "" ? {} : { AGENT_MODEL_ID = var.agentcore_chat_model_id })
   } : null
 }

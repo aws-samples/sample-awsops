@@ -135,6 +135,8 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
 }
 
 export async function POST(request: Request) {
+  // Leave response headroom below CloudFront's 60-second origin read timeout.
+  const deadlineMs = Date.now() + 55_000;
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ error: 'unauthenticated' }, 401);
 
@@ -168,7 +170,7 @@ export async function POST(request: Request) {
 
   try {
     // PromQL vocabulary warnings remain advisory; invalid TraceQL drafts still fail validation.
-    const { query, warning } = await generateQuery({ nl, lang, ...schema, isSql });
+    const { query, warning } = await generateQuery({ nl, lang, ...schema, isSql, deadlineMs });
     return json({ query, lang, ...(warning ? { warning } : {}) }, 200);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'generation failed' }, 502);

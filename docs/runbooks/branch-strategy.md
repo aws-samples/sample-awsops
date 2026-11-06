@@ -66,9 +66,10 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 ## Oversized promotion review
 
 The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
-and up to 32 supported HEAD images under the existing byte/codec bounds. An
-accumulated dev-to-main promotion can exceed these bounds even if each feature PR
-was independently reviewed. It stays blocked; rerunning unchanged input cannot
+per review call and up to 32 supported HEAD images under the existing byte/codec
+bounds. A larger diff is reviewed in at most 10 complete file-boundary batches that
+must all pass (`pr-review-head-images.md`). An accumulated dev-to-main promotion
+can still exceed that even if each feature PR was independently reviewed. It stays blocked; rerunning unchanged input cannot
 restore missing scope, and historical feature-review comments are not proof of
 complete review of the current promotion HEAD.
 
@@ -80,10 +81,11 @@ main first. Do not assume this activation path for another repository whose defa
 branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
 must authorize the workflow change under the existing protections.
 
-Before continuing such a promotion, implement and review complete bounded batching
-or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
-exists yet. The same protected workflow must then review the full promotion scope
-and integration changes on its current HEAD. Do not bypass required checks, alter
+Complete bounded batching exists: a promotion diff up to 10 file-boundary batches,
+whose batch-1 file set fits one batch, is reviewed in full by the same protected
+workflow on its current HEAD. A promotion beyond that still needs authenticated
+exact-commit coverage reuse, which is not implemented, through an ordinary PR to dev
+before it can continue. Do not bypass required checks, alter
 main to hide changes, or publish the release tag while this prerequisite is pending.
 Smaller promotion intervals can prevent future accumulation, but cannot repair the
 already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).

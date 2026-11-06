@@ -72,7 +72,7 @@ Admin functions are allowed only for users who are Cognito `admins` **group memb
 AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA**.
 
 - **IaC**: Terraform (partial S3 backend). CDK is retired.
-- **Compute**: ECS Fargate (arm64). The web tier is a Next.js 15 thin-BFF served at the root path.
+- **Compute**: ECS Fargate (arm64). The web tier is a Next.js 16 thin-BFF served at the root path.
 - **Async workers**: heavy, long, or OOM-risk work is not handled by web directly; it goes SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
 
 There is no live Steampipe query path; only the flag-gated inventory sync exists.
@@ -113,7 +113,7 @@ The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. A f
 
 They are **optimized through prompt caching and per-depth model selection**.
 
-- **Prompt caching** — an ~59% hit rate reduces recomputation of repeated context.
+- **Prompt caching** — explicit cache points on Claude paths only reduce recomputation of repeated context (GPT-6 Luna chat sends none).
 - **Per-depth models** — AI diagnosis uses Sonnet by default for Light and Mid (8+1 sections); Deep (15+1 sections) uses Sonnet by default with Opus as an option (cost-gate). Classification and routing use a cheaper Haiku-class model.
 - The Aurora durable token budget (persisted budget) is implemented in v1; wiring it into the current web-chat path is follow-up work.
 

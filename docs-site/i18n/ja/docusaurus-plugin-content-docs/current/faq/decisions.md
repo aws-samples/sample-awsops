@@ -72,7 +72,7 @@ Cognito + Lambda@Edge の構成は最小権限(REFRESH 未付与)に従います
 AWSops は v1 の**単一 EC2 モノリシック**を **Terraform ベースの MSA** に再構築しました。
 
 - **IaC**: Terraform(部分 S3 backend)。CDK は廃止されました。
-- **コンピュート**: ECS Fargate(arm64)。web は Next.js 15 thin-BFF としてルートパスで配信されます。
+- **コンピュート**: ECS Fargate(arm64)。web は Next.js 16 thin-BFF としてルートパスで配信されます。
 - **非同期ワーカー**: 重い・長い/OOM リスクのある作業は web が直接処理せず、SQS → ESM(キルスイッチ) → dispatcher Lambda(冪等) → Step Functions → Lambda または `ecs:runTask.sync` Fargate に送ります。
 
 ライブ Steampipe のクエリ経路はなく、flag-gated インベントリ sync のみがあります。
@@ -113,7 +113,7 @@ OpsCenter / Incident Manager への双方向ライトバックで記録するよ
 
 **プロンプトキャッシングと作業深度別のモデル選択で最適化**されます。
 
-- **プロンプトキャッシング** — 約 59% のヒット率で、繰り返しコンテキストの再計算を削減します。
+- **プロンプトキャッシング** — Claude 経路のみ明示的なキャッシュポイントで繰り返しコンテキストの再計算を削減します（GPT-6 Luna チャットは送信しません）。
 - **作業深度別モデル** — AI 診断は Light·Mid(8+1 セクション)は Sonnet デフォルト、Deep(15+1 セクション)は Sonnet デフォルト・Opus 選択(cost-gate)。分類・ルーティングには低コストの Haiku クラスモデルを使用します。
 - Aurora durable token budget(予算永続化)は v1 に実装済みで、現在のウェブチャット経路への連携は今後の課題です。
 

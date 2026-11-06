@@ -225,7 +225,7 @@ The Explore page lets you execute queries directly against registered datasource
 
 ### AI Query Generation
 
-Enable the **AI Assist** toggle to write queries in natural language. Bedrock Sonnet automatically generates a query matching the datasource type and displays an explanation banner.
+Enable the **AI Assist** toggle to write queries in natural language. GPT-6.1 Terra (Claude Sonnet 5.5 fallback on invocation or validation failure) automatically generates a query matching the datasource type and displays an explanation banner.
 
 **Example prompts by datasource type:**
 
@@ -241,7 +241,7 @@ Enable the **AI Assist** toggle to write queries in natural language. Bedrock So
 1. Toggle AI Assist to ON
 2. Describe the data you want in natural language
 3. Press **Ctrl+Enter** or click the execute button
-4. Bedrock Sonnet generates a PromQL/LogQL/SQL query
+4. GPT-6.1 Terra (Claude Sonnet 5.5 fallback on invocation or validation failure) generates a PromQL/LogQL/SQL query
 5. The generated query is displayed along with an explanation banner
 
 :::tip AI Assist Shortcut

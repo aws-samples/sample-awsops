@@ -52,7 +52,7 @@ flowchart TD
   ECR -->|"Image reference"| RT
 
   AGENT -->|"MCP + SigV4"| GW["9 section gateways<br/>(~160 read-only tools)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet / Opus / Haiku classes"]
+  AGENT -->|"Bedrock API"| MODEL["GPT-6 Luna chat (AGENT_MODEL_ID override)"]
 ```
 
 ### AgentCore Runtime
@@ -398,5 +398,5 @@ The web BFF queries Runtime / Gateway / Code Interpreter status. It reads identi
 The AI assistant is available at `/assistant` (full page) and in a resizable drawer you can open anywhere; both share the same Aurora conversation history.
 
 :::tip Routing is hybrid
-Questions are routed to the appropriate section agent via a regex fast-path + Haiku-class classifier + prompt caching (LIVE, ~59% cache hit). This is not the legacy fixed multi-route Sonnet registry.
+Questions are routed to the appropriate section agent via a regex fast-path + Haiku-class classifier (LIVE; explicit prompt caching applies only to Claude paths). This is not the legacy fixed multi-route Sonnet registry.
 :::

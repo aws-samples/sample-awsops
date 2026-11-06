@@ -113,7 +113,7 @@ Example: `Network Gateway (17 tools)`, `Bedrock + Steampipe SQL`
 │  - Supports tables, lists, code blocks                 │
 │                                                        │
 ├────────────────────────────────────────────────────────┤
-│  Network Gateway (17 tools)  │  Claude Sonnet-class│ 3.2s │
+│  Network Gateway (17 tools)  │  GPT-6 Luna         │ 3.2s │
 ├────────────────────────────────────────────────────────┤
 │  Tools: list_vpcs, get_vpc_network_details, ...        │
 │  Queried: aws_vpc, aws_vpc_subnet                      │
@@ -123,7 +123,7 @@ Example: `Network Gateway (17 tools)`, `Bedrock + Steampipe SQL`
 ### Displayed Information
 
 - **Route Path**: Which Gateway processed the request
-- **Model**: The Claude model used (Sonnet/Opus)
+- **Model**: The Bedrock model used for the answer (for example, GPT-6 Luna)
 - **Response Time**: Time taken to process
 - **Tools Used**: List of MCP tools called
 - **Queried Resources**: Tables queried from Steampipe
@@ -138,7 +138,7 @@ Responses are streamed in real-time and displayed progressively on screen. The o
 
 ## Model Selection
 
-Chat has no model dropdown. Agent answers use a Claude Sonnet-class model and routing classification uses a Haiku-class model; an Opus-class model is selectable only in the [AI Diagnosis](../monitoring/ai-diagnosis.md) Deep tier. Exact model IDs live in code.
+Chat has no model dropdown. Agent answers use GPT-6 Luna and routing classification uses a Haiku-class model; an Opus-class model is selectable only in the [AI Diagnosis](../monitoring/ai-diagnosis.md) Deep tier. Exact model IDs live in code.
 
 ## Related Questions
 

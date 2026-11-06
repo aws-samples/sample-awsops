@@ -119,7 +119,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await trace();
     const previous = await state('trace');
     producer.invoke.mockResolvedValue({ traces: [] });
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + 1);
     try {
       expect(await rebuildTraceGraph(pool, [new TempoTraceSource(7)]))
         .toMatchObject({ published: 0, retained: 1 });
@@ -175,7 +175,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const cls = phase === 'trace_context' ? 'trace' : 'infra';
     const previous = await state(cls);
     const query = Client.prototype.query;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
       if ((phase === 'discover' && String(sql).includes('SELECT accounts.account_id'))
         || (phase === 'publish' && String(sql).includes('INSERT INTO topology_nodes'))
         || (phase === 'trace_context' && String(sql).includes("class = 'infra'")))
@@ -371,7 +371,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
     const query = Client.prototype.query;
     let scans = 0;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
       if (String(sql).includes('count(*)::int AS count')) scans++;
       return Reflect.apply(query, this, [sql, ...args]);
     });
@@ -468,8 +468,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await hostParticipation();
     const query = Client.prototype.query;
     let changed = false;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
-      const result = Reflect.apply(query, this, [sql, ...args]);
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
+      const result = Reflect.apply(query, this, [sql, ...args]) as unknown as Promise<unknown>;
       if (!changed && String(sql).includes('count(*)::int AS count')) {
         changed = true;
         return result.then(async rows => {
@@ -600,7 +600,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(result).toMatchObject({ status: 'error', stale: true, captured_at: null,
       retainedPrevious: false, failureReason: 'source_read_failed' });
     expect(result.windowStartMs).toBeUndefined();
-    expect(result.sources[0].itemCount == null).toBe(true);
+    expect(result.sources![0].itemCount == null).toBe(true);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(0);
   });
   it('does not replace trace evidence when the infra-read admission is busy', async () => {
@@ -640,7 +640,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it.each([0, -1000])('trace discloses superseded attempts (%s ms) without changing graph or state', async offset => {
     await trace();
     const previous = await state('trace');
-    const attemptClock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + offset);
+    const attemptClock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + offset);
     expect(await trace([])).toMatchObject({ published: 0, skipped: 1, reasons: ['superseded'] });
     attemptClock.mockRestore(); // Compare freshness with the real read clock, not an older attempt clock.
     expect(await state('trace')).toEqual(previous);
@@ -683,7 +683,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     } else {
       expect(afterFailure).toMatchObject({ status: 'error', stale: true, retainedPrevious: true,
         failureReason: 'publication_failed' });
-      expect(new Date(afterFailure.captured_at).getTime()).toBe(new Date(previous.captured_at).getTime());
+      expect(new Date(afterFailure.captured_at!).getTime()).toBe(new Date(previous.captured_at!).getTime());
     }
     if (mode === 'timer') {
       expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 60000]]);
@@ -839,7 +839,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it('records budget-skipped source reads without changing the saved graph', async () => {
     await seed('infra'); await build('infra');
     const previous = await state('infra');
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1000);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + 1000);
     const timer = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(31_000);
     try {
       expect(await build('infra')).toMatchObject({ skipped: 1, reasons: ['time_limit'] });
@@ -969,7 +969,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       const result = await state('infra');
       expect(result).toMatchObject({ status: 'unavailable', stale: true, retainedPrevious: true,
         captured_at: previous.captured_at, publishedSources: previous.publishedSources });
-      expect(new Date(result.attempted_at).getTime()).toBe(now + offset);
+      expect(new Date(result.attempted_at!).getTime()).toBe(now + offset);
       expect(result.sources).toContainEqual(expect.objectContaining({
         sourceId: 'inventory:subnet', status: 'unavailable', producerStatus: 'unknown', reasons: ['missing_ledger'],
       }));
@@ -984,7 +984,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     clock.mockImplementation(() => new Date().getTime());
     const confirmed = await state('infra');
     expect(confirmed).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(new Date(confirmed.captured_at).getTime()).toBeGreaterThan(new Date(previous.captured_at).getTime());
+    expect(new Date(confirmed.captured_at!).getTime()).toBeGreaterThan(new Date(previous.captured_at!).getTime());
     expect(confirmed.publishedSources).toContainEqual(expect.objectContaining({
       sourceId: 'inventory:subnet', status: 'empty', producerStatus: 'succeeded', itemCount: 0, reasons: [],
     }));
@@ -1059,7 +1059,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await graphTransaction(pool, false, async client => {
       await client.query('SELECT pg_advisory_xact_lock($1)', [0x696e6672]);
       expect(await writeGraphState(client, 'self', {
-        status: 'error', publish: false, attemptedAt: new Date(previous.attempted_at).toISOString(), details: {},
+        status: 'error', publish: false, attemptedAt: new Date(previous.attempted_at!).toISOString(), details: {},
       }, 'infra' as never)).toBe(false);
     });
     expect((await pool.query('SELECT * FROM topology_nodes')).rowCount).toBeGreaterThan(0);
@@ -1144,7 +1144,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       } };
     } };
     const body = await (await GET(new Request('http://localhost/api/graph?class=infra'))).json();
-    expect(body.collection.captured_at).toBe(new Date(previous.captured_at).toISOString());
+    expect(body.collection.captured_at).toBe(new Date(previous.captured_at!).toISOString());
     expect(body.nodes.length).toBeGreaterThan(0);
     expect((await pool.query('SELECT * FROM topology_nodes')).rows).toEqual([]);
   });
