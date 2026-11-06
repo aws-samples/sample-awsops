@@ -551,10 +551,11 @@ def test_provider_requests_respect_sdk_resource_list_bound(provider):
         f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-{i:017x}" for i in range(count)}
 
 
-def test_database_timeout_restores_existing_policy_after_read_error(provider):
+@pytest.mark.parametrize("prior", [30, None])  # worker db.connect() passes no timeout: gettimeout() is None
+def test_database_timeout_restores_existing_policy_after_read_error(provider, prior):
     class Socket:
         def __init__(self):
-            self.timeout, self.changes = 30, []
+            self.timeout, self.changes = prior, []
         def gettimeout(self):
             return self.timeout
         def settimeout(self, seconds):
@@ -575,8 +576,8 @@ def test_database_timeout_restores_existing_policy_after_read_error(provider):
     changes = [args["timeout"] for sql, args in db.queries if "set_config('statement_timeout'" in sql]
     # The server cancels before the 4s transport timeout closes the connection.
     assert "2000ms" in changes and changes[-1] == "30s"
-    assert 4 in db._usock.changes and max(db._usock.changes[:-1]) <= 30
-    assert db._usock.timeout == 30
+    assert 4 in db._usock.changes and max(c for c in db._usock.changes if c is not None) <= 30
+    assert db._usock.timeout == prior
     assert "inventory_read_failed" in bundle["degraded"]
 
 
@@ -1072,3 +1073,48 @@ def test_host_trace_nodes_without_account_bind_and_unbound_edges_are_disclosed(p
     db.nodes[-1][3]["region"] = "eu-west-1"  # db:two cannot be scoped
     bundle = discovery.collect(db, ACCOUNT, Budget())
     assert "unresolved_graph_edge" in bundle["incomplete"]
+
+
+
+def test_evidence_loop_is_off_when_the_flag_is_absent(provider, monkeypatch):
+    monkeypatch.delenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED")
+    db = Database([inventory("ec2", I1, {})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert not db.queries and not provider.client_calls
+    assert "evidence_loop_disabled" in bundle["gaps"]
+    merged = discovery.follow_up(Database(), ACCOUNT, bundle, [], Budget())
+    assert "follow_up_rejected" in merged["gaps"] and not provider.client_calls
+
+
+def test_metric_requests_stay_under_the_cloudwatch_query_limit(provider):
+    provider.metrics = metric_response
+    rows = [inventory("ec2", f"i-{n:017x}", {}) for n in range(120)]
+    rows += [inventory("rds", f"db{n}", {"db_instance_identifier": f"db{n}",
+                                         "read_replica_source_db_instance_identifier": "src"}) for n in range(80)]
+    discovery.collect(Database(rows), ACCOUNT, Budget())
+    calls = [args for op, args in provider.calls if op == "metrics"]
+    assert calls and all(len(c["MetricDataQueries"]) <= 500 for c in calls)
+
+
+def test_row_freshness_follows_the_configured_graph_window(provider, monkeypatch):
+    monkeypatch.setenv("GRAPH_REBUILD_INTERVAL_MINS", "60")  # class window: 120 minutes
+    db = graph_fixture()
+    old = NOW - dt.timedelta(minutes=45)
+    for edge in db.edges:
+        edge[5] = old
+    for state in db.states:
+        state[2] = state[3] = old
+    import diagnosis.discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    rows = [e for e in bundle["evidence"] if e["source"] == "stored_graph" and e["kind"] == "configured_dependency"
+            or (e["source"] == "stored_graph" and not e["facts"].get("correlation_id"))]
+    assert rows and all(e["fresh"] for e in rows)
+
+
+def test_non_eni_attachments_are_disclosed_not_reported_unattached(provider):
+    db = Database([inventory("ebs_volume", "vol-1", {"attachments": [{"Device": "/dev/xvda", "InstanceId": I1,
+                                                                        "State": "attached"}]})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    facts = resource(bundle, "vol-1")["facts"]
+    assert facts["attachments"] == [] and facts["attachments_complete"] is False

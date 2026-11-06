@@ -492,17 +492,24 @@ class RuntimePolicyTests(unittest.TestCase):
             {"Sid": "DiagnosisRegisteredMemberReadOnly", "Effect": "Allow", "Action": ["sts:AssumeRole"],
              "Resource": [member], "Condition": {"StringLike": {"sts:ExternalId": "?*"},
                                                  "StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]}}}]}
-        policy_after = {"name": "awsops-dev-worker-task-diagnosis-evidence-read", "role": "awsops-dev-worker-task",
-                        "policy": json.dumps(policy)}
+        policy_after = {"name": "awsops-dev-worker-task-diagnosis-evidence-read", "policy": json.dumps(policy)}
         containers = [{"name": "worker", "environment": [
             {"name": "DIAGNOSIS_MEMBER_ROLE_ARNS", "value": json.dumps([member])},
             {"name": "DIAGNOSIS_HOST_ACCOUNT_ID", "value": ACCOUNT}]}]
         task_after = {"family": "awsops-dev-worker", "container_definitions": json.dumps(containers),
                       "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/awsops-dev-worker-task"}
         plan = self.plan([
-            self.change('aws_iam_role_policy.worker_diagnosis_evidence["task"]', "aws_iam_role_policy", policy_after),
-            self.change("aws_ecs_task_definition.worker[0]", "aws_ecs_task_definition", task_after)])
+            self.change('aws_iam_policy.worker_diagnosis_evidence["task"]', "aws_iam_policy", policy_after),
+            self.change("aws_ecs_task_definition.worker[0]", "aws_ecs_task_definition", task_after),
+            self.change('aws_iam_role_policy_attachment.worker_diagnosis_evidence["task"]',
+                        "aws_iam_role_policy_attachment", {"role": "awsops-dev-worker-task"})])
         plan["variables"]["diagnosis_member_role_arns"] = {"value": [member]}
+        plan["configuration"] = {"root_module": {"resources": [
+            {"address": "aws_iam_policy.worker_diagnosis_evidence", "expressions": {"name": {}}},
+            {"address": "aws_iam_role_policy_attachment.worker_diagnosis_evidence", "expressions": {
+                "role": {"references": ["aws_iam_role.worker_task[0].name", "aws_iam_role.worker_task"]},
+                "policy_arn": {"references": ["each.value.arn", "each.value"]}},
+             "for_each_expression": {"references": ["aws_iam_policy.worker_diagnosis_evidence"]}}]}}
         return plan
 
     def test_member_role_exception_covers_only_the_exact_allowlisted_positions(self):
@@ -518,11 +525,24 @@ class RuntimePolicyTests(unittest.TestCase):
             bad["variables"]["diagnosis_member_role_arns"] = {"value": bad_roles}
             with self.subTest(roles=bad_roles), self.assertRaises(ValueError):
                 self.module.check_plan(bad, "dev", "full", ACCOUNT)
-        for field, value in (("role", "awsops-dev-web-task"), ("name", "awsops-dev-other")):
-            bad = copy.deepcopy(plan)
-            bad["resource_changes"][0]["change"]["after"][field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][0]["change"]["after"]["name"] = "awsops-dev-other"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # The managed policy must be attached only to the worker task role.
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][2]["change"]["after"]["role"] = "awsops-dev-web-task"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["configuration"]["root_module"]["resources"].append({"address": "aws_iam_role_policy_attachment.web_extra",
+            "expressions": {"policy_arn": {"references": ["aws_iam_policy.worker_diagnosis_evidence[\"task\"].arn"]}}})
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        del bad["configuration"]
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
         bad = copy.deepcopy(plan)
         bad["resource_changes"][1]["change"]["after"]["family"] = "awsops-dev-web"
         with self.assertRaises(ValueError):

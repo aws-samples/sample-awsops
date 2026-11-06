@@ -173,3 +173,45 @@ def test_proxy_provider_error_is_a_gap_and_defect_is_degraded():
     identities.collect_proxies(bundle, Budget(), lambda *args: Broken())
     assert "proxy_projection_failed" in bundle["degraded"]
     assert "proxy_configuration_unavailable" not in bundle["gaps"]
+
+
+
+def test_in_scope_unavailable_proxy_is_a_gap_and_cluster_deadline_is_a_bound():
+    bundle = _proxy_bundle()
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "modifying", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"},
+                    {"DBProxyName": "q", "Status": "modifying", "VpcId": "vpc-other",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-2"}]}
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert bundle["gaps"].count("proxy_not_available") == 1
+
+    class Deadline:
+        def __init__(self):
+            self.left = 3
+
+        def remaining(self, analysis=True):
+            self.left -= 1
+            return 100 if self.left > 0 else 0
+    bundle = _proxy_bundle()
+
+    class Cluster(Rds):
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:c1", "Type": "TRACKED_CLUSTER"}]}
+    budget = Budget()
+    calls = {"n": 0}
+    real = budget.remaining
+
+    def remaining(analysis=True):
+        calls["n"] += 1
+        return real(analysis=analysis) if calls["n"] < 6 else 0
+    budget.remaining = remaining
+    identities.collect_proxies(bundle, budget, lambda *args: Cluster())
+    assert "discovery_deadline" in bundle["incomplete"]
+    assert "proxy_target_unresolved" not in bundle["gaps"]

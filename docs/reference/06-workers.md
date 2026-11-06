@@ -99,9 +99,9 @@ wires them in, and until then the `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` check inside
 
 | Terraform variable (default) | Effect when enabled |
 |---|---|
-| `diagnosis_evidence_loop_enabled` (`false`, requires `workers_enabled`) | Sets the worker env `DIAGNOSIS_EVIDENCE_LOOP_ENABLED`, `DIAGNOSIS_HOST_ACCOUNT_ID` (the applied account), `GRAPH_REBUILD_INTERVAL_MINS`, `INVENTORY_STALE_AFTER_MINUTES`, `DIAGNOSIS_MEMBER_ROLE_ARNS`, `DIAGNOSIS_NETWORK_EVIDENCE_ENABLED` and `DIAGNOSIS_DNS_LOG_GROUP_ARNS`. Adds the Fargate task-role policy `worker_diagnosis_evidence`: `compute-optimizer:GetEC2InstanceRecommendations`/`GetRDSDatabaseRecommendations` and `cloudwatch:ListMetrics`, limited to the runtime regions. |
-| `diagnosis_member_role_arns` (`[]`) | Adds `sts:AssumeRole` only on these foreign-account `AWSopsReadOnlyRole` ARNs, with a required external ID. Member reads also need an enabled account-registry row, and the assumed identity is verified before any service client is built. The dev plan guard (`scripts/v2/ci_runtime_policy.py`) accepts these foreign ARNs only in that `DiagnosisRegisteredMemberReadOnly` statement and the worker task's `DIAGNOSIS_MEMBER_ROLE_ARNS` value, and only when they equal the variable; any other foreign ARN still fails the plan. |
-| `diagnosis_network_evidence_enabled` (`false`, requires the loop) | Adds `worker_diagnosis_network`: Resolver query-log config listing, NFM monitor listing and top-contributor queries on host monitors, and `rds:DescribeDBProxies`/`DescribeDBProxyTargets`/`DescribeDBClusters`. |
+| `diagnosis_evidence_loop_enabled` (`false`, requires `workers_enabled`) | Sets the worker env `DIAGNOSIS_EVIDENCE_LOOP_ENABLED`, `DIAGNOSIS_HOST_ACCOUNT_ID` (the applied account), `GRAPH_REBUILD_INTERVAL_MINS`, `INVENTORY_STALE_AFTER_MINUTES`, `DIAGNOSIS_MEMBER_ROLE_ARNS`, `DIAGNOSIS_NETWORK_EVIDENCE_ENABLED` and `DIAGNOSIS_DNS_LOG_GROUP_ARNS`. Attaches the customer-managed policy `worker_diagnosis_evidence` to the Fargate task role: `compute-optimizer:GetEC2InstanceRecommendations`/`GetRDSDatabaseRecommendations` and `cloudwatch:ListMetrics`, limited to the runtime regions. |
+| `diagnosis_member_role_arns` (`[]`, requires the loop) | Adds `sts:AssumeRole` only on these foreign-account `AWSopsReadOnlyRole` ARNs, with a required external ID. The worker always sends the registered ExternalId and refuses a registration without one (`member_external_id_required`), so member accounts used for diagnosis must be registered with an ExternalId. Member reads also need an enabled account-registry row, and the assumed identity is verified before any service client is built. The dev plan guard (`scripts/v2/ci_runtime_policy.py`) accepts these foreign ARNs only in that `DiagnosisRegisteredMemberReadOnly` statement and the worker task's `DIAGNOSIS_MEMBER_ROLE_ARNS` value, only when they equal the variable, and only while the policy is attached solely to the worker task role; any other foreign ARN still fails the plan. |
+| `diagnosis_network_evidence_enabled` (`false`, requires the loop) | Attaches the customer-managed policy `worker_diagnosis_network`: Resolver query-log config listing, NFM monitor listing and top-contributor queries on host monitors, and `rds:DescribeDBProxies`/`DescribeDBProxyTargets`/`DescribeDBClusters`. |
 | `diagnosis_dns_log_group_arns` (`[]`) | Adds `logs:StartQuery` only on these host log groups, plus `logs:GetQueryResults`/`StopQuery`. |
 
 All grants are read-only and region-conditioned, and ADR-005 is unchanged. The NFM and Logs
@@ -113,8 +113,11 @@ The bundle keeps the report's two kinds of gap apart
 ([evaluation guide](../guides/diagnosis-evaluation.md)):
 
 - `incomplete` lists self-imposed bounds: caps such as `region_cap`, `inventory_cap` and
-  `proxy_query_cap`, and `discovery_deadline`. A bound never also records a source gap.
-- `gaps` lists evidence that could not be confirmed or read. Examples are
+  `proxy_query_cap`, and `discovery_deadline`. The bound itself is never recorded as a source
+  gap. When a bound leaves a specific identity unproven (a capped task attachment list), that
+  consequence is listed separately in `gaps` (`workload_address_unresolved`).
+- `gaps` lists evidence that could not be confirmed or read, including `proxy_not_available`
+  (an in-scope proxy that is not `available`) and `member_external_id_required`. Examples are
   `inventory_empty_not_confirmed` (zero inventory rows are not verified emptiness),
   `proxy_configuration_unavailable` (a provider or credential error), `follow_up_rejected`
   and `*_not_collected`.

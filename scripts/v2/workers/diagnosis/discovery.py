@@ -266,6 +266,9 @@ def _facts(data, *, account=None, region=None):
                 and x.get("Name") in ("subnetId", "privateIPv4Address", "networkInterfaceId")
                 and isinstance(x.get("Value"), str)]}
                 for a in value if isinstance(a, dict) and isinstance(a.get("Details"), list)]
+            # Non-ENI shapes (EBS/IGW attachments carry no Details) are not projected: say so,
+            # so an attached volume never reads as unattached.
+            out["attachments_complete"] = len(out[key]) == len(value)
         elif key == "read_replica_source_db_instance_identifier" and key in data:
             # Presence matters: a synced null means standalone, an absent key means unknown.
             out[key] = _text(value, 200) if isinstance(value, str) else ""
@@ -446,10 +449,15 @@ def _read_inventory(conn, bundle, budget, scope):
         _mark(bundle, "degraded", "task_projection_failed")
 
 
+def _graph_max_age():
+    """Class window in seconds (web/lib/graph-state.ts: max(15, interval * 2) minutes)."""
+    return max(15, _bounded_int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS"), 0, 1440) * 2) * 60
+
+
 def _graph_state(value, cls):
     state = value or {}
     details = _dict(state.get("details"))
-    max_age = max(15, _bounded_int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS"), 0, 1440) * 2) * 60
+    max_age = _graph_max_age()
     fresh = _fresh(state.get("captured"), max_age)
     complete = state.get("status") in ("ok", "empty")
     fresh = fresh and complete and not any(details.get(k) is True for k in
@@ -639,7 +647,7 @@ def _read_graph(conn, bundle, budget, scope):
                     if _number(meta.get(key)) is not None:
                         facts[key] = meta[key]
                 item = _evidence(bundle, "stored_graph", kind, [source_r["id"], target_r["id"]],
-                    facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, 1800),
+                    facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, _graph_max_age()),
                     window=window, coverage=_row_coverage(coverage, cls))
                 _relationship(bundle, source_r["id"], target_r["id"], kind, item)
             else:
@@ -700,7 +708,7 @@ def _read_graph(conn, bundle, budget, scope):
                     r["id"] in e["resource_ids"] for e in bundle["evidence"]) for r in (instance, database))
                 item = _evidence(bundle, "stored_graph", "observed_call", [instance["id"], database["id"]],
                     facts, pair["observed_at_ms"], region=instance["region"],
-                    fresh=fresh and inventory_fresh and _fresh(observed, 1800),
+                    fresh=fresh and inventory_fresh and _fresh(observed, _graph_max_age()),
                     window=window, coverage=pair_coverage)
                 _relationship(bundle, instance["id"], database["id"], "observed_call", item)
         if any(row["id"] in retired and row["coverage"].get("status") == "refresh_pending"

@@ -122,10 +122,16 @@ def collect_proxies(bundle, budget, client_factory):
                 if not _vpc(vpc):
                     d._mark(bundle, "gaps", "proxy_target_unresolved")
                     continue
-                if (row.get("Status") != "available" or not isinstance(name, str)
-                        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", name)
-                        or not arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
-                        or vpc not in {r["facts"].get("vpc_id") for r in databases if r["region"] == region}):
+                in_scope = (isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
+                            and vpc in {r["facts"].get("vpc_id") for r in databases if r["region"] == region})
+                if not in_scope:
+                    continue  # Another account/VPC's proxy is outside this diagnosis, not missing evidence.
+                if row.get("Status") != "available":
+                    # e.g. 'modifying' during maintenance: present but not usable as configuration evidence.
+                    d._mark(bundle, "gaps", "proxy_not_available")
+                    continue
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", name):
+                    d._mark(bundle, "gaps", "proxy_identity_unresolved")
                     continue
                 proxy = d._resource(bundle, account, region, "rds_proxy", arn,
                                     {"arn": arn, "endpoint_address": row.get("Endpoint", ""), "vpc_id": vpc})
@@ -164,10 +170,10 @@ def _cluster_target(bundle, budget, read, target, databases, account, region, vp
     from . import discovery as d
     arn = target.get("TargetArn", "")
     if not _vpc(vpc) or not isinstance(arn, str) or not re.fullmatch(
-            rf"arn:aws:rds:{re.escape(region)}:{account}:cluster:[A-Za-z0-9-]+", arn):
+            rf"arn:aws:rds:{re.escape(region)}:{re.escape(account)}:cluster:[A-Za-z0-9-]+", arn):
         return None
-    if not d._available(bundle, budget):
-        return None
+    if not d._available(bundle, budget):  # marks discovery_deadline
+        raise _ProxyBound()  # an unattempted lookup is a bound, never an unresolved target
     response = read("describe_db_clusters", DBClusterIdentifier=arn)
     clusters = response.get("DBClusters", [])
     if len(clusters) != 1 or response.get("Marker"):
