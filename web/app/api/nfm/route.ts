@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { isTransientRead } from '@/lib/bounded-cache';
 import { nfmStatus, NFM_METRICS, NFM_CATEGORIES } from '@/lib/nfm';
 
 export const dynamic = 'force-dynamic';
@@ -14,6 +15,11 @@ export async function GET(request: Request) {
     return Response.json({ ...status, metrics: NFM_METRICS, categories: NFM_CATEGORIES });
   } catch (e) {
     // 미온보딩/권한 부재도 페이지가 안내를 그리도록 200 + available:false 계열로 응답.
+    // A saturated/slow cache read is not "not onboarded": retryable 503, no internal message.
+    if (isTransientRead(e)) {
+      return Response.json({ status: 'error', message: 'NFM status temporarily unavailable', retryable: true },
+        { status: 503, headers: { 'Retry-After': '5' } });
+    }
     return Response.json({ monitors: [], scopeCount: 0, metrics: NFM_METRICS, categories: NFM_CATEGORIES, error: e instanceof Error ? e.message : String(e) });
   }
 }

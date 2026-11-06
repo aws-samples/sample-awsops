@@ -355,6 +355,13 @@ def _read_inventory(conn, bundle, budget, scope):
                                          "omitted": len(regions) - len(selected)}
         if len(regions) > MAX_REGIONS:
             _mark(bundle, "incomplete", "region_cap")
+        if int(total) == 0:
+            # Zero rows can mean a sync that never ran or failed upstream: emptiness is not
+            # verified here, and no region is selected for region-scoped collectors either.
+            bundle["coverage"]["inventory"] = {"total": 0, "matched": 0, "returned": 0, "omitted": 0,
+                                               "confirmed": False}
+            _mark(bundle, "gaps", "inventory_empty_not_confirmed")
+            return
         if not _available(bundle, budget):
             return
         # Projection happens inside SQL, before provider JSON crosses the pg8000
@@ -1169,13 +1176,17 @@ def collect(conn, account, budget, *, scope="self"):
     for key in bundle["native_sources"]:
         _mark(bundle, "gaps", f"{key}_not_collected")
     if os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true":
-        # Defense in depth: report.generate only routes here when this flag is applied.
+        # This flag is the gate: report.generate does not route here yet (a later change wires it).
         _mark(bundle, "gaps", "evidence_loop_disabled")
         return _finish(bundle)
     if not isinstance(account, str) or not _ACCOUNT.fullmatch(account) or scope not in ("self", account):
         _mark(bundle, "degraded", "invalid_discovery_scope")
         return _finish(bundle)
     host = os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")
+    if not isinstance(host, str) or not _ACCOUNT.fullmatch(host):
+        # Without a trusted host id neither path can be told apart: fail closed for both.
+        _mark(bundle, "degraded", "untrusted_host_scope")
+        return _finish(bundle)
     if (scope == "self") != (host == account):
         # The host is never read through the member path, and vice versa.
         _mark(bundle, "degraded", "untrusted_host_scope" if scope == "self" else "host_member_scope_rejected")
@@ -1206,6 +1217,12 @@ def collect(conn, account, budget, *, scope="self"):
 
 def follow_up(conn, account, bundle, requests, budget):
     merged = copy.deepcopy(bundle)
+    host = os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")
+    if (os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true"
+            or not isinstance(host, str) or not _ACCOUNT.fullmatch(host)):
+        # A bundle collected while the flag was on gains no live reads once it is off.
+        _mark(merged, "gaps", "follow_up_rejected")
+        return _finish(merged)
     if merged.get("coverage", {}).get("account") != account or not _ACCOUNT.fullmatch(str(account)):
         _mark(merged, "gaps", "follow_up_rejected")
         return _finish(merged)

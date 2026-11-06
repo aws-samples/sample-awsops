@@ -91,6 +91,42 @@ env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 �
 전이한다. reaper(EventBridge, 5분마다)가 고아 행을 보정. **모든 것이 `workers_enabled`로 게이트됨
 (기본 false → `terraform plan` = No changes, 유휴 $0).**
 
+
+### Diagnosis evidence core (default-off, not yet routed)
+
+`scripts/v2/workers/diagnosis/` contains a bounded discovery and evidence core:
+`discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`
+and `scoped_clients.py`. `report.generate` does not call these modules yet. A later change
+wires them in, and until then the `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` check inside
+`discovery.collect()` and `discovery.follow_up()` is the only gate.
+
+| Terraform variable (default) | Effect when enabled |
+|---|---|
+| `diagnosis_evidence_loop_enabled` (`false`, requires `workers_enabled`) | Sets the worker env `DIAGNOSIS_EVIDENCE_LOOP_ENABLED`, `DIAGNOSIS_HOST_ACCOUNT_ID` (the applied account), `GRAPH_REBUILD_INTERVAL_MINS`, `INVENTORY_STALE_AFTER_MINUTES`, `DIAGNOSIS_MEMBER_ROLE_ARNS`, `DIAGNOSIS_NETWORK_EVIDENCE_ENABLED` and `DIAGNOSIS_DNS_LOG_GROUP_ARNS`. Adds the Fargate task-role policy `worker_diagnosis_evidence`: `compute-optimizer:GetEC2InstanceRecommendations`/`GetRDSDatabaseRecommendations` and `cloudwatch:ListMetrics`, limited to the runtime regions. |
+| `diagnosis_member_role_arns` (`[]`) | Adds `sts:AssumeRole` only on these foreign-account `AWSopsReadOnlyRole` ARNs, with a required external ID. Member reads also need an enabled account-registry row, and the assumed identity is verified before any service client is built. |
+| `diagnosis_network_evidence_enabled` (`false`, requires the loop) | Adds `worker_diagnosis_network`: Resolver query-log config listing, NFM monitor listing and top-contributor queries on host monitors, and `rds:DescribeDBProxies`/`DescribeDBProxyTargets`/`DescribeDBClusters`. |
+| `diagnosis_dns_log_group_arns` (`[]`) | Adds `logs:StartQuery` only on these host log groups, plus `logs:GetQueryResults`/`StopQuery`. |
+
+All grants are read-only and region-conditioned, and ADR-005 is unchanged. The NFM and Logs
+query actions only create and stop analysis queries. They never create monitors, logging or
+instrumentation. If `DIAGNOSIS_HOST_ACCOUNT_ID` is unset or malformed, both the host and the
+member paths fail closed (`untrusted_host_scope`).
+
+The bundle keeps the report's two kinds of gap apart
+([evaluation guide](../guides/diagnosis-evaluation.md)):
+
+- `incomplete` lists self-imposed bounds: caps such as `region_cap`, `inventory_cap` and
+  `proxy_query_cap`, and `discovery_deadline`. A bound never also records a source gap.
+- `gaps` lists evidence that could not be confirmed or read. Examples are
+  `inventory_empty_not_confirmed` (zero inventory rows are not verified emptiness),
+  `proxy_configuration_unavailable` (a provider or credential error), `follow_up_rejected`
+  and `*_not_collected`.
+- `degraded` lists failed reads and projection defects, such as `inventory_read_failed`,
+  `task_projection_failed` and `proxy_projection_failed`.
+
+`configured_dependency` relationships, such as an RDS Proxy target, record configuration
+only. They never prove that an application calls the target.
+
 ## Decisions (ADRs) / 결정
 
 - **ADR-005 — AWS mutation & autonomy (FROZEN)** — P2

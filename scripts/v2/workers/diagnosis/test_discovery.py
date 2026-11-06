@@ -970,3 +970,29 @@ def test_follow_up_can_use_a_reconnected_database_after_transport_failure(provid
         {"capability": "graph_refresh", "resource_ids": [resource(first, I1)["id"]]}], Budget())
     assert any("FROM topology_graph_state" in sql for sql, _ in reconnected.queries)
     assert "graph_read_failed" not in merged["degraded"] and not discovery.connection_broken(merged)
+
+
+def test_empty_inventory_is_disclosed_as_unconfirmed_not_verified(provider):
+    bundle = discovery.collect(Database([]), ACCOUNT, Budget())
+    assert bundle["coverage"]["inventory"]["confirmed"] is False
+    assert bundle["coverage"]["inventory"]["total"] == 0
+    assert "inventory_empty_not_confirmed" in bundle["gaps"]
+    assert bundle["coverage"]["regions"]["selected"] == []
+
+
+def test_member_scope_requires_applied_host_identity(provider, monkeypatch):
+    monkeypatch.delenv("DIAGNOSIS_HOST_ACCOUNT_ID")
+    db = Database([inventory("ec2", I1, {}, account=ACCOUNT)])
+    bundle = discovery.collect(db, ACCOUNT, Budget(), scope=ACCOUNT)
+    assert not db.queries and not provider.client_calls
+    assert "untrusted_host_scope" in bundle["degraded"]
+
+
+def test_followup_makes_no_live_reads_once_the_flag_is_off(provider, monkeypatch):
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    before = len(provider.client_calls)
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "false")
+    merged = discovery.follow_up(Database(), ACCOUNT, bundle, [
+        {"capability": "resource_metrics", "resource_ids": [resource(bundle, I1)["id"]]}], Budget())
+    assert len(provider.client_calls) == before
+    assert "follow_up_rejected" in merged["gaps"]

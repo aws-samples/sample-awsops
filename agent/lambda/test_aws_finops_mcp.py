@@ -225,6 +225,16 @@ def test_preserves_provider_freshness_lookback_and_missing_utilization(stubber, 
     assert recommendation["missingUtilizationMetrics"] == ["memory", "io"]
 
 
+def test_storage_capacity_metric_is_not_io_evidence(stubber):
+    response = response_for("rds")
+    record = response[CASES["rds"]["collection"]][0]
+    record["utilizationMetrics"] = [{"name": "CPU", "statistic": "MAXIMUM", "value": 17.0},
+                                    {"name": "EBSVolumeStorageSpaceUtilization", "statistic": "MAXIMUM", "value": 40.0}]
+    enqueue(stubber, "rds", response)
+    recommendation = invoke("rds")["results"]["rds"]["recommendations"][0]
+    assert recommendation["missingUtilizationMetrics"] == ["memory", "io"]
+
+
 @pytest.mark.parametrize("resource_type", ["ec2", "rds"])
 def test_selects_the_lowest_provider_rank_independently_of_response_order(stubber, resource_type):
     response = response_for(resource_type)
