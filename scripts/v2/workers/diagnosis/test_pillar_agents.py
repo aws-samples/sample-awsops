@@ -112,7 +112,7 @@ def test_model_call_has_exact_structured_contract_redaction_and_usage(monkeypatc
                         or configs.append(read_timeout) or client)
     budget = ReportBudget("mid")
     data = bundle()
-    data["resources"][0]["facts"]["endpoint"] = "admin@example.com"
+    data["resources"][0]["facts"]["name"] = "admin@example.com"
     result = agents.analyze("security", EvidenceIndex(data, ACCOUNT),
                             model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
     request = json.loads(client.calls[0]["body"])
