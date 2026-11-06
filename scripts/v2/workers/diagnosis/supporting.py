@@ -216,8 +216,10 @@ def collect(bundle, budget, *, scope):
     result = deepcopy(bundle)
     account = result.get("coverage", {}).get("account")
     # Applied host identity must match; member reads never use this path.
-    if (scope != "self" or result.get("coverage", {}).get("storage_scope") != "self"
-            or not account or account != os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")):
+    if scope != "self" or result.get("coverage", {}).get("storage_scope") != "self":
+        return result
+    if not account or account != os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID"):
+        _mark(result, "gaps", "supporting_host_unknown")  # host identity absent/mismatched: all skipped
         return result
     now = _now()
     plans = [

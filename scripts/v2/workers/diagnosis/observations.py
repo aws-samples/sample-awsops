@@ -151,14 +151,14 @@ def _dns_binding(bundle, row, qualified, start, end):
              and abs((stamp - capture).total_seconds()) <= 300]
     instance = row.get("instance")
     sources = [r for r, _ in local if r["kind"] in {"ec2", "ecs_task"}
-               and _ip(r["facts"].get("private_ip_address")) == source_ip
+               and _ip(r.get("facts", {}).get("private_ip_address")) == source_ip
                and ((r["kind"] == "ec2" and instance == r["resource_id"])
                     or (r["kind"] == "ecs_task" and not instance))]
     if not sources and any(r["kind"] in {"lambda", "lambda_function"}
-            and _ip(r["facts"].get("private_ip_address")) == source_ip for r, _ in local):
+            and _ip(r.get("facts", {}).get("private_ip_address")) == source_ip for r, _ in local):
         d._mark(bundle, "gaps", "lambda_eni_identity_unresolved")
     targets = [r for r, _ in local if r["kind"] in {"rds", "rds_instance", "rds_proxy", "rds_cluster"}
-               and _host(r["facts"].get("endpoint_address")) in {name, *aliases}]
+               and _host(r.get("facts", {}).get("endpoint_address")) in {name, *aliases}]
     if len(sources) != 1 or len(targets) != 1:
         return None
     return {"source": sources[0], "target": targets[0], "stamp": stamp,

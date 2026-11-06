@@ -226,3 +226,17 @@ def test_savings_plans_coverage_is_monthly_period_labelled_and_paginated(provide
     assert [(r["start"], r["end"]) for r in plans] == [("2026-10-01", "2026-10-28"), ("2026-11-01", "2026-11-28")]
     assert [c.get("NextToken") for c in calls] == [None, "p2"]
     assert commitment["coverage"]["complete"] is True and "commitment_page_cap" not in result["incomplete"]
+
+
+def test_absent_or_mismatched_host_identity_marks_the_skip(providers, monkeypatch):
+    monkeypatch.setattr(providers, "_client", lambda *a: pytest.fail("host read occurred"))
+    for value in (None, "999900001111"):
+        if value is None:
+            monkeypatch.delenv("DIAGNOSIS_HOST_ACCOUNT_ID")
+        else:
+            monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", value)
+        result = providers.collect(base(), Budget(), scope="self")
+        assert "supporting_host_unknown" in result["gaps"] and not result["evidence"]
+    member = base()
+    member["coverage"].update(account="999900001111", storage_scope="999900001111")
+    assert "supporting_host_unknown" not in providers.collect(member, Budget(), scope="999900001111")["gaps"]
