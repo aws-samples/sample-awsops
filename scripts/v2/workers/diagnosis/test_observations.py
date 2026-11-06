@@ -45,6 +45,34 @@ def flow(**changes):
         "remoteRegion": REGION, "targetPort": 5432, "value": 321, **changes}
 
 
+def test_dns_projection_preserves_later_region_rows(monkeypatch):
+    monkeypatch.setattr(discovery, "_now", lambda: NOW)
+    data, later = bundle(), bundle()
+    other_region = "eu-west-1"
+    data["coverage"]["regions"]["selected"].append(other_region)
+    ids = {r["id"]: oid("later-" + r["id"]) for r in later["resources"]}
+    for resource in later["resources"]:
+        resource.update(id=ids[resource["id"]], region=other_region)
+    for evidence in later["evidence"]:
+        evidence.update(id=oid("later-" + evidence["id"]), region=other_region,
+                        resource_ids=[ids[r] for r in evidence["resource_ids"]])
+    data["resources"].extend(later["resources"])
+    data["evidence"].extend(later["evidence"])
+    rows = [dns()] * (observations.MAX_ROWS * observations.MAX_GROUPS)
+    observations.project(data, rows + [dns(region=other_region)], [],
+                         start=START, end=NOW, source_id="resolver")
+    admitted = [e for e in data["evidence"] if e["kind"] == "observed_dns_resolution"]
+    assert {e["region"] for e in admitted} == {REGION, other_region}
+
+
+def test_dns_projection_discloses_excess_over_all_region_bound(monkeypatch):
+    monkeypatch.setattr(discovery, "_now", lambda: NOW)
+    data = bundle()
+    cap = observations.MAX_ROWS * observations.MAX_GROUPS * observations.MAX_REGIONS
+    observations.project(data, [dns()] * (cap + 1), [], start=START, end=NOW, source_id="resolver")
+    assert "dns_projection_cap" in data["incomplete"]
+
+
 @pytest.fixture(autouse=True)
 def scope(monkeypatch):
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")

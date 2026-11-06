@@ -225,7 +225,10 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
            for row in flow_rows[:MAX_ROWS * MAX_QUERIES]):
         d._mark(bundle, "gaps", "pod_identity_unresolved")
     unique = {}
-    for row in dns_rows[:MAX_ROWS * MAX_GROUPS]:
+    dns_cap = MAX_ROWS * MAX_GROUPS * MAX_REGIONS
+    if len(dns_rows) > dns_cap:
+        d._mark(bundle, "incomplete", "dns_projection_cap")
+    for row in dns_rows[:dns_cap]:
         binding = _dns_binding(bundle, row, qualified, start, end) if isinstance(row, dict) else None
         if binding is None:
             d._mark(bundle, "gaps", "dns_binding_unresolved")

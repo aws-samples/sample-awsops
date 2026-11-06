@@ -233,12 +233,109 @@ def test_handler_malformed_local_title_falls_back(monkeypatch, meta):
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
     monkeypatch.setattr(wdb, "connect", lambda: type("C", (), {"close": lambda self: None})())
     monkeypatch.setattr(report, "generate", lambda *a, **kw: ("# r", {"title_and_tags": meta}, []))
-    monkeypatch.setattr(report, "make_title_and_tags", lambda *a: {"title": "Fallback", "tags": []})
+    monkeypatch.setattr(report, "make_title_and_tags", lambda *a: pytest.fail("unbudgeted title call"))
     monkeypatch.setattr(handlers, "_upload_markdown", lambda *a: "s3://test/report.md")
     monkeypatch.setattr(handlers, "_export_artifacts", lambda *a: None)
     monkeypatch.setattr(ddb, "finish_report", lambda *a, **kw: state.update(kw))
     assert handlers._report({"account": "self", "report_id": 1}, dry_run=False)[0]["status"] == "succeeded"
-    assert state["title"] == "Fallback"
+    assert state["title"] is None and state["tags"] == []
+
+
+def test_handler_upload_failure_after_broken_connection_is_persisted(monkeypatch):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb
+    connections, writes = [], []
+
+    class Conn:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
+    monkeypatch.setattr(wdb, "connect", lambda: connections.append(Conn()) or connections[-1])
+
+    def generate(*args, **kwargs):
+        connections[0].close()
+        return "# r", {"degraded": ["database_connection_broken"]}, []
+
+    def finish(conn, report_id, **fields):
+        assert not conn.closed, "report write reused closed connection"
+        writes.append(fields)
+
+    def upload(*args):
+        raise RuntimeError("artifact upload failed")
+
+    monkeypatch.setattr(report, "generate", generate)
+    monkeypatch.setattr(handlers, "_upload_markdown", upload)
+    monkeypatch.setattr(ddb, "finish_report", finish)
+    with pytest.raises(RuntimeError, match="artifact upload failed"):
+        handlers._report({"account": "self", "report_id": 1}, dry_run=False)
+    assert writes == [{"status": "failed", "error": "artifact upload failed"}]
+    assert len(connections) == 2 and all(c.closed for c in connections)
+
+
+def test_final_report_write_recovers_without_a_prior_broken_marker(monkeypatch):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb
+    connections, writes = [], []
+
+    class Conn:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    original, fresh = Conn(), Conn()
+    monkeypatch.setattr(wdb, "connect", lambda: connections.append(fresh) or fresh)
+
+    def finish(conn, report_id, **fields):
+        writes.append(conn)
+        if conn is original:
+            raise RuntimeError("transport unavailable")
+        return report_id
+
+    monkeypatch.setattr(ddb, "finish_report", finish)
+    assert handlers._finish_report(wdb, ddb, original, False, 1, status="failed") == 1
+    assert writes == [original, fresh] and connections == [fresh]
+    assert original.closed and fresh.closed
+
+
+def test_unknown_enabled_tier_persists_failure_before_rethrow(monkeypatch):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb
+    finished = []
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
+    monkeypatch.setattr(wdb, "connect", lambda: type("C", (), {"close": lambda self: None})())
+    monkeypatch.setattr(ddb, "finish_report", lambda *a, **kw: finished.append(kw))
+    monkeypatch.setattr(report, "generate", lambda *a, **kw: pytest.fail("invalid tier reached generation"))
+    with pytest.raises(ValueError):
+        handlers._report({"account": "self", "tier": "unknown", "report_id": 1}, dry_run=False)
+    assert len(finished) == 1 and finished[0]["status"] == "failed"
+
+def test_missing_supporting_host_identity_produces_a_partial_report(monkeypatch):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb, supporting
+    collect = supporting.collect
+    data = bundle()
+    data["coverage"].update(account="111122223333", storage_scope="self")
+    prepare(monkeypatch, data=data)
+    monkeypatch.setattr(supporting, "collect", collect)
+    monkeypatch.delenv("DIAGNOSIS_HOST_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(wdb, "connect", lambda: type("C", (), {"close": lambda self: None})())
+    monkeypatch.setattr(handlers, "_upload_markdown", lambda *a: "s3://test/report.md")
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda *a: None)
+    finished = []
+    monkeypatch.setattr(ddb, "finish_report", lambda *a, **kw: finished.append(kw))
+    monkeypatch.setattr(ddb, "get_report_summary", lambda *a: (None, None))
+    monkeypatch.setattr(ddb, "update_progress", lambda *a, **kw: None)
+    result, _ = handlers._report({"account": "self", "report_id": 1}, dry_run=False)
+    assert result["status"] == finished[0]["status"] == "partial"
+    assert "supporting_host_unknown" in finished[0]["summary"]["degraded"]
 
 
 def test_size_bound_truncation_degrades_render(monkeypatch):

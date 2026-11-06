@@ -29,8 +29,8 @@ def member_factory(conn, account, budget):
         raise ScopeError("member_not_registered")
     role, external = rows[0]
     if (not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9_+=,.@-]{1,64}", role)
-            or (external not in (None, "") and (not isinstance(external, str)
-                or not re.fullmatch(r"[\w+=,.@:/-]{2,1224}", external)))):
+            or not isinstance(external, str)
+            or not re.fullmatch(r"[\w+=,.@:/-]{2,1224}", external)):
         raise ScopeError("member_registry_unqualified")
     role_arn = f"arn:aws:iam::{account}:role/{role}"
     try:
@@ -45,13 +45,14 @@ def member_factory(conn, account, budget):
             raise ScopeError("member_discovery_deadline")
         config = Config(connect_timeout=1, read_timeout=min(10, max(1, int(budget.remaining(analysis=True) - 2))),
                         retries={"total_max_attempts": 1, "mode": "standard"})
-        # ExternalId is optional for first-party members (migration 01KW39F7...).
+        # This gated diagnosis path requires ExternalId even for first-party members,
+        # matching its applied DiagnosisRegisteredMemberReadOnly IAM condition.
         # 3600s is the role-chaining maximum (sg_rule_scan parity); refreshed before expiry.
         # IAM sts:AssumeRole: workers.tf worker_diagnosis_evidence Sid DiagnosisRegisteredMemberReadOnly
         # (exactly diagnosis_member_role_arns, ExternalId ?*, runtime regions). GetCallerIdentity needs no grant.
         result = boto3.client("sts", config=config).assume_role(
             RoleArn=role_arn, RoleSessionName="awsops-diagnosis-read", DurationSeconds=3600,
-            **({"ExternalId": external} if external else {}))
+            ExternalId=external)
         expected = f"arn:aws:sts::{account}:assumed-role/{role}/"
         if not result.get("AssumedRoleUser", {}).get("Arn", "").startswith(expected):
             raise ScopeError("member_principal_mismatch")

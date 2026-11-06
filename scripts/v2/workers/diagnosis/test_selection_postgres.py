@@ -59,7 +59,10 @@ def test_dense_database_selection_runs_on_postgresql(pg):
     discovery._read_inventory(pg, found, Budget(), "self")
     assert {r["kind"] for r in found["resources"]} == {"ec2", "rds", "lambda", "ecs_task"}
     assert len(found["resources"]) == discovery.MAX_INVENTORY_RESOURCES
-    assert found["coverage"]["inventory"]["omitted"] == 63
+    coverage = found["coverage"]["inventory"]
+    assert coverage["total"] == 243
+    assert coverage["returned"] == len(found["resources"])
+    assert coverage["omitted"] == 243 - coverage["returned"]
 
 
 def test_scoped_neighborhood_wins_over_alphabetical_graph_noise(pg):

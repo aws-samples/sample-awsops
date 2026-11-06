@@ -131,6 +131,59 @@ def _proxy_bundle():
         {"id": f"e:{d['id']}", "kind": "inventory", "source": "inventory", "resource_ids": [d["id"]],
          "fresh": True, "coverage": {"complete": True}} for d in dbs]}
 
+def test_deleted_proxy_cluster_does_not_drop_following_targets(monkeypatch):
+    from botocore.exceptions import ClientError
+    from diagnosis import discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    bundle = _proxy_bundle()
+    bundle["resources"] = [bundle["resources"][0]]
+    deleted = f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:deleted"
+    database = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "orders-proxy", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": deleted, "Type": "TRACKED_CLUSTER", "Port": 5432},
+                                {"TargetArn": database, "Type": "RDS_INSTANCE", "Port": 5432}]}
+
+        def describe_db_clusters(self, **kwargs):
+            raise ClientError({"Error": {"Code": "DBClusterNotFoundFault", "Message": "deleted"}},
+                              "DescribeDBClusters")
+
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert len(bundle["relationships"]) == 1
+    assert "proxy_target_unresolved" in bundle["gaps"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]
+
+
+def test_denied_proxy_targets_does_not_drop_following_proxy(monkeypatch):
+    from botocore.exceptions import ClientError
+    from diagnosis import discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    bundle = _proxy_bundle()
+    bundle["resources"] = [bundle["resources"][0]]
+    database = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": name, "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:{name}"}
+                    for name in ("denied", "readable")]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            if kwargs["DBProxyName"] == "denied":
+                raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                                  "DescribeDBProxyTargets")
+            return {"Targets": [{"TargetArn": database, "Type": "RDS_INSTANCE", "Port": 5432}]}
+
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert len(bundle["relationships"]) == 1
+    assert "proxy_target_unresolved" in bundle["gaps"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]
+
 
 def test_proxy_call_cap_is_incomplete_only_and_stops_every_region():
     bundle, regions = _proxy_bundle(), []

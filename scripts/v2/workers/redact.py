@@ -34,14 +34,16 @@ IPV6_CANDIDATES = re.compile(
 
 def _ipv6(match):
     value = match.group(0)
-    # Sentence punctuation ("peer 2001:db8::1.") is eaten by the greedy body: retry without
-    # trailing [.:] characters and re-emit them after the placeholder.
-    for end in range(len(value.rstrip(".:")), len(value) + 1):
+    # The longest uncompressed IPv6 spelling (with a dotted IPv4 suffix) is 45
+    # characters. Bound validation independently of source text or punctuation.
+    address, zone, _ = value.partition("%")
+    for end in range(min(len(address), 45), 1, -1):
         try:
-            ipaddress.IPv6Address(value[:end])
+            ipaddress.IPv6Address(address[:end])
         except ValueError:
             continue
-        return "<ip>" + value[end:]
+        suffix = value[len(value.rstrip(".:")):] if zone and end == len(address) else value[end:]
+        return "<ip>" + suffix
     return value
 
 

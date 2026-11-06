@@ -36,6 +36,19 @@ def install_models(monkeypatch, reviews=None):
     return events
 
 
+@pytest.mark.parametrize("provider", ["anthropic_api", "bedrock_openai"])
+def test_unsupported_provider_is_distinct_and_makes_no_model_attempt(monkeypatch, provider):
+    monkeypatch.setenv("MODEL_PROVIDER", provider)
+    events = install_models(monkeypatch)
+    budget = ReportBudget("mid")
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
+    assert not events and budget.snapshot()["attempt_count"] == 0
+    assert result["passes"] == 0 and result["findings"] == []
+    assert "analysis:model_provider_unsupported" in result["degraded"]
+    assert result["model_stages"][0]["reason"] == "model_provider_unsupported"
+
+
 def test_initial_specialists_finish_before_review_and_light_has_no_follow_up(monkeypatch):
     events = install_models(monkeypatch, [{"follow_up": [
         {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}],

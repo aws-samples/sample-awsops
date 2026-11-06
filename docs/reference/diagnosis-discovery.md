@@ -28,21 +28,27 @@ registration, its registered role and external ID, and an exact role ARN in
 onboarding `AWSopsReadOnlyRole`, so a privileged role cannot be allowlisted). The assumed
 principal and its STS account must match. Any failed authorization or verification
 leaves an explicit gap and makes no substitute host read. Account registration
-alone does not grant the worker permission to assume a role.
+alone does not grant the worker permission to assume a role. Missing or empty
+ExternalId values are rejected before STS, including for same-org members. The
+target trust policy must include the host worker role and the same ExternalId;
+see [member onboarding](../runbooks/onboard-target-account.md#prerequisites).
 
 ## Model requirement
 
-The specialist and review stages call Bedrock `InvokeModel` directly and accept only
-Claude Sonnet 5.5 or Opus 5.5 model IDs (bare or a supported `global.`, `us.`, `eu.`,
+The specialist and review stages use the shared provider wrapper and accept only
+Claude Sonnet 5.5 or Opus 5.5 model IDs (`anthropic.claude-*` without a geographic
+prefix, or a supported `global.`, `us.`, `eu.`,
 `au.` or Opus-only `jp.` inference profile). The diagnosis model comes from
 `DIAGNOSIS_MODEL_SONNET` (Opus for deep tier when selected), which
 [`model_provider`](../runbooks/model-provider.md) sets. With `bedrock_claude` or
 `mixed`, the loop runs. With `bedrock_openai` (`global.openai.*`) or `anthropic_api`
-(bare `claude-*` IDs over the Anthropic API), the loop makes no model call: the report
+(bare `claude-*` IDs over the Anthropic API), provider validation refuses the loop
+before client creation or model-attempt allocation: the report
 still renders discovery evidence and intended-vs-actual results, every pillar is
-`failed`, and the summary records the degraded marker `analysis:unsupported_model`
+`failed`, and the summary records the degraded marker `analysis:model_provider_unsupported`
 and the incomplete marker `six_pillars`, so the report is `partial`. The disabled
-(legacy) diagnosis path keeps using the configured provider.
+(legacy) diagnosis path keeps using the configured provider. An unsupported model
+ID under a supported provider remains a distinct `analysis:unsupported_model`.
 
 ## Identity and connection strength
 
@@ -76,6 +82,16 @@ scrubbed before model calls. Capped attachment projections cannot prove a unique
 owner. Unsupported ownership remains unresolved. Proxy targets are read in
 bounded batches, and Aurora cluster members must match exact scoped inventory
 identifiers and VPCs; unresolved members remain gaps.
+An individual denied target read or deleted cluster records `proxy_target_unresolved`
+and continues to the next target or proxy. A region's initial provider failure
+records `proxy_configuration_unavailable`; shared deadlines and query caps still
+stop the stage. DNS projection admits up to eight regions' bounded query rows and
+records `dns_projection_cap` if that producer bound is exceeded.
+
+Missing or mismatched host identity skips all native supporting sources and
+records both the gap and degraded marker `supporting_host_unknown`, so this
+failure cannot produce a successful report. Member scope still skips these
+host-only sources without using host credentials.
 
 These rules preserve evidence strength along CloudFront, load-balancer, compute
 and database paths. A configured path may be available when end-to-end request

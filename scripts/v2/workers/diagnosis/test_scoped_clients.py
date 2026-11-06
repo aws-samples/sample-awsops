@@ -42,7 +42,8 @@ def test_unregistered_member_makes_no_sts_call(monkeypatch):
         scoped_clients.member_factory(Registry([]), ACCOUNT, Budget())
 
 
-@pytest.mark.parametrize("rows", [[["ReadOnly", 7]], [["ReadOnly", "x"]], [["bad/path", "external"]],
+@pytest.mark.parametrize("rows", [[["ReadOnly", None]], [["ReadOnly", ""]],
+                                 [["ReadOnly", 7]], [["ReadOnly", "x"]], [["bad/path", "external"]],
                                  [["ReadOnly", "external"], ["ReadOnly", "external"]]])
 def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
     monkeypatch.setattr(scoped_clients.boto3, "client", lambda *a, **k: pytest.fail("STS forbidden"))
@@ -50,7 +51,7 @@ def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
         scoped_clients.member_factory(Registry(rows), ACCOUNT, Budget())
 
 
-@pytest.mark.parametrize("external", ["external", None, ""])
+@pytest.mark.parametrize("external", ["external"])
 def test_assumed_principal_must_match_registered_account(monkeypatch, external):
     called = []
 

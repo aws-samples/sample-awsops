@@ -237,6 +237,7 @@ def test_absent_or_mismatched_host_identity_marks_the_skip(providers, monkeypatc
             monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", value)
         result = providers.collect(base(), Budget(), scope="self")
         assert "supporting_host_unknown" in result["gaps"] and not result["evidence"]
+        assert "supporting_host_unknown" in result["degraded"]
     member = base()
     member["coverage"].update(account="999900001111", storage_scope="999900001111")
     assert "supporting_host_unknown" not in providers.collect(member, Budget(), scope="999900001111")["gaps"]

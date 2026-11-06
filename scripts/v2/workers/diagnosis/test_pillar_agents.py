@@ -24,6 +24,24 @@ class FakeClient:
         return {"body": io.BytesIO(json.dumps(payload).encode())}
 
 
+@pytest.mark.parametrize("provider", ["anthropic_api", "bedrock_openai"])
+def test_unsupported_provider_is_refused_before_client_creation(monkeypatch, provider):
+    monkeypatch.setenv("MODEL_PROVIDER", provider)
+    monkeypatch.setattr(agents.boto3.session, "Session", lambda: pytest.fail("provider created client"))
+    with pytest.raises(agents.ModelUnsupported, match="model_provider_unsupported"):
+        agents._client("us-west-1", 13)
+
+
+def test_structured_client_uses_the_shared_provider_shim(monkeypatch):
+    import model_runtime
+    monkeypatch.setenv("MODEL_PROVIDER", "bedrock_claude")
+    raw, wrapped = object(), object()
+    monkeypatch.setattr(agents, "_clients", {})
+    monkeypatch.setattr(agents.boto3.session, "Session",
+                        lambda: type("S", (), {"client": lambda self, *a, **kw: raw})())
+    monkeypatch.setattr(model_runtime, "wrap", lambda client: wrapped if client is raw else None)
+    assert agents._client("us-west-1", 13) is wrapped
+
 def response(value, *, usage=True, stop="end_turn"):
     result = {"content": [{"type": "thinking", "thinking": "private reasoning"},
                           {"type": "text", "text": json.dumps(value)}], "stop_reason": stop}

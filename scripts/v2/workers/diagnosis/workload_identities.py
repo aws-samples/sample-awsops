@@ -134,13 +134,21 @@ def collect_proxies(bundle, budget, client_factory):
                 captured = d._now()
                 d._evidence(bundle, "rds_proxy_configuration", "inventory", [proxy["id"]],
                             proxy["facts"], captured, region=region, fresh=True, coverage={"complete": True})
-                targets = read("describe_db_proxy_targets", DBProxyName=name, MaxRecords=20)
+                try:
+                    targets = read("describe_db_proxy_targets", DBProxyName=name, MaxRecords=20)
+                except (ClientError, BotoCoreError, ScopeError):
+                    d._mark(bundle, "gaps", "proxy_target_unresolved")
+                    continue
                 if targets.get("Marker"):
                     d._mark(bundle, "incomplete", "proxy_target_cap")
                 for target in targets.get("Targets", [])[:20]:
                     database = proxy_target(target, databases, account, region, vpc)
                     if database is None and target.get("Type") == "TRACKED_CLUSTER":
-                        database = _cluster_target(bundle, budget, read, target, databases, account, region, vpc)
+                        try:
+                            database = _cluster_target(bundle, budget, read, target, databases, account, region, vpc)
+                        except (ClientError, BotoCoreError, ScopeError):
+                            d._mark(bundle, "gaps", "proxy_target_unresolved")
+                            continue
                     if database is None:
                         d._mark(bundle, "gaps", "proxy_target_unresolved")
                         continue
@@ -164,7 +172,7 @@ def _cluster_target(bundle, budget, read, target, databases, account, region, vp
     from . import discovery as d
     arn = target.get("TargetArn", "")
     if not _vpc(vpc) or not isinstance(arn, str) or not re.fullmatch(
-            rf"arn:aws:rds:{re.escape(region)}:{account}:cluster:[A-Za-z0-9-]+", arn):
+            rf"arn:aws:rds:{re.escape(region)}:{re.escape(account)}:cluster:[A-Za-z0-9-]+", arn):
         return None
     if not d._available(bundle, budget):
         return None

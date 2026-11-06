@@ -9,6 +9,7 @@ import os
 import threading
 
 import boto3
+import model_runtime
 from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 
@@ -184,14 +185,20 @@ def _config(read_timeout):
 _clients = {}
 _client_lock = threading.Lock()
 
+def validate_provider():
+    """The structured evidence contract is verified only for Bedrock Claude."""
+    if model_runtime.provider() not in {"mixed", "bedrock_claude"}:
+        raise ModelUnsupported("model_provider_unsupported")
+
 
 def _client(region, read_timeout):
+    validate_provider()
     key = (region, read_timeout)
     with _client_lock:
         if key not in _clients:
             # Session/client creation stays under the lock; invoke calls are thread-safe.
-            _clients[key] = boto3.session.Session().client(
-                "bedrock-runtime", region_name=region, config=_config(read_timeout))
+            _clients[key] = model_runtime.wrap(boto3.session.Session().client(
+                "bedrock-runtime", region_name=region, config=_config(read_timeout)))
         return _clients[key]
 
 

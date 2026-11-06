@@ -2,6 +2,26 @@ import redact
 import pytest
 
 
+@pytest.mark.parametrize("value", ["2001:db8::1.ec2", "2001:db8::1:..", "2001:db8::1" + "." * 1000])
+def test_ipv6_with_suffix_is_redacted(value):
+    text = redact.redact("peer " + value)
+    assert "2001:db8" not in text and "<ip>" in text
+
+
+def test_ipv6_candidate_validation_has_a_fixed_length_bound(monkeypatch):
+    original = redact.ipaddress.IPv6Address
+    seen = []
+
+    def checked(value):
+        seen.append(value)
+        return original(value)
+
+    monkeypatch.setattr(redact.ipaddress, "IPv6Address", checked)
+    text = redact.redact("peer ::ffff:999.999.999.999" + "." * 1000)
+    assert "::ffff" not in text and "<ip>" in text
+    assert len(seen) <= 45 and all(len(value) <= 45 for value in seen)
+
+
 def test_redact_strips_pii():
     s = redact.redact('arn:aws:iam::123456789012:role/x user a@b.io ip 10.0.0.1 AKIAABCDEFGHIJKLMNOP')
     assert 'arn:aws' not in s and '123456789012' not in s and 'a@b.io' not in s

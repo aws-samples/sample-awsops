@@ -248,17 +248,19 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
     degraded, incomplete = list(index.degraded), list(index.incomplete)
     coverage, stages = {}, []
     try:
+        agents.validate_provider()
         agents.model_capabilities(model_id)
-    except agents.ModelUnsupported:
+    except agents.ModelUnsupported as exc:
+        reason = str(exc)
         # Only Bedrock Claude Sonnet/Opus 5.5 run the evidence loop (e.g. a bedrock_openai or
         # anthropic_api model_provider): one visible degraded marker, no model calls.
         return {
             "findings": [], "rejected": [], "passes": 0,
             "pillar_coverage": {p: {"status": "failed", "findings": 0, "rejected": 0} for p in PILLARS},
             "review": {"status": "failed", "follow_up": [], "rerun_pillars": [], "issues": []},
-            "degraded": list(dict.fromkeys([*degraded, "analysis:unsupported_model"])),
+            "degraded": list(dict.fromkeys([*degraded, f"analysis:{reason}"])),
             "incomplete": list(dict.fromkeys([*incomplete, "six_pillars"])),
-            "model_stages": [{"stage": "analysis", "status": "failed", "reason": "unsupported_model",
+            "model_stages": [{"stage": "analysis", "status": "failed", "reason": reason,
                               "model_id": model_id, "prompt_version": agents.PROMPT_VERSION,
                               "schema_version": agents.SCHEMA_VERSION}],
             "prompt_version": agents.PROMPT_VERSION, "schema_version": agents.SCHEMA_VERSION,
