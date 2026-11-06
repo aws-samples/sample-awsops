@@ -1,5 +1,6 @@
 import { CloudWatchLogsClient, StartQueryCommand, GetQueryResultsCommand, StopQueryCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { Route53ResolverClient, ListResolverQueryLogConfigsCommand } from '@aws-sdk/client-route53resolver';
+import { BoundedTtlCache } from './bounded-cache';
 
 // DNS Query Log 분석 (Network 메뉴) — Route53 Resolver query logging의 CloudWatch Logs
 // 대상 그룹을 라이브 발견하고, 원시 라인을 퍼오는 대신 Logs Insights **집계 쿼리**를
@@ -10,26 +11,17 @@ import { Route53ResolverClient, ListResolverQueryLogConfigsCommand } from '@aws-
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let logsClient: CloudWatchLogsClient | null = null;
 let r53Client: Route53ResolverClient | null = null;
-const logs = () => (logsClient ??= new CloudWatchLogsClient({ region: REGION }));
-const r53 = () => (r53Client ??= new Route53ResolverClient({ region: REGION }));
+const SDK = { region: REGION, requestHandler: { connectionTimeout: 2_000, requestTimeout: 10_000 } };
+const logs = () => (logsClient ??= new CloudWatchLogsClient(SDK));
+const r53 = () => (r53Client ??= new Route53ResolverClient(SDK));
 
-// ── TTL cache + in-flight dedupe (lib/nfm.ts와 동일 패턴) ────────────────────
+// Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
-const cache = new Map<string, { at: number; v: unknown }>();
-const inflight = new Map<string, Promise<unknown>>();
-async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.v as T;
-  const running = inflight.get(key);
-  if (running) return running as Promise<T>;
-  const p = fn().then((v) => {
-    cache.set(key, { at: Date.now(), v });
-    return v;
-  }).finally(() => inflight.delete(key));
-  inflight.set(key, p);
-  return p;
+const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
+function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return cache.get(key, fn) as Promise<T>;
 }
-export function _resetDnsCacheForTests() { cache.clear(); inflight.clear(); logsClient = null; r53Client = null; }
+export function _resetDnsCacheForTests() { cache.clear(); logsClient = null; r53Client = null; }
 
 // ── Status (menu gate): resolver query-log configs → CW log-group destinations ──
 export interface DnsLogConfig {

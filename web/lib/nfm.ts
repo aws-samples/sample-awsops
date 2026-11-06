@@ -9,6 +9,7 @@ import {
   type MonitorMetric,
   type DestinationCategory,
 } from '@aws-sdk/client-networkflowmonitor';
+import { BoundedTtlCache } from './bounded-cache';
 
 // CloudWatch Network Flow Monitor (NFM) — nfm-dashboard 주요 기능 이식의 데이터 계층.
 // nfm-dashboard와 달리 수집 파이프라인(DDB) 없이 NFM 비동기 쿼리를 라이브로 실행한다:
@@ -18,7 +19,9 @@ import {
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let client: NetworkFlowMonitorClient | null = null;
-const nfm = () => (client ??= new NetworkFlowMonitorClient({ region: REGION }));
+const nfm = () => (client ??= new NetworkFlowMonitorClient({
+  region: REGION, requestHandler: { connectionTimeout: 2_000, requestTimeout: 10_000 },
+}));
 
 export const NFM_METRICS = ['DATA_TRANSFERRED', 'RETRANSMISSIONS', 'TIMEOUTS', 'ROUND_TRIP_TIME'] as const;
 export type NfmMetric = (typeof NFM_METRICS)[number];
@@ -52,23 +55,13 @@ export interface NfmFlowRow {
   traversedIds: string[];
 }
 
-// ── TTL cache + in-flight dedupe ────────────────────────────────────────────
+// Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
-const cache = new Map<string, { at: number; v: unknown }>();
-const inflight = new Map<string, Promise<unknown>>();
-async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.v as T;
-  const running = inflight.get(key);
-  if (running) return running as Promise<T>;
-  const p = fn().then((v) => {
-    cache.set(key, { at: Date.now(), v });
-    return v;
-  }).finally(() => inflight.delete(key));
-  inflight.set(key, p);
-  return p;
+const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
+function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return cache.get(key, fn) as Promise<T>;
 }
-export function _resetNfmCacheForTests() { cache.clear(); inflight.clear(); client = null; }
+export function _resetNfmCacheForTests() { cache.clear(); client = null; }
 
 // ── Status (menu gate) ──────────────────────────────────────────────────────
 export async function nfmStatus(): Promise<NfmStatus> {

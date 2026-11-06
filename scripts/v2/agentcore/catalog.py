@@ -69,9 +69,9 @@ TARGETS = {
     "flow-monitor-target": {
         "gateway": "network",
         "lambda_key": "flow-monitor",
-        "description": "VPC Flow Log analyzer (1 tool)",
+        "description": "VPC Flow Log configuration reader (1 tool)",
         "tools": [
-            {"name": "query_flow_logs", "description": "Query flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
+            {"name": "query_flow_logs", "description": "Describe flow-log configuration and destinations for a VPC; returns no traffic records and does not prove an application or database connection", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
         ],
     },
     # ===== Read-only MCP additions (2026-06-18): core-helpers (ops) + reachability-read (network) =====
@@ -140,7 +140,7 @@ TARGETS = {
             ), "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
             {"name": "list_vpcs", "description": "List VPCs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_vpc_network_details", "description": "Full VPC config", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
-            {"name": "get_vpc_flow_logs", "description": "VPC flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
+            {"name": "get_vpc_flow_logs", "description": "Read VPC flow-log configuration and bounded traffic samples when available. A traffic sample proves only observed network traffic in its window, not a successful DB session/query; absent samples are unknown, not proof of no dependency", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
             {"name": "describe_network", "description": "Describe SG/NACL/RT/Subnet/VPC", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Type")}, "required": ["resource_type"]}},
             {"name": "list_transit_gateways", "description": "List TGWs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_tgw_details", "description": "TGW details", "inputSchema": {"type": "object", "properties": {"tgw_id": _p("string", "TGW ID")}, "required": ["tgw_id"]}},
@@ -251,7 +251,7 @@ TARGETS = {
         "lambda_key": "finops-mcp",
         "description": "FinOps Optimization - Compute Optimizer, RI/SP Recommendations, Cost Optimization Hub, Trusted Advisor (5 tools)",
         "tools": [
-            {"name": "get_rightsizing_recommendations", "description": "EC2/RDS/ECS/Lambda rightsizing recommendations from Compute Optimizer",
+            {"name": "get_rightsizing_recommendations", "description": "Read-only EC2/RDS/ECS/Lambda sizing proposals from Compute Optimizer. EC2/RDS include generation time, lookback, provider rank, performance risk and bounded utilization/missing-metric evidence. Unknown risk/memory/I/O or inadequate lookback prevents a definitive safe downsize; retain currency and verify dependencies/HA/protection before any manual proposal",
              "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "all, ec2, rds, ecs, or lambda")}}},
             {"name": "get_savings_plans_recommendations", "description": "Savings Plans purchase recommendations from Cost Explorer",
              "inputSchema": {"type": "object", "properties": {
@@ -282,8 +282,24 @@ TARGETS = {
         "lambda_key": "cloudwatch-mcp",
         "description": "CloudWatch metrics, alarms, logs, Log Insights (11 tools)",
         "tools": [
-            {"name": "get_metric_data", "description": "Get metric data", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace"), "metric_name": _p("string", "Metric")}, "required": ["namespace", "metric_name"]}},
-            {"name": "get_metric_metadata", "description": "Metric metadata", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace")}, "required": ["namespace"]}},
+            {"name": "get_metric_data", "description": "Read scoped CloudWatch metrics for 1 minute to 14 days. Returns the latest 30 points and discloses truncation; use a period yielding at most 1440 points. A truncated recent sample does not establish full-window sizing coverage",
+             "inputSchema": {"type": "object", "properties": {
+                 "namespace": _p("string", "Verified namespace"),
+                 "metric_name": _p("string", "Verified metric name"),
+                 # AgentCore SchemaDefinition carries only type/description/properties/required/items;
+                 # bounds live in descriptions here and are enforced server-side by _metric_request.
+                 "dimensions": {"type": "object", "description": "Exact dimensions, e.g. InstanceId or DBInstanceIdentifier; at most 30 string values of 1-1024 characters"},
+                 "statistic": _p("string", "One of Average, Minimum, Maximum, Sum, SampleCount, p50, p90, p95, p99"),
+                 "minutes": _p("integer", "Window in minutes, 1 to 20160 (14 days)"),
+                 "period": _p("integer", "Seconds; positive multiple of 60 and at most 1440 points per request"),
+                 "unit": _p("string", "Optional CloudWatch standard unit, e.g. Percent, Count, Bytes, Seconds, Bytes/Second or None"),
+             }, "required": ["namespace", "metric_name"]}},
+            {"name": "get_metric_metadata", "description": "Discover bounded CloudWatch metric metadata by namespace and optional metric/dimensions; omitted metric_name performs namespace-only discovery",
+             "inputSchema": {"type": "object", "properties": {
+                 "namespace": _p("string", "Verified namespace"),
+                 "metric_name": _p("string", "Optional exact metric name"),
+                 "dimensions": {"type": "object", "description": "Optional exact dimension filters; at most 30 string values of 1-1024 characters"},
+             }, "required": ["namespace"]}},
             {"name": "analyze_metric", "description": "Analyze trend", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace"), "metric_name": _p("string", "Metric")}, "required": ["namespace", "metric_name"]}},
             {"name": "get_recommended_metric_alarms", "description": "Alarm recommendations", "inputSchema": {"type": "object", "properties": {"metric_name": _p("string", "Metric")}, "required": ["metric_name"]}},
             {"name": "get_active_alarms", "description": "Active alarms", "inputSchema": {"type": "object", "properties": {}}},

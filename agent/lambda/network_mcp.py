@@ -385,8 +385,10 @@ def lambda_handler(event, context):
             start = int((time.time() - minutes * 60) * 1000)
             try:
                 resp = logs.filter_log_events(logGroupName=log_group, startTime=start, limit=50, filterPattern=filter_pattern)
-                events = [{"timestamp": e.get("timestamp"), "message": e.get("message", "")[:200]} for e in resp.get("events", [])]
-                return ok({"vpc_id": vpc_id, "logGroup": log_group, "events": events, "count": len(events)})
+                raw, meta = cap_list(resp.get("events", []), 50, bool(resp.get("nextToken")))
+                events = [{"timestamp": e.get("timestamp"), "message": e.get("message", "")[:200]} for e in raw]
+                return ok({"vpc_id": vpc_id, "logGroup": log_group, "events": events, "count": len(events),
+                           "windowMinutes": minutes, "limit": 50, **meta, "truncated": meta["truncated"] or len(events) >= 50})
             except Exception as e:
                 # Return error with log group info for debugging / 디버깅을 위해 로그 그룹 정보와 함께 오류 반환
                 return ok({"vpc_id": vpc_id, "logGroup": log_group, "error": str(e)})

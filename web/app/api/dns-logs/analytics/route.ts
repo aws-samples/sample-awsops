@@ -16,15 +16,21 @@ export async function GET(request: Request) {
   const rangeRaw = Number(url.searchParams.get('range') ?? 3600);
   const range = RANGE_ALLOWED.includes(rangeRaw) ? rangeRaw : 3600;
   const source = url.searchParams.get('source') ?? 'resolver';
+  // A failed/saturated allow-list lookup is not proof the group is unknown: retryable 503.
+  const unavailable = () => Response.json(
+    { status: 'error', message: 'log group lookup temporarily unavailable', retryable: true },
+    { status: 503, headers: { 'Retry-After': '5' } });
   try {
     if (source === 'coredns') {
-      const groups = await coreDnsGroups().catch(() => []);
+      let groups;
+      try { groups = await coreDnsGroups(); } catch { return unavailable(); }
       if (!groups.some((g) => g.group === group)) {
         return Response.json({ status: 'error', message: 'unknown log group' }, { status: 404 });
       }
       return Response.json({ source, group, range, ...(await coreDnsAnalytics(group, range)) });
     }
-    const status = await dnsLogStatus().catch(() => ({ configs: [], groups: [] as string[] }));
+    let status;
+    try { status = await dnsLogStatus(); } catch { return unavailable(); }
     if (!status.groups.includes(group)) {
       return Response.json({ status: 'error', message: 'unknown log group' }, { status: 404 });
     }

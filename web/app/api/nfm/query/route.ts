@@ -23,7 +23,14 @@ export async function GET(request: Request) {
   if (!(NFM_METRICS as readonly string[]).includes(metric) || !(NFM_CATEGORIES as readonly string[]).includes(category)) {
     return Response.json({ status: 'error', message: 'unknown metric/category' }, { status: 400 });
   }
-  const status = await nfmStatus().catch(() => ({ monitors: [], scopeCount: 0 }));
+  let status;
+  try {
+    status = await nfmStatus();
+  } catch {
+    // A failed/saturated allow-list lookup is not proof the monitor is unknown: retryable 503.
+    return Response.json({ status: 'error', message: 'monitor lookup temporarily unavailable', retryable: true },
+      { status: 503, headers: { 'Retry-After': '5' } });
+  }
   if (!status.monitors.some((m) => m.name === monitor)) {
     return Response.json({ status: 'error', message: 'unknown monitor' }, { status: 404 });
   }

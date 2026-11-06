@@ -34,6 +34,10 @@ export interface TraceSpan extends TraceIdentity {
   status?: 'ok' | 'error' | 'unset';
   links?: { traceId: string; spanId: string }[];
   serviceVersion?: string;
+  /** Allowlisted telemetry claims; inventory validation is required before EC2 attribution. */
+  cloudResourceId?: string;
+  hostId?: string;
+  serviceInstanceId?: string;
   messagingSystem?: string;
   messagingDestination?: string;
   messagingBroker?: string;
@@ -172,6 +176,12 @@ export class FakeTraceSource implements TraceSource {
 
 // --- Shared allowlisted OTel metadata ---------------------------------------------------------
 
+function identityClaim(value: unknown): string | undefined {
+  const claim = text(value);
+  return claim && claim.length <= 512 && !/[\u0000-\u001f\u007f]/.test(claim)
+    ? claim.trim() : undefined;
+}
+
 function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
   const fields: Partial<Record<keyof TraceSpan, string | undefined>> = {
     accountId: text(resource['cloud.account.id']),
@@ -179,6 +189,9 @@ function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
     environment: text(resource['deployment.environment.name']) ?? text(resource['deployment.environment']),
     serviceNamespace: text(resource['service.namespace']),
     serviceVersion: text(resource['service.version']),
+    cloudResourceId: identityClaim(resource['cloud.resource_id']),
+    hostId: identityClaim(resource['host.id']),
+    serviceInstanceId: identityClaim(resource['service.instance.id']),
     k8sNamespace: text(resource['k8s.namespace.name']), k8sCluster: text(resource['k8s.cluster.name']),
     k8sPod: text(resource['k8s.pod.name']), k8sDeployment: text(resource['k8s.deployment.name']),
     dbSystem: text(span['db.system']), dbName: text(span['db.name']),
