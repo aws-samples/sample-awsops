@@ -91,6 +91,8 @@ describe('GET /api/network-topology', () => {
     expect(sql).toContain('LIMIT 8001');
     expect(sql).toContain('UNION ALL');
     expect(params[2]).toEqual(['vpc-aaaaaaaa', 'vpc-cccccccc']);
+    // Structural rows sort ahead of tiles so the detail cap never drops the AZ/subnet skeleton.
+    expect(sql).toMatch(/ORDER BY \(resource_type NOT IN \('subnet', 'route_table', 'internet_gateway', 'nat_gateway'\)\), resource_type/);
   });
 
   it('flags truncation when fleet rows exceed the cap', async () => {

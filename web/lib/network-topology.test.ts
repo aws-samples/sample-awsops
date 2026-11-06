@@ -83,6 +83,23 @@ describe('buildNetworkTopology', () => {
     expect(t.edges.some((e) => e.source === stub.id)).toBe(true);
   });
 
+  it('renders a TGW owned by an account without inventory as an out-of-scope stub', () => {
+    const C = '333333333333';
+    const t = build([vpc(B, 'vpc-bbbbbbbb', 'spoke'),
+      att(B, 'tgw-attach-0000000000000000d', 'tgw-0fedcba9876543210', C, 'vpc-bbbbbbbb', B)]);
+    expect(t.nodes.some((n) => n.id === `account:${C}`)).toBe(false);
+    expect(t.nodes.find((n) => n.id === `tgw:${C}/${R}/tgw-0fedcba9876543210`)).toMatchObject({ parent: null, outOfScope: true });
+  });
+
+  it('marks whether an external stub exists in inventory', () => {
+    const t = build([vpc('self', 'vpc-aaaaaaaa', 'hub'), ...fleet.slice(2),
+      att('self', 'tgw-attach-0000000000000000e', 'tgw-0123456789abcdef0', A, 'vpc-eeeeeeee', '333333333333')], { accounts: [A], vpcs: [] });
+    expect(t.nodes.find((n) => n.id === `external:${B}/${R}/vpc-bbbbbbbb`)?.inInventory).toBe(false);
+    const known = build(fleet, { accounts: [A], vpcs: [] });
+    expect(known.nodes.find((n) => n.id === `external:${B}/${R}/vpc-bbbbbbbb`)?.inInventory).toBe(true);
+    expect(t.nodes.find((n) => n.id === `external:333333333333/${R}/vpc-eeeeeeee`)?.inInventory).toBe(false);
+  });
+
   describe('detail level', () => {
     const vpcKey = `${A}/${R}/vpc-aaaaaaaa`;
     const subnet = (id: string, az: string) => row('subnet', 'self', R, id, { vpc_id: 'vpc-aaaaaaaa', availability_zone: az, name: id, cidr_block: '10.0.1.0/24' });

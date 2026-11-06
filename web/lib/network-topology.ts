@@ -39,6 +39,8 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     list.push(r); byType.set(r.resource_type, list);
   }
   const of = (type: string) => byType.get(type) ?? [];
+  // Accounts that collected any fleet row (onboarded); others never get an account box.
+  const collecting = new Set(rows.filter((r) => FLEET_TYPES.has(r.resource_type)).map((r) => acct(r.account_id)));
 
   // ── VPC identity: keyed by owner, reachable from every collecting account's scope ──
   const vpcs = new Map<string, VpcInfo>();
@@ -102,7 +104,7 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
   const anchoredTgws = new Set<string>();
   for (const l of live) {
     if (l.kind !== 'tgw') continue;
-    if (detail ? expanded.has(l.a) : accountInScope(l.tgw!.owner)) anchoredTgws.add(l.b);
+    if (detail ? expanded.has(l.a) : accountInScope(l.tgw!.owner) && collecting.has(l.tgw!.owner)) anchoredTgws.add(l.b);
   }
 
   const nodes = new Map<string, NetNode>();
@@ -119,11 +121,11 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     if (v && vpcVisible(key)) return vpcNode(v);
     const [accountId, region, vpcId] = key.split('/');
     return put({ id: `external:${key}`, kind: 'external', parent: null, label: v?.label ?? vpcId,
-      sub: opts.aliases[accountId] || accountId, accountId, region, resourceId: vpcId, vpcKey: key, outOfScope: true });
+      sub: opts.aliases[accountId] || accountId, accountId, region, resourceId: vpcId, vpcKey: key, outOfScope: true, inInventory: !!v });
   };
   const tgwNode = (t: { owner: string; region: string; id: string }) => {
     const key = `${t.owner}/${t.region}/${t.id}`;
-    const boxed = (detail ? nodes.has(`region:${t.owner}/${t.region}`) : accountInScope(t.owner));
+    const boxed = detail ? nodes.has(`region:${t.owner}/${t.region}`) : accountInScope(t.owner) && collecting.has(t.owner);
     return put({ id: `tgw:${key}`, kind: 'tgw', parent: boxed ? regionNode(t.owner, t.region) : null,
       label: tgwLabels.get(key) ?? t.id, sub: boxed ? undefined : opts.aliases[t.owner] || t.owner,
       accountId: t.owner, region: t.region, resourceId: t.id, outOfScope: boxed ? undefined : true });

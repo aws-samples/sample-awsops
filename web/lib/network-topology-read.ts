@@ -18,12 +18,14 @@ export async function readNetworkRows(vpcIds: string[]): Promise<{ rows: NetRow[
   if (vpcIds.length) {
     params.push(DETAIL_TYPES, vpcIds);
     // vpc_id alone is not unique across accounts; the builder re-scopes by account+region.
+    // Structural rows (subnets, route tables, gateways) sort first so the cap trims tiles, not the AZ/subnet skeleton.
     sql += ` UNION ALL (SELECT ${COLUMNS}, 'detail' AS part FROM inventory_resources
       WHERE resource_type = ANY($2) AND (data->>'vpc_id' = ANY($3) OR (resource_type = 'internet_gateway' AND EXISTS (
         SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(data->'attachments') = 'array'
           THEN data->'attachments' ELSE '[]'::jsonb END) a
         WHERE COALESCE(a->>'VpcId', a->>'vpc_id') = ANY($3))))
-      ${ORDER} LIMIT ${DETAIL_LIMIT + 1})`;
+      ORDER BY (resource_type NOT IN ('subnet', 'route_table', 'internet_gateway', 'nat_gateway')), resource_type, account_id, region, resource_id
+      LIMIT ${DETAIL_LIMIT + 1})`;
   }
   const result = await getPool().query(sql, params);
   const fleet: NetRow[] = [], detail: NetRow[] = [];

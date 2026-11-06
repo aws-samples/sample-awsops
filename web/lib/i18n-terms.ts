@@ -7,6 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.': { en: 'The selected VPCs are not in inventory. Select again from the fleet map.', zh: '所选 VPC 不在清单中。请在全局图中重新选择。', ja: '選択した VPC はインベントリにありません。全体マップから選び直してください。' },
   '네트워크 토폴로지': { en: 'Network topology', zh: '网络拓扑', ja: 'ネットワークトポロジー' },
   '선택한 VPC를 AZ·서브넷·리소스 단위로 표시합니다. 연결된 외부 VPC를 클릭하면 상세에 추가됩니다.': { en: 'Shows the selected VPCs by AZ, subnet and resource. Click a connected external VPC to add it to the detail view.', zh: '按可用区、子网和资源显示所选 VPC。点击已连接的外部 VPC 可将其加入详情视图。', ja: '選択した VPC を AZ・サブネット・リソース単位で表示します。接続された外部 VPC をクリックすると詳細に追加されます。' },
   '계정·리전별 VPC와 TGW·피어링 연결을 표시합니다. VPC를 클릭해 선택한 뒤 상세 보기로 이동하세요.': { en: 'Shows VPCs by account and region with TGW and peering connections. Click VPCs to select them, then open the detail view.', zh: '按账户和区域显示 VPC 及 TGW、对等连接。点击 VPC 进行选择，然后打开详情视图。', ja: 'アカウント・リージョン別の VPC と TGW・ピアリング接続を表示します。VPC をクリックして選択し、詳細表示に進んでください。' },

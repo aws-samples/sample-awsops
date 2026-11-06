@@ -154,7 +154,8 @@ export function toFlowElements(topology: NetworkTopology, theme: Theme): { nodes
 /** VPC key a click should toggle into the selection, or null for non-VPC nodes. */
 export function selectableVpcKey(node: Node): string | null {
   const n = (node.data as NetData | undefined)?.net;
-  return n && (n.kind === 'vpc' || n.kind === 'external') && n.vpcKey ? n.vpcKey : null;
+  // A stub without an inventory row cannot expand, so it never consumes a selection slot.
+  return n && n.vpcKey && (n.kind === 'vpc' || (n.kind === 'external' && n.inInventory === true)) ? n.vpcKey : null;
 }
 
 export default function NetworkDiagram({ topology, theme, onSelectVpc }:

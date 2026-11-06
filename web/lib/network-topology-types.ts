@@ -9,6 +9,8 @@ export interface NetNode {
   id: string; kind: NetKind; parent: string | null; label: string; sub?: string;
   accountId: string; region: string; resourceId?: string; tier?: SubnetTier;
   state?: string; count?: number; vpcKey?: string; outOfScope?: boolean;
+  /** external stubs only: the VPC has an inventory row, so it can be expanded into detail. */
+  inInventory?: boolean;
 }
 
 /** Configuration relationships only; an edge never certifies routing or reachability. */

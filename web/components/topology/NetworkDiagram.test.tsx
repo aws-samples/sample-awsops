@@ -45,6 +45,8 @@ describe('NetworkDiagram elements', () => {
     expect(selectableVpcKey(external)).toBe(`${B}/${R}/vpc-bbbbbbbb`);
     expect(selectableVpcKey(nodes.find((n) => n.id === `vpc:${A}/${R}/vpc-aaaaaaaa`)!)).toBe(`${A}/${R}/vpc-aaaaaaaa`);
     expect(selectableVpcKey(nodes.find((n) => n.id.startsWith('tgw:'))!)).toBeNull();
+    const ghost = { ...external, data: { ...external.data, net: { ...(external.data as { net: object }).net, inInventory: false } } };
+    expect(selectableVpcKey(ghost)).toBeNull();
   });
 
   it('renders dashed peering edges when a peering end is in scope', () => {
