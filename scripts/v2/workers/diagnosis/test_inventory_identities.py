@@ -5,7 +5,7 @@ import json
 import pytest
 
 from diagnosis import discovery as d, workload_identities as identities
-from diagnosis.pillar_agents import _redacted_context
+from diagnosis.evidence import redact_context as _redacted_context
 from diagnosis.test_discovery import ACCOUNT, REGION, I1, Budget, Database, inventory, provider, resource
 
 

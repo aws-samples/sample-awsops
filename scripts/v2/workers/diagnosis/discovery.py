@@ -438,9 +438,7 @@ def _graph_state(value, cls):
             # An unknown reason is still a reason: fail closed rather than dropping it.
             if row.get("status") not in ("ok", "empty") or reasons:
                 fresh = False
-            if cls != "trace" and (row.get("producerStatus") != "succeeded"
-                    or not _fresh(row.get("lastSuccessAtMs"), _stale_seconds())
-                    or ((_number(row.get("itemCount")) or 0) > 0 and not _fresh(row.get("capturedAtMs"), _stale_seconds()))):
+            if cls != "trace" and not _inventory_source_fresh(row):
                 fresh = False
         if len(sources) > 128:
             fresh = False
@@ -448,6 +446,21 @@ def _graph_state(value, cls):
     return fresh, {"status": state.get("status", "unknown"), "complete": fresh,
                    "sources": projected, "retained_previous": details.get("retainedPrevious") is True,
                    "instance_observations_omitted": drops}, window
+
+
+def _inventory_source_fresh(row):
+    """Mirror of web/lib/graph-state.ts inventorySourcesStale for one published source."""
+    count = row.get("itemCount")
+    if type(count) is not int or not 0 <= count <= 2**53 - 1:
+        return False  # Number.isSafeInteger: null/float/bool/str are never fresh
+    clocks = [row.get("lastSuccessAtMs")]
+    if count > 0 or row.get("capturedAtMs") is not None:
+        clocks.append(row.get("capturedAtMs"))
+    return (row.get("producerStatus") == "succeeded"
+            and (row.get("status") != "ok" or count != 0)
+            and (row.get("status") != "empty" or count == 0)
+            and all(_number(clock) is not None and clock > 0 and _fresh(clock, _stale_seconds())
+                    for clock in clocks))
 
 
 def _bounded_int(value, default, ceiling, floor=0):
@@ -694,6 +707,7 @@ def _xray(bundle, budget, regions):
         end, start = _now(), _now() - dt.timedelta(hours=3)
         services = {}
         try:
+            # IAM xray:GetServiceGraph: workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
             client = _client("xray", region, budget)
             for page in _pages(client, "get_service_graph", {"StartTime": start, "EndTime": end},
                                bundle, budget, coverage):
@@ -763,7 +777,7 @@ def _summary(values):
 def _metrics(bundle, budget, resources, *, client_factory=None):
     for region in sorted({r["region"] for r in resources}):
         scoped = [r for r in resources if r["region"] == region and r["kind"] in _METRICS]
-        for offset in range(0, len(scoped), 8):  # <=88 query IDs, <=29,568 hourly datapoints/page
+        for offset in range(0, len(scoped), 8):  # <=96 query IDs, <=32,256 hourly datapoints/page
             if not _available(bundle, budget):
                 return
             queries, mapping, dimensions = [], {}, {}
@@ -778,7 +792,10 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     continue
                 dim = [{"Name": "InstanceId" if r["kind"] == "ec2" else "DBInstanceIdentifier", "Value": native}]
                 dimensions[r["id"]] = dim
-                for name, statistic in _METRICS[r["kind"]]:
+                specs = list(_METRICS[r["kind"]])
+                if r["kind"] == "rds" and _replica_source(bundle, r) not in ("none", "unknown"):
+                    specs.append(("ReplicaLag", "Maximum"))  # replica health gates replica sizing
+                for name, statistic in specs:
                     qid = f"m{len(queries)}"
                     mapping[qid] = (r["id"], name, statistic)
                     queries.append({"Id": qid, "MetricStat": {"Metric": {
@@ -792,6 +809,7 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
             result, memory = {}, {}
             page_coverage = {"pages": 0, "complete": True}
             try:
+                # IAM cloudwatch:GetMetricData: workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition); member scope uses the member AWSopsReadOnlyRole instead.
                 client = (client_factory or _client)("cloudwatch", region, budget)
                 for page in _pages(client, "get_metric_data", {"MetricDataQueries": queries, "StartTime": start,
                         "EndTime": end, "MaxDatapoints": 100800}, bundle, budget, page_coverage):
@@ -947,6 +965,8 @@ def _provider_sizing(bundle, budget, resources, *, client_factory=None):
             if not selected or not _available(bundle, budget):
                 continue
             try:
+                # IAM compute-optimizer:Get{EC2Instance,RDSDatabase}Recommendations: workers.tf
+                # worker_diagnosis_evidence Sid DiagnosisProviderSizingReadOnly (runtime_read_condition); member scope uses the member AWSopsReadOnlyRole instead.
                 client = (client_factory or _client)("compute-optimizer", region, budget)
                 operation = client.get_ec2_instance_recommendations if kind == "ec2" else client.get_rds_database_recommendations
                 key = "instanceArns" if kind == "ec2" else "resourceArns"

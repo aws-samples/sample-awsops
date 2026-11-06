@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BoundedTtlCache } from './bounded-cache';
+import { BoundedTtlCache, CacheUnavailableError } from './bounded-cache';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -151,7 +151,9 @@ describe('BoundedTtlCache', () => {
       const cache = new BoundedTtlCache<string>({ ttlMs: 1000, maxEntries: 2, maxInFlight: 1, loadTimeoutMs: 50 });
       const hung = cache.get('hung', () => new Promise<string>(() => {}));
       await expect(cache.get('b', async () => 'blocked')).rejects.toThrow(/in-flight capacity/);
-      const expectation = expect(hung).rejects.toThrow(/deadline/);
+      await expect(cache.get('b', async () => 'blocked')).rejects.toBeInstanceOf(CacheUnavailableError);
+      const expectation = expect(hung).rejects.toSatisfy(
+        (e: unknown) => e instanceof CacheUnavailableError && e.reason === 'deadline' && /deadline/.test(e.message));
       await vi.advanceTimersByTimeAsync(50);
       await expectation;
       expect(await cache.get('b', async () => 'admitted')).toBe('admitted');

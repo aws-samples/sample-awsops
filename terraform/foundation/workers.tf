@@ -954,7 +954,7 @@ resource "aws_iam_role_policy" "worker_diagnosis_network" {
       }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
       Sid       = "DiagnosisApprovedResolverLogRead"
       Effect    = "Allow"
-      Action    = ["logs:StartQuery", "logs:FilterLogEvents"]
+      Action    = ["logs:StartQuery"]
       Resource  = [for arn in var.diagnosis_dns_log_group_arns : endswith(arn, ":*") ? arn : "${arn}:*"]
       Condition = local.runtime_read_condition
       }, {

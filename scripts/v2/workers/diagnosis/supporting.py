@@ -67,6 +67,7 @@ def _cost(client, account, budget, bundle, now):
                   "Filter": {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [account]}}}
         if token:
             params["NextPageToken"] = token
+        # IAM ce:GetCostAndUsage (us-east-1): workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
         result = client.get_cost_and_usage(**params)
         for period in result.get("ResultsByTime", []):
             for group in period.get("Groups", []):
@@ -117,6 +118,7 @@ def _posture(client, account, bundle):
         try:
             # Highest severity first, so a capped page is the worst findings, not an arbitrary
             # sample (sources.collect_posture parity); fall back unsorted and say so.
+            # IAM securityhub:GetFindings (both calls): workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
             response = client.get_findings(
                 SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
         except (ClientError, ParamValidationError) as error:
@@ -148,6 +150,7 @@ def _posture(client, account, bundle):
 
 
 def _changes(client, account, bundle, now):
+    # IAM cloudtrail:LookupEvents: workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
     response = client.lookup_events(
         StartTime=now - dt.timedelta(hours=24), EndTime=now, MaxResults=50,
         LookupAttributes=[{"AttributeKey": "ReadOnly", "AttributeValue": "false"}])
@@ -173,6 +176,7 @@ def _commitment(client, account, budget, bundle, now):
     params = {"TimePeriod": {"Start": (now.date() - dt.timedelta(days=30)).isoformat(),
                             "End": now.date().isoformat()},
               "Filter": {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [account]}}}
+    # IAM ce:GetReservationCoverage/GetSavingsPlansCoverage (below; us-east-1): workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
     ri = client.get_reservation_coverage(**params)
     if budget.remaining() < 10:
         raise TimeoutError("supporting_deadline_exhausted")

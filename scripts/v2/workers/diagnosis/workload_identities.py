@@ -100,6 +100,8 @@ def collect_proxies(bundle, budget, client_factory):
                 if not d._available(bundle, budget):
                     raise TimeoutError("proxy_deadline")
                 calls += 1
+                # IAM rds:DescribeDBProxies/DescribeDBProxyTargets/DescribeDBClusters (all read() calls): workers.tf
+                # worker_diagnosis_network Sid DiagnosisObservationDiscovery (runtime_read_condition).
                 return getattr(client_factory("rds", region, budget), operation)(**parameters)
 
             response = read("describe_db_proxies", MaxRecords=20)

@@ -47,6 +47,8 @@ def member_factory(conn, account, budget):
                         retries={"total_max_attempts": 1, "mode": "standard"})
         # ExternalId is optional for first-party members (migration 01KW39F7...).
         # 3600s is the role-chaining maximum (sg_rule_scan parity); refreshed before expiry.
+        # IAM sts:AssumeRole: workers.tf worker_diagnosis_evidence Sid DiagnosisRegisteredMemberReadOnly
+        # (exactly diagnosis_member_role_arns, ExternalId ?*, runtime regions). GetCallerIdentity needs no grant.
         result = boto3.client("sts", config=config).assume_role(
             RoleArn=role_arn, RoleSessionName="awsops-diagnosis-read", DurationSeconds=3600,
             **({"ExternalId": external} if external else {}))
@@ -80,6 +82,7 @@ def member_factory(conn, account, budget):
         timeout = min(10, max(1, int(remaining - 1)))
         key = service, region, timeout
         if key not in clients:
+            # Member-session calls are granted by the member account's AWSopsReadOnlyRole, not workers.tf.
             clients[key] = state["session"].client(service, region_name=region, config=Config(
                 connect_timeout=1, read_timeout=timeout,
                 retries={"total_max_attempts": 1, "mode": "standard"}))

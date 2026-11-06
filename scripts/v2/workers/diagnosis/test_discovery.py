@@ -297,6 +297,9 @@ def test_synced_replica_source_distinguishes_standalone_from_replica(provider):
     assert facts[resource(bundle, "solo")["id"]] == "none"
     assert facts[resource(bundle, "copy")["id"]] == "solo"
     assert "rds_replica_source_unknown" not in bundle["gaps"]
+    lag = {e["resource_ids"][0]: e["facts"]["metrics"].get("ReplicaLag") for e in evidence(bundle, "metrics")}
+    assert lag[resource(bundle, "solo")["id"]] is None
+    assert lag[resource(bundle, "copy")["id"]]["Maximum"]["status"] == "Complete"
 
 
 def test_partial_metric_status_never_becomes_complete_sizing_evidence(provider):
@@ -472,6 +475,24 @@ def test_null_item_count_from_a_payload_capped_source_does_not_wipe_graph_eviden
     bundle = discovery.collect(db, ACCOUNT, Budget())
     assert "graph_read_failed" not in bundle["degraded"]
     assert evidence(bundle, "observed_call")
+
+
+@pytest.mark.parametrize("change,complete", [
+    ({"itemCount": None}, False), ({"itemCount": 1.5}, False), ({"itemCount": True}, False),
+    ({"itemCount": "2"}, False), ({"itemCount": -1}, False), ({"itemCount": 2**53}, False),
+    ({"itemCount": 0}, False),  # status ok requires a nonzero count
+    ({"status": "empty"}, False),  # status empty requires a zero count
+    ({"status": "empty", "itemCount": 0, "capturedAtMs": None}, True),
+    ({"status": "empty", "itemCount": 0, "capturedAtMs": "bogus"}, False),
+    ({"status": "empty", "itemCount": 0, "capturedAtMs": 0}, False),
+    ({"lastSuccessAtMs": NOW.isoformat()}, False),
+    ({"producerStatus": "running"}, False),
+])
+def test_inventory_source_qualification_mirrors_web_graph_state(provider, change, complete):
+    db = graph_fixture()
+    db.states[1][4]["publishedSources"][0].update(change)
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert bundle["coverage"]["graph"]["infra"]["complete"] is complete
 
 
 def test_read_side_pair_cap_is_disclosed_by_its_sentinel(provider):

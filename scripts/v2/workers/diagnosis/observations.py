@@ -331,6 +331,8 @@ def _groups(account, regions):
 
 def _dns(reads, region, approved, vpcs, start, end):
     rows = []
+    # IAM route53resolver:ListResolverQueryLogConfigs(+Associations below): workers.tf
+    # worker_diagnosis_network Sid DiagnosisObservationDiscovery (runtime_read_condition).
     configs = {row.get("Id"): row.get("DestinationArn", "").removesuffix(":*")
                for row in _pages(reads, "route53resolver", region, "list_resolver_query_log_configs", "ResolverQueryLogConfigs")
                if isinstance(row, dict) and row.get("OwnerId") == reads.bundle["coverage"]["account"]
@@ -344,12 +346,14 @@ def _dns(reads, region, approved, vpcs, start, end):
     for arn in sorted(selected)[:MAX_GROUPS]:
         query_id, finished = None, False
         try:
+            # IAM logs:StartQuery: workers.tf worker_diagnosis_network Sid DiagnosisApprovedResolverLogRead (allowlisted groups).
             response = reads.call("logs", region, "start_query", logGroupName=approved[arn],
                 startTime=int(start.timestamp()), endTime=int(end.timestamp()), queryString=DNS_QUERY, limit=MAX_ROWS)
             query_id = response.get("queryId")
             if not isinstance(query_id, str) or not query_id:
                 raise ValueError("dns_query_id_missing")
             for attempt in range(MAX_POLLS):
+                # IAM logs:GetQueryResults: workers.tf worker_diagnosis_network Sid DiagnosisQueryResultsAndCancellation.
                 result = reads.call("logs", region, "get_query_results", queryId=query_id)
                 status = result.get("status")
                 if status == "Complete":
@@ -374,6 +378,7 @@ def _dns(reads, region, approved, vpcs, start, end):
                 d._mark(reads.bundle, "incomplete", "dns_query_poll_cap")
         finally:
             if query_id and not finished:
+                # IAM logs:StopQuery: workers.tf worker_diagnosis_network Sid DiagnosisQueryResultsAndCancellation.
                 reads.stop("logs", region, "stop_query", queryId=query_id)
     return rows
 
@@ -385,6 +390,7 @@ def _flows(reads, regions, start, end):
     account = reads.bundle["coverage"]["account"]
     for region in regions:
         try:
+            # IAM networkflowmonitor:ListMonitors: workers.tf worker_diagnosis_network Sid DiagnosisObservationDiscovery.
             for monitor in _pages(reads, "networkflowmonitor", region, "list_monitors", "monitors", lower=True):
                 if not isinstance(monitor, dict):
                     continue
@@ -404,6 +410,8 @@ def _flows(reads, regions, start, end):
                     queries += 1
                     query_id, finished = None, False
                     try:
+                        # IAM networkflowmonitor:{Start,GetQueryStatus,GetQueryResults,Stop}QueryMonitorTopContributors
+                        # (this and the calls below): workers.tf worker_diagnosis_network Sid DiagnosisMonitorObservationQuery.
                         response = reads.call("networkflowmonitor", region, "start_query_monitor_top_contributors",
                             monitorName=name, startTime=start, endTime=end, metricName="DATA_TRANSFERRED",
                             destinationCategory=category, limit=MAX_ROWS)

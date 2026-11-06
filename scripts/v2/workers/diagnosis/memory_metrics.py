@@ -99,6 +99,7 @@ def collect(client, resources, start, end, budget):
             continue
         candidates = []
         try:
+            # IAM cloudwatch:ListMetrics: workers.tf worker_diagnosis_evidence Sid DiagnosisMeasuredMemoryReadOnly; member scope uses the member AWSopsReadOnlyRole instead.
             for page in _pages(client, "list_metrics", {
                     "Namespace": "CWAgent", "MetricName": "mem_used_percent",
                     "Dimensions": [{"Name": "InstanceId", "Value": resource["resource_id"]}],
@@ -139,6 +140,7 @@ def collect(client, resources, start, end, budget):
     data = {qid: {"samples": {}, "statuses": [], "valid": True} for qid in selected}
     complete, failure = True, "memory_metric_samples_incomplete"
     try:
+        # IAM cloudwatch:GetMetricData: workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition); member scope uses the member AWSopsReadOnlyRole instead.
         for page in _pages(client, "get_metric_data", {
                 "MetricDataQueries": queries, "StartTime": start, "EndTime": end,
                 "MaxDatapoints": EXPECTED * len(queries)}, budget):

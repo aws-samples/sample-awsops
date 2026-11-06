@@ -7,6 +7,14 @@ export interface BoundedTtlCacheOptions {
   now?: () => number;
 }
 
+/** Transient cache saturation or a load deadline: callers report it as retryable, never as absence. */
+export class CacheUnavailableError extends Error {
+  constructor(readonly reason: 'capacity' | 'deadline') {
+    super(reason === 'capacity' ? 'Cache in-flight capacity reached' : 'Cache load deadline exceeded');
+    this.name = 'CacheUnavailableError';
+  }
+}
+
 export class BoundedTtlCache<T> {
   private readonly ttlMs: number;
   private readonly maxEntries: number;
@@ -44,14 +52,14 @@ export class BoundedTtlCache<T> {
     const running = this.pending.get(key);
     if (running) return running;
     if (this.activeLoads >= this.maxInFlight) {
-      return Promise.reject(new Error('Cache in-flight capacity reached'));
+      return Promise.reject(new CacheUnavailableError('capacity'));
     }
 
     const generation = this.generation;
     this.activeLoads += 1;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Cache load deadline exceeded')), this.loadTimeoutMs);
+      timer = setTimeout(() => reject(new CacheUnavailableError('deadline')), this.loadTimeoutMs);
     });
     const promise = Promise.race([Promise.resolve().then(loader), deadline]).then((value) => {
       if (generation === this.generation) {

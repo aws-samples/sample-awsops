@@ -4,6 +4,8 @@ from datetime import datetime
 import math
 import re
 
+from redact import redact
+
 
 PILLARS = (
     "operational_excellence", "security", "reliability",
@@ -72,6 +74,11 @@ FACT_KEYS = {
     # explicit binding marker that keeps unresolved service nodes out of observations.
     "from_ref", "to_ref", "from_name", "to_name", "calls", "error_rate", "fault_rate", "resource_binding",
     "architecture", "enabled",
+    # discovery._facts inventory projections (attachments carry only ENI Type/Details
+    # Name/Value pairs; attachments_complete=False marks a capped, untrusted projection).
+    "engine_version", "availability_zone", "allocated_storage", "iops", "endpoint_port",
+    "read_replica_source_db_instance_identifier", "arn", "attachments", "attachments_complete",
+    "Type", "Details", "task_arn", "cluster_arn", "task_group", "last_status",
 }
 # Compute Optimizer directions that are downsizing opportunities (finops/rules.py parity).
 # Underprovisioned (upsize) and Optimized rows never validate as sizing candidates.
@@ -148,6 +155,36 @@ def _string_list(value, limit=16):
     return (isinstance(value, list) and len(value) <= limit
             and all(isinstance(item, str) and 0 < len(item) <= 256 for item in value)
             and len(set(value)) == len(value))
+
+
+# Only these top-level records carry code-owned, admitted references. A
+# similarly named key inside telemetry facts receives ordinary redaction.
+_REFERENCE_FIELDS = {
+    "resources": ("id",),
+    "evidence": ("id", "resource_ids"),
+    "relationships": ("id", "source", "target", "evidence_ids"),
+    "findings": ("id", "resource_ids", "evidence_ids"),
+}
+
+
+def redact_context(context):
+    """Scrub source strings while keeping admitted citation IDs byte-for-byte."""
+    def scrub(value):
+        if isinstance(value, str):
+            return redact(value)
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        if isinstance(value, dict):
+            return {key: scrub(item) for key, item in value.items()}
+        return value
+
+    result = scrub(context)
+    for collection, fields in _REFERENCE_FIELDS.items():
+        for original, redacted in zip(context.get(collection, []), result.get(collection, [])):
+            for field in fields:
+                if field in original:
+                    redacted[field] = deepcopy(original[field])
+    return result
 
 
 class EvidenceIndex:
@@ -290,15 +327,18 @@ class EvidenceIndex:
             self.relationships[row["id"]] = {key: deepcopy(row[key]) for key in
                                             ("id", "source", "target", "kind", "evidence_ids")}
 
-    def model_context(self):
-        return deepcopy({
+    def model_context(self, redacted=False):
+        """Admitted, projected records. Every model prompt carries ``redacted=True``
+        (or redact_context() of a trimmed copy); unredacted is for code-side checks only."""
+        context = deepcopy({
             "resources": list(self.resources.values()), "evidence": list(self.evidence.values()),
             "relationships": list(self.relationships.values()), "coverage": self.coverage,
             "gaps": self.gaps, "degraded": self.degraded, "incomplete": self.incomplete,
         })
+        return redact_context(context) if redacted else context
 
     def admitted_bundle(self):
-        """The exact sanitized records used for analysis and deterministic rendering."""
+        """The exact admitted (unredacted) records used for analysis and deterministic rendering."""
         return self.model_context()
 
     @staticmethod
@@ -393,12 +433,13 @@ class EvidenceIndex:
                 dimensions = dict(pairs)
             native_id = self._native_identity(resource)[3]
             if (not isinstance(dimensions, dict) or dimensions != {dimension: native_id}
-                    or not self._pressure_supported(details.get("metrics"), resource["kind"])):
+                    or not self._pressure_supported(details.get("metrics"), resource["kind"],
+                                                    details.get("replica_source"))):
                 return False
         return True
 
     @staticmethod
-    def _pressure_supported(metrics, kind):
+    def _pressure_supported(metrics, kind, replica_source=None):
         if not isinstance(metrics, dict):
             return False
         required = [("CPUUtilization", "p95"), ("CPUUtilization", "Maximum")]
@@ -411,6 +452,9 @@ class EvidenceIndex:
                          ("ReadIOPS", "Maximum"), ("WriteIOPS", "Maximum"),
                          ("ReadLatency", "p95"), ("WriteLatency", "p95"),
                          ("DiskQueueDepth", "Maximum")]
+            if isinstance(replica_source, str) and replica_source not in ("none", "unknown"):
+                # A read replica is never sized without measured replica health.
+                required.append(("ReplicaLag", "Maximum"))
         for name, statistic in required:
             values = metrics.get(name)
             values = values.get(statistic) if isinstance(values, dict) else None

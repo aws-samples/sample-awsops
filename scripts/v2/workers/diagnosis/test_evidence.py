@@ -2,7 +2,8 @@ from copy import deepcopy
 
 import pytest
 
-from diagnosis.evidence import EvidenceIndex, PILLARS
+from diagnosis import discovery
+from diagnosis.evidence import FACT_KEYS, EvidenceIndex, PILLARS
 
 
 ACCOUNT = "111111111111"
@@ -190,6 +191,38 @@ def test_model_context_contains_projected_data_not_instruction_sources():
                            "performance_efficiency", "cost_optimization", "sustainability"}
 
 
+def test_every_discovery_inventory_fact_reaches_the_model_context():
+    assert set(discovery._FACT_KEYS) | {"attachments_complete"} <= FACT_KEYS
+    data = bundle()
+    data["resources"][1]["facts"].update({
+        "engine_version": "17.9", "availability_zone": "ap-northeast-2a", "allocated_storage": 100,
+        "iops": 3000, "endpoint_port": 5432, "read_replica_source_db_instance_identifier": "",
+        "arn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db:database", "task_group": "service:api",
+        "task_arn": "t", "cluster_arn": "c", "last_status": "RUNNING", "attachments_complete": False,
+        "attachments": [{"Type": "ElasticNetworkInterface", "Details": [
+            {"Name": "subnetId", "Value": "subnet-0123456789abcdef0"}]}]})
+    facts = EvidenceIndex(data, ACCOUNT).model_context()["resources"][1]["facts"]
+    assert facts == data["resources"][1]["facts"]
+
+
+def test_redacted_model_context_scrubs_sources_but_keeps_citation_ids():
+    data = bundle()
+    cited = f"r-{ACCOUNT}"  # code-owned id containing an account-like digit run
+    data["resources"][0]["id"] = data["relationships"][0]["source"] = cited
+    for row in data["evidence"]:
+        row["resource_ids"] = [cited if ref == "r-instance" else ref for ref in row["resource_ids"]]
+    data["resources"][0]["facts"]["private_ip_address"] = "10.0.1.5"
+    data["resources"][1]["facts"]["arn"] = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:database"
+    index = EvidenceIndex(data, ACCOUNT)
+    raw, redacted = index.model_context(), index.model_context(redacted=True)
+    assert raw["resources"][0]["facts"]["private_ip_address"] == "10.0.1.5"
+    text = repr(redacted)
+    assert "10.0.1.5" not in text and f"arn:aws:rds:{REGION}:{ACCOUNT}" not in text
+    assert redacted["resources"][0]["id"] == cited
+    assert redacted["relationships"][0]["source"] == cited
+    assert cited in redacted["evidence"][2]["resource_ids"]
+
+
 def test_review_request_can_only_use_admitted_resource_and_capability():
     index = EvidenceIndex(bundle(), ACCOUNT)
     assert index.validate_request({"capability": "resource_metrics", "resource_ids": ["r-instance"]})
@@ -351,6 +384,11 @@ def test_rds_sizing_uses_database_dimensions_and_representative_pressure():
         provider["facts"]["finding"] = direction
         assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
     provider["facts"]["finding"] = "Overprovisioned"
+    # A named read replica needs measured replica health before it can be sized.
+    metrics["facts"]["replica_source"] = provider["facts"]["replica_source"] = "primary-db"
+    assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
+    metrics["facts"]["metrics"]["ReplicaLag"] = {"Maximum": {"max": 1, "samples": 330, "status": "Complete"}}
+    assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "sizing_candidate"
     metrics["facts"]["metrics"].pop("ReadLatency")
     assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
 

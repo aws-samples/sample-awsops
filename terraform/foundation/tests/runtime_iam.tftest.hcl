@@ -95,6 +95,14 @@ run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
     error_message = "Only the two provider reads in supported runtime regions may be added."
   }
   assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      length(jsondecode(p.policy).Statement) == 2 &&
+      jsondecode(p.policy).Statement[1].Action == ["cloudwatch:ListMetrics"] &&
+      [for s in jsondecode(p.policy).Statement : s.Sid] == ["DiagnosisProviderSizingReadOnly", "DiagnosisMeasuredMemoryReadOnly"]
+    ])
+    error_message = "Without member roles the evidence policy is exactly the provider reads plus cloudwatch:ListMetrics; no AssumeRole."
+  }
+  assert {
     condition     = [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_HOST_ACCOUNT_ID"] == ["123456789012"] && length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if contains(["INVENTORY_STALE_AFTER_MINUTES", "GRAPH_REBUILD_INTERVAL_MINS"], e.name)]) == 2 && !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_HOST_ACCOUNT_ID")
     error_message = "The Fargate report worker binds discovery to the applied host account; the Lambda runs no diagnosis."
   }
@@ -146,8 +154,11 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
   }
   assert {
     condition = keys(aws_iam_role_policy.worker_diagnosis_network) == ["task"] && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
+      length(jsondecode(p.policy).Statement) == 4 &&
+      jsondecode(p.policy).Statement[0].Action == ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"] &&
+      jsondecode(p.policy).Statement[1].Action == ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"] &&
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
-      jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery", "logs:FilterLogEvents"] &&
+      jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery"] &&
       jsondecode(p.policy).Statement[3].Action == ["logs:GetQueryResults", "logs:StopQuery"] &&
       jsondecode(p.policy).Statement[1].Resource == [for region in ["ap-northeast-2", "eu-west-1", "us-east-1"] : "arn:aws:networkflowmonitor:${region}:123456789012:monitor/*"] &&
       alltrue([for s in jsondecode(p.policy).Statement : can(s.Condition.StringEquals["aws:RequestedRegion"])])
@@ -156,10 +167,12 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
   }
   assert {
     condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      length(jsondecode(p.policy).Statement) == 3 &&
+      [for s in jsondecode(p.policy).Statement : s.Action] == [["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"], ["cloudwatch:ListMetrics"], ["sts:AssumeRole"]] &&
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"] &&
       jsondecode(p.policy).Statement[2].Condition.StringLike["sts:ExternalId"] == "?*"
     ])
-    error_message = "Member reads require an explicit role and an external ID."
+    error_message = "Member reads add exactly one sts:AssumeRole statement on the explicit role with an external ID."
   }
   assert {
     condition = (!contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED") &&

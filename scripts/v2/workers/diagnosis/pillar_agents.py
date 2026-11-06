@@ -12,9 +12,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 
-from redact import redact
 from .budget import BudgetExceeded, MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS
-from .evidence import CLAIMS, PILLARS, VERIFICATIONS
+from .evidence import CLAIMS, PILLARS, VERIFICATIONS, redact_context
 
 
 PROMPT_VERSION = "diagnosis-pillars-2026-11-05-v2"
@@ -239,34 +238,6 @@ def _body(prompt, context, schema, capabilities):
     }
 
 
-def _redacted_context(context):
-    """Scrub source strings while keeping admitted citation IDs byte-for-byte."""
-    def scrub(value):
-        if isinstance(value, str):
-            return redact(value)
-        if isinstance(value, list):
-            return [scrub(item) for item in value]
-        if isinstance(value, dict):
-            return {key: scrub(item) for key, item in value.items()}
-        return value
-
-    result = scrub(context)
-    # Only these top-level records carry code-owned, admitted references. A
-    # similarly named key inside telemetry facts receives ordinary redaction.
-    reference_fields = {
-        "resources": ("id",),
-        "evidence": ("id", "resource_ids"),
-        "relationships": ("id", "source", "target", "evidence_ids"),
-        "findings": ("id", "resource_ids", "evidence_ids"),
-    }
-    for collection, fields in reference_fields.items():
-        for original, redacted in zip(context.get(collection, []), result.get(collection, [])):
-            for field in fields:
-                if field in original:
-                    redacted[field] = deepcopy(original[field])
-    return result
-
-
 def _bounded_body(prompt, index, schema, capabilities, extra=None):
     context = index.model_context()
     if extra:
@@ -288,9 +259,10 @@ def _bounded_body(prompt, index, schema, capabilities, extra=None):
         body = _body(prompt, context, schema, capabilities)
         serialized = _serialize(body)
         if len(serialized.encode()) <= MAX_INPUT_BYTES:
-            # Redact values structurally. Scrubbing serialized JSON also edits
+            # Redact values structurally (evidence.redact_context, the same scrub as
+            # model_context(redacted=True)). Scrubbing serialized JSON also edits
             # random citation hashes containing account-like digit sequences.
-            body["messages"][0]["content"][0]["text"] = _serialize(_redacted_context(context))
+            body["messages"][0]["content"][0]["text"] = _serialize(redact_context(context))
             serialized = _serialize(body)
             if len(serialized.encode()) <= MAX_INPUT_BYTES:
                 return serialized, context["model_context_coverage"]
