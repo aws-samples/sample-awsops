@@ -754,7 +754,7 @@ run "model_provider_mixed_is_the_default_and_adds_no_env" {
       length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "MODEL_PROVIDER"]) == 0 &&
       !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "MODEL_PROVIDER") &&
       length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if e.name == "MODEL_PROVIDER"]) == 0 &&
-    !contains(keys(output.agentcore), "model_env"))
+    length(output.agentcore.model_env) == 0)
     error_message = "mixed must keep every task definition, function and the provisioner input unchanged."
   }
   assert {
@@ -795,7 +795,7 @@ run "model_provider_bedrock_claude_grants_only_claude" {
       jsondecode(aws_iam_role_policy.task_classifier_bedrock[0].policy).Statement[0].Resource,
       jsondecode(aws_iam_role_policy.task_synthesis_bedrock[0].policy).Statement[0].Resource,
       jsondecode(aws_iam_role_policy.worker_lambda_diagnosis[0].policy).Statement[0].Resource,
-    ) : strcontains(arn, "anthropic.claude-")]) &&
+      ) : strcontains(arn, "anthropic.claude-")]) &&
     contains(jsondecode(aws_iam_role_policy.worker_diagnosis[0].policy).Statement[0].Resource, "arn:aws:bedrock:*:123456789012:inference-profile/global.anthropic.claude-opus-5-5"))
     error_message = "bedrock_claude must grant Claude models only, including Opus for the Deep diagnosis tier."
   }
@@ -823,7 +823,7 @@ run "model_provider_bedrock_openai_grants_only_gpt" {
       jsondecode(aws_iam_role_policy.task_web_models[0].policy).Statement[0].Resource,
       jsondecode(aws_iam_role_policy.task_classifier_bedrock[0].policy).Statement[0].Resource,
       jsondecode(aws_iam_role_policy.worker_diagnosis[0].policy).Statement[0].Resource,
-    ) : strcontains(arn, "openai.gpt-6")]) &&
+      ) : strcontains(arn, "openai.gpt-6")]) &&
     [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "CLASSIFIER_MODEL_ID"] == ["global.openai.gpt-6-luna"])
     error_message = "bedrock_openai must grant GPT-6 Luna/Terra only."
   }
@@ -872,4 +872,13 @@ run "model_provider_anthropic_api_reads_one_secret_and_drops_bedrock_model_grant
     aws_lambda_function.worker[0].environment[0].variables["DIAGNOSIS_MODEL_OPUS"] == "claude-opus-5-5")
     error_message = "anthropic_api must pass Anthropic API model IDs and the secret ARN to the runtime and workers."
   }
+}
+
+run "chat_model_rollback_is_mixed_only" {
+  command = plan
+  variables {
+    model_provider          = "bedrock_openai"
+    agentcore_chat_model_id = "global.anthropic.claude-sonnet-5-5"
+  }
+  expect_failures = [var.agentcore_chat_model_id]
 }

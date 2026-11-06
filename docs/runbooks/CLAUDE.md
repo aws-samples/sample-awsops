@@ -48,7 +48,8 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 - HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
   deterministic declaration gate. Two comprehensive vendor reports each attest L2–L5;
-  full filtered diff admission is 6,000 lines/128 KiB and chair stdin is at most 256 KiB.
+  filtered diff admission is 6,000 lines/128 KiB per call (larger diffs: at most 8 complete
+  file-boundary batches that must all pass) and chair stdin is at most 256 KiB.
   Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
   output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.

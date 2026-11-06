@@ -398,5 +398,5 @@ The web BFF queries Runtime / Gateway / Code Interpreter status. It reads identi
 The AI assistant is available at `/assistant` (full page) and in a resizable drawer you can open anywhere; both share the same Aurora conversation history.
 
 :::tip Routing is hybrid
-Questions are routed to the appropriate section agent via a regex fast-path + Haiku-class classifier + prompt caching (LIVE, ~59% cache hit). This is not the legacy fixed multi-route Sonnet registry.
+Questions are routed to the appropriate section agent via a regex fast-path + Haiku-class classifier (LIVE; explicit prompt caching applies only to Claude paths). This is not the legacy fixed multi-route Sonnet registry.
 :::

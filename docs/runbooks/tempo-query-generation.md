@@ -70,7 +70,7 @@ a limited inventory go directly to schema-refresh/manual-query guidance. A draft
 that omits the required status filter against complete evidence can use fallback
 as described above.
 
-Limited qualifiers such as `today`, `yesterday`, and `last hour/day/week`, and their Korean equivalents, are recognized only to preserve the status predicate. Generation does not change search time bounds; use explicit historical bounds in Grafana or the Tempo API as described below.
+Limited qualifiers such as `today`, `yesterday`, and `last hour/day/week`, plus the Korean `오늘` and `어제`, are recognized only to preserve the status predicate. Generation does not change search time bounds; use explicit historical bounds in Grafana or the Tempo API as described below.
 
 - `syntax error`: Check scopes, quoting, and operators. The pinned parser does not cover every server version; verify newer syntax through Grafana Explore on the same Tempo.
 - `schema mismatch`: Verify the observation window, names, and types using the API procedure above, refreshing when needed. `.key` can match span/resource observations; event/link/instrumentation retain explicit scopes.

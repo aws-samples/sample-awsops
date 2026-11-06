@@ -1072,6 +1072,9 @@ def runtime_model_env(value):
         return {}
     return {k: v for k, v in value.items()
             if k in MODEL_ENV_KEYS and isinstance(v, str) and _MODEL_ENV_VALUE.fullmatch(v)}
+# Chat models any model_provider profile may select (Bedrock Luna, Bedrock Sonnet 5.5, Anthropic API
+# Sonnet 5.5); Terraform validation and the profile IAM bound which one a stack can actually use.
+AGENT_MODEL_IDS = ("global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5")
 
 
 def ensure_runtime(ctrl, ac, gw_ids):
@@ -1120,6 +1123,20 @@ def ensure_runtime(ctrl, ac, gw_ids):
     # Terraform var.model_provider role env (models.tf output agentcore.model_env); absent = mixed,
     # i.e. the agent's code defaults. Only the known keys with plain model-ID/secret-ARN values pass.
     env.update(runtime_model_env(ac.get("model_env")))
+    # Durable chat model: only the applied Terraform value (agentcore.model_env from var.model_provider
+    # or var.agentcore_chat_model_id) reaches the runtime, so every provisioning run — CI included —
+    # writes the same model. The deployer's shell cannot change it. A value outside the reviewed
+    # allowlist refuses the runtime update.
+    model_env = ac.get("model_env") if isinstance(ac.get("model_env"), dict) else {}
+    agent_model = model_env.get("AGENT_MODEL_ID", "")
+    if agent_model:
+        if not isinstance(agent_model, str) or agent_model not in AGENT_MODEL_IDS:
+            log("runtime", "ERR", "agentcore.model_env AGENT_MODEL_ID is not a reviewed chat model; runtime not updated")
+            return ""
+        env["AGENT_MODEL_ID"] = agent_model
+    else:
+        env.pop("AGENT_MODEL_ID", None)  # blank keeps agent.py's default rather than an empty env
+    log("runtime", "OK", f"chat model {agent_model or 'default (global.openai.gpt-6-luna)'}")
     # Same fail-closed contract as the readiness poll below (review MINOR, codex/L3): this listing
     # used to sit outside the try (which only catches ClientError), so any exception here crashed
     # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.

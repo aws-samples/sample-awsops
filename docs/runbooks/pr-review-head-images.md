@@ -94,11 +94,12 @@ then run offline verification from the repository root:
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
-python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline
+python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline \
+  scripts.v2.test_pr_review_batches
 ```
 
-Merge Verify discovers both suites through isolated pytest execution.
-The local `test-pr-review-panel-prompt.sh` structure check also runs both suites.
+Merge Verify discovers these suites through isolated pytest execution.
+The local `test-pr-review-panel-prompt.sh` structure check also runs all three suites.
 Prepare `AWSOPS_REVIEW_CODEC_STATE` using the [sandbox setup](review-codec-sandbox.md#verification)
 before direct local image tests; Docker is required. The image suite also supports the isolated `scripts/v2` cwd used by pytest:
 `python3 -m pytest test_pr_review_head_images.py`.
@@ -114,7 +115,9 @@ limits, prompt propagation and missing-evidence failures.
 | Decode attempts / staged files | 32; deletions do not consume slots |
 | One source or rendered file | 8 MiB |
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
-| Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB |
+| Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB per review call |
+| Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the byte limit, at most 4 in flight per wave (two waves, fresh credentials each); every batch must pass |
+| Published comment body | `comment_bytes` 60,000 (GitHub caps comments at 65,536 characters) |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
 | Public failure diagnostic | Fixed labels and severity-keyword presence (true/false); no model text |
@@ -201,7 +204,7 @@ Pre-credential workflow preparation, including `input_scope.py`, runs as ordinar
 Python scripts from the trusted default-workflow checkout; this is not a claim
 that every Python invocation in the repository uses isolated mode.
 
-Before issuing model credentials, `input_scope.py` requires the entire filtered diff
+Before issuing model credentials, `input_scope.py` requires each review call's filtered diff
 to fit 6,000 lines and 128 KiB, plus complete and hash-valid image evidence. The
 32-image extraction bound remains. Diff admission is byte-based and counts LF
 boundaries like `wc -l`; raw bytes are passed unchanged to reviewer CLIs without
@@ -210,7 +213,60 @@ that a CLI understood an encoding: unreadable or incomplete model responses stil
 fail the mandatory report checks. Sanitizer and image-evidence faults have separate
 fixed diagnostics. Oversized source lines already omitted by the
 filter also block admission. There is no first-N-lines review, misleading unseen-file
-index or partial PASS. Input failures publish a distinct incomplete-input diagnosis;
+index or partial PASS.
+
+A filtered diff over one call's limit is reviewed in complete batches
+(`scripts/pr-review/review_batches.py`). Admission splits it at file boundaries into at most
+8 batches, each within 7/8 of the byte limit less a 12 KiB paths header and within the line
+limit less the header's 400 lines, and admits
+every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
+chair inside the existing panel and chair steps. At most `max_parallel_batches` (4) batches run at
+once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsops` runner pod
+(2 CPU, 8 GiB request, 12 GiB limit). Batches 5–8 form a second wave: each wave of each phase is
+its own workflow step (`scripts/pr-review/run-batches.sh`) after a fresh one-hour AWS session,
+which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its credentials. The job
+timeout (190 minutes) covers two worst-case waves of each phase plus staging and publication.
+Admission refuses a filtered diff larger than 8 batch budgets plus one call limit (928 KiB)
+before reading it. The per-batch scope note added to the trusted
+prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
+`scripts/pr-review/`, `terraform/` (including the edge Lambda), `agent/`, `scripts/v2/agentcore/`,
+`scripts/v2/remediation/`, `scripts/v2/secret-rotation/`, `scripts/v2/eks/`,
+`scripts/v2/incident/` and `web/app/api/`; worker files whose names start with `remediation`,
+`handlers`, `action_catalog`, `connector_target`, `worker_lambda`, `fargate_worker` or `sg_rule` or
+contain `dispatcher`; `web/lib/remediation*`, `web/lib/aws*` and `web/middleware*`; plus any file
+whose path has a directory or file-name segment starting with iam, polic, auth, guard,
+cross_account/cross-account, remediat, admin, connector, mutat, secret, credential, rbac, redact,
+frozen, skill, allowlist, assume, writeback or redeploy (at a path, `-`, `_` or `.` boundary).
+Classification reads every header path line (old and new ends); quoted, escaped or unparseable
+headers count as sensitive. Markdown and unit-test files (`test_*.py`, `*_test.py`,
+`*.test.ts[x]`/`.js[x]`) are not counted as permission surfaces. More than one batch of sensitive files is rejected.
+
+This list prioritizes the main permission surfaces; it does not guarantee that every
+security-relevant file is in batch 1. Models see only their own batch's diff and the BASE
+checkout. Each batch's input starts with a data header (in the stdin data channel, never the
+trusted prompt) listing the sanitized paths changed in the other batches (both ends of renames and copies). A dependency that one of
+those paths plausibly provides is reported as an unverified cross-batch dependency; one that no
+listed path provides is missing and stays blocking. The note never lowers the severity of a
+security finding. Joint review of
+changes split across batches is therefore not guaranteed; Merge Verify remains the build and test
+check for the whole PR. Every batch receives the PR-wide HEAD image context and must apply the
+image-coverage rules to it.
+
+Each batch writes its own `GITHUB_ENV` flags. `report_invalid`, `chair_input_failed`,
+`panel_incomplete` and `image_coverage_failed` block if any batch set them; the comment's
+"chair input exceeds allocation" wording then applies to the batch that tripped it. `chair_failed`, which
+only selects the "not a code problem" comment wording, is set only when every batch's chair
+failed (a batch without the key produced a verdict); a failed chair still fails the gate through
+its `VERDICT: FAIL`. When only some chairs failed, `chair_failed_any=1` selects a separate badge
+saying review generation failed for one or more batches and the workflow should be re-run, so an
+infrastructure failure is never published as a code finding. Scrubbed per-batch chair reports are printed in "Batch review" log groups
+with workflow commands suspended, so text cut from an over-limit comment (`comment_bytes`, 60,000)
+stays retrievable; each wave logs its batches before its exit status is checked. Batch work
+directories, the batch index and the gate's scratch file are removed at the end of every job, and
+admission writes batch copies owner-only. The combined
+comment has one section per batch, and the PR passes only if
+every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
+rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
 fixed diagnostics and unadjudicated severity-keyword presence booleans; it never asserts
 that the code is safe. Each report permits 60,000 bytes and the panel bundle 120,000
@@ -222,10 +278,11 @@ attestations remain incomplete coverage, separately from unreadable report bytes
 
 These changes reduce normal review calls from eight panel calls plus a chair to two
 panel calls plus a chair; existing retry/model/timeout choices remain. They do not
-promise a wall-clock speedup or make an oversized promotion review complete. A large
-promotion exceeding these bounds needs complete bounded batches or an independently
-reviewed, exact-commit coverage-reuse design. Neither is implemented here; splitting
-feature PRs alone does not reduce an existing dev-to-main cumulative diff. Do not
+promise a wall-clock speedup. A diff over one call's bounds is reviewed in the complete
+batches described above; a promotion that needs more than 8 batches, or whose sensitive
+files exceed batch 1, is still rejected, and exact-commit coverage reuse is not
+implemented. Splitting feature PRs alone does not reduce an existing dev-to-main
+cumulative diff. Do not
 rerun unchanged oversized input expecting success, raise limits without a resource
 review, reuse historical comments as latest-HEAD proof, or bypass required checks.
 
@@ -304,6 +361,8 @@ See [the diagnostic contract](review-image-capability.md) for its fixed proof fi
 - [Workflow](../../.github/workflows/pr-review.yml)
 - [Shared review limits](../../scripts/pr-review/review-limits.json)
 - [Input admission](../../scripts/pr-review/input_scope.py)
+- [Batched review admission and aggregation](../../scripts/pr-review/review_batches.py)
+- [Batch wave runner](../../scripts/pr-review/run-batches.sh)
 - [Fixed failure diagnostics](../../scripts/pr-review/report-panel-failure.sh)
 - [Git blob stager](../../scripts/pr-review/stage_head_pngs.py)
 - [Bounded decoder](../../scripts/pr-review/render_head_image.py) and [binary codec lock](../../scripts/pr-review/image-requirements.txt)

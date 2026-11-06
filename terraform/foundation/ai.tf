@@ -1049,6 +1049,7 @@ output "agentcore" {
     # Bedrock/AgentCore/ECR. provision.py emits networkMode=VPC when these are present.
     subnets         = local.private_subnet_ids
     security_groups = [aws_security_group.service.id]
-    # var.model_provider role env (models.tf) for the runtime; omitted for mixed (code defaults).
-  }, local.model_custom ? { model_env = local.model_env } : {}) : null
+    # Runtime model env: var.model_provider's profile (models.tf; empty for mixed) plus the
+    # mixed-only var.agentcore_chat_model_id chat rollback. Empty keeps agent.py's code defaults.
+  }, { model_env = tomap(merge(local.model_env, var.agentcore_chat_model_id == "" ? {} : { AGENT_MODEL_ID = var.agentcore_chat_model_id })) }) : null
 }

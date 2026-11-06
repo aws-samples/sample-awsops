@@ -64,6 +64,7 @@ describe('Tempo requested-status retention', () => {
 
   it.each([
     ['HTTP 500 yesterday', '{ status = error }'],
+    ['HTTP 500 response spans', '{ status = error }'],
     ['yesterday HTTP 500', '{}'],
     ['HTTP 500 어제', '{ status = error }'],
     ['어제 HTTP 500', '{}'],

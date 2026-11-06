@@ -30,15 +30,17 @@ Sonnet fallback without the web grant, or Luna without the runtime grant; model
 fallback cannot recover missing IAM permissions. Complete the release's required
 migrations before AgentCore provisioning.
 
-The current `scripts/v2/agentcore/provision.py` constructs its own environment map
-and **does not forward `AGENT_MODEL_ID` from the deployer's shell**. Therefore
-`AGENT_MODEL_ID=... make agentcore` is not a supported deployment rollback lever.
-The supported lever is the Terraform `model_provider` variable below, which the
-provisioner reads from the reviewed `agentcore` output.
-An operator must review and deploy an explicit runtime environment change with the
-complete existing runtime configuration, or use the approved earlier-image release
-procedure. A subsequent provisioner reconciliation overwrites manual environment
-changes. This PR adds no deployment and no new autonomous model switching.
+Under the default `model_provider = mixed`, the supported rollback is the Terraform
+variable `agentcore_chat_model_id` (empty by default; other providers reject it; validated to `global.openai.gpt-6-luna` or
+`global.anthropic.claude-sonnet-5-5`, both granted by the runtime role). The applied
+value reaches `scripts/v2/agentcore/provision.py` through `output.agentcore.model_env`,
+so every provisioning run, including Dev Deploy AgentCore, writes the same
+`AGENT_MODEL_ID`; each run also records the effective chat model in its result log. The
+deployer's shell cannot change the model, and an output value outside the reviewed
+allowlist refuses the runtime update (`runtime` `ERR`). Each reconciliation rewrites
+the whole environment map, so a manual runtime environment change does not survive
+it. Rolling back is a reviewed saved-plan apply followed by provisioning, never
+autonomous.
 
 Luna requests omit explicit `cachePoint` blocks and `cache_tools`; any automatic
 cache benefit must be verified before rollout using a multi-turn tool-using session

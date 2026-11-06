@@ -102,7 +102,16 @@ def test_deadline_removes_the_created_decoder(state, monkeypatch):
     with pytest.raises(codec.SandboxError, match="image_decode_timeout"):
         codec.decode(state, ".png", 8192, 16777216, 8388608, png())
     result = subprocess.run([codec.docker(), "inspect", names[0]], capture_output=True, timeout=5)
-    assert result.returncode != 0 and b"No such" in result.stderr
+    assert result.returncode != 0 and codec.NOT_FOUND.search(result.stderr)
+
+
+def test_not_found_match_excludes_transport_and_storage_errors():
+    for text in (b"Error response from daemon: No such container: x", b"error: no such object: x",
+                 b"Error: No such image: x:1"):
+        assert codec.NOT_FOUND.search(text)
+    for text in (b"dial tcp: lookup docker: no such host",
+                 b"unlinkat /var/lib/docker/x: no such file or directory"):
+        assert not codec.NOT_FOUND.search(text)
 
 
 def test_actual_namespace_cannot_write_root_or_read_host_credentials(state, tmp_path):
