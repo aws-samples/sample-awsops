@@ -25,6 +25,10 @@ def attempt_tokens(model_id):
     return MAX_OUTPUT_TOKENS + opus_headroom(model_id)
 
 
+# Holdback for the final review: the largest attempt any review model can request.
+MAX_REVIEW_TOKENS = MAX_OUTPUT_TOKENS + OPUS_THINKING_HEADROOM
+
+
 TIER_LIMITS = {
     "light": {"attempts": 20, "input_bytes": 2 * 1024 * 1024, "output_tokens": 100000},
     "mid": {"attempts": 24, "input_bytes": 3 * 1024 * 1024, "output_tokens": 120000},
@@ -69,7 +73,8 @@ class ReportBudget:
             final = stage in {"review", "final_review"}
             held_calls = 0 if final else 1
             held_bytes = 0 if final else MAX_INPUT_BYTES
-            held_tokens = 0 if final else attempt_tokens(model_id)
+            # The review may run on a heavier model than this specialist (Opus-class thinking).
+            held_tokens = 0 if final else MAX_REVIEW_TOKENS
             if len(self._attempts) + 1 + held_calls > self.limits["attempts"]:
                 raise BudgetExceeded("model attempt ceiling exhausted")
             if self._input_bytes + input_bytes + held_bytes > self.limits["input_bytes"]:
