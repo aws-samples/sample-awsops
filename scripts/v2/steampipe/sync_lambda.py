@@ -89,7 +89,8 @@ QUERIES = {
         "vpc_id, db_subnet_group_name, availability_zone, endpoint_address, endpoint_port, "
         "backup_retention_period, preferred_backup_window, latest_restorable_time, vpc_security_groups, "
         "auto_minor_version_upgrade, copy_tags_to_snapshot, deletion_protection, "
-        "iam_database_authentication_enabled, performance_insights_enabled, create_time, tags "
+        "iam_database_authentication_enabled, performance_insights_enabled, create_time, tags, "
+        "read_replica_source_db_instance_identifier "
         "FROM aws_rds_db_instance ORDER BY db_instance_identifier",
         "db_instance_identifier",
         "region",

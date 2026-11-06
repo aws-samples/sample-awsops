@@ -1,4 +1,5 @@
 import redact
+import pytest
 
 
 def test_redact_strips_pii():
@@ -22,3 +23,23 @@ def test_redact_leaves_non_standalone_digit_runs_alone():
     assert '<acct>' not in s
     assert '1234567890123' in s
     assert '12345' in s
+
+
+@pytest.mark.parametrize('address', [
+    'fd00:1234::7', '2001:db8:1234:5678:abcd:ef01:2345:6789',
+    '::1', '::', '::ffff:192.0.2.7', 'fe80::1%eth0',
+])
+def test_redact_valid_ipv6_in_source_strings(address):
+    assert redact.redact('answer "' + address + '"') == 'answer "<ip>"'
+    assert redact.redact('peer ' + address + '.') == 'peer <ip>.'
+    assert redact.redact('peer ' + address + ': down') == 'peer <ip>: down'
+
+
+@pytest.mark.parametrize('partition', ['aws-cn', 'aws-us-gov', 'aws-iso', 'aws-iso-b', 'aws-iso-f', 'aws-eusc'])
+def test_redact_noncommercial_arn(partition):
+    assert redact.redact(f'arn:{partition}:rds:region:123456789012:db:orders') == '<arn>'
+
+
+def test_ipv6_redaction_preserves_timestamps_units_and_opaque_identifiers():
+    text = '2026-11-05T12:00:00+00:00 12:00:00 e:abc123 r:123abc Count/Second bad:de:ad'
+    assert redact.redact(text) == text

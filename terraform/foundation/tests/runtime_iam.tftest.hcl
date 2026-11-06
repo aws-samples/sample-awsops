@@ -62,6 +62,152 @@ variables {
   existing_private_subnet_ids  = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
 }
 
+run "diagnosis_evidence_defaults_remain_dark" {
+  command = plan
+  variables { workers_enabled = true }
+  assert {
+    condition     = !var.diagnosis_evidence_loop_enabled && length(aws_iam_role_policy.worker_diagnosis_evidence) == 0
+    error_message = "The evidence loop must be default-off with no additional IAM."
+  }
+  assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if contains(["DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "DIAGNOSIS_HOST_ACCOUNT_ID"], e.name)]) == 0 && !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_EVIDENCE_LOOP_ENABLED")
+    error_message = "Disabled discovery must leave both worker environments unchanged."
+  }
+}
+
+run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
+  command = plan
+  variables {
+    workers_enabled                 = true
+    diagnosis_evidence_loop_enabled = true
+  }
+  assert {
+    condition     = keys(aws_iam_role_policy.worker_diagnosis_evidence) == ["task"] && length(aws_iam_role_policy.worker_finops_baseline) == 0
+    error_message = "Diagnosis provider reads must be separately gated from FinOps on each worker role."
+  }
+  assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      jsondecode(p.policy).Statement[0].Action == ["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"] &&
+      jsondecode(p.policy).Statement[0].Effect == "Allow" &&
+      jsondecode(p.policy).Statement[0].Resource == "*" &&
+      jsondecode(p.policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"] == ["ap-northeast-2", "eu-west-1", "us-east-1"]
+    ])
+    error_message = "Only the two provider reads in supported runtime regions may be added."
+  }
+  assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      length(jsondecode(p.policy).Statement) == 2 &&
+      jsondecode(p.policy).Statement[1].Action == ["cloudwatch:ListMetrics"] &&
+      [for s in jsondecode(p.policy).Statement : s.Sid] == ["DiagnosisProviderSizingReadOnly", "DiagnosisMeasuredMemoryReadOnly"]
+    ])
+    error_message = "Without member roles the evidence policy is exactly the provider reads plus cloudwatch:ListMetrics; no AssumeRole."
+  }
+  assert {
+    condition     = [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_HOST_ACCOUNT_ID"] == ["123456789012"] && length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if contains(["INVENTORY_STALE_AFTER_MINUTES", "GRAPH_REBUILD_INTERVAL_MINS"], e.name)]) == 2 && !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_HOST_ACCOUNT_ID")
+    error_message = "The Fargate report worker binds discovery to the applied host account; the Lambda runs no diagnosis."
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_EVIDENCE_LOOP_ENABLED") && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == ["true"] && [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if e.name == "DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == []
+    error_message = "The gate must enable worker discovery without adding a web/BFF execution path."
+  }
+  assert {
+    condition     = !var.remediation_enabled && !var.integrations_write_enabled && !var.incident_lifecycle_enabled
+    error_message = "Enabling read-only discovery must leave frozen and unrelated gates off."
+  }
+}
+
+run "diagnosis_evidence_gate_requires_workers" {
+  command = plan
+  variables { diagnosis_evidence_loop_enabled = true }
+  expect_failures = [var.diagnosis_evidence_loop_enabled]
+}
+
+run "diagnosis_network_defaults_remain_dark" {
+  command = plan
+  variables {
+    workers_enabled                 = true
+    diagnosis_evidence_loop_enabled = true
+  }
+  assert {
+    condition     = !var.diagnosis_network_evidence_enabled && length(aws_iam_role_policy.worker_diagnosis_network) == 0
+    error_message = "Network observations must require a separate default-off source gate."
+  }
+}
+
+run "diagnosis_network_requires_evidence_loop" {
+  command = plan
+  variables {
+    workers_enabled                    = true
+    diagnosis_network_evidence_enabled = true
+  }
+  expect_failures = [var.diagnosis_network_evidence_enabled]
+}
+
+run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
+  command = plan
+  variables {
+    workers_enabled                    = true
+    diagnosis_evidence_loop_enabled    = true
+    diagnosis_network_evidence_enabled = true
+    diagnosis_dns_log_group_arns       = ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved"]
+    diagnosis_member_role_arns         = ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"]
+  }
+  assert {
+    condition = keys(aws_iam_role_policy.worker_diagnosis_network) == ["task"] && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
+      length(jsondecode(p.policy).Statement) == 4 &&
+      jsondecode(p.policy).Statement[0].Action == ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"] &&
+      jsondecode(p.policy).Statement[1].Action == ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"] &&
+      jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
+      jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery"] &&
+      jsondecode(p.policy).Statement[3].Action == ["logs:GetQueryResults", "logs:StopQuery"] &&
+      jsondecode(p.policy).Statement[1].Resource == [for region in ["ap-northeast-2", "eu-west-1", "us-east-1"] : "arn:aws:networkflowmonitor:${region}:123456789012:monitor/*"] &&
+      alltrue([for s in jsondecode(p.policy).Statement : can(s.Condition.StringEquals["aws:RequestedRegion"])])
+    ])
+    error_message = "Observation permissions must remain host/account/region scoped with explicit Resolver groups."
+  }
+  assert {
+    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+      length(jsondecode(p.policy).Statement) == 3 &&
+      [for s in jsondecode(p.policy).Statement : s.Action] == [["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"], ["cloudwatch:ListMetrics"], ["sts:AssumeRole"]] &&
+      jsondecode(p.policy).Statement[2].Resource == ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"] &&
+      jsondecode(p.policy).Statement[2].Condition.StringLike["sts:ExternalId"] == "?*"
+    ])
+    error_message = "Member reads add exactly one sts:AssumeRole statement on the explicit role with an external ID."
+  }
+  assert {
+    condition = (!contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED") &&
+      [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED"] == ["true"] &&
+    !var.remediation_enabled && !var.integrations_write_enabled)
+    error_message = "Only the Fargate report worker receives the analysis gate, without enabling mutation."
+  }
+}
+
+run "diagnosis_allowlists_reject_foreign_logs_and_host_roles" {
+  command = plan
+  variables {
+    diagnosis_dns_log_group_arns = ["arn:aws:logs:ap-northeast-2:999900001111:log-group:/foreign"]
+    diagnosis_member_role_arns   = ["arn:aws:iam::123456789012:role/AWSopsReadOnlyRole"]
+  }
+  expect_failures = [var.diagnosis_dns_log_group_arns, var.diagnosis_member_role_arns]
+}
+
+run "diagnosis_member_roles_pin_the_onboarding_role_name" {
+  command = plan
+  variables {
+    diagnosis_member_role_arns = ["arn:aws:iam::999900001111:role/OrganizationAccountAccessRole"]
+  }
+  expect_failures = [var.diagnosis_member_role_arns]
+}
+
+run "diagnosis_allowlists_reject_malformed_arns" {
+  command = plan
+  variables {
+    diagnosis_dns_log_group_arns = ["bad"]
+    diagnosis_member_role_arns   = ["bad"]
+  }
+  expect_failures = [var.diagnosis_dns_log_group_arns, var.diagnosis_member_role_arns]
+}
+
 run "defaults_remain_dark" {
   command = plan
   assert {
