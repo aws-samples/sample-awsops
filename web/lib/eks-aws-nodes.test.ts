@@ -80,7 +80,20 @@ describe('listAwsApiNodes', () => {
     const { listAwsApiNodes } = await import('./eks-aws-nodes');
     const rows = await listAwsApiNodes(CONTEXT);
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ version: '', cpuCapacity: 0, memCapacity: 0 });
+    expect(rows[0]).toMatchObject({ version: '', cpuCapacity: 0, memCapacity: 0, capacityUnknown: true });
+  });
+
+  it('retries a rejected instance-type batch per type so one bad type does not void the rest', async () => {
+    const base = ec2Send.getMockImplementation()!;
+    ec2Send.mockImplementation(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.constructor.name === 'DescribeInstanceTypesCommand' && (command.input.InstanceTypes as string[]).length > 1) {
+        throw Object.assign(new Error('invalid'), { name: 'InvalidInstanceType' });
+      }
+      return base(command);
+    });
+    const { listAwsApiNodes } = await import('./eks-aws-nodes');
+    const rows = await listAwsApiNodes(CONTEXT);
+    expect(rows.some((r) => r.cpuCapacity > 0 && r.capacityUnknown !== true)).toBe(true);
   });
 
   it('propagates an instance read failure (caller degrades only the node fields)', async () => {

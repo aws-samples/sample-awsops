@@ -66,7 +66,25 @@ describe('FleetKindPage nodes capacity list (gap L132)', () => {
     // reserved% over the Kubernetes-API node only: 1 - 7168/8192 = 12.5% → 13%
     expect(screen.getByText('allocatable 7 GiB · reserved 13% (EC2 view 1 excluded)')).toBeTruthy();
     expect(screen.getByText('총 노드').parentElement?.textContent).toContain('2');
-    // the EC2-view node's capacity caption shows Reserved as unknown, not 0
-    await waitFor(() => expect(screen.getByText('avail 4.0 vCPU | rsv —')).toBeTruthy());
+    // the EC2-view node's caption: no pod references it, so requests are unknown (not 0%) and
+    // Reserved is unknown, not 0
+    await waitFor(() => expect(screen.getAllByText('요청량 미상 | rsv —').length).toBeGreaterThan(0));
+  });
+
+  it('EC2-view rows join pods by instance id and stay unknown (not 0%) when no pod references them', async () => {
+    setFetch({ member: [POD({ node: 'i-0abc' })] }, {
+      member: { status: 'EC2 running', source: 'aws-api', instanceId: 'i-0abc', cpuAllocatable: 4, memAllocatable: 8192 },
+    });
+    render(<FleetKindPage kind="nodes" />);
+    await waitFor(() => expect(screen.getByText(/EC2 running 1/)).toBeTruthy());
+    // pod scheduled on node name 'i-0abc' matches the instance id, so requests are known
+    await waitFor(() => expect(screen.queryByText(/요청량 미상/)).toBeNull());
+  });
+
+  it('capacity-unknown EC2 rows are not summed as 0 vCPU', async () => {
+    setFetch({ member: [] }, { member: { status: 'EC2 running', source: 'aws-api', capacityUnknown: true, cpuCapacity: 0, memCapacity: 0 } });
+    render(<FleetKindPage kind="nodes" />);
+    await waitFor(() => expect(screen.getByText('capacity unknown 1')).toBeTruthy());
+    expect(screen.getByText('총 vCPU').parentElement?.textContent).toContain('—');
   });
 });

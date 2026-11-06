@@ -35,6 +35,8 @@ export interface NodeRow {
    *  kubelet allocatable, so reserved-% math must exclude these rows. Absent = nodes API. */
   source?: 'aws-api';
   instanceId?: string;
+  /** aws-api rows whose instance type could not be resolved: capacity is unknown, not zero. */
+  capacityUnknown?: boolean;
 }
 /** True for an EC2/node-group (AWS-API) node row — it has no kubelet Ready/Pressure data. */
 export const isAwsApiNode = (n?: Pick<NodeRow, 'source'> | null): boolean => n?.source === 'aws-api';

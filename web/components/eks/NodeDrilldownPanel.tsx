@@ -18,7 +18,12 @@ import type { NodeRow, PodRow } from '@/lib/eks-resources';
 // an explicit "kubelet details unavailable" state instead of a bare status code.
 export const KUBELET_UNAVAILABLE = 'kubelet 상세 정보 없음 (View 정책 — 노드 읽기 권한 없음)';
 
-class NodeReadError extends Error { constructor(readonly status: number) { super(String(status)); } }
+class NodeReadError extends Error { constructor(readonly status: number, readonly reason = '') { super(String(status)); } }
+/** The incluster route reports a Kubernetes 403 as `reason: 'denied'` (HTTP 502), never as a 403. */
+const nodeReadError = async (r: Response) => {
+  const body = await r.json().catch(() => null) as { reason?: unknown; message?: unknown } | null;
+  return new NodeReadError(r.status, typeof body?.reason === 'string' ? body.reason : '');
+};
 
 export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: knownNode }: {
   cluster: string; nodeName: string; onClose: () => void;
@@ -36,7 +41,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
     Promise.all([
       ec2Known
         ? Promise.resolve({ rows: [ec2Known] })
-        : fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=nodes`).then((r) => (r.ok ? r.json() : Promise.reject(new NodeReadError(r.status)))),
+        : fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=nodes`).then(async (r) => (r.ok ? r.json() : Promise.reject(await nodeReadError(r)))),
       fetch(`/api/eks/${encodeURIComponent(cluster)}/incluster?kind=pods`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
       .then(([nd, pd]) => {
@@ -47,7 +52,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
       })
       .catch((e) => {
         if (seq !== seqRef.current) return;
-        const err = e instanceof NodeReadError && e.status === 403 ? tt(KUBELET_UNAVAILABLE) : String(e instanceof Error ? e.message : e);
+        const err = e instanceof NodeReadError && e.reason === 'denied' ? tt(KUBELET_UNAVAILABLE) : String(e instanceof Error ? e.message : e);
         setDetail({ node: null, pods: null, err });
       });
     return () => { seqRef.current += 1; };
@@ -84,6 +89,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
             podFailed={(pods ?? []).filter((x) => x.status === 'Failed').length}
             createdAt={detail.node.createdAt}
             ec2View={detail.node.source === 'aws-api'}
+            capacityUnknown={detail.node.capacityUnknown === true}
           />
           <NodePodsSection pods={pods} error="" />
           <NodeEniSection nodeName={nodeName} cluster={cluster} />

@@ -27,6 +27,12 @@ describe('NodeCapacityCards', () => {
     expect(screen.queryByTitle(/System-Reserved/)).toBeNull();
   });
 
+  it('unresolved instance capacity renders as unknown, never 0', () => {
+    render(<NodeCapacityCards {...props} cpuCapacity={0} memCapacityMiB={0} ec2View capacityUnknown />);
+    expect(rowValue(screen.getByText('CPU').parentElement!, 'Capacity')).toBe('—');
+    expect(rowValue(screen.getByText('Memory').parentElement!, 'Capacity')).toBe('—');
+  });
+
   it('kubelet view keeps allocatable percentages and the reserved split', () => {
     render(<NodeCapacityCards {...props} cpuAllocatable={1.9} />);
     expect(screen.queryByRole('note')).toBeNull();

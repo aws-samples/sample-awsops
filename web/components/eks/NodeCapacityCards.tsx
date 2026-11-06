@@ -16,6 +16,8 @@ interface Props {
   /** EC2/node-group (source 'aws-api') row: capacity is the instance type's, kubelet
    *  allocatable/reserved are unknown (AmazonEKSViewPolicy has no nodes read). */
   ec2View?: boolean;
+  /** Instance type unresolved: capacity is unknown ('—'), never shown as 0. */
+  capacityUnknown?: boolean;
 }
 
 const gib = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${Math.round(mib)} MiB`);
@@ -74,6 +76,7 @@ const Row = ({ label, value }: { label: string; value: string }) => (
 export default function NodeCapacityCards(raw: Props) {
   const { lang, tt } = useI18n();
   const ec2 = raw.ec2View === true;
+  const sizeUnknown = raw.capacityUnknown === true;
   // 방어적 정규화 — 노드 API가 일부 값을 안 주는 경우(테스트 픽스처 포함) 0으로 강제.
   const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const p = {
@@ -96,7 +99,7 @@ export default function NodeCapacityCards(raw: Props) {
       )}
       <div className={card}>
         <div className={h}>CPU</div>
-        <Row label="Capacity" value={`${p.cpuCapacity.toFixed(1)} vCPU`} />
+        <Row label="Capacity" value={sizeUnknown ? '—' : `${p.cpuCapacity.toFixed(1)} vCPU`} />
         <Row label="Allocatable" value={ec2 ? '—' : `${p.cpuAllocatable.toFixed(1)} (${p.cpuCapacity > 0 ? ((p.cpuAllocatable / p.cpuCapacity) * 100).toFixed(0) : 0}%)`} />
         {ec2 && <Row label="Reserved" value="—" />}
         <Row label="Pod Requested" value={p.cpuRequest == null ? '—' : ec2 ? p.cpuRequest.toFixed(2) : `${p.cpuRequest.toFixed(2)} (${p.cpuAllocatable > 0 ? ((p.cpuRequest / p.cpuAllocatable) * 100).toFixed(0) : 0}%)`} />
@@ -105,7 +108,7 @@ export default function NodeCapacityCards(raw: Props) {
       </div>
       <div className={card}>
         <div className={h}>Memory</div>
-        <Row label="Capacity" value={gib(p.memCapacityMiB)} />
+        <Row label="Capacity" value={sizeUnknown ? '—' : gib(p.memCapacityMiB)} />
         <Row label="Allocatable" value={ec2 ? '—' : `${gib(p.memAllocatableMiB)} (${p.memCapacityMiB > 0 ? ((p.memAllocatableMiB / p.memCapacityMiB) * 100).toFixed(0) : 0}%)`} />
         {ec2 && <Row label="Reserved" value="—" />}
         <Row label="Pod Requested" value={p.memRequestMiB == null ? '—' : ec2 ? gib(p.memRequestMiB) : `${gib(p.memRequestMiB)} (${p.memAllocatableMiB > 0 ? ((p.memRequestMiB / p.memAllocatableMiB) * 100).toFixed(0) : 0}%)`} />

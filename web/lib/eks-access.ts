@@ -90,7 +90,7 @@ export async function onboardingGuide(cluster: string): Promise<OnboardingGuide>
         `aws eks associate-access-policy ${target} --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster`,
       ],
       note: `As the cluster owner in AWS account ${context.accountId}, region ${context.region}, run these two commands. `
-        + 'No kubeconfig, kubectl or RBAC step is needed. When an administrator next opens /eks, AWSops detects the Access Entry and registers the cluster automatically; [조회 등록] (Register for query) remains as a manual fallback. '
+        + 'No kubeconfig, kubectl or RBAC step is needed. When an administrator next opens /eks, the cluster appears as "Access Entry 확인됨" and one click on [조회 등록] (Register for query) registers it; AWSops never registers it on its own. '
         + 'AmazonEKSViewPolicy is read-only and excludes Kubernetes Secrets and nodes; the node list is built from EC2/node-group APIs through the registered member read role. '
         + `Access policies are additive: if this entry already has AmazonEKSAdminViewPolicy (which can read Secrets), remove it with aws eks disassociate-access-policy ${target} --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminViewPolicy. `
         + 'An existing entry from the earlier guide (awsops:eks-readonly group plus node-read RBAC) keeps working unchanged; the group and binding are no longer required. '

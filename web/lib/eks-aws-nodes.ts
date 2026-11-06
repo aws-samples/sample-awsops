@@ -79,10 +79,16 @@ async function instanceTypeInfo(ec2: EC2Client, types: string[]): Promise<Map<st
   const out = new Map<string, InstanceTypeInfo>();
   for (let i = 0; i < types.length; i += INSTANCE_TYPES_PER_CALL) {
     const batch = types.slice(i, i + INSTANCE_TYPES_PER_CALL) as _InstanceType[];
-    try {
-      const r = await ec2.send(new DescribeInstanceTypesCommand({ InstanceTypes: batch }));
-      for (const t of r.InstanceTypes ?? []) if (t.InstanceType) out.set(t.InstanceType, t);
-    } catch { /* capacity is optional detail; rows keep 0 (unknown) */ }
+    // One invalid/unsupported type rejects a whole batch, so a failed batch is retried per type;
+    // a type still missing leaves its rows' capacity unknown (capacityUnknown), never 0 as fact.
+    for (const attempt of [batch, ...batch.map((t) => [t])]) {
+      if (attempt.every((t) => out.has(t))) continue;
+      try {
+        const r = await ec2.send(new DescribeInstanceTypesCommand({ InstanceTypes: attempt }));
+        for (const t of r.InstanceTypes ?? []) if (t.InstanceType) out.set(t.InstanceType, t);
+        if (attempt === batch) break;
+      } catch { /* retried per type below; unresolved types stay unknown */ }
+    }
   }
   return out;
 }
@@ -112,6 +118,7 @@ export async function listAwsApiNodes(context: EksClusterContext): Promise<NodeR
     const info = i.InstanceType ? typeInfo.get(i.InstanceType) : undefined;
     const cpu = info?.VCpuInfo?.DefaultVCpus ?? 0;
     const mem = info?.MemoryInfo?.SizeInMiB ?? 0;
+    const capacityUnknown = !(cpu > 0 && mem > 0);
     const ng = tag(i, 'eks:nodegroup-name');
     const state = i.State?.Name ?? 'unknown';
     return {
@@ -129,6 +136,7 @@ export async function listAwsApiNodes(context: EksClusterContext): Promise<NodeR
       diskCapacity: 0, diskAllocatable: 0,
       createdAt: i.LaunchTime?.toISOString(),
       source: 'aws-api',
+      ...(capacityUnknown ? { capacityUnknown: true } : {}),
       ...(i.InstanceId ? { instanceId: i.InstanceId } : {}),
     } satisfies NodeRow;
   });

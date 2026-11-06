@@ -35,9 +35,9 @@ it('uses the caller-provided EC2/node-group row without re-listing nodes', async
   expect(fetcher.mock.calls.some(([url]) => url.includes('kind=nodes'))).toBe(false);
 });
 
-it('reports a node-read 403 as kubelet details unavailable (View policy)', async () => {
+it('reports a denied node read (route 502 + reason denied) as kubelet details unavailable', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => (input.includes('kind=nodes')
-    ? { ok: false, status: 403, json: async () => ({}) }
+    ? { ok: false, status: 502, json: async () => ({ status: 'error', reason: 'denied', message: 'EKS resources are unavailable. Access denied; check read permissions.' }) }
     : { ok: true, json: async () => ({ rows: [] }) })));
   const { findByText } = render(<NodeDrilldownPanel cluster="c" nodeName="n" onClose={() => {}} />);
   await findByText(/kubelet 상세 정보 없음/);

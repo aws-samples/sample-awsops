@@ -300,8 +300,8 @@ View excludes Kubernetes Secrets; do not grant the shared role AdminView/Secret 
 and disassociate an existing AdminView association (policies are additive). View has no
 `nodes` read, so the node list comes from read-only EC2/node-group APIs with the same
 role (`ReadOnlyAccess` already covers them). After the entry exists, the next
-administrator visit to **EKS** registers the cluster automatically; **[조회 등록]**
-remains a manual fallback. Entries created from the earlier guide (`awsops:eks-readonly`
+administrator visit to **EKS** shows the cluster as **Access Entry 확인됨**, and one click on
+**[조회 등록]** registers it (AWSops never registers it on its own). Entries created from the earlier guide (`awsops:eks-readonly`
 group plus node-read RBAC) keep working. OpenCost proxy and K8sGPT Result reads require
 the separate narrow bindings in the [EKS reference](../reference/07-eks.md).
 

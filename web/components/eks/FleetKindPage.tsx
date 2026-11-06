@@ -353,8 +353,11 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
               const ec2Rows = allRows.length - k8sRows.length;
               const ec2Running = allRows.filter((r) => r.source === 'aws-api' && r.status === 'EC2 running').length;
               const ready = k8sRows.filter((r) => String(r.status ?? '') === 'Ready').length;
-              const cpu = allRows.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
-              const memMiB = allRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
+              // Rows with unresolved capacity are counted, not summed as 0, and disclosed in the hint.
+              const sized = allRows.filter((r) => r.capacityUnknown !== true);
+              const unsized = allRows.length - sized.length;
+              const cpu = sized.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
+              const memMiB = sized.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
               // gap L234 (v1 memory analysis KPI): allocatable + reserved% — shown only when
               // allocatable is actually reported (an unreported fleet must not read 'reserved 100%').
               const k8sMemMiB = k8sRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
@@ -383,7 +386,8 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                       hint={readyHint}
                       variant={ready < k8sRows.length ? 'warn' : 'default'}
                     />
-                    <StatCard label="총 vCPU" value={Math.round(cpu).toLocaleString()} />
+                    <StatCard label="총 vCPU" value={sized.length ? Math.round(cpu).toLocaleString() : '—'}
+                      hint={unsized ? `capacity unknown ${unsized}` : undefined} />
                     <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} hint={memHint} />
                   </div>
                   <DonutBreakdown title="Instance Types" data={donut} nameKey="name" valueKey="value" />
@@ -400,7 +404,14 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                   const cluster = String(r.cluster ?? '');
                   // hasOwn guard: cluster names may legally shadow Object.prototype members.
                   const clusterAgg = Object.hasOwn(podReq, cluster) ? podReq[cluster] : null;
-                  const nodeAgg = clusterAgg == null ? null : (Object.hasOwn(clusterAgg, String(r.name ?? '')) ? clusterAgg[String(r.name ?? '')] : { cpu: 0, mem: 0 });
+                  // EC2-view rows may be named by private DNS while pods use another node name (e.g.
+                  // instance IDs): try both keys, and treat "no pod references this node" as unknown
+                  // for those rows rather than a fabricated 0% request.
+                  const keys = [String(r.name ?? ''), ...(r.source === 'aws-api' && r.instanceId ? [String(r.instanceId)] : [])];
+                  const hit = clusterAgg == null ? undefined : keys.find((k) => Object.hasOwn(clusterAgg, k));
+                  const nodeAgg = clusterAgg == null ? null
+                    : hit !== undefined ? clusterAgg[hit]
+                      : r.source === 'aws-api' ? null : { cpu: 0, mem: 0 };
                   return {
                     cluster,
                     name: String(r.name ?? ''),

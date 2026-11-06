@@ -148,7 +148,7 @@ describe('eks-access', () => {
     expect(assumedClient).not.toHaveBeenCalled();
     expect(stsSend).not.toHaveBeenCalled();
     expect(guide.note).toContain('excludes Kubernetes Secrets');
-    expect(guide.note).toContain('registers the cluster automatically');
+    expect(guide.note).toContain('one click on [조회 등록]');
     expect(guide.note).toContain('disassociate-access-policy');
     expect(guide.note).toContain('AmazonEKSAdminViewPolicy');
     expect(guide.note).toContain('no longer required');
@@ -222,7 +222,7 @@ ${guide.commands.join('\n')}
       expect(guide.note).toContain('then click [조회 등록]');
     } else {
       // Members register on the next administrator /eks read; the button stays as fallback.
-      expect(guide.note).toContain('registers the cluster automatically');
+      expect(guide.note).toContain('one click on [조회 등록]');
       expect(guide.note).toContain('[조회 등록]');
     }
     expect(guide.note).not.toMatch(/EventBridge|1~2|자동|Terraform|make configure|onboard_eks_clusters/);
