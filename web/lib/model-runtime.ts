@@ -41,6 +41,8 @@ type Json = Record<string, unknown>;
 type TextBlock = { text?: string };
 
 let apiKey: Promise<string> | null = null;
+/** Forget the cached key (401 from the API, or tests). */
+export function resetAnthropicApiKey(): void { apiKey = null; }
 /** Anthropic API key from Secrets Manager: a plain string or JSON `{ "api_key": ... }`. */
 export function anthropicApiKey(): Promise<string> {
   if (!apiKey) {
@@ -146,13 +148,18 @@ class AnthropicApiClient {
     throw new Error('anthropic_api_unsupported_command');
   }
 
-  private async request(body: Json, options?: SendOptions): Promise<Response> {
+  private async request(body: Json, options?: SendOptions, retry = true): Promise<Response> {
     const res = await fetch(ANTHROPIC_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': await anthropicApiKey() },
       body: JSON.stringify(body),
       signal: options?.abortSignal,
     });
+    if (res.status === 401 && retry) {
+      // A rotated secret: drop the cached key and retry once with a fresh read.
+      resetAnthropicApiKey();
+      return this.request(body, options, false);
+    }
     if (!res.ok) {
       let kind = '';
       try { kind = String(((await res.json()) as { error?: { type?: string } }).error?.type ?? ''); } catch { /* no body */ }

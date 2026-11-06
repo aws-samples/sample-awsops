@@ -69,8 +69,12 @@ def _timeout(config):
     return value if isinstance(value, (int, float)) and value > 0 else 300
 
 
-def anthropic_messages(body, model_id, timeout=300):
-    """POST an Anthropic Messages request; returns the decoded JSON reply."""
+def anthropic_messages(body, model_id, timeout=300, _retry=True):
+    """POST an Anthropic Messages request; returns the decoded JSON reply.
+
+    A 401 drops the cached key and retries once, so a rotated secret takes effect without a redeploy.
+    """
+    global _API_KEY
     payload = {k: v for k, v in body.items() if k != "anthropic_version"}
     payload["model"] = model_id
     request = urllib.request.Request(
@@ -81,6 +85,10 @@ def anthropic_messages(body, model_id, timeout=300):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
+        if error.code == 401 and _retry:
+            with _KEY_LOCK:
+                _API_KEY = None
+            return anthropic_messages(body, model_id, timeout, _retry=False)
         try:
             kind = json.loads(error.read()).get("error", {}).get("type", "")
         except (ValueError, AttributeError):

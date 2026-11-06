@@ -4,7 +4,7 @@
 model-calling role uses: the AgentCore chat runtime, web query generation, synthesis, routing,
 the product-help assistant and the AI Diagnosis / insight / FinOps workers.
 
-| `model_provider` | Chat | Fast roles (routing, assistant, insight) | Standard roles (query generation, synthesis, diagnosis) | Deep diagnosis | Query fallback |
+| `model_provider` | Chat | Fast roles (routing, assistant, insight) | Standard roles (query generation, synthesis, code generation, diagnosis) | Deep diagnosis | Query fallback |
 |---|---|---|---|---|---|
 | `mixed` (default) | `global.openai.gpt-6-luna` | `global.anthropic.claude-haiku-5-5` | Terra for query generation, Sonnet 5.5 elsewhere | `global.anthropic.claude-opus-5-5` | Sonnet 5.5 |
 | `bedrock_claude` | `global.anthropic.claude-sonnet-5-5` | `global.anthropic.claude-haiku-5-5` | `global.anthropic.claude-sonnet-5-5` | `global.anthropic.claude-opus-5-5` | none |
@@ -25,6 +25,10 @@ runtime. Bedrock `InvokeModel*` grants shrink to the chosen family; `anthropic_a
   existing private-subnet NAT egress to `api.anthropic.com:443`; no ingress or security-group change
   is made. Usage is billed by Anthropic and does not appear in the Bedrock invocation logs that the
   AI usage pages read.
+- `anthropic_api` sends the same prompt content the Bedrock path sends (chat context, inventory
+  rows, security-group rules and account identifiers redacted only where the Bedrock path already
+  redacts them) to Anthropic as a third-party processor. Confirm that is acceptable for the
+  account's data before enabling it.
 
 ## Enable
 
@@ -43,6 +47,15 @@ runtime. Bedrock `InvokeModel*` grants shrink to the chosen family; `anthropic_a
    environment, and redeploy the worker image if it predates this change.
 5. Verify with the deployment readiness probe (it calls the configured chat model) and one chat,
    one Explore query generation and one AI Diagnosis run.
+
+## Key rotation
+
+Rotate by writing a new value to the same secret (`aws secretsmanager put-secret-value
+--secret-id <arn> --secret-string file://<path>`). The web task and the worker Lambda/Fargate
+calls drop their cached key and read the secret again on the first `401` from the API, then retry
+once, so no redeploy is needed. The AgentCore chat runtime reads the key once per cold start; run
+`make agentcore` (or wait for the next runtime restart) after rotating. Revoke the old key in the
+Anthropic console only after the new one is in the secret.
 
 ## Rollback
 

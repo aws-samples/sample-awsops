@@ -114,13 +114,32 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(out["ResponseMetadata"]["HTTPStatusCode"], 200)
 
     def test_api_errors_expose_only_status_and_type(self):
-        seen, urlopen = self._api({"error": {"type": "authentication_error", "message": "sk-cached is bad"}}, 401)
+        seen, urlopen = self._api({"error": {"type": "permission_error", "message": "sk-cached is bad"}}, 403)
         model_runtime._API_KEY = "sk-cached"
         with mock.patch.dict(os.environ, {"MODEL_PROVIDER": "anthropic_api"}), \
                 mock.patch("urllib.request.urlopen", urlopen):
             with self.assertRaises(RuntimeError) as ctx:
                 model_runtime.client("r").converse(modelId="claude-haiku-5-5", messages=[])
-        self.assertEqual(str(ctx.exception), "anthropic_api_error:401:authentication_error")
+        self.assertEqual(str(ctx.exception), "anthropic_api_error:403:permission_error")
+
+    def test_rotated_key_is_refetched_once_after_401(self):
+        import urllib.error
+        keys = []
+
+        def urlopen(request, timeout):
+            keys.append(dict(request.header_items())["X-api-key"])
+            if len(keys) == 1:
+                raise urllib.error.HTTPError(request.full_url, 401, "x", {}, io.BytesIO(b'{"error":{"type":"authentication_error"}}'))
+            return io.BytesIO(json.dumps({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).encode())
+        secrets = mock.Mock()
+        secrets.get_secret_value.return_value = {"SecretString": "sk-new"}
+        model_runtime._API_KEY = "sk-old"
+        env = {"MODEL_PROVIDER": "anthropic_api", "ANTHROPIC_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:x"}
+        with mock.patch.dict(os.environ, env), mock.patch("urllib.request.urlopen", urlopen), \
+                mock.patch("boto3.client", return_value=secrets):
+            reply = model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
+        self.assertEqual(keys, ["sk-old", "sk-new"])
+        self.assertEqual(reply["content"][0]["text"], "ok")
 
     def test_missing_secret_arn_fails_closed(self):
         with mock.patch.dict(os.environ, {"MODEL_PROVIDER": "anthropic_api", "ANTHROPIC_API_KEY_SECRET_ARN": ""}):

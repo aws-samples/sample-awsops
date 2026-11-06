@@ -131,6 +131,24 @@ describe('model runtime client', () => {
     expect((error as Error).message).toBe('anthropic_api_error:401:authentication_error');
   });
 
+  it('anthropic_api refetches a rotated key once after a 401', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
+    vi.spyOn(SecretsManagerClient.prototype, 'send')
+      .mockResolvedValueOnce({ SecretString: 'sk-old' } as never)
+      .mockResolvedValueOnce({ SecretString: 'sk-new' } as never);
+    const keys: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      keys.push((init.headers as Record<string, string>)['x-api-key']);
+      return keys.length === 1
+        ? new Response(JSON.stringify({ error: { type: 'authentication_error' } }), { status: 401 })
+        : new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+    }));
+    const { modelRuntimeClient } = await load();
+    await modelRuntimeClient({ region: 'x' }).send(new ConverseCommand({ modelId: 'claude-haiku-5-5', messages: [] }));
+    expect(keys).toEqual(['sk-old', 'sk-new']);
+  });
+
   it('anthropic_api without a configured secret fails closed', async () => {
     process.env.MODEL_PROVIDER = 'anthropic_api';
     delete process.env.ANTHROPIC_API_KEY_SECRET_ARN;

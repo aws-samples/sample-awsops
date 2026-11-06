@@ -179,6 +179,11 @@ data "archive_file" "workers_src" {
     filename = "graph_querygen.py"
   }
   source {
+    # Provider shim imported by graph_querygen, signal_catalog_gen and insight/generate.
+    content  = file("${local.workers_src}/model_runtime.py")
+    filename = "model_runtime.py"
+  }
+  source {
     content  = file("${local.workers_src}/card_catalog.py")
     filename = "card_catalog.py"
   }
