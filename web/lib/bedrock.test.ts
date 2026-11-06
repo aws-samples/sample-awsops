@@ -24,6 +24,15 @@ describe('Claude 5.5 pricing entries', () => {
   });
 });
 
+describe('Anthropic API bare model ids', () => {
+  it('price and label like the Bedrock family (model_provider = anthropic_api)', () => {
+    expect(getModelLabel('claude-sonnet-5-5')).toBe('Claude Sonnet 5.5');
+    expect(getModelLabel('claude-haiku-5-5')).toBe('Claude Haiku 5.5');
+    expect(getModelPricing('claude-sonnet-5-5')).toEqual(getModelPricing('global.anthropic.claude-sonnet-5-5'));
+    expect(getModelPricing('claude-opus-5-5').input).toBe(4);
+  });
+});
+
 describe('GPT pricing entries', () => {
   it.each(['openai.gpt-6-luna-20261104-v1:0', 'global.openai.gpt-6-luna-v1:0',
     'global.openai.gpt-6.1-terra-20261104-v2:0'])('normalizes a known GPT version: %s', id => {

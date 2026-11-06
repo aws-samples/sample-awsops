@@ -44,7 +44,8 @@ const CROSS_REGION = /^(us\.|eu\.|ap\.|global\.)/;
 
 /** Only normalize version/date suffixes for GPT models whose rates we explicitly track. */
 function pricingKey(modelId: string): string {
-  const base = modelId.replace(CROSS_REGION, '');
+  // Anthropic API (model_provider = anthropic_api) uses bare ids; price them as the Bedrock family.
+  const base = modelId.replace(CROSS_REGION, '').replace(/^(claude-)/, 'anthropic.$1');
   return base.replace(/^(openai\.gpt-6(?:\.1-terra|-luna))-(?:\d{8}(?:-v\d+)?|v\d+)(?::\d+)?$/, '$1');
 }
 

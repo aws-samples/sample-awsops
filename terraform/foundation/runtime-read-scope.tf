@@ -84,13 +84,15 @@ locals {
   ))) : [var.region, "us-east-1"]
   runtime_read_condition   = { StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions } }
   runtime_region_condition = { StringEquals = { "aws:RequestedRegion" = var.region } }
-  runtime_model_resources = [
+  runtime_claude_model_resources = [
     "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
     "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*anthropic.claude-*",
   ]
-  # The AgentCore chat runtime answers with GPT-6 Luna (agent.py MODEL_ID); Claude stays granted for
-  # the dark anthropic_loop path and rollback. Workers keep the Claude-only list above.
-  agentcore_model_resources = concat(local.runtime_model_resources, [
+  # Worker/runtime model grants follow var.model_provider (models.tf); anthropic_api grants none.
+  runtime_model_resources = var.model_provider == "mixed" ? local.runtime_claude_model_resources : local.model_runtime_arns
+  # mixed: the AgentCore chat runtime answers with GPT-6 Luna (agent.py MODEL_ID); Claude stays
+  # granted for the dark anthropic_loop path and rollback. Workers keep the Claude-only list above.
+  agentcore_model_resources = var.model_provider != "mixed" ? local.runtime_model_resources : concat(local.runtime_claude_model_resources, [
     "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna",
     "arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna-*",
     "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6-luna",

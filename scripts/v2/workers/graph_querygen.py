@@ -83,12 +83,13 @@ def _bedrock_invoke(prompt):
     established pattern; bedrock:InvokeModel is already granted to the worker Lambda role via the
     worker_lambda_diagnosis IAM policy, no new grant needed). Lazy boto3 import."""
     import boto3
+    import model_runtime
     region = os.environ.get("AWS_REGION", "ap-northeast-2")
     model = os.environ.get("GRAPH_QUERYGEN_MODEL_ID", "global.anthropic.claude-haiku-5-5")
     body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 800,
             **({"thinking": {"type": "disabled"}} if "claude-haiku-5" in model else {}),
             "messages": [{"role": "user", "content": prompt}]}
-    resp = boto3.client("bedrock-runtime", region_name=region).invoke_model(modelId=model, body=json.dumps(body))
+    resp = model_runtime.wrap(boto3.client("bedrock-runtime", region_name=region)).invoke_model(modelId=model, body=json.dumps(body))
     payload = json.loads(resp["body"].read())
     return "".join(p.get("text", "") for p in payload.get("content", []))
 

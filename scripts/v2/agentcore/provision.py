@@ -1057,8 +1057,28 @@ def ensure_interpreter(ctrl):
         return ""
 
 
-# Chat models the runtime role may invoke; keep in lockstep with local.agentcore_model_resources.
-AGENT_MODEL_IDS = ("global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5")
+MODEL_ENV_KEYS = frozenset({
+    "MODEL_PROVIDER", "AGENT_MODEL_ID", "DATASOURCE_QUERYGEN_MODEL_ID",
+    "DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID", "SYNTHESIS_MODEL_ID", "CODEGEN_MODEL_ID",
+    "ASSISTANT_MODEL_ID", "DIAGNOSIS_MODEL_SONNET", "DIAGNOSIS_MODEL_OPUS", "DIAGNOSIS_TITLE_MODEL",
+    "GRAPH_QUERYGEN_MODEL_ID", "FINOPS_EXPLAIN_MODEL_ID", "INSIGHT_MODEL_ID", "RCA_MODEL_ID",
+    "ANTHROPIC_API_KEY_SECRET_ARN"})
+_MODEL_ENV_VALUE = re.compile(r"[A-Za-z0-9._:/+=@-]{0,256}")
+
+
+def runtime_model_env(value):
+    """Validated model_provider env from the Terraform output; anything unexpected is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    kept = {k: v for k, v in value.items()
+            if k in MODEL_ENV_KEYS and isinstance(v, str) and _MODEL_ENV_VALUE.fullmatch(v)}
+    dropped = sorted(str(k)[:64] for k in value if k not in kept)
+    if dropped:
+        log("runtime", "WARN", f"model_env keys dropped (unknown key or invalid value): {', '.join(dropped)}")
+    return kept
+# Chat models any model_provider profile may select (Bedrock Luna, Bedrock Sonnet 5.5, Anthropic API
+# Sonnet 5.5); Terraform validation and the profile IAM bound which one a stack can actually use.
+AGENT_MODEL_IDS = ("global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5")
 
 
 def ensure_runtime(ctrl, ac, gw_ids):
@@ -1104,12 +1124,11 @@ def ensure_runtime(ctrl, ac, gw_ids):
            # Where agent.py reads the datasource kind-mirror credentials for the stdio path (same
            # single integrations secret the connector lambdas use).
            "INTEGRATIONS_SECRET_NAME": f"ops/{ac.get('project', 'awsops-v2')}/integrations/credentials"}
-    # Same fail-closed contract as the readiness poll below (review MINOR, codex/L3): this listing
-    # used to sit outside the try (which only catches ClientError), so any exception here crashed
-    # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.
-    # ensure_runtime must never raise; "" (unconfirmed) always lets teardown proceed.
-    # Durable chat-model rollback: only the applied Terraform value (agentcore.model_env from
-    # var.agentcore_chat_model_id) reaches the runtime, so every provisioning run — CI included —
+    # Terraform var.model_provider role env (models.tf output agentcore.model_env); absent = mixed,
+    # i.e. the agent's code defaults. Only the known keys with plain model-ID/secret-ARN values pass.
+    env.update(runtime_model_env(ac.get("model_env")))
+    # Durable chat model: only the applied Terraform value (agentcore.model_env from var.model_provider
+    # or var.agentcore_chat_model_id) reaches the runtime, so every provisioning run — CI included —
     # writes the same model. The deployer's shell cannot change it. A value outside the reviewed
     # allowlist refuses the runtime update.
     model_env = ac.get("model_env") if isinstance(ac.get("model_env"), dict) else {}
@@ -1119,7 +1138,13 @@ def ensure_runtime(ctrl, ac, gw_ids):
             log("runtime", "ERR", "agentcore.model_env AGENT_MODEL_ID is not a reviewed chat model; runtime not updated")
             return ""
         env["AGENT_MODEL_ID"] = agent_model
+    else:
+        env.pop("AGENT_MODEL_ID", None)  # blank keeps agent.py's default rather than an empty env
     log("runtime", "OK", f"chat model {agent_model or 'default (global.openai.gpt-6-luna)'}")
+    # Same fail-closed contract as the readiness poll below (review MINOR, codex/L3): this listing
+    # used to sit outside the try (which only catches ClientError), so any exception here crashed
+    # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.
+    # ensure_runtime must never raise; "" (unconfirmed) always lets teardown proceed.
     try:
         existing = {r.get("agentRuntimeName"): r for r in _list_all(ctrl.list_agent_runtimes)}
     except Exception as e:  # noqa: BLE001 — anything here means runtime state is unknowable

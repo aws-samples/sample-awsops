@@ -67,6 +67,14 @@ class ShouldUseAnthropicLoopTest(unittest.TestCase):
     def test_none_payload_safe(self):
         self.assertFalse(al.should_use_anthropic_loop(None))
 
+    def test_non_bedrock_claude_model_providers_never_route_to_the_dark_loop(self):
+        os.environ["ANTHROPIC_AGENT_LOOP_ENABLED"] = "true"
+        from unittest import mock
+        for provider, expected in (("mixed", True), ("bedrock_claude", True),
+                                   ("bedrock_openai", False), ("anthropic_api", False)):
+            with self.subTest(provider=provider), mock.patch.dict(os.environ, {"MODEL_PROVIDER": provider}):
+                self.assertIs(al.should_use_anthropic_loop({"agentLoop": "anthropic"}), expected)
+
 
 # ── mcp_tools_to_anthropic ────────────────────────────────────────────────────
 class McpToolsToAnthropicTest(unittest.TestCase):

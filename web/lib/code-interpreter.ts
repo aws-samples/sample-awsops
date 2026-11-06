@@ -9,7 +9,8 @@ import {
   InvokeCodeInterpreterCommand,
   StopCodeInterpreterSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-import { BedrockRuntimeClient, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { thinkingOffFields } from './bedrock';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
@@ -20,7 +21,7 @@ const EXEC_TIMEOUT_MS = 60_000;
 
 let ssm: SSMClient | null = null;
 let ac: BedrockAgentCoreClient | null = null;
-let br: BedrockRuntimeClient | null = null;
+let br: ModelRuntimeClient | null = null;
 let idCache: { value: string | null; at: number } | null = null;
 
 /** v1 priority-1 trigger, kept CONSERVATIVE: explicit code/calculation intents only, so ordinary
@@ -56,7 +57,7 @@ const CODEGEN_SYSTEM =
 
 /** Stream the code-generation answer (explanation + ```python block) as text deltas. */
 export async function* generateCode(prompt: string, abortSignal?: AbortSignal): AsyncGenerator<string> {
-  if (!br) br = new BedrockRuntimeClient({ region: REGION });
+  if (!br) br = modelRuntimeClient({ region: REGION });
   const res = await br.send(new ConverseStreamCommand({
     modelId: CODEGEN_MODEL,
     system: [{ text: CODEGEN_SYSTEM }],

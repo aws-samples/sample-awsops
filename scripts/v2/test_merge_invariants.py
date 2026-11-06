@@ -73,6 +73,19 @@ def test_frozen_marker_present():
     )
 
 
+def test_pinned_selectors_keep_their_default():
+    defaults = mi.tf_selector_defaults(TF_DIR)
+    assert defaults == mi.PINNED_SELECTORS, f"pinned selector defaults changed: {defaults}"
+
+
+def test_tracked_tfvars_scan_flags_a_non_default_selector(tmp_path, monkeypatch):
+    import subprocess
+    (tmp_path / "terraform").mkdir()
+    (tmp_path / "terraform" / "x.tfvars").write_text('model_provider = "anthropic_api"\nmodel_provider = "mixed"\n')
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "terraform/x.tfvars\n", ""))
+    assert mi.tracked_tfvars_enabling(str(tmp_path)) == ["terraform/x.tfvars:1:model_provider"]
+
+
 def test_no_tracked_tfvars_enable_flags():
     offenders = mi.tracked_tfvars_enabling(ROOT)
     assert offenders == [], f"tracked tfvars enable gated/frozen flags: {offenders}"

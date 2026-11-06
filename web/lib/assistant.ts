@@ -1,4 +1,5 @@
-import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { AWSOPS_KB } from './awsops-kb';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
 import { thinkingOffFields } from './bedrock';
@@ -37,9 +38,9 @@ const FALLBACK =
   'Agents(routingKeywords·통합·스킬 연결) → Agent Space에서 활성화(관리자). ' +
   '(어시스턴트 응답 생성에 일시적으로 실패했습니다.)';
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 const bedrockSend: AssistantSend = async (system, user, modelId) => {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const res = await client.send(new ConverseCommand({
     modelId,
     system: [{ text: system }],

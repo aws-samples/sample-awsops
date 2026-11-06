@@ -2,7 +2,8 @@
 // itself is down/unreachable, answer via Bedrock directly instead of surfacing a dead error
 // frame. Honest by design — the caller tags the answer `via: 'bedrock-direct-fallback'` and the
 // text opens with a notice that live tools were unavailable.
-import { BedrockRuntimeClient, ConverseStreamCommand, type Message } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseStreamCommand, type Message } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { thinkingOffFields } from './bedrock';
 import type { ChatMsg } from './agentcore';
 
@@ -16,7 +17,7 @@ const SYSTEM =
   'give safe general guidance instead of fabricating account-specific facts. ' +
   'Format responses in markdown.';
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 
 /** Stream a Bedrock-direct answer for the last-resort fallback path. Throws on Bedrock failure —
  *  the caller keeps its existing error frame as the true end of the ladder. */
@@ -25,7 +26,7 @@ export async function* bedrockDirectStream(
   history: ChatMsg[],
   opts: { abortSignal?: AbortSignal; responseLanguage?: string } = {},
 ): AsyncGenerator<string> {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const lang = opts.responseLanguage === 'en' ? 'English'
     : opts.responseLanguage === 'zh' ? 'Simplified Chinese'
     : opts.responseLanguage === 'ja' ? 'Japanese' : 'Korean';
