@@ -119,3 +119,57 @@ def test_missing_vpc_never_matches_inventory_rows_without_vpc(monkeypatch):
     identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
     assert [r["kind"] for r in bundle["resources"]] == ["rds"] and not bundle["relationships"]
     assert "proxy_target_unresolved" in bundle["gaps"]
+
+
+def _proxy_bundle():
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+    dbs = [{"id": f"r:{region}", "kind": "rds", "account": ACCOUNT, "region": region,
+            "resource_id": "orders", "facts": {"arn": arn, "vpc_id": "vpc-a"}}
+           for region in (REGION, "us-east-1")]
+    return {"resources": dbs, "relationships": [], "coverage": {"account": ACCOUNT},
+            "gaps": [], "incomplete": [], "degraded": [], "evidence": [
+        {"id": f"e:{d['id']}", "kind": "inventory", "source": "inventory", "resource_ids": [d["id"]],
+         "fresh": True, "coverage": {"complete": True}} for d in dbs]}
+
+
+def test_proxy_call_cap_is_incomplete_only_and_stops_every_region():
+    bundle, regions = _proxy_bundle(), []
+
+    class Rds:
+        def __init__(self, region):
+            self.region = region
+
+        def describe_db_proxies(self, **kwargs):
+            regions.append(self.region)
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{self.region}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": f"arn:aws:rds:{self.region}:{ACCOUNT}:cluster:c{i}",
+                                 "Type": "TRACKED_CLUSTER"} for i in range(20)]}
+
+        def describe_db_clusters(self, **kwargs):
+            return {"DBClusters": []}
+    identities.collect_proxies(bundle, Budget(), lambda service, region, budget: Rds(region))
+    assert "proxy_query_cap" in bundle["incomplete"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]
+    assert len(regions) == 1  # the shared cap stops the remaining region instead of re-failing it
+
+
+def test_proxy_provider_error_is_a_gap_and_defect_is_degraded():
+    from botocore.exceptions import ClientError
+
+    class Denied:
+        def describe_db_proxies(self, **kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "DescribeDBProxies")
+    bundle = _proxy_bundle()
+    identities.collect_proxies(bundle, Budget(), lambda *args: Denied())
+    assert "proxy_configuration_unavailable" in bundle["gaps"] and not bundle["degraded"]
+
+    class Broken:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": ["not-a-proxy-row"]}
+    bundle = _proxy_bundle()
+    identities.collect_proxies(bundle, Budget(), lambda *args: Broken())
+    assert "proxy_projection_failed" in bundle["degraded"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]

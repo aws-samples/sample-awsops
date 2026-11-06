@@ -2,6 +2,10 @@
 import ipaddress
 import re
 
+from botocore.exceptions import BotoCoreError, ClientError
+
+from .scoped_clients import ScopeError
+
 
 def task_address(task, subnet_vpcs):
     if task.get("last_status") != "RUNNING":
@@ -81,6 +85,10 @@ def project_tasks(bundle):
                     fresh=True, coverage={"complete": True})
 
 
+class _ProxyBound(Exception):
+    """A self-imposed call cap or deadline: already disclosed as incomplete, never a source gap."""
+
+
 def collect_proxies(bundle, budget, client_factory):
     from . import discovery as d
     account = bundle["coverage"]["account"]
@@ -96,9 +104,9 @@ def collect_proxies(bundle, budget, client_factory):
                 nonlocal calls
                 if calls >= 16:
                     d._mark(bundle, "incomplete", "proxy_query_cap")
-                    raise TimeoutError("proxy_query_cap")
-                if not d._available(bundle, budget):
-                    raise TimeoutError("proxy_deadline")
+                    raise _ProxyBound()
+                if not d._available(bundle, budget):  # marks discovery_deadline
+                    raise _ProxyBound()
                 calls += 1
                 # IAM rds:DescribeDBProxies/DescribeDBProxyTargets/DescribeDBClusters (all read() calls): workers.tf
                 # worker_diagnosis_network Sid DiagnosisObservationDiscovery (runtime_read_condition).
@@ -142,8 +150,14 @@ def collect_proxies(bundle, budget, client_factory):
                     d._relationship(bundle, proxy["id"], database["id"], "configured_dependency", evidence)
             if len(response.get("DBProxies", [])) > 4:
                 d._mark(bundle, "incomplete", "proxy_cap")
-        except Exception:
+        except _ProxyBound:
+            return  # The call budget is shared across regions: stop instead of re-recording per region.
+        except (ClientError, BotoCoreError, ScopeError):
             d._mark(bundle, "gaps", "proxy_configuration_unavailable")
+        except Exception:
+            # A projection defect is not a provider outage: surface it as degraded, distinctly.
+            d._mark(bundle, "degraded", "proxy_projection_failed")
+            return
 
 
 def _cluster_target(bundle, budget, read, target, databases, account, region, vpc):
