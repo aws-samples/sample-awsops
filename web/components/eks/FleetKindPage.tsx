@@ -388,7 +388,8 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                     />
                     <StatCard label="총 vCPU" value={sized.length ? Math.round(cpu).toLocaleString() : '—'}
                       hint={unsized ? `capacity unknown ${unsized}` : undefined} />
-                    <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} hint={memHint} />
+                    <StatCard label="총 Memory (GiB)" value={sized.length ? Math.round(memMiB / 1024).toLocaleString() : '—'}
+                      hint={[memHint, unsized ? `capacity unknown ${unsized}` : undefined].filter(Boolean).join(' · ') || undefined} />
                   </div>
                   <DonutBreakdown title="Instance Types" data={donut} nameKey="name" valueKey="value" />
                 </>

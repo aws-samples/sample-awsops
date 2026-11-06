@@ -7,7 +7,8 @@ import NodeDrilldownPanel from './NodeDrilldownPanel';
 vi.mock('@/components/ui/DetailPanel', () => ({ default: ({ children, data }: { children: ReactNode; data?: unknown }) => <div><pre>{JSON.stringify(data)}</pre>{children}</div> }));
 const cardProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('@/components/eks/NodeCapacityCards', () => ({ default: (props: Record<string, unknown>) => { cardProps.push(props); return null; } }));
-vi.mock('@/components/eks/NodePodsSection', () => ({ default: () => null }));
+const podSectionProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('@/components/eks/NodePodsSection', () => ({ default: (props: Record<string, unknown>) => { podSectionProps.push(props); return null; } }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('carries the qualified cluster through the node ENI child request', async () => {
@@ -57,6 +58,10 @@ it('joins EC2-view pods by instance id and never fabricates 0 pods for an unrefe
     await waitFor(() => expect(cardProps.some((p) => p.podsUnknown === (expected === null))).toBe(true));
     const last = cardProps[cardProps.length - 1];
     if (expected) expect(last).toMatchObject({ podCount: 1, podsUnknown: false, cpuRequest: 0.5 });
-    else expect(last).toMatchObject({ podsUnknown: true, cpuRequest: null });
+    else {
+      expect(last).toMatchObject({ podsUnknown: true, cpuRequest: null });
+      // never the permanent 'Pod list loading…' sentinel: the section gets an explicit reason
+      expect(String(podSectionProps[podSectionProps.length - 1].error)).toContain('EC2');
+    }
   }
 });

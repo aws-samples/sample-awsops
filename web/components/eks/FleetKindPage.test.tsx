@@ -84,7 +84,8 @@ describe('FleetKindPage nodes capacity list (gap L132)', () => {
   it('capacity-unknown EC2 rows are not summed as 0 vCPU', async () => {
     setFetch({ member: [] }, { member: { status: 'EC2 running', source: 'aws-api', capacityUnknown: true, cpuCapacity: 0, memCapacity: 0 } });
     render(<FleetKindPage kind="nodes" />);
-    await waitFor(() => expect(screen.getByText('capacity unknown 1')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('capacity unknown 1').length).toBe(2));
     expect(screen.getByText('총 vCPU').parentElement?.textContent).toContain('—');
+    expect(screen.getByText('총 Memory (GiB)').parentElement?.textContent).toContain('—');
   });
 });

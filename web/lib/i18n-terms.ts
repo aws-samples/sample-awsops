@@ -1157,6 +1157,7 @@ export const TERMS: Record<string, Pair> = {
   'Access Entry 확인됨': { en: 'Access Entry verified', zh: 'Access Entry 已确认', ja: 'Access Entry 確認済み' },
   'Access Entry 확인됨 — 등록 대기 중인 멤버 클러스터': { en: 'Access Entry verified — member clusters awaiting registration', zh: 'Access Entry 已确认 — 等待注册的成员集群', ja: 'Access Entry 確認済み — 登録待ちのメンバークラスター' },
   '멤버 계정 소유자가 읽기 역할의 Access Entry를 만들었습니다. 자동으로 등록되지 않으며, [조회 등록]을 눌러야 조회 대상에 추가됩니다.': { en: 'The member account owner created an Access Entry for the read role. Nothing is registered automatically — click [Register for query] to add the cluster.', zh: '成员账户所有者已为只读角色创建 Access Entry。不会自动注册 — 点击[注册查询]后才会加入查询对象。', ja: 'メンバーアカウントの所有者が読み取りロールの Access Entry を作成しました。自動では登録されず、[照会登録] を押すと照会対象に追加されます。' },
+  '이 EC2/노드그룹 노드를 가리키는 Pod를 찾지 못했습니다 (노드 이름 불일치 가능)': { en: 'No pod references this EC2/node-group node (node names may differ)', zh: '未找到指向此 EC2/节点组节点的 Pod（节点名称可能不一致）', ja: 'この EC2/ノードグループのノードを参照する Pod が見つかりません（ノード名の不一致の可能性）' },
   'kubelet 상세 정보 없음 (View 정책 — 노드 읽기 권한 없음)': { en: 'Kubelet details unavailable (View policy — no node read permission)', zh: '无 kubelet 详细信息（View 策略 — 无节点读取权限）', ja: 'kubelet 詳細情報なし（View ポリシー — ノード読み取り権限なし）' },
   '노드 정보 없음': { en: 'Node details unavailable', zh: '节点信息不可用', ja: 'ノード情報なし' },
   'EC2/노드그룹 기준': { en: 'EC2/node-group view', zh: 'EC2/节点组视图', ja: 'EC2/ノードグループ基準' },

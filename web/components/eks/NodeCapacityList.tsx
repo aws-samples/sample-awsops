@@ -28,6 +28,8 @@ const gib = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${M
 function caption(requested: number | null, allocatable: number, capacity: number, fmt: (v: number) => string, unknownText: string, allocUnknown = false): string {
   const rsv = allocUnknown ? '—' : fmt(Math.max(0, capacity - allocatable));
   if (requested == null) return `${unknownText} | rsv ${rsv}`;
+  // EC2-view allocatable only mirrors instance capacity: availability is unknown, not derived.
+  if (allocUnknown) return `avail — | rsv ${rsv}`;
   const avail = Math.max(0, allocatable - Math.min(requested, allocatable));
   return `avail ${fmt(avail)} | rsv ${rsv}`;
 }

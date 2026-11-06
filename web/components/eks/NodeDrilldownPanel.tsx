@@ -96,7 +96,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
             capacityUnknown={detail.node.capacityUnknown === true}
             podsUnknown={pods == null}
           />
-          <NodePodsSection pods={pods} error="" />
+          <NodePodsSection pods={pods} error={pods == null && detail.node.source === 'aws-api' ? tt('이 EC2/노드그룹 노드를 가리키는 Pod를 찾지 못했습니다 (노드 이름 불일치 가능)') : ''} />
           <NodeEniSection nodeName={nodeName} cluster={cluster} />
         </>
       )}
