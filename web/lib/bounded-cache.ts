@@ -2,15 +2,50 @@ export interface BoundedTtlCacheOptions {
   ttlMs: number;
   maxEntries: number;
   maxInFlight: number;
-  /** Per-load deadline; a hung loader is rejected and frees its in-flight slot. */
+  /**
+   * Per-load deadline: the caller is rejected and the loader's AbortSignal fires. The in-flight
+   * slot stays held until the loader itself settles, so maxInFlight bounds real outstanding work.
+   */
   loadTimeoutMs?: number;
   now?: () => number;
 }
 
-/** Transient cache saturation or a load deadline: callers report it as retryable, never as absence. */
+const TRANSIENT_NAMES = new Set([
+  'CacheUnavailableError', 'TimeoutError', 'RequestTimeout', 'RequestTimeoutException',
+  'ThrottlingException', 'Throttling', 'TooManyRequestsException', 'RequestLimitExceeded',
+  'ServiceUnavailable', 'ServiceUnavailableException', 'InternalServerException', 'InternalFailure',
+]);
+
+/**
+ * Cache saturation/deadline, SDK timeout, throttling or a service 5xx: retry later, never treat
+ * the read as proof of absence. Permanent errors (AccessDenied, validation) return false.
+ */
+export function isTransientRead(error: unknown): boolean {
+  if (error instanceof CacheUnavailableError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { name?: unknown; $retryable?: { throttling?: unknown }; $metadata?: { httpStatusCode?: unknown } };
+  if (typeof e.name === 'string' && TRANSIENT_NAMES.has(e.name)) return true;
+  if (e.$retryable && typeof e.$retryable === 'object' && e.$retryable.throttling === true) return true;
+  const status = e.$metadata?.httpStatusCode;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
+/** setTimeout that rejects with the signal's reason once the cache deadline aborts the loader. */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const onAbort = () => { clearTimeout(timer); reject(signal!.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export class CacheUnavailableError extends Error {
-  constructor(readonly reason: 'capacity' | 'deadline') {
+  // Explicit field (no parameter property): Node's strip-only TypeScript can import this file.
+  readonly reason: 'capacity' | 'deadline';
+  constructor(reason: 'capacity' | 'deadline') {
     super(reason === 'capacity' ? 'Cache in-flight capacity reached' : 'Cache load deadline exceeded');
+    this.reason = reason;
     this.name = 'CacheUnavailableError';
   }
 }
@@ -40,7 +75,7 @@ export class BoundedTtlCache<T> {
     this.now = options.now ?? (() => Date.now());
   }
 
-  get(key: string, loader: () => Promise<T>): Promise<T> {
+  get(key: string, loader: (signal: AbortSignal) => Promise<T>): Promise<T> {
     this.pruneExpired(this.now());
     const hit = this.values.get(key);
     if (hit) {
@@ -56,12 +91,21 @@ export class BoundedTtlCache<T> {
     }
 
     const generation = this.generation;
+    const controller = new AbortController();
     this.activeLoads += 1;
+    const work = Promise.resolve().then(() => loader(controller.signal));
+    // Release the slot only when the loader settles (not at the caller deadline), so a slow
+    // source cannot accumulate unbounded background work behind rejected callers.
+    work.then(() => undefined, () => undefined).then(() => { this.activeLoads -= 1; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new CacheUnavailableError('deadline')), this.loadTimeoutMs);
+      timer = setTimeout(() => {
+        const error = new CacheUnavailableError('deadline');
+        controller.abort(error);
+        reject(error);
+      }, this.loadTimeoutMs);
     });
-    const promise = Promise.race([Promise.resolve().then(loader), deadline]).then((value) => {
+    const promise = Promise.race([work, deadline]).then((value) => {
       if (generation === this.generation) {
         const now = this.now();
         this.pruneExpired(now);
@@ -73,7 +117,6 @@ export class BoundedTtlCache<T> {
       return value;
     }).finally(() => {
       clearTimeout(timer);
-      this.activeLoads -= 1;
       // A clear may have admitted a replacement load under this same key.
       if (this.pending.get(key) === promise) this.pending.delete(key);
     });
