@@ -44,6 +44,17 @@ type AnthropicStreamEvent = {
   message?: AnthropicReply; usage?: { output_tokens?: number };
 };
 
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+const RETRY_ATTEMPTS = 3;
+function pause(attempt: number, retryAfter: string | null, signal?: AbortSignal): Promise<void> {
+  const seconds = Number(retryAfter);
+  const ms = Math.min(Math.max(Number.isFinite(seconds) && retryAfter !== null ? seconds * 1000 : 500 * 2 ** attempt, 0), 10_000);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason ?? new Error('aborted')); }, { once: true });
+  });
+}
+
 let apiKey: Promise<string> | null = null;
 /** Forget the cached key (401 from the API, or tests). */
 export function resetAnthropicApiKey(): void { apiKey = null; }
@@ -152,24 +163,43 @@ class AnthropicApiClient {
     throw new Error('anthropic_api_unsupported_command');
   }
 
-  private async request(body: Json, options?: SendOptions, retry = true): Promise<Response> {
-    const res = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': await anthropicApiKey() },
-      body: JSON.stringify(body),
-      signal: options?.abortSignal,
-    });
-    if (res.status === 401 && retry) {
-      // A rotated secret: drop the cached key and retry once with a fresh read.
-      resetAnthropicApiKey();
-      return this.request(body, options, false);
+  /** POST to the Messages API. A 401 re-reads the key once (rotation); 408/409/429/5xx/529 and
+   *  network errors retry up to three attempts with bounded backoff (Retry-After capped at 10 s),
+   *  matching model_runtime.py. An aborted request is never retried. */
+  private async request(body: Json, options?: SendOptions): Promise<Response> {
+    const signal = options?.abortSignal;
+    let refreshed = false;
+    for (let attempt = 1; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(ANTHROPIC_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': await anthropicApiKey() },
+          body: JSON.stringify(body),
+          signal,
+        });
+      } catch (error) {
+        if (signal?.aborted || attempt >= RETRY_ATTEMPTS) throw error;
+        await pause(attempt, null, signal);
+        continue;
+      }
+      if (res.status === 401 && !refreshed) {
+        refreshed = true;
+        resetAnthropicApiKey();
+        continue;
+      }
+      if (RETRYABLE_STATUS.has(res.status) && attempt < RETRY_ATTEMPTS && !signal?.aborted) {
+        await res.body?.cancel().catch(() => undefined);
+        await pause(attempt, res.headers.get('retry-after'), signal);
+        continue;
+      }
+      if (!res.ok) {
+        let kind = '';
+        try { kind = String(((await res.json()) as { error?: { type?: string } }).error?.type ?? ''); } catch { /* no body */ }
+        throw new Error(`anthropic_api_error:${res.status}:${kind}`.slice(0, 120));
+      }
+      return res;
     }
-    if (!res.ok) {
-      let kind = '';
-      try { kind = String(((await res.json()) as { error?: { type?: string } }).error?.type ?? ''); } catch { /* no body */ }
-      throw new Error(`anthropic_api_error:${res.status}:${kind}`.slice(0, 120));
-    }
-    return res;
   }
 
   private async post(body: Json, options?: SendOptions): Promise<unknown> {
@@ -183,6 +213,7 @@ class AnthropicApiClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let inputTokens = 0;
+    let stopped = false;
     const events = function* (frames: string[]) {
       for (const frame of frames) {
         const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
@@ -202,14 +233,20 @@ class AnthropicApiClient {
           else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
             yield { contentBlockDelta: { contentBlockIndex: event.index ?? 0, delta: { text: event.delta.text ?? '' } } };
           } else if (event.type === 'message_delta') {
+            stopped = true;
             if (event.delta?.stop_reason) yield { messageStop: { stopReason: event.delta.stop_reason as never } };
             const outputTokens = event.usage?.output_tokens ?? 0;
             yield { metadata: { usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }, metrics: { latencyMs: 0 } } };
+          } else if (event.type === 'message_stop') {
+            stopped = true;
           } else if (event.type === 'error') {
             throw new Error('anthropic_api_stream_error');
           }
         }
-        if (done) break;
+        if (done) {
+          if (!stopped) throw new Error('anthropic_api_stream_truncated');
+          break;
+        }
       }
     } finally {
       // A consumer that stops early must not leak the locked response body.

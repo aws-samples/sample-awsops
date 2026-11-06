@@ -138,6 +138,39 @@ describe('model runtime client', () => {
     expect(seen).toEqual(['Hi', 'stop:end_turn']);
   });
 
+  it('anthropic_api retries throttling and network errors, then succeeds', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
+    vi.spyOn(SecretsManagerClient.prototype, 'send').mockResolvedValue({ SecretString: 'sk' } as never);
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return new Response('{}', { status: 429, headers: { 'retry-after': '0' } });
+      if (calls === 2) throw new TypeError('fetch failed');
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+    }));
+    vi.useFakeTimers();
+    try {
+      const { modelRuntimeClient } = await load();
+      const pending = modelRuntimeClient({ region: 'x' }).send(new ConverseCommand({ modelId: 'claude-haiku-5-5', messages: [] }));
+      await vi.runAllTimersAsync();
+      const out = await pending;
+      expect(out.output?.message?.content?.[0]?.text).toBe('ok');
+      expect(calls).toBe(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('anthropic_api stream that ends without a terminal event is an error, not a complete answer', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
+    vi.spyOn(SecretsManagerClient.prototype, 'send').mockResolvedValue({ SecretString: 'sk' } as never);
+    vi.stubGlobal('fetch', vi.fn(async () => sse([{ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'part' } }])));
+    const { modelRuntimeClient } = await load();
+    const res = await modelRuntimeClient({ region: 'x' }).send(new ConverseStreamCommand({ modelId: 'claude-sonnet-5-5', messages: [] }));
+    const read = async () => { for await (const _ of res.stream ?? []) { /* drain */ } };
+    await expect(read()).rejects.toThrow('anthropic_api_stream_truncated');
+  });
+
   it('anthropic_api errors carry only status and error type, never the key', async () => {
     process.env.MODEL_PROVIDER = 'anthropic_api';
     process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
