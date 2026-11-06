@@ -79,6 +79,9 @@ class AnthropicApiKeyRotationTest(unittest.TestCase):
                 patch.object(agent, "AnthropicModel", fake, create=True), patch.object(agent, "model", "model-old"):
             self.assertEqual(agent._current_model(), "model-new")
             self.assertEqual(agent._current_model(), "model-new")
+        with patch.object(agent, "model_runtime", rt), patch.object(agent, "_MODEL_KEY", None, create=True), \
+                patch.object(agent, "AnthropicModel", fake, create=True), patch.object(agent, "model", None):
+            self.assertEqual(agent._current_model(), "model-new")  # lazily built on first use
             sdk_auth = type("AuthenticationError", (Exception,), {"__module__": "anthropic._exceptions"})
             connector_auth = type("AuthenticationError", (Exception,), {"__module__": "mcp.client"})
             try:
@@ -87,7 +90,7 @@ class AnthropicApiKeyRotationTest(unittest.TestCase):
                 agent._drop_key_on_auth_error(wrapped)  # SDK auth error in the cause chain
             agent._drop_key_on_auth_error(connector_auth("connector 401"))
             agent._drop_key_on_auth_error(RuntimeError("authentication_error from a gateway"))
-        self.assertEqual(built, ["sk-new", "reset"])
+        self.assertEqual(built, ["sk-new", "sk-new", "reset"])
 
 
 class ReadinessEntrypointTest(unittest.TestCase):

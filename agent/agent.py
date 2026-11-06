@@ -149,8 +149,10 @@ if model_runtime.provider() == "anthropic_api":
     # ANTHROPIC_API_KEY_SECRET_ARN (cached, never logged). _current_model() rebuilds the client when
     # the key changes; an authentication error drops the cached key so the next request re-reads it.
     from strands.models.anthropic import AnthropicModel
-    _MODEL_KEY = model_runtime.api_key()
-    model = AnthropicModel(client_args={"api_key": _MODEL_KEY}, model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
+    # Built lazily by _current_model(): a key read failure fails that request (and readiness), never
+    # the import, so the runtime still starts and recovers once the secret is readable.
+    _MODEL_KEY = None
+    model = None
 else:
     try:
         if CacheConfig is None:
@@ -184,7 +186,7 @@ def _current_model():
     global model, _MODEL_KEY
     if model_runtime.provider() == "anthropic_api":
         key = model_runtime.api_key()
-        if key != _MODEL_KEY:
+        if model is None or key != _MODEL_KEY:
             model = AnthropicModel(client_args={"api_key": key}, model_id=MODEL_ID, max_tokens=AGENT_MAX_TOKENS)
             _MODEL_KEY = key
     return model

@@ -1070,8 +1070,12 @@ def runtime_model_env(value):
     """Validated model_provider env from the Terraform output; anything unexpected is dropped."""
     if not isinstance(value, dict):
         return {}
-    return {k: v for k, v in value.items()
+    kept = {k: v for k, v in value.items()
             if k in MODEL_ENV_KEYS and isinstance(v, str) and _MODEL_ENV_VALUE.fullmatch(v)}
+    dropped = sorted(str(k)[:64] for k in value if k not in kept)
+    if dropped:
+        log("runtime", "WARN", f"model_env keys dropped (unknown key or invalid value): {', '.join(dropped)}")
+    return kept
 # Chat models any model_provider profile may select (Bedrock Luna, Bedrock Sonnet 5.5, Anthropic API
 # Sonnet 5.5); Terraform validation and the profile IAM bound which one a stack can actually use.
 AGENT_MODEL_IDS = ("global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5")

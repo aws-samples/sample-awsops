@@ -44,6 +44,12 @@ def wrap(bedrock_client):
     return wrapped
 
 
+def _arn_region(arn):
+    """The secret's own region from its ARN, never the caller's ambient region."""
+    parts = arn.split(":")
+    return parts[3] if len(parts) > 6 and parts[2] == "secretsmanager" and parts[3] else None
+
+
 def api_key():
     """Read and cache the Anthropic API key from Secrets Manager (plain string or {"api_key"})."""
     global _API_KEY
@@ -53,7 +59,8 @@ def api_key():
             arn = os.environ.get("ANTHROPIC_API_KEY_SECRET_ARN", "")
             if not arn:
                 raise RuntimeError("anthropic_api_key_unconfigured")
-            raw = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"].strip()
+            raw = boto3.client("secretsmanager", region_name=_arn_region(arn)).get_secret_value(
+                SecretId=arn)["SecretString"].strip()
             try:
                 parsed = json.loads(raw)
             except ValueError:
@@ -133,7 +140,11 @@ def anthropic_messages(body, model_id, timeout=300, attempts=3, operation="Invok
                      "x-api-key": api_key()})
         try:
             with _OPENER.open(request, timeout=timeout) as response:
-                return json.loads(response.read())
+                raw = response.read()
+            try:
+                return json.loads(raw)
+            except ValueError:
+                raise _client_error(502, "invalid_json", operation) from None
         except urllib.error.HTTPError as error:
             if error.code == 401 and not refreshed:
                 refreshed = True

@@ -172,6 +172,18 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(model_runtime._attempts(Config(retries={"total_max_attempts": 1})), 1)
         self.assertEqual(model_runtime._attempts(None), 3)
 
+    def test_secret_client_uses_the_secret_arn_region(self):
+        self.assertEqual(model_runtime._arn_region(
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:anthropic-AbCdEf"), "us-east-1")
+        self.assertIsNone(model_runtime._arn_region("not-an-arn"))
+
+    def test_non_json_success_body_is_a_client_error(self):
+        model_runtime._API_KEY = "sk"
+        with mock.patch.object(model_runtime._OPENER, "open", lambda request, timeout: io.BytesIO(b"<html>")), \
+                self.assertRaises(ClientError) as ctx:
+            model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
+        self.assertEqual(ctx.exception.response["Error"]["Message"], "anthropic_api_error:502:invalid_json")
+
     def test_api_requests_never_follow_redirects_or_use_a_proxy(self):
         handlers = {type(h).__name__ for h in model_runtime._OPENER.handlers}
         self.assertIn("_NoRedirect", handlers)
@@ -220,6 +232,9 @@ class ProvisionerModelEnvTests(unittest.TestCase):
                                "DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID": "",
                                "ANTHROPIC_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:k-AbC"})
         self.assertEqual(provision.runtime_model_env(None), {})
+        provision.report.clear()
+        provision.runtime_model_env({"MODEL_PROVIDER": "anthropic_api", "ANTHROPIC_API_KEY_SECRET_ARN": "x" * 300})
+        self.assertIn(("runtime", "WARN"), [(r[0], r[1]) for r in provision.report])
 
 
 if __name__ == "__main__":
