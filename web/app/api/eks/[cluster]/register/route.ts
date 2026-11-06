@@ -41,7 +41,7 @@ function parseAuth(body: unknown): EksAuth | null | 'invalid' {
 }
 
 function auditRegistration(event: string, cluster: string, actorSub: string, extra: Record<string, unknown> = {}) {
-  console.info(JSON.stringify({ event, cluster, actor_sub: actorSub, ...extra }));
+  console.info(JSON.stringify({ ...extra, event, cluster, actor_sub: actorSub }));
 }
 
 export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
@@ -71,6 +71,9 @@ export async function POST(request: Request, { params: pendingParams }: { params
       if (auth.mode === 'assume-role') assertEksRoleArn(context, auth.roleArn);
       const ok = await setClusterAuth(context.id, user.sub, auth);
       if (!ok) return json({ status: 'error', message: 'registry storage unavailable' }, 503);
+      // Credential-backed registration is the most sensitive write here; it is audited too
+      // (mode only — the token/role ARN/external ID are never logged).
+      auditRegistration('eks_cluster_registered', context.id, user.sub, { mode: auth.mode });
       return json({ registered: true, authMode: auth.mode }, 200);
     }
     const entry = await hasAccessEntry(context.id);

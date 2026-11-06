@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import NodeDrilldownPanel from './NodeDrilldownPanel';
 
 vi.mock('@/components/ui/DetailPanel', () => ({ default: ({ children, data }: { children: ReactNode; data?: unknown }) => <div><pre>{JSON.stringify(data)}</pre>{children}</div> }));
-vi.mock('@/components/eks/NodeCapacityCards', () => ({ default: () => null }));
+const cardProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('@/components/eks/NodeCapacityCards', () => ({ default: (props: Record<string, unknown>) => { cardProps.push(props); return null; } }));
 vi.mock('@/components/eks/NodePodsSection', () => ({ default: () => null }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -43,3 +44,19 @@ it('reports a denied node read (route 502 + reason denied) as kubelet details un
   await findByText(/kubelet 상세 정보 없음/);
 });
 
+
+it('joins EC2-view pods by instance id and never fabricates 0 pods for an unreferenced node', async () => {
+  const row = { name: 'ip-1.ec2.internal', instanceId: 'i-0abc', status: 'EC2 running', source: 'aws-api' as const, roles: '', version: '', instanceType: 'm7g.large', zone: 'a', age: '1d',
+    cpuCapacity: 2, cpuAllocatable: 2, memCapacity: 8192, memAllocatable: 8192, diskCapacity: 0, diskAllocatable: 0 };
+  const pod = { name: 'p', namespace: 'd', status: 'Running', node: 'i-0abc', restarts: 0, age: '1d', cpuRequest: 0.5, memRequest: 256, diskRequest: 0 };
+  for (const [pods, expected] of [[[pod], '1'], [[], null]] as const) {
+    cleanup();
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => ({ ok: true, json: async () => (input.includes('node-eni') ? { found: false } : { rows: pods }) })));
+    render(<NodeDrilldownPanel cluster="c" nodeName={row.name} node={row} onClose={() => {}} />);
+    cardProps.length = 0;
+    await waitFor(() => expect(cardProps.some((p) => p.podsUnknown === (expected === null))).toBe(true));
+    const last = cardProps[cardProps.length - 1];
+    if (expected) expect(last).toMatchObject({ podCount: 1, podsUnknown: false, cpuRequest: 0.5 });
+    else expect(last).toMatchObject({ podsUnknown: true, cpuRequest: null });
+  }
+});

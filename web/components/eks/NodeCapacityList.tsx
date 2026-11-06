@@ -17,6 +17,8 @@ export interface NodeCapacityRow {
   memCapacityMiB: number; memAllocatableMiB: number; memRequestMiB: number | null;
   /** EC2/node-group (aws-api) row: allocatable mirrors capacity, so Reserved is unknown ('rsv —'). */
   allocatableUnknown?: boolean;
+  /** Instance type unresolved: capacity is unknown ('—'), never shown as 0. */
+  capacityUnknown?: boolean;
 }
 
 const MAX_RENDER = 40;
@@ -67,14 +69,14 @@ export default function NodeCapacityList({ rows, requestsPending = false }: { ro
             </div>
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">
-                <span>CPU {n.cpuCapacity.toFixed(1)} vCPU</span>
+                <span>CPU {n.capacityUnknown ? '—' : `${n.cpuCapacity.toFixed(1)} vCPU`}</span>
                 <span>{caption(n.cpuRequest, n.cpuAllocatable, n.cpuCapacity, cpuFmt, unknownText, n.allocatableUnknown)}</span>
               </div>
               <StackBar requested={n.cpuRequest} allocatable={n.cpuAllocatable} capacity={n.cpuCapacity} allocatableUnknown={n.allocatableUnknown} />
             </div>
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">
-                <span>Mem {gib(n.memCapacityMiB)}</span>
+                <span>Mem {n.capacityUnknown ? '—' : gib(n.memCapacityMiB)}</span>
                 <span>{caption(n.memRequestMiB, n.memAllocatableMiB, n.memCapacityMiB, gib, unknownText, n.allocatableUnknown)}</span>
               </div>
               <StackBar requested={n.memRequestMiB} allocatable={n.memAllocatableMiB} capacity={n.memCapacityMiB} allocatableUnknown={n.allocatableUnknown} />

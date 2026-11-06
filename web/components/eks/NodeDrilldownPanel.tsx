@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
-import { isTerminalPodPhase } from '@/lib/eks-resources';
+import { isTerminalPodPhase, nodePodKeys } from '@/lib/eks-resources';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -47,7 +47,11 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
       .then(([nd, pd]) => {
         if (seq !== seqRef.current) return;
         const node = ((nd.rows ?? []) as NodeRow[]).find((n) => n.name === nodeName) ?? null;
-        const pods = pd ? ((pd.rows ?? []) as PodRow[]).filter((x) => x.node === nodeName) : null;
+        // EC2-view rows may be named by private DNS while pods use another node name: join on
+        // both keys, and treat "no pod references this EC2-view node" as unknown, not zero.
+        const keys = node ? nodePodKeys(node) : [nodeName];
+        const matched = pd ? ((pd.rows ?? []) as PodRow[]).filter((x) => keys.includes(x.node)) : null;
+        const pods = matched && node?.source === 'aws-api' && matched.length === 0 ? null : matched;
         setDetail({ node, pods, err: node ? '' : tt('노드를 찾지 못했습니다') });
       })
       .catch((e) => {
@@ -90,6 +94,7 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose, node: k
             createdAt={detail.node.createdAt}
             ec2View={detail.node.source === 'aws-api'}
             capacityUnknown={detail.node.capacityUnknown === true}
+            podsUnknown={pods == null}
           />
           <NodePodsSection pods={pods} error="" />
           <NodeEniSection nodeName={nodeName} cluster={cluster} />

@@ -66,7 +66,7 @@ describe('GET /api/eks/fleet', () => {
     expect(c.nodesError).toMatch(/^Node details are unavailable\./);
     expect(c.podsByNamespace).toEqual([{ namespace: 'default', count: 1 }]);
   });
-  it('marks the AWS-API node source and joins pods by node name', async () => {
+  it('marks the AWS-API node source and keeps EC2-view rows out of the reserved-% meters', async () => {
     const awsNode = { ...NODE, status: 'EC2 running', source: 'aws-api' };
     listInCluster.mockImplementation(async (_c: string, kind: string) => (
       { nodes: [awsNode], pods: [POD] } as Record<string, unknown[]>
@@ -75,7 +75,8 @@ describe('GET /api/eks/fleet', () => {
     expect(c.nodesSource).toBe('aws-api');
     // No kubelet Ready condition exists: Ready is unknown (null), never 0 Ready.
     expect(c.counts).toMatchObject({ nodes: 1, nodesReady: null, ec2Running: 1 });
-    expect(c.nodeAgg[0]).toMatchObject({ name: 'n1', podCount: 1, cpuRequest: 0.5 });
+    // EC2-view rows have no kubelet allocatable, so no meter is drawn for them.
+    expect(c.nodeAgg).toEqual([]);
     expect(c).not.toHaveProperty('nodesError');
   });
   it('degrades a failing cluster to reachable:false (never 500)', async () => {

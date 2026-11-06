@@ -244,6 +244,20 @@ describe('scoped EKS registration', () => {
     expect(rows.get(MEMBER_ID)).toEqual({ mode: 'sa-token', token: 'private-member-token' });
   });
 
+  it('audits credential-backed registration by mode without logging the credential', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { POST } = await import('./route');
+      await POST(request(MEMBER_ID, '', 'POST', { auth: { mode: 'sa-token', token: 'private-member-token' } }), params(MEMBER_ID));
+      const lines = info.mock.calls.map(([line]) => String(line));
+      expect(lines.map((l) => JSON.parse(l))).toEqual([
+        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'sa-token' }]);
+      expect(lines.join('')).not.toContain('private-member-token');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it.each(['scope', 'write'])('returns 503 for %s registry failure', async boundary => {
     if (boundary === 'scope') getAccount.mockRejectedValue(new Error('database unavailable'));
     else query.mockRejectedValue(new Error('database unavailable'));

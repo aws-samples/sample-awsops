@@ -422,6 +422,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                     memAllocatableMiB: Number(r.memAllocatable) || 0,
                     memRequestMiB: nodeAgg == null ? null : nodeAgg.mem,
                     ...(r.source === 'aws-api' ? { allocatableUnknown: true } : {}),
+                    ...(r.capacityUnknown === true ? { capacityUnknown: true } : {}),
                   };
                 })}
               />

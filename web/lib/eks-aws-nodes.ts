@@ -18,6 +18,19 @@ import type { NodeRow } from './eks-resources';
 const MAX_INSTANCES = 2000;
 const MAX_NODEGROUPS = 100;
 const INSTANCE_TYPES_PER_CALL = 100;
+// Same per-request bound as the incluster Kubernetes reads: past it the node fields degrade
+// (instances) or the optional details read as unknown (versions, instance-type capacity).
+export const AWS_NODES_DEADLINE_MS = 4_000;
+const MAX_PER_TYPE_RETRIES = 10;
+
+function withDeadline<T>(work: Promise<T>, deadline: number, onTimeout: () => T): Promise<T> {
+  const ms = Math.max(0, deadline - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => { try { resolve(onTimeout()); } catch (error) { reject(error); } }, ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
 const LIVE_STATES = ['pending', 'running', 'stopping', 'shutting-down'];
 
 function age(ts?: Date): string {
@@ -81,7 +94,7 @@ async function instanceTypeInfo(ec2: EC2Client, types: string[]): Promise<Map<st
     const batch = types.slice(i, i + INSTANCE_TYPES_PER_CALL) as _InstanceType[];
     // One invalid/unsupported type rejects a whole batch, so a failed batch is retried per type;
     // a type still missing leaves its rows' capacity unknown (capacityUnknown), never 0 as fact.
-    for (const attempt of [batch, ...batch.map((t) => [t])]) {
+    for (const attempt of [batch, ...batch.slice(0, MAX_PER_TYPE_RETRIES).map((t) => [t])]) {
       if (attempt.every((t) => out.has(t))) continue;
       try {
         const r = await ec2.send(new DescribeInstanceTypesCommand({ InstanceTypes: attempt }));
@@ -108,12 +121,13 @@ export async function listAwsApiNodes(context: EksClusterContext): Promise<NodeR
     assumedClient(context.accountId, EC2Client, cfg),
     assumedClient(context.accountId, EKSClient, cfg),
   ]);
+  const deadline = Date.now() + AWS_NODES_DEADLINE_MS;
   const [instances, versions] = await Promise.all([
-    clusterInstances(ec2, context.name),
-    nodegroupVersions(eks, context.name).catch(() => new Map<string, string>()),
+    withDeadline(clusterInstances(ec2, context.name), deadline, () => { throw new Error('EC2 node listing timed out'); }),
+    withDeadline(nodegroupVersions(eks, context.name).catch(() => new Map<string, string>()), deadline, () => new Map<string, string>()),
   ]);
   const types = [...new Set(instances.flatMap((i) => (i.InstanceType ? [String(i.InstanceType)] : [])))];
-  const typeInfo = await instanceTypeInfo(ec2, types);
+  const typeInfo = await withDeadline(instanceTypeInfo(ec2, types), deadline, () => new Map<string, InstanceTypeInfo>());
   return instances.map((i) => {
     const info = i.InstanceType ? typeInfo.get(i.InstanceType) : undefined;
     const cpu = info?.VCpuInfo?.DefaultVCpus ?? 0;

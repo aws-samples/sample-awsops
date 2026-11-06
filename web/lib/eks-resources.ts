@@ -142,6 +142,12 @@ export function isTerminalPodPhase(status: unknown): boolean {
  * Pods are matched to a node by PodRow.node === NodeRow.name. reqPct is clamped 0..100
  * (0 when allocatable is 0/unknown). Nodes with no scheduled pods report zeros.
  */
+/** Pods scheduled on a node: by name, and for EC2-view rows also by instance id (some
+ *  clusters name nodes by instance id while the EC2 view names them by private DNS). */
+export function nodePodKeys(n: NodeRow): string[] {
+  return [n.name, ...(n.source === 'aws-api' && n.instanceId ? [n.instanceId] : [])].filter(Boolean);
+}
+
 export function aggregateNodeResources(nodes: NodeRow[], pods: PodRow[]): NodeResourceAgg[] {
   const byNode = new Map<string, { cpu: number; mem: number; disk: number; count: number }>();
   for (const p of pods) {
@@ -158,7 +164,9 @@ export function aggregateNodeResources(nodes: NodeRow[], pods: PodRow[]): NodeRe
     byNode.set(p.node, e);
   }
   const pct = (req: number, alloc: number) => (alloc > 0 ? Math.min(100, Math.round((req / alloc) * 100)) : 0);
-  return nodes.map((n) => {
+  // EC2-view rows carry no kubelet allocatable (it mirrors capacity, or is unknown), so they
+  // are excluded here: a reserved-% over them would read as "fully free".
+  return nodes.filter((n) => n.source !== 'aws-api').map((n) => {
     const e = byNode.get(n.name) ?? { cpu: 0, mem: 0, disk: 0, count: 0 };
     return {
       name: n.name,

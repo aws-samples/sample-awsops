@@ -96,6 +96,32 @@ describe('listAwsApiNodes', () => {
     expect(rows.some((r) => r.cpuCapacity > 0 && r.capacityUnknown !== true)).toBe(true);
   });
 
+  it('bounds slow optional detail reads by the request deadline (capacity unknown, not a hang)', async () => {
+    vi.useFakeTimers();
+    try {
+      const base = ec2Send.getMockImplementation()!;
+      ec2Send.mockImplementation(async (command: { constructor: { name: string } }) => (
+        command.constructor.name === 'DescribeInstanceTypesCommand' ? new Promise(() => {}) : base(command)));
+      const { listAwsApiNodes, AWS_NODES_DEADLINE_MS } = await import('./eks-aws-nodes');
+      const pending = listAwsApiNodes(CONTEXT);
+      await vi.advanceTimersByTimeAsync(AWS_NODES_DEADLINE_MS + 10);
+      const rows = await pending;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.capacityUnknown === true)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('fails a slow instance listing at the deadline so the caller degrades node fields', async () => {
+    vi.useFakeTimers();
+    try {
+      ec2Send.mockImplementation(() => new Promise(() => {}));
+      const { listAwsApiNodes, AWS_NODES_DEADLINE_MS } = await import('./eks-aws-nodes');
+      const pending = listAwsApiNodes(CONTEXT).catch((e: Error) => e);
+      await vi.advanceTimersByTimeAsync(AWS_NODES_DEADLINE_MS + 10);
+      expect(String(await pending)).toContain('timed out');
+    } finally { vi.useRealTimers(); }
+  });
+
   it('propagates an instance read failure (caller degrades only the node fields)', async () => {
     ec2Send.mockRejectedValue(Object.assign(new Error('denied'), { name: 'UnauthorizedOperation' }));
     const { listAwsApiNodes } = await import('./eks-aws-nodes');

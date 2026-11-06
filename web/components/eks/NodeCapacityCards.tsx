@@ -12,6 +12,8 @@ interface Props {
   cpuCapacity: number; cpuAllocatable: number; cpuRequest: number | null;
   memCapacityMiB: number; memAllocatableMiB: number; memRequestMiB: number | null;
   podCIDR?: string; podCount: number; podRunning: number; podPending: number; podFailed: number;
+  /** The node's pods could not be determined (fetch failed, or an EC2-view node no pod references). */
+  podsUnknown?: boolean;
   createdAt?: string;
   /** EC2/node-group (source 'aws-api') row: capacity is the instance type's, kubelet
    *  allocatable/reserved are unknown (AmazonEKSViewPolicy has no nodes read). */
@@ -118,8 +120,8 @@ export default function NodeCapacityCards(raw: Props) {
       <div className={card}>
         <div className={h}>Pod Info</div>
         <Row label="Pod CIDR" value={p.podCIDR ?? '—'} />
-        <Row label="Total Pods" value={String(p.podCount)} />
-        <Row label="Running / Pending / Failed" value={`${p.podRunning} / ${p.podPending} / ${p.podFailed}`} />
+        <Row label="Total Pods" value={raw.podsUnknown ? '—' : String(p.podCount)} />
+        <Row label="Running / Pending / Failed" value={raw.podsUnknown ? '—' : `${p.podRunning} / ${p.podPending} / ${p.podFailed}`} />
         <Row label="Created" value={p.createdAt ? new Date(p.createdAt).toLocaleString(localeOf(lang)) : '—'} />
       </div>
     </div>
