@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import re
 
 from . import pillar_agents as agents
 from .budget import BudgetExceeded
@@ -11,6 +12,19 @@ from .evidence import EvidenceIndex, PILLARS, _NUMBER
 MAX_CONCURRENCY = 4
 MAX_FOLLOW_UP_REQUESTS = 4
 MAX_RERUNS = 2
+_IDENTIFIER_TOKEN = re.compile(
+    r"\b(?:db\.)?[a-z][a-z0-9-]*\d[a-z0-9-]*\.(?:nano|micro|small|medium|large|\d*xlarge|metal)\b"
+    r"|\b[a-z]{2}(?:-gov)?-[a-z]+-\d\b"
+    r"|\b[a-z]{1,8}-[0-9a-f]{8,17}\b"
+    r"|\b[a-z]{1,7}:[0-9a-f]{32}\b")
+
+
+def _failure_reason(exc):
+    if isinstance(exc, BudgetExceeded):
+        return "budget_exhausted"
+    if isinstance(exc, agents.ModelUnsupported):
+        return "unsupported_model"
+    return "output_truncated" if isinstance(exc, agents.OutputTruncated) else "model_failed"
 
 
 def _fingerprint(index):
@@ -80,19 +94,26 @@ def _validate_review(value, findings, index):
         index._reject("", "invalid_review_pillar", "review")
         return None
     issues = value["issues"]
-    if (not isinstance(issues, list) or len(issues) > 16
-            or any(not isinstance(item, str) or len(item) > 1000 or _NUMBER.search(item) for item in issues)):
+    if not isinstance(issues, list) or len(issues) > 16:
         index._reject("", "invalid_review_issue", "review")
         return None
+    kept_issues = []
+    for item in issues:
+        # Identifier tokens (m5.large, ap-northeast-2, opaque IDs) are not numeric assertions.
+        if (not isinstance(item, str) or len(item) > 1000
+                or _NUMBER.search(_IDENTIFIER_TOKEN.sub(" ", item))):
+            index._reject("", "invalid_review_issue", "review")
+        else:
+            kept_issues.append(item)
     if not isinstance(value["follow_up"], list) or len(value["follow_up"]) > 16:
         index._reject("", "invalid_follow_up", "review")
         return None
     requests = []
     seen = set()
     for requested in value["follow_up"]:
-        admitted = index.validate_request(requested)
+        admitted = index.validate_request(requested)  # records its own rejection reason
         if admitted is None:
-            return None
+            continue
         key = (admitted["capability"], tuple(admitted["resource_ids"]))
         if key not in seen:
             requests.append(admitted)
@@ -100,7 +121,7 @@ def _validate_review(value, findings, index):
     if len(requests) > MAX_FOLLOW_UP_REQUESTS:
         index._reject("", "follow_up_limit", "review")
         return None
-    return {**value, "follow_up": requests, "rerun_pillars": pillars[:MAX_RERUNS]}
+    return {**value, "issues": kept_issues, "follow_up": requests, "rerun_pillars": pillars[:MAX_RERUNS]}
 
 
 def _admit_outputs(outputs, index, coverage, degraded, incomplete):
@@ -157,8 +178,7 @@ def _run_specialists(pillars, index, *, model_id, budget, lang, coverage, stages
                     "prompt_version": agents.PROMPT_VERSION, "schema_version": agents.SCHEMA_VERSION,
                 }))
             except Exception as exc:
-                reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else (
-                    "unsupported_model" if isinstance(exc, agents.ModelUnsupported) else "model_failed")
+                reason = _failure_reason(exc)
                 coverage[pillar] = {"status": "failed", "findings": 0, "rejected": 0}
                 degraded.append(f"pillar:{pillar}:{reason}")
                 incomplete.append(f"pillar:{pillar}:uncompleted")
@@ -199,7 +219,7 @@ def _run_review(findings, index, *, model_id, budget, lang, stages, degraded, in
             degraded.append(f"{stage}:unresolved_issues")
         return retained, {**{key: value for key, value in valid.items() if key != "_stage"}, "status": "completed"}
     except Exception as exc:
-        reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "model_failed"
+        reason = _failure_reason(exc)
         degraded.append(f"{stage}:{reason}")
         incomplete.append(f"{stage}:uncompleted")
         stages.append({"stage": stage, "status": "failed", "reason": reason, "model_id": model_id,

@@ -833,6 +833,8 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                     memory = {}
                     _mark(bundle, "degraded", "memory_metrics_read_failed")
             for r in batch:
+                if r["id"] not in dimensions:
+                    continue  # metric_identity_unresolved: never queried, so no evidence row
                 metrics, ratios, statuses = {}, [], []
                 for qid, (rid, name, stat) in mapping.items():
                     if rid != r["id"]:
@@ -867,7 +869,8 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                          "window_days": METRIC_DAYS, "missing_memory": bool(missing_memory), "missing_io": missing_io,
                          "multi_az": r["facts"].get("multi_az"), "replica_source": _replica_source(bundle, r)}
                 _evidence(bundle, "cloudwatch", "metrics", [r["id"]], facts, end, region=region,
-                    fresh=page_coverage["complete"],
+                    # Pages read is not data measured: a zero-sample row is never current evidence.
+                    fresh=page_coverage["complete"] and ratio > 0,
                     window={"start": start.isoformat(), "end": end.isoformat()},
                     coverage={**page_coverage, "complete": complete, "lookback_days": METRIC_DAYS, "sample_ratio": ratio})
 
@@ -1051,6 +1054,16 @@ _EVICTION = {"xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer":
              "inventory": 4}  # inventory anchors every resource; evicted last
 
 
+def _supersede(bundle, source, resource_ids):
+    """Retain earlier point-source rows for refreshed resources as stale history."""
+    targets = set(resource_ids)
+    for row in bundle["evidence"]:
+        if row.get("source") == source and set(row.get("resource_ids", [])) & targets:
+            row["fresh"] = False
+            row["coverage"] = {**row.get("coverage", {}), "complete": False,
+                               "status": "refresh_pending", "retained_previous": True}
+
+
 def _finish(bundle):
     # Apply the JSON byte bound after all projections. Removing evidence also
     # removes dependent edges; removing a resource removes its evidence. No
@@ -1063,7 +1076,9 @@ def _finish(bundle):
             # Evict the newest low-priority evidence first (X-Ray, then graph);
             # sizing, metrics and FinOps rows outlast them; inventory goes last.
             rows = bundle["evidence"]
-            row = rows.pop(min(range(len(rows)), key=lambda i: (_EVICTION.get(rows[i].get("source"), 2), -i)))
+            # Within a class, stale/superseded rows go before current ones.
+            row = rows.pop(min(range(len(rows)), key=lambda i: (
+                _EVICTION.get(rows[i].get("source"), 2), rows[i].get("fresh") is True, -i)))
             evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
             evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
             removed = row["id"]
@@ -1172,11 +1187,15 @@ def follow_up(conn, account, bundle, requests, budget):
                 _mark(merged, "gaps", "member_live_sources_unsupported")
                 continue
             if key[0] == "resource_metrics":
+                _supersede(merged, "cloudwatch", key[1])
                 _metrics(merged, budget, resources, client_factory=factory)
             else:
+                _supersede(merged, "compute_optimizer", key[1])
                 _provider_sizing(merged, budget, resources, client_factory=factory)
         elif key[0] == "resource_metrics":
+            _supersede(merged, "cloudwatch", key[1])
             _metrics(merged, budget, resources)
         else:
+            _supersede(merged, "compute_optimizer", key[1])
             _provider_sizing(merged, budget, resources)
     return _finish(merged)

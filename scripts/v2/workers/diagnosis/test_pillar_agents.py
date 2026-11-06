@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 from diagnosis import pillar_agents as agents
 from diagnosis.budget import ReportBudget
 from diagnosis.evidence import EvidenceIndex, PILLARS
-from diagnosis.test_evidence import ACCOUNT, bundle, finding
+from diagnosis.test_evidence import ACCOUNT, bundle, finding, oid
 
 
 class FakeClient:
@@ -35,13 +35,14 @@ def response(value, *, usage=True, stop="end_turn"):
 @pytest.mark.parametrize("prefix", ["", "global.", "us.", "eu.", "au."])
 @pytest.mark.parametrize("family", ["sonnet", "opus"])
 def test_exact_capability_profiles(prefix, family):
-    assert agents.model_capabilities(prefix + "anthropic.claude-" + family + "-5-5")["thinking"] == "adaptive"
+    model_id = prefix + "anthropic.claude-" + family + "-5-5"
+    assert agents.model_capabilities(model_id)["model_id"] == model_id
     with pytest.raises(agents.ModelUnsupported):
         agents.model_capabilities(prefix + "anthropic.claude-" + family + "-5-5-unverified")
 
 
 def test_model_specific_geographic_profiles():
-    assert agents.model_capabilities("jp.anthropic.claude-opus-5-5")["thinking"] == "adaptive"
+    assert agents.model_capabilities("jp.anthropic.claude-opus-5-5")["model_id"] == "jp.anthropic.claude-opus-5-5"
     for model_id in ("jp.anthropic.claude-sonnet-5-5",
                      "apac.anthropic.claude-sonnet-5-5",
                      "apac.anthropic.claude-opus-5-5"):
@@ -115,10 +116,10 @@ def test_model_call_has_exact_structured_contract_redaction_and_usage(monkeypatc
     result = agents.analyze("security", EvidenceIndex(data, ACCOUNT),
                             model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
     request = json.loads(client.calls[0]["body"])
-    assert request["thinking"] == {"type": "adaptive"}
-    assert request["output_config"]["effort"] == "high"
-    assert request["output_config"]["format"] == {"type": "json_schema", "schema": agents.FINDINGS_SCHEMA}
-    assert "temperature" not in request and "budget_tokens" not in request["thinking"]
+    # report._thinking_fields parity: Sonnet 5.5 turns thinking off only via between_tools.
+    assert request["thinking"] == {"type": "between_tools"}
+    assert "output_config" not in request and request["max_tokens"] == 8192
+    assert "temperature" not in request
     assert "untrusted" in request["system"].lower()
     assert "Write all human-readable prose in English (locale: en)." in request["system"]
     assert "<email>" in request["messages"][0]["content"][0]["text"]
@@ -146,7 +147,6 @@ def test_transient_retry_is_explicit_and_every_attempt_charged(monkeypatch):
 
 
 @pytest.mark.parametrize("stop,value", [
-    ("max_tokens", {"findings": []}),
     ("end_turn", {"findings": [], "unexpected": "ignored"}),
     ("end_turn", {"findings": [{"id": "missing fields"}]}),
 ])
@@ -159,6 +159,38 @@ def test_truncated_or_invalid_json_is_failed_evidence(monkeypatch, stop, value):
                        model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
     assert budget.snapshot()["attempts"][0]["outcome"] == "invalid_output"
     assert budget.snapshot()["actual_usage"] == {"input_tokens": 100, "output_tokens": 200}
+
+
+def test_opus_request_matches_report_thinking_fields_and_headroom(monkeypatch):
+    from diagnosis import report
+    client = FakeClient([response({"findings": []})])
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("deep")
+    agents.analyze("security", EvidenceIndex(bundle(), ACCOUNT),
+                   model_id="global.anthropic.claude-opus-5-5", budget=budget)
+    request = json.loads(client.calls[0]["body"])
+    # Opus 5.5 cannot disable thinking: omit the field (adaptive) and add report.py's headroom.
+    assert "thinking" not in request and "output_config" not in request
+    assert report._thinking_fields("global.anthropic.claude-opus-5-5") == {}
+    assert request["max_tokens"] == 8192 + report._OPUS_THINKING_HEADROOM
+    assert budget.snapshot()["attempts"][0]["max_tokens"] == request["max_tokens"]
+
+
+def test_max_tokens_stop_is_retried_once_then_distinct(monkeypatch):
+    client = FakeClient([response({"findings": []}, stop="max_tokens"), response({"findings": []})])
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("light")
+    result = agents.analyze("security", EvidenceIndex(bundle(), ACCOUNT),
+                            model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
+    assert result["findings"] == [] and len(client.calls) == 2
+    assert [row["outcome"] for row in budget.snapshot()["attempts"]] == ["output_truncated", "succeeded"]
+    client = FakeClient([response({"findings": []}, stop="max_tokens")] * 2)
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("light")
+    with pytest.raises(agents.OutputTruncated):
+        agents.analyze("security", EvidenceIndex(bundle(), ACCOUNT),
+                       model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
+    assert [row["outcome"] for row in budget.snapshot()["attempts"]] == ["output_truncated"] * 2
 
 
 def test_unsupported_model_fails_without_call_or_allocating(monkeypatch):
@@ -174,7 +206,7 @@ def test_context_is_bounded_without_silent_complete_coverage(monkeypatch):
     data = bundle()
     for n in range(180):
         data["resources"].append({
-            "id": f"resource-{n}", "account": ACCOUNT, "region": "ap-northeast-2",
+            "id": oid(f"r-resource-{n}"), "account": ACCOUNT, "region": "ap-northeast-2",
             "kind": "ec2", "resource_id": f"i-{n}", "facts": {"endpoint": "x" * 1024},
         })
     client = FakeClient([response({"findings": []})])
@@ -242,13 +274,13 @@ def test_source_redaction_preserves_real_opaque_citation_ids(monkeypatch):
     data["resources"][0]["id"] = opaque
     data["resources"][0]["facts"]["endpoint"] = "admin@example.com"
     for row in data["evidence"]:
-        row["resource_ids"] = [opaque if ref == "r-instance" else ref for ref in row["resource_ids"]]
+        row["resource_ids"] = [opaque if ref == oid("r-instance") else ref for ref in row["resource_ids"]]
     data["relationships"][0]["source"] = opaque
     # Exercise all code-owned reference locations, including reviewer selections.
     data["evidence"][1]["id"] = "e:" + opaque[2:]
     data["relationships"][0]["id"] = "edge:" + opaque[2:]
     data["relationships"][0]["evidence_ids"] = [data["evidence"][1]["id"]]
-    selected = finding(id="finding:" + opaque[2:], resource_ids=[opaque, "r-db"],
+    selected = finding(id="finding:" + opaque[2:], resource_ids=[opaque, oid("r-db")],
                        evidence_ids=[data["evidence"][1]["id"]])
     index = EvidenceIndex(data, ACCOUNT)
 

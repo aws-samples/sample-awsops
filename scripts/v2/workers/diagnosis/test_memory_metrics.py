@@ -7,11 +7,12 @@ import pytest
 
 from diagnosis import discovery, memory_metrics
 from diagnosis.evidence import EvidenceIndex
+from diagnosis.test_evidence import oid
 from diagnosis.test_discovery import (ACCOUNT, REGION, NOW, I1, I2, Budget, Database,
                                      inventory, metric_response, recommendation, provider)
 
 START = NOW - dt.timedelta(days=14)
-RESOURCE = {"id": "r-instance", "resource_id": I1, "kind": "ec2", "region": REGION,
+RESOURCE = {"id": oid("r-instance"), "resource_id": I1, "kind": "ec2", "region": REGION,
             "account": ACCOUNT, "facts": {"instance_type": "m7g.xlarge"}}
 DIMS = [{"Name": "InstanceId", "Value": I1}, {"Name": "ImageId", "Value": "ami-example"}]
 METRIC = {"Namespace": "CWAgent", "MetricName": "mem_used_percent", "Dimensions": DIMS}

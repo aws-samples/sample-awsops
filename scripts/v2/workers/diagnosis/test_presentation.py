@@ -3,6 +3,7 @@ import html
 import json
 import pytest
 from diagnosis.sections import SECTIONS, INTENDED_VS_ACTUAL_SECTION
+from diagnosis.test_evidence import oid
 
 
 @pytest.mark.parametrize("lang,prose", [
@@ -35,11 +36,11 @@ def test_defensive_renderer_preserves_localized_non_numeric_hypotheses(lang, pro
 
 def bundle():
     return {
-        "resources": [{"id": "ec2:@self:us-east-1:i-0123456789abcdef0",
+        "resources": [{"id": oid("r-instance"),
                        "account": "self", "region": "us-east-1", "kind": "ec2",
                        "resource_id": "i-0123456789abcdef0", "facts": {}}],
-        "evidence": [{"id": "metric-a", "source": "cloudwatch",
-                      "resource_ids": ["ec2:@self:us-east-1:i-0123456789abcdef0"],
+        "evidence": [{"id": oid("metric-a"), "source": "cloudwatch",
+                      "resource_ids": [oid("r-instance")],
                       "kind": "metrics", "facts": {"CPUUtilization": {"maximum": 17.25}},
                       "captured_at": "2026-11-04T00:00:00Z", "window": {"days": 14},
                       "coverage": {"complete": True}, "fresh": True}],
@@ -50,7 +51,7 @@ def bundle():
 
 def finding(**changes):
     row = {"id": "finding-a", "pillar": "performance_efficiency", "severity": "medium",
-           "resource_ids": [bundle()["resources"][0]["id"]], "evidence_ids": ["metric-a"],
+           "resource_ids": [bundle()["resources"][0]["id"]], "evidence_ids": [oid("metric-a")],
            "claim": "hypothesis", "explanation": "Memory pressure needs verification.",
            "prerequisites": ["memory_unknown"], "verification": "resource_metrics"}
     return dict(row, **changes)
@@ -189,3 +190,13 @@ def test_unsafe_prerequisite_prose_is_withheld_like_the_explanation(unsafe):
     plain = html.unescape(text)
     assert "memory_unknown" in plain
     assert unsafe not in plain and "example.test" not in plain and "kubectl" not in plain
+
+
+def test_withheld_tolerates_missing_none_or_nonstring_ids_and_reasons():
+    from diagnosis import presentation
+    rows = [{"reason": "x"}, {"id": None, "reason": "y"}, {"id": 7, "reason": None},
+            {"id": "ok-id", "reason": "z"}, "not-a-dict"]
+    assert presentation.withheld({"rejected": rows}) == [
+        {"id": "invalid", "reason": "x"}, {"id": "invalid", "reason": "y"},
+        {"id": "invalid", "reason": "invalid"}, {"id": "ok-id", "reason": "z"}]
+    assert presentation.withheld({"rejected": "bad"}) == []

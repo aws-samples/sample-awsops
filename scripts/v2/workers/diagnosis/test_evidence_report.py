@@ -2,6 +2,7 @@
 import pytest
 
 from diagnosis import report
+from diagnosis.test_evidence import oid
 from diagnosis.test_presentation import bundle, analysis
 
 
@@ -239,7 +240,7 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
 
     data = actual_bundle()
     data["evidence"].append({
-        "id": "summary-cost", "source": "cost", "kind": "scope_summary",
+        "id": oid("summary-cost"), "source": "cost", "kind": "scope_summary",
         "resource_ids": [], "account": ACCOUNT, "region": "global",
         "fresh": True, "captured_at": "2026-11-04T00:00:00Z",
         "facts": {"cost_groups": [{"service": "Amazon EC2", "amount": 123.75,
@@ -248,7 +249,7 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
         "coverage": {"complete": True}, "window": {"start": "2026-11-01", "end": "2026-11-04"},
     })
     data["evidence"].append({
-        "id": "summary-posture", "source": "posture", "kind": "scope_summary",
+        "id": oid("summary-posture"), "source": "posture", "kind": "scope_summary",
         "resource_ids": [], "account": ACCOUNT, "region": "ap-northeast-2",
         "fresh": True, "captured_at": "2026-11-04T00:00:00Z",
         "facts": {"posture_counts": {"HIGH": 7}, "sampled": True},
@@ -258,24 +259,24 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
     class Bedrock:
         def invoke_model(self, *, modelId, body):
             request = json.loads(body)
-            assert request["output_config"]["format"]["type"] == "json_schema"
-            assert request["thinking"] == {"type": "adaptive"}
+            # report._thinking_fields parity: Sonnet 5.5 thinking off; no output_config.
+            assert "output_config" not in request
+            assert request["thinking"] == {"type": "between_tools"}
             assert "temperature" not in request
             context = json.loads(request["messages"][0]["content"][0]["text"])
-            schema = request["output_config"]["format"]["schema"]["properties"]
-            if "findings" in schema:
+            if "findings" not in context:
                 pillar = request["system"].split("Required pillar key: ")[1].rstrip(".")
                 rows = []
                 if pillar == "reliability":
                     rows = [finding(), finding(id="fabricated", evidence_ids=["invented"])]
                 elif pillar == "cost_optimization":
                     rows = [finding(id="account-cost", pillar=pillar, resource_ids=[],
-                                    evidence_ids=["summary-cost"], claim="hypothesis",
+                                    evidence_ids=[oid("summary-cost")], claim="hypothesis",
                                     explanation="Service spend needs resource attribution.",
                                     verification="none")]
                 elif pillar == "security":
                     rows = [finding(id="account-posture", pillar=pillar, resource_ids=[],
-                                    evidence_ids=["summary-posture"], claim="hypothesis",
+                                    evidence_ids=[oid("summary-posture")], claim="hypothesis",
                                     explanation="The sampled posture needs investigation.",
                                     verification="none")]
                 output = {"findings": rows}

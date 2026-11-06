@@ -12,8 +12,9 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 
-from .budget import BudgetExceeded, MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS
+from .budget import BudgetExceeded, MAX_INPUT_BYTES, attempt_tokens
 from .evidence import CLAIMS, PILLARS, VERIFICATIONS, redact_context
+from .report import _thinking_fields
 
 
 PROMPT_VERSION = "diagnosis-pillars-2026-11-05-v2"
@@ -29,10 +30,7 @@ def _region():
 
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Simplified Chinese"}
-MODEL_CAPABILITIES = {
-    "anthropic.claude-sonnet-5-5": {"thinking": "adaptive", "effort": "high"},
-    "anthropic.claude-opus-5-5": {"thinking": "adaptive", "effort": "high"},
-}
+MODEL_CAPABILITIES = {"anthropic.claude-sonnet-5-5": {}, "anthropic.claude-opus-5-5": {}}
 MODEL_PROFILE_PREFIXES = {
     "anthropic.claude-sonnet-5-5": {"", "global.", "us.", "eu.", "au."},
     "anthropic.claude-opus-5-5": {"", "global.", "us.", "eu.", "au.", "jp."},
@@ -146,6 +144,10 @@ class ModelUnsupported(ModelStageError):
     pass
 
 
+class OutputTruncated(ModelStageError):
+    """stop_reason=max_tokens: transient, retried once, then surfaced distinctly."""
+
+
 def validate_language(lang):
     if not isinstance(lang, str) or lang not in LANGUAGE_NAMES:
         raise ValueError("unsupported diagnosis language")
@@ -171,7 +173,7 @@ def model_capabilities(model_id):
     if (normalized not in MODEL_CAPABILITIES
             or matched_prefix not in MODEL_PROFILE_PREFIXES[normalized]):
         raise ModelUnsupported("unsupported_model")
-    return dict(MODEL_CAPABILITIES[normalized])
+    return {**MODEL_CAPABILITIES[normalized], "model_id": model_id}
 
 
 def _config(read_timeout):
@@ -225,12 +227,14 @@ def _serialize(value):
 
 
 def _body(prompt, context, schema, capabilities):
+    # Same request shape as report._bedrock_render: thinking fields from
+    # report._thinking_fields (omitted = adaptive on Opus 5.5) and Opus headroom.
+    # No output_config: no other repo caller uses it; JSON-in-text is validated below.
+    model_id = capabilities["model_id"]
     return {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": MAX_OUTPUT_TOKENS,
-        "thinking": {"type": capabilities["thinking"]},
-        "output_config": {"effort": capabilities["effort"],
-                          "format": {"type": "json_schema", "schema": schema}},
+        "max_tokens": attempt_tokens(model_id),
+        **_thinking_fields(model_id),
         "system": prompt,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": _serialize(context)}
@@ -317,13 +321,13 @@ def _structured(stage, prompt, index, schema, *, model_id, budget, extra=None):
     body, coverage = _bounded_body(prompt, index, schema, capabilities, extra)
     attempts = []
     for number in range(MAX_MODEL_ATTEMPTS):
-        # Initial grammar compilation can take roughly ninety seconds; short
-        # remaining budgets cannot accommodate the supported structured call.
+        # A bounded adaptive-thinking call needs a minimum read window; short
+        # remaining budgets cannot accommodate it.
         remaining = budget.remaining()
         if remaining < 130:
             raise BudgetExceeded("structured model deadline exhausted")
         read_timeout = min(300, int(remaining - 10))
-        attempt = budget.reserve(stage, model_id, len(body.encode()), MAX_OUTPUT_TOKENS)
+        attempt = budget.reserve(stage, model_id, len(body.encode()), attempt_tokens(model_id))
         attempts.append(attempt)
         usage = None
         try:
@@ -332,6 +336,8 @@ def _structured(stage, prompt, index, schema, *, model_id, budget, extra=None):
             if not isinstance(payload, dict):
                 raise ModelStageError("invalid_output")
             usage = payload.get("usage")
+            if payload.get("stop_reason") == "max_tokens":
+                raise OutputTruncated("output_truncated")
             if payload.get("stop_reason") not in {"end_turn", "stop_sequence"}:
                 raise ModelStageError("invalid_output")
             content = payload.get("content")
@@ -367,6 +373,12 @@ def _structured(stage, prompt, index, schema, *, model_id, budget, extra=None):
             if number + 1 < MAX_MODEL_ATTEMPTS:
                 continue
             raise ModelStageError("provider_error") from exc
+        except OutputTruncated:
+            # Adaptive thinking spends from max_tokens: truncation is retried once.
+            budget.record(attempt, "output_truncated", usage)
+            if number + 1 < MAX_MODEL_ATTEMPTS:
+                continue
+            raise
         except Exception as exc:
             outcome = ("deadline_exhausted" if isinstance(exc, BudgetExceeded) else
                        "invalid_output" if isinstance(exc, ModelStageError) else "provider_error")

@@ -12,6 +12,19 @@ TASK_SECONDS = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))
 EXPORT_RESERVE_SECONDS = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
 MAX_INPUT_BYTES = 96 * 1024
 MAX_OUTPUT_TOKENS = 8192
+# Opus 5.x cannot disable thinking, which spends from max_tokens; report.py shares this parse.
+OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
+
+
+def opus_headroom(model_id):
+    """Thinking headroom for Opus 5.x only; an Opus 4.x rollback override takes thinking off."""
+    return OPUS_THINKING_HEADROOM if "claude-opus-5" in model_id else 0
+
+
+def attempt_tokens(model_id):
+    return MAX_OUTPUT_TOKENS + opus_headroom(model_id)
+
+
 TIER_LIMITS = {
     "light": {"attempts": 20, "input_bytes": 2 * 1024 * 1024, "output_tokens": 100000},
     "mid": {"attempts": 24, "input_bytes": 3 * 1024 * 1024, "output_tokens": 120000},
@@ -46,7 +59,7 @@ class ReportBudget:
             raise ValueError("stage and model_id must be named")
         if type(input_bytes) is not int or type(max_tokens) is not int or input_bytes < 0 or max_tokens < 1:
             raise ValueError("attempt allocations must be nonnegative integer bytes and positive tokens")
-        if input_bytes > MAX_INPUT_BYTES or max_tokens > MAX_OUTPUT_TOKENS:
+        if input_bytes > MAX_INPUT_BYTES or max_tokens > attempt_tokens(model_id):
             raise BudgetExceeded("per-attempt allocation exceeded")
         with self._lock:
             if self.remaining() <= 0:
@@ -56,7 +69,7 @@ class ReportBudget:
             final = stage in {"review", "final_review"}
             held_calls = 0 if final else 1
             held_bytes = 0 if final else MAX_INPUT_BYTES
-            held_tokens = 0 if final else MAX_OUTPUT_TOKENS
+            held_tokens = 0 if final else attempt_tokens(model_id)
             if len(self._attempts) + 1 + held_calls > self.limits["attempts"]:
                 raise BudgetExceeded("model attempt ceiling exhausted")
             if self._input_bytes + input_bytes + held_bytes > self.limits["input_bytes"]:

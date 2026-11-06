@@ -180,12 +180,7 @@ _MAX_OUTPUT_TOKENS = max(1, int(os.environ.get("DIAGNOSIS_MAX_OUTPUT_TOKENS", "3
 # headroom raises the per-call ceiling, not the expected duration: _call_timeout still clamps every
 # read to the remaining render budget, and a measured Opus 5.5 compute section rendered in 59 s
 # (2026-10-29, n=1), far inside the 2400 s budget at concurrency 4.
-_OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
-
-
-def _opus_headroom(model_id):
-    """Thinking headroom for Opus 5.x only; an Opus 4.x rollback override takes thinking off."""
-    return _OPUS_THINKING_HEADROOM if "claude-opus-5" in model_id else 0
+from .budget import OPUS_THINKING_HEADROOM as _OPUS_THINKING_HEADROOM, opus_headroom as _opus_headroom  # noqa: E402,F401
 
 
 def _capped_budget(section, tier_budget, headroom=0):

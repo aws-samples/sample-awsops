@@ -16,7 +16,9 @@ MAX_ROWS = 50
 MAX_MONITORS = 2
 MAX_QUERIES = 6
 MAX_POLLS = 8  # Backoff waits up to ~7.75s per query inside the 35s stage deadline.
-CATEGORIES = ("INTRA_AZ", "INTER_AZ", "INTER_VPC")
+# A DNS binding pairs a source and database in one VPC, so an INTER_VPC contributor
+# can never be that pair; querying it would only spend the bounded query budget.
+CATEGORIES = ("INTRA_AZ", "INTER_AZ")
 MAX_ANSWERS = 8
 # Resolver query logs carry answers as [{"Rdata", "Type", "Class"}]. Logs Insights
 # flattens JSON arrays into indexed fields (answers.0.Rdata), so the bounded query
@@ -25,9 +27,20 @@ _ANSWER_FIELDS = tuple(f"answers.{i}.{key}" for i in range(MAX_ANSWERS + 1)
                        for key in ("Type", "Rdata"))
 DNS_FIELDS = ("account_id", "region", "vpc_id", "query_timestamp", "query_name",
               "rcode", "answers", "srcaddr", "instance", *_ANSWER_FIELDS)
-DNS_QUERY = ("fields account_id, region, vpc_id, query_timestamp, query_name, rcode, "
-             "answers, " + ", ".join(_ANSWER_FIELDS)
-             + ", srcaddr, srcids.instance as instance | limit 50")
+_VPC_ID = re.compile(r"vpc-[0-9a-f]+")
+MAX_OBSERVATION_RECORDS = 200  # DNS + flow evidence emitted by one project() call
+
+
+def dns_query(vpcs):
+    """Selective bounded query: only validated, associated VPCs and answered NOERROR rows."""
+    vpcs = sorted(vpcs)
+    if not vpcs or any(not isinstance(v, str) or not _VPC_ID.fullmatch(v) for v in vpcs):
+        raise ValueError("dns_query_vpc_invalid")
+    listed = ", ".join(f'"{v}"' for v in vpcs)
+    return (f'filter vpc_id in [{listed}] and rcode = "NOERROR" and ispresent(answers.0.Rdata) '
+            "| fields account_id, region, vpc_id, query_timestamp, query_name, rcode, "
+            "answers, " + ", ".join(_ANSWER_FIELDS)
+            + f", srcaddr, srcids.instance as instance | limit {MAX_ROWS}")
 _sleep = time.sleep
 
 
@@ -201,13 +214,18 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
     if any(isinstance(row, dict) and row.get("kubernetesMetadata")
            for row in flow_rows[:MAX_ROWS * MAX_QUERIES]):
         d._mark(bundle, "gaps", "pod_identity_unresolved")
-    bindings = []
+    unique = {}
     for row in dns_rows[:MAX_ROWS * MAX_GROUPS]:
         binding = _dns_binding(bundle, row, qualified, start, end) if isinstance(row, dict) else None
         if binding is None:
             d._mark(bundle, "gaps", "dns_binding_unresolved")
-        else:
-            bindings.append(binding)
+            continue
+        # Repeated resolutions of one (instance, database, query) add no dependency evidence.
+        key = (binding["source"]["id"], binding["target"]["id"], binding["name"],
+               frozenset(binding["ips"]))
+        if key not in unique or binding["stamp"] > unique[key]["stamp"]:
+            unique[key] = binding
+    bindings = list(unique.values())
     peers = {}
     for binding in bindings:
         for address in binding["ips"]:
@@ -217,7 +235,11 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
     if conflict:
         d._mark(bundle, "gaps", "dns_ip_conflict")
     window = {"start": start.isoformat(), "end": end.isoformat()}
+    emitted, flow_matched = 0, False
     for binding in bindings:
+        if emitted >= MAX_OBSERVATION_RECORDS:
+            d._mark(bundle, "incomplete", "observation_cap")
+            break
         resources = [binding["source"]["id"], binding["target"]["id"]]
         facts = {"query_name": binding["name"], "dns_timestamp": binding["stamp"].isoformat(),
                  "answer_ips": sorted(binding["ips"]), "ttl_known": False,
@@ -227,11 +249,16 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
             facts, binding["stamp"], region=binding["region"], fresh=d._fresh(binding["stamp"], 300),
             window=window, coverage={"complete": False, "sampled": True})
         d._relationship(bundle, *resources, "observed_dns_resolution", evidence)
+        emitted += 1
         if any((binding["region"], binding["vpc"], ip) in conflict for ip in binding["ips"]):
             continue
         for row in flow_rows[:MAX_ROWS * MAX_QUERIES]:
             if not _network_matches(binding, row, bundle["coverage"]["account"]):
                 continue
+            flow_matched = True
+            if emitted >= MAX_OBSERVATION_RECORDS:
+                d._mark(bundle, "incomplete", "observation_cap")
+                break
             if row.get("unit") not in (None, "Bytes"):
                 d._mark(bundle, "gaps", "network_unit_unsupported")
                 continue
@@ -243,6 +270,10 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
                 end, region=binding["region"], fresh=d._fresh(end, 300), window=window,
                 coverage={"complete": False, "sampled": True})
             d._relationship(bundle, *resources, "observed_network_flow", item)
+            emitted += 1
+    if bindings and not flow_matched and any(isinstance(row, dict) for row in flow_rows[:MAX_ROWS * MAX_QUERIES]):
+        # Contributors were returned but none bound to a resolved pair: not "no traffic".
+        d._mark(bundle, "gaps", "nfm_rows_unmatched")
     return bundle
 
 
@@ -348,7 +379,7 @@ def _dns(reads, region, approved, vpcs, start, end):
         try:
             # IAM logs:StartQuery: workers.tf worker_diagnosis_network Sid DiagnosisApprovedResolverLogRead (allowlisted groups).
             response = reads.call("logs", region, "start_query", logGroupName=approved[arn],
-                startTime=int(start.timestamp()), endTime=int(end.timestamp()), queryString=DNS_QUERY, limit=MAX_ROWS)
+                startTime=int(start.timestamp()), endTime=int(end.timestamp()), queryString=dns_query(selected[arn]), limit=MAX_ROWS)
             query_id = response.get("queryId")
             if not isinstance(query_id, str) or not query_id:
                 raise ValueError("dns_query_id_missing")

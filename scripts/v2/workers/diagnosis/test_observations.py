@@ -7,6 +7,7 @@ import pytest
 
 from diagnosis import discovery, observations
 from diagnosis.evidence import EvidenceIndex
+from diagnosis.test_evidence import oid
 from diagnosis.test_discovery import ACCOUNT, REGION, NOW, I1, Budget
 
 START = NOW - dt.timedelta(minutes=5)
@@ -16,11 +17,11 @@ GROUP = f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:/resolver/test"
 
 def bundle():
     resources = [
-        {"id": "r-instance", "account": ACCOUNT, "region": REGION, "kind": "ec2", "resource_id": I1,
+        {"id": oid("r-instance"), "account": ACCOUNT, "region": REGION, "kind": "ec2", "resource_id": I1,
          "facts": {"private_ip_address": "10.0.1.5", "vpc_id": VPC}},
-        {"id": "r-db", "account": ACCOUNT, "region": REGION, "kind": "rds", "resource_id": "orders",
+        {"id": oid("r-db"), "account": ACCOUNT, "region": REGION, "kind": "rds", "resource_id": "orders",
          "facts": {"endpoint_address": "orders.example.test", "endpoint_port": 5432, "vpc_id": VPC}}]
-    evidence = [{"id": "e-inventory-" + r["id"], "source": "inventory", "kind": "inventory",
+    evidence = [{"id": oid("e-inventory-" + r["id"]), "source": "inventory", "kind": "inventory",
         "account": ACCOUNT, "region": REGION, "resource_ids": [r["id"]], "facts": r["facts"],
         "captured_at": (NOW - dt.timedelta(minutes=1)).isoformat(), "fresh": True,
         "coverage": {"complete": True}} for r in resources]
@@ -113,9 +114,9 @@ def test_bad_flow_keeps_dns_but_does_not_bind_network_dependency(change):
 
 def test_duplicate_endpoint_and_ip_reuse_are_not_guessed():
     data = bundle()
-    duplicate = copy.deepcopy(data["resources"][1]); duplicate["id"] = "r-other"; duplicate["resource_id"] = "other"
+    duplicate = copy.deepcopy(data["resources"][1]); duplicate["id"] = oid("r-other"); duplicate["resource_id"] = "other"
     data["resources"].append(duplicate)
-    item = copy.deepcopy(data["evidence"][1]); item["id"] = "e-other"; item["resource_ids"] = ["r-other"]
+    item = copy.deepcopy(data["evidence"][1]); item["id"] = oid("e-other"); item["resource_ids"] = [oid("r-other")]
     data["evidence"].append(item)
     assert not project(data)["relationships"]
     duplicate["facts"]["endpoint_address"] = "other.example.test"
@@ -138,7 +139,7 @@ def test_context_and_admission_keep_weak_binding_as_hypothesis():
     row = next(e for e in data["evidence"] if e["kind"] == "observed_network_flow")
     index = EvidenceIndex(data, ACCOUNT)
     finding = {"id": "finding-peer", "pillar": "reliability", "severity": "medium",
-        "resource_ids": ["r-instance", "r-db"], "evidence_ids": [row["id"]],
+        "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [row["id"]],
         "claim": "observation", "explanation": "The scoped peer is a dependency candidate.",
         "prerequisites": [], "verification": "graph_refresh"}
     assert index.validate_finding(finding)["claim"] == "hypothesis"
@@ -310,10 +311,10 @@ def test_dns_rows_are_checked_against_their_own_group_association(monkeypatch):
     data = bundle()
     for r in data["resources"]:
         r["facts"]["vpc_id"] = "vpc-fedcba9876543210"
-    subnet = {"id": "r-subnet", "account": ACCOUNT, "region": REGION,
+    subnet = {"id": oid("r-subnet"), "account": ACCOUNT, "region": REGION,
               "kind": "subnet", "resource_id": "subnet-test", "facts": {"vpc_id": VPC}}
     data["resources"].append(subnet)
-    data["evidence"].append({**data["evidence"][0], "id": "e-subnet", "resource_ids": [subnet["id"]],
+    data["evidence"].append({**data["evidence"][0], "id": oid("e-subnet"), "resource_ids": [subnet["id"]],
                              "facts": subnet["facts"]})
 
     class WrongVpc(Provider):
@@ -351,7 +352,7 @@ def test_resolution_and_window_uncertainty_survive_deterministic_presentation():
     index = EvidenceIndex(data, ACCOUNT)
     row = next(e for e in data["evidence"] if e["kind"] == "observed_network_flow")
     finding = index.validate_finding({"id": "finding-network", "pillar": "reliability",
-        "severity": "medium", "resource_ids": ["r-instance", "r-db"], "evidence_ids": [row["id"]],
+        "severity": "medium", "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [row["id"]],
         "claim": "observation", "explanation": "The peer needs trace verification.",
         "prerequisites": [], "verification": "graph_refresh"})
     text = html.unescape("\n".join(value for _, value in presentation.render(SECTIONS,
@@ -422,7 +423,7 @@ def test_nfm_global_monitor_and_query_caps_are_visible(monkeypatch):
     fake = ManyMonitors()
     monkeypatch.setattr(observations, "_sleep", lambda _: None)
     data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
-    assert len([c for c,_ in fake.calls if c == "nfm_start"]) == 6
+    assert len([c for c,_ in fake.calls if c == "nfm_start"]) == 2 * len(observations.CATEGORIES)
     assert "nfm_monitor_cap" in data["incomplete"]
 
 
@@ -441,7 +442,7 @@ def test_malformed_admitted_fact_shape_cannot_raise_or_confirm_a_call():
     row["facts"] = ["untrusted"]
     index = EvidenceIndex(data, ACCOUNT)
     finding = index.validate_finding({"id": "finding-shape", "pillar": "reliability",
-        "severity": "medium", "resource_ids": ["r-instance", "r-db"], "evidence_ids": [row["id"]],
+        "severity": "medium", "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [row["id"]],
         "claim": "observation", "explanation": "The peer needs verification.",
         "prerequisites": [], "verification": "graph_refresh"})
     assert finding["claim"] == "hypothesis"
@@ -490,5 +491,37 @@ def test_flattened_answers_beyond_projection_or_with_gaps_are_refused():
                 "answers.2.Rdata": "10.0.2.8", "answers.2.Type": "A"})
     assert observations._answers(overflow) is None
     assert observations._answers(gap) is None
-    query = observations.DNS_QUERY
+    query = observations.dns_query([VPC])
     assert "answers.0.Rdata" in query and f"answers.{observations.MAX_ANSWERS}.Type" in query
+
+
+def test_dns_query_is_selective_and_validates_vpc_ids():
+    query = observations.dns_query({VPC})
+    assert f'vpc_id in ["{VPC}"]' in query and 'rcode = "NOERROR"' in query
+    assert "ispresent(answers.0.Rdata)" in query and query.index("filter") < query.index("limit")
+    for bad in ([], ['vpc-0"] or rcode = "x'], ["vpc-XYZ"]):
+        with pytest.raises(ValueError):
+            observations.dns_query(bad)
+    fake = Provider()
+    observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    sent = next(p for c, p in fake.calls if c == "dns_start")["queryString"]
+    assert sent == observations.dns_query({VPC})
+
+
+def test_inter_vpc_is_not_queried_and_unmatched_rows_are_disclosed():
+    assert "INTER_VPC" not in observations.CATEGORIES
+    data = project(flows=[flow(remoteVpcId="vpc-0fedcba9876543210")])
+    assert not any(e["kind"] == "observed_network_flow" for e in data["evidence"])
+    assert "nfm_rows_unmatched" in data["gaps"]
+    assert "nfm_rows_unmatched" not in project()["gaps"]
+
+
+def test_duplicate_dns_rows_dedupe_and_correlation_output_is_capped(monkeypatch):
+    repeated = [dns(query_timestamp=(NOW - dt.timedelta(seconds=s)).isoformat()) for s in range(10, 60)]
+    data = project(rows=repeated, flows=[flow(value=v) for v in range(1, 40)])
+    dns_rows = [e for e in data["evidence"] if e["kind"] == "observed_dns_resolution"]
+    assert len(dns_rows) == 1 and dns_rows[0]["facts"]["dns_timestamp"] == (NOW - dt.timedelta(seconds=10)).isoformat()
+    monkeypatch.setattr(observations, "MAX_OBSERVATION_RECORDS", 5)
+    capped = project(flows=[flow(value=v) for v in range(1, 40)])
+    assert len([e for e in capped["evidence"] if e["kind"].startswith("observed_")]) == 5
+    assert "observation_cap" in capped["incomplete"]

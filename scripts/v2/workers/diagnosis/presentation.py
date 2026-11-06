@@ -181,9 +181,17 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
 
 def withheld(analysis):
     """Code-owned {id, reason} only; model prose never reaches rendering or persistence."""
-    return [{"id": r["id"] if re.fullmatch(r"[\w:.-]{1,128}", str(r.get("id"))) else "invalid",
-             "reason": str(r.get("reason"))[:64]}
-            for r in analysis.get("rejected", [])[:200] if isinstance(r, dict)]
+    rows = analysis.get("rejected") if isinstance(analysis, dict) else None
+    result = []
+    for r in rows[:200] if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        value = r.get("id")
+        valid = isinstance(value, str) and re.fullmatch(r"[\w:.-]{1,128}", value)
+        reason = r.get("reason")
+        result.append({"id": value if valid else "invalid",
+                       "reason": reason[:64] if isinstance(reason, str) else "invalid"})
+    return result
 
 
 def _coverage(bundle, analysis, copy):

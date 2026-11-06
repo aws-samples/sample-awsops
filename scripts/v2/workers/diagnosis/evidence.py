@@ -110,6 +110,9 @@ _NUMBER = re.compile(
     re.IGNORECASE,
 )
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$")
+# discovery._id ("r:"/"e:"/"edge:" + 32 hex) and supporting's "summary-" + 24 hex.
+# redact_context restores these byte-for-byte, so no ARN/account id can be one.
+_OPAQUE_ID = re.compile(r"^(?:[a-z]{1,4}:[0-9a-f]{32}|summary-[0-9a-f]{24})$")
 
 
 def _project(value, depth=0, *, mapping=False):
@@ -223,7 +226,7 @@ class EvidenceIndex:
         result = []
         for row in rows:
             row_id = row.get("id") if isinstance(row, dict) else None
-            if not isinstance(row_id, str) or not row_id or len(row_id) > 256:
+            if not isinstance(row_id, str) or not _OPAQUE_ID.fullmatch(row_id):
                 self._reject("", "invalid_id", item_type)
             elif counts[row_id] != 1:
                 self._reject(row_id, "duplicate_id", item_type)
@@ -483,7 +486,11 @@ class EvidenceIndex:
         if any(ref not in self.evidence for ref in finding["evidence_ids"]):
             return self._reject(row_id, "unknown_evidence")
         cited = [self.evidence[ref] for ref in finding["evidence_ids"]]
-        if any(not set(finding["resource_ids"]).issubset(row["resource_ids"]) for row in cited):
+        # Cited rows jointly cover the finding's resources and each touches one of them;
+        # _observation_supported/_sizing_supported keep the strict pairing.
+        scoped = set(finding["resource_ids"])
+        if scoped and (not scoped.issubset({ref for row in cited for ref in row["resource_ids"]})
+                       or any(not scoped & set(row["resource_ids"]) for row in cited)):
             return self._reject(row_id, "unrelated_evidence")
         if not isinstance(finding["explanation"], str) or not _string_list(finding["prerequisites"]):
             return self._reject(row_id, "invalid_explanation")

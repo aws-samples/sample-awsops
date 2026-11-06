@@ -8,7 +8,7 @@ from diagnosis import discovery
 from diagnosis import loop
 from diagnosis.budget import ReportBudget
 from diagnosis.evidence import PILLARS
-from diagnosis.test_evidence import ACCOUNT, bundle, finding
+from diagnosis.test_evidence import ACCOUNT, bundle, finding, oid
 
 
 def install_models(monkeypatch, reviews=None):
@@ -38,7 +38,7 @@ def install_models(monkeypatch, reviews=None):
 
 def test_initial_specialists_finish_before_review_and_light_has_no_follow_up(monkeypatch):
     events = install_models(monkeypatch, [{"follow_up": [
-        {"capability": "resource_metrics", "resource_ids": ["r-instance"]}],
+        {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}],
         "rerun_pillars": ["performance_efficiency"]}])
     result = loop.run(bundle(), account=ACCOUNT, tier="light",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("light"),
@@ -51,7 +51,7 @@ def test_initial_specialists_finish_before_review_and_light_has_no_follow_up(mon
 
 
 def test_follow_up_dedup_two_targeted_reruns_then_final_review(monkeypatch):
-    request = {"capability": "resource_metrics", "resource_ids": ["r-instance"]}
+    request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
     events = install_models(monkeypatch, [{"follow_up": [request, request],
         "rerun_pillars": ["performance_efficiency", "cost_optimization", "reliability"]}])
     collected = []
@@ -74,7 +74,7 @@ def test_follow_up_dedup_two_targeted_reruns_then_final_review(monkeypatch):
 
 def test_no_progress_stops_before_reruns(monkeypatch):
     events = install_models(monkeypatch, [{"follow_up": [
-        {"capability": "graph_refresh", "resource_ids": ["r-instance"]}],
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")]}],
         "rerun_pillars": ["reliability"]}])
     result = loop.run(bundle(), account=ACCOUNT, tier="mid",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
@@ -85,7 +85,7 @@ def test_no_progress_stops_before_reruns(monkeypatch):
 
 def test_fabricated_reviewer_selection_and_requests_fail_closed(monkeypatch):
     events = install_models(monkeypatch, [{"finding_ids": ["invented"], "follow_up": [
-        {"capability": "terminate", "resource_ids": ["r-instance"]}]}])
+        {"capability": "terminate", "resource_ids": [oid("r-instance")]}]}])
     result = loop.run(bundle(), account=ACCOUNT, tier="deep",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("deep"))
     assert len(events) == 7
@@ -94,18 +94,41 @@ def test_fabricated_reviewer_selection_and_requests_fail_closed(monkeypatch):
     assert result["findings"] == []  # an invalid review never returns unselected findings
 
 
-@pytest.mark.parametrize("review,kept", [
-    ({"issues": ["Confirm only one subnet route"]}, 1),
-    ({"issues": ["CPU at 99"]}, 1),
-    ({"issues": ["CPU at 99"], "finding_ids": [], "reject_ids": ["finding-reliability"]}, 0),
+@pytest.mark.parametrize("review,kept,issues", [
+    ({"issues": ["Confirm only one subnet route"]}, 1, ["Confirm only one subnet route"]),
+    ({"issues": ["CPU at 99", "Verify the m5.large peer in ap-northeast-2"]}, 1,
+     ["Verify the m5.large peer in ap-northeast-2"]),
+    ({"issues": ["CPU at 99"], "finding_ids": [], "reject_ids": ["finding-reliability"]}, 0, []),
 ])
-def test_invalid_review_keeps_only_explicit_selection(monkeypatch, review, kept):
+def test_numeric_review_issue_is_dropped_per_item(monkeypatch, review, kept, issues):
     install_models(monkeypatch, [review])
     result = loop.run(bundle(), account=ACCOUNT, tier="mid",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"))
     assert len(result["findings"]) == kept
-    assert (result["review"]["status"] == "invalid") is ("99" in review["issues"][0])
-    assert ("review:invalid_selection" in result["degraded"]) is ("99" in review["issues"][0])
+    assert result["review"]["status"] == "completed" and result["review"]["issues"] == issues
+    assert "review:invalid_selection" not in result["degraded"]
+    assert any(row["reason"] == "invalid_review_issue" for row in result["rejected"]) is ("99" in review["issues"][0])
+
+
+def test_one_unsupported_follow_up_keeps_review_and_valid_requests(monkeypatch):
+    request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
+    events = install_models(monkeypatch, [{"follow_up": [
+        {"capability": "resource_metrics", "resource_ids": ["fabricated"]}, request],
+        "rerun_pillars": ["performance_efficiency"]}])
+    collected = []
+
+    def follow_up(requests):
+        collected.append(requests)
+        data = bundle()
+        data["evidence"][2]["facts"]["window_days"] = 15
+        return data
+
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
+                      collect_follow_up=follow_up)
+    assert collected == [[request]] and result["passes"] == 2 and events[-1] == "final_review"
+    assert any(row["reason"] == "invalid_follow_up" for row in result["rejected"])
+    assert "review:invalid_selection" not in result["degraded"]
 
 
 def test_provider_failure_and_invalid_findings_are_visible_per_pillar(monkeypatch):
@@ -147,7 +170,7 @@ def test_review_can_withhold_existing_finding_but_cannot_promote_hypothesis(monk
 
 def test_capture_time_only_refresh_is_no_progress(monkeypatch):
     events = install_models(monkeypatch, [{"follow_up": [
-        {"capability": "graph_refresh", "resource_ids": ["r-instance"]}],
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")]}],
         "rerun_pillars": ["reliability"]}])
     data = bundle()
     for evidence in data["evidence"]:
@@ -163,14 +186,14 @@ def captured_bundle(captured):
     """Create real discovery IDs, which include the source capture timestamp."""
     data = bundle()
     data["coverage"]["account"] = ACCOUNT
-    data["evidence"] = [row for row in data["evidence"] if row["id"] != "e-config"]
+    data["evidence"] = [row for row in data["evidence"] if row["id"] != oid("e-config")]
     item = discovery._evidence(
-        data, "stored_graph", "configured_dependency", ["r-instance", "r-db"],
+        data, "stored_graph", "configured_dependency", [oid("r-instance"), oid("r-db")],
         {"relation": "queries", "graph_class": "infra"}, captured,
         region=data["resources"][0]["region"], fresh=True,
         window={"start": "2026-11-04T00:00:00Z", "end": "2026-11-04T00:30:00Z"},
         coverage={"complete": True, "status": "ok"})
-    discovery._relationship(data, "r-instance", "r-db", "configured_dependency", item)
+    discovery._relationship(data, oid("r-instance"), oid("r-db"), "configured_dependency", item)
     return data, item
 
 
@@ -187,7 +210,7 @@ def test_real_discovery_capture_ids_do_not_trigger_model_reruns(monkeypatch, ret
         refreshed["evidence"].append(historical)
         refreshed["relationships"].append(deepcopy(first["relationships"][-1]))
     events = install_models(monkeypatch, [{"follow_up": [
-        {"capability": "graph_refresh", "resource_ids": ["r-instance"]}],
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")]}],
         "rerun_pillars": ["performance_efficiency", "cost_optimization"]}])
     result = loop.run(first, account=ACCOUNT, tier="mid",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
@@ -209,7 +232,7 @@ def test_real_discovery_semantic_changes_still_trigger_reruns(monkeypatch, chang
     else:
         original["coverage"]["complete"] = False
     events = install_models(monkeypatch, [{"follow_up": [
-        {"capability": "graph_refresh", "resource_ids": ["r-instance"]}],
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")]}],
         "rerun_pillars": ["performance_efficiency", "cost_optimization"]}])
     result = loop.run(first, account=ACCOUNT, tier="mid",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
@@ -220,7 +243,7 @@ def test_real_discovery_semantic_changes_still_trigger_reruns(monkeypatch, chang
 
 @pytest.mark.parametrize("lang", ["ko", "en", "ja", "zh"])
 def test_language_reaches_initial_and_followup_model_stages(monkeypatch, lang):
-    request = {"capability": "resource_metrics", "resource_ids": ["r-instance"]}
+    request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
     install_models(monkeypatch, [{"follow_up": [request],
                                  "rerun_pillars": ["performance_efficiency", "cost_optimization"]}])
     original_analyze, original_review = loop.agents.analyze, loop.agents.review

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 
 import pytest
 
@@ -8,6 +9,12 @@ from diagnosis.evidence import FACT_KEYS, EvidenceIndex, PILLARS
 
 ACCOUNT = "111111111111"
 REGION = "ap-northeast-2"
+
+
+def oid(label):
+    """A readable fixture label in discovery's opaque citation-id shape."""
+    prefix = "edge" if label.startswith("edge") else label.split("-", 1)[0][:4]
+    return prefix + ":" + hashlib.sha256(label.encode()).hexdigest()[:32]
 
 
 @pytest.mark.parametrize("prose", [
@@ -37,19 +44,19 @@ def test_numeral_character_inside_ordinary_words_is_not_numeric_prose(prose):
 def bundle():
     return {
         "resources": [
-            {"id": "r-instance", "account": ACCOUNT, "region": REGION,
+            {"id": oid("r-instance"), "account": ACCOUNT, "region": REGION,
              "kind": "ec2", "resource_id": "i-0123456789abcdef0", "facts": {"instance_type": "m7g.large"}},
-            {"id": "r-db", "account": ACCOUNT, "region": REGION,
+            {"id": oid("r-db"), "account": ACCOUNT, "region": REGION,
              "kind": "rds", "resource_id": "database", "facts": {"class": "db.r7g.large"}},
         ],
         "evidence": [
-            {"id": "e-config", "source": "inventory", "resource_ids": ["r-instance", "r-db"],
+            {"id": oid("e-config"), "source": "inventory", "resource_ids": [oid("r-instance"), oid("r-db")],
              "kind": "configured_dependency", "facts": {"port": 5432}, "fresh": True,
              "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}},
-            {"id": "e-observed", "source": "trace", "resource_ids": ["r-instance", "r-db"],
+            {"id": oid("e-observed"), "source": "trace", "resource_ids": [oid("r-instance"), oid("r-db")],
              "kind": "observed_call", "facts": {"correlation_id": "opaque"},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}},
-            {"id": "e-metrics", "source": "cloudwatch", "resource_ids": ["r-instance"],
+            {"id": oid("e-metrics"), "source": "cloudwatch", "resource_ids": [oid("r-instance")],
              "kind": "metrics", "facts": {"window_days": 14, "missing_memory": False,
                  "missing_io": False,
                  "dimensions": [{"Name": "InstanceId", "Value": "i-0123456789abcdef0"}],
@@ -63,28 +70,28 @@ def bundle():
                  }},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z",
              "coverage": {"complete": True, "lookback_days": 14, "sample_ratio": 0.95}},
-            {"id": "e-provider", "source": "compute_optimizer", "resource_ids": ["r-instance"],
+            {"id": oid("e-provider"), "source": "compute_optimizer", "resource_ids": [oid("r-instance")],
              "kind": "provider_sizing", "facts": {"current_type": "m7g.large",
                  "recommended_type": "m7g.medium", "lookback_days": 14, "rank": 1,
                  "performance_risk": 1, "monthly_savings": 10, "currency": "USD",
                  "generation_time": "2026-11-04T00:00:00Z", "guard_hits": [],
                  "missing_memory": False, "missing_io": False, "finding": "Overprovisioned"},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}},
-            *({"id": f"e-inventory-{ref}", "source": "inventory", "resource_ids": [ref],
+            *({"id": oid(f"e-inventory-{ref}"), "source": "inventory", "resource_ids": [oid(ref)],
                "kind": "inventory", "facts": {}, "fresh": True,
                "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}}
               for ref in ("r-instance", "r-db")),
         ],
         "relationships": [
-            {"id": "edge", "source": "r-instance", "target": "r-db", "kind": "observed_call",
-             "evidence_ids": ["e-observed"]},
+            {"id": oid("edge"), "source": oid("r-instance"), "target": oid("r-db"), "kind": "observed_call",
+             "evidence_ids": [oid("e-observed")]},
         ], "coverage": {"regions": [REGION]}, "gaps": [], "degraded": [], "incomplete": [],
     }
 
 
 def finding(**overrides):
     value = {"id": "finding-a", "pillar": "reliability", "severity": "medium",
-             "resource_ids": ["r-instance", "r-db"], "evidence_ids": ["e-observed"],
+             "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [oid("e-observed")],
              "claim": "observation", "explanation": "The dependency was observed in this sample.",
              "prerequisites": [], "verification": "graph_refresh"}
     value.update(overrides)
@@ -94,7 +101,7 @@ def finding(**overrides):
 def test_observed_pair_is_admitted_but_configuration_is_not_promoted():
     index = EvidenceIndex(bundle(), ACCOUNT)
     assert index.validate_finding(finding())["claim"] == "observation"
-    assert index.validate_finding(finding(id="finding-config", evidence_ids=["e-config"]))["claim"] == "hypothesis"
+    assert index.validate_finding(finding(id="finding-config", evidence_ids=[oid("e-config")]))["claim"] == "hypothesis"
     assert index.downgraded[-1]["reason"] == "unconfirmed_observation"
 
 
@@ -114,14 +121,14 @@ def test_wrong_account_region_and_duplicate_ids_fail_closed():
     data = bundle()
     data["resources"][1]["account"] = "222222222222"
     index = EvidenceIndex(data, ACCOUNT)
-    assert "r-db" not in index.resources
+    assert oid("r-db") not in index.resources
     assert index.validate_finding(finding()) is None
     data = bundle()
     data["evidence"][1]["region"] = "us-east-1"
-    assert "e-observed" not in EvidenceIndex(data, ACCOUNT).evidence
+    assert oid("e-observed") not in EvidenceIndex(data, ACCOUNT).evidence
     data = bundle()
     data["evidence"].append(deepcopy(data["evidence"][1]))
-    assert "e-observed" not in EvidenceIndex(data, ACCOUNT).evidence
+    assert oid("e-observed") not in EvidenceIndex(data, ACCOUNT).evidence
 
 
 def test_cross_resource_citations_do_not_establish_observed_pair():
@@ -145,8 +152,8 @@ def test_inadequate_provider_sizing_is_withheld(key, value):
     else:
         provider["facts"][key] = value
     result = EvidenceIndex(data, ACCOUNT).validate_finding(finding(
-        pillar="cost_optimization", resource_ids=["r-instance"],
-        evidence_ids=["e-provider", "e-metrics"], claim="sizing_candidate",
+        pillar="cost_optimization", resource_ids=[oid("r-instance")],
+        evidence_ids=[oid("e-provider"), oid("e-metrics")], claim="sizing_candidate",
         explanation="Consider the provider candidate after manual verification.",
         verification="provider_sizing"))
     assert result["claim"] == "hypothesis"
@@ -155,8 +162,8 @@ def test_inadequate_provider_sizing_is_withheld(key, value):
 
 def test_sizing_requires_representative_metrics_and_deduplicates_resource():
     index = EvidenceIndex(bundle(), ACCOUNT)
-    candidate = finding(pillar="cost_optimization", resource_ids=["r-instance"],
-                        evidence_ids=["e-provider", "e-metrics"], claim="sizing_candidate",
+    candidate = finding(pillar="cost_optimization", resource_ids=[oid("r-instance")],
+                        evidence_ids=[oid("e-provider"), oid("e-metrics")], claim="sizing_candidate",
                         explanation="Consider the provider candidate after manual verification.",
                         verification="provider_sizing")
     assert index.validate_finding(candidate)["claim"] == "sizing_candidate"
@@ -172,7 +179,7 @@ def test_sizing_requires_representative_metrics_and_deduplicates_resource():
     for change in ({"fresh": False}, {"coverage": {"complete": False}}, None):
         data = bundle()
         if change is None:
-            data["evidence"] = [e for e in data["evidence"] if e["id"] != "e-inventory-r-instance"]
+            data["evidence"] = [e for e in data["evidence"] if e["id"] != oid("e-inventory-r-instance")]
         else:
             data["evidence"][4].update(change)
         assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
@@ -207,10 +214,10 @@ def test_every_discovery_inventory_fact_reaches_the_model_context():
 
 def test_redacted_model_context_scrubs_sources_but_keeps_citation_ids():
     data = bundle()
-    cited = f"r-{ACCOUNT}"  # code-owned id containing an account-like digit run
+    cited = f"r:{ACCOUNT}{'a' * 20}"  # opaque hash id containing an account-like digit run
     data["resources"][0]["id"] = data["relationships"][0]["source"] = cited
     for row in data["evidence"]:
-        row["resource_ids"] = [cited if ref == "r-instance" else ref for ref in row["resource_ids"]]
+        row["resource_ids"] = [cited if ref == oid("r-instance") else ref for ref in row["resource_ids"]]
     data["resources"][0]["facts"]["private_ip_address"] = "10.0.1.5"
     data["resources"][1]["facts"]["arn"] = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:database"
     index = EvidenceIndex(data, ACCOUNT)
@@ -225,26 +232,26 @@ def test_redacted_model_context_scrubs_sources_but_keeps_citation_ids():
 
 def test_review_request_can_only_use_admitted_resource_and_capability():
     index = EvidenceIndex(bundle(), ACCOUNT)
-    assert index.validate_request({"capability": "resource_metrics", "resource_ids": ["r-instance"]})
+    assert index.validate_request({"capability": "resource_metrics", "resource_ids": [oid("r-instance")]})
     for request in [
-        {"capability": "execute_sql", "resource_ids": ["r-instance"]},
+        {"capability": "execute_sql", "resource_ids": [oid("r-instance")]},
         {"capability": "graph_refresh", "resource_ids": ["unknown"]},
-        {"capability": "graph_refresh", "resource_ids": ["r-instance"], "query": "select secrets"},
-        {"capability": "resource_metrics", "resource_ids": ["r-instance"], "region": "us-east-1"},
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")], "query": "select secrets"},
+        {"capability": "resource_metrics", "resource_ids": [oid("r-instance")], "region": "us-east-1"},
     ]:
         assert index.validate_request(request) is None
     data = bundle()
     data["resources"] += [
-        {"id": "r-cluster", "account": ACCOUNT, "region": REGION, "kind": "rds_cluster",
+        {"id": oid("r-cluster"), "account": ACCOUNT, "region": REGION, "kind": "rds_cluster",
          "resource_id": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:aurora", "facts": {}},
-        {"id": "r-legacy", "account": ACCOUNT, "region": REGION, "kind": "rds_instance",
+        {"id": oid("r-legacy"), "account": ACCOUNT, "region": REGION, "kind": "rds_instance",
          "resource_id": "legacy-db", "facts": {}}]
     index = EvidenceIndex(data, ACCOUNT)
     for capability in ("resource_metrics", "provider_sizing"):
-        for ref in ("r-cluster", "r-legacy"):
+        for ref in (oid("r-cluster"), oid("r-legacy")):
             # Discovery has no collector for these kinds: never spend the pass.
             assert index.validate_request({"capability": capability, "resource_ids": [ref]}) is None
-    assert index.validate_request({"capability": "graph_refresh", "resource_ids": ["r-cluster"]})
+    assert index.validate_request({"capability": "graph_refresh", "resource_ids": [oid("r-cluster")]})
 
 
 @pytest.mark.parametrize("field,value", [("pillar", []), ("severity", {}),
@@ -260,7 +267,7 @@ def test_malformed_relationship_and_facts_are_rejected_without_crashing():
     data["resources"][0]["facts"] = None
     index = EvidenceIndex(data, ACCOUNT)
     assert index.relationships == {}
-    assert index.resources["r-instance"]["facts"] == {}
+    assert index.resources[oid("r-instance")]["facts"] == {}
 
 
 def test_metrics_projection_preserves_provider_contract_without_raw_rows():
@@ -278,18 +285,18 @@ def test_metrics_projection_preserves_provider_contract_without_raw_rows():
 def test_duplicate_scoped_native_identity_cannot_bypass_savings_dedup():
     data = bundle()
     duplicate = deepcopy(data["resources"][0])
-    duplicate["id"] = "alias-of-instance"
+    duplicate["id"] = oid("alias-of-instance")
     data["resources"].append(duplicate)
     index = EvidenceIndex(data, ACCOUNT)
-    assert "r-instance" not in index.resources
-    assert "alias-of-instance" not in index.resources
+    assert oid("r-instance") not in index.resources
+    assert oid("alias-of-instance") not in index.resources
     assert any(row["reason"] == "ambiguous_identity" for row in index.rejected)
 
 
 def test_arn_account_or_region_mismatch_is_not_admitted():
     data = bundle()
     data["resources"][0]["resource_id"] = "arn:aws:ec2:us-east-1:222222222222:instance/i-native"
-    assert "r-instance" not in EvidenceIndex(data, ACCOUNT).resources
+    assert oid("r-instance") not in EvidenceIndex(data, ACCOUNT).resources
     with pytest.raises(ValueError, match="account"):
         EvidenceIndex(bundle(), "self")
 
@@ -297,7 +304,7 @@ def test_arn_account_or_region_mismatch_is_not_admitted():
 def test_scope_summary_is_explicit_scoped_and_cannot_prove_traffic_or_sizing():
     data = bundle()
     data["evidence"].append({
-        "id": "scope-cost", "source": "cost_explorer", "account": ACCOUNT, "region": "global",
+        "id": oid("scope-cost"), "source": "cost_explorer", "account": ACCOUNT, "region": "global",
         "resource_ids": [], "kind": "scope_summary", "fresh": True,
         "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": False},
         "facts": {"cost_groups": [{"service": "Amazon EC2", "amount": 100,
@@ -305,16 +312,16 @@ def test_scope_summary_is_explicit_scoped_and_cannot_prove_traffic_or_sizing():
                   "resource_cost": False, "raw_account": ACCOUNT, "secret": "discard"},
     })
     index = EvidenceIndex(data, ACCOUNT)
-    aggregate = finding(resource_ids=[], evidence_ids=["scope-cost"], claim="hypothesis",
+    aggregate = finding(resource_ids=[], evidence_ids=[oid("scope-cost")], claim="hypothesis",
                         explanation="Review the service-level cost allocation.",
                         verification="none")
     assert index.validate_finding(aggregate)
-    assert index.evidence["scope-cost"]["facts"]["cost_groups"][0]["amount"] == 100
-    assert "secret" not in index.evidence["scope-cost"]["facts"]
+    assert index.evidence[oid("scope-cost")]["facts"]["cost_groups"][0]["amount"] == 100
+    assert "secret" not in index.evidence[oid("scope-cost")]["facts"]
     assert index.validate_finding(dict(aggregate, id="observe", claim="observation")) is None
     assert index.validate_finding(dict(aggregate, id="size", claim="sizing_candidate")) is None
     del data["evidence"][-1]["account"]
-    assert "scope-cost" not in EvidenceIndex(data, ACCOUNT).evidence
+    assert oid("scope-cost") not in EvidenceIndex(data, ACCOUNT).evidence
 
 
 def test_coverage_counts_and_graph_qualifications_survive_projection():
@@ -345,8 +352,8 @@ def test_declared_coverage_does_not_override_missing_or_wrong_metrics(fault):
         metrics["metrics"].pop("EBSReadBytes")
     else:
         data["evidence"][3]["facts"]["current_type"] = "r7g.large"
-    candidate = finding(pillar="cost_optimization", resource_ids=["r-instance"],
-                        evidence_ids=["e-provider", "e-metrics"], claim="sizing_candidate",
+    candidate = finding(pillar="cost_optimization", resource_ids=[oid("r-instance")],
+                        evidence_ids=[oid("e-provider"), oid("e-metrics")], claim="sizing_candidate",
                         explanation="Consider the provider candidate after manual verification.",
                         verification="provider_sizing")
     index = EvidenceIndex(data, ACCOUNT)
@@ -358,7 +365,7 @@ def test_declared_coverage_does_not_override_missing_or_wrong_metrics(fault):
 def test_rds_sizing_uses_database_dimensions_and_representative_pressure():
     data = bundle()
     metrics, provider = data["evidence"][2:4]
-    metrics["resource_ids"] = provider["resource_ids"] = ["r-db"]
+    metrics["resource_ids"] = provider["resource_ids"] = [oid("r-db")]
     metrics["facts"].update({
         "dimensions": {"DBInstanceIdentifier": "database"},
         "metrics": {
@@ -374,8 +381,8 @@ def test_rds_sizing_uses_database_dimensions_and_representative_pressure():
         },
     })
     provider["facts"].update(current_type="db.r7g.large", recommended_type="db.r7g.medium")
-    candidate = finding(pillar="cost_optimization", resource_ids=["r-db"],
-                        evidence_ids=["e-provider", "e-metrics"], claim="sizing_candidate",
+    candidate = finding(pillar="cost_optimization", resource_ids=[oid("r-db")],
+                        evidence_ids=[oid("e-provider"), oid("e-metrics")], claim="sizing_candidate",
                         explanation="Consider the provider candidate after manual verification.",
                         verification="provider_sizing")
     assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "sizing_candidate"
@@ -403,7 +410,7 @@ def test_metric_observation_requires_complete_representative_coverage(coverage, 
     data = bundle()
     data["evidence"][2]["coverage"] = coverage
     result = EvidenceIndex(data, ACCOUNT).validate_finding(finding(
-        resource_ids=["r-instance"], evidence_ids=["e-metrics"]))
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))
     assert result["claim"] == expected
 
 
@@ -416,13 +423,40 @@ def test_paginated_or_partial_observed_edge_is_not_confirmed():
 
 def test_relationship_evidence_may_span_regions_but_single_resource_stays_strict():
     data = bundle()
-    data["resources"].append({"id": "r-edge", "account": ACCOUNT, "region": "global",
+    data["resources"].append({"id": oid("r-edge"), "account": ACCOUNT, "region": "global",
                               "kind": "cloudfront", "resource_id": "E123EXAMPLE", "facts": {}})
-    data["evidence"].append({"id": "e-origin", "source": "stored_graph", "resource_ids": ["r-edge", "r-instance"],
+    data["evidence"].append({"id": oid("e-origin"), "source": "stored_graph", "resource_ids": [oid("r-edge"), oid("r-instance")],
                              "kind": "configured_dependency", "region": "global", "facts": {},
                              "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}})
-    data["evidence"].append({**deepcopy(data["evidence"][2]), "id": "e-far-metrics", "region": "us-east-1"})
-    data["evidence"].append({**deepcopy(data["evidence"][-2]), "id": "e-foreign-region", "region": "us-east-1"})
+    data["evidence"].append({**deepcopy(data["evidence"][2]), "id": oid("e-far-metrics"), "region": "us-east-1"})
+    data["evidence"].append({**deepcopy(data["evidence"][-2]), "id": oid("e-foreign-region"), "region": "us-east-1"})
     index = EvidenceIndex(data, ACCOUNT)
-    assert index.evidence["e-origin"]["regions"] == ["ap-northeast-2", "global"]
-    assert "e-far-metrics" not in index.evidence and "e-foreign-region" not in index.evidence
+    assert index.evidence[oid("e-origin")]["regions"] == ["ap-northeast-2", "global"]
+    assert oid("e-far-metrics") not in index.evidence and oid("e-foreign-region") not in index.evidence
+
+
+def test_multi_resource_finding_may_cite_one_row_per_resource_but_not_unrelated_rows():
+    data = bundle()
+    db_metrics = deepcopy(data["evidence"][2])
+    db_metrics.update(id=oid("e-db-metrics"), resource_ids=[oid("r-db")])
+    data["evidence"].append(db_metrics)
+    index = EvidenceIndex(data, ACCOUNT)
+    joint = finding(id="joint", claim="hypothesis", evidence_ids=[oid("e-metrics"), oid("e-db-metrics")])
+    assert index.validate_finding(joint) is not None
+    lone = finding(id="lone", claim="hypothesis", resource_ids=[oid("r-instance")],
+                   evidence_ids=[oid("e-metrics"), oid("e-db-metrics")])
+    assert index.validate_finding(lone) is None
+    assert index.rejected[-1]["reason"] == "unrelated_evidence"
+    partial = finding(id="partial", claim="hypothesis", evidence_ids=[oid("e-metrics")])
+    assert index.validate_finding(partial) is None
+
+
+@pytest.mark.parametrize("collection,field", [("resources", "id"), ("evidence", "id"), ("relationships", "id")])
+def test_reference_ids_must_be_opaque_so_restore_cannot_reintroduce_scope(collection, field):
+    data = bundle()
+    leaked = f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-0123456789abcdef0"
+    data[collection][0][field] = leaked
+    index = EvidenceIndex(data, ACCOUNT)
+    assert leaked not in repr(index.model_context(redacted=True))
+    kinds = {"resources": "resource", "evidence": "evidence", "relationships": "relationship"}
+    assert {"id": "", "reason": "invalid_id", "type": kinds[collection]} in index.rejected

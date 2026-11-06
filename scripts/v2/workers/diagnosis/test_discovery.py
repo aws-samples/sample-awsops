@@ -837,3 +837,32 @@ def test_provider_guards_separate_inventory_row_and_provider_staleness(provider)
     bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
     guards = evidence(bundle, "provider_sizing")[0]["facts"]["guard_hits"]
     assert "stale_provider_recommendation" in guards and "stale_inventory_data" not in guards
+
+
+def test_zero_sample_metrics_are_never_fresh_and_unqueried_identity_emits_nothing(provider):
+    # Pages were read (complete) but no datapoint came back: measured nothing.
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    item = evidence(bundle, "metrics")[0]
+    assert item["coverage"]["sample_ratio"] == 0 and item["fresh"] is False
+    unresolved = discovery.collect(Database([inventory("ec2", "not-an-instance", {})]), ACCOUNT, Budget())
+    assert not evidence(unresolved, "metrics")
+    assert "metric_identity_unresolved" in unresolved["incomplete"]
+
+
+def test_followup_supersedes_prior_metrics_and_eviction_keeps_current_row(provider, monkeypatch):
+    provider.metrics = metric_response
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    first = evidence(bundle, "metrics")[0]
+    assert first["fresh"] is True
+    monkeypatch.setattr(discovery, "_now", lambda: NOW + dt.timedelta(minutes=1))
+    merged = discovery.follow_up(Database(), ACCOUNT, bundle, [
+        {"capability": "resource_metrics", "resource_ids": first["resource_ids"]}], Budget())
+    rows = {e["id"]: e for e in evidence(merged, "metrics")}
+    assert rows[first["id"]]["fresh"] is False
+    assert rows[first["id"]]["coverage"]["retained_previous"] is True
+    assert [e["fresh"] for e in rows.values() if e["id"] != first["id"]] == [True]
+    capped = {"resources": [], "relationships": [], "gaps": [], "degraded": [], "incomplete": [],
+              "coverage": {"account": ACCOUNT},
+              "evidence": [{"id": "old", "source": "cloudwatch", "fresh": False, "facts": "m" * 120000},
+                           {"id": "new", "source": "cloudwatch", "fresh": True, "facts": "m" * 120000}]}
+    assert [e["id"] for e in discovery._finish(capped)["evidence"]] == ["new"]
