@@ -493,3 +493,39 @@ def test_facts_less_inventory_rows_do_not_crash_dns_binding():
     data["resources"].append(bare)
     data["evidence"].append({**data["evidence"][0], "id": oid("e-bare"), "resource_ids": [bare["id"]], "facts": {}})
     assert not project(data, rows=[dns(vpc_id=None)])["relationships"]
+
+
+def test_stage_deadline_is_incomplete_only_and_still_stops_started_queries(monkeypatch):
+    monkeypatch.setattr(observations, "_sleep", lambda _: None)
+    clock = [0.0]
+    monkeypatch.setattr(observations.time, "monotonic", lambda: clock[0])
+    fake = Provider(pending=True)
+    original = fake.get_query_results
+
+    def slow(**params):
+        clock[0] += 100  # the 35 s stage deadline passes while the DNS query is polled
+        return original(**params)
+    fake.get_query_results = slow
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert "network_evidence_deadline" in data["incomplete"]
+    assert "dns_logs_unavailable" not in data["gaps"] and "nfm_unavailable" not in data["gaps"]
+    assert any(c == "dns_stop" for c, _ in fake.calls)
+
+
+def test_provider_error_is_a_gap_and_projection_defect_is_degraded(monkeypatch):
+    from botocore.exceptions import ClientError
+    monkeypatch.setattr(observations, "_sleep", lambda _: None)
+    fake = Provider()
+
+    def denied(**params):
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "ListMonitors")
+    fake.list_monitors = denied
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert "nfm_unavailable" in data["gaps"] and "nfm_projection_failed" not in data["degraded"]
+
+    fake = Provider()
+    fake.list_monitors = lambda **params: {"monitors": [{"monitorName": "test", "monitorStatus": "ACTIVE",
+        "monitorArn": f"arn:aws:networkflowmonitor:{REGION}:{ACCOUNT}:monitor/test"}]}
+    fake.start_query_monitor_top_contributors = lambda **params: (_ for _ in ()).throw(KeyError("defect"))
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert "nfm_projection_failed" in data["degraded"]

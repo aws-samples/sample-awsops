@@ -7,7 +7,17 @@ import os
 import re
 import time
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from . import discovery as d
+from .scoped_clients import ScopeError
+
+# Provider/credential/payload failures are source gaps; anything else is a projection defect.
+_SOURCE_ERRORS = (ClientError, BotoCoreError, ScopeError, ValueError)
+
+
+class _NetworkBound(TimeoutError):
+    """The stage deadline or analysis budget: already disclosed as incomplete, never a source gap."""
 
 MAX_GROUPS = 8
 MAX_REGIONS = 8
@@ -283,28 +293,31 @@ class _Reads:
         self.bundle, self.budget, self.factory = bundle, budget, factory
         self.deadline = time.monotonic() + 35
         self.clients = {}
+        self.bounded = False
 
     def available(self):
         if self.budget.remaining(analysis=True) <= 2 or time.monotonic() >= self.deadline:
             d._mark(self.bundle, "incomplete", "network_evidence_deadline")
+            self.bounded = True
             return False
         return True
 
     def call(self, service, region, operation, **parameters):
         if not self.available():
-            raise TimeoutError("network_evidence_deadline")
+            raise _NetworkBound("network_evidence_deadline")
         key = service, region
         if key not in self.clients:
             self.clients[key] = self.factory(service, region, self.budget)
         if not self.available():
-            raise TimeoutError("network_evidence_deadline")
+            raise _NetworkBound("network_evidence_deadline")
         client = self.clients[key]
         config = getattr(client, "_client_config", None)
         if config is not None:
             timeout = config.connect_timeout + config.read_timeout
             if min(self.budget.remaining(analysis=True), self.deadline - time.monotonic()) <= timeout:
                 d._mark(self.bundle, "incomplete", "network_evidence_deadline")
-                raise TimeoutError("network_evidence_deadline")
+                self.bounded = True
+                raise _NetworkBound("network_evidence_deadline")
         return getattr(client, operation)(**parameters)
 
     def pause(self, attempt=0):
@@ -313,11 +326,16 @@ class _Reads:
                               self.deadline - time.monotonic())))
 
     def stop(self, service, region, operation, **parameters):
-        if self.available():
-            try:
-                self.call(service, region, operation, **parameters)
-            except Exception:
-                d._mark(self.bundle, "incomplete", "network_query_cleanup_failed")
+        # Cancellation still runs after the stage deadline (an abandoned query keeps scanning),
+        # but only on an existing client and while the job's own budget leaves room.
+        client = self.clients.get((service, region))
+        if client is None or self.budget.remaining(analysis=True) <= 1:
+            d._mark(self.bundle, "incomplete", "network_query_cleanup_failed")
+            return
+        try:
+            getattr(client, operation)(**parameters)
+        except Exception:
+            d._mark(self.bundle, "incomplete", "network_query_cleanup_failed")
 
 
 def _pages(reads, service, region, operation, key, *, lower=False):
@@ -476,8 +494,13 @@ def _flows(reads, regions, start, end):
                         if query_id and not finished:
                             reads.stop("networkflowmonitor", region, "stop_query_monitor_top_contributors",
                                        monitorName=name, queryId=query_id)
-        except Exception:
+        except _NetworkBound:
+            return rows
+        except _SOURCE_ERRORS:
             d._mark(reads.bundle, "gaps", "nfm_unavailable")
+        except Exception:
+            d._mark(reads.bundle, "degraded", "nfm_projection_failed")
+            return rows
     if not monitors:
         d._mark(reads.bundle, "gaps", "nfm_unavailable")
     return rows
@@ -519,9 +542,13 @@ def collect(bundle, budget, *, scope, client_factory):
             continue
         try:
             dns_rows.extend(_dns(reads, region, approved[region], vpcs[region], start, end))
-        except Exception:
+        except _NetworkBound:
+            break
+        except _SOURCE_ERRORS:
             d._mark(bundle, "gaps", "dns_logs_unavailable")
-    if not dns_rows:
+        except Exception:
+            d._mark(bundle, "degraded", "dns_projection_failed")
+    if not dns_rows and not reads.bounded:
         d._mark(bundle, "gaps", "dns_logs_unavailable")
     flows = _flows(reads, regions, start, end)
     project(bundle, dns_rows, flows, start=start, end=end, source_id="nfm_top_contributors")
