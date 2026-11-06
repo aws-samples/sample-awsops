@@ -15,7 +15,9 @@ const getAllowedClusters = vi.fn();
 const isEnvCluster = vi.fn();
 const hasAccessEntry = vi.fn();
 const isAdmin = vi.fn();
+const registerCluster = vi.fn();
 vi.mock('@/lib/eks-registry', () => ({
+  registerCluster: (...a: unknown[]) => registerCluster(...a),
   getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a),
   isEnvCluster: (...a: unknown[]) => isEnvCluster(...a),
   getAuthModes: async () => new Map(),
@@ -41,6 +43,7 @@ beforeEach(() => {
   isEnvCluster.mockReturnValue(false);
   hasAccessEntry.mockResolvedValue(false);
   isAdmin.mockResolvedValue(false);
+  registerCluster.mockReset().mockResolvedValue(true);
   onboardingGuide.mockReset();
   onboardingGuide.mockResolvedValue({ commands: ['c1', 'c2'], note: 'n' });
 });
@@ -83,6 +86,49 @@ describe('GET /api/eks', () => {
       'same', 'arn:aws:eks:ap-northeast-2:222222222222:cluster/same',
     ]);
     expect(hasAccessEntry).toHaveBeenCalledWith('arn:aws:eks:ap-northeast-2:222222222222:cluster/same');
+  });
+  it('auto-registers a member cluster whose verified Access Entry is seen by an administrator', async () => {
+    verifyUser.mockResolvedValue({ sub: 'admin-sub' });
+    isAdmin.mockResolvedValue(true);
+    hasAccessEntry.mockResolvedValue(true);
+    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    const body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+    const id = 'arn:aws:eks:ap-northeast-2:222222222222:cluster/same';
+    expect(registerCluster).toHaveBeenCalledWith(id, 'admin-sub');
+    expect(body.clusters[0]).toMatchObject({ id, access: 'connected', runtime: true, autoRegistered: true });
+    expect(body.clusters[0].guide).toBeUndefined();
+    expect(onboardingGuide).not.toHaveBeenCalled();
+  });
+  it('does not auto-register for non-admins, unknown/missing entries, or host clusters', async () => {
+    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    verifyUser.mockResolvedValue({ sub: 'viewer' });
+    hasAccessEntry.mockResolvedValue(true);
+    let body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+    expect(body.clusters[0]).toMatchObject({ access: 'entry-only' });
+    isAdmin.mockResolvedValue(true);
+    for (const entry of [false, null]) {
+      hasAccessEntry.mockResolvedValue(entry);
+      body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+      expect(body.clusters[0].access).toBe(entry === false ? 'no-entry' : 'unknown');
+    }
+    hasAccessEntry.mockResolvedValue(true);
+    body = await (await GET(req())).json();
+    expect(body.clusters[0]).toMatchObject({ id: 'same', access: 'entry-only' });
+    expect(registerCluster).not.toHaveBeenCalled();
+  });
+  it('keeps entry-only with the guide when the Aurora write is unavailable', async () => {
+    verifyUser.mockResolvedValue({ sub: 'admin-sub' });
+    isAdmin.mockResolvedValue(true);
+    hasAccessEntry.mockResolvedValue(true);
+    registerCluster.mockResolvedValue(false);
+    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
+    const { GET } = await import('./route');
+    const body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+    expect(body.clusters[0]).toMatchObject({ access: 'entry-only', runtime: false });
+    expect(body.clusters[0].autoRegistered).toBeUndefined();
+    expect(body.clusters[0].guide).toBeDefined();
   });
   it('does not treat a host registration as access to a member with the same name', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

@@ -17,6 +17,9 @@ export const dynamic = 'force-dynamic';
 const EVENTS_CAP = 25;
 const NS_CAP = 10;
 
+/** 'aws-api' when the node rows are the EC2/node-group view (no kubelet Ready condition). */
+const nodesSource = (nodes: NodeRow[]) => (nodes.some((n) => n.source === 'aws-api') ? 'aws-api' as const : undefined);
+
 const empty = (identity: ScopedEksRegistration) => ({
   ...identity, reachable: false,
   counts: { nodes: 0, nodesReady: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
@@ -36,9 +39,16 @@ export async function GET(request: Request) {
   const clusters = await mapEksConcurrent(scope.clusters, async (identity) => {
     const name = identity.id;
     let eventsFailure: EksReadFailure | undefined;
+    let nodesFailure: EksReadFailure | undefined;
     try {
       const [nodes, pods, deployments, services, events] = await Promise.all([
-        listInCluster(name, 'nodes') as Promise<NodeRow[]>,
+        // A forbidden/failed node read degrades only the node fields: pods, deployments and
+        // services still show (member ViewPolicy entries fall back to the AWS-API node view
+        // inside listInCluster; this catch covers that fallback failing too).
+        (listInCluster(name, 'nodes') as Promise<NodeRow[]>).catch(error => {
+          nodesFailure = eksReadFailure(error, 'eks-fleet-nodes');
+          return [] as NodeRow[];
+        }),
         listInCluster(name, 'pods') as Promise<PodRow[]>,
         listInCluster(name, 'deployments') as Promise<DeploymentRow[]>,
         listInCluster(name, 'services') as Promise<ServiceRow[]>,
@@ -63,6 +73,8 @@ export async function GET(request: Request) {
         podStatus: podStatusCounts(pods),
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
+        ...(nodesSource(nodes) ? { nodesSource: nodesSource(nodes) } : {}),
+        ...(nodesFailure ? { nodesReason: nodesFailure.reason, nodesError: nodesFailure.message } : {}),
         ...(eventsFailure ? { eventsReason: eventsFailure.reason, eventsError: eventsFailure.message } : {}),
       };
     } catch (e) {

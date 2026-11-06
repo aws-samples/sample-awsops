@@ -633,7 +633,23 @@ export async function describeInCluster(
 export async function listInCluster(cluster: string, kind: Kind): Promise<InClusterRow[]> {
   const { endpoint, caPem } = await clusterConn(cluster);
   const token = await eksToken(cluster);
-  const body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  let body: string;
+  try {
+    body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  } catch (error) {
+    // Member Access Entries use AmazonEKSViewPolicy, which has no `nodes` read. A
+    // Kubernetes 403 on nodes for a member cluster falls back to the EC2/node-group view
+    // from AWS read APIs with the registered member role; host clusters (AdminView) and
+    // every other kind keep the original failure.
+    if (kind === 'nodes' && error instanceof EksKubernetesHttpError && error.statusCode === 403) {
+      const context = await resolveEksCluster(cluster);
+      if (context.accountId !== 'self') {
+        const { listAwsApiNodes } = await import('./eks-aws-nodes');
+        return await listAwsApiNodes(context);
+      }
+    }
+    throw error;
+  }
   const parsed = JSON.parse(body) as K8sList;
   const norm = NORMALIZERS[kind];
   return (parsed.items ?? []).map(norm);

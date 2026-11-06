@@ -87,17 +87,19 @@ grant workload writes, Secret reads, or cluster-admin to the application princip
   which already covers broad reads. If the host uses a tighter policy, map an
   explicit group on that role's Access Entry and bind only the Result-read rule.
 - **Member cluster:** the actual bearer uses the registered member role, normally
-  `AWSopsReadOnlyRole`. Use `AmazonEKSViewPolicy` plus the minimal node-read binding
-  described in [EKS onboarding](../reference/07-eks.md). Never attach AdminView to
-  this shared member role. The managed View policy does not grant this custom CRD,
-  so bind the Result reader to the member Entry's `awsops:eks-readonly` group.
+  `AWSopsReadOnlyRole`. Its Entry uses `AmazonEKSViewPolicy` only, as described in
+  [EKS onboarding](../reference/07-eks.md). Never attach AdminView to this shared
+  member role. The managed View policy does not grant this custom CRD, so add a
+  Kubernetes group such as `awsops:eks-readonly` to the member Entry (entries from
+  the earlier onboarding guide already carry it) and bind the Result reader to it.
   An Entry/group for only the host web task role does not authorize member reads.
 - **Explicit auth:** bind the selected same-member IAM role's Entry group, or the
   exact ServiceAccount name/namespace for an SA token. Do not use a broad group
   such as `system:authenticated` to avoid selecting the real principal.
 
 The cluster owner applies the following client-read binding. For the default
-member path, the group is `awsops:eks-readonly`; for a tighter host or explicit
+member path, use the group added to the member Entry (for example
+`awsops:eks-readonly`); for a tighter host or explicit
 identity, substitute the verified group actually mapped by that identity's Entry.
 Add a group to an existing Entry without discarding its unrelated groups.
 

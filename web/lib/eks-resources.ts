@@ -29,6 +29,11 @@ export interface NodeRow {
   /** v1 parity (node capacity card): the node's pod CIDR + creation timestamp. */
   podCIDR?: string;
   createdAt?: string;
+  /** 'aws-api' = EC2/node-group view for a member cluster whose AmazonEKSViewPolicy entry
+   *  cannot read the Kubernetes nodes API: no kubelet conditions/labels/taints, and
+   *  allocatable mirrors instance-type capacity. Absent = Kubernetes nodes API. */
+  source?: 'aws-api';
+  instanceId?: string;
 }
 export interface PodRow {
   name: string; namespace: string; status: string; node: string; restarts: number; age: string;

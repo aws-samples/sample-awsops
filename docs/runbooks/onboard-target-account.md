@@ -293,12 +293,17 @@ Account registration enables scoped AWS discovery; it does not grant Kubernetes 
 Select the member account and region in **EKS**, then follow that cluster's registration
 guide. The default Kubernetes token uses the registered member read role, normally
 `AWSopsReadOnlyRole`, so an Access Entry for only the host web task role is insufficient.
-The cluster owner grants the member role an Entry with `AmazonEKSViewPolicy` and the
-minimal `awsops:eks-readonly` node-read binding. The generated guide includes the complete
-manifest from `web/lib/eks-member-rbac.ts`; do not grant the shared role AdminView/Secrets
-access. OpenCost proxy and K8sGPT Result reads require the separate narrow bindings in the
-[EKS reference](../reference/07-eks.md). Preserve existing Entry groups when adding this
-group and review/remove any existing broader policy association separately.
+The cluster owner grants the member role an Entry with `AmazonEKSViewPolicy` only: the
+generated guide is two commands (`create-access-entry --type STANDARD` and
+`associate-access-policy` at cluster scope), with no kubeconfig, kubectl or RBAC step.
+View excludes Kubernetes Secrets; do not grant the shared role AdminView/Secret access,
+and disassociate an existing AdminView association (policies are additive). View has no
+`nodes` read, so the node list comes from read-only EC2/node-group APIs with the same
+role (`ReadOnlyAccess` already covers them). After the entry exists, the next
+administrator visit to **EKS** registers the cluster automatically; **[조회 등록]**
+remains a manual fallback. Entries created from the earlier guide (`awsops:eks-readonly`
+group plus node-read RBAC) keep working. OpenCost proxy and K8sGPT Result reads require
+the separate narrow bindings in the [EKS reference](../reference/07-eks.md).
 
 AWSops verifies the selected cluster directly and saves only app registration/auth state;
 it does not run the owner-side grant commands. Permission errors, timeout and unreachable

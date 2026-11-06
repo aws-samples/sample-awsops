@@ -53,7 +53,8 @@ authorization still requires the `ClusterRoleBinding` in that manifest, applied 
 `kubectl` (an EKS Access Entry alone cannot grant custom fine-grained RBAC — only AWS-managed
 access policies or your own RBAC objects can).
 For a shared member role, this group is additive to the web-query
-`AmazonEKSViewPolicy` and `awsops:eks-readonly` node-read group. Removing this feature's group
+`AmazonEKSViewPolicy` (and, on entries created from the earlier onboarding guide, the
+`awsops:eks-readonly` node-read group). Removing this feature's group
 does not revoke read access granted independently by those other bindings.
 
 ## Prerequisites

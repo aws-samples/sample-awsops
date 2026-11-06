@@ -456,6 +456,11 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
                   );
                 })()}
 
+                {tab === 'nodes' && allRows.some((r) => r.source === 'aws-api') && (
+                  <div role="note" className="rounded-md bg-ink-50 px-3 py-2 text-[12px] text-ink-500">
+                    {tt('멤버 클러스터 노드는 Kubernetes nodes API 대신 EC2/노드그룹 API(등록된 멤버 읽기 역할) 기준입니다. kubelet 상태·레이블·테인트는 없고, allocatable은 인스턴스 타입 용량(상한)으로 표시되며 Fargate 노드는 제외됩니다.')}
+                  </div>
+                )}
                 {tab === 'nodes' && nodeAgg && nodeAgg.length > 0 && (
                   <Card title="노드 리소스" subtitle="Pod 요청 합계 대비 노드 allocatable (CPU 코어 · 메모리 MiB)">
                     <div className="flex flex-col gap-3">

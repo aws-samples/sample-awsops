@@ -116,6 +116,16 @@ describe('strict registration evidence through real EKS routes', () => {
     expect(listInCluster).toHaveBeenCalledWith(MEMBER_ID, 'pods');
     expect(listInCluster).not.toHaveBeenCalledWith('shared', expect.anything());
   });
+
+  it('summary keeps a member reachable when only its node read fails', async () => {
+    failRegistrationRead = false;
+    listInCluster.mockImplementation(async (_id: string, kind: string) => {
+      if (kind === 'nodes') throw new Error('forbidden');
+      return kind === 'pods' ? [{}, {}] : [{}];
+    });
+    const body = await (await collectionResponse('summary', `account=${MEMBER}`)).json();
+    expect(body).toMatchObject({ clusters: 1, reachable: 1, nodes: 0, pods: 2, deployments: 1, services: 1, nodesUnavailable: 1 });
+  });
 });
 
 describe('single-cluster routes reject collection selectors before host data access', () => {

@@ -56,6 +56,9 @@ interface FleetCluster {
   podStatus: Record<string, number>;
   podsByNamespace: Array<{ namespace: string; count: number }>;
   events: FleetEvent[];
+  /** 'aws-api' = member EC2/node-group view (AmazonEKSViewPolicy has no nodes read). */
+  nodesSource?: 'aws-api';
+  nodesError?: string;
 }
 
 // [PR#40 review MINOR] readable size: GiB at/above 1 GiB, else MiB (avoids tiny nodes showing "0.7").
@@ -108,14 +111,6 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   const listSeqRef = useRef(0);
   const fleetSeqRef = useRef(0);
   const refreshSeqRef = useRef(0);
-  const load = useCallback(() => {
-    const seq = ++listSeqRef.current;
-    const fresh = () => alive.current && seq === listSeqRef.current;
-    return fetch(`/api/eks?${scopeQuery}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (fresh()) { setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr(''); } })
-      .catch((e) => { if (fresh()) setErr(String(e)); });
-  }, [scopeQuery]);
   const loadFleet = useCallback(() => {
     const seq = ++fleetSeqRef.current;
     const fresh = () => alive.current && seq === fleetSeqRef.current;
@@ -124,6 +119,19 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       .then((d) => { if (fresh()) { setFleet(d.clusters ?? []); setFleetLoaded(true); setFleetCollection(d); setFleetErr(''); } })
       .catch((e) => { if (fresh()) setFleetErr(String(e)); });
   }, [scopeQuery]);
+  const load = useCallback(() => {
+    const seq = ++listSeqRef.current;
+    const fresh = () => alive.current && seq === listSeqRef.current;
+    return fetch(`/api/eks?${scopeQuery}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        if (!fresh()) return;
+        setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr('');
+        // A member cluster registered automatically on this read joins the live fleet now.
+        if ((d.clusters ?? []).some((c: { autoRegistered?: boolean }) => c.autoRegistered)) void loadFleet();
+      })
+      .catch((e) => { if (fresh()) setErr(String(e)); });
+  }, [scopeQuery, loadFleet]);
 
   // Manual refresh: re-fetch both the access list and the live fleet; stamp
   // capturedAt once the fleet load settles (best-effort — never throws).
@@ -524,7 +532,10 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
 
                 {f && f.reachable && (
                   <div className="mt-2 text-[12px] text-ink-500">
-                    {f.counts.nodes} nodes · {f.counts.pods} pods · {f.counts.deployments} deploys
+                    {f.nodesError ? tt('노드 정보 없음') : `${f.counts.nodes} nodes`} · {f.counts.pods} pods · {f.counts.deployments} deploys
+                    {f.nodesSource === 'aws-api' && !f.nodesError && (
+                      <span className="ml-2 text-ink-400" title={tt('Kubernetes nodes API 대신 EC2/노드그룹 API 기준 (kubelet 상태 없음)')}>{tt('EC2/노드그룹 기준')}</span>
+                    )}
                   </div>
                 )}
                 {c.access === 'connected' && f && !f.reachable && (
@@ -623,7 +634,12 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
           <div className="flex flex-col gap-4">
             {reachable.filter((f) => f.nodeAgg.length > 0).map((f) => (
               <div key={f.id ?? f.name} className="flex flex-col gap-2">
-                <div className="font-mono text-[12px] text-ink-500">{eksClusterLabel(f.id ?? f.name)}</div>
+                <div className="font-mono text-[12px] text-ink-500">
+                  {eksClusterLabel(f.id ?? f.name)}
+                  {f.nodesSource === 'aws-api' && (
+                    <span className="ml-2 font-sans text-ink-400">{tt('EC2/노드그룹 기준 — allocatable 대신 인스턴스 타입 용량')}</span>
+                  )}
+                </div>
                 {f.nodeAgg.map((n) => (
                   <div
                     key={n.name}

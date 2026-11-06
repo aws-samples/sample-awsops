@@ -54,6 +54,29 @@ describe('GET /api/eks/fleet', () => {
     expect(c).not.toHaveProperty('nodes');
     expect(c).not.toHaveProperty('serviceTypes'); // deliberately excluded from the payload
   });
+  it('degrades only the node fields when the node read fails', async () => {
+    listInCluster.mockImplementation(async (_c: string, kind: string) => {
+      if (kind === 'nodes') throw Object.assign(new Error('forbidden'), { name: 'AccessDeniedException' });
+      return ({ pods: [POD], deployments: [{ name: 'd' }], services: [{ type: 'ClusterIP' }], events: [] } as Record<string, unknown[]>)[kind] ?? [];
+    });
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.reachable).toBe(true);
+    expect(c.counts).toEqual({ nodes: 0, nodesReady: 0, pods: 1, podsRunning: 1, deployments: 1, services: 1 });
+    expect(c.nodesReason).toBe('denied');
+    expect(c.nodesError).toMatch(/^Node details are unavailable\./);
+    expect(c.podsByNamespace).toEqual([{ namespace: 'default', count: 1 }]);
+  });
+  it('marks the AWS-API node source and joins pods by node name', async () => {
+    const awsNode = { ...NODE, status: 'EC2 running', source: 'aws-api' };
+    listInCluster.mockImplementation(async (_c: string, kind: string) => (
+      { nodes: [awsNode], pods: [POD] } as Record<string, unknown[]>
+    )[kind] ?? []);
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.nodesSource).toBe('aws-api');
+    expect(c.counts.nodesReady).toBe(0); // no kubelet Ready condition is claimed
+    expect(c.nodeAgg[0]).toMatchObject({ name: 'n1', podCount: 1, cpuRequest: 0.5 });
+    expect(c).not.toHaveProperty('nodesError');
+  });
   it('degrades a failing cluster to reachable:false (never 500)', async () => {
     getAllowedClusters.mockResolvedValue(new Set(['ok', 'down']));
     listInCluster.mockImplementation(async (c: string, kind: string) => {
