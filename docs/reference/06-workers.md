@@ -92,13 +92,14 @@ env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 �
 (기본 false → `terraform plan` = No changes, 유휴 $0).**
 
 
-### Diagnosis evidence core (default-off, not yet routed)
+### Diagnosis evidence core (default-off)
 
 `scripts/v2/workers/diagnosis/` contains a bounded discovery and evidence core:
 `discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`
-and `scoped_clients.py`. `report.generate` does not call these modules yet. A later change
-wires them in, and until then the `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` check inside
-`discovery.collect()` and `discovery.follow_up()` is the only gate.
+and `scoped_clients.py`. `report.generate` routes to it (`loop.run`) only when
+`DIAGNOSIS_EVIDENCE_LOOP_ENABLED` is applied (`report.evidence_loop_enabled()`).
+`discovery.collect()` and `discovery.follow_up()` check the same flag again. The full
+contract is in [Diagnosis discovery](diagnosis-discovery.md).
 
 | Terraform variable (default) | Effect when enabled |
 |---|---|

@@ -1176,7 +1176,7 @@ def collect(conn, account, budget, *, scope="self"):
     for key in bundle["native_sources"]:
         _mark(bundle, "gaps", f"{key}_not_collected")
     if os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true":
-        # This flag is the gate: report.generate does not route here yet (a later change wires it).
+        # Defense in depth: report.generate only routes here when this flag is applied.
         _mark(bundle, "gaps", "evidence_loop_disabled")
         return _finish(bundle)
     if not isinstance(account, str) or not _ACCOUNT.fullmatch(account) or scope not in ("self", account):
