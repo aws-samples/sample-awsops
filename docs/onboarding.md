@@ -8,8 +8,8 @@
 ## 사전 요구사항 / Prerequisites
 | 도구 | 버전/조건 | 비고 |
 |------|-----------|------|
-| terraform | **>= 1.15** | S3 native state locking(`use_lockfile`) 필요 — DynamoDB 없음 |
-| node | **>= 18** (configurator TUI 기준) | web 컨테이너는 `node:20-alpine` |
+| terraform | **>= 1.17.1** (`scripts/v2/terraform-test.sh`는 정확히 1.17.1) | S3 native state locking(`use_lockfile`) 필요 — DynamoDB 없음 |
+| node | **26.13.x** (`package.json` engines `>=26.13.0 <27`) | web 컨테이너는 `node:26.13.0-alpine` |
 | aws CLI | 대상 계정 자격증명 구성 | `AWS_REGION` 기본값 `ap-northeast-2` |
 | docker + buildx | **arm64 크로스빌드 필수** (`--platform linux/arm64`) | `deploy.mjs`는 기본 `sudo docker` 사용 — `DOCKER` env로 오버라이드 가능 |
 

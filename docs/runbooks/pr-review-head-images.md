@@ -233,7 +233,7 @@ prompt contains only fixed text (batch number, rules), never PR file names. Batc
 `scripts/v2/remediation/`, `scripts/v2/secret-rotation/`, `scripts/v2/eks/`,
 `scripts/v2/incident/` and `web/app/api/`; worker files whose names start with `remediation`,
 `handlers`, `action_catalog`, `connector_target`, `worker_lambda`, `fargate_worker` or `sg_rule` or
-contain `dispatcher`; `web/lib/remediation*`, `web/lib/aws*` and `web/middleware*`; plus any file
+contain `dispatcher`; `web/lib/remediation*`, `web/lib/aws*`, `web/middleware*` and `web/proxy*`; plus any file
 whose path has a directory or file-name segment starting with iam, polic, auth, guard,
 cross_account/cross-account, remediat, admin, connector, mutat, secret, credential, rbac, redact,
 frozen, skill, allowlist, assume, writeback or redeploy (at a path, `-`, `_` or `.` boundary).

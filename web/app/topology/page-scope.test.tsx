@@ -93,6 +93,7 @@ function mount(initial = '/topology', component = <TopologyPage />) {
     back: () => { if (index > 0) publish(entries[--index]); },
     forward: () => { if (index + 1 < entries.length) publish(entries[++index]); },
     refresh: () => {}, prefetch: () => {},
+    bfcacheId: 'test-bfcache', // required by Next.js 16's AppRouterInstance
   };
   function Harness() {
     const [href, setHref] = useState(initial);

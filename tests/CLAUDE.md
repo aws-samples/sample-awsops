@@ -20,6 +20,7 @@ The image fixtures require Python 3.12 and the pinned binary Pillow codec in a v
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
+python -m pip install -r agent/requirements.txt   # runtime SDKs for agent/tests (separate install)
 bash tests/run-all.sh    # everything (TAP format: structure + agent)
 ```
 

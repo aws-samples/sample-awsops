@@ -17,8 +17,13 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 
+_stubbed_modules = {}
+_missing_module = object()
+
+
 def _install_stubs():
     def stub(name, **attrs):
+        _stubbed_modules[name] = sys.modules.get(name, _missing_module)
         m = types.ModuleType(name)
         for k, v in attrs.items():
             setattr(m, k, v)
@@ -54,6 +59,13 @@ startup_output = io.StringIO()
 with redirect_stdout(startup_output), patch.dict(os.environ, {"AGENT_MODEL_ID": ""}), \
         patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
     import agent  # noqa: E402  (import after stubs are installed)
+# The agent retains its helper-test bindings; other suites must import real SDKs.
+# In particular, Lambda cross-account tests construct actual botocore Credentials.
+for _name, _original in _stubbed_modules.items():
+    if _original is _missing_module:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _original
 
 
 class ChatModelTest(unittest.TestCase):

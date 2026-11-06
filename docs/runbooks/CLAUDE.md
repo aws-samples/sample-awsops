@@ -190,7 +190,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
   the full authenticated runtime gate before service A publication. Existing-web
   prepare does not create first web or bypass readiness; follow runtime adoption first.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
-  Terraform 1.15.7, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
+  Terraform 1.17.1, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
   `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in
   `scripts/v2/requirements-test.txt`; deployment Node tests also run in the shared merge script.
   Root-level Python command: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
@@ -237,7 +237,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
   finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
   contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
-- Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
+- Curl/OpenSSL, PyYAML and Terraform 1.17.1 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
 
 Collector verification binds the applied `sync_code_sha256` to the configured archive

@@ -96,7 +96,7 @@ class TerraformReadTests(unittest.TestCase):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps({
-                    "version": 4, "terraform_version": "1.15.7", "serial": 0,
+                    "version": 4, "terraform_version": "1.17.1", "serial": 0,
                     "lineage": "00000000-0000-0000-0000-000000000000",
                     "outputs": {}, "resources": [],
                 }).encode())

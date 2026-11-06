@@ -168,8 +168,8 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const end = new Date(previous.attempted_at).getTime() + 1;
     const child = { batches: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'new-service' } }] },
       scopeSpans: [{ spans: [{ traceId: '2', spanId: '0000000000000001', kind: 1,
-        startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
-        endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+        startTimeUnixNano: String(BigInt(end - 1000) * BigInt(1_000_000)),
+        endTimeUnixNano: String(BigInt(end - 500) * BigInt(1_000_000)) }] }] }] };
     producer.invoke.mockReset()
       .mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }, { traceID: '2' }] })
       .mockResolvedValueOnce({ batches: [] })
@@ -200,8 +200,8 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const child = { batches: [{ resource: { attributes: [
       { key: 'service.name', value: { stringValue: 'bounded-sibling' } },
     ] }, scopeSpans: [{ spans: [{ traceId: 'b2', spanId: '0000000000000001', kind: 1,
-      startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
-      endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+      startTimeUnixNano: String(BigInt(end - 1000) * BigInt(1_000_000)),
+      endTimeUnixNano: String(BigInt(end - 500) * BigInt(1_000_000)) }] }] }] };
     producer.invoke.mockReset().mockResolvedValueOnce({ collectionStatus: 'ok',
       traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
       .mockResolvedValueOnce(childContracts.find(fixture => fixture.name === (forged
@@ -298,8 +298,8 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
         return { batches: [{ resource: { attributes: [
           { key: 'service.name', value: { stringValue: `busy-${round}` } },
         ] }, scopeSpans: [{ spans: [{ traceId: request.args.trace_id, spanId: '0000000000000001',
-          kind: 1, startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
-          endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+          kind: 1, startTimeUnixNano: String(BigInt(end - 1000) * BigInt(1_000_000)),
+          endTimeUnixNano: String(BigInt(end - 500) * BigInt(1_000_000)) }] }] }] };
       });
       const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
       try { await rebuildTraceGraph(pool, [source]); }
@@ -325,8 +325,8 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
             windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) }]);
         const end = Date.now() + 1000;
         const span = { spanId: '0000000000000001', kind: 2,
-          startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
-          endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) };
+          startTimeUnixNano: String(BigInt(end - 1000) * BigInt(1_000_000)),
+          endTimeUnixNano: String(BigInt(end - 500) * BigInt(1_000_000)) };
         producer.invoke.mockReset().mockImplementation(async ({ tool }: { tool: string }) => {
           if (tool === 'tempo_search') return { collectionStatus: mode === 'tempo-unknown' ? 'unknown' : 'partial',
             traces: Array.from({ length: 20 }, (_, i) => ({ traceID: (i + 1).toString(16) })) };

@@ -243,7 +243,7 @@ resource "aws_lambda_layer_version" "pg8000" {
   layer_name               = "${var.project}-pg8000"
   filename                 = data.archive_file.pg8000_layer[0].output_path
   source_code_hash         = data.archive_file.pg8000_layer[0].output_base64sha256
-  compatible_runtimes      = ["python3.12"]
+  compatible_runtimes      = ["python3.14"]
   compatible_architectures = ["arm64"]
 }
 
@@ -572,7 +572,7 @@ resource "aws_lambda_function" "dispatcher" {
   count            = local.we
   function_name    = "${var.project}-dispatcher"
   role             = aws_iam_role.dispatcher[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "dispatcher.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -603,7 +603,7 @@ resource "aws_lambda_function" "worker" {
   count            = local.we
   function_name    = "${var.project}-worker"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "worker_lambda.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -636,7 +636,7 @@ resource "aws_lambda_function" "status_updater" {
   count            = local.we
   function_name    = "${var.project}-status-updater"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "status_updater.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -662,7 +662,7 @@ resource "aws_lambda_function" "reaper" {
   count            = local.we
   function_name    = "${var.project}-reaper"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "reaper.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -995,7 +995,7 @@ resource "aws_lambda_function" "finops_dispatcher" {
   count            = local.fnb
   function_name    = "${var.project}-finops-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "finops_dispatcher.lambda_handler"
   filename         = data.archive_file.finops_dispatcher_src[0].output_path
@@ -1212,7 +1212,7 @@ resource "aws_lambda_function" "ai_cost_aggregator" {
   count            = local.act
   function_name    = "${var.project}-ai-cost-aggregator"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "ai_cost_aggregator.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -1309,7 +1309,7 @@ resource "aws_lambda_function" "schedule_dispatcher" {
   count            = local.sched
   function_name    = "${var.project}-schedule-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "schedule_dispatcher.lambda_handler"
   filename         = data.archive_file.schedule_dispatcher_src[0].output_path
@@ -1421,7 +1421,7 @@ resource "aws_lambda_function" "diagnosis_digest" {
   count            = local.digest
   function_name    = "${var.project}-diagnosis-digest"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "diagnosis_digest.lambda_handler"
   filename         = data.archive_file.diagnosis_digest_src[0].output_path
@@ -1513,7 +1513,7 @@ resource "aws_lambda_function" "dsindex_dispatcher" {
   count            = local.dsd
   function_name    = "${var.project}-datasource-index-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "datasource_index_dispatcher.lambda_handler"
   filename         = data.archive_file.dsindex_dispatcher_src[0].output_path
@@ -1612,7 +1612,7 @@ resource "aws_lambda_function" "insight_dispatcher" {
   count            = local.aii
   function_name    = "${var.project}-insight-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "insight_dispatcher.lambda_handler"
   filename         = data.archive_file.insight_dispatcher_src[0].output_path
@@ -1736,7 +1736,7 @@ resource "aws_lambda_function" "connector_target_sync" {
   count            = local.cts
   function_name    = "${var.project}-connector-target-sync"
   role             = aws_iam_role.connector_target_sync[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "connector_targets.lambda_handler"
   filename         = data.archive_file.connector_target_sync[0].output_path

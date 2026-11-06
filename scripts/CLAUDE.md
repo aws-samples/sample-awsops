@@ -217,7 +217,7 @@ secrets-manager) — installed by `make deps`.
   rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
   a known configured collector hash. Diagnostics also publish bounded numeric metric values;
   never raw configuration, ARNs, account IDs, state or plans.
-- `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
+- `v2/terraform-test.sh` — Terraform 1.17.1 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
   `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.
 - `v2/workers.mjs` — `make workers`: builds and pushes the worker image **only**. The Fargate
@@ -269,7 +269,7 @@ secrets-manager) — installed by `make deps`.
   full web/collection/worker release gate. Exact timing and wire contracts: `docs/reference/05-agentcore.md`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.17.1 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions. It,
   `v2/ci/web-db-connection.itest.mjs`, and `v2/ci/agent-tool-policy.itest.mjs` are **required fail-hard exceptions** to the legacy
   optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,

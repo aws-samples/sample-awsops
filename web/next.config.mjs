@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // Test fixture type noise stays outside the production application check.
+  typescript: { tsconfigPath: 'tsconfig.build.json' },
   poweredByHeader: false,
   async redirects() {
     return [
