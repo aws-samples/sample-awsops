@@ -32,14 +32,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 1. 在 **Accounts** 中注册并启用目标账户，配置其区域，并在信任策略要求时提供 external ID。通常使用的目标角色是 `AWSopsReadOnlyRole`；该角色必须可由 web 任务承担，并获准读取 EKS 元数据。
 2. 选择目标账户和区域。对于**成员账户**，默认元数据发现和 Kubernetes 令牌签名都使用该账户已注册的只读角色。宿主账户的集群仍以 web 任务角色作为默认身份。AWSops 不会向成员集群发送宿主任务角色的 bearer 令牌。
-3. 集群所有者为相应角色准备 `STANDARD` Access Entry。共享成员读取角色应使用 **`AmazonEKSViewPolicy`，并为组 `awsops:eks-readonly` 绑定最小节点读取 RBAC**（仅对 `nodes` 的 `get/list/watch`）。不要给该共享角色附加可读取 Secrets 的 `AmazonEKSAdminViewPolicy`。添加 View 不会撤销已有 AdminView 关联，所有者必须移除原关联。宿主集群继续使用既有 Terraform 权限配置。
-4. 选择**查询注册**。应用通过 `DescribeCluster` 直接验证所选集群，并检查对应的现有 Access Entry。它不会搜索宿主集群列表，也不会创建 AWS 资源。注册和详情导航会保留账户与区域信息。
+3. 集群所有者只需为相应角色运行两条命令：`aws eks create-access-entry --type STANDARD`，以及集群范围的 `AmazonEKSViewPolicy` 关联（`associate-access-policy`）。无需 kubeconfig、kubectl 或 RBAC 步骤。View 不读取 Kubernetes Secrets。不要给该共享角色附加可读取 Secrets 的 `AmazonEKSAdminViewPolicy`。访问策略是叠加的，若已有 AdminView 关联，所有者必须用 `disassociate-access-policy` 移除。按旧指南创建的条目（组 `awsops:eks-readonly` 加节点读取 RBAC）仍可正常使用，但已不再必需。宿主集群继续使用既有 Terraform 权限配置。
+4. 管理员打开 **EKS** 页面时，应用会用 `DescribeAccessEntry` 验证已注册角色的 Access Entry，并在集群列表上方的 **Access Entry 已确认** 提示区域中优先列出已验证但未注册的成员集群。应用不会自动注册：只有管理员点击**查询注册**后才会注册，该按钮通过 `DescribeCluster` 直接验证所选集群并检查现有 Access Entry。应用只写入 Aurora 注册行，不会创建或修改 Access Entry、策略或 RBAC。注册和详情导航会保留账户与区域信息。管理员**取消注册**的集群在再次点击**查询注册**之前一直保持未注册状态。
 
-**可选读取权限：** View 和节点绑定不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
+**可选读取权限：** View 不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。这些绑定应关联到所有者添加到 Access Entry 的 Kubernetes 组。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
 
 **诊断与 ENI 数据前提：** CloudWatch 诊断要求目标读取角色具备 `cloudwatch:GetMetricData` 和 `cloudwatch:ListMetrics` 权限，并且 Container Insights 实际发布了指标。ENI 面板要求所选账户/区域已纳入清单采集范围，且 EC2 清单采集已完成。权限失败、没有指标序列和尚未采集清单是不同状态；AWSops 不会自动授予权限或安装代理。
 
-页面显示的接入命令由所有者执行，应用不会执行。`make configure` → `eks.tf` 仍是宿主账户的 Terraform 资源配置路径。成员账户或非默认区域的集群，需要在所有者准备好访问权限后手动查询注册；宿主 EventBridge 观察器并不是自动注册成员集群的机制。
+页面显示的接入命令由所有者执行，应用不会执行。`make configure` → `eks.tf` 仍是宿主账户的 Terraform 资源配置路径。成员账户的集群在所有者准备好 Access Entry 后，会在管理员的 EKS 页面上显示为已确认，并在管理员点击**查询注册**后注册，这与宿主 EventBridge 观察器无关。宿主账户非默认区域的集群仍需手动查询注册。
 
 ### 显式认证选项
 
@@ -54,6 +54,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 - **Nodes / Pods / Deployments / Services** 分别打开对应范围的资源页面。
 - 节点面板显示 capacity、allocatable 资源、请求量和 Pod 信息；请求比率表示预留量，而非实测 CPU/内存使用率。
+- 由于 View 策略没有 `nodes` 读取权限，成员集群的节点列表通过已注册成员只读角色的 EC2/节点组 API（`DescribeInstances`、`ListNodegroups`/`DescribeNodegroup`、`DescribeInstanceTypes`）构建，并标注为 **EC2/节点组视图**。其中不含 kubelet 状态、标签和污点；allocatable 显示为实例类型容量（上限），且不包含 Fargate 节点。Ready 数显示为“EC2 running N · Ready unknown”，并且不计入预留（Reserved）比例计算。若仅节点读取失败，Pod、Deployment 和 Service 仍会显示。
 - ENI 详情使用限定范围的 EC2 清单，并在可用时使用实例级 CloudWatch 流量数据。
 - Pod 状态、命名空间、实例类型图表和 Warning Events 汇总观测数据。不可达集群仍会明确显示。
 - 点击已连接卡片的标题可打开集群详情。OpenCost 状态、配置和资源请求会保留集群标识。

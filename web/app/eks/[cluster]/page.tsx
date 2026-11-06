@@ -149,6 +149,8 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
   const { tt } = useI18n();
   const [tab, setTab] = useState<Tab>('nodes');
   const [rows, setRows] = useState<Row[] | null>(null);
+  // Node provenance from the route, not row contents: an empty EC2/node-group read stays labelled.
+  const [nodesSource, setNodesSource] = useState<string | undefined>(undefined);
   const [nodeAgg, setNodeAgg] = useState<NodeResourceAgg[] | null>(null);
   const [nodePods, setNodePods] = useState<PodRow[] | null>(null);
   const [nodePodsErr, setNodePodsErr] = useState('');
@@ -219,6 +221,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
         ? [...(d.rows as Row[])].sort((a, b) => Number(b.lastSeenTs ?? 0) - Number(a.lastSeenTs ?? 0))
         : (d.rows as Row[]);
       setRows(sorted);
+      setNodesSource(tab === 'nodes' && typeof d.source === 'string' ? d.source : undefined);
       if (podsP) {
         const pd = await podsP;
         if (!fresh()) return;
@@ -456,6 +459,11 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
                   );
                 })()}
 
+                {tab === 'nodes' && nodesSource === 'aws-api' && (
+                  <div role="note" className="rounded-md bg-ink-50 px-3 py-2 text-[12px] text-ink-500">
+                    {tt('멤버 클러스터 노드는 Kubernetes nodes API 대신 EC2/노드그룹 API(등록된 멤버 읽기 역할) 기준입니다. kubelet 상태·레이블·테인트는 없고, allocatable은 인스턴스 타입 용량(상한)으로 표시되며 Fargate 노드는 제외됩니다.')}
+                  </div>
+                )}
                 {tab === 'nodes' && nodeAgg && nodeAgg.length > 0 && (
                   <Card title="노드 리소스" subtitle="Pod 요청 합계 대비 노드 allocatable (CPU 코어 · 메모리 MiB)">
                     <div className="flex flex-col gap-3">
@@ -516,6 +524,8 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
             podPending={(selectedNodePods ?? []).filter((x) => x.status === 'Pending').length}
             podFailed={(selectedNodePods ?? []).filter((x) => x.status === 'Failed').length}
             createdAt={selectedNode.createdAt}
+            ec2View={selectedNode.source === 'aws-api'}
+            capacityUnknown={selectedNode.capacityUnknown === true}
           />
           <NodePodsSection pods={selectedNodePods} error={nodePodsErr} />
           <NodeEniSection nodeName={selectedNode.name} cluster={cluster} />

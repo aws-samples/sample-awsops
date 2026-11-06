@@ -32,14 +32,14 @@ import Screenshot from '@site/src/components/Screenshot';
 
 1. **Accounts**에서 대상 계정을 등록·활성화하고 리전을 설정합니다. 신뢰 정책이 요구하면 external ID를 입력합니다. 일반적인 대상 역할은 `AWSopsReadOnlyRole`이며, web 태스크가 AssumeRole할 수 있고 EKS 메타데이터를 읽을 권한이 있어야 합니다.
 2. 대상 계정과 리전을 선택합니다. **멤버 계정**에서는 메타데이터 조회와 기본 Kubernetes 토큰 서명에 모두 그 계정에 등록된 읽기 역할을 사용합니다. 호스트 계정 클러스터의 기본 인증은 web 태스크 역할을 유지합니다. 호스트 태스크 역할의 bearer 토큰을 멤버 클러스터에 보내지 않습니다.
-3. 클러스터 소유자가 해당 역할의 `STANDARD` Access Entry를 준비합니다. 멤버의 공유 읽기 역할에는 **`AmazonEKSViewPolicy`와 `awsops:eks-readonly` 그룹의 최소 노드 읽기 RBAC**(`nodes`의 `get/list/watch`)를 사용합니다. 이 공유 역할에는 Secrets를 읽을 수 있는 `AmazonEKSAdminViewPolicy`를 부여하지 마세요. 이미 연결되어 있으면 View를 추가하는 것만으로 권한이 줄지 않으므로 소유자가 기존 AdminView 연결을 제거해야 합니다. 호스트 계정은 기존 Terraform 권한 구성을 따릅니다.
-4. **조회 등록**을 누릅니다. 앱은 `DescribeCluster`로 선택한 클러스터를 직접 확인하고 해당 역할의 기존 Access Entry를 점검합니다. 호스트 클러스터 목록으로 검증하거나 AWS 리소스를 만들지 않습니다. 등록과 상세 이동에는 계정·리전 정보가 유지됩니다.
+3. 클러스터 소유자가 해당 역할에 대해 명령 두 개만 실행합니다: `aws eks create-access-entry --type STANDARD`와 클러스터 범위 `AmazonEKSViewPolicy` 연결(`associate-access-policy`). kubeconfig·kubectl·RBAC 단계는 없습니다. View는 Kubernetes Secrets를 읽지 않습니다. 이 공유 역할에는 Secrets를 읽을 수 있는 `AmazonEKSAdminViewPolicy`를 부여하지 마세요. 액세스 정책은 누적되므로 기존 AdminView 연결이 있으면 소유자가 `disassociate-access-policy`로 제거해야 합니다. 이전 가이드로 만든 항목(`awsops:eks-readonly` 그룹 + 노드 읽기 RBAC)은 그대로 동작하며 더 이상 필수는 아닙니다. 호스트 계정은 기존 Terraform 권한 구성을 따릅니다.
+4. 관리자가 **EKS** 페이지를 열면 앱이 등록된 역할의 Access Entry를 `DescribeAccessEntry`로 확인하고, 확인된 미등록 멤버 클러스터를 목록 위 **Access Entry 확인됨** 안내 영역에 먼저 보여 줍니다. 자동으로 등록하지는 않으며, 관리자가 **조회 등록**을 눌러야 등록됩니다. 이 버튼은 `DescribeCluster`로 선택한 클러스터를 직접 확인하고 기존 Access Entry를 점검합니다. 앱은 Aurora 등록 행만 기록하며 Access Entry·정책·RBAC를 만들거나 바꾸지 않습니다. 등록과 상세 이동에는 계정·리전 정보가 유지됩니다. 관리자가 **해제**한 클러스터는 다시 **조회 등록**을 누르기 전까지 등록되지 않은 상태로 남습니다.
 
-**선택적 읽기 권한:** View와 노드 바인딩은 Secrets를 허용하지 않습니다. OpenCost API 프록시에는 `opencost` 네임스페이스의 해당 서비스에 한정된 `services/proxy` GET 권한이, K8sGPT에는 `result.core.k8sgpt.ai`의 `results` 읽기 바인딩이 별도로 필요합니다. 소유자가 필요한 기능에만 최소 권한을 추가하며 앱은 적용하지 않습니다.
+**선택적 읽기 권한:** View는 Secrets를 허용하지 않습니다. OpenCost API 프록시에는 `opencost` 네임스페이스의 해당 서비스에 한정된 `services/proxy` GET 권한이, K8sGPT에는 `result.core.k8sgpt.ai`의 `results` 읽기 바인딩이 별도로 필요하며, 이 바인딩은 소유자가 Access Entry에 추가한 Kubernetes 그룹에 연결합니다. 소유자가 필요한 기능에만 최소 권한을 추가하며 앱은 적용하지 않습니다.
 
 **진단·ENI 데이터 준비:** CloudWatch 진단 지표에는 대상 읽기 역할의 `cloudwatch:GetMetricData`와 `cloudwatch:ListMetrics` 권한이 필요합니다. Container Insights 지표는 실제로 게시되고 있어야 합니다. ENI 패널은 선택한 계정·리전이 인벤토리 수집 범위에 포함되고 EC2 인벤토리 수집이 완료되어야 합니다. 권한 오류, 지표 없음, 미수집 인벤토리는 서로 다른 상태이며, AWSops가 권한이나 에이전트를 자동 설치하지 않습니다.
 
-표시되는 온보딩 명령은 소유자가 실행하며 앱이 실행하지 않습니다. `make configure` → `eks.tf`는 호스트 계정의 Terraform 프로비저닝 경로입니다. 멤버 계정·기본 리전 외 클러스터는 소유자가 권한을 준비한 뒤 수동으로 조회 등록해야 하며, 호스트 EventBridge 관찰자가 멤버 등록을 자동 처리하지 않습니다.
+표시되는 온보딩 명령은 소유자가 실행하며 앱이 실행하지 않습니다. `make configure` → `eks.tf`는 호스트 계정의 Terraform 프로비저닝 경로입니다. 멤버 계정 클러스터는 소유자가 Access Entry를 준비하면 관리자의 EKS 페이지에 확인됨으로 표시되고 관리자가 **조회 등록**을 눌러 등록하며, 호스트 EventBridge 관찰자와는 별개입니다. 호스트 계정의 기본 리전 외 클러스터는 계속 수동으로 조회 등록합니다.
 
 ### 명시적 인증 옵션
 
@@ -54,6 +54,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 - **Nodes / Pods / Deployments / Services**에서 선택 범위의 리소스를 조회합니다.
 - 노드 패널은 Capacity, Allocatable, 요청량과 Pod 정보를 보여줍니다. 요청 비율은 예약량이며 실제 CPU·메모리 사용률이 아닙니다.
+- 멤버 클러스터는 View 정책에 `nodes` 읽기가 없으므로 노드 목록을 등록된 멤버 읽기 역할의 EC2/노드그룹 API(`DescribeInstances`, `ListNodegroups`/`DescribeNodegroup`, `DescribeInstanceTypes`)로 구성하고 **EC2/노드그룹 기준**으로 표시합니다. kubelet 상태·레이블·테인트는 없고, Allocatable은 인스턴스 타입 용량(상한)이며 Fargate 노드는 제외됩니다. Ready 수는 "EC2 running N · Ready unknown"으로 표시하고, 예약(Reserved) 비율 계산에서 제외합니다. 노드 조회만 실패하면 Pod·Deployment·Service는 계속 표시됩니다.
 - ENI 상세는 해당 범위의 EC2 인벤토리와 사용 가능한 인스턴스 단위 CloudWatch 트래픽을 표시합니다.
 - Pod 상태·네임스페이스·인스턴스 타입 차트와 Warning Events는 관측한 데이터를 요약하며, 미도달 클러스터를 안내합니다.
 - 연결된 카드 제목으로 상세 화면을 엽니다. OpenCost 상태·설정과 리소스 요청도 클러스터 식별자를 유지합니다.

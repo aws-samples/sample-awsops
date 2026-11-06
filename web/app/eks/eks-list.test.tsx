@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import EksPage from './page';
 
 afterEach(cleanup);
@@ -34,7 +34,7 @@ function mockFetch(handlers: Record<string, (init?: RequestInit) => { status: nu
   }));
 }
 
-beforeEach(() => { vi.unstubAllGlobals(); });
+beforeEach(() => { vi.unstubAllGlobals(); window.localStorage.clear(); });
 
 describe('EKS list page (ADR buildout)', () => {
   it('renders a connected cluster as a link, others as plain text', async () => {
@@ -112,5 +112,92 @@ describe('EKS list page (ADR buildout)', () => {
     // warning events table — DataTable renders both desktop table + mobile card
     // list, so the cell value appears twice in jsdom → assert via getAllByText.
     await waitFor(() => expect(screen.getAllByText('BackOff').length).toBeGreaterThan(0));
+  });
+
+  it('renders EC2/node-group fleet nodes as EC2 running with Ready unknown, never 0 ready', async () => {
+    const ec2Fleet = { ...fleetCluster, nodesSource: 'aws-api', counts: { ...fleetCluster.counts, nodesReady: null, ec2Running: 2 } };
+    mockFetch({
+      'GET /api/eks/fleet?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters: [ec2Fleet] } }),
+      'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }),
+    });
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('EC2 running 2 · Ready unknown')).toBeTruthy());
+    expect(screen.queryByText(/0 ready/)).toBeNull();
+  });
+});
+
+describe('EKS member one-click registration (verified Access Entry callout, no auto-POST)', () => {
+  const MEMBER = 'arn:aws:eks:us-east-1:222222222222:cluster/member';
+  const memberRow = { id: MEMBER, name: 'member', accountId: '222222222222', region: 'us-east-1', status: 'ACTIVE', access: 'entry-only', runtime: false, guide, accessEntryVerified: true };
+  const LIST = 'GET /api/eks?regions=__all__&includeGlobal=1';
+  const POST_MEMBER = `POST /api/eks/${encodeURIComponent(MEMBER)}/register`;
+  const DELETE_MEMBER = `DELETE /api/eks/${encodeURIComponent(MEMBER)}/register`;
+
+  function setup(opts: { admin?: boolean } = {}) {
+    const state = { registered: false, posts: [] as unknown[], listCalls: 0 };
+    mockFetch({
+      ...FLEET,
+      [LIST]: () => {
+        state.listCalls += 1;
+        const admin = opts.admin ?? true;
+        const member = state.registered
+          ? { ...memberRow, access: 'connected', runtime: true, accessEntryVerified: undefined, guide: undefined }
+          : admin ? memberRow : { ...memberRow, accessEntryVerified: undefined };
+        return { status: 200, body: { admin, clusters: [clusters[0], member] } };
+      },
+      [POST_MEMBER]: (init) => { state.posts.push(init?.body ? JSON.parse(String(init.body)) : null); state.registered = true; return { status: 200, body: { registered: true } }; },
+      [DELETE_MEMBER]: () => { state.registered = false; return { status: 200, body: { unregistered: true } }; },
+    });
+    return state;
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it('shows the verified member in a callout and lists its card first, without any POST', async () => {
+    const state = setup();
+    render(<EksPage />);
+    const callout = await screen.findByTestId('eks-verified-callout');
+    expect(within(callout).getByText('member (222222222222 / us-east-1)')).toBeTruthy();
+    expect(within(callout).getAllByText('Access Entry 확인됨').length).toBeGreaterThan(0);
+    await settle();
+    expect(state.posts).toEqual([]);
+    expect(state.listCalls).toBe(1);
+    // Cards: the verified member renders before the connected cluster.
+    const names = screen.getAllByText(/^(conn|member)$/).map((el) => el.textContent);
+    expect(names[0]).toBe('member');
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it('registers only when the admin clicks [조회 등록] in the callout (ordinary POST, no auto body)', async () => {
+    const state = setup();
+    render(<EksPage />);
+    const callout = await screen.findByTestId('eks-verified-callout');
+    fireEvent.click(within(callout).getByText('조회 등록'));
+    await waitFor(() => expect(screen.getByText(/등록 완료/)).toBeTruthy());
+    expect(state.posts).toEqual([null]);
+    await waitFor(() => expect(screen.queryByTestId('eks-verified-callout')).toBeNull());
+  });
+
+  it('never shows the callout or POSTs for a non-admin view', async () => {
+    const state = setup({ admin: false });
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('member')).toBeTruthy());
+    await settle();
+    expect(screen.queryByTestId('eks-verified-callout')).toBeNull();
+    expect(state.posts).toEqual([]);
+  });
+
+  it('DELETE is durable: a fresh page load lists the cluster as a callout but never re-registers it', async () => {
+    const state = setup();
+    state.registered = true;
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('해제')).toBeTruthy());
+    fireEvent.click(screen.getByText('해제'));
+    await waitFor(() => expect(screen.getByText(/등록 해제됨/)).toBeTruthy());
+    cleanup();
+    render(<EksPage />);
+    await screen.findByTestId('eks-verified-callout');
+    await settle();
+    expect(state.posts).toEqual([]);
+    expect(state.registered).toBe(false);
   });
 });

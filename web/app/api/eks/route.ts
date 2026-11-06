@@ -18,8 +18,8 @@ export async function GET(request: Request) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
   try {
-    const [scope, allowed, authModes] = await Promise.all([
-      getEksScope(new URL(request.url).searchParams), getAllowedClusters(true), getAuthModes(),
+    const [scope, allowed, authModes, admin] = await Promise.all([
+      getEksScope(new URL(request.url).searchParams), getAllowedClusters(true), getAuthModes(), isAdmin(user),
     ]);
     const results = await mapEksConcurrent(scope.targets, async target => {
       try {
@@ -30,6 +30,7 @@ export async function GET(request: Request) {
             c.name, target.accountId === 'self' ? currentAccountId() : target.accountId, target.region,
           );
           let access: AccessState;
+          let accessEntryVerified = false;
           const isEnv = isEnvCluster(id);
           const authMode = authModes.get(id);
           if (authMode) {
@@ -42,6 +43,14 @@ export async function GET(request: Request) {
               // runtime-registered: re-verify the entry (spec: connected = allowed AND entry) —
               // a revoked entry shows as no-entry again (guide + still unregisterable)
               access = entry === true ? 'connected' : entry === false ? 'no-entry' : 'unknown';
+            } else if (entry === true && admin && target.accountId !== 'self' && !isEnv) {
+              // One-click registration hint only: the owner's Access Entry for the
+              // registered member read role is verified (DescribeAccessEntry) on a cluster
+              // ListClusters just returned through that role. This GET never writes — the
+              // admin /eks page surfaces the cluster in a callout and registers it only when
+              // the admin clicks [조회 등록] (the ordinary POST /api/eks/[cluster]/register).
+              access = 'entry-only';
+              accessEntryVerified = true;
             } else {
               access = entry === true ? 'entry-only' : entry === false ? 'no-entry' : 'unknown';
             }
@@ -50,7 +59,8 @@ export async function GET(request: Request) {
           // (role ARN is cached — per-row cost is string templating only).
           const guide = access === 'connected' ? undefined : await onboardingGuide(id);
           return { ...c, id, accountId: target.accountId === 'self' ? currentAccountId() : target.accountId,
-            region: target.region, access, runtime: allowed.has(id) && !isEnv, authMode, guide };
+            region: target.region, access, runtime: allowed.has(id) && !isEnv, authMode, guide,
+            ...(accessEntryVerified ? { accessEntryVerified } : {}) };
         });
         return { clusters, truncated: inventory.truncated, error: undefined };
       } catch (error) {
@@ -59,7 +69,6 @@ export async function GET(request: Request) {
         } };
       }
     });
-    const admin = await isAdmin(user);
     const queryErrors = results.flatMap(result => result.error ? [result.error] : []);
     const errors = [...(scope.errors ?? []), ...queryErrors];
     const failed = results.length > 0 && queryErrors.length === results.length;

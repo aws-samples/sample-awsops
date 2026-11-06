@@ -19,7 +19,7 @@ import BarDistribution from '@/components/charts/BarDistribution';
 import { podStatusCounts, serviceTypeCounts } from '@/lib/eks-tab-stats';
 import { serviceResources, topServiceResources } from '@/lib/eks-service-resources';
 import type { ServiceRow } from '@/lib/eks-incluster';
-import type { PodRow } from '@/lib/eks-resources';
+import type { NodeRow, PodRow } from '@/lib/eks-resources';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from './EksFilterPanel';
@@ -140,7 +140,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
   const [ns, setNs] = useState('전체');
   const [clusterSel, setClusterSel] = useState('전체');
   // nodes 전용 드릴다운 (v1 parity — 개요와 동일 패널): 행 클릭 → CPU/Memory/Pods/ENI
-  const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string } | null>(null);
+  const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string; row?: NodeRow } | null>(null);
   // Gap L132 (nodes only): per-cluster pod request aggregation keyed by node name; a cluster
   // whose pods fetch failed maps to null so its bars degrade honestly ('요청량 미상').
   const [podReq, setPodReq] = useState<Record<string, Record<string, { cpu: number; mem: number }> | null>>({});
@@ -345,19 +345,31 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
             {/* Per-kind KPI/viz — ALWAYS computed from allRows (pre-filter) so
                 the summary describes the whole fleet, not the filtered table. */}
             {kind === 'nodes' && allRows.length > 0 && (() => {
-              const ready = allRows.filter((r) => String(r.status ?? '') === 'Ready').length;
-              const cpu = allRows.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
-              const memMiB = allRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
+              // Member EC2/node-group rows (source 'aws-api') have no kubelet Ready condition
+              // and no kubelet allocatable (their allocatable mirrors instance capacity), so
+              // they are excluded from the Ready ratio and from reserved% — shown as
+              // "EC2 running N · Ready unknown" rather than as unhealthy or 0% reserved.
+              const k8sRows = allRows.filter((r) => r.source !== 'aws-api');
+              const ec2Rows = allRows.length - k8sRows.length;
+              const ec2Running = allRows.filter((r) => r.source === 'aws-api' && r.status === 'EC2 running').length;
+              const ready = k8sRows.filter((r) => String(r.status ?? '') === 'Ready').length;
+              // Rows with unresolved capacity are counted, not summed as 0, and disclosed in the hint.
+              const sized = allRows.filter((r) => r.capacityUnknown !== true);
+              const unsized = allRows.length - sized.length;
+              const cpu = sized.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
+              const memMiB = sized.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
               // gap L234 (v1 memory analysis KPI): allocatable + reserved% — shown only when
               // allocatable is actually reported (an unreported fleet must not read 'reserved 100%').
-              const memAllocMiB = allRows.reduce((s, r) => s + (Number(r.memAllocatable) || 0), 0);
+              const k8sMemMiB = k8sRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
+              const memAllocMiB = k8sRows.reduce((s, r) => s + (Number(r.memAllocatable) || 0), 0);
               // every capacity-bearing node must report allocatable — a partial fleet would
               // inflate reserved% (missing allocatable counts 0 in the numerator but full
               // capacity in the denominator).
-              const allocComplete = allRows.every((r) => !(Number(r.memCapacity) > 0) || Number(r.memAllocatable) > 0);
-              const memHint = allocComplete && memAllocMiB > 0 && memMiB > 0
-                ? `allocatable ${Math.round(memAllocMiB / 1024).toLocaleString()} GiB · reserved ${Math.round((1 - memAllocMiB / memMiB) * 100)}%`
+              const allocComplete = k8sRows.every((r) => !(Number(r.memCapacity) > 0) || Number(r.memAllocatable) > 0);
+              const memHint = allocComplete && memAllocMiB > 0 && k8sMemMiB > 0
+                ? `allocatable ${Math.round(memAllocMiB / 1024).toLocaleString()} GiB · reserved ${Math.round((1 - memAllocMiB / k8sMemMiB) * 100)}%${ec2Rows ? ` (EC2 view ${ec2Rows} excluded)` : ''}`
                 : undefined;
+              const readyHint = ec2Rows ? `EC2 running ${ec2Running} · Ready unknown ${ec2Rows}` : undefined;
               const types = new Map<string, number>();
               for (const r of allRows) {
                 const t = String(r.instanceType ?? '') || 'unknown';
@@ -368,9 +380,16 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <StatCard label="총 노드" value={allRows.length} />
-                    <StatCard label="Ready" value={ready} variant={ready < allRows.length ? 'warn' : 'default'} />
-                    <StatCard label="총 vCPU" value={Math.round(cpu).toLocaleString()} />
-                    <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} hint={memHint} />
+                    <StatCard
+                      label="Ready"
+                      value={k8sRows.length ? ready : '—'}
+                      hint={readyHint}
+                      variant={ready < k8sRows.length ? 'warn' : 'default'}
+                    />
+                    <StatCard label="총 vCPU" value={sized.length ? Math.round(cpu).toLocaleString() : '—'}
+                      hint={unsized ? `capacity unknown ${unsized}` : undefined} />
+                    <StatCard label="총 Memory (GiB)" value={sized.length ? Math.round(memMiB / 1024).toLocaleString() : '—'}
+                      hint={[memHint, unsized ? `capacity unknown ${unsized}` : undefined].filter(Boolean).join(' · ') || undefined} />
                   </div>
                   <DonutBreakdown title="Instance Types" data={donut} nameKey="name" valueKey="value" />
                 </>
@@ -386,7 +405,14 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                   const cluster = String(r.cluster ?? '');
                   // hasOwn guard: cluster names may legally shadow Object.prototype members.
                   const clusterAgg = Object.hasOwn(podReq, cluster) ? podReq[cluster] : null;
-                  const nodeAgg = clusterAgg == null ? null : (Object.hasOwn(clusterAgg, String(r.name ?? '')) ? clusterAgg[String(r.name ?? '')] : { cpu: 0, mem: 0 });
+                  // EC2-view rows may be named by private DNS while pods use another node name (e.g.
+                  // instance IDs): try both keys, and treat "no pod references this node" as unknown
+                  // for those rows rather than a fabricated 0% request.
+                  const keys = [String(r.name ?? ''), ...(r.source === 'aws-api' && r.instanceId ? [String(r.instanceId)] : [])];
+                  const hit = clusterAgg == null ? undefined : keys.find((k) => Object.hasOwn(clusterAgg, k));
+                  const nodeAgg = clusterAgg == null ? null
+                    : hit !== undefined ? clusterAgg[hit]
+                      : r.source === 'aws-api' ? null : { cpu: 0, mem: 0 };
                   return {
                     cluster,
                     name: String(r.name ?? ''),
@@ -396,6 +422,8 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                     memCapacityMiB: Number(r.memCapacity) || 0,
                     memAllocatableMiB: Number(r.memAllocatable) || 0,
                     memRequestMiB: nodeAgg == null ? null : nodeAgg.mem,
+                    ...(r.source === 'aws-api' ? { allocatableUnknown: true } : {}),
+                    ...(r.capacityUnknown === true ? { capacityUnknown: true } : {}),
                   };
                 })}
               />
@@ -532,7 +560,8 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
               onRowClick={(row) => {
                 // nodes는 개요와 동일한 리치 드릴다운(CPU/Memory/Pods/ENI), 그 외 kind는 기존 raw 패널.
                 if (kind === 'nodes' && typeof row.cluster === 'string' && typeof row.name === 'string') {
-                  setNodeSel({ cluster: row.cluster, name: row.name });
+                  // EC2/node-group rows carry everything the drilldown can show — no node re-list.
+                  setNodeSel({ cluster: row.cluster, name: row.name, ...(row.source === 'aws-api' ? { row: row as unknown as NodeRow } : {}) });
                 } else {
                   setSelected(row);
                 }
@@ -548,7 +577,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
         onClose={() => setSelected(null)}
       />
       {nodeSel && (
-        <NodeDrilldownPanel cluster={nodeSel.cluster} nodeName={nodeSel.name} onClose={() => setNodeSel(null)} />
+        <NodeDrilldownPanel cluster={nodeSel.cluster} nodeName={nodeSel.name} node={nodeSel.row} onClose={() => setNodeSel(null)} />
       )}
     </>
   );
