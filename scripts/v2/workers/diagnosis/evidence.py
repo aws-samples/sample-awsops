@@ -175,16 +175,30 @@ _REFERENCE_FIELDS = {
 }
 
 
-# DNS names (RDS endpoints, trace hosts) identify the account's resources but carry no
-# ARN/IP shape that redact() recognizes: their values never reach a model.
-_HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host"}
+# DNS names (RDS endpoints, resolver queries, trace hosts) identify the account's resources
+# but carry no ARN/IP shape that redact() recognizes: their values never reach a model.
+# Host-valued keys are always masked; name-valued keys (X-Ray/trace node names, which are a
+# service name or a remote host) are masked when the value is hostname-shaped; any AWS
+# service DNS name is masked wherever it appears.
+_HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host", "query_name", "dns_source_id"}
+_NAME_KEYS = {"from_name", "to_name", "service_name", "service", "name", "Name"}
+_HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.){2,}[a-z][a-z0-9-]{0,62}\.?")
+_AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
+
+
+def _scrub_text(value, key):
+    if not value:
+        return value
+    if key in _HOST_KEYS or (key in _NAME_KEYS and _HOSTNAME.fullmatch(value)):
+        return "<host>"
+    return _AWS_HOST.sub("<host>", redact(value))
 
 
 def redact_context(context):
     """Scrub source strings while keeping admitted citation IDs byte-for-byte."""
     def scrub(value, key=None):
         if isinstance(value, str):
-            return "<host>" if key in _HOST_KEYS and value else redact(value)
+            return _scrub_text(value, key)
         if isinstance(value, list):
             return [scrub(item, key) for item in value]
         if isinstance(value, dict):
