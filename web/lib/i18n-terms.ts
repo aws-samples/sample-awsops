@@ -1154,6 +1154,7 @@ export const TERMS: Record<string, Pair> = {
   '미연결': { en: 'Not connected', zh: '未连接', ja: '未接続' },
   '확인 불가': { en: 'Unable to verify', zh: '无法确认', ja: '確認不可' },
   '조회 불가': { en: 'Unable to query', zh: '无法查询', ja: '照会不可' },
+  '자동 조회 등록됨': { en: 'Auto-registered for queries', zh: '已自动注册查询', ja: '自動で照会登録済み' },
   '노드 정보 없음': { en: 'Node details unavailable', zh: '节点信息不可用', ja: 'ノード情報なし' },
   'EC2/노드그룹 기준': { en: 'EC2/node-group view', zh: 'EC2/节点组视图', ja: 'EC2/ノードグループ基準' },
   'Kubernetes nodes API 대신 EC2/노드그룹 API 기준 (kubelet 상태 없음)': { en: 'From EC2/node-group APIs instead of the Kubernetes nodes API (no kubelet status)', zh: '基于 EC2/节点组 API，而非 Kubernetes nodes API（无 kubelet 状态）', ja: 'Kubernetes nodes API ではなく EC2/ノードグループ API 基準（kubelet 状態なし）' },

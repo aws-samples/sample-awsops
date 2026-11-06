@@ -16,7 +16,7 @@ const POD = (over: Record<string, unknown> = {}) => ({
 
 // Fetch stub: /api/eks list → two connected clusters; per-cluster incluster fetches are
 // scripted per cluster+kind so one cluster's pods can fail while the other succeeds.
-function setFetch(pods: Record<string, unknown[] | null>) {
+function setFetch(pods: Record<string, unknown[] | null>, nodeOverride: Record<string, Record<string, unknown>> = {}) {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const u = String(url);
     if (u === '/api/eks?regions=__all__&includeGlobal=1') {
@@ -25,7 +25,7 @@ function setFetch(pods: Record<string, unknown[] | null>) {
     const m = u.match(/\/api\/eks\/([^/]+)\/incluster\?kind=(\w+)/);
     if (m) {
       const [, cluster, kind] = m;
-      if (kind === 'nodes') return { ok: true, status: 200, json: async () => ({ rows: [{ ...NODE, name: `${cluster}-n1` }] }) };
+      if (kind === 'nodes') return { ok: true, status: 200, json: async () => ({ rows: [{ ...NODE, name: `${cluster}-n1`, ...nodeOverride[cluster] }] }) };
       if (kind === 'pods') {
         const rows = pods[cluster];
         if (rows === null) return { ok: false, status: 500, json: async () => ({}) };
@@ -54,5 +54,19 @@ describe('FleetKindPage nodes capacity list (gap L132)', () => {
     render(<FleetKindPage kind="nodes" />);
     await waitFor(() => expect(screen.getByText('avail 2.5 vCPU | rsv 0.5 vCPU')).toBeTruthy());
     expect(screen.getAllByText(/요청량 미상/).length).toBe(2); // dev-b-n1's CPU + Mem captions only
+  });
+
+  it('keeps EC2/node-group (aws-api) rows out of the Ready ratio and reserved%', async () => {
+    setFetch({ 'prod-a': [POD({ node: 'prod-a-n1' })], member: [] }, {
+      // aws-api rows mirror capacity into allocatable — that must not read as 0% reserved.
+      member: { status: 'EC2 running', source: 'aws-api', cpuAllocatable: 4, memAllocatable: 8192 },
+    });
+    render(<FleetKindPage kind="nodes" />);
+    await waitFor(() => expect(screen.getByText('EC2 running 1 · Ready unknown 1')).toBeTruthy());
+    // reserved% over the Kubernetes-API node only: 1 - 7168/8192 = 12.5% → 13%
+    expect(screen.getByText('allocatable 7 GiB · reserved 13% (EC2 view 1 excluded)')).toBeTruthy();
+    expect(screen.getByText('총 노드').parentElement?.textContent).toContain('2');
+    // the EC2-view node's capacity caption shows Reserved as unknown, not 0
+    await waitFor(() => expect(screen.getByText('avail 4.0 vCPU | rsv —')).toBeTruthy());
   });
 });

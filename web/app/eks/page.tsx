@@ -19,7 +19,10 @@ import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
 import EksFilterPanel, { EksCollectionNotice, NO_VPC, type EksCollectionStatus, type EksFilterState } from '@/components/eks/EksFilterPanel';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
-import type { NodeRow, PodRow } from '@/lib/eks-resources';
+import { fleetNodeTotals, formatFleetNodeReady, type NodeRow, type PodRow } from '@/lib/eks-resources';
+import {
+  autoRegisterCandidates, clearAutoRegisterSuppression, readAutoRegisterSuppressed, suppressAutoRegister,
+} from '@/lib/eks-auto-register';
 
 // EKS fleet overview — v1 /k8s-Overview parity. Access Entry holders register
 // instantly (the v2 equivalent of v1's "Register kubeconfig"); others get the
@@ -33,6 +36,8 @@ interface Cluster {
   authMode?: 'sa-token' | 'assume-role';
   runtime?: boolean;
   guide?: Guide;
+  /** Admin-only GET flag: member Access Entry verified, not registered yet (auto-POST candidate). */
+  accessEntryVerified?: boolean;
 }
 interface Guide { commands: string[]; note: string }
 
@@ -50,7 +55,8 @@ interface FleetEvent {
 }
 interface FleetCluster {
   id?: string; name: string; accountId?: string; region?: string; reachable: boolean; error?: string;
-  counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
+  /** nodesReady is null (unknown) and ec2Running is set when nodesSource is 'aws-api'. */
+  counts: { nodes: number; nodesReady: number | null; ec2Running?: number; pods: number; podsRunning: number; deployments: number; services: number };
   nodeAgg: NodeAgg[];
   instanceTypes: Array<{ type: string; count: number }>;
   podStatus: Record<string, number>;
@@ -111,6 +117,9 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   const listSeqRef = useRef(0);
   const fleetSeqRef = useRef(0);
   const refreshSeqRef = useRef(0);
+  // Auto-registration: each candidate is POSTed at most once per mount (a 409/503 never loops).
+  const autoAttempted = useRef(new Set<string>());
+  const autoRegisterRef = useRef<(ids: string[]) => Promise<void>>(async () => {});
   const loadFleet = useCallback(() => {
     const seq = ++fleetSeqRef.current;
     const fresh = () => alive.current && seq === fleetSeqRef.current;
@@ -127,11 +136,15 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       .then((d) => {
         if (!fresh()) return;
         setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr('');
-        // A member cluster registered automatically on this read joins the live fleet now.
-        if ((d.clusters ?? []).some((c: { autoRegistered?: boolean }) => c.autoRegistered)) void loadFleet();
+        // GET never writes: verified member entries are registered through the ordinary
+        // admin POST path, skipping clusters this browser's admin unregistered.
+        const ids = autoRegisterCandidates(d.clusters ?? [], {
+          admin: !!d.admin, suppressed: readAutoRegisterSuppressed(), attempted: autoAttempted.current,
+        });
+        if (ids.length) void autoRegisterRef.current(ids);
       })
       .catch((e) => { if (fresh()) setErr(String(e)); });
-  }, [scopeQuery, loadFleet]);
+  }, [scopeQuery]);
 
   // Manual refresh: re-fetch both the access list and the live fleet; stamp
   // capturedAt once the fleet load settles (best-effort — never throws).
@@ -162,7 +175,10 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'POST' });
       if (!alive.current) return;
-      if (res.status === 200) { setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet(); }
+      if (res.status === 200) {
+        clearAutoRegisterSuppression(cluster); // an explicit register re-enables auto-registration
+        setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet();
+      }
       else if (res.status === 409) { const d = await res.json(); if (alive.current) setGuide({ cluster, data: d.guide }); }
       else if (res.status === 403) setNotice(tt('관리자 전용 기능입니다.'));
       else if (res.status === 503) setNotice(tt('등록 저장소(Aurora)가 설정되지 않았습니다.'));
@@ -184,6 +200,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       });
       if (!alive.current) return;
       if (res.status === 200) {
+        clearAutoRegisterSuppression(cluster);
         setNotice(tt(`${eksClusterLabel(cluster)} 인증 저장 완료 — 바로 조회할 수 있습니다.`));
         setAuthFor(null); setRegOpen(false); setAuthToken(''); setAuthRole(''); setAuthExtId('');
         load(); loadFleet();
@@ -200,12 +217,33 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     setBusyCluster(cluster); setNotice('');
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'DELETE' });
+      // Suppress before the reload so the still-valid Access Entry cannot auto-register it again.
+      if (res.ok) suppressAutoRegister(cluster);
       if (!alive.current) return;
       setNotice(res.ok ? tt(`${eksClusterLabel(cluster)} 등록 해제됨.`) : tt(`해제 실패 (${res.status})`));
       load(); loadFleet();
     } catch { if (alive.current) setNotice(tt('해제 요청 실패')); }
     if (alive.current) setBusyCluster('');
   }
+
+  // Same POST route, checks and audit log as [조회 등록]; `{auto:true}` is logged only.
+  autoRegisterRef.current = async (ids: string[]) => {
+    for (const id of ids) autoAttempted.current.add(id);
+    const done: string[] = [];
+    for (const id of ids) {
+      try {
+        const res = await fetch(`/api/eks/${encodeURIComponent(id)}/register`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ auto: true }),
+        });
+        if (res.status === 200) done.push(id);
+      } catch { /* the manual [조회 등록] button stays as the fallback */ }
+      if (!alive.current) return;
+    }
+    if (done.length) {
+      setNotice(`${tt('자동 조회 등록됨')}: ${done.map((id) => eksClusterLabel(id)).join(', ')}`);
+      void load(); void loadFleet();
+    }
+  };
 
   const btn = 'rounded-md border border-ink-200 px-2 py-0.5 text-[11px] text-ink-600 hover:bg-ink-100 disabled:opacity-50';
 
@@ -252,13 +290,14 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   // the access list (rows), not the fleet (fleet only holds allowed clusters).
   const totals = useMemo(() => reachable.reduce(
     (acc, f) => {
-      acc.nodes += f.counts.nodes; acc.nodesReady += f.counts.nodesReady;
+      acc.nodes += f.counts.nodes;
       acc.pods += f.counts.pods; acc.podsRunning += f.counts.podsRunning;
       acc.deployments += f.counts.deployments; acc.services += f.counts.services;
       return acc;
     },
-    { nodes: 0, nodesReady: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
+    { nodes: 0, pods: 0, podsRunning: 0, deployments: 0, services: 0 },
   ), [reachable]);
+  const nodeTotals = useMemo(() => fleetNodeTotals(reachable), [reachable]);
 
   // Pod status merged across the fleet → [{name,value}] for the donut.
   const podStatusData = useMemo(() => {
@@ -330,7 +369,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
         <StatCard label="Clusters" value={(rows ?? []).length} icon={<Container size={16} />} />
         <StatCard label="Connected" value={connected} icon={<CheckCircle2 size={16} />} />
-        <StatCard label="Nodes" value={totals.nodes} trend={`${totals.nodesReady} ready`} icon={<Server size={16} />} href="/eks/nodes" />
+        <StatCard label="Nodes" value={totals.nodes} trend={formatFleetNodeReady(nodeTotals)} icon={<Server size={16} />} href="/eks/nodes" />
         <StatCard label="Pods" value={totals.pods} trend={`${totals.podsRunning} running`} icon={<Boxes size={16} />} href="/eks/pods" />
         <StatCard label="Deployments" value={totals.deployments} icon={<Layers size={16} />} href="/eks/deployments" />
         <StatCard label="Services" value={totals.services} icon={<Network size={16} />} href="/eks/services" />

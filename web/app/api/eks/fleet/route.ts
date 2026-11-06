@@ -57,12 +57,16 @@ export async function GET(request: Request) {
           return [] as EventRow[];
         }), // events-only failure must not kill the cluster entry
       ]);
+      const source = nodesSource(nodes);
       return {
         ...identity,
         reachable: true,
         counts: {
           nodes: nodes.length,
-          nodesReady: nodes.filter((n) => n.status === 'Ready').length,
+          // EC2/node-group rows carry no kubelet Ready condition: report Ready as unknown
+          // (null) with the EC2 running count, never as 0 Ready.
+          nodesReady: source ? null : nodes.filter((n) => n.status === 'Ready').length,
+          ...(source ? { ec2Running: nodes.filter((n) => n.status === 'EC2 running').length } : {}),
           pods: pods.length,
           podsRunning: pods.filter((p) => p.status === 'Running').length,
           deployments: deployments.length,
@@ -73,7 +77,7 @@ export async function GET(request: Request) {
         podStatus: podStatusCounts(pods),
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
-        ...(nodesSource(nodes) ? { nodesSource: nodesSource(nodes) } : {}),
+        ...(source ? { nodesSource: source } : {}),
         ...(nodesFailure ? { nodesReason: nodesFailure.reason, nodesError: nodesFailure.message } : {}),
         ...(eventsFailure ? { eventsReason: eventsFailure.reason, eventsError: eventsFailure.message } : {}),
       };

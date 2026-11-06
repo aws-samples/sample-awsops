@@ -30,11 +30,42 @@ export interface NodeRow {
   podCIDR?: string;
   createdAt?: string;
   /** 'aws-api' = EC2/node-group view for a member cluster whose AmazonEKSViewPolicy entry
-   *  cannot read the Kubernetes nodes API: no kubelet conditions/labels/taints, and
-   *  allocatable mirrors instance-type capacity. Absent = Kubernetes nodes API. */
+   *  cannot read the Kubernetes nodes API: no kubelet conditions/labels/taints, and the
+   *  allocatable fields mirror instance-type capacity as an upper bound only — they are NOT
+   *  kubelet allocatable, so reserved-% math must exclude these rows. Absent = nodes API. */
   source?: 'aws-api';
   instanceId?: string;
 }
+/** Fleet node counts with provenance: `nodesReady` is null (unknown) for an 'aws-api' cluster. */
+export interface FleetNodeCountsLike {
+  counts: { nodes: number; nodesReady: number | null; ec2Running?: number };
+  nodesSource?: 'aws-api';
+}
+export interface FleetNodeTotals { k8sNodes: number; ready: number; ec2Nodes: number; ec2Running: number }
+
+/** Sum fleet node counts, keeping EC2/node-group (no Ready condition) clusters separate. */
+export function fleetNodeTotals(clusters: FleetNodeCountsLike[]): FleetNodeTotals {
+  const t: FleetNodeTotals = { k8sNodes: 0, ready: 0, ec2Nodes: 0, ec2Running: 0 };
+  for (const c of clusters) {
+    if (c.nodesSource === 'aws-api' || c.counts.nodesReady == null) {
+      t.ec2Nodes += c.counts.nodes;
+      t.ec2Running += c.counts.ec2Running ?? 0;
+    } else {
+      t.k8sNodes += c.counts.nodes;
+      t.ready += c.counts.nodesReady;
+    }
+  }
+  return t;
+}
+
+/** "3/4 ready", "EC2 running 2 · Ready unknown", or both joined — never "0/N ready" for EC2 views. */
+export function formatFleetNodeReady(t: FleetNodeTotals): string {
+  const parts: string[] = [];
+  if (t.k8sNodes > 0 || t.ec2Nodes === 0) parts.push(`${t.ready}/${t.k8sNodes} ready`);
+  if (t.ec2Nodes > 0) parts.push(`EC2 running ${t.ec2Running} · Ready unknown`);
+  return parts.join(' · ');
+}
+
 export interface PodRow {
   name: string; namespace: string; status: string; node: string; restarts: number; age: string;
   // summed container requests: cpu in cores, memory in MiB, ephemeral-storage in MiB.

@@ -73,7 +73,8 @@ describe('GET /api/eks/fleet', () => {
     )[kind] ?? []);
     const c = (await (await GET(req())).json()).clusters[0];
     expect(c.nodesSource).toBe('aws-api');
-    expect(c.counts.nodesReady).toBe(0); // no kubelet Ready condition is claimed
+    // No kubelet Ready condition exists: Ready is unknown (null), never 0 Ready.
+    expect(c.counts).toMatchObject({ nodes: 1, nodesReady: null, ec2Running: 1 });
     expect(c.nodeAgg[0]).toMatchObject({ name: 'n1', podCount: 1, cpuRequest: 0.5 });
     expect(c).not.toHaveProperty('nodesError');
   });

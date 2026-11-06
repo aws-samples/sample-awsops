@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseCpuCores, parseMem, aggregateNodeResources, instanceTypeDistribution, type NodeRow, type PodRow } from './eks-resources';
+import {
+  parseCpuCores, parseMem, aggregateNodeResources, instanceTypeDistribution, fleetNodeTotals, formatFleetNodeReady,
+  type NodeRow, type PodRow,
+} from './eks-resources';
 
 describe('parseCpuCores', () => {
   it('parses whole cores and millicores', () => {
@@ -127,5 +130,16 @@ describe('instanceTypeDistribution', () => {
   });
   it('returns empty array for no nodes', () => {
     expect(instanceTypeDistribution([])).toEqual([]);
+  });
+});
+
+describe('fleet node provenance (EC2/node-group view)', () => {
+  it('keeps aws-api clusters out of the Ready ratio and reports EC2 running instead', () => {
+    const k8s = { counts: { nodes: 4, nodesReady: 3 } };
+    const ec2 = { counts: { nodes: 2, nodesReady: null, ec2Running: 2 }, nodesSource: 'aws-api' as const };
+    expect(formatFleetNodeReady(fleetNodeTotals([k8s]))).toBe('3/4 ready');
+    expect(formatFleetNodeReady(fleetNodeTotals([ec2]))).toBe('EC2 running 2 · Ready unknown');
+    expect(formatFleetNodeReady(fleetNodeTotals([k8s, ec2]))).toBe('3/4 ready · EC2 running 2 · Ready unknown');
+    expect(formatFleetNodeReady(fleetNodeTotals([]))).toBe('0/0 ready');
   });
 });

@@ -33,7 +33,7 @@ import Screenshot from '@site/src/components/Screenshot';
 1. 在 **Accounts** 中注册并启用目标账户，配置其区域，并在信任策略要求时提供 external ID。通常使用的目标角色是 `AWSopsReadOnlyRole`；该角色必须可由 web 任务承担，并获准读取 EKS 元数据。
 2. 选择目标账户和区域。对于**成员账户**，默认元数据发现和 Kubernetes 令牌签名都使用该账户已注册的只读角色。宿主账户的集群仍以 web 任务角色作为默认身份。AWSops 不会向成员集群发送宿主任务角色的 bearer 令牌。
 3. 集群所有者只需为相应角色运行两条命令：`aws eks create-access-entry --type STANDARD`，以及集群范围的 `AmazonEKSViewPolicy` 关联（`associate-access-policy`）。无需 kubeconfig、kubectl 或 RBAC 步骤。View 不读取 Kubernetes Secrets。不要给该共享角色附加可读取 Secrets 的 `AmazonEKSAdminViewPolicy`。访问策略是叠加的，若已有 AdminView 关联，所有者必须用 `disassociate-access-policy` 移除。按旧指南创建的条目（组 `awsops:eks-readonly` 加节点读取 RBAC）仍可正常使用，但已不再必需。宿主集群继续使用既有 Terraform 权限配置。
-4. 管理员下次打开 **EKS** 页面时，应用会用 `DescribeAccessEntry` 验证已注册角色的 Access Entry，并自动在 Aurora 中注册该集群。**查询注册**按钮保留为手动备用方式，它通过 `DescribeCluster` 直接验证所选集群并检查现有 Access Entry。应用只写入 Aurora 注册行，不会创建或修改 Access Entry、策略或 RBAC。注册和详情导航会保留账户与区域信息。
+4. 管理员下次打开 **EKS** 页面时，应用会用 `DescribeAccessEntry` 验证已注册角色的 Access Entry，并自动在 Aurora 中注册该集群。**查询注册**按钮保留为手动备用方式，它通过 `DescribeCluster` 直接验证所选集群并检查现有 Access Entry。应用只写入 Aurora 注册行，不会创建或修改 Access Entry、策略或 RBAC。注册和详情导航会保留账户与区域信息。管理员**取消注册**的集群不会在同一浏览器中再次自动注册；直接点击**查询注册**即可重新启用。该标记按浏览器保存，因此只要 Access Entry 仍存在，其他管理员或浏览器仍可能再次自动注册。若要永久排除，请由所有者删除该角色的 Access Entry。
 
 **可选读取权限：** View 不允许读取 Secrets。OpenCost API 代理另需仅针对 `opencost` 命名空间内相应服务的 `services/proxy` GET 权限；K8sGPT 另需对 `result.core.k8sgpt.ai` 中 `results` 的读取绑定。这些绑定应关联到所有者添加到 Access Entry 的 Kubernetes 组。所有者只为启用的功能增加必要的最小权限，应用不会自动应用。
 
@@ -54,7 +54,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 - **Nodes / Pods / Deployments / Services** 分别打开对应范围的资源页面。
 - 节点面板显示 capacity、allocatable 资源、请求量和 Pod 信息；请求比率表示预留量，而非实测 CPU/内存使用率。
-- 由于 View 策略没有 `nodes` 读取权限，成员集群的节点列表通过已注册成员只读角色的 EC2/节点组 API（`DescribeInstances`、`ListNodegroups`/`DescribeNodegroup`、`DescribeInstanceTypes`）构建，并标注为 **EC2/节点组视图**。其中不含 kubelet 状态、标签和污点；allocatable 显示为实例类型容量（上限），且不包含 Fargate 节点。若仅节点读取失败，Pod、Deployment 和 Service 仍会显示。
+- 由于 View 策略没有 `nodes` 读取权限，成员集群的节点列表通过已注册成员只读角色的 EC2/节点组 API（`DescribeInstances`、`ListNodegroups`/`DescribeNodegroup`、`DescribeInstanceTypes`）构建，并标注为 **EC2/节点组视图**。其中不含 kubelet 状态、标签和污点；allocatable 显示为实例类型容量（上限），且不包含 Fargate 节点。Ready 数显示为“EC2 running N · Ready unknown”，并且不计入预留（Reserved）比例计算。若仅节点读取失败，Pod、Deployment 和 Service 仍会显示。
 - ENI 详情使用限定范围的 EC2 清单，并在可用时使用实例级 CloudWatch 流量数据。
 - Pod 状态、命名空间、实例类型图表和 Warning Events 汇总观测数据。不可达集群仍会明确显示。
 - 点击已连接卡片的标题可打开集群详情。OpenCost 状态、配置和资源请求会保留集群标识。

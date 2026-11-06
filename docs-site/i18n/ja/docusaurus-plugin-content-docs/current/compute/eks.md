@@ -33,7 +33,7 @@ import Screenshot from '@site/src/components/Screenshot';
 1. **Accounts** で対象アカウントを登録・有効化し、そのリージョンを設定します。信頼ポリシーで要求される場合は external ID も指定します。通常の対象ロールは `AWSopsReadOnlyRole` で、web タスクから引き受け可能であり、EKS メタデータの読み取り権限が必要です。
 2. 対象アカウントとリージョンを選択します。**メンバーアカウント**では、既定のメタデータ検出と Kubernetes トークン署名の両方に、そのアカウントの登録済み読み取り専用ロールを使用します。ホストアカウントのクラスターでは、引き続き web タスクロールが既定の認証主体です。AWSops はホストのタスクロールの bearer トークンをメンバークラスターへ送信しません。
 3. クラスター所有者は対象ロールについて 2 つのコマンドだけを実行します: `aws eks create-access-entry --type STANDARD` と、クラスタースコープの `AmazonEKSViewPolicy` 関連付け（`associate-access-policy`）です。kubeconfig・kubectl・RBAC の手順はありません。View は Kubernetes Secrets を読み取りません。Secrets を読める `AmazonEKSAdminViewPolicy` をこの共有ロールに付与しないでください。アクセスポリシーは加算されるため、AdminView の関連付けがある場合は所有者が `disassociate-access-policy` で削除する必要があります。以前のガイドで作成したエントリ（グループ `awsops:eks-readonly` とノード読み取り RBAC）はそのまま動作し、今後は必須ではありません。ホストクラスターは既存の Terraform 権限構成に従います。
-4. 管理者が次に **EKS** ページを開くと、アプリは登録済みロールの Access Entry を `DescribeAccessEntry` で確認し、Aurora に自動登録します。**照会登録**ボタンは手動の代替手段として残り、`DescribeCluster` で選択したクラスターを直接確認して既存の Access Entry を確認します。アプリは Aurora の登録行だけを書き込み、Access Entry・ポリシー・RBAC を作成・変更しません。登録と詳細画面への移動では、アカウントとリージョンが保持されます。
+4. 管理者が次に **EKS** ページを開くと、アプリは登録済みロールの Access Entry を `DescribeAccessEntry` で確認し、Aurora に自動登録します。**照会登録**ボタンは手動の代替手段として残り、`DescribeCluster` で選択したクラスターを直接確認して既存の Access Entry を確認します。アプリは Aurora の登録行だけを書き込み、Access Entry・ポリシー・RBAC を作成・変更しません。登録と詳細画面への移動では、アカウントとリージョンが保持されます。管理者が**登録解除**したクラスターは、同じブラウザーでは再び自動登録されません。**照会登録**を直接押すと再び許可されます。この記録はブラウザーごとのため、Access Entry が残っている限り、別の管理者やブラウザーでは再び自動登録される場合があります。恒久的に除外するには、所有者がそのロールの Access Entry を削除します。
 
 **任意機能の読み取り権限:** View は Secrets を許可しません。OpenCost API プロキシには `opencost` 名前空間の対象サービスに限定した `services/proxy` の GET、K8sGPT には `result.core.k8sgpt.ai` の `results` 読み取りバインディングが別途必要です。これらは所有者が Access Entry に追加した Kubernetes グループにバインドします。所有者が有効にする機能に必要な最小権限だけを追加し、アプリは適用しません。
 
@@ -54,7 +54,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 - **Nodes / Pods / Deployments / Services** から、それぞれの選択範囲のリソースページを開きます。
 - ノードパネルは capacity、allocatable リソース、リクエスト、Pod 情報を表示します。リクエスト比率は予約量であり、CPU・メモリ使用率の実測値ではありません。
-- View ポリシーには `nodes` の読み取りがないため、メンバークラスターのノード一覧は登録済みメンバー読み取りロールの EC2/ノードグループ API（`DescribeInstances`、`ListNodegroups`/`DescribeNodegroup`、`DescribeInstanceTypes`）で構成し、**EC2/ノードグループ基準**と表示します。kubelet 状態・ラベル・テイントはなく、allocatable はインスタンスタイプ容量（上限）で、Fargate ノードは除外されます。ノードの読み取りだけが失敗した場合も、Pod・Deployment・Service は引き続き表示されます。
+- View ポリシーには `nodes` の読み取りがないため、メンバークラスターのノード一覧は登録済みメンバー読み取りロールの EC2/ノードグループ API（`DescribeInstances`、`ListNodegroups`/`DescribeNodegroup`、`DescribeInstanceTypes`）で構成し、**EC2/ノードグループ基準**と表示します。kubelet 状態・ラベル・テイントはなく、allocatable はインスタンスタイプ容量（上限）で、Fargate ノードは除外されます。Ready 数は「EC2 running N · Ready unknown」と表示し、予約（Reserved）率の計算からは除外します。ノードの読み取りだけが失敗した場合も、Pod・Deployment・Service は引き続き表示されます。
 - ENI の詳細は、範囲を限定した EC2 インベントリと、取得可能な場合はインスタンス単位の CloudWatch トラフィックを使用します。
 - Pod 状態・ネームスペース・インスタンスタイプのチャートと Warning Events は観測データを要約します。到達不能なクラスターも明示されます。
 - 接続済みカードのタイトルからクラスター詳細画面を開きます。OpenCost の状態・設定とリソース照会ではクラスターの識別子が保持されます。

@@ -94,7 +94,7 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 ## eks (10)
 | Path | Method | Behavior | Authentication |
 |------|--------|----------|----------------|
-| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; for an administrator, a member cluster with a verified Access Entry is registered in Aurora (`autoRegistered: true`); partial errors and enumeration limits are disclosed | verifyUser |
+| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; never writes; for an administrator, an unregistered member cluster with a verified Access Entry is flagged `accessEntryVerified: true` so the admin page can send the ordinary register POST; partial errors and enumeration limits are disclosed | verifyUser |
 | `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; a node-only read failure keeps the cluster reachable with `nodesReason`/`nodesError`, and `nodesSource: "aws-api"` marks member EC2/node-group rows; unavailable scope/registration storage returns 503 | verifyUser |
 | `/api/eks/node-eni` | GET | `node` DNS lookup in EC2 inventory and traffic metrics; optional `cluster` selects its registered account/region; node-only requests retain host/deployment-region behavior | verifyUser |
 | `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; a node-only failure keeps the cluster counted and reports `nodesUnavailable`; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |

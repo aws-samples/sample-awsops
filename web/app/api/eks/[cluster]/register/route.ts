@@ -40,6 +40,14 @@ function parseAuth(body: unknown): EksAuth | null | 'invalid' {
   return 'invalid';
 }
 
+/** `{auto:true}` marks the /eks page's automatic member registration. Logged only —
+ * it grants nothing and skips no check (the same admin/entry/isEnvCluster path runs). */
+const isAutoTrigger = (body: unknown) => !!body && typeof body === 'object' && (body as { auto?: unknown }).auto === true;
+
+function auditRegistration(event: string, cluster: string, actorSub: string, extra: Record<string, unknown> = {}) {
+  console.info(JSON.stringify({ event, cluster, actor_sub: actorSub, ...extra }));
+}
+
 export async function POST(request: Request, { params: pendingParams }: { params: Promise<{ cluster: string }> }) {
   try {
     const user = await verifyUser(request.headers.get('cookie'));
@@ -81,6 +89,9 @@ export async function POST(request: Request, { params: pendingParams }: { params
     // The TEXT key stores an ARN for member/non-default-region registrations.
     const ok = await registerCluster(context.id, user.sub);
     if (!ok) return json({ status: 'error', message: 'registry storage unavailable' }, 503);
+    auditRegistration('eks_cluster_registered', context.id, user.sub, {
+      trigger: isAutoTrigger(rawBody) ? 'auto' : 'manual', mode: 'access-entry',
+    });
     return json({ registered: true }, 200);
   } catch (error) {
     return failure(error);
@@ -98,7 +109,10 @@ export async function DELETE(request: Request, { params: pendingParams }: { para
       return json({ status: 'error', message: 'Terraform(onboard_eks_clusters) 관할 — tfvars에서 제거하세요' }, 400);
     }
     const result = await unregisterCluster(context.id);
-    if (result === 'deleted') return json({ unregistered: true }, 200);
+    if (result === 'deleted') {
+      auditRegistration('eks_cluster_unregistered', context.id, user.sub);
+      return json({ unregistered: true }, 200);
+    }
     if (result === 'not-found') return json({ status: 'error', message: 'not registered' }, 404);
     return json({ status: 'error', message: '등록 저장소(Aurora)를 사용할 수 없습니다' }, 503);
   } catch (error) {

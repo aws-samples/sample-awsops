@@ -345,19 +345,28 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
             {/* Per-kind KPI/viz — ALWAYS computed from allRows (pre-filter) so
                 the summary describes the whole fleet, not the filtered table. */}
             {kind === 'nodes' && allRows.length > 0 && (() => {
-              const ready = allRows.filter((r) => String(r.status ?? '') === 'Ready').length;
+              // Member EC2/node-group rows (source 'aws-api') have no kubelet Ready condition
+              // and no kubelet allocatable (their allocatable mirrors instance capacity), so
+              // they are excluded from the Ready ratio and from reserved% — shown as
+              // "EC2 running N · Ready unknown" rather than as unhealthy or 0% reserved.
+              const k8sRows = allRows.filter((r) => r.source !== 'aws-api');
+              const ec2Rows = allRows.length - k8sRows.length;
+              const ec2Running = allRows.filter((r) => r.source === 'aws-api' && r.status === 'EC2 running').length;
+              const ready = k8sRows.filter((r) => String(r.status ?? '') === 'Ready').length;
               const cpu = allRows.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
               const memMiB = allRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
               // gap L234 (v1 memory analysis KPI): allocatable + reserved% — shown only when
               // allocatable is actually reported (an unreported fleet must not read 'reserved 100%').
-              const memAllocMiB = allRows.reduce((s, r) => s + (Number(r.memAllocatable) || 0), 0);
+              const k8sMemMiB = k8sRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
+              const memAllocMiB = k8sRows.reduce((s, r) => s + (Number(r.memAllocatable) || 0), 0);
               // every capacity-bearing node must report allocatable — a partial fleet would
               // inflate reserved% (missing allocatable counts 0 in the numerator but full
               // capacity in the denominator).
-              const allocComplete = allRows.every((r) => !(Number(r.memCapacity) > 0) || Number(r.memAllocatable) > 0);
-              const memHint = allocComplete && memAllocMiB > 0 && memMiB > 0
-                ? `allocatable ${Math.round(memAllocMiB / 1024).toLocaleString()} GiB · reserved ${Math.round((1 - memAllocMiB / memMiB) * 100)}%`
+              const allocComplete = k8sRows.every((r) => !(Number(r.memCapacity) > 0) || Number(r.memAllocatable) > 0);
+              const memHint = allocComplete && memAllocMiB > 0 && k8sMemMiB > 0
+                ? `allocatable ${Math.round(memAllocMiB / 1024).toLocaleString()} GiB · reserved ${Math.round((1 - memAllocMiB / k8sMemMiB) * 100)}%${ec2Rows ? ` (EC2 view ${ec2Rows} excluded)` : ''}`
                 : undefined;
+              const readyHint = ec2Rows ? `EC2 running ${ec2Running} · Ready unknown ${ec2Rows}` : undefined;
               const types = new Map<string, number>();
               for (const r of allRows) {
                 const t = String(r.instanceType ?? '') || 'unknown';
@@ -368,7 +377,12 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <StatCard label="총 노드" value={allRows.length} />
-                    <StatCard label="Ready" value={ready} variant={ready < allRows.length ? 'warn' : 'default'} />
+                    <StatCard
+                      label="Ready"
+                      value={k8sRows.length ? ready : '—'}
+                      hint={readyHint}
+                      variant={ready < k8sRows.length ? 'warn' : 'default'}
+                    />
                     <StatCard label="총 vCPU" value={Math.round(cpu).toLocaleString()} />
                     <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} hint={memHint} />
                   </div>
@@ -396,6 +410,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
                     memCapacityMiB: Number(r.memCapacity) || 0,
                     memAllocatableMiB: Number(r.memAllocatable) || 0,
                     memRequestMiB: nodeAgg == null ? null : nodeAgg.mem,
+                    ...(r.source === 'aws-api' ? { allocatableUnknown: true } : {}),
                   };
                 })}
               />

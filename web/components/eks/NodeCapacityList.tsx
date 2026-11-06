@@ -15,17 +15,19 @@ export interface NodeCapacityRow {
   name: string;
   cpuCapacity: number; cpuAllocatable: number; cpuRequest: number | null;
   memCapacityMiB: number; memAllocatableMiB: number; memRequestMiB: number | null;
+  /** EC2/node-group (aws-api) row: allocatable mirrors capacity, so Reserved is unknown ('rsv —'). */
+  allocatableUnknown?: boolean;
 }
 
 const MAX_RENDER = 40;
 
 const gib = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
 
-function caption(requested: number | null, allocatable: number, capacity: number, fmt: (v: number) => string, unknownText: string): string {
-  const rsv = Math.max(0, capacity - allocatable);
-  if (requested == null) return `${unknownText} | rsv ${fmt(rsv)}`;
+function caption(requested: number | null, allocatable: number, capacity: number, fmt: (v: number) => string, unknownText: string, allocUnknown = false): string {
+  const rsv = allocUnknown ? '—' : fmt(Math.max(0, capacity - allocatable));
+  if (requested == null) return `${unknownText} | rsv ${rsv}`;
   const avail = Math.max(0, allocatable - Math.min(requested, allocatable));
-  return `avail ${fmt(avail)} | rsv ${fmt(rsv)}`;
+  return `avail ${fmt(avail)} | rsv ${rsv}`;
 }
 
 export default function NodeCapacityList({ rows, requestsPending = false }: { rows: NodeCapacityRow[]; requestsPending?: boolean }) {
@@ -66,14 +68,14 @@ export default function NodeCapacityList({ rows, requestsPending = false }: { ro
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">
                 <span>CPU {n.cpuCapacity.toFixed(1)} vCPU</span>
-                <span>{caption(n.cpuRequest, n.cpuAllocatable, n.cpuCapacity, cpuFmt, unknownText)}</span>
+                <span>{caption(n.cpuRequest, n.cpuAllocatable, n.cpuCapacity, cpuFmt, unknownText, n.allocatableUnknown)}</span>
               </div>
               <StackBar requested={n.cpuRequest} allocatable={n.cpuAllocatable} capacity={n.cpuCapacity} />
             </div>
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">
                 <span>Mem {gib(n.memCapacityMiB)}</span>
-                <span>{caption(n.memRequestMiB, n.memAllocatableMiB, n.memCapacityMiB, gib, unknownText)}</span>
+                <span>{caption(n.memRequestMiB, n.memAllocatableMiB, n.memCapacityMiB, gib, unknownText, n.allocatableUnknown)}</span>
               </div>
               <StackBar requested={n.memRequestMiB} allocatable={n.memAllocatableMiB} capacity={n.memCapacityMiB} />
             </div>

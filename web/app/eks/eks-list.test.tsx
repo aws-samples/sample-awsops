@@ -34,7 +34,7 @@ function mockFetch(handlers: Record<string, (init?: RequestInit) => { status: nu
   }));
 }
 
-beforeEach(() => { vi.unstubAllGlobals(); });
+beforeEach(() => { vi.unstubAllGlobals(); window.localStorage.clear(); });
 
 describe('EKS list page (ADR buildout)', () => {
   it('renders a connected cluster as a link, others as plain text', async () => {
@@ -112,5 +112,75 @@ describe('EKS list page (ADR buildout)', () => {
     // warning events table — DataTable renders both desktop table + mobile card
     // list, so the cell value appears twice in jsdom → assert via getAllByText.
     await waitFor(() => expect(screen.getAllByText('BackOff').length).toBeGreaterThan(0));
+  });
+
+  it('renders EC2/node-group fleet nodes as EC2 running with Ready unknown, never 0 ready', async () => {
+    const ec2Fleet = { ...fleetCluster, nodesSource: 'aws-api', counts: { ...fleetCluster.counts, nodesReady: null, ec2Running: 2 } };
+    mockFetch({
+      'GET /api/eks/fleet?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters: [ec2Fleet] } }),
+      'GET /api/eks?regions=__all__&includeGlobal=1': () => ({ status: 200, body: { clusters, admin: false } }),
+    });
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('EC2 running 2 · Ready unknown')).toBeTruthy());
+    expect(screen.queryByText(/0 ready/)).toBeNull();
+  });
+});
+
+describe('EKS member auto-registration (admin page, ordinary POST path)', () => {
+  const MEMBER = 'arn:aws:eks:us-east-1:222222222222:cluster/member';
+  const memberRow = { id: MEMBER, name: 'member', accountId: '222222222222', region: 'us-east-1', status: 'ACTIVE', access: 'entry-only', runtime: false, guide, accessEntryVerified: true };
+  const LIST = 'GET /api/eks?regions=__all__&includeGlobal=1';
+  const POST_MEMBER = `POST /api/eks/${encodeURIComponent(MEMBER)}/register`;
+  const DELETE_MEMBER = `DELETE /api/eks/${encodeURIComponent(MEMBER)}/register`;
+
+  function setup(opts: { admin?: boolean } = {}) {
+    const state = { registered: false, posts: [] as unknown[], listCalls: 0 };
+    mockFetch({
+      ...FLEET,
+      [LIST]: () => {
+        state.listCalls += 1;
+        return { status: 200, body: { admin: opts.admin ?? true, clusters: [
+          state.registered ? { ...memberRow, access: 'connected', runtime: true, accessEntryVerified: undefined, guide: undefined } : memberRow,
+        ] } };
+      },
+      [POST_MEMBER]: (init) => { state.posts.push(init?.body ? JSON.parse(String(init.body)) : null); state.registered = true; return { status: 200, body: { registered: true } }; },
+      [DELETE_MEMBER]: () => { state.registered = false; return { status: 200, body: { unregistered: true } }; },
+    });
+    return state;
+  }
+
+  it('POSTs {auto:true} once for a verified member entry and reloads the list', async () => {
+    const state = setup();
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText(/자동 조회 등록됨/)).toBeTruthy());
+    expect(state.posts).toEqual([{ auto: true }]);
+    await waitFor(() => expect(state.listCalls).toBeGreaterThanOrEqual(2));
+  });
+
+  it('never auto-POSTs for a non-admin view', async () => {
+    const state = setup({ admin: false });
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('member')).toBeTruthy());
+    expect(state.posts).toEqual([]);
+  });
+
+  it('DELETE suppresses auto-registration in this browser until a manual [조회 등록] clears it', async () => {
+    const state = setup();
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('해제')).toBeTruthy());
+    fireEvent.click(screen.getByText('해제'));
+    await waitFor(() => expect(screen.getByText(/등록 해제됨/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('조회 등록')).toBeTruthy());
+    expect(JSON.parse(window.localStorage.getItem('awsops.eks.autoRegisterSuppressed.v1') ?? '[]')).toEqual([MEMBER]);
+    cleanup();
+    // A fresh page load must not re-register the unregistered cluster.
+    render(<EksPage />);
+    await waitFor(() => expect(screen.getByText('조회 등록')).toBeTruthy());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.posts).toEqual([{ auto: true }]);
+    fireEvent.click(screen.getByText('조회 등록'));
+    await waitFor(() => expect(screen.getByText(/등록 완료/)).toBeTruthy());
+    expect(state.posts).toEqual([{ auto: true }, null]);
+    expect(JSON.parse(window.localStorage.getItem('awsops.eks.autoRegisterSuppressed.v1') ?? '[]')).toEqual([]);
   });
 });

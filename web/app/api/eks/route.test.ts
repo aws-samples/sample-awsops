@@ -87,7 +87,7 @@ describe('GET /api/eks', () => {
     ]);
     expect(hasAccessEntry).toHaveBeenCalledWith('arn:aws:eks:ap-northeast-2:222222222222:cluster/same');
   });
-  it('auto-registers a member cluster whose verified Access Entry is seen by an administrator', async () => {
+  it('flags a verified member Access Entry for an administrator without writing on GET', async () => {
     verifyUser.mockResolvedValue({ sub: 'admin-sub' });
     isAdmin.mockResolvedValue(true);
     hasAccessEntry.mockResolvedValue(true);
@@ -95,40 +95,36 @@ describe('GET /api/eks', () => {
     const { GET } = await import('./route');
     const body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
     const id = 'arn:aws:eks:ap-northeast-2:222222222222:cluster/same';
-    expect(registerCluster).toHaveBeenCalledWith(id, 'admin-sub');
-    expect(body.clusters[0]).toMatchObject({ id, access: 'connected', runtime: true, autoRegistered: true });
-    expect(body.clusters[0].guide).toBeUndefined();
-    expect(onboardingGuide).not.toHaveBeenCalled();
+    // GET is read-only: the /eks page sends the ordinary POST register for this flag.
+    expect(registerCluster).not.toHaveBeenCalled();
+    expect(body.clusters[0]).toMatchObject({ id, access: 'entry-only', runtime: false, accessEntryVerified: true });
+    expect(body.clusters[0]).not.toHaveProperty('autoRegistered');
+    expect(body.clusters[0].guide).toBeDefined();
   });
-  it('does not auto-register for non-admins, unknown/missing entries, or host clusters', async () => {
+  it('does not flag non-admins, unknown/missing entries, host or Terraform clusters', async () => {
     listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
     const { GET } = await import('./route');
     verifyUser.mockResolvedValue({ sub: 'viewer' });
     hasAccessEntry.mockResolvedValue(true);
     let body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
     expect(body.clusters[0]).toMatchObject({ access: 'entry-only' });
+    expect(body.clusters[0].accessEntryVerified).toBeUndefined();
     isAdmin.mockResolvedValue(true);
     for (const entry of [false, null]) {
       hasAccessEntry.mockResolvedValue(entry);
       body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
       expect(body.clusters[0].access).toBe(entry === false ? 'no-entry' : 'unknown');
+      expect(body.clusters[0].accessEntryVerified).toBeUndefined();
     }
     hasAccessEntry.mockResolvedValue(true);
     body = await (await GET(req())).json();
     expect(body.clusters[0]).toMatchObject({ id: 'same', access: 'entry-only' });
+    expect(body.clusters[0].accessEntryVerified).toBeUndefined();
+    // A Terraform-onboarded id not yet in the allow-list is never an auto candidate.
+    isEnvCluster.mockReturnValue(true);
+    body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
+    expect(body.clusters[0].accessEntryVerified).toBeUndefined();
     expect(registerCluster).not.toHaveBeenCalled();
-  });
-  it('keeps entry-only with the guide when the Aurora write is unavailable', async () => {
-    verifyUser.mockResolvedValue({ sub: 'admin-sub' });
-    isAdmin.mockResolvedValue(true);
-    hasAccessEntry.mockResolvedValue(true);
-    registerCluster.mockResolvedValue(false);
-    listClusters.mockResolvedValue([{ name: 'same', status: 'ACTIVE' }]);
-    const { GET } = await import('./route');
-    const body = await (await GET(new Request('http://x/api/eks?account=222222222222'))).json();
-    expect(body.clusters[0]).toMatchObject({ access: 'entry-only', runtime: false });
-    expect(body.clusters[0].autoRegistered).toBeUndefined();
-    expect(body.clusters[0].guide).toBeDefined();
   });
   it('does not treat a host registration as access to a member with the same name', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

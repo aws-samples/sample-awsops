@@ -48,6 +48,10 @@ Rows use the EC2 private DNS name (the default node name, so pods' `spec.nodeNam
 still joins per-node requests), report EC2 state rather than kubelet `Ready`, carry
 no labels/taints/conditions, show instance-type capacity as allocatable (an upper
 bound), and exclude Fargate nodes. The UI labels these rows as an EC2/node-group view.
+`GET /api/eks/fleet` marks such a cluster `nodesSource: "aws-api"` with
+`counts.nodesReady: null` and `counts.ec2Running`; the home tile, `/eks` stats and the
+fleet nodes page show "EC2 running N · Ready unknown" rather than 0 Ready, and the
+fleet reserved-% and per-node Reserved captions exclude these rows.
 If both reads fail, the fleet and summary views degrade only the node fields; pods,
 deployments and services still show. Existing entries created from the earlier guide
 (`awsops:eks-readonly` group plus a nodes ClusterRoleBinding) keep working and return
@@ -55,14 +59,29 @@ Kubernetes node rows; the group and binding are no longer required.
 
 ### Automatic member registration
 
-When an administrator loads `/eks`, each discovered member cluster that is not yet
-registered is checked with `DescribeAccessEntry` for its registered member read role.
-A verified entry (`true`) writes the Aurora `eks_registrations` row, attributed to that
-administrator, and the cluster shows as connected immediately. Non-administrator
-reads, missing or unverifiable entries, host clusters and Aurora write failures keep the
-previous `entry-only`/`no-entry`/`unknown` state and guide. Registration is an
-app-state write only: AWSops never creates Access Entries, associates policies or
-applies RBAC. The admin `[조회 등록]` button remains as a manual fallback.
+`GET /api/eks` never writes. For an administrator, each discovered member cluster that
+is not yet registered is checked with `DescribeAccessEntry` for its registered member
+read role; a verified entry (`true`) stays `entry-only` and is flagged
+`accessEntryVerified: true`. The admin `/eks` page then sends the ordinary
+`POST /api/eks/[cluster]/register` with body `{"auto":true}` for each flagged cluster,
+at most once per page load. That request runs the same admin, `DescribeCluster`,
+Access Entry and `ONBOARDED_EKS_CLUSTERS` checks as the manual `[조회 등록]` button and
+writes the Aurora `eks_registrations` row attributed to that administrator. The route
+logs a structured `eks_cluster_registered` line with `trigger: "auto"` or `"manual"`
+(the flag is logged only and grants nothing); a successful DELETE logs
+`eks_cluster_unregistered`. Non-administrator reads, missing or unverifiable entries,
+host clusters and Terraform-managed ids are never flagged. Registration is an app-state
+write only: AWSops never creates Access Entries, associates policies or applies RBAC.
+The `[조회 등록]` button remains as a manual fallback.
+
+Admin DELETE (`[해제]`) removes the registry row. `eks_registrations` has no column that
+can mark a removed cluster without also allow-listing it, and no migration is added for
+this, so the page remembers clusters the admin unregistered in that browser's
+`localStorage` and skips them during auto-registration; a manual `[조회 등록]` or saved
+auth clears the marker. **Limitation:** the marker is per browser profile. Another
+administrator, another browser, or cleared site data can auto-register the cluster again
+while its Access Entry remains. To keep a member cluster unregistered durably, the
+owner removes the registered role's Access Entry.
 
 Optional APIs need separate narrow bindings bound to a Kubernetes group that the
 owner adds to the member Access Entry (for example `awsops:eks-readonly`). K8sGPT Result access is described
@@ -124,7 +143,8 @@ account's cluster list. A `404 unknown cluster` therefore means the selected tar
 was not found; an absent or unverifiable entry remains a separate registration
 failure. Invalid or disabled target accounts do not fall back to the host.
 
-Admin DELETE is a local cleanup operation: a syntactically valid canonical
+Admin DELETE is a local cleanup operation (see the auto-registration suppression note
+above): a syntactically valid canonical
 registration can be removed, including its saved auth, after its member account
 is disabled or removed. It does not require AWS discovery or an enabled member
 scope, and it does not revoke AWS permissions. Bare-name member
@@ -170,8 +190,10 @@ roles, member Access Entries, or cross-account network connectivity.
 An operator can separately create an Access Entry and read-policy association.
 For host/deployment-region events, the optional `eks_auto_register_enabled` observer
 (`scripts/v2/eks/auto_register.py`) can reflect the event into the app registry.
-The member/nondefault-region web guide requires manual query registration and does
-not promise that the host EventBridge observer will see those events.
+Member clusters register through the admin `/eks` page's automatic registration (or the
+manual `[조회 등록]` fallback) described above, not through this observer; the
+guide does not promise that the host EventBridge observer will see member or
+nondefault-region events.
 
 ## Principal and governance boundaries
 
@@ -198,7 +220,8 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `web/lib/eks-cluster-id.ts` | Strict name/ARN parsing and display labels |
 | `web/lib/eks-context.ts` | Canonical account/region identity, selector conflicts, enabled member scope |
 | `web/lib/eks-role.ts` | Registered member-role ARN and same-account authentication checks |
-| `web/lib/eks-member-rbac.ts` | Minimal member node-read group and operator manifest |
+| `web/lib/eks-aws-nodes.ts` | Member EC2/node-group node view when the Kubernetes nodes read is forbidden |
+| `web/lib/eks-auto-register.ts` | Admin page auto-registration candidates and per-browser DELETE suppression |
 | `web/lib/eks-registry.ts` | Legacy host and qualified runtime registrations, cached read quality, saved auth |
 | `web/lib/eks-scope.ts` | Collection selection, wildcard disclosure, discovery and fleet limits |
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
