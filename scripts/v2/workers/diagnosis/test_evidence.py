@@ -64,7 +64,7 @@ def bundle():
                  "recommended_type": "m7g.medium", "lookback_days": 14, "rank": 1,
                  "performance_risk": 1, "monthly_savings": 10, "currency": "USD",
                  "generation_time": "2026-11-04T00:00:00Z", "guard_hits": [],
-                 "missing_memory": False, "missing_io": False},
+                 "missing_memory": False, "missing_io": False, "finding": "Overprovisioned"},
              "fresh": True, "captured_at": "2026-11-04T00:00:00Z", "coverage": {"complete": True}},
         ],
         "relationships": [
@@ -126,6 +126,8 @@ def test_cross_resource_citations_do_not_establish_observed_pair():
     ("fresh", False), ("lookback_days", 3), ("missing_memory", True),
     ("missing_io", True), ("guard_hits", ["protected"]), ("generation_time", None),
     ("performance_risk", None), ("rank", None),
+    # Upsize/optimized/unknown directions are never downsizing candidates (finops parity).
+    ("finding", "Underprovisioned"), ("finding", "Optimized"), ("finding", None),
 ])
 def test_inadequate_provider_sizing_is_withheld(key, value):
     data = bundle()
@@ -316,5 +318,31 @@ def test_rds_sizing_uses_database_dimensions_and_representative_pressure():
                         explanation="Consider the provider candidate after manual verification.",
                         verification="provider_sizing")
     assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "sizing_candidate"
+    # RDS mirrors rds_rightsizing: only Overprovisioned is a downsizing opportunity.
+    for direction in ("Underprovisioned", "NotOptimized"):
+        provider["facts"]["finding"] = direction
+        assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
+    provider["facts"]["finding"] = "Overprovisioned"
     metrics["facts"]["metrics"].pop("ReadLatency")
     assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
+
+
+@pytest.mark.parametrize("coverage,expected", [
+    ({"complete": True, "lookback_days": 14, "sample_ratio": 0.95}, "observation"),
+    ({"complete": False, "lookback_days": 14, "sample_ratio": 0.95}, "hypothesis"),
+    ({"lookback_days": 14, "sample_ratio": 0.95}, "hypothesis"),
+    ({"complete": True, "lookback_days": 14, "sample_ratio": 0.5}, "hypothesis"),
+])
+def test_metric_observation_requires_complete_representative_coverage(coverage, expected):
+    data = bundle()
+    data["evidence"][2]["coverage"] = coverage
+    result = EvidenceIndex(data, ACCOUNT).validate_finding(finding(
+        resource_ids=["r-instance"], evidence_ids=["e-metrics"]))
+    assert result["claim"] == expected
+
+
+def test_paginated_or_partial_observed_edge_is_not_confirmed():
+    data = bundle()
+    assert EvidenceIndex(data, ACCOUNT).validate_finding(finding())["claim"] == "observation"
+    data["evidence"][1]["coverage"] = {"complete": False, "pages": 3, "continuation": True}
+    assert EvidenceIndex(data, ACCOUNT).validate_finding(finding())["claim"] == "hypothesis"

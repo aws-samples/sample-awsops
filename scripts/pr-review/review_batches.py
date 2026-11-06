@@ -52,7 +52,7 @@ SENSITIVE_PREFIX = re.compile(
     r"|scripts/v2/secret-rotation/|scripts/v2/eks/|scripts/v2/incident/"
     r"|scripts/v2/workers/([^/]*dispatcher|remediation|handlers|action_catalog|connector_target"
     r"|worker_lambda|fargate_worker|sg_rule)"
-    r"|web/app/api/|web/lib/(remediation|aws)|web/middleware)")
+    r"|web/app/api/|web/lib/(remediation|aws)|web/(middleware|proxy))")
 # Any path segment (directory or file name) naming one of these surfaces.
 SENSITIVE_NAME = re.compile(
     r"(^|/|[-_.])(iam|polic|auth|guard|cross[-_]account|remediat|admin|connector|mutat|secret"

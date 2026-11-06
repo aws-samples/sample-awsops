@@ -49,14 +49,14 @@ The image-codec confinement tests require Docker and a prepared
 [the codec sandbox runbook](runbooks/review-codec-sandbox.md) before running the full
 Python suite locally. Merge Verify prepares and cleans this state automatically.
 
-Use Node.js 26 (CI, web runtime and migration runtime image), Python 3.12, curl, OpenSSL, jq, Terraform **1.17.1**
+Use Node.js 26 (CI, web runtime and migration runtime image), Python 3.12 (plus Python 3.14 for the runtime test stage), curl, OpenSSL, jq, Terraform **1.17.1**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
 The required web-image helper suite also needs Linux `/proc` and curl installed
 on its fixed provider PATH, `/usr/local/bin:/usr/bin:/bin`; its network fixture is localhost-only.
 The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Deploy Web uses the controller and forces automatic SQL admission for web-driven migrations; see `docs/runbooks/release-safety-primitives.md`.
-CI·웹 런타임·migration 런타임 이미지 Node 26·Python 3.12·curl·OpenSSL·jq·Terraform **1.17.1**·접근 가능한 Docker를
+CI·웹 런타임·migration 런타임 이미지 Node 26·Python 3.12(런타임 테스트 단계는 Python 3.14 추가)·curl·OpenSSL·jq·Terraform **1.17.1**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을,
 웹 연결 단계 테스트는 `web/`의 잠긴 드라이버·TypeScript를 사용한다.
 
@@ -212,10 +212,15 @@ aggregate-run false failures.
 7. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
    initialized with `-backend=false`. A validation or test failure fails CI.
 8. Clean up the owned codec containers and image tag, including after failures.
-9. On Python 3.14 (the Lambda/container runtime), run the isolated pytest stage for agent, workers,
-   incident, remediation, Steampipe and AgentCore code.
+9. Set up Python 3.14 (the Lambda and worker container runtime), create a virtualenv, install
+   `agent/requirements.txt`, `scripts/v2/requirements-test.txt` and the incident, remediation,
+   Steampipe and workers requirements, then run
+   `MERGE_VERIFY_PY_ROOT=<root> MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2/merge-verify.sh` for each
+   root `agent`, `scripts/v2/workers`, `scripts/v2/incident`, `scripts/v2/remediation`,
+   `scripts/v2/steampipe` and `scripts/v2/agentcore`. The AgentCore root is included for interpreter
+   compatibility only; the provisioner itself still deploys from a Python 3.12 virtualenv.
 
-CI는 **main/dev** 대상 PR에서 Node 26·Python 3.12·Terraform 1.17.1을 설치한다.
+CI는 **main/dev** 대상 PR에서 Node 26·Python 3.12·Terraform 1.17.1을 설치하고, agent·workers·incident·remediation·Steampipe·AgentCore 테스트를 Python 3.14 가상환경에서 한 번 더 실행한다.
 pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을
 `--ignore-scripts`로 설치한다. migration offline 테스트·Docker PG migration/웹 연결 단계 테스트·별도 복사본의
 backend 비활성 Terraform validate/mock 테스트 모두 필수다.

@@ -61,7 +61,10 @@ def project_tasks(bundle):
         if resource["kind"] != "ecs_task" or resource["id"] not in qualified:
             continue
         if resource["facts"].get("attachments_complete") is False:
+            # A capped attachment list cannot prove the task's only address.
             d._mark(bundle, "incomplete", "workload_attachment_cap")
+            d._mark(bundle, "gaps", "workload_address_unresolved")
+            continue
         address = task_address(resource["facts"], by_region.get(resource["region"], {}))
         if not address:
             d._mark(bundle, "gaps", "workload_address_unresolved")

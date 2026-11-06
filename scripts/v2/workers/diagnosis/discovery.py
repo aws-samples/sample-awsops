@@ -569,7 +569,8 @@ def _read_graph(conn, bundle, budget, scope):
                     and pair.get("provenance") == "trace_span"
                     and isinstance(pair.get("correlation_id"), str) and 8 <= len(pair["correlation_id"]) <= 128
                     and observed and start and end and start <= observed <= end
-                    and any(s.get("sourceId") == pair.get("source_id") for s in coverage["sources"]))
+                    and isinstance(pair.get("source_id"), str)
+                    and any(s.get("sourceId") == pair["source_id"] for s in coverage["sources"]))
                 if not valid:
                     _mark(bundle, "incomplete", "unresolved_instance_observation")
                     continue

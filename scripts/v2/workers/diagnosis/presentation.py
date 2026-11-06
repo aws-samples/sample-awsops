@@ -98,7 +98,7 @@ def _facts(value, prefix="", depth=0):
     return [(prefix, value)]
 
 
-def _finding_body(finding, evidence, resources, copy, *, verification=False):
+def _finding_body(finding, evidence, resources, copy, *, verification=False, lang="ko"):
     claims = {"observation": copy[3], "hypothesis": copy[4],
               "sizing_candidate": copy[5], "coverage_gap": copy[6]}
     claim = finding.get("claim", "hypothesis")
@@ -127,8 +127,14 @@ def _finding_body(finding, evidence, resources, copy, *, verification=False):
             output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
                           f"| {_cell(scope)} | {_cell(field)} = {_cell(value)} |")
     prerequisites = finding.get("prerequisites", [])
-    if prerequisites:
-        output += ["", f"**{copy[8]}:** " + ", ".join(_cell(p) for p in prerequisites)]
+    # Model-authored prerequisites get the base renderer's read-only CLI rule. A
+    # mutating command is withheld (never printed) and the section carries the mark.
+    from .report import _MUTATING_MARK, _has_mutating_cli
+    safe = [p for p in prerequisites if not (isinstance(p, str) and _has_mutating_cli(p))]
+    if safe:
+        output += ["", f"**{copy[8]}:** " + ", ".join(_cell(p) for p in safe)]
+    if len(safe) != len(prerequisites):
+        output += ["", _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()]
     capability = finding.get("verification")
     if verification and capability in _VERIFY:
         output += ["", f"**{copy[9]}:**", "", f"`{_VERIFY[capability]}`"]
@@ -162,7 +168,8 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
             output[key] = invariant_md
             continue
         selected = [f for f in findings if f.get("pillar") in _SECTION_PILLARS.get(key, set())]
-        output[key] = "\n\n".join(_finding_body(f, evidence, resources, copy) for f in selected)
+        output[key] = "\n\n".join(_finding_body(f, evidence, resources, copy, lang=lang)
+                                  for f in selected)
         if not output[key]:
             output[key] = copy[7]
         # Missing discovery/sizing prerequisites remain explicit in every detail section.
@@ -170,7 +177,8 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
     for key in ("executive_summary", "recommendations"):
         if any(s["key"] == key for s in catalog):
             output[key] = ("\n\n".join(_finding_body(f, evidence, resources, copy,
-                                                    verification=key == "recommendations")
+                                                    verification=key == "recommendations",
+                                                    lang=lang)
                                        for f in findings[:12]) or copy[7])
             output[key] += "\n\n" + _coverage(bundle, analysis, copy)
     return [(section["key"], output[section["key"]]) for section in catalog]

@@ -147,6 +147,8 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
   assert {
     condition = length(aws_iam_role_policy.worker_diagnosis_network) == 2 && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
+      jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery", "logs:FilterLogEvents"] &&
+      jsondecode(p.policy).Statement[3].Action == ["logs:GetQueryResults", "logs:StopQuery"] &&
       jsondecode(p.policy).Statement[1].Resource == [for region in ["ap-northeast-2", "eu-west-1", "us-east-1"] : "arn:aws:networkflowmonitor:${region}:123456789012:monitor/*"] &&
       alltrue([for s in jsondecode(p.policy).Statement : can(s.Condition.StringEquals["aws:RequestedRegion"])])
     ])
@@ -174,6 +176,14 @@ run "diagnosis_allowlists_reject_foreign_logs_and_host_roles" {
     diagnosis_member_role_arns   = ["arn:aws:iam::123456789012:role/AWSopsReadOnlyRole"]
   }
   expect_failures = [var.diagnosis_dns_log_group_arns, var.diagnosis_member_role_arns]
+}
+
+run "diagnosis_member_roles_pin_the_onboarding_role_name" {
+  command = plan
+  variables {
+    diagnosis_member_role_arns = ["arn:aws:iam::999900001111:role/OrganizationAccountAccessRole"]
+  }
+  expect_failures = [var.diagnosis_member_role_arns]
 }
 
 run "diagnosis_allowlists_reject_malformed_arns" {

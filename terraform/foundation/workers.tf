@@ -953,13 +953,15 @@ resource "aws_iam_role_policy" "worker_diagnosis_network" {
       }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
       Sid       = "DiagnosisApprovedResolverLogRead"
       Effect    = "Allow"
-      Action    = ["logs:StartQuery", "logs:GetQueryResults", "logs:FilterLogEvents"]
+      Action    = ["logs:StartQuery", "logs:FilterLogEvents"]
       Resource  = [for arn in var.diagnosis_dns_log_group_arns : endswith(arn, ":*") ? arn : "${arn}:*"]
       Condition = local.runtime_read_condition
       }, {
-      Sid       = "DiagnosisOwnQueryCancellation"
+      # GetQueryResults / StopQuery do not support resource-level scoping; results are reachable
+      # only by query ID, and queries can start only on the allowlisted groups above.
+      Sid       = "DiagnosisQueryResultsAndCancellation"
       Effect    = "Allow"
-      Action    = ["logs:StopQuery"]
+      Action    = ["logs:GetQueryResults", "logs:StopQuery"]
       Resource  = ["*"]
       Condition = local.runtime_read_condition
     }] : [])

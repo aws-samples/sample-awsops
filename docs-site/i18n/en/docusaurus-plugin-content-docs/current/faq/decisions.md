@@ -72,7 +72,7 @@ Admin functions are allowed only for users who are Cognito `admins` **group memb
 AWSops rebuilt v1's **single-EC2 monolith** into a **Terraform-based MSA**.
 
 - **IaC**: Terraform (partial S3 backend). CDK is retired.
-- **Compute**: ECS Fargate (arm64). The web tier is a Next.js 15 thin-BFF served at the root path.
+- **Compute**: ECS Fargate (arm64). The web tier is a Next.js 16 thin-BFF served at the root path.
 - **Async workers**: heavy, long, or OOM-risk work is not handled by web directly; it goes SQS → ESM (kill-switch) → dispatcher Lambda (idempotent) → Step Functions → Lambda or `ecs:runTask.sync` Fargate.
 
 There is no live Steampipe query path; only the flag-gated inventory sync exists.

@@ -48,6 +48,8 @@ def providers(monkeypatch):
     from diagnosis import supporting
     monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", ACCOUNT)
     monkeypatch.setattr(supporting, "_client", lambda *a: Client())
+    # Mid-month clock: the month-to-date window is non-empty on every real run date.
+    monkeypatch.setattr(supporting, "_now", lambda: dt.datetime(2026, 11, 6, 9, tzinfo=dt.timezone.utc))
     return supporting
 
 
@@ -122,3 +124,26 @@ def test_all_native_requests_match_locked_sdk_shapes(providers, monkeypatch):
     assert all(result["native_sources"][key]["status"] in {"ok", "partial"}
                for key in ("cost", "posture", "what_changed", "commitment"))
     assert not result["degraded"]
+
+
+def test_first_day_of_month_summarizes_previous_full_month(providers, monkeypatch):
+    windows = []
+
+    class Recording(Client):
+        def get_cost_and_usage(self, **kwargs):
+            windows.append(kwargs["TimePeriod"])
+            return super().get_cost_and_usage(**kwargs)
+
+    monkeypatch.setattr(providers, "_client", lambda *a: Recording())
+    monkeypatch.setattr(providers, "_now", lambda: dt.datetime(2026, 12, 1, 0, 5, tzinfo=dt.timezone.utc))
+    result = providers.collect(base(), Budget(), scope="self")
+    assert windows == [{"Start": "2026-11-01", "End": "2026-12-01"}]
+    assert "cost_read_failed" not in result["degraded"]
+    cost = next(e for e in result["evidence"] if e["source"] == "cost")
+    assert cost["facts"]["partial_month"] is False
+    assert cost["window"] == {"start": "2026-11-01", "end": "2026-12-01"}
+    assert result["native_sources"]["cost"]["status"] == "ok"
+    # January 1 rolls back across the year boundary.
+    monkeypatch.setattr(providers, "_now", lambda: dt.datetime(2027, 1, 1, tzinfo=dt.timezone.utc))
+    providers.collect(base(), Budget(), scope="self")
+    assert windows[-1] == {"Start": "2026-12-01", "End": "2027-01-01"}

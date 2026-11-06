@@ -64,3 +64,31 @@ def test_proxy_target_uses_exact_database_arn_and_vpc():
     assert identities.proxy_target({"TargetArn": arn}, [db, db], db["account"], db["region"], "vpc-a") is None
     assert identities.proxy_target({"TargetArn": arn}, [db], db["account"], db["region"], "vpc-b") is None
     assert identities.proxy_target({"Endpoint": "orders"}, [db], db["account"], db["region"], "vpc-a") is None
+
+
+def test_incomplete_attachment_list_refuses_task_binding(monkeypatch):
+    from diagnosis import discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    captured = NOW.isoformat()
+    attachments = [{"Type": "ElasticNetworkInterface", "Details": [
+        {"Name": "subnetId", "Value": "subnet-a"}, {"Name": "privateIPv4Address", "Value": "10.0.1.5"}]}]
+
+    def bundle(complete):
+        task = {"id": "r:task", "account": ACCOUNT, "region": REGION, "kind": "ecs_task",
+                "resource_id": "task-1", "facts": {"last_status": "RUNNING", "attachments": attachments,
+                                                   **({} if complete else {"attachments_complete": False})}}
+        subnet = {"id": "r:subnet", "account": ACCOUNT, "region": REGION, "kind": "subnet",
+                  "resource_id": "subnet-a", "facts": {"vpc_id": "vpc-a"}}
+        return {"resources": [task, subnet], "relationships": [], "coverage": {"account": ACCOUNT},
+                "gaps": [], "incomplete": [], "degraded": [], "evidence": [
+            {"id": "e:" + r["id"], "kind": "inventory", "source": "inventory", "resource_ids": [r["id"]],
+             "fresh": True, "captured_at": captured, "coverage": {"complete": True}} for r in (task, subnet)]}
+
+    bound = bundle(True)
+    identities.project_tasks(bound)
+    assert any(e["source"] == "inventory_workload_binding" for e in bound["evidence"])
+    capped = bundle(False)
+    identities.project_tasks(capped)
+    assert not any(e["source"] == "inventory_workload_binding" for e in capped["evidence"])
+    assert "private_ip_address" not in capped["resources"][0]["facts"]
+    assert "workload_attachment_cap" in capped["incomplete"]

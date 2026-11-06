@@ -292,13 +292,13 @@ variable "diagnosis_dns_log_group_arns" {
 variable "diagnosis_member_role_arns" {
   type        = list(string)
   default     = []
-  description = "Explicit reviewed member read-only role ARN allowlist; an enabled account registry row, external ID and verified assumed identity are also required. Empty disables member live reads."
+  description = "Explicit reviewed member AWSopsReadOnlyRole ARN allowlist (the onboarding read-only role name is pinned); an enabled account registry row, external ID and verified assumed identity are also required. Empty disables member live reads."
   validation {
     condition = length(var.diagnosis_member_role_arns) <= 32 && alltrue([for arn in var.diagnosis_member_role_arns :
-      can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@-]{1,64}$", arn)) &&
+      can(regex("^arn:aws:iam::[0-9]{12}:role/AWSopsReadOnlyRole$", arn)) &&
       try(split(":", arn)[4] != data.aws_caller_identity.current.account_id, false)
     ])
-    error_message = "Use at most 32 explicit foreign-account role ARNs without wildcards or paths."
+    error_message = "Use at most 32 foreign-account AWSopsReadOnlyRole ARNs without wildcards or paths."
   }
 }
 

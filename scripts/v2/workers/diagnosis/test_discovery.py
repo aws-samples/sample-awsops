@@ -587,3 +587,35 @@ def test_evidence_index_retains_native_metrics_and_provider_shapes(provider):
     provider_fact = evidence(admitted, "provider_sizing")[0]["facts"]
     assert (provider_fact["rank"], provider_fact["currency"], provider_fact["generation_time"]) == (1, "USD", NOW.isoformat())
     assert provider_fact["guard_hits"] == ["protected_tag:dr"]
+
+
+def test_pair_and_source_without_source_ids_do_not_lose_the_graph(provider):
+    db = graph_fixture()
+    db.states[0][4]["sources"].append({"status": "ok", "itemCount": 0})
+    db.edges[0][4]["instance_observations"][0].pop("source_id")
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "graph_read_failed" not in bundle["degraded"]
+    assert "unresolved_instance_observation" in bundle["incomplete"]
+    reverse = {r["id"]: r["resource_id"] for r in bundle["resources"]}
+    pairs = {(reverse[e["source"]], reverse[e["target"]]) for e in bundle["relationships"]
+             if e["kind"] == "observed_call" and reverse[e["source"]].startswith("i-")}
+    assert pairs == {(I2, "db2")}
+
+
+def test_xray_facts_survive_admission_and_unresolved_binding_is_not_an_observation(provider):
+    from diagnosis.evidence import EvidenceIndex
+    provider.xray = [{"Services": [{"ReferenceId": 1, "Name": "app", "Edges": [
+                        {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 10,
+                         "ErrorStatistics": {"TotalCount": 1}}}]},
+                     {"ReferenceId": 2, "Name": "database"}]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    index = EvidenceIndex(bundle, ACCOUNT)
+    row = next(e for e in index.admitted_bundle()["evidence"] if e["source"] == "xray")
+    assert row["facts"]["resource_binding"] == "unresolved"
+    assert (row["facts"]["from_name"], row["facts"]["to_name"], row["facts"]["calls"]) == ("app", "database", 10)
+    assert row["facts"]["error_rate"] == 0.1 and row["coverage"]["complete"] is True
+    result = index.validate_finding({"id": "finding-xray", "pillar": "reliability", "severity": "medium",
+        "resource_ids": row["resource_ids"], "evidence_ids": [row["id"]], "claim": "observation",
+        "explanation": "The service edge needs verification.", "prerequisites": [],
+        "verification": "graph_refresh"})
+    assert result["claim"] == "hypothesis"

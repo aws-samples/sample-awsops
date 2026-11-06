@@ -33,7 +33,7 @@ def dns(**changes):
     row = {"account_id": ACCOUNT, "region": REGION, "vpc_id": VPC,
         "query_timestamp": (NOW - dt.timedelta(seconds=20)).isoformat(),
         "query_name": "orders.example.test.", "rcode": "NOERROR", "srcaddr": "10.0.1.5",
-        "instance": I1, "answers": [{"answer_type": "A", "rdata": "10.0.2.7"}],
+        "instance": I1, "answers": [{"Rdata": "10.0.2.7", "Type": "A", "Class": "IN"}],
         "srcport": 60000, "raw_sql": "secret"}
     return {**row, **changes}
 
@@ -79,7 +79,8 @@ def test_dns_plus_flow_preserves_original_windows_and_never_becomes_sql_call():
     {"query_timestamp": (START - dt.timedelta(seconds=1)).isoformat()},
     {"query_timestamp": (NOW + dt.timedelta(seconds=1)).isoformat()},
     {"query_timestamp": "malformed"}, {"srcaddr": "10.0.1.6"}, {"instance": "i-foreign"},
-    {"rcode": "NXDOMAIN"}, {"answers": []}, {"answers": [{"answer_type": "A", "rdata": "invalid"}]},
+    {"rcode": "NXDOMAIN"}, {"answers": []}, {"answers": [{"Rdata": "invalid", "Type": "A", "Class": "IN"}]},
+    {"answers": [{"Rdata": "10.0.2.7", "Type": "A", "Class": "CH"}]},
 ])
 def test_bad_dns_cannot_establish_resource_dependencies(change):
     data = project(rows=[dns(**change)])
@@ -137,14 +138,21 @@ def test_context_and_admission_keep_weak_binding_as_hypothesis():
     assert admitted["facts"]["query_name"] == "orders.example.test"
 
 
-@pytest.mark.parametrize("gate,scope,host", [
-    ("false", "self", ACCOUNT), ("true", ACCOUNT, ACCOUNT), ("true", "self", "999900001111")])
-def test_gate_or_scope_refusal_makes_no_calls(monkeypatch, gate, scope, host):
+# The argname must not shadow the autouse `scope` fixture: its loop gate, allowlist
+# and frozen clock must be active so only the parametrized refusal stops the calls.
+@pytest.mark.parametrize("gate,report_scope,host,gap", [
+    ("false", "self", ACCOUNT, None), ("true", ACCOUNT, ACCOUNT, "network_scope_unsupported"),
+    ("true", "self", "999900001111", "network_scope_unsupported")])
+def test_gate_or_scope_refusal_makes_no_calls(monkeypatch, gate, report_scope, host, gap):
+    from diagnosis import workload_identities
+    assert observations.os.environ["DIAGNOSIS_EVIDENCE_LOOP_ENABLED"] == "true"
     monkeypatch.setenv("DIAGNOSIS_NETWORK_EVIDENCE_ENABLED", gate)
     monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", host)
-    data = observations.collect(bundle(), Budget(), scope=scope,
+    monkeypatch.setattr(workload_identities, "collect_proxies", lambda *a: pytest.fail("refusal bypass"))
+    data = observations.collect(bundle(), Budget(), scope=report_scope,
         client_factory=lambda *a: pytest.fail("No SDK call permitted"))
     assert not data["relationships"]
+    assert (gap in data["gaps"]) if gap else not data["gaps"]
 
 
 class Provider:
@@ -167,8 +175,12 @@ class Provider:
     def get_query_results(self, **params):
         self.calls.append(("dns_results", params))
         if self.pending: return {"status": "Running"}
-        row = dns(); row["answers"] = json.dumps(row["answers"])
-        return {"status": "Complete", "results": [[{"field": k, "value": v} for k,v in row.items()]]}
+        # Logs Insights flattens the JSON answers array into indexed fields.
+        row = dns()
+        for i, answer in enumerate(row.pop("answers")):
+            row[f"answers.{i}.Rdata"], row[f"answers.{i}.Type"] = answer["Rdata"], answer["Type"]
+        return {"status": "Complete", "results": [[{"field": k, "value": v} for k,v in row.items()]
+                                                  + [{"field": "@ptr", "value": "opaque"}]]}
 
     def stop_query(self, **params):
         self.calls.append(("dns_stop", params)); return {}
@@ -403,8 +415,8 @@ def test_nfm_global_monitor_and_query_caps_are_visible(monkeypatch):
 
 def test_reversed_peer_flow_is_undirected_and_cname_is_not_call_evidence():
     data = project(rows=[dns(query_name="alias.example.test", answers=[
-        {"answer_type": "CNAME", "rdata": "orders.example.test"},
-        {"answer_type": "A", "rdata": "10.0.2.7"}])], flows=[flow(localIp="10.0.2.7",
+        {"Rdata": "orders.example.test", "Type": "CNAME", "Class": "IN"},
+        {"Rdata": "10.0.2.7", "Type": "A", "Class": "IN"}])], flows=[flow(localIp="10.0.2.7",
         remoteIp="10.0.1.5", localInstanceId=None, remoteInstanceId=I1)])
     assert any(e["kind"] == "observed_network_flow" for e in data["evidence"])
     assert not any(e["kind"] == "observed_call" for e in data["evidence"])
@@ -444,3 +456,26 @@ def test_node_metadata_and_shared_lambda_addresses_keep_explicit_identity_gaps()
     assert not result["relationships"]
     assert "lambda_eni_identity_unresolved" in result["gaps"]
     assert "pod_identity_unresolved" in result["gaps"]
+
+
+def test_resolver_answers_parse_real_shape_from_list_json_and_flattened_fields():
+    real = [{"Rdata": "10.0.2.7", "Type": "A", "Class": "IN"}]
+    flattened = dns(); flattened.pop("answers")
+    flattened.update({"answers.0.Rdata": "10.0.2.7", "answers.0.Type": "A"})
+    for row in (dns(answers=real), dns(answers=json.dumps(real)), flattened):
+        assert observations._answers(row) == ({"10.0.2.7"}, set())
+    # The legacy guessed keys are not the Resolver log shape.
+    assert observations._answers(dns(answers=[{"answer_type": "A", "rdata": "10.0.2.7"}])) is None
+
+
+def test_flattened_answers_beyond_projection_or_with_gaps_are_refused():
+    overflow = dns(); overflow.pop("answers")
+    for i in range(observations.MAX_ANSWERS + 1):
+        overflow[f"answers.{i}.Rdata"], overflow[f"answers.{i}.Type"] = "10.0.2.7", "A"
+    gap = dns(); gap.pop("answers")
+    gap.update({"answers.0.Rdata": "10.0.2.7", "answers.0.Type": "A",
+                "answers.2.Rdata": "10.0.2.8", "answers.2.Type": "A"})
+    assert observations._answers(overflow) is None
+    assert observations._answers(gap) is None
+    query = observations.DNS_QUERY
+    assert "answers.0.Rdata" in query and f"answers.{observations.MAX_ANSWERS}.Type" in query

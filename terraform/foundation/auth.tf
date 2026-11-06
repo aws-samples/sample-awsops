@@ -171,7 +171,8 @@ data "archive_file" "edge" {
   }
 }
 
-# Lambda@Edge supports the latest Python runtimes (CloudFront "Restrictions on Lambda@Edge").
+# Lambda@Edge supports the latest Python runtimes, including python3.14 (CloudFront "Restrictions on
+# Lambda@Edge": https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/lambda-at-edge-function-restrictions.html#lambda-at-edge-restrictions-runtime).
 resource "aws_lambda_function" "edge" {
   provider         = aws.use1
   function_name    = "${var.project}-cognito-auth"

@@ -45,10 +45,17 @@ def _mark(bundle, category, value):
         bundle[category].append(value)
 
 
+def _now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
 def _cost(client, account, budget, bundle, now):
-    start, end = now.date().replace(day=1).isoformat(), now.date().isoformat()
-    if start == end:
-        raise ValueError("cost_window_empty")
+    # Cost Explorer's End is exclusive. On the first day of a month the
+    # month-to-date window is empty, so summarize the previous full month.
+    month_start = now.date().replace(day=1)
+    partial = now.date() != month_start
+    first = month_start if partial else (month_start - dt.timedelta(days=1)).replace(day=1)
+    start, end = first.isoformat(), (now.date() if partial else month_start).isoformat()
     groups, token, seen, complete = [], None, set(), True
     for page_number in range(_MAX_PAGES):
         if budget.remaining() < 10:
@@ -90,7 +97,7 @@ def _cost(client, account, budget, bundle, now):
     if len(currencies) > 1:
         _mark(bundle, "gaps", "mixed_currency")
     # Keep provider service-level amounts. Never infer resource cost or add currencies.
-    return ({"cost_groups": groups[:40], "resource_cost": False, "partial_month": True},
+    return ({"cost_groups": groups[:40], "resource_cost": False, "partial_month": partial},
             {"start": start, "end": end},
             {"complete": complete, "returned": min(40, len(groups)),
              "total": len(groups), "omitted": max(0, len(groups) - 40)})
@@ -171,7 +178,7 @@ def collect(bundle, budget, *, scope):
     if (scope != "self" or result.get("coverage", {}).get("storage_scope") != "self"
             or not account or account != os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID")):
         return result
-    now = dt.datetime.now(dt.timezone.utc)
+    now = _now()
     plans = [
         ("cost", "ce", "us-east-1", _cost), ("posture", "securityhub", _REGION, _posture),
         ("what_changed", "cloudtrail", _REGION, _changes), ("commitment", "ce", "us-east-1", _commitment),

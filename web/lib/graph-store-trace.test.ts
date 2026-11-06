@@ -95,7 +95,7 @@ describe('instance observation publication', () => {
       meta: { resourceId: 'orders', inventoryAccount: 'self', region, host: 'orders.example.test' } },
   ];
   const querySpan = {
-    service: 'checkout', accountId: account, region, hostId: instanceId,
+    service: 'checkout', kind: 'CLIENT', accountId: account, region, hostId: instanceId,
     dbSystem: 'postgresql', dbHost: 'orders.example.test', startMs: 1_794_000_000_000,
   };
 
@@ -121,9 +121,14 @@ describe('instance observation publication', () => {
 
   it('publishes an explicitly partial graph when paired observations exceed their bound', async () => {
     vi.stubEnv('HOST_ACCOUNT_ID', account);
-    const { pool, params, client } = mockPool(infra);
+    const fleetId = (index: number) => `i-${index.toString(16).padStart(17, '0')}`;
+    const fleet = [...Array.from({ length: 201 }, (_, index) => ({
+      id: `ec2:@self:${region}:${fleetId(index)}`, kind: 'ec2',
+      meta: { resourceId: fleetId(index), inventoryAccount: 'self', region } })), infra[1]];
+    const { pool, params, client } = mockPool(fleet);
     const result = await rebuildTraceGraph(pool as never, [new FakeTraceSource(
-      Array.from({ length: 201 }, (_, index) => span({ ...querySpan, spanId: `query-${index}` })),
+      Array.from({ length: 201 }, (_, index) =>
+        span({ ...querySpan, spanId: `query-${index}`, hostId: fleetId(index) })),
     )]);
     expect(result).toMatchObject({ published: 1, degraded: 1 });
     const state = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO topology_graph_state'))![1]!;

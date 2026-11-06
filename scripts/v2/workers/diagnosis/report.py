@@ -1,6 +1,7 @@
 """AWSops v2 — AI Diagnosis orchestrator: collect native sources → render sections →
 assemble markdown + summary. Invariant verdicts render deterministically; other sections use
 Bedrock. Read-only. Bedrock model from env (Sonnet for mid tier)."""
+import copy
 import json
 import os
 import re
@@ -885,12 +886,26 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     emit(0, "Discovery", "collect")
     try:
         bundle = discovery.collect(conn, account, budget, scope=scope)
-        bundle = observations.collect(bundle, budget, scope=scope, client_factory=discovery._client)
-        bundle = supporting.collect(bundle, budget, scope=scope)
     except Exception as exc:  # a partial artifact is preferable to losing all stage metadata
         print(f"evidence report discovery failed: {type(exc).__name__}", file=sys.stderr)
         bundle = {"resources": [], "evidence": [], "relationships": [], "coverage": {},
                   "gaps": ["discovery_failed"], "degraded": ["discovery_failed"], "incomplete": []}
+    # Later stages only add evidence. A failure keeps the prior stage's bundle (observations
+    # mutate in place, so restore a snapshot) and records the failed stage explicitly.
+    for stage, collect_stage in (
+            ("observations", lambda value: observations.collect(
+                value, budget, scope=scope, client_factory=discovery._client)),
+            ("supporting", lambda value: supporting.collect(value, budget, scope=scope))):
+        prior = copy.deepcopy(bundle)
+        try:
+            bundle = collect_stage(bundle)
+        except Exception as exc:
+            print(f"evidence report {stage} failed: {type(exc).__name__}", file=sys.stderr)
+            bundle = prior
+            for category in ("gaps", "degraded"):
+                values = bundle.setdefault(category, [])
+                if f"{stage}_failed" not in values:
+                    values.append(f"{stage}_failed")
     collected = _evidence_invariant_sources(bundle)
     active = ddb.list_active_invariants(conn)
     verdicts = _evaluate_intent(active, _build_actual(collected))
@@ -917,6 +932,11 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     bodies = presentation.render(catalog, bundle, analysis, lang=lang,
                                  invariant_md=_render_intended_vs_actual(verdicts, lang))
     by_key = dict(bodies)
+    # Same read-only presentation rule as render_section: presentation withholds a
+    # model-authored mutating command and appends the code-owned mark (it cannot be
+    # produced through escaped cells), so those sections are a degraded render.
+    mutating_mark = _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()
+    mutating = [key for key, body in bodies if mutating_mark in body]
     rendered, completed = [], []
     for index, section in enumerate(catalog, start=1):
         title = localized_title(section, lang)
@@ -932,7 +952,8 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     incomplete = list(dict.fromkeys(bundle.get("incomplete", []) + analysis.get("incomplete", [])))
     summary = {
         "sections": total, "sources_used": sources_used, "degraded": degraded,
-        "incomplete": incomplete, "render_degraded": analysis.get("degraded", []),
+        "incomplete": incomplete,
+        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating)),
         "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),
         "evidence_loop": {"enabled": True, "passes": analysis.get("passes", 0),
                           "prompt_version": analysis.get("prompt_version"),

@@ -64,7 +64,14 @@ FACT_KEYS = {
     "instance_observations_omitted",
     "query_name", "dns_timestamp", "answer_ips", "ttl_known", "direction", "destination_category",
     "dns_source_id",
+    # X-Ray service-graph edges: service references/names, call statistics and the
+    # explicit binding marker that keeps unresolved service nodes out of observations.
+    "from_ref", "to_ref", "from_name", "to_name", "calls", "error_rate", "resource_binding",
 }
+# Compute Optimizer directions that are downsizing opportunities (finops/rules.py parity).
+# Underprovisioned (upsize) and Optimized rows never validate as sizing candidates.
+_DOWNSIZE_FINDINGS = {"ec2": {"Overprovisioned", "NotOptimized"},
+                      "rds": {"Overprovisioned"}, "rds_instance": {"Overprovisioned"}}
 _HAN_NUMERALS = "〇零一二三四五六七八九十百千萬万億亿兆兩两壹贰貳叁參肆伍陆陸柒捌玖拾佰仟"
 _NUMBER = re.compile(
     r"\d|[%$€£¥₩¢]"
@@ -280,13 +287,23 @@ class EvidenceIndex:
         """The exact sanitized records used for analysis and deterministic rendering."""
         return self.model_context()
 
+    @staticmethod
+    def _complete(row, *, sampled=False):
+        """Freshness is not completeness: paginated/capped/partial reads stay unconfirmed."""
+        coverage = row.get("coverage")
+        if not isinstance(coverage, dict) or coverage.get("complete") is not True:
+            return False
+        return not sampled or (_finite(coverage.get("sample_ratio"), MIN_SAMPLE_RATIO)
+                               and coverage["sample_ratio"] <= 1)
+
     def _observation_supported(self, finding):
         refs = finding["resource_ids"]
         cited = [self.evidence[ref] for ref in finding["evidence_ids"]]
         if not cited or any(not row["fresh"] for row in cited):
             return False
         if len(refs) == 1:
-            return any(row["kind"] == "metrics" and refs[0] in row["resource_ids"] for row in cited)
+            return any(row["kind"] == "metrics" and refs[0] in row["resource_ids"]
+                       and self._complete(row, sampled=True) for row in cited)
         # A referenced scoped edge must preserve the actual pair. Sharing a
         # service/SG or joining independent aggregates never creates an observed edge.
         return len(refs) == 2 and any(
@@ -295,6 +312,8 @@ class EvidenceIndex:
             and set(row["evidence_ids"]).issubset(finding["evidence_ids"])
             and all(isinstance(self.evidence[eid]["facts"], dict)
                     and self.evidence[eid]["facts"].get("binding") != "dns_window_correlation"
+                    and self.evidence[eid]["facts"].get("resource_binding") != "unresolved"
+                    and self._complete(self.evidence[eid])
                     for eid in row["evidence_ids"])
             for row in self.relationships.values()
         )
@@ -312,6 +331,8 @@ class EvidenceIndex:
             return False
         facts = provider[0]["facts"]
         if not isinstance(facts, dict):
+            return False
+        if facts.get("finding") not in _DOWNSIZE_FINDINGS.get(resource["kind"], set()):
             return False
         if (not _finite(facts.get("lookback_days"), 14)
                 or not _finite(facts.get("performance_risk"))

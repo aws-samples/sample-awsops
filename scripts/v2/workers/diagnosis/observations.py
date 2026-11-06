@@ -17,10 +17,17 @@ MAX_MONITORS = 2
 MAX_QUERIES = 6
 MAX_POLLS = 4
 CATEGORIES = ("INTRA_AZ", "INTER_AZ", "INTER_VPC")
+MAX_ANSWERS = 8
+# Resolver query logs carry answers as [{"Rdata", "Type", "Class"}]. Logs Insights
+# flattens JSON arrays into indexed fields (answers.0.Rdata), so the bounded query
+# projects those explicitly; one extra index proves the answer list was not truncated.
+_ANSWER_FIELDS = tuple(f"answers.{i}.{key}" for i in range(MAX_ANSWERS + 1)
+                       for key in ("Type", "Rdata"))
 DNS_FIELDS = ("account_id", "region", "vpc_id", "query_timestamp", "query_name",
-              "rcode", "answers", "srcaddr", "instance")
+              "rcode", "answers", "srcaddr", "instance", *_ANSWER_FIELDS)
 DNS_QUERY = ("fields account_id, region, vpc_id, query_timestamp, query_name, rcode, "
-             "answers, srcaddr, srcids.instance as instance | limit 50")
+             "answers, " + ", ".join(_ANSWER_FIELDS)
+             + ", srcaddr, srcids.instance as instance | limit 50")
 _sleep = time.sleep
 
 
@@ -62,8 +69,27 @@ def _qualified(bundle):
             and r.get("region") in regions]
 
 
+def _flattened_answers(row):
+    if not any(key in row for key in _ANSWER_FIELDS):
+        return None
+    if any(row.get(f"answers.{MAX_ANSWERS}.{key}") is not None for key in ("Type", "Rdata")):
+        return []  # more answers than projected: refuse rather than bind a partial set
+    answers = []
+    for i in range(MAX_ANSWERS):
+        kind, rdata = row.get(f"answers.{i}.Type"), row.get(f"answers.{i}.Rdata")
+        if kind is None and rdata is None:
+            break
+        answers.append({"Type": kind, "Rdata": rdata})
+    if any(row.get(f"answers.{j}.{key}") is not None for j in range(len(answers) + 1, MAX_ANSWERS)
+           for key in ("Type", "Rdata")):
+        return []  # a gap in the indexes cannot be an exact answer list
+    return answers
+
+
 def _answers(row):
     answers = row.get("answers")
+    if answers is None or answers == "":
+        answers = _flattened_answers(row)
     if isinstance(answers, str):
         if len(answers) > 8192:
             return None
@@ -77,14 +103,17 @@ def _answers(row):
     for answer in answers:
         if not isinstance(answer, dict):
             return None
-        kind = answer.get("answer_type")
+        # Real Resolver query log shape: {"Rdata": ..., "Type": ..., "Class": "IN"}.
+        kind, rdata = answer.get("Type"), answer.get("Rdata")
+        if answer.get("Class", "IN") != "IN":
+            return None
         if kind in {"A", "AAAA"}:
-            address = _ip(answer.get("rdata"))
+            address = _ip(rdata)
             if address is None or (":" in address) != (kind == "AAAA"):
                 return None
             addresses.add(address)
         elif kind == "CNAME":
-            host = _host(answer.get("rdata"))
+            host = _host(rdata)
             if host is None:
                 return None
             aliases.add(host)
@@ -324,7 +353,7 @@ def _dns(reads, region, approved, vpcs, start, end):
                     finished = True
                     for fields in result.get("results", [])[:MAX_ROWS]:
                         if isinstance(fields, list):
-                            row = {f["field"]: f.get("value") for f in fields[:32]
+                            row = {f["field"]: f.get("value") for f in fields[:64]
                                    if isinstance(f, dict) and f.get("field") in DNS_FIELDS}
                             if (row.get("region") == region and row.get("vpc_id") in selected[arn]
                                     and row.get("account_id") == reads.bundle["coverage"]["account"]):

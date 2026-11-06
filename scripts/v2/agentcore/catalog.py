@@ -286,25 +286,19 @@ TARGETS = {
              "inputSchema": {"type": "object", "properties": {
                  "namespace": _p("string", "Verified namespace"),
                  "metric_name": _p("string", "Verified metric name"),
-                 "dimensions": {"type": "object", "description": "Exact dimensions, e.g. InstanceId or DBInstanceIdentifier",
-                     "maxProperties": 30, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1024}},
-                 "statistic": {"type": "string", "enum": ["Average", "Minimum", "Maximum", "Sum", "SampleCount", "p50", "p90", "p95", "p99"]},
-                 "minutes": {"type": "integer", "minimum": 1, "maximum": 20160},
-                 "period": {"type": "integer", "minimum": 60, "maximum": 2147483647, "multipleOf": 60,
-                     "description": "Seconds; positive multiple of 60 and at most 1440 points per request"},
-                 "unit": {"type": "string", "enum": [
-                     "Seconds", "Microseconds", "Milliseconds", "Bytes", "Kilobytes", "Megabytes",
-                     "Gigabytes", "Terabytes", "Bits", "Kilobits", "Megabits", "Gigabits", "Terabits",
-                     "Percent", "Count", "Bytes/Second", "Kilobytes/Second", "Megabytes/Second",
-                     "Gigabytes/Second", "Terabytes/Second", "Bits/Second", "Kilobits/Second",
-                     "Megabits/Second", "Gigabits/Second", "Terabits/Second", "Count/Second", "None"]},
+                 # AgentCore SchemaDefinition carries only type/description/properties/required/items;
+                 # bounds live in descriptions here and are enforced server-side by _metric_request.
+                 "dimensions": {"type": "object", "description": "Exact dimensions, e.g. InstanceId or DBInstanceIdentifier; at most 30 string values of 1-1024 characters"},
+                 "statistic": _p("string", "One of Average, Minimum, Maximum, Sum, SampleCount, p50, p90, p95, p99"),
+                 "minutes": _p("integer", "Window in minutes, 1 to 20160 (14 days)"),
+                 "period": _p("integer", "Seconds; positive multiple of 60 and at most 1440 points per request"),
+                 "unit": _p("string", "Optional CloudWatch standard unit, e.g. Percent, Count, Bytes, Seconds, Bytes/Second or None"),
              }, "required": ["namespace", "metric_name"]}},
             {"name": "get_metric_metadata", "description": "Discover bounded CloudWatch metric metadata by namespace and optional metric/dimensions; omitted metric_name performs namespace-only discovery",
              "inputSchema": {"type": "object", "properties": {
                  "namespace": _p("string", "Verified namespace"),
                  "metric_name": _p("string", "Optional exact metric name"),
-                 "dimensions": {"type": "object", "description": "Optional exact dimension filters",
-                     "maxProperties": 30, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1024}},
+                 "dimensions": {"type": "object", "description": "Optional exact dimension filters; at most 30 string values of 1-1024 characters"},
              }, "required": ["namespace"]}},
             {"name": "analyze_metric", "description": "Analyze trend", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace"), "metric_name": _p("string", "Metric")}, "required": ["namespace", "metric_name"]}},
             {"name": "get_recommended_metric_alarms", "description": "Alarm recommendations", "inputSchema": {"type": "object", "properties": {"metric_name": _p("string", "Metric")}, "required": ["metric_name"]}},

@@ -148,12 +148,61 @@ describe('same-span EC2 and DB observations', () => {
       .not.toHaveProperty('instance_observations');
   });
 
-  it('discloses omitted observations when a service→DB pair list reaches its cap', () => {
-    const spans = Array.from({ length: 201 }, (_, index) => dbSpan({ spanId: `query-${index}` }));
-    const graph = buildTraceGraph(spans, [], inventory());
-    expect(graph.edges[0].meta.spanCount).toBe(201);
+  const fleetId = (index: number) => `i-${index.toString(16).padStart(17, '0')}`;
+  const fleet = (count: number): InfraNodeLike[] => buildInfraGraph({
+    resources: [
+      ...Array.from({ length: count }, (_, index) => ({ resource_type: 'ec2', resource_id: fleetId(index),
+        account_id: account, region, data: { vpc_id: 'vpc-a' } })),
+      { resource_type: 'rds', resource_id: 'orders', account_id: account,
+        region, data: { vpc_id: 'vpc-a', endpoint_address: dbHostA } },
+    ],
+    vpcs: [], subnets: [], securityGroups: [],
+  }).nodes;
+
+  it('discloses omitted distinct pairs when a service→DB pair list reaches its cap', () => {
+    const spans = Array.from({ length: 201 }, (_, index) =>
+      dbSpan({ spanId: `query-${index}`, hostId: fleetId(index) }));
+    const graph = buildTraceGraph([...spans, spans[200], { ...spans[200], spanId: 'again' }], [], fleet(201));
+    expect(graph.edges[0].meta.spanCount).toBe(202);
     expect(graph.edges[0].meta.instance_observations).toHaveLength(200);
     expect(graph.edges[0].meta.instance_observations_omitted).toBe(1);
     expect(graph.instanceObservationDrops).toBe(1);
   });
+
+  it('dedupes repeated spans per instance/database pair so a chatty instance cannot hide another', () => {
+    const chatty = Array.from({ length: 500 }, (_, index) =>
+      dbSpan({ spanId: `a-${index}`, startMs: 1_794_000_000_000 + index }));
+    const quiet = dbSpan({ spanId: 'b-only', hostId: instanceB, startMs: 1_794_000_000_100 });
+    const graph = buildTraceGraph([...chatty, quiet], [], inventory());
+    const queries = graph.edges.filter(edge => edge.rel === 'queries');
+    expect(queries).toHaveLength(1);
+    expect(queries[0].meta.spanCount).toBe(501);
+    expect(queries[0].meta).not.toHaveProperty('instance_observations_omitted');
+    expect(graph.instanceObservationDrops).toBe(0);
+    const observations = queries[0].meta.instance_observations!;
+    expect(observations.map(pair => [pair.instance_ref, pair.database_ref])).toEqual([
+      [instanceRefA, databaseRefA], [instanceRefB, databaseRefA],
+    ]);
+    expect(observations[0]).toMatchObject({
+      first_observed_at_ms: 1_794_000_000_000, observed_at_ms: 1_794_000_000_499, observation_count: 500,
+    });
+    expect(observations[1]).toMatchObject({
+      instance_id: instanceB, first_observed_at_ms: 1_794_000_000_100,
+      observed_at_ms: 1_794_000_000_100, observation_count: 1,
+    });
+    // The representative correlation names the latest span, independent of input order.
+    const reversed = buildTraceGraph([quiet, ...[...chatty].reverse()], [], inventory())
+      .edges[0].meta.instance_observations!;
+    expect(reversed.find(pair => pair.instance_ref === instanceRefA)).toEqual(observations[0]);
+  });
+
+  it.each(['SERVER', 'PRODUCER', 'CONSUMER', 'INTERNAL', 'UNSPECIFIED'])(
+    'keeps service→DB but emits no instance observation for a %s db span', kind => {
+      const graph = buildTraceGraph([dbSpan({ kind })], [], inventory());
+      const queries = graph.edges.filter(edge => edge.rel === 'queries');
+      expect(queries).toHaveLength(1);
+      expect(queries[0].meta).toMatchObject({ spanCount: 1, metricCount: 0 });
+      expect(queries[0].meta).not.toHaveProperty('instance_observations');
+      expect(graph.instanceObservationDrops).toBe(0);
+    });
 });

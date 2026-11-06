@@ -12,7 +12,7 @@ def test_aaaa_dns_answer_is_scrubbed_from_actual_specialist_request(monkeypatch)
     monkeypatch.setattr(discovery, '_now', lambda: NOW)
     address = 'fd00:1234:5678::25'
     data = bundle()
-    observations.project(data, [dns(answers=[{'answer_type': 'AAAA', 'rdata': address}])],
+    observations.project(data, [dns(answers=[{'Rdata': address, 'Type': 'AAAA', 'Class': 'IN'}])],
                          [flow(remoteIp=address)], start=START, end=NOW, source_id='offline-test')
     assert address in json.dumps(data)
     assert any(e['kind'] == 'observed_network_flow' for e in data['evidence'])

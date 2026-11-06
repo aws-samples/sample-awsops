@@ -11,7 +11,12 @@ export interface InstanceObservation {
   account: string;
   region: string;
   db_host: string;
+  /** Latest span start for this (instance_ref, database_ref) pair; correlation_id names that span. */
   observed_at_ms: number;
+  /** Earliest span start for the same pair (additive; equals observed_at_ms for one span). */
+  first_observed_at_ms: number;
+  /** Number of spans merged into this pair. */
+  observation_count: number;
   source_id?: string;
   provenance: 'trace_span';
 }
@@ -109,7 +114,7 @@ function observedInstanceDatabasePair(
   return {
     instance_id: instanceId, instance_ref: instances[0].id, database_ref: databases[0].id,
     correlation_id: correlationId, account, region, db_host: host,
-    observed_at_ms: span.startMs,
+    observed_at_ms: span.startMs, first_observed_at_ms: span.startMs, observation_count: 1,
     ...(span.sourceId ? { source_id: span.sourceId } : {}),
     provenance: 'trace_span',
   };
@@ -128,6 +133,9 @@ export function buildTraceGraph(
   let invalidSpans = 0;
   let unresolvedMessaging = 0;
   let instanceObservationDrops = 0;
+  // Per-edge pair index: the cap bounds distinct (instance, database) pairs, so a chatty
+  // instance cannot crowd out another instance that shares the same database.
+  const pairIndex = new WeakMap<TraceEdge, { kept: Map<string, InstanceObservation>; omitted: Set<string> }>();
   const valid = spans.filter((s) => {
     if (s.traceId && s.spanId && s.service) return true;
     invalidSpans++;
@@ -207,11 +215,31 @@ export function buildTraceGraph(
           ...(infraRef ? { infra_ref: infraRef } : {}) },
       });
       const queryEdge = edge(sid, id, 'queries');
-      const observation = observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId);
+      // Only an outbound client call is evidence that this instance queried the database;
+      // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
+      const observation = span.kind === 'CLIENT'
+        ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
       if (observation) {
         const observations = queryEdge.meta.instance_observations ??= [];
-        if (observations.length < INSTANCE_OBSERVATION_CAP) observations.push(observation);
-        else {
+        let index = pairIndex.get(queryEdge);
+        if (!index) pairIndex.set(queryEdge, index = { kept: new Map(), omitted: new Set() });
+        const key = JSON.stringify([observation.instance_ref, observation.database_ref]);
+        const existing = index.kept.get(key);
+        if (existing) {
+          existing.observation_count++;
+          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, observation.observed_at_ms);
+          if (observation.observed_at_ms > existing.observed_at_ms
+            || (observation.observed_at_ms === existing.observed_at_ms
+              && observation.correlation_id > existing.correlation_id)) {
+            existing.observed_at_ms = observation.observed_at_ms;
+            existing.correlation_id = observation.correlation_id;
+          }
+        } else if (observations.length < INSTANCE_OBSERVATION_CAP) {
+          index.kept.set(key, observation);
+          observations.push(observation);
+        } else if (!index.omitted.has(key)) {
+          // Omitted counts distinct pairs, matching the distinct-pair cap.
+          index.omitted.add(key);
           queryEdge.meta.instance_observations_omitted = (queryEdge.meta.instance_observations_omitted ?? 0) + 1;
           instanceObservationDrops++;
         }

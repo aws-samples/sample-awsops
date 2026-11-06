@@ -307,3 +307,39 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
     md = html.unescape(md)
     assert f"`{I1}`, `db1`" in md and f"`{I2}`, `db2`" in md
     assert f"`{I1}`, `db2`" not in md and f"`{I2}`, `db1`" not in md
+
+
+@pytest.mark.parametrize("stage,error", [("observations", KeyError), ("supporting", TimeoutError)])
+def test_late_stage_failure_keeps_discovered_resources(monkeypatch, stage, error):
+    from diagnosis import observations, supporting
+    prepare(monkeypatch)
+
+    def fail(data, *a, **kw):
+        data["resources"].clear()  # a partial in-place mutation must not survive the failure
+        raise error("stage")
+
+    monkeypatch.setattr(observations if stage == "observations" else supporting, "collect", fail)
+    md, summary, used = report.generate(object(), "self", lang="en")
+    assert summary["discovery"]["resources"] == 1
+    assert f"{stage}_failed" in summary["degraded"]
+    assert f"{stage}_failed" in summary["discovery"]["gaps"]
+    assert "discovery_failed" not in summary["degraded"]
+    assert "cloudwatch" in used and "i-0123456789abcdef0" in md
+
+
+def test_model_prerequisite_with_mutating_cli_is_withheld_and_degrades(monkeypatch):
+    from diagnosis.test_presentation import finding
+    unsafe = finding(prerequisites=["Run aws rds delete-db-instance --db-instance-identifier orders",
+                                    "Confirm owner approval."])
+    prepare(monkeypatch, findings=analysis(findings=[unsafe]))
+    md, summary, _ = report.generate(object(), "self", lang="en")
+    assert "delete-db-instance" not in md
+    assert "Confirm owner approval." in md
+    assert report._MUTATING_MARK["en"].strip() in md
+    assert summary["render_degraded"] and "executive_summary" in summary["render_degraded"]
+
+
+def test_read_only_prerequisites_do_not_degrade_render(monkeypatch):
+    prepare(monkeypatch)
+    _, summary, _ = report.generate(object(), "self", lang="en")
+    assert summary["render_degraded"] == []

@@ -24,7 +24,8 @@ that source limitation.
 
 Member metrics and Compute Optimizer reads require an enabled non-host account
 registration, its registered role and external ID, and an exact role ARN in
-`diagnosis_member_role_arns` (empty by default, at most 32 entries). The assumed
+`diagnosis_member_role_arns` (empty by default, at most 32 entries; each must name the
+onboarding `AWSopsReadOnlyRole`, so a privileged role cannot be allowlisted). The assumed
 principal and its STS account must match. Any failed authorization or verification
 leaves an explicit gap and makes no substitute host read. Account registration
 alone does not grant the worker permission to assume a role.

@@ -151,7 +151,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse(module.is_sensitive(plain), "body text must not drive classification")
         for path in ("scripts/v2/workers/remediation_executor.py", "web/lib/remediation.ts",
                      "agent/lambda/cross_account.py", "agent/lambda/sql_readonly_guard.py",
-                     "web/lib/auth-session.ts", "web/middleware.ts"):
+                     "web/lib/auth-session.ts", "web/middleware.ts", "web/proxy.ts"):
             header = f"diff --git a/{path} b/{path}\n@@ -1 +1 @@\n+a\n".encode()
             self.assertTrue(module.is_sensitive(header), path)
         for path in ("scripts/v2/workers/finops_dispatcher.py", "web/lib/integration-credentials.ts",

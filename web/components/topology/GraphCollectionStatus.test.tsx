@@ -99,6 +99,31 @@ describe('graph collection status', () => {
     expect(text).not.toContain('Processing limit');
     expect(text).not.toContain('previous graph retained');
   });
+  it.each([
+    ['ko', '생략된 인스턴스-DB 관측 쌍'],
+    ['en', 'Instance-to-database observation pairs omitted'],
+    ['ja', '省略されたインスタンス-DB観測ペア'],
+    ['zh', '省略的实例-数据库观测对'],
+  ])('discloses a partial graph caused only by instance observation drops in %s', async (lang, label) => {
+    language.current = lang;
+    expect(CollectionStatusContract.OPTIONAL_COLLECTION_LOSS_KEYS).toEqual(['instanceObservationDrops']);
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [{
+      status: 'partial', attempted_at: new Date(), captured_at: new Date(),
+      details: { nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0,
+        instanceObservationDrops: 3, retainedPrevious: false, sources: [] },
+    }] }) } as unknown as Pool;
+    const collection = JSON.parse(JSON.stringify(await readGraphState(pool, 'self')));
+    render(<GraphCollectionStatus collection={collection} />);
+    const alert = screen.getByRole('alert');
+    const items = within(alert).getAllByRole('listitem');
+    expect(items.map(item => item.textContent)).toEqual([`${label}: 3`]);
+    if (lang !== 'ko') expect(alert.textContent).not.toMatch(/[가-힣]/);
+  });
+  it.each([{}, { instanceObservationDrops: 0 }, { instanceObservationDrops: -1 }, { instanceObservationDrops: '2' }])(
+    'does not disclose absent, zero or invalid instance observation drops: %j', counters => {
+      render(<GraphCollectionStatus collection={{ status: 'unknown', stale: false, ...counters }} />);
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
   it('does not interpret ordinary numeric metadata as loss evidence', () => {
     render(<GraphCollectionStatus collection={{ status: 'ok', stale: false, itemCount: 12, spanCount: 99 }} />);
     expect(screen.queryByRole('alert')).toBeNull();
