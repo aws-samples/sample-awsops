@@ -191,10 +191,18 @@ def _current_model():
 
 
 def _drop_key_on_auth_error(error):
-    """A rejected Anthropic API key (rotation/revocation) is re-read on the next request."""
-    if model_runtime.provider() == "anthropic_api" and (
-            "authentication_error" in str(error) or type(error).__name__ == "AuthenticationError"):
-        model_runtime.reset_api_key()
+    """A rejected Anthropic API key (rotation/revocation) is re-read on the next request.
+
+    Only the Anthropic SDK's own AuthenticationError (anywhere in the cause chain) counts, so an
+    unrelated connector/MCP auth failure never forces a Secrets Manager re-read."""
+    if model_runtime.provider() != "anthropic_api":
+        return
+    seen = 0
+    while error is not None and seen < 8:
+        if type(error).__name__ == "AuthenticationError" and type(error).__module__.startswith("anthropic"):
+            model_runtime.reset_api_key()
+            return
+        error, seen = error.__cause__ or error.__context__, seen + 1
 
 
 # ============================================================================
@@ -1637,10 +1645,14 @@ async def handler(payload):
         callback_handler=None,
         hooks=lang_hooks,  # tool-less fallback still benefits if tools attach later
     )
-    async for chunk in _stream_text(agent, user_input):
-        if notice and "delta" in chunk:
-            chunk, notice = {**chunk, "delta": notice + chunk["delta"]}, None
-        yield chunk
+    try:
+        async for chunk in _stream_text(agent, user_input):
+            if notice and "delta" in chunk:
+                chunk, notice = {**chunk, "delta": notice + chunk["delta"]}, None
+            yield chunk
+    except Exception as e:
+        _drop_key_on_auth_error(e)  # the tool-less fallback rotates a rejected key too
+        raise
 
 
 if __name__ == "__main__":

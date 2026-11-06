@@ -7,6 +7,8 @@ import sys
 import unittest
 from unittest import mock
 
+from botocore.exceptions import ClientError, EndpointConnectionError
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_runtime  # noqa: E402
 
@@ -84,7 +86,7 @@ class ProviderTests(unittest.TestCase):
         secrets = mock.Mock()
         secrets.get_secret_value.return_value = {"SecretString": '{"api_key": "sk-test"}'}
         env = {"MODEL_PROVIDER": "anthropic_api", "ANTHROPIC_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:x"}
-        with mock.patch.dict(os.environ, env), mock.patch("urllib.request.urlopen", urlopen), \
+        with mock.patch.dict(os.environ, env), mock.patch.object(model_runtime._OPENER, "open", urlopen), \
                 mock.patch("boto3.client", return_value=secrets):
             out = model_runtime.client("ap-northeast-2").invoke_model(modelId="claude-haiku-5-5",
                                                                       body=json.dumps(ANTHROPIC_BODY))
@@ -101,7 +103,7 @@ class ProviderTests(unittest.TestCase):
                                    "usage": {"input_tokens": 3, "output_tokens": 1}})
         model_runtime._API_KEY = "sk-cached"
         with mock.patch.dict(os.environ, {"MODEL_PROVIDER": "anthropic_api"}), \
-                mock.patch("urllib.request.urlopen", urlopen):
+                mock.patch.object(model_runtime._OPENER, "open", urlopen):
             out = model_runtime.client("ap-northeast-2").converse(
                 modelId="claude-sonnet-5-5", messages=[{"role": "user", "content": [{"text": "ping"}]}],
                 inferenceConfig={"maxTokens": 128},
@@ -117,10 +119,12 @@ class ProviderTests(unittest.TestCase):
         seen, urlopen = self._api({"error": {"type": "permission_error", "message": "sk-cached is bad"}}, 403)
         model_runtime._API_KEY = "sk-cached"
         with mock.patch.dict(os.environ, {"MODEL_PROVIDER": "anthropic_api"}), \
-                mock.patch("urllib.request.urlopen", urlopen):
-            with self.assertRaises(RuntimeError) as ctx:
+                mock.patch.object(model_runtime._OPENER, "open", urlopen):
+            with self.assertRaises(ClientError) as ctx:
                 model_runtime.client("r").converse(modelId="claude-haiku-5-5", messages=[])
-        self.assertEqual(str(ctx.exception), "anthropic_api_error:403:permission_error")
+        error = ctx.exception.response["Error"]
+        self.assertEqual((error["Code"], error["Message"]), ("AccessDeniedException", "anthropic_api_error:403:permission_error"))
+        self.assertNotIn("sk-cached", str(ctx.exception))
 
     def test_throttling_and_network_errors_retry_with_bounded_backoff(self):
         import urllib.error
@@ -134,7 +138,7 @@ class ProviderTests(unittest.TestCase):
                 raise urllib.error.URLError("reset")
             return io.BytesIO(b'{"content": [], "stop_reason": "end_turn"}')
         model_runtime._API_KEY = "sk"
-        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep") as sleep:
+        with mock.patch.object(model_runtime._OPENER, "open", urlopen), mock.patch("time.sleep") as sleep:
             model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
         self.assertEqual(len(calls), 3)
         self.assertEqual(sleep.call_args_list[0].args, (10.0,))
@@ -145,10 +149,34 @@ class ProviderTests(unittest.TestCase):
         def urlopen(request, timeout):
             raise urllib.error.URLError("down")
         model_runtime._API_KEY = "sk"
-        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep"), \
-                self.assertRaises(RuntimeError) as ctx:
+        with mock.patch.object(model_runtime._OPENER, "open", urlopen), mock.patch("time.sleep"), \
+                self.assertRaises(EndpointConnectionError):
             model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
-        self.assertEqual(str(ctx.exception), "anthropic_api_unreachable:URLError")
+
+    def test_caller_retry_budget_is_honored_and_throttles_keep_their_code(self):
+        import urllib.error
+        from botocore.config import Config
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(1)
+            raise urllib.error.HTTPError(request.full_url, 429, "x", {}, io.BytesIO(b'{"error":{"type":"rate_limit_error"}}'))
+        model_runtime._API_KEY = "sk"
+        env = {"MODEL_PROVIDER": "anthropic_api"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(model_runtime._OPENER, "open", urlopen), \
+                mock.patch("time.sleep"), self.assertRaises(ClientError) as ctx:
+            model_runtime.client("r", Config(retries={"max_attempts": 0})).invoke_model(
+                modelId="claude-haiku-5-5", body=json.dumps(ANTHROPIC_BODY))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(ctx.exception.response["Error"]["Code"], "ThrottlingException")
+        self.assertEqual(model_runtime._attempts(Config(retries={"total_max_attempts": 1})), 1)
+        self.assertEqual(model_runtime._attempts(None), 3)
+
+    def test_api_requests_never_follow_redirects_or_use_a_proxy(self):
+        handlers = {type(h).__name__ for h in model_runtime._OPENER.handlers}
+        self.assertIn("_NoRedirect", handlers)
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:3128"}):
+            self.assertFalse([h for h in model_runtime._OPENER.handlers if getattr(h, "proxies", None)])
 
     def test_rotated_key_is_refetched_once_after_401(self):
         import urllib.error
@@ -163,7 +191,7 @@ class ProviderTests(unittest.TestCase):
         secrets.get_secret_value.return_value = {"SecretString": "sk-new"}
         model_runtime._API_KEY = "sk-old"
         env = {"MODEL_PROVIDER": "anthropic_api", "ANTHROPIC_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:x"}
-        with mock.patch.dict(os.environ, env), mock.patch("urllib.request.urlopen", urlopen), \
+        with mock.patch.dict(os.environ, env), mock.patch.object(model_runtime._OPENER, "open", urlopen), \
                 mock.patch("boto3.client", return_value=secrets):
             reply = model_runtime.anthropic_messages({"messages": []}, "claude-haiku-5-5")
         self.assertEqual(keys, ["sk-old", "sk-new"])

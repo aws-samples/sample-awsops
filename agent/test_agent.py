@@ -79,8 +79,14 @@ class AnthropicApiKeyRotationTest(unittest.TestCase):
                 patch.object(agent, "AnthropicModel", fake, create=True), patch.object(agent, "model", "model-old"):
             self.assertEqual(agent._current_model(), "model-new")
             self.assertEqual(agent._current_model(), "model-new")
-            agent._drop_key_on_auth_error(RuntimeError("anthropic_api_error:401:authentication_error"))
-            agent._drop_key_on_auth_error(RuntimeError("other"))
+            sdk_auth = type("AuthenticationError", (Exception,), {"__module__": "anthropic._exceptions"})
+            connector_auth = type("AuthenticationError", (Exception,), {"__module__": "mcp.client"})
+            try:
+                raise RuntimeError("model stream failed") from sdk_auth("401")
+            except RuntimeError as wrapped:
+                agent._drop_key_on_auth_error(wrapped)  # SDK auth error in the cause chain
+            agent._drop_key_on_auth_error(connector_auth("connector 401"))
+            agent._drop_key_on_auth_error(RuntimeError("authentication_error from a gateway"))
         self.assertEqual(built, ["sk-new", "reset"])
 
 

@@ -78,47 +78,82 @@ def reset_api_key():
 
 
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
-_ATTEMPTS = 3
+# HTTP status -> the botocore error code callers already classify (throttle/retryable vs fatal).
+_ERROR_CODES = {400: "ValidationException", 401: "UnrecognizedClientException", 403: "AccessDeniedException",
+                404: "ResourceNotFoundException", 408: "ModelTimeoutException", 409: "ModelNotReadyException",
+                429: "ThrottlingException", 529: "ServiceUnavailableException"}
 
 
-def anthropic_messages(body, model_id, timeout=300):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # never forward x-api-key to another host
+        return None
+
+
+# Fixed endpoint: no redirects and no ambient HTTP(S)_PROXY.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+def _attempts(config):
+    """Total attempts from the caller's botocore retry config; botocore's default (3) otherwise."""
+    retries = getattr(config, "retries", None) or {}
+    if isinstance(retries.get("total_max_attempts"), int):
+        return max(1, retries["total_max_attempts"])
+    if isinstance(retries.get("max_attempts"), int):
+        return max(1, retries["max_attempts"] + 1)
+    return 3
+
+
+def _client_error(status, kind, operation):
+    from botocore.exceptions import ClientError
+    code = _ERROR_CODES.get(status) or ("ServiceUnavailableException" if status >= 500 else "ValidationException")
+    message = f"anthropic_api_error:{status}:{kind}"[:120]
+    return ClientError({"Error": {"Code": code, "Message": message},
+                        "ResponseMetadata": {"HTTPStatusCode": status}}, operation)
+
+
+def anthropic_messages(body, model_id, timeout=300, attempts=3, operation="InvokeModel"):
     """POST an Anthropic Messages request; returns the decoded JSON reply.
 
-    A 401 drops the cached key and retries once (rotated secret). Throttling, overload, 5xx and
-    network errors retry up to three attempts with bounded backoff (Retry-After capped at 10 s).
+    Attempts follow the caller's botocore retry budget (report.py disables retries and owns its
+    own deadline). A 401 drops the cached key and retries once without consuming an attempt.
+    Retryable statuses back off with Retry-After capped at 10 s. Errors are botocore ClientErrors
+    (status-mapped codes) so callers' existing throttle/fatal classification still applies;
+    network failures stay botocore connection errors.
     """
+    from botocore.exceptions import EndpointConnectionError
     payload = {k: v for k, v in body.items() if k != "anthropic_version"}
     payload["model"] = model_id
     data = json.dumps(payload).encode()
     refreshed = False
     attempt = 0
     while True:
-        attempt += 1
         request = urllib.request.Request(
             ANTHROPIC_URL, data=data, method="POST",
             headers={"content-type": "application/json", "anthropic-version": ANTHROPIC_VERSION,
                      "x-api-key": api_key()})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with _OPENER.open(request, timeout=timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             if error.code == 401 and not refreshed:
                 refreshed = True
                 reset_api_key()
                 continue
+            attempt += 1
             try:
                 kind = json.loads(error.read()).get("error", {}).get("type", "")
             except (ValueError, AttributeError):
                 kind = ""
-            if error.code in _RETRYABLE_STATUS and attempt < _ATTEMPTS:
+            if error.code in _RETRYABLE_STATUS and attempt < attempts:
                 _pause(attempt, error.headers.get("retry-after") if error.headers else None)
                 continue
-            raise RuntimeError(f"anthropic_api_error:{error.code}:{kind}"[:120]) from None
+            raise _client_error(error.code, kind, operation) from None
         except (urllib.error.URLError, TimeoutError, OSError) as error:
-            if attempt < _ATTEMPTS:
+            attempt += 1
+            if attempt < attempts:
                 _pause(attempt, None)
                 continue
-            raise RuntimeError(f"anthropic_api_unreachable:{type(error).__name__}"[:120]) from None
+            raise EndpointConnectionError(endpoint_url=f"{ANTHROPIC_URL} ({type(error).__name__})") from None
 
 
 def _pause(attempt, retry_after):
@@ -204,7 +239,7 @@ class ModelClient:
     def invoke_model(self, modelId, body, **kwargs):
         parsed = json.loads(body) if isinstance(body, (str, bytes, bytearray)) else body
         if provider() == "anthropic_api":
-            reply = anthropic_messages(parsed, modelId, _timeout(self._config))
+            reply = anthropic_messages(parsed, modelId, _timeout(self._config), _attempts(self._config))
         elif "openai." in modelId:
             reply = converse_to_anthropic_reply(
                 self._runtime().converse(modelId=modelId, **anthropic_body_to_converse(parsed)))
@@ -216,5 +251,6 @@ class ModelClient:
     def converse(self, **kwargs):
         if provider() == "anthropic_api":
             return anthropic_reply_to_converse(anthropic_messages(
-                converse_to_anthropic_body(kwargs), kwargs["modelId"], _timeout(self._config)))
+                converse_to_anthropic_body(kwargs), kwargs["modelId"], _timeout(self._config),
+                _attempts(self._config), operation="Converse"))
         return self._runtime().converse(**kwargs)
