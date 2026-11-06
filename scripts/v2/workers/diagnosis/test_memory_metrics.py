@@ -229,10 +229,16 @@ def test_native_and_memory_windows_share_one_clock_capture(provider, monkeypatch
     bundle = {"resources": [copy.deepcopy(RESOURCE)], "evidence": [], "relationships": [],
               "coverage": {"account": ACCOUNT}, "gaps": [], "degraded": [], "incomplete": []}
     discovery._metrics(bundle, Budget(), bundle["resources"], client_factory=lambda *args: cw)
-    query = next(args for op, args in cw.calls if op == "get_metric_data")
-    assert query["EndTime"] - query["StartTime"] == dt.timedelta(days=14)
-    assert any(args["MetricDataQueries"][0]["MetricStat"]["Metric"]["Namespace"] == "CWAgent"
-               for op, args in cw.calls if op == "get_metric_data")
+    queries = [args for op, args in cw.calls if op == "get_metric_data"]
+    namespaces = lambda args: {q["MetricStat"]["Metric"]["Namespace"] for q in args["MetricDataQueries"]}
+    native = [q for q in queries if "AWS/EC2" in namespaces(q)]
+    memory = [q for q in queries if "CWAgent" in namespaces(q)]
+    assert native and memory
+    # Both collectors read one captured window: a per-collector _now() would differ by microseconds.
+    windows = {(q["StartTime"], q["EndTime"]) for q in native + memory}
+    assert len(windows) == 1
+    start, end = windows.pop()
+    assert end - start == dt.timedelta(days=14)
 
 
 @pytest.mark.parametrize("fault", ["absent", "duplicate", "foreign", "partial"])

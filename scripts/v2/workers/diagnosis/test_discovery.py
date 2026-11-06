@@ -996,3 +996,19 @@ def test_followup_makes_no_live_reads_once_the_flag_is_off(provider, monkeypatch
         {"capability": "resource_metrics", "resource_ids": [resource(bundle, I1)["id"]]}], Budget())
     assert len(provider.client_calls) == before
     assert "follow_up_rejected" in merged["gaps"]
+
+
+def test_empty_replica_lag_on_a_known_replica_is_coverage_loss_not_unpublished(provider):
+    def response(kwargs):
+        out = metric_response(kwargs)
+        for row, query in zip(out["MetricDataResults"], kwargs["MetricDataQueries"]):
+            if query["MetricStat"]["Metric"]["MetricName"] == "ReplicaLag":
+                row["Values"], row["Timestamps"] = [], []
+        return out
+    provider.metrics = response
+    key = "read_replica_source_db_instance_identifier"
+    db = Database([inventory("rds", "copy", {"db_instance_identifier": "copy", key: "solo"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    row = next(e for e in evidence(bundle, "metrics") if resource(bundle, "copy")["id"] in e["resource_ids"])
+    assert "ReplicaLag" not in row["facts"]["metrics_not_published"]
+    assert row["coverage"]["complete"] is False
