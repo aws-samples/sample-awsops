@@ -81,7 +81,7 @@ main first. Do not assume this activation path for another repository whose defa
 branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
 must authorize the workflow change under the existing protections.
 
-Complete bounded batching exists: a promotion diff up to 8 file-boundary batches,
+Complete bounded batching exists: a promotion diff up to 10 file-boundary batches,
 whose batch-1 file set fits one batch, is reviewed in full by the same protected
 workflow on its current HEAD. A promotion beyond that still needs authenticated
 exact-commit coverage reuse, which is not implemented, through an ordinary PR to dev
