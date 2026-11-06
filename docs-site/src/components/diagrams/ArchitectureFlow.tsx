@@ -206,7 +206,7 @@ export default function ArchitectureFlow() {
     let hoveredNode: Node | null = null;
 
     // Draw nodes
-    nodes.forEach(node => {
+    for (const node of nodes) {
       const hovered = isHover(mouse.x, mouse.y, node.x, node.y, node.w, node.h);
       if (hovered) hoveredNode = node;
 
@@ -301,7 +301,7 @@ export default function ArchitectureFlow() {
       } else {
         ctx.fillText(node.label, node.x + node.w / 2, node.y + node.h / 2 + s(5));
       }
-    });
+    }
 
     // Draw internal connections (Next.js <-> Steampipe)
     const ec2 = findNode('ec2');

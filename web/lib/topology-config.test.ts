@@ -208,7 +208,7 @@ describe('EKS inventory producer → configuration', () => {
     expect(await fetchEksIpMap()).toMatchObject({ map: {}, status: 'unavailable' });
   });
 
-  it.each([
+  it.each<{ name: string; pods: unknown[]; endpoints?: unknown[] } & NonNullable<Parameters<typeof serve>[2]>>([
     { name: 'empty pod inventory', pods: [] },
     { name: 'failed pod HTTP request', pods: [pod], failure: 'http' as const },
     { name: 'failed pod transport', pods: [pod], failure: 'transport' as const },

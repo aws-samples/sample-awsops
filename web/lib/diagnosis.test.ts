@@ -17,7 +17,7 @@ vi.mock('./auth', () => ({
   matchesIdentity: (owner: any, u: any) => !!owner && (owner === (u.email || u.sub) || owner === u.sub),
 }));
 
-const query = vi.fn(async (sql: string) => {
+const query = vi.fn(async (sql: string, _args?: unknown[]) => {
   if (sql.includes('INSERT INTO diagnosis_reports')) return { rows: [{ id: 7 }] };
   if (sql.includes('idempotency_key')) return { rows: [{ id: 9 }] };
   if (sql.includes('LEFT JOIN worker_jobs')) return { rows: [{ id: 1, tier: 'mid', status: 'succeeded', account: '061525506239' }] };

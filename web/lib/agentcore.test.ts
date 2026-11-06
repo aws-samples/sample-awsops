@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ResolvedIntegration } from './agent-resolver';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -174,7 +175,7 @@ print(json.dumps({'current': [t.tool_name for t in scope['_filter_tools'](tools,
     ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf('"ok"') });
     const { invokeAgent } = await import('./agentcore');
-    const integrations = [{ name: 'dd', endpoint: 'https://x/mcp', transport: 'api_key', credentialsRef: 'arn:sec', exposedTools: ['datadog_query'], allowPrivate: false }];
+    const integrations = [{ name: 'dd', endpoint: 'https://x/mcp', transport: 'api_key', credentialsRef: 'arn:sec', exposedTools: ['datadog_query'], allowPrivate: false }] as unknown as ResolvedIntegration[];
     await invokeAgent({ gateway: 'security', messages: [{ role: 'user', content: 'hi' }], sessionId: 's'.repeat(36), integrations });
     const withI = JSON.parse(new TextDecoder().decode((acSend.mock.calls[0][0] as { input: { payload: Uint8Array } }).input.payload));
     expect(withI.integrations).toEqual(integrations);

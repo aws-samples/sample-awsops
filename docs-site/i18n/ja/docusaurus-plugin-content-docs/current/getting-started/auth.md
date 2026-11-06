@@ -48,7 +48,7 @@ AWSops は Amazon Cognito + Lambda@Edge + CloudFront の組み合わせで認証
 | 項目 | 設定 |
 |------|------|
 | **リージョン** | us-east-1 (Lambda@Edge の必須要件) |
-| **ランタイム** | Python 3.12 (デプロイハンドラー; CDK スタブは Node.js 20) |
+| **ランタイム** | Python 3.14 (デプロイハンドラー; CDK スタブは Node.js 20) |
 | **トリガー** | CloudFront viewer-request |
 | **機能** | `awsops_token` JWT Cookie の検証、未認証時は `/awsops/login` へリダイレクト |
 

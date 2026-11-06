@@ -329,7 +329,7 @@ describe('layout archetypes', () => {
     for (const t of Object.keys(INVENTORY_TYPES)) {
       if (layoutOf(t) !== 'risk') continue;
       const hl = HIGHLIGHTS[t] ?? [];
-      expect(hl.some((h) => h.tone === 'danger'), `${t} risk hero needs a danger highlight`).toBe(true);
+      expect(hl.some((h) => 'tone' in h && h.tone === 'danger'), `${t} risk hero needs a danger highlight`).toBe(true);
     }
   });
 });

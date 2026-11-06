@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NextRequest } from 'next/server';
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
 const query = vi.fn();
@@ -15,9 +16,9 @@ vi.mock('@/lib/jobs', () => ({
   EnqueueDeliveryError: class EnqueueDeliveryError extends Error {},
   IdempotencyKeyCollisionError: class IdempotencyKeyCollisionError extends Error {},
 }));
-const req = (cookie = 'awsops_token=t') => new Request('http://x/api/jobs', { headers: { cookie } });
+const req = (cookie = 'awsops_token=t') => new NextRequest('http://x/api/jobs', { headers: { cookie } });
 const postReq = (body: unknown, cookie = 'awsops_token=t') =>
-  new Request('http://x/api/jobs', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  new NextRequest('http://x/api/jobs', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 beforeEach(() => {
   verifyUser.mockReset(); isAdmin.mockReset(); query.mockReset(); enqueueJob.mockReset();
   isAdmin.mockResolvedValue(false);

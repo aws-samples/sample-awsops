@@ -124,7 +124,7 @@ describe('getDatasource', () => {
 });
 
 describe('resolveConnConfig', () => {
-  const row = { id: 1, name: 'p', kind: 'prometheus', endpoint: 'http://p:9090', authType: 'none' as const, isDefault: true, enabled: true };
+  const row = { id: 1, name: 'p', kind: 'prometheus', endpoint: 'http://p:9090', authType: 'none' as const, isDefault: true, enabled: true, settings: {} };
 
   it('uses the ROW endpoint + authType when no SM credential exists (auth=none heal path)', async () => {
     getCredentialById.mockResolvedValueOnce(null); // no stored cred (auth=none, or never written)

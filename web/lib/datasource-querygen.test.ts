@@ -116,7 +116,7 @@ describe('generateQuery model fallback', () => {
   it('passes cancellation to the real Bedrock SDK send boundary', async () => {
     const sdkSend = vi.spyOn(BedrockRuntimeClient.prototype, 'send').mockResolvedValue({
       output: { message: { role: 'assistant', content: [{ text: 'SELECT 1' }] } },
-    });
+    } as never);
     await expect(generateQuery({ nl: 'x', lang: 'read-only SQL', schemaBlock: '', isSql: true }))
       .resolves.toEqual({ query: 'SELECT 1' });
     expect(sdkSend).toHaveBeenCalledWith(expect.anything(), { abortSignal: expect.any(AbortSignal) });

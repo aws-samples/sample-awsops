@@ -118,7 +118,7 @@ def _discover_gateways():
 GATEWAYS = _discover_gateways()
 
 # Bedrock Model / Bedrock 모델
-# ADR-003[legacy 038]: deterministic tool selection + prompt caching (verified against strands-agents 1.48.0:
+# ADR-003[legacy 038]: deterministic tool selection + prompt caching (re-verified against strands-agents 1.63.0 on 2026-11-06:
 # BedrockConfig exposes temperature / cache_config / cache_tools; cache_prompt is deprecated).
 # Cache params are guarded — an unsupported version degrades to temperature-only (spec §6 no-op rule).
 # Single source of truth for the model id — also streamed to the web as answer provenance

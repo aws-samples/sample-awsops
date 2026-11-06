@@ -65,7 +65,7 @@ IAM attachment is added here.
 | --- | --- | --- |
 | Both | STS caller identity | Configured account/role is checked; region is fixed |
 | Backend capture | S3 object read and bucket location | One configured default-workspace state object and its bucket, bound to the owner account |
-| Backend listing | S3 bucket listing | Exact state-key/listing prefixes; Terraform 1.15.7 lists the configured workspace prefix even for default workspace |
+| Backend listing | S3 bucket listing | Exact state-key/listing prefixes; Terraform lists the configured workspace prefix even for default workspace (behavior read from the 1.15.7 source cited below) |
 | Backend decryption | KMS decrypt | Supplied key only when `encrypt=true` and `kms_key_id` is present; otherwise the existing account/region-constrained wildcard, only via S3 and the bound bucket/object encryption context |
 | Workload, both modes | ECR manifest read | Only the project's web repository |
 | Workload, both modes | ECS service/task reads and task listing | Only the web service and project-cluster task resources; DescribeTasks and ListTasks both require the cluster condition |

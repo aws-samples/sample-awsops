@@ -592,8 +592,8 @@ describe('SourceRead provenance and bounds', () => {
     configure('tempo');
     invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
       .mockResolvedValueOnce(tempoTrace([tempoSpan({
-        startTimeUnixNano: String(BigInt(END_MS - 3_600_000) * 1_000_000n),
-        endTimeUnixNano: String(BigInt(END_MS - 3_599_000) * 1_000_000n),
+        startTimeUnixNano: String(BigInt(END_MS - 3_600_000) * BigInt(1_000_000)),
+        endTimeUnixNano: String(BigInt(END_MS - 3_599_000) * BigInt(1_000_000)),
       })]));
     const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
     expect(result).toMatchObject({ items: [], status: 'ok', reasons: [] });

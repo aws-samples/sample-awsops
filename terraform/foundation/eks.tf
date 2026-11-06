@@ -131,7 +131,7 @@ resource "aws_lambda_function" "eks_auto_register" {
   count            = local.ear
   function_name    = "${var.project}-eks-auto-register"
   role             = aws_iam_role.eks_auto_register[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   handler          = "auto_register.handler"
   filename         = data.archive_file.eks_auto_register[0].output_path
   source_code_hash = data.archive_file.eks_auto_register[0].output_base64sha256

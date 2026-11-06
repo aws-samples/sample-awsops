@@ -134,7 +134,7 @@ resource "aws_lambda_function" "sg_rule_athena_broker" {
   count            = local.sgr
   function_name    = "${var.project}-sg-rule-athena-broker"
   role             = aws_iam_role.sg_rule_athena_broker[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "sg_rule_athena_broker.lambda_handler"
   filename         = data.archive_file.sg_rule_athena_broker_src[0].output_path
@@ -261,7 +261,7 @@ resource "aws_lambda_function" "sg_rule_dispatcher" {
   count            = local.sgr
   function_name    = "${var.project}-sg-rule-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "sg_rule_dispatcher.lambda_handler"
   filename         = data.archive_file.sg_rule_dispatcher_src[0].output_path

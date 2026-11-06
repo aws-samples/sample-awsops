@@ -9,7 +9,7 @@ import styles from './index.module.css';
 
 const GITHUB_URL = 'https://github.com/aws-samples/sample-awsops';
 
-function useScrollReveal(): React.RefObject<HTMLDivElement> {
+function useScrollReveal(): React.RefObject<HTMLDivElement | null> {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

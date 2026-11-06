@@ -391,7 +391,7 @@ resource "aws_lambda_function" "remediation_executor" {
   count            = local.re_or_iw
   function_name    = "${var.project}-remediation-executor"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "remediation_executor.lambda_handler"
   filename         = data.archive_file.remediation_src[0].output_path
@@ -411,7 +411,7 @@ resource "aws_lambda_function" "record_ssm_start" {
   count            = local.re_or_iw
   function_name    = "${var.project}-remediation-record-ssm-start"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "record_ssm_start.lambda_handler"
   filename         = data.archive_file.remediation_src[0].output_path
@@ -431,7 +431,7 @@ resource "aws_lambda_function" "approval_notifier" {
   count            = local.re_or_iw
   function_name    = "${var.project}-remediation-approval-notifier"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "approval_notifier.lambda_handler"
   filename         = data.archive_file.remediation_src[0].output_path
@@ -451,7 +451,7 @@ resource "aws_lambda_function" "status_resume" {
   count            = local.re
   function_name    = "${var.project}-remediation-status-resume"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "status_resume.lambda_handler"
   filename         = data.archive_file.remediation_src[0].output_path

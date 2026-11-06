@@ -95,7 +95,7 @@ def backend_policy(env):
         allow(["sts:GetCallerIdentity"], "*", {"StringEquals": {"aws:RequestedRegion": REGION}}),
         allow(["s3:GetBucketLocation"], bucket, owner),
         allow(["s3:GetObject"], state_object, owner),
-        # Terraform 1.15.7 lists workspace_key_prefix + "/" even for default workspace.
+        # Terraform lists workspace_key_prefix + "/" even for default workspace (read from the 1.15.7 source).
         allow(["s3:ListBucket"], bucket, {"StringEquals": {
             "aws:ResourceAccount": account, "s3:prefix": [fields["key"], prefix + "/"]}}),
         allow(["kms:Decrypt"], state_kms_resource(fields), {"StringEquals": {

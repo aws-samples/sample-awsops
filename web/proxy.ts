@@ -7,7 +7,7 @@ import type { NextRequest } from 'next/server';
 // bodies that this header check cannot). Body-less methods are passed straight through.
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB — larger than any legit body (chat caps at 512KB); per-route caps are tighter
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const m = request.method;
   if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return NextResponse.next();
   const len = request.headers.get('content-length');

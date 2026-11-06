@@ -526,8 +526,8 @@ unset GRAPH_TEST_POSTGRES_SOCKET
 ```
 
 Alternatively, `GRAPH_TEST_POSTGRES_SOCKET` may point at that disposable server's
-Unix-socket directory. This path requires `pg8000` (validated with 1.31.5); install it
-in the test environment with `python3 -m pip install pg8000==1.31.5`. The socket mode
+Unix-socket directory. This path requires `pg8000` (validated with 1.31.6); install it
+in the test environment with `python3 -m pip install pg8000==1.31.6`. The socket mode
 takes precedence when both variables are present. The server must carry the same
 sentinel and must be dedicated to these destructive fixtures.
 

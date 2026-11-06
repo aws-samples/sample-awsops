@@ -1511,7 +1511,7 @@ class TestTraceTopologyCollection(unittest.TestCase):
                                     "sources": [source], "publishedSources": [source],
                                 }), True, cls))
                     # Execute graph-state.ts itself using the installed compiler, compatible with
-                    # the CI's Node 20. Only SQL rows, environment and wall clock are controlled.
+                    # the CI's Node 26. Only SQL rows, environment and wall clock are controlled.
                     web = subprocess.run(["node", "-e", r"""
 const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));

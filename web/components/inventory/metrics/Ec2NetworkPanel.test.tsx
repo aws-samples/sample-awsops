@@ -41,7 +41,7 @@ describe('Ec2NetworkPanel (gap L139)', () => {
   });
 
   it('sends account and region; Escape closes', async () => {
-    const f = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ trends: { netIn: null, netOut: null } }) }));
+    const f = vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => ({ trends: { netIn: null, netOut: null } }) }));
     vi.stubGlobal('fetch', f);
     const onClose = vi.fn();
     render(<Ec2NetworkPanel instanceId="i-0abc12345" accountId="123456789012" region="us-west-2" onClose={onClose} />);
