@@ -125,7 +125,7 @@ After registration, release prepare and collect require **exactly** the enabled 
 and every configured target, each unique. The controller never requests onboarding
 leniency. Missing, disabled or unexpected enabled members stop before type collection.
 
-Collect retains every aggregate catalog proof (currently 43), known row/unknown-attribute
+Collect retains every aggregate catalog proof (currently 46), known row/unknown-attribute
 counts and zero unknown attributes. In target mode, SQL types must report
 `account_reachability_scope="enabled_scan_accounts"` and numeric
 `unreachable_account_count=0`. This measures the enabled, renderable DB scan scope
@@ -517,7 +517,7 @@ are added. Fixed diagnostics and private cleanup remain required on success and 
 The [owner's 2026-09-14 acceptance condition](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
 requires all current catalog types, superseding the earlier CloudFront-only verifier
 proposal. At this revision that means at least one catalog request plus at least one request
-for each of the 43 types; catalog and per-type retries add calls. Four is the concurrency ceiling, not the total call count or
+for each of the 46 types; catalog and per-type retries add calls. Four is the concurrency ceiling, not the total call count or
 a claim of fourfold throughput. The [session contract](runtime-verifier-sessions.md#collection-effects-and-proof)
 authorizes exactly catalog or a verified catalog member, never empty/all/unregistered
 payloads or asynchronous `Event` invocation. No IAM scope is widened.

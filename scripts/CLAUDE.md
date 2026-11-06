@@ -405,9 +405,9 @@ full readiness (including login/DB); prepare only verifies
 authenticated login/DB/host registration. Explicit runtime/readiness activation remains
 separate, and inactive prerequisites cannot be skipped.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
-web digest, requires every pinned baseline member (currently 43, source-AST checked)
+web digest, requires every pinned baseline member (currently 46, source-AST checked)
 and permits valid growth up to 128 types, then drives every returned
-type (currently 43) with at most four
+type (currently 46) with at most four
 concurrent in-flight synchronous invocations. It requires succeeded results, known counts and zero unknowns.
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
@@ -418,7 +418,7 @@ require the exact enabled host/member registry before type calls, measured SQL r
 with zero unreachable accounts, and fresh account-bound known EC2/CloudFront member rows.
 `account_reachability_scope` distinguishes `enabled_scan_accounts` measurement from host-only
 and unmeasured results; the latter counts stay null. CI permits host-only/null only for
-the five source-AST-pinned SDK types. The aggregate 43-type proof does not establish 43-type coverage for every member.
+the five source-AST-pinned SDK types. The aggregate 46-type proof does not establish 46-type coverage for every member.
 Member evidence uses one exact, bounded `/api/deployment/member-inventory` response,
 never a scan of full inventory pages.
 Only Terraform plan/apply onboarding preflight permits approved subsets; apply reads
