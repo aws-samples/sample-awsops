@@ -55,6 +55,12 @@ function pause(attempt: number, retryAfter: string | null, signal?: AbortSignal)
   });
 }
 
+/** Region of a Secrets Manager ARN, or undefined (SDK default) when it is not one. */
+export function secretRegion(arn: string): string | undefined {
+  const parts = arn.split(':');
+  return parts.length > 6 && parts[2] === 'secretsmanager' && parts[3] ? parts[3] : undefined;
+}
+
 let apiKey: Promise<string> | null = null;
 /** Forget the cached key (401 from the API, or tests). */
 export function resetAnthropicApiKey(): void { apiKey = null; }
@@ -64,7 +70,8 @@ export function anthropicApiKey(): Promise<string> {
     apiKey = (async () => {
       const arn = process.env.ANTHROPIC_API_KEY_SECRET_ARN?.trim();
       if (!arn) throw new Error('anthropic_api_key_unconfigured');
-      const out = await new SecretsManagerClient({}).send(new GetSecretValueCommand({ SecretId: arn }));
+      // The secret's own region (from its ARN), never the task's ambient region (model_runtime.py parity).
+      const out = await new SecretsManagerClient({ region: secretRegion(arn) }).send(new GetSecretValueCommand({ SecretId: arn }));
       const raw = (out.SecretString ?? '').trim();
       let key: unknown = raw;
       try { const parsed = JSON.parse(raw) as unknown; key = typeof parsed === 'object' && parsed ? (parsed as Json).api_key : parsed; } catch { /* plain string */ }

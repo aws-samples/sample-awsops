@@ -160,6 +160,20 @@ describe('model runtime client', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('reads the Anthropic API key from the secret ARN region, not the task region', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:anthropic-AbC';
+    let region: unknown;
+    vi.spyOn(SecretsManagerClient.prototype, 'send').mockImplementation(async function (this: SecretsManagerClient) {
+      region = await this.config.region();
+      return { SecretString: 'sk' } as never;
+    });
+    const { anthropicApiKey, secretRegion } = await load();
+    expect(await anthropicApiKey()).toBe('sk');
+    expect(region).toBe('us-east-1');
+    expect(secretRegion('not-an-arn')).toBeUndefined();
+  });
+
   it('anthropic_api requests never follow redirects (the key must not reach another host)', async () => {
     process.env.MODEL_PROVIDER = 'anthropic_api';
     process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
