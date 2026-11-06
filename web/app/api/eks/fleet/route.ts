@@ -1,7 +1,7 @@
 import { verifyUser } from '@/lib/auth';
 import { getScopedEksRegistrations, eksErrorStatus, mapEksConcurrent, type ScopedEksRegistration } from '@/lib/eks-scope';
 import { eksReadFailure, type EksReadFailure } from '@/lib/eks-read-error';
-import { listInCluster, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
+import { listInCluster, listNodes, type NodeRow, type PodRow, type DeploymentRow, type ServiceRow, type EventRow } from '@/lib/eks-incluster';
 import { aggregateNodeResources, instanceTypeDistribution } from '@/lib/eks-resources';
 import { podStatusCounts, podsByNamespace } from '@/lib/eks-tab-stats';
 
@@ -17,8 +17,6 @@ export const dynamic = 'force-dynamic';
 const EVENTS_CAP = 25;
 const NS_CAP = 10;
 
-/** 'aws-api' when the node rows are the EC2/node-group view (no kubelet Ready condition). */
-const nodesSource = (nodes: NodeRow[]) => (nodes.some((n) => n.source === 'aws-api') ? 'aws-api' as const : undefined);
 
 const empty = (identity: ScopedEksRegistration) => ({
   ...identity, reachable: false,
@@ -41,13 +39,13 @@ export async function GET(request: Request) {
     let eventsFailure: EksReadFailure | undefined;
     let nodesFailure: EksReadFailure | undefined;
     try {
-      const [nodes, pods, deployments, services, events] = await Promise.all([
+      const [nodeRead, pods, deployments, services, events] = await Promise.all([
         // A forbidden/failed node read degrades only the node fields: pods, deployments and
         // services still show (member ViewPolicy entries fall back to the AWS-API node view
         // inside listInCluster; this catch covers that fallback failing too).
-        (listInCluster(name, 'nodes') as Promise<NodeRow[]>).catch(error => {
+        listNodes(name).catch(error => {
           nodesFailure = eksReadFailure(error, 'eks-fleet-nodes');
-          return [] as NodeRow[];
+          return { rows: [] as NodeRow[], source: 'kubernetes' as const };
         }),
         listInCluster(name, 'pods') as Promise<PodRow[]>,
         listInCluster(name, 'deployments') as Promise<DeploymentRow[]>,
@@ -57,7 +55,9 @@ export async function GET(request: Request) {
           return [] as EventRow[];
         }), // events-only failure must not kill the cluster entry
       ]);
-      const source = nodesSource(nodes);
+      // Source comes from the read itself, never from row contents (an empty EC2 view stays EC2).
+      const nodes = nodeRead.rows;
+      const source = nodeRead.source === 'aws-api' ? 'aws-api' as const : undefined;
       return {
         ...identity,
         reachable: true,

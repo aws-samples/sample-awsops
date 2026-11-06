@@ -12,7 +12,15 @@ vi.mock('@/lib/account-regions', () => ({
 }));
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/eks-registry', () => ({ getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a) }));
-vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => listInCluster(...a) }));
+const nodeSourceOverride = vi.hoisted(() => ({ value: undefined as undefined | 'aws-api' | 'kubernetes' }));
+vi.mock('@/lib/eks-incluster', () => ({
+  listInCluster: (...a: unknown[]) => listInCluster(...a),
+  // The real listNodes reports the source of the read itself; tests derive it from rows unless overridden.
+  listNodes: async (c: string) => {
+    const rows = (await listInCluster(c, 'nodes')) as Array<{ source?: string }>;
+    return { rows, source: nodeSourceOverride.value ?? (rows.some((r) => r.source === 'aws-api') ? 'aws-api' : 'kubernetes') };
+  },
+}));
 import { GET } from './route';
 import { EksScopeError } from '@/lib/eks-context';
 
@@ -24,7 +32,7 @@ const EVENT = { kind: 'Pod', object: 'default/p1', reason: 'BackOff', message: '
 beforeEach(() => {
   vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
   vi.stubEnv('AWS_REGION', 'ap-northeast-2');
-  verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset();
+  verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset(); nodeSourceOverride.value = undefined;
   verifyUser.mockResolvedValue({ sub: 'u' });
   getAllowedClusters.mockResolvedValue(new Set(['c1']));
 });
@@ -78,6 +86,13 @@ describe('GET /api/eks/fleet', () => {
     // EC2-view rows have no kubelet allocatable, so no meter is drawn for them.
     expect(c.nodeAgg).toEqual([]);
     expect(c).not.toHaveProperty('nodesError');
+  });
+  it('an empty EC2/node-group read still reports Ready as unknown, not 0', async () => {
+    nodeSourceOverride.value = 'aws-api';
+    listInCluster.mockImplementation(async (_c: string, kind: string) => (kind === 'pods' ? [POD] : []));
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.nodesSource).toBe('aws-api');
+    expect(c.counts).toMatchObject({ nodes: 0, nodesReady: null });
   });
   it('degrades a failing cluster to reachable:false (never 500)', async () => {
     getAllowedClusters.mockResolvedValue(new Set(['ok', 'down']));

@@ -630,7 +630,21 @@ export async function describeInCluster(
   return obj;
 }
 
+export type NodeSource = 'kubernetes' | 'aws-api';
+
+/** Node rows plus where they came from, carried out of band: an empty EC2/node-group read
+ *  (all-Fargate or scaled-to-zero member) must still report Ready as unknown, not 0. */
+export async function listNodes(cluster: string): Promise<{ rows: NodeRow[]; source: NodeSource }> {
+  const origin: { source: NodeSource } = { source: 'kubernetes' };
+  const rows = await listInClusterFrom(cluster, 'nodes', origin) as NodeRow[];
+  return { rows, source: origin.source };
+}
+
 export async function listInCluster(cluster: string, kind: Kind): Promise<InClusterRow[]> {
+  return listInClusterFrom(cluster, kind, { source: 'kubernetes' });
+}
+
+async function listInClusterFrom(cluster: string, kind: Kind, origin: { source: NodeSource }): Promise<InClusterRow[]> {
   const { endpoint, caPem } = await clusterConn(cluster);
   const token = await eksToken(cluster);
   let body: string;
@@ -645,7 +659,9 @@ export async function listInCluster(cluster: string, kind: Kind): Promise<InClus
       const context = await resolveEksCluster(cluster);
       if (context.accountId !== 'self') {
         const { listAwsApiNodes } = await import('./eks-aws-nodes');
-        return await listAwsApiNodes(context);
+        const rows = await listAwsApiNodes(context);
+        origin.source = 'aws-api';
+        return rows;
       }
     }
     throw error;

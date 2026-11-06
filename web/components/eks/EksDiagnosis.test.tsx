@@ -102,6 +102,7 @@ it('renders EC2/node-group rows as Ready unknown / Pressure unknown, never dange
       ? { controlPlane: {}, cluster: {}, nodes: {} }
       : { rows: url.includes('kind=nodes') ? [
         { name: 'ip-1.ec2.internal', status: 'EC2 running', source: 'aws-api' },
+        { name: 'ip-2.ec2.internal', status: 'EC2 stopping', source: 'aws-api' },
         { name: 'kube-node', status: 'NotReady', conditions: [] },
       ] : [] },
   })));
@@ -113,7 +114,10 @@ it('renders EC2/node-group rows as Ready unknown / Pressure unknown, never dange
   const ec2Row = ready.closest('tr')!;
   expect(within(ec2Row).getByText('unknown')).toBeTruthy();
   expect(within(ec2Row).queryByText('none')).toBeNull();
-  // A kubelet NotReady row stays dangerous.
+  // A kubelet NotReady row stays dangerous, and so does an EC2-view instance that is not running.
   expect(cell('NotReady').className).toMatch(/rose/);
+  const stopping = within(screen.getByText('ip-2.ec2.internal').closest('tr')!).getAllByRole('cell')
+    .find((td) => /EC2 stopping/.test(td.textContent ?? ''))!;
+  expect(stopping.className).toMatch(/rose/);
 });
 

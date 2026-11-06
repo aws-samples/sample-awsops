@@ -108,7 +108,8 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
       key: 'ready', label: 'Ready', facet: true, title: tt('인-클러스터 node condition — NotReady면 kubelet/OS 레벨 조사'),
       // EC2/node-group rows (member View policy) carry no Ready condition: neutral text, never danger.
       value: (it) => (it.node ? nodeReadyText(it.node) : null),
-      danger: (it) => it.node != null && !isAwsApiNode(it.node) && it.node.status !== 'Ready',
+      // EC2-view rows: Ready is unknown, but a non-running instance is an authoritative signal.
+      danger: (it) => it.node != null && (isAwsApiNode(it.node) ? it.node.status !== 'EC2 running' : it.node.status !== 'Ready'),
     },
     {
       key: 'pressure', label: 'Pressure', title: tt('Memory/Disk/PID Pressure=True → 파드 축출 위험 (인-클러스터 조회)'),

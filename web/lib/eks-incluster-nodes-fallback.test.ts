@@ -49,6 +49,12 @@ describe('listInCluster nodes fallback', () => {
     expect(listAwsApiNodes).toHaveBeenCalledWith(contextFor(MEMBER));
   });
 
+  it('listNodes reports the source of the read itself, even when the EC2 view is empty', async () => {
+    listAwsApiNodes.mockResolvedValue([]);
+    const { listNodes } = await import('./eks-incluster');
+    expect(await listNodes(MEMBER)).toEqual({ rows: [], source: 'aws-api' });
+  });
+
   it('keeps the Kubernetes failure for host clusters and for other member kinds', async () => {
     const { listInCluster } = await import('./eks-incluster');
     await expect(listInCluster('host', 'nodes')).rejects.toMatchObject({ statusCode: 403 });

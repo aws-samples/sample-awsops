@@ -16,6 +16,7 @@ vi.mock('./eks-access', () => ({
 }));
 vi.mock('./eks-incluster', () => ({
   listInCluster: (...args: unknown[]) => listInCluster(...args),
+  listNodes: async (c: string) => ({ rows: await listInCluster(c, 'nodes'), source: 'kubernetes' as const }),
   isKind: (kind: string) => kind === 'pods',
 }));
 
