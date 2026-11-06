@@ -6,7 +6,7 @@ import DiagnosisGuide from '@/components/inventory/metrics/DiagnosisGuide';
 import { EKS_GUIDE } from '@/components/inventory/metrics/guides';
 import MetricTable, { type MetricCol } from '@/components/inventory/metrics/MetricTable';
 import { HealthPill, RangePicker, num, meter, kbps } from '@/components/inventory/metrics/shared';
-import type { NodeRow } from '@/lib/eks-resources';
+import { isAwsApiNode, nodeReadyText, type NodeRow } from '@/lib/eks-resources';
 import type { DeploymentRow, DaemonSetRow } from '@/lib/eks-incluster';
 import type { EksDiagnosisMetricsResponse, EksMetricStatus, EksMetricValues } from '@/lib/eks-metrics-types';
 
@@ -106,13 +106,14 @@ export default function EksDiagnosis({ cluster }: { cluster: string }) {
     { key: 'name', label: 'Node', mono: true, value: (it) => it.name },
     {
       key: 'ready', label: 'Ready', facet: true, title: tt('인-클러스터 node condition — NotReady면 kubelet/OS 레벨 조사'),
-      value: (it) => it.node?.status ?? null,
-      danger: (it) => it.node != null && it.node.status !== 'Ready',
+      // EC2/node-group rows (member View policy) carry no Ready condition: neutral text, never danger.
+      value: (it) => (it.node ? nodeReadyText(it.node) : null),
+      danger: (it) => it.node != null && !isAwsApiNode(it.node) && it.node.status !== 'Ready',
     },
     {
       key: 'pressure', label: 'Pressure', title: tt('Memory/Disk/PID Pressure=True → 파드 축출 위험 (인-클러스터 조회)'),
-      value: (it) => (it.node ? (pressures(it.node).join(', ') || 'none') : null),
-      danger: (it) => pressures(it.node).length > 0,
+      value: (it) => (it.node ? (isAwsApiNode(it.node) ? 'unknown' : pressures(it.node).join(', ') || 'none') : null),
+      danger: (it) => !isAwsApiNode(it.node) && pressures(it.node).length > 0,
     },
     { key: 'cpu', label: 'CPU', type: 'num', title: tt('node_cpu_utilization — 노드 CPU 사용률'), value: (it) => num(it.m.cpu), render: (it) => meter(num(it.m.cpu)) },
     { key: 'mem', label: 'Memory', type: 'num', title: tt('node_memory_utilization — OOM/eviction 진단 핵심'), value: (it) => num(it.m.mem), render: (it) => meter(num(it.m.mem)) },

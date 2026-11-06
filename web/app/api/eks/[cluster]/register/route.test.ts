@@ -96,30 +96,32 @@ describe('scoped EKS registration', () => {
     },
   );
 
-  it('logs manual and automatic registrations and unregistrations as distinct audit events', async () => {
+  it('logs registrations and unregistrations as single audit events', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {
       const { POST, DELETE } = await import('./route');
-      expect((await POST(request(MEMBER_ID, '', 'POST', { auto: true }), params(MEMBER_ID))).status).toBe(200);
-      expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(200);
       expect((await POST(request(MEMBER_ID), params(MEMBER_ID))).status).toBe(200);
+      expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(200);
       const events = info.mock.calls.map(([line]) => JSON.parse(String(line)));
       expect(events).toEqual([
-        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', trigger: 'auto', mode: 'access-entry' },
+        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'access-entry' },
         { event: 'eks_cluster_unregistered', cluster: MEMBER_ID, actor_sub: 'admin-sub' },
-        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', trigger: 'manual', mode: 'access-entry' },
       ]);
     } finally {
       info.mockRestore();
     }
   });
 
-  it('applies the same isEnvCluster and entry checks to an automatic registration request', async () => {
-    vi.stubEnv('ONBOARDED_EKS_CLUSTERS', MEMBER_ID);
-    const { POST } = await import('./route');
-    const result = await POST(request(MEMBER_ID, '', 'POST', { auto: true }), params(MEMBER_ID));
-    expect(await result.json()).toEqual({ registered: true, managedBy: 'terraform' });
-    expect(rows.size).toBe(0);
+  it('ignores a legacy {auto:true} body: same checks, no auto trigger in the audit line', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { POST } = await import('./route');
+      expect((await POST(request(MEMBER_ID, '', 'POST', { auto: true }), params(MEMBER_ID))).status).toBe(200);
+      const events = info.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events).toEqual([{ event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'access-entry' }]);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('registers a host cluster beyond the discovery list cap under the legacy bare key', async () => {

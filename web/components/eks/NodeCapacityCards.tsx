@@ -2,6 +2,9 @@
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
 
+const EC2_VIEW_LABEL = 'EC2/노드그룹 기준';
+const EC2_VIEW_TITLE = 'Kubernetes nodes API 대신 EC2/노드그룹 API 기준 (kubelet 상태 없음)';
+
 // v1 노드 상세 3분할 카드 (CPU / Memory / Pod Info) — 스택 바는 Capacity 기준
 // [Requested | Available(=Allocatable-Requested) | Reserved(=Capacity-Allocatable)] 3분할.
 interface Props {
@@ -10,6 +13,9 @@ interface Props {
   memCapacityMiB: number; memAllocatableMiB: number; memRequestMiB: number | null;
   podCIDR?: string; podCount: number; podRunning: number; podPending: number; podFailed: number;
   createdAt?: string;
+  /** EC2/node-group (source 'aws-api') row: capacity is the instance type's, kubelet
+   *  allocatable/reserved are unknown (AmazonEKSViewPolicy has no nodes read). */
+  ec2View?: boolean;
 }
 
 const gib = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${Math.round(mib)} MiB`);
@@ -17,8 +23,27 @@ const gib = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `
 // Exported for reuse by the fleet nodes page's NodeCapacityList (gap L132) — one source of
 // truth for the 3-segment math. `requested: null` = unknown (pods fetch failed): the bar
 // renders only the Allocatable/Reserved split, never a fabricated zero-requested segment.
-export function StackBar({ requested, allocatable, capacity }: { requested: number | null; allocatable: number; capacity: number }) {
+// `allocatableUnknown` (EC2/node-group rows): no Allocatable/Reserved split is drawn — only
+// Requested against instance capacity, the remainder labelled as capacity.
+export function StackBar({ requested, allocatable, capacity, allocatableUnknown = false }: {
+  requested: number | null; allocatable: number; capacity: number; allocatableUnknown?: boolean;
+}) {
   if (!(capacity > 0)) return null;
+  if (allocatableUnknown) {
+    const req = requested == null ? null : Math.min(requested, capacity);
+    const pctU = (v: number) => `${(v / capacity) * 100}%`;
+    return (
+      <div>
+        <div className="flex h-2 w-full overflow-hidden rounded-full bg-ink-100" title="Allocatable/Reserved unknown">
+          {req != null && <span className="h-full bg-brand-500" style={{ width: pctU(req) }} title={`Requested ${((req / capacity) * 100).toFixed(0)}% of capacity`} />}
+        </div>
+        <div className="mt-1 flex items-center gap-3 text-[10.5px] text-ink-400">
+          {req != null && <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-brand-500" />Requested</span>}
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-ink-100" />Capacity · Allocatable/Reserved —</span>
+        </div>
+      </div>
+    );
+  }
   const req = requested == null ? null : Math.min(requested, allocatable);
   const avail = req == null ? allocatable : Math.max(0, allocatable - req);
   const reserved = Math.max(0, capacity - allocatable);
@@ -47,7 +72,8 @@ const Row = ({ label, value }: { label: string; value: string }) => (
 );
 
 export default function NodeCapacityCards(raw: Props) {
-  const { lang } = useI18n();
+  const { lang, tt } = useI18n();
+  const ec2 = raw.ec2View === true;
   // 방어적 정규화 — 노드 API가 일부 값을 안 주는 경우(테스트 픽스처 포함) 0으로 강제.
   const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const p = {
@@ -57,27 +83,34 @@ export default function NodeCapacityCards(raw: Props) {
     memCapacityMiB: n(raw.memCapacityMiB), memAllocatableMiB: n(raw.memAllocatableMiB),
     memRequestMiB: raw.memRequestMiB == null ? null : n(raw.memRequestMiB),
   };
-  const cpuAvail = p.cpuRequest == null ? null : Math.max(0, p.cpuAllocatable - p.cpuRequest);
-  const memAvail = p.memRequestMiB == null ? null : Math.max(0, p.memAllocatableMiB - p.memRequestMiB);
+  const cpuAvail = ec2 || p.cpuRequest == null ? null : Math.max(0, p.cpuAllocatable - p.cpuRequest);
+  const memAvail = ec2 || p.memRequestMiB == null ? null : Math.max(0, p.memAllocatableMiB - p.memRequestMiB);
   const card = 'rounded-lg border border-ink-100 bg-paper-muted/40 p-3 flex flex-col gap-1.5';
   const h = 'text-[11px] font-semibold text-ink-700';
   return (
     <div className="grid grid-cols-1 gap-3">
+      {ec2 && (
+        <div role="note" className="text-[11px] text-ink-400" title={tt(EC2_VIEW_TITLE)}>
+          {tt(EC2_VIEW_LABEL)} — {tt(EC2_VIEW_TITLE)}
+        </div>
+      )}
       <div className={card}>
         <div className={h}>CPU</div>
         <Row label="Capacity" value={`${p.cpuCapacity.toFixed(1)} vCPU`} />
-        <Row label="Allocatable" value={`${p.cpuAllocatable.toFixed(1)} (${p.cpuCapacity > 0 ? ((p.cpuAllocatable / p.cpuCapacity) * 100).toFixed(0) : 0}%)`} />
-        <Row label="Pod Requested" value={p.cpuRequest == null ? '—' : `${p.cpuRequest.toFixed(2)} (${p.cpuAllocatable > 0 ? ((p.cpuRequest / p.cpuAllocatable) * 100).toFixed(0) : 0}%)`} />
+        <Row label="Allocatable" value={ec2 ? '—' : `${p.cpuAllocatable.toFixed(1)} (${p.cpuCapacity > 0 ? ((p.cpuAllocatable / p.cpuCapacity) * 100).toFixed(0) : 0}%)`} />
+        {ec2 && <Row label="Reserved" value="—" />}
+        <Row label="Pod Requested" value={p.cpuRequest == null ? '—' : ec2 ? p.cpuRequest.toFixed(2) : `${p.cpuRequest.toFixed(2)} (${p.cpuAllocatable > 0 ? ((p.cpuRequest / p.cpuAllocatable) * 100).toFixed(0) : 0}%)`} />
         <Row label="Available" value={cpuAvail == null ? '—' : `${cpuAvail.toFixed(2)} vCPU`} />
-        <StackBar requested={p.cpuRequest} allocatable={p.cpuAllocatable} capacity={p.cpuCapacity} />
+        <StackBar requested={p.cpuRequest} allocatable={p.cpuAllocatable} capacity={p.cpuCapacity} allocatableUnknown={ec2} />
       </div>
       <div className={card}>
         <div className={h}>Memory</div>
         <Row label="Capacity" value={gib(p.memCapacityMiB)} />
-        <Row label="Allocatable" value={`${gib(p.memAllocatableMiB)} (${p.memCapacityMiB > 0 ? ((p.memAllocatableMiB / p.memCapacityMiB) * 100).toFixed(0) : 0}%)`} />
-        <Row label="Pod Requested" value={p.memRequestMiB == null ? '—' : `${gib(p.memRequestMiB)} (${p.memAllocatableMiB > 0 ? ((p.memRequestMiB / p.memAllocatableMiB) * 100).toFixed(0) : 0}%)`} />
+        <Row label="Allocatable" value={ec2 ? '—' : `${gib(p.memAllocatableMiB)} (${p.memCapacityMiB > 0 ? ((p.memAllocatableMiB / p.memCapacityMiB) * 100).toFixed(0) : 0}%)`} />
+        {ec2 && <Row label="Reserved" value="—" />}
+        <Row label="Pod Requested" value={p.memRequestMiB == null ? '—' : ec2 ? gib(p.memRequestMiB) : `${gib(p.memRequestMiB)} (${p.memAllocatableMiB > 0 ? ((p.memRequestMiB / p.memAllocatableMiB) * 100).toFixed(0) : 0}%)`} />
         <Row label="Available" value={memAvail == null ? '—' : gib(memAvail)} />
-        <StackBar requested={p.memRequestMiB} allocatable={p.memAllocatableMiB} capacity={p.memCapacityMiB} />
+        <StackBar requested={p.memRequestMiB} allocatable={p.memAllocatableMiB} capacity={p.memCapacityMiB} allocatableUnknown={ec2} />
       </div>
       <div className={card}>
         <div className={h}>Pod Info</div>

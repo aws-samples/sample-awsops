@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import EksPage from './page';
 
 afterEach(cleanup);
@@ -126,7 +126,7 @@ describe('EKS list page (ADR buildout)', () => {
   });
 });
 
-describe('EKS member auto-registration (admin page, ordinary POST path)', () => {
+describe('EKS member one-click registration (verified Access Entry callout, no auto-POST)', () => {
   const MEMBER = 'arn:aws:eks:us-east-1:222222222222:cluster/member';
   const memberRow = { id: MEMBER, name: 'member', accountId: '222222222222', region: 'us-east-1', status: 'ACTIVE', access: 'entry-only', runtime: false, guide, accessEntryVerified: true };
   const LIST = 'GET /api/eks?regions=__all__&includeGlobal=1';
@@ -139,48 +139,65 @@ describe('EKS member auto-registration (admin page, ordinary POST path)', () => 
       ...FLEET,
       [LIST]: () => {
         state.listCalls += 1;
-        return { status: 200, body: { admin: opts.admin ?? true, clusters: [
-          state.registered ? { ...memberRow, access: 'connected', runtime: true, accessEntryVerified: undefined, guide: undefined } : memberRow,
-        ] } };
+        const admin = opts.admin ?? true;
+        const member = state.registered
+          ? { ...memberRow, access: 'connected', runtime: true, accessEntryVerified: undefined, guide: undefined }
+          : admin ? memberRow : { ...memberRow, accessEntryVerified: undefined };
+        return { status: 200, body: { admin, clusters: [clusters[0], member] } };
       },
       [POST_MEMBER]: (init) => { state.posts.push(init?.body ? JSON.parse(String(init.body)) : null); state.registered = true; return { status: 200, body: { registered: true } }; },
       [DELETE_MEMBER]: () => { state.registered = false; return { status: 200, body: { unregistered: true } }; },
     });
     return state;
   }
+  const settle = () => new Promise((r) => setTimeout(r, 20));
 
-  it('POSTs {auto:true} once for a verified member entry and reloads the list', async () => {
+  it('shows the verified member in a callout and lists its card first, without any POST', async () => {
     const state = setup();
     render(<EksPage />);
-    await waitFor(() => expect(screen.getByText(/자동 조회 등록됨/)).toBeTruthy());
-    expect(state.posts).toEqual([{ auto: true }]);
-    await waitFor(() => expect(state.listCalls).toBeGreaterThanOrEqual(2));
+    const callout = await screen.findByTestId('eks-verified-callout');
+    expect(within(callout).getByText('member (222222222222 / us-east-1)')).toBeTruthy();
+    expect(within(callout).getAllByText('Access Entry 확인됨').length).toBeGreaterThan(0);
+    await settle();
+    expect(state.posts).toEqual([]);
+    expect(state.listCalls).toBe(1);
+    // Cards: the verified member renders before the connected cluster.
+    const names = screen.getAllByText(/^(conn|member)$/).map((el) => el.textContent);
+    expect(names[0]).toBe('member');
+    expect(window.localStorage.length).toBe(0);
   });
 
-  it('never auto-POSTs for a non-admin view', async () => {
+  it('registers only when the admin clicks [조회 등록] in the callout (ordinary POST, no auto body)', async () => {
+    const state = setup();
+    render(<EksPage />);
+    const callout = await screen.findByTestId('eks-verified-callout');
+    fireEvent.click(within(callout).getByText('조회 등록'));
+    await waitFor(() => expect(screen.getByText(/등록 완료/)).toBeTruthy());
+    expect(state.posts).toEqual([null]);
+    await waitFor(() => expect(screen.queryByTestId('eks-verified-callout')).toBeNull());
+  });
+
+  it('never shows the callout or POSTs for a non-admin view', async () => {
     const state = setup({ admin: false });
     render(<EksPage />);
     await waitFor(() => expect(screen.getByText('member')).toBeTruthy());
+    await settle();
+    expect(screen.queryByTestId('eks-verified-callout')).toBeNull();
     expect(state.posts).toEqual([]);
   });
 
-  it('DELETE suppresses auto-registration in this browser until a manual [조회 등록] clears it', async () => {
+  it('DELETE is durable: a fresh page load lists the cluster as a callout but never re-registers it', async () => {
     const state = setup();
+    state.registered = true;
     render(<EksPage />);
     await waitFor(() => expect(screen.getByText('해제')).toBeTruthy());
     fireEvent.click(screen.getByText('해제'));
     await waitFor(() => expect(screen.getByText(/등록 해제됨/)).toBeTruthy());
-    await waitFor(() => expect(screen.getByText('조회 등록')).toBeTruthy());
-    expect(JSON.parse(window.localStorage.getItem('awsops.eks.autoRegisterSuppressed.v1') ?? '[]')).toEqual([MEMBER]);
     cleanup();
-    // A fresh page load must not re-register the unregistered cluster.
     render(<EksPage />);
-    await waitFor(() => expect(screen.getByText('조회 등록')).toBeTruthy());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(state.posts).toEqual([{ auto: true }]);
-    fireEvent.click(screen.getByText('조회 등록'));
-    await waitFor(() => expect(screen.getByText(/등록 완료/)).toBeTruthy());
-    expect(state.posts).toEqual([{ auto: true }, null]);
-    expect(JSON.parse(window.localStorage.getItem('awsops.eks.autoRegisterSuppressed.v1') ?? '[]')).toEqual([]);
+    await screen.findByTestId('eks-verified-callout');
+    await settle();
+    expect(state.posts).toEqual([]);
+    expect(state.registered).toBe(false);
   });
 });

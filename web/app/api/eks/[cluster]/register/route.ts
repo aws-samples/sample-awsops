@@ -40,10 +40,6 @@ function parseAuth(body: unknown): EksAuth | null | 'invalid' {
   return 'invalid';
 }
 
-/** `{auto:true}` marks the /eks page's automatic member registration. Logged only —
- * it grants nothing and skips no check (the same admin/entry/isEnvCluster path runs). */
-const isAutoTrigger = (body: unknown) => !!body && typeof body === 'object' && (body as { auto?: unknown }).auto === true;
-
 function auditRegistration(event: string, cluster: string, actorSub: string, extra: Record<string, unknown> = {}) {
   console.info(JSON.stringify({ event, cluster, actor_sub: actorSub, ...extra }));
 }
@@ -89,9 +85,7 @@ export async function POST(request: Request, { params: pendingParams }: { params
     // The TEXT key stores an ARN for member/non-default-region registrations.
     const ok = await registerCluster(context.id, user.sub);
     if (!ok) return json({ status: 'error', message: 'registry storage unavailable' }, 503);
-    auditRegistration('eks_cluster_registered', context.id, user.sub, {
-      trigger: isAutoTrigger(rawBody) ? 'auto' : 'manual', mode: 'access-entry',
-    });
+    auditRegistration('eks_cluster_registered', context.id, user.sub, { mode: 'access-entry' });
     return json({ registered: true }, 200);
   } catch (error) {
     return failure(error);

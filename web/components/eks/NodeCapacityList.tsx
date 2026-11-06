@@ -70,14 +70,14 @@ export default function NodeCapacityList({ rows, requestsPending = false }: { ro
                 <span>CPU {n.cpuCapacity.toFixed(1)} vCPU</span>
                 <span>{caption(n.cpuRequest, n.cpuAllocatable, n.cpuCapacity, cpuFmt, unknownText, n.allocatableUnknown)}</span>
               </div>
-              <StackBar requested={n.cpuRequest} allocatable={n.cpuAllocatable} capacity={n.cpuCapacity} />
+              <StackBar requested={n.cpuRequest} allocatable={n.cpuAllocatable} capacity={n.cpuCapacity} allocatableUnknown={n.allocatableUnknown} />
             </div>
             <div>
               <div className="mb-0.5 flex items-baseline justify-between text-[10.5px] text-ink-400">
                 <span>Mem {gib(n.memCapacityMiB)}</span>
                 <span>{caption(n.memRequestMiB, n.memAllocatableMiB, n.memCapacityMiB, gib, unknownText, n.allocatableUnknown)}</span>
               </div>
-              <StackBar requested={n.memRequestMiB} allocatable={n.memAllocatableMiB} capacity={n.memCapacityMiB} />
+              <StackBar requested={n.memRequestMiB} allocatable={n.memAllocatableMiB} capacity={n.memCapacityMiB} allocatableUnknown={n.allocatableUnknown} />
             </div>
           </div>
         ))}

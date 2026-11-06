@@ -44,12 +44,11 @@ export async function GET(request: Request) {
               // a revoked entry shows as no-entry again (guide + still unregisterable)
               access = entry === true ? 'connected' : entry === false ? 'no-entry' : 'unknown';
             } else if (entry === true && admin && target.accountId !== 'self' && !isEnv) {
-              // Member auto-registration CANDIDATE only: the owner's Access Entry for the
+              // One-click registration hint only: the owner's Access Entry for the
               // registered member read role is verified (DescribeAccessEntry) on a cluster
               // ListClusters just returned through that role. This GET never writes — the
-              // admin /eks page sends the ordinary POST /api/eks/[cluster]/register (same
-              // admin/isEnvCluster/entry checks and audit log as [조회 등록]) and skips
-              // clusters that admin unregistered (DELETE suppression, per browser).
+              // admin /eks page surfaces the cluster in a callout and registers it only when
+              // the admin clicks [조회 등록] (the ordinary POST /api/eks/[cluster]/register).
               access = 'entry-only';
               accessEntryVerified = true;
             } else {

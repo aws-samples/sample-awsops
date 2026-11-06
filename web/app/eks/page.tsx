@@ -20,9 +20,6 @@ import EksFilterPanel, { EksCollectionNotice, NO_VPC, type EksCollectionStatus, 
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import { fleetNodeTotals, formatFleetNodeReady, type NodeRow, type PodRow } from '@/lib/eks-resources';
-import {
-  autoRegisterCandidates, clearAutoRegisterSuppression, readAutoRegisterSuppressed, suppressAutoRegister,
-} from '@/lib/eks-auto-register';
 
 // EKS fleet overview — v1 /k8s-Overview parity. Access Entry holders register
 // instantly (the v2 equivalent of v1's "Register kubeconfig"); others get the
@@ -36,7 +33,7 @@ interface Cluster {
   authMode?: 'sa-token' | 'assume-role';
   runtime?: boolean;
   guide?: Guide;
-  /** Admin-only GET flag: member Access Entry verified, not registered yet (auto-POST candidate). */
+  /** Admin-only GET flag: member Access Entry verified, not registered yet (one-click [조회 등록]). */
   accessEntryVerified?: boolean;
 }
 interface Guide { commands: string[]; note: string }
@@ -66,6 +63,10 @@ interface FleetCluster {
   nodesSource?: 'aws-api';
   nodesError?: string;
 }
+
+/** Listed-but-unregistered member cluster whose Access Entry the admin GET verified. */
+const isVerifiedCandidate = (c: Cluster, admin: boolean) =>
+  admin && c.accessEntryVerified === true && c.access === 'entry-only' && !c.runtime;
 
 // [PR#40 review MINOR] readable size: GiB at/above 1 GiB, else MiB (avoids tiny nodes showing "0.7").
 const fmtMib = (mib: number): string => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
@@ -117,9 +118,6 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   const listSeqRef = useRef(0);
   const fleetSeqRef = useRef(0);
   const refreshSeqRef = useRef(0);
-  // Auto-registration: each candidate is POSTed at most once per mount (a 409/503 never loops).
-  const autoAttempted = useRef(new Set<string>());
-  const autoRegisterRef = useRef<(ids: string[]) => Promise<void>>(async () => {});
   const loadFleet = useCallback(() => {
     const seq = ++fleetSeqRef.current;
     const fresh = () => alive.current && seq === fleetSeqRef.current;
@@ -135,13 +133,8 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => {
         if (!fresh()) return;
+        // GET never writes: verified member entries are only surfaced for a one-click admin POST.
         setRows(d.clusters ?? []); setAdmin(!!d.admin); setCollection(d); setErr('');
-        // GET never writes: verified member entries are registered through the ordinary
-        // admin POST path, skipping clusters this browser's admin unregistered.
-        const ids = autoRegisterCandidates(d.clusters ?? [], {
-          admin: !!d.admin, suppressed: readAutoRegisterSuppressed(), attempted: autoAttempted.current,
-        });
-        if (ids.length) void autoRegisterRef.current(ids);
       })
       .catch((e) => { if (fresh()) setErr(String(e)); });
   }, [scopeQuery]);
@@ -176,7 +169,6 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'POST' });
       if (!alive.current) return;
       if (res.status === 200) {
-        clearAutoRegisterSuppression(cluster); // an explicit register re-enables auto-registration
         setNotice(tt(`${eksClusterLabel(cluster)} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet();
       }
       else if (res.status === 409) { const d = await res.json(); if (alive.current) setGuide({ cluster, data: d.guide }); }
@@ -200,7 +192,6 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       });
       if (!alive.current) return;
       if (res.status === 200) {
-        clearAutoRegisterSuppression(cluster);
         setNotice(tt(`${eksClusterLabel(cluster)} 인증 저장 완료 — 바로 조회할 수 있습니다.`));
         setAuthFor(null); setRegOpen(false); setAuthToken(''); setAuthRole(''); setAuthExtId('');
         load(); loadFleet();
@@ -217,33 +208,12 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     setBusyCluster(cluster); setNotice('');
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'DELETE' });
-      // Suppress before the reload so the still-valid Access Entry cannot auto-register it again.
-      if (res.ok) suppressAutoRegister(cluster);
       if (!alive.current) return;
       setNotice(res.ok ? tt(`${eksClusterLabel(cluster)} 등록 해제됨.`) : tt(`해제 실패 (${res.status})`));
       load(); loadFleet();
     } catch { if (alive.current) setNotice(tt('해제 요청 실패')); }
     if (alive.current) setBusyCluster('');
   }
-
-  // Same POST route, checks and audit log as [조회 등록]; `{auto:true}` is logged only.
-  autoRegisterRef.current = async (ids: string[]) => {
-    for (const id of ids) autoAttempted.current.add(id);
-    const done: string[] = [];
-    for (const id of ids) {
-      try {
-        const res = await fetch(`/api/eks/${encodeURIComponent(id)}/register`, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ auto: true }),
-        });
-        if (res.status === 200) done.push(id);
-      } catch { /* the manual [조회 등록] button stays as the fallback */ }
-      if (!alive.current) return;
-    }
-    if (done.length) {
-      setNotice(`${tt('자동 조회 등록됨')}: ${done.map((id) => eksClusterLabel(id)).join(', ')}`);
-      void load(); void loadFleet();
-    }
-  };
 
   const btn = 'rounded-md border border-ink-200 px-2 py-0.5 text-[11px] text-ink-600 hover:bg-ink-100 disabled:opacity-50';
 
@@ -261,6 +231,13 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
     return true;
   }), [rows, facet]);
   const facetNames = useMemo(() => new Set(facetRows.map((c) => c.id ?? c.name)), [facetRows]);
+  // Owner decision 2026-11-06: no automatic registration. Verified member entries (admin-only
+  // GET flag) are surfaced first and registered only when the admin clicks [조회 등록].
+  const verifiedRows = useMemo(() => (rows ?? []).filter((c) => isVerifiedCandidate(c, admin)), [rows, admin]);
+  const cardRows = useMemo(
+    () => [...facetRows].sort((a, b) => Number(isVerifiedCandidate(b, admin)) - Number(isVerifiedCandidate(a, admin))),
+    [facetRows, admin],
+  );
   // The card-click scope must not silently zero every panel when the facet excludes it.
   useEffect(() => {
     if (facetActive && clusterFilter && !facetNames.has(clusterFilter)) setClusterFilter('');
@@ -408,6 +385,27 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
         </div>
       )}
 
+      {verifiedRows.length > 0 && (
+        <div data-testid="eks-verified-callout" className="rounded-lg border border-brand-300 border-l-[3px] bg-brand-500/5 p-4">
+          <div className="text-[14px] font-semibold text-brand-700">{tt('Access Entry 확인됨 — 등록 대기 중인 멤버 클러스터')}</div>
+          <p className="mt-1 text-[12px] text-ink-500">
+            {tt('멤버 계정 소유자가 읽기 역할의 Access Entry를 만들었습니다. 자동으로 등록되지 않으며, [조회 등록]을 눌러야 조회 대상에 추가됩니다.')}
+          </p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {verifiedRows.map((c) => {
+              const id = c.id ?? c.name;
+              return (
+                <li key={id} className="flex flex-wrap items-center gap-2 text-[12px]">
+                  <span className="font-mono text-ink-700">{eksClusterLabel(id)}</span>
+                  <Badge tone="brand" dot>{tt('Access Entry 확인됨')}</Badge>
+                  <button className={btn} disabled={busyCluster === id} onClick={() => register(id)}>{tt('조회 등록')}</button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {admin && regOpen && (
         <Card title="클러스터 등록" subtitle="클러스터를 선택하고 연결 방식을 지정하세요 — 인증은 Aurora에 저장되며 조회 전용입니다 (v1 kubeconfig 등록 대응).">
           <div className="flex flex-col gap-3 text-[12px]">
@@ -530,7 +528,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
       )}
       {rows && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {facetRows.map((c) => {
+          {cardRows.map((c) => {
             const id = c.id ?? c.name;
             const f = fleetBy.get(id);
             return (

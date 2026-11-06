@@ -521,6 +521,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
             podPending={(selectedNodePods ?? []).filter((x) => x.status === 'Pending').length}
             podFailed={(selectedNodePods ?? []).filter((x) => x.status === 'Failed').length}
             createdAt={selectedNode.createdAt}
+            ec2View={selectedNode.source === 'aws-api'}
           />
           <NodePodsSection pods={selectedNodePods} error={nodePodsErr} />
           <NodeEniSection nodeName={selectedNode.name} cluster={cluster} />

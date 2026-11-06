@@ -19,7 +19,7 @@ import BarDistribution from '@/components/charts/BarDistribution';
 import { podStatusCounts, serviceTypeCounts } from '@/lib/eks-tab-stats';
 import { serviceResources, topServiceResources } from '@/lib/eks-service-resources';
 import type { ServiceRow } from '@/lib/eks-incluster';
-import type { PodRow } from '@/lib/eks-resources';
+import type { NodeRow, PodRow } from '@/lib/eks-resources';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from './EksFilterPanel';
@@ -140,7 +140,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
   const [ns, setNs] = useState('전체');
   const [clusterSel, setClusterSel] = useState('전체');
   // nodes 전용 드릴다운 (v1 parity — 개요와 동일 패널): 행 클릭 → CPU/Memory/Pods/ENI
-  const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string } | null>(null);
+  const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string; row?: NodeRow } | null>(null);
   // Gap L132 (nodes only): per-cluster pod request aggregation keyed by node name; a cluster
   // whose pods fetch failed maps to null so its bars degrade honestly ('요청량 미상').
   const [podReq, setPodReq] = useState<Record<string, Record<string, { cpu: number; mem: number }> | null>>({});
@@ -547,7 +547,8 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
               onRowClick={(row) => {
                 // nodes는 개요와 동일한 리치 드릴다운(CPU/Memory/Pods/ENI), 그 외 kind는 기존 raw 패널.
                 if (kind === 'nodes' && typeof row.cluster === 'string' && typeof row.name === 'string') {
-                  setNodeSel({ cluster: row.cluster, name: row.name });
+                  // EC2/node-group rows carry everything the drilldown can show — no node re-list.
+                  setNodeSel({ cluster: row.cluster, name: row.name, ...(row.source === 'aws-api' ? { row: row as unknown as NodeRow } : {}) });
                 } else {
                   setSelected(row);
                 }
@@ -563,7 +564,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
         onClose={() => setSelected(null)}
       />
       {nodeSel && (
-        <NodeDrilldownPanel cluster={nodeSel.cluster} nodeName={nodeSel.name} onClose={() => setNodeSel(null)} />
+        <NodeDrilldownPanel cluster={nodeSel.cluster} nodeName={nodeSel.name} node={nodeSel.row} onClose={() => setNodeSel(null)} />
       )}
     </>
   );

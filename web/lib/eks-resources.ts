@@ -36,6 +36,14 @@ export interface NodeRow {
   source?: 'aws-api';
   instanceId?: string;
 }
+/** True for an EC2/node-group (AWS-API) node row — it has no kubelet Ready/Pressure data. */
+export const isAwsApiNode = (n?: Pick<NodeRow, 'source'> | null): boolean => n?.source === 'aws-api';
+
+/** Ready text: the kubelet status, or "EC2 running · Ready unknown" for an EC2/node-group row. */
+export function nodeReadyText(n: Pick<NodeRow, 'status' | 'source'>): string {
+  return isAwsApiNode(n) ? `${n.status} · Ready unknown` : n.status;
+}
+
 /** Fleet node counts with provenance: `nodesReady` is null (unknown) for an 'aws-api' cluster. */
 export interface FleetNodeCountsLike {
   counts: { nodes: number; nodesReady: number | null; ec2Running?: number };

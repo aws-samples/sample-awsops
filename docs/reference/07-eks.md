@@ -51,37 +51,41 @@ bound), and exclude Fargate nodes. The UI labels these rows as an EC2/node-group
 `GET /api/eks/fleet` marks such a cluster `nodesSource: "aws-api"` with
 `counts.nodesReady: null` and `counts.ec2Running`; the home tile, `/eks` stats and the
 fleet nodes page show "EC2 running N · Ready unknown" rather than 0 Ready, and the
-fleet reserved-% and per-node Reserved captions exclude these rows.
+fleet reserved-% and per-node Reserved captions exclude these rows. The cluster
+diagnosis node table shows Ready as "EC2 running · Ready unknown" and Pressure as
+`unknown` (never flagged as a problem), and the Kubernetes map draws these nodes as
+neutral. The node drilldown labels its CPU/Memory cards "EC2/노드그룹 기준", shows
+instance-type Capacity with Allocatable and Reserved as "—", and the fleet nodes page
+passes the row it already holds instead of re-listing nodes; a node-read 403 in the
+drilldown reads as "kubelet details unavailable (View policy)".
 If both reads fail, the fleet and summary views degrade only the node fields; pods,
 deployments and services still show. Existing entries created from the earlier guide
 (`awsops:eks-readonly` group plus a nodes ClusterRoleBinding) keep working and return
 Kubernetes node rows; the group and binding are no longer required.
 
-### Automatic member registration
+### One-click member registration
 
-`GET /api/eks` never writes. For an administrator, each discovered member cluster that
-is not yet registered is checked with `DescribeAccessEntry` for its registered member
-read role; a verified entry (`true`) stays `entry-only` and is flagged
-`accessEntryVerified: true`. The admin `/eks` page then sends the ordinary
-`POST /api/eks/[cluster]/register` with body `{"auto":true}` for each flagged cluster,
-at most once per page load. That request runs the same admin, `DescribeCluster`,
-Access Entry and `ONBOARDED_EKS_CLUSTERS` checks as the manual `[조회 등록]` button and
-writes the Aurora `eks_registrations` row attributed to that administrator. The route
-logs a structured `eks_cluster_registered` line with `trigger: "auto"` or `"manual"`
-(the flag is logged only and grants nothing); a successful DELETE logs
-`eks_cluster_unregistered`. Non-administrator reads, missing or unverifiable entries,
-host clusters and Terraform-managed ids are never flagged. Registration is an app-state
-write only: AWSops never creates Access Entries, associates policies or applies RBAC.
-The `[조회 등록]` button remains as a manual fallback.
+Member clusters are never registered automatically. `GET /api/eks` never writes. For an
+administrator, each discovered member cluster that is not yet registered is checked with
+`DescribeAccessEntry` for its registered member read role; a verified entry (`true`)
+stays `entry-only` and is flagged `accessEntryVerified: true`. Non-administrator reads,
+missing or unverifiable entries, host clusters and Terraform-managed ids are never
+flagged.
 
-Admin DELETE (`[해제]`) removes the registry row. `eks_registrations` has no column that
-can mark a removed cluster without also allow-listing it, and no migration is added for
-this, so the page remembers clusters the admin unregistered in that browser's
-`localStorage` and skips them during auto-registration; a manual `[조회 등록]` or saved
-auth clears the marker. **Limitation:** the marker is per browser profile. Another
-administrator, another browser, or cleared site data can auto-register the cluster again
-while its Access Entry remains. To keep a member cluster unregistered durably, the
-owner removes the registered role's Access Entry.
+The admin `/eks` page lists flagged clusters in an "Access Entry 확인됨" callout above the
+cluster cards, each with its own `[조회 등록]` button, and sorts their cards first. The
+page sends no request on load; registration happens only when the administrator clicks
+`[조회 등록]` (in the callout or on the card), which sends the ordinary
+`POST /api/eks/[cluster]/register`. That request runs the admin, `DescribeCluster`,
+Access Entry and `ONBOARDED_EKS_CLUSTERS` checks and writes the Aurora
+`eks_registrations` row attributed to that administrator. The route logs one structured
+`eks_cluster_registered` line (`mode: "access-entry"`); a successful DELETE logs
+`eks_cluster_unregistered`. Registration is an app-state write only: AWSops never
+creates Access Entries, associates policies or applies RBAC.
+
+Admin DELETE (`[해제]`) removes the registry row, and the cluster stays unregistered: on
+the next page load it reappears in the callout but is not registered again until an
+administrator clicks `[조회 등록]`.
 
 Optional APIs need separate narrow bindings bound to a Kubernetes group that the
 owner adds to the member Access Entry (for example `awsops:eks-readonly`). K8sGPT Result access is described
@@ -143,8 +147,7 @@ account's cluster list. A `404 unknown cluster` therefore means the selected tar
 was not found; an absent or unverifiable entry remains a separate registration
 failure. Invalid or disabled target accounts do not fall back to the host.
 
-Admin DELETE is a local cleanup operation (see the auto-registration suppression note
-above): a syntactically valid canonical
+Admin DELETE is a local cleanup operation: a syntactically valid canonical
 registration can be removed, including its saved auth, after its member account
 is disabled or removed. It does not require AWS discovery or an enabled member
 scope, and it does not revoke AWS permissions. Bare-name member
@@ -190,8 +193,8 @@ roles, member Access Entries, or cross-account network connectivity.
 An operator can separately create an Access Entry and read-policy association.
 For host/deployment-region events, the optional `eks_auto_register_enabled` observer
 (`scripts/v2/eks/auto_register.py`) can reflect the event into the app registry.
-Member clusters register through the admin `/eks` page's automatic registration (or the
-manual `[조회 등록]` fallback) described above, not through this observer; the
+Member clusters register through the admin `/eks` page's one-click `[조회 등록]`
+described above, not through this observer; the
 guide does not promise that the host EventBridge observer will see member or
 nondefault-region events.
 
@@ -221,7 +224,6 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `web/lib/eks-context.ts` | Canonical account/region identity, selector conflicts, enabled member scope |
 | `web/lib/eks-role.ts` | Registered member-role ARN and same-account authentication checks |
 | `web/lib/eks-aws-nodes.ts` | Member EC2/node-group node view when the Kubernetes nodes read is forbidden |
-| `web/lib/eks-auto-register.ts` | Admin page auto-registration candidates and per-browser DELETE suppression |
 | `web/lib/eks-registry.ts` | Legacy host and qualified runtime registrations, cached read quality, saved auth |
 | `web/lib/eks-scope.ts` | Collection selection, wildcard disclosure, discovery and fleet limits |
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
