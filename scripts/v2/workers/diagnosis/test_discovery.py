@@ -466,6 +466,24 @@ def test_pair_cannot_use_a_trace_node_with_foreign_scope(provider):
     assert not any(e["source"] == iid and e["kind"] == "observed_call" for e in bundle["relationships"])
 
 
+def test_null_item_count_from_a_payload_capped_source_does_not_wipe_graph_evidence(provider):
+    db = graph_fixture()
+    db.states[1][4]["publishedSources"][0]["itemCount"] = None  # graph-inventory-read.ts limited type
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "graph_read_failed" not in bundle["degraded"]
+    assert evidence(bundle, "observed_call")
+
+
+def test_read_side_pair_cap_is_disclosed_by_its_sentinel(provider):
+    db = graph_fixture()
+    pair = db.edges[0][4]["instance_observations"][0]
+    db.edges[0][4]["instance_observations"] = [dict(pair, correlation_id=f"pair:{i:04d}:x") for i in range(201)]
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "instance_observation_cap" in bundle["incomplete"]
+    edge_sql = next(sql for sql, _ in db.queries if "instance_observations" in sql and "jsonb_array_elements" in sql)
+    assert "ORDER BY n LIMIT 201" in edge_sql  # stored order, one sentinel past the 200 kept
+
+
 @pytest.mark.parametrize("key", ["instance_observations_omitted", "instance_observations_unbound"])
 def test_edge_omitted_or_unbound_pairs_mark_that_edge_observations_incomplete(provider, key):
     db = graph_fixture()

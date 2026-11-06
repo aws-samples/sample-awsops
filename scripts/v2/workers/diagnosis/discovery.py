@@ -440,7 +440,7 @@ def _graph_state(value, cls):
                 fresh = False
             if cls != "trace" and (row.get("producerStatus") != "succeeded"
                     or not _fresh(row.get("lastSuccessAtMs"), _stale_seconds())
-                    or (row.get("itemCount", 0) > 0 and not _fresh(row.get("capturedAtMs"), _stale_seconds()))):
+                    or ((_number(row.get("itemCount")) or 0) > 0 and not _fresh(row.get("capturedAtMs"), _stale_seconds()))):
                 fresh = False
         if len(sources) > 128:
             fresh = False
@@ -541,7 +541,8 @@ def _read_graph(conn, bundle, budget, scope):
             "'spanCount',meta->'spanCount','metricCount',meta->'metricCount',"
             "'instance_observations',(SELECT coalesce(jsonb_agg(pair),'[]'::jsonb) FROM "
             "(SELECT pair FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'instance_observations')='array' "
-            "THEN meta->'instance_observations' ELSE '[]'::jsonb END) AS p(pair) LIMIT 200) pairs),"
+            "THEN meta->'instance_observations' ELSE '[]'::jsonb END) WITH ORDINALITY AS p(pair, n) "
+            "ORDER BY n LIMIT 201) pairs),"
             "'instance_observations_omitted',meta->'instance_observations_omitted',"
             "'instance_observations_unbound',meta->'instance_observations_unbound'),captured_at,class "
             "FROM ranked ORDER BY seed_rank,class,source,target,rel LIMIT 401",
@@ -585,6 +586,7 @@ def _read_graph(conn, bundle, budget, scope):
             # Capped/unbound pairs on this edge leave its own observation coverage incomplete.
             omitted = sum(_number(meta.get(k)) or 0 for k in
                           ("instance_observations_omitted", "instance_observations_unbound"))
+            # The read keeps 201 pairs in stored order: a 201st is the sentinel for a read-side cap.
             omitted += max(0, len(observations) - 200) if isinstance(observations, list) else 0
             if omitted:
                 _mark(bundle, "incomplete", "instance_observation_cap")

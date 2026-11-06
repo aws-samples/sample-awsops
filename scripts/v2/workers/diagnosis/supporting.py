@@ -8,7 +8,7 @@ import threading
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 _clients = {}
 _lock = threading.Lock()
@@ -104,13 +104,27 @@ def _cost(client, account, budget, bundle, now):
              "total": len(groups), "omitted": max(0, len(groups) - 40)})
 
 
+_SORT_REJECTED_CODES = frozenset(("InvalidInputException", "ValidationException"))
+
+
 def _posture(client, account, bundle):
+    query = {"Filters": {"AwsAccountId": [{"Value": account, "Comparison": "EQUALS"}],
+                         "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+                         "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
+             "MaxResults": 100}
+    order = "severity_desc"
     try:
-        response = client.get_findings(
-            Filters={"AwsAccountId": [{"Value": account, "Comparison": "EQUALS"}],
-                     "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
-                     "WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
-            MaxResults=100)
+        try:
+            # Highest severity first, so a capped page is the worst findings, not an arbitrary
+            # sample (sources.collect_posture parity); fall back unsorted and say so.
+            response = client.get_findings(
+                SortCriteria=[{"Field": "SeverityNormalized", "SortOrder": "desc"}], **query)
+        except (ClientError, ParamValidationError) as error:
+            if isinstance(error, ClientError) and error.response.get("Error", {}).get("Code") not in _SORT_REJECTED_CODES:
+                raise
+            response = client.get_findings(**query)
+            order = "unsorted"
+            _mark(bundle, "incomplete", "posture_unsorted_sample")
     except ClientError as error:
         # Not subscribed is a steady state, not a failure (sources.collect_posture parity).
         if error.response.get("Error", {}).get("Code") != "InvalidAccessException":
@@ -129,8 +143,8 @@ def _posture(client, account, bundle):
     more = bool(response.get("NextToken"))
     if more:
         _mark(bundle, "incomplete", "posture_page_cap")
-    return ({"enabled": True, "posture_counts": counts, "sampled": True, "continuation": more},
-            {"filter": "ACTIVE_NEW"}, {"complete": not more, "returned": len(rows)})
+    return ({"enabled": True, "posture_counts": counts, "sampled": True, "continuation": more, "order": order},
+            {"filter": "ACTIVE_NEW"}, {"complete": not more, "returned": len(rows), "order": order})
 
 
 def _changes(client, account, bundle, now):
@@ -238,6 +252,9 @@ def collect(bundle, budget, *, scope):
             missing = f"{key}_not_collected"
             if missing in result["gaps"]:
                 result["gaps"].remove(missing)
+        except TimeoutError:  # the shared deadline ran out mid-plan: not a provider failure
+            _mark(result, "degraded", "supporting_deadline_exhausted")
+            result.setdefault("native_sources", {})[key] = {"status": "not_collected", "reason": "deadline"}
         except Exception:  # fixed diagnostics; no provider exception data in reports
             _mark(result, "degraded", f"{key}_read_failed")
             result.setdefault("native_sources", {})[key] = {"status": "failed"}

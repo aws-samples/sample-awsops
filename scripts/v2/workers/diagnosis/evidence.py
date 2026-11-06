@@ -41,7 +41,7 @@ FACT_KEYS = {
     "average", "maximum", "minimum", "p95", "peak", "value", "unit",
     "min", "max", "mean", "samples", "Name", "Value", "name",
     "sample_count", "expected_samples", "sample_ratio", "missing_metrics",
-    "finding", "reason", "risk", "prerequisites", "correlation_id",
+    "finding", "reason", "risk", "prerequisites", "correlation_id", "order",
     "source_ref", "target_ref", "instance_ref", "database_ref", "instance_observations",
     "account", "region", "instance_id", "observed_pairs", "service_ref",
     "service", "service_name", "source", "target", "kind", "binding",

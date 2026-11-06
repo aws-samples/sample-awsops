@@ -103,6 +103,41 @@ def test_unsubscribed_security_hub_is_steady_state_not_degraded(providers, monke
     assert result["native_sources"]["posture"]["status"] == "ok"
 
 
+def test_posture_sample_is_highest_severity_first_with_unsorted_fallback_disclosed(providers, monkeypatch):
+    from botocore.exceptions import ClientError
+    calls = []
+
+    class Sorted(Client):
+        def get_findings(self, **kwargs):
+            calls.append(kwargs)
+            return super().get_findings(**kwargs)
+    monkeypatch.setattr(providers, "_client", lambda *a: Sorted())
+    result = providers.collect(base(), Budget(), scope="self")
+    assert calls[0]["SortCriteria"] == [{"Field": "SeverityNormalized", "SortOrder": "desc"}]
+    posture = next(e for e in result["evidence"] if e["source"] == "posture")
+    assert posture["facts"]["order"] == "severity_desc"
+
+    class Rejects(Client):
+        def get_findings(self, **kwargs):
+            if "SortCriteria" in kwargs:
+                raise ClientError({"Error": {"Code": "InvalidInputException"}}, "GetFindings")
+            return super().get_findings(**kwargs)
+    monkeypatch.setattr(providers, "_client", lambda *a: Rejects())
+    result = providers.collect(base(), Budget(), scope="self")
+    posture = next(e for e in result["evidence"] if e["source"] == "posture")
+    assert posture["facts"]["order"] == "unsorted" and "posture_unsorted_sample" in result["incomplete"]
+
+
+def test_deadline_mid_plan_is_not_reported_as_a_provider_failure(providers, monkeypatch):
+    class Slow(Client):
+        def get_findings(self, **kwargs):
+            raise TimeoutError("supporting_deadline_exhausted")
+    monkeypatch.setattr(providers, "_client", lambda *a: Slow())
+    result = providers.collect(base(), Budget(), scope="self")
+    assert "posture_read_failed" not in result["degraded"]
+    assert result["native_sources"]["posture"] == {"status": "not_collected", "reason": "deadline"}
+
+
 def test_repeated_cost_page_tokens_stop_at_bound(providers, monkeypatch):
     class Pages(Client):
         def get_cost_and_usage(self, **kwargs):
