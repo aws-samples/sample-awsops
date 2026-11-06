@@ -45,7 +45,7 @@ AgentCore 基于 Amazon Bedrock AgentCore Runtime 和 Gateway，负责 AI 助手
 | **引擎** | Strands Agent Framework |
 | **容器** | Docker arm64（存储于 ECR，`make agentcore`） |
 | **运行环境** | AgentCore 托管服务（Bedrock AgentCore Runtime） |
-| **模型** | 聊天 Runtime 默认为 **GPT-6 Luna**，可通过进程环境变量 `AGENT_MODEL_ID` 覆盖；当前部署器不会转发此 shell 变量。Explore 查询生成使用 GPT-6.1 Terra → Claude Sonnet 5.5 fallback；AI 诊断使用 Sonnet 5.5 / 可选 Deep 层 Opus 5.5，路由与帮助使用 Haiku 5.5 |
+| **模型** | 聊天 Runtime 默认为 **GPT-6 Luna**，可通过 `AGENT_MODEL_ID` 回滚到 Claude Sonnet 5.5（部署器仅转发经审核的聊天模型）。Explore 查询生成使用 GPT-6.1 Terra → Claude Sonnet 5.5 fallback；AI 诊断使用 Sonnet 5.5 / 可选 Deep 层 Opus 5.5，路由与帮助使用 Haiku 5.5 |
 
 ### 状态
 

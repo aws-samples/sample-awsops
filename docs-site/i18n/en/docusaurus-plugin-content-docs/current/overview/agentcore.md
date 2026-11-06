@@ -45,7 +45,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 | **Engine** | Strands Agent Framework |
 | **Container** | Docker arm64 (stored in ECR, via `make agentcore`) |
 | **Execution Environment** | AgentCore managed service (Bedrock AgentCore Runtime) |
-| **Model** | Chat Runtime defaults to **GPT-6 Luna**, overridable through the process environment `AGENT_MODEL_ID`; the current provisioner does not forward this shell variable. Explore query generation uses GPT-6.1 Terra → Claude Sonnet 5.5 fallback; AI Diagnosis uses Sonnet 5.5 / optional Deep-tier Opus 5.5, and routing/help uses Haiku 5.5 |
+| **Model** | Chat Runtime defaults to **GPT-6 Luna**, and `AGENT_MODEL_ID` can roll it back to Claude Sonnet 5.5 (the provisioner forwards only reviewed chat models). Explore query generation uses GPT-6.1 Terra → Claude Sonnet 5.5 fallback; AI Diagnosis uses Sonnet 5.5 / optional Deep-tier Opus 5.5, and routing/help uses Haiku 5.5 |
 
 ### Status
 

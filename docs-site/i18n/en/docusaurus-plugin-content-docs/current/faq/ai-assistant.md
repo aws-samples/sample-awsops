@@ -38,7 +38,7 @@ The AI assistant uses **hybrid routing** (LIVE). It is no longer a fixed route r
 
 1. **Regex fast-path** — clear signals ("EKS pod", "IAM policy", "cost spike", etc.) are matched by pattern alone and routed instantly, with no model call (zero latency / cost).
 2. **Haiku-class classifier** — if the fast-path doesn't decide, a lightweight, fast Haiku model classifies the question and sends it to the right section.
-3. **Prompt caching** — system prompts / tool definitions are cached to cut latency and token cost on repeat calls (cache hit rate ~59%).
+3. **Prompt caching** — Claude paths place explicit cache points on system prompts / tool definitions to cut latency and token cost on repeat calls. The default GPT-6 Luna chat sends no explicit cache points.
 
 :::tip
 Want to pick a domain explicitly? Type a slash (`/`) in the input box. See the "slash domain selection" item below.

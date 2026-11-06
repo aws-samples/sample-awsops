@@ -137,7 +137,7 @@ flowchart TD
 
 1. **Regex fast-path** — clear keyword patterns route instantly with no LLM call → latency saved.
 2. **Haiku-class classifier** — only questions the fast-path misses go to the lightweight Haiku model.
-3. **Prompt caching** — the classifier prompt is cached (~59% hit rate), cutting tokens and latency.
+3. **Prompt caching** — explicit cache points on Claude paths only cut tokens and latency (not applied to GPT-6 Luna chat).
 
 ### AI assistant behavior
 

@@ -310,7 +310,7 @@ variable "hybrid_routing_enabled" {
 
 variable "multi_route_synthesis_enabled" {
   type        = bool
-  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no direct Sonnet Bedrock call from the web task, no extra IAM. PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
+  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no synthesis Sonnet call from the web task and no synthesis-specific IAM (the always-on task_web_models grant still covers Sonnet 5.5 InvokeModel for query generation and help). PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
   default     = false
 }
 

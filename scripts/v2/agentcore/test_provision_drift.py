@@ -293,5 +293,38 @@ class TestReadinessFlag(unittest.TestCase):
             self.assertEqual(env["DEPLOYMENT_READINESS_ENABLED"], "true" if value is True else "false")
 
 
+class TestAgentModelLever(unittest.TestCase):
+    AC = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
+          "ecr_uri": "fixture.example.test/agent"}
+
+    def _run(self, value):
+        ctrl = mock.Mock()
+        ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+        ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
+        environ = {} if value is None else {"AGENT_MODEL_ID": value}
+        with mock.patch.dict(os.environ, environ), \
+             mock.patch.object(provision, "_wait_runtime_ready", return_value=True), \
+             redirect_stdout(io.StringIO()):
+            os.environ.pop("AGENT_MODEL_ID", None) if value is None else None
+            result = provision.ensure_runtime(ctrl, self.AC, {})
+        return ctrl, result
+
+    def test_reviewed_model_is_forwarded(self):
+        ctrl, _ = self._run(" global.anthropic.claude-sonnet-5-5 ")
+        env = ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
+        self.assertEqual(env["AGENT_MODEL_ID"], "global.anthropic.claude-sonnet-5-5")
+
+    def test_absent_or_blank_keeps_the_default(self):
+        for value in (None, "", "  "):
+            ctrl, _ = self._run(value)
+            self.assertNotIn("AGENT_MODEL_ID", ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"])
+
+    def test_unreviewed_model_refuses_the_runtime_update(self):
+        ctrl, result = self._run("global.anthropic.claude-opus-5-5")
+        self.assertEqual(result, "")
+        ctrl.create_agent_runtime.assert_not_called()
+        ctrl.update_agent_runtime.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
