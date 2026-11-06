@@ -518,8 +518,26 @@ class RuntimePolicyTests(unittest.TestCase):
             bad["variables"]["diagnosis_member_role_arns"] = {"value": bad_roles}
             with self.subTest(roles=bad_roles), self.assertRaises(ValueError):
                 self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        for field, value in (("role", "awsops-dev-web-task"), ("name", "awsops-dev-other")):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"][0]["change"]["after"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][1]["change"]["after"]["family"] = "awsops-dev-web"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Loop off: the task definition carries no member env entry, which is not a failure.
+        off = copy.deepcopy(plan)
+        after = off["resource_changes"][1]["change"]["after"]
+        containers = json.loads(after["container_definitions"])
+        containers[0]["environment"] = containers[0]["environment"][1:]
+        after["container_definitions"] = json.dumps(containers)
+        self.module.check_plan(off, "dev", "full", ACCOUNT)
         for change in ({"Resource": ["arn:aws:iam::888888888888:role/AWSopsReadOnlyRole"]}, {"Resource": "*"},
-                       {"Condition": {}}, {"Action": ["sts:AssumeRole", "iam:PassRole"]}, {"Sid": "Other"}):
+                       {"Condition": {}}, {"Condition": {"StringLike": {"sts:ExternalId": "?*"}}},
+                       {"Condition": {"StringLike": {"sts:ExternalId": "?*"}, "StringEquals": {"aws:SourceIp": "1.2.3.4"}}},
+                       {"Action": ["sts:AssumeRole", "iam:PassRole"]}, {"Sid": "Other"}):
             bad = copy.deepcopy(plan)
             after = bad["resource_changes"][0]["change"]["after"]
             policy = json.loads(after["policy"])

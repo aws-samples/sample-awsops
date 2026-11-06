@@ -1028,3 +1028,11 @@ run "chat_model_rollback_is_mixed_only" {
   }
   expect_failures = [var.agentcore_chat_model_id]
 }
+
+run "diagnosis_member_roles_require_the_evidence_loop" {
+  command = plan
+  variables {
+    diagnosis_member_role_arns = ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"]
+  }
+  expect_failures = [var.diagnosis_member_role_arns]
+}
