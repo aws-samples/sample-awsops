@@ -32,7 +32,7 @@ AWSops v2 is a read-only AWS/Kubernetes operations dashboard with AI diagnosis, 
 
 ## Infrastructure
 
-Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.hcl`, bucket `awsops-v2-tfstate`, `use_lockfile`, no DynamoDB), TF >= 1.15, provider `~>6.0`. Large features are count/flag-gated (default false → `plan` = No changes, $0).
+Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.hcl`, bucket `awsops-v2-tfstate`, `use_lockfile`, no DynamoDB), TF >= 1.17.1, provider `~>6.0`. Large features are count/flag-gated (default false → `plan` = No changes, $0).
 
 | File | Owns |
 |---|---|
@@ -115,7 +115,7 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 
 ## Infrastructure
 
-단일 Terraform 루트 `terraform/foundation/` — partial S3 backend(`backend.hcl`, 버킷 `awsops-v2-tfstate`, `use_lockfile`, DynamoDB 없음), TF >= 1.15, provider `~>6.0`. 대형 기능은 count/flag 게이트(기본 false → `plan` = No changes, $0).
+단일 Terraform 루트 `terraform/foundation/` — partial S3 backend(`backend.hcl`, 버킷 `awsops-v2-tfstate`, `use_lockfile`, DynamoDB 없음), TF >= 1.17.1, provider `~>6.0`. 대형 기능은 count/flag 게이트(기본 false → `plan` = No changes, $0).
 
 | 파일 | 담당 |
 |---|---|
