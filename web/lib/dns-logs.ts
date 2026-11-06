@@ -1,5 +1,6 @@
 import { CloudWatchLogsClient, StartQueryCommand, GetQueryResultsCommand, StopQueryCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { Route53ResolverClient, ListResolverQueryLogConfigsCommand } from '@aws-sdk/client-route53resolver';
+import { BoundedTtlCache, abortableSleep } from './bounded-cache';
 
 // DNS Query Log 분석 (Network 메뉴) — Route53 Resolver query logging의 CloudWatch Logs
 // 대상 그룹을 라이브 발견하고, 원시 라인을 퍼오는 대신 Logs Insights **집계 쿼리**를
@@ -10,26 +11,17 @@ import { Route53ResolverClient, ListResolverQueryLogConfigsCommand } from '@aws-
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let logsClient: CloudWatchLogsClient | null = null;
 let r53Client: Route53ResolverClient | null = null;
-const logs = () => (logsClient ??= new CloudWatchLogsClient({ region: REGION }));
-const r53 = () => (r53Client ??= new Route53ResolverClient({ region: REGION }));
+const SDK = { region: REGION, requestHandler: { connectionTimeout: 2_000, requestTimeout: 10_000 } };
+const logs = () => (logsClient ??= new CloudWatchLogsClient(SDK));
+const r53 = () => (r53Client ??= new Route53ResolverClient(SDK));
 
-// ── TTL cache + in-flight dedupe (lib/nfm.ts와 동일 패턴) ────────────────────
+// Bounded local TTL cache; source observation windows are retained unchanged.
 const TTL_MS = 4 * 60_000;
-const cache = new Map<string, { at: number; v: unknown }>();
-const inflight = new Map<string, Promise<unknown>>();
-async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.v as T;
-  const running = inflight.get(key);
-  if (running) return running as Promise<T>;
-  const p = fn().then((v) => {
-    cache.set(key, { at: Date.now(), v });
-    return v;
-  }).finally(() => inflight.delete(key));
-  inflight.set(key, p);
-  return p;
+const cache = new BoundedTtlCache<unknown>({ ttlMs: TTL_MS, maxEntries: 128, maxInFlight: 32, loadTimeoutMs: 90_000 });
+function cached<T>(key: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  return cache.get(key, fn) as Promise<T>;
 }
-export function _resetDnsCacheForTests() { cache.clear(); inflight.clear(); logsClient = null; r53Client = null; }
+export function _resetDnsCacheForTests() { cache.clear(); logsClient = null; r53Client = null; }
 
 // ── Status (menu gate): resolver query-log configs → CW log-group destinations ──
 export interface DnsLogConfig {
@@ -47,8 +39,8 @@ function logGroupOf(arn: string): string | null {
 }
 
 export async function dnsLogStatus(): Promise<DnsLogStatus> {
-  return cached('status', async () => {
-    const r = await r53().send(new ListResolverQueryLogConfigsCommand({}));
+  return cached('status', async (abortSignal) => {
+    const r = await r53().send(new ListResolverQueryLogConfigsCommand({}), { abortSignal });
     const configs: DnsLogConfig[] = (r.ResolverQueryLogConfigs ?? []).map((c) => ({
       id: c.Id ?? '', name: c.Name ?? '', status: c.Status ?? '',
       associationCount: c.AssociationCount ?? 0,
@@ -63,14 +55,24 @@ export async function dnsLogStatus(): Promise<DnsLogStatus> {
 // ── Logs Insights runner ────────────────────────────────────────────────────
 type Row = Record<string, string>;
 
-async function runInsights(group: string, query: string, rangeSec: number): Promise<Row[]> {
+async function runInsights(group: string, query: string, rangeSec: number, abortSignal?: AbortSignal): Promise<Row[]> {
   const end = Math.floor(Date.now() / 1000);
   const { queryId } = await logs().send(new StartQueryCommand({
     logGroupName: group, queryString: query, startTime: end - rangeSec, endTime: end, limit: 1000,
-  }));
+  }), { abortSignal });
   if (!queryId) return [];
+  try {
+    return await pollInsights(queryId, abortSignal);
+  } catch (e) {
+    // Deadline abort: stop the scan-billed query instead of leaving it running server-side.
+    if (abortSignal?.aborted) await logs().send(new StopQueryCommand({ queryId })).catch(() => {});
+    throw e;
+  }
+}
+
+async function pollInsights(queryId: string, abortSignal?: AbortSignal): Promise<Row[]> {
   for (let i = 0; i < 30; i++) {
-    const res = await logs().send(new GetQueryResultsCommand({ queryId }));
+    const res = await logs().send(new GetQueryResultsCommand({ queryId }), { abortSignal });
     if (res.status === 'Complete') {
       return (res.results ?? []).map((row) =>
         Object.fromEntries(row.filter((f) => f.field && f.field !== '@ptr').map((f) => [f.field as string, f.value ?? ''])));
@@ -78,7 +80,7 @@ async function runInsights(group: string, query: string, rangeSec: number): Prom
     if (res.status === 'Failed' || res.status === 'Cancelled' || res.status === 'Timeout') {
       throw new Error(`Insights query ${res.status}`);
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await abortableSleep(1000, abortSignal);
   }
   await logs().send(new StopQueryCommand({ queryId })).catch(() => {});
   throw new Error('Insights query poll cap reached');
@@ -106,7 +108,7 @@ const nv = (rows: Row[], nameField: string): { name: string; value: number }[] =
 
 /** Resolver 쿼리 로그 집계 분석 — 7개 Insights 쿼리를 병렬 실행 (개별 실패는 failed로 degrade). */
 export async function dnsAnalytics(group: string, rangeSec: number): Promise<DnsAnalytics> {
-  return cached(`a|${group}|${rangeSec}`, async () => {
+  return cached(`a|${group}|${rangeSec}`, async (abortSignal) => {
     const bin = BIN_SEC[rangeSec] ?? 300;
     const Q: Record<string, string> = {
       totals: 'stats count(*) as total, count_distinct(query_name) as uniq',
@@ -121,7 +123,7 @@ export async function dnsAnalytics(group: string, rangeSec: number): Promise<Dns
     const failed: string[] = [];
     const out: Record<string, Row[]> = {};
     await Promise.all(Object.entries(Q).map(async ([k, q]) => {
-      try { out[k] = await runInsights(group, q, rangeSec); }
+      try { out[k] = await runInsights(group, q, rangeSec, abortSignal); }
       catch { out[k] = []; failed.push(k); }
     }));
 
@@ -160,8 +162,8 @@ export interface CoreDnsGroup { cluster: string; group: string }
 
 /** /aws/containerinsights/<cluster>/application 로그 그룹 발견 (CI 미설치 클러스터는 자연히 빠짐). */
 export async function coreDnsGroups(): Promise<CoreDnsGroup[]> {
-  return cached('coredns-groups', async () => {
-    const r = await logs().send(new DescribeLogGroupsCommand({ logGroupNamePrefix: '/aws/containerinsights/' }));
+  return cached('coredns-groups', async (abortSignal) => {
+    const r = await logs().send(new DescribeLogGroupsCommand({ logGroupNamePrefix: '/aws/containerinsights/' }), { abortSignal });
     return (r.logGroups ?? [])
       .map((g) => g.logGroupName ?? '')
       .filter((n) => n.endsWith('/application'))
@@ -185,7 +187,7 @@ export interface CoreDnsAnalytics {
 
 /** 한 클러스터 CoreDNS 로그의 집계 분석 (4개 Insights 쿼리 병렬, 개별 실패 degrade). */
 export async function coreDnsAnalytics(group: string, rangeSec: number): Promise<CoreDnsAnalytics> {
-  return cached(`cd|${group}|${rangeSec}`, async () => {
+  return cached(`cd|${group}|${rangeSec}`, async (abortSignal) => {
     const bin = BIN_SEC[rangeSec] ?? 300;
     const Q: Record<string, string> = {
       totals: `${CORE_PARSE} | stats count(*) as total, percentile(dur, 50) as p50, percentile(dur, 95) as p95`,
@@ -196,7 +198,7 @@ export async function coreDnsAnalytics(group: string, rangeSec: number): Promise
     const failed: string[] = [];
     const out: Record<string, Row[]> = {};
     await Promise.all(Object.entries(Q).map(async ([k, q]) => {
-      try { out[k] = await runInsights(group, q, rangeSec); }
+      try { out[k] = await runInsights(group, q, rangeSec, abortSignal); }
       catch { out[k] = []; failed.push(k); }
     }));
     const rcode = nv(out.rcode ?? [], 'rcode');

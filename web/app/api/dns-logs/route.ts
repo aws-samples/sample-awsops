@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { isTransientRead } from '@/lib/bounded-cache';
 import { dnsLogStatus, coreDnsGroups } from '@/lib/dns-logs';
 
 export const dynamic = 'force-dynamic';
@@ -13,10 +14,16 @@ export async function GET(request: Request) {
     // CoreDNS(CI application 로그)는 별개 소스 — 한쪽 실패가 다른 쪽을 가리지 않게 개별 degrade.
     const [status, coredns] = await Promise.all([
       dnsLogStatus(),
-      coreDnsGroups().catch(() => []),
+      // Saturation/deadline is not "no CoreDNS groups": let it reach the retryable 503 below.
+      coreDnsGroups().catch((e) => { if (isTransientRead(e)) throw e; return []; }),
     ]);
     return Response.json({ ...status, coredns });
   } catch (e) {
+    // A saturated/slow cache read is not "not onboarded": retryable 503, no internal message.
+    if (isTransientRead(e)) {
+      return Response.json({ status: 'error', message: 'DNS log status temporarily unavailable', retryable: true },
+        { status: 503, headers: { 'Retry-After': '5' } });
+    }
     return Response.json({ configs: [], groups: [], coredns: [], error: e instanceof Error ? e.message : String(e) });
   }
 }

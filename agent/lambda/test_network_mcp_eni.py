@@ -682,3 +682,24 @@ def test_list_tgw_peerings_and_route_tables_disclose_more_pages(monkeypatch):
     allr = json.loads(network.lambda_handler({"tool_name": "get_all_tgw_routes", "arguments": {"tgw_id": "t"}}, None)["body"])
     assert allr["routeTablesMorePages"] is True
     assert allr["truncated"] is True
+
+
+@pytest.mark.parametrize("count,token,truncated", [(3, None, False), (3, "next", True), (50, None, True)])
+def test_flow_log_sample_discloses_window_limit_and_truncation(monkeypatch, count, token, truncated):
+    class Clients:
+        def describe_flow_logs(self, **kwargs):
+            return {"FlowLogs": [{"FlowLogId": "fl-1", "LogGroupName": "/vpc/flow"}]}
+
+        def filter_log_events(self, **kwargs):
+            assert kwargs["limit"] == 50
+            resp = {"events": [{"timestamp": i, "message": "m"} for i in range(count)]}
+            return {**resp, "nextToken": token} if token else resp
+
+    monkeypatch.setenv("AWSOPS_HOST_ACCOUNT_ID", "123456789012")
+    ca._host_account_id.cache_clear()
+    monkeypatch.setattr(network, "get_client", lambda *a, **k: Clients())
+    result = network.lambda_handler(
+        {"tool_name": "get_vpc_flow_logs", "arguments": {"vpc_id": "vpc-test", "minutes": 15}}, None)
+    body = json.loads(result["body"])
+    ca._host_account_id.cache_clear()
+    assert (body["count"], body["windowMinutes"], body["limit"], body["truncated"]) == (count, 15, 50, truncated)

@@ -118,6 +118,32 @@ class ReadinessEntrypointTest(unittest.TestCase):
             probe.assert_awaited_once()
 
 
+class DiagnosisToolRoutingContractTest(unittest.TestCase):
+    def test_network_decision_chains_reference_registered_read_only_tools(self):
+        import importlib.util
+        import re
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "diagnosis_prompt_catalog", Path(__file__).resolve().parent.parent / "scripts/v2/agentcore/catalog.py",
+        )
+        catalog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(catalog)
+        registered = {tool["name"] for target in catalog.TARGETS.values()
+                      if target["gateway"] == "network" for tool in target["tools"]}
+        chains = [line.split("|")[-2] for line in agent.SKILL_BASE["network"].splitlines()
+                  if line.startswith("|") and len(line.split("|")) == 4]
+        references = {name for chain in chains for name in re.findall(r"\b[a-z]+_[a-z0-9_]+\b", chain)}
+        self.assertTrue(references)
+        self.assertEqual(references - registered, set())
+
+    def test_cost_sizing_decision_selects_the_registered_provider_tool(self):
+        import re
+        rows = [line.split("|")[-2] for line in agent.SKILL_BASE["cost"].splitlines()
+                if line.startswith("|") and ("right" in line.lower() or "사이징" in line)]
+        references = {name for row in rows for name in re.findall(r"\b[a-z]+_[a-z0-9_]+\b", row)}
+        self.assertIn("get_rightsizing_recommendations", references)
+
+
 class FakeTool:
     def __init__(self, name):
         self.tool_name = name

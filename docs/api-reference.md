@@ -538,6 +538,25 @@ runtime payloads for compatibility with older or malformed responses.
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
+### Trace edge instance observations
+
+Trace `queries` edges (service → `db`) may carry three additive, optional `meta` fields built by
+`web/lib/trace-graph.ts`. Older rows and responses without them remain compatible; absence means
+no bound observation was recorded, not that no instance queried the database.
+
+| Field | Meaning |
+|---|---|
+| `instance_observations[]` | Distinct (`instance_ref`, `database_ref`) pairs from outbound `CLIENT` spans only. Each entry carries `instance_id`, `instance_ref`, `database_ref`, `account`, `region`, `db_host`, `observed_at_ms` (latest span start), `first_observed_at_ms`, `observation_count`, an opaque `correlation_id` naming the latest span, optional `source_id`, and `provenance: "trace_span"`. At most 200 pairs per edge. |
+| `instance_observations_omitted` | Count of further distinct pairs dropped by the 200-pair cap. |
+| `instance_observations_unbound` | Count of spans whose EC2 claim could not be bound: missing or invalid account/region/clock, or no unique inventory EC2 instance and RDS instance endpoint in the same account and region. |
+
+These are sampled telemetry claims bound to inventory, not authority: a pair shows that the
+sampled spans named that instance and endpoint within the trace window. It does not prove
+current connectivity, credentials or complete coverage of instances querying the database.
+Binding requires an exact RDS instance endpoint; Aurora cluster/reader and RDS Proxy endpoints
+stay unbound. The agent SQL view `sql_reader.topology_edges` does not project these fields; see
+[agent SQL reader](runbooks/agent-sql-reader.md#trace-queue-projection--트레이스-큐-투영).
+
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count

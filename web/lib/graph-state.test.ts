@@ -108,3 +108,7 @@ it('rejects future publication clocks and contradictory empty source counts', as
   expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 1,
     capturedAtMs: Date.now() - 1000, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
 });
+
+it('keeps edge-level observation counters out of the collection projection (SQL view parity)', () => {
+  expect(projectGraphDetails({ instanceObservationDrops: 3, rawTrace: 'PRIVATE' })).toEqual({ sources: [] });
+});

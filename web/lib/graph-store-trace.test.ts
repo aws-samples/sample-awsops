@@ -86,6 +86,60 @@ describe('trusted host account DB bridge', () => {
   });
 });
 
+describe('instance observation publication', () => {
+  const account = '111122223333', region = 'ap-northeast-2', instanceId = 'i-0123456789abcdef0';
+  const infra = [
+    { id: `ec2:@self:${region}:${instanceId}`, kind: 'ec2',
+      meta: { resourceId: instanceId, inventoryAccount: 'self', region } },
+    { id: `rds:@self:${region}:orders`, kind: 'rds',
+      meta: { resourceId: 'orders', inventoryAccount: 'self', region, host: 'orders.example.test' } },
+  ];
+  const querySpan = {
+    service: 'checkout', kind: 'CLIENT', accountId: account, region, hostId: instanceId,
+    dbSystem: 'postgresql', dbHost: 'orders.example.test', startMs: 1_794_000_000_000,
+  };
+
+  it('stores the validated same-span pair in trace edge JSON', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', account);
+    const { pool, params } = mockPool(infra);
+    await rebuildTraceGraph(pool as never, [new FakeTraceSource([span(querySpan)])]);
+    const queryEdge = params.find(p => p[2] === 'queries')!;
+    expect(JSON.parse(String(queryEdge[7])).instance_observations).toEqual([expect.objectContaining({
+      instance_id: instanceId, instance_ref: `ec2:@self:${region}:${instanceId}`,
+      database_ref: `rds:@self:${region}:orders`, account, region,
+      db_host: 'orders.example.test', observed_at_ms: 1_794_000_000_000,
+      source_id: 'fake:default', provenance: 'trace_span',
+    })]);
+    const scopedQueryNodes = params.filter(p => p[1] === 'service' || p[1] === 'db');
+    expect(scopedQueryNodes).toHaveLength(2);
+    for (const node of scopedQueryNodes) {
+      expect(JSON.parse(String(node[3]))).toMatchObject({
+        accountId: account, region, sourceId: 'fake:default',
+      });
+    }
+  });
+
+  it('discloses capped observation pairs on the edge without degrading the collection', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', account);
+    const fleetId = (index: number) => `i-${index.toString(16).padStart(17, '0')}`;
+    const fleet = [...Array.from({ length: 201 }, (_, index) => ({
+      id: `ec2:@self:${region}:${fleetId(index)}`, kind: 'ec2',
+      meta: { resourceId: fleetId(index), inventoryAccount: 'self', region } })), infra[1]];
+    const { pool, params, client } = mockPool(fleet);
+    const result = await rebuildTraceGraph(pool as never, [new FakeTraceSource(
+      Array.from({ length: 201 }, (_, index) =>
+        span({ ...querySpan, spanId: `query-${index}`, hostId: fleetId(index) })),
+    )]);
+    expect(result).toMatchObject({ published: 1, degraded: 0 });
+    const state = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO topology_graph_state'))![1]!;
+    expect(state[1]).toBe('ok');
+    expect(JSON.parse(String(state[4]))).not.toHaveProperty('instanceObservationDrops');
+    const metadata = JSON.parse(String(params.find(p => p[2] === 'queries')![7]));
+    expect(metadata.instance_observations).toHaveLength(200);
+    expect(metadata.instance_observations_omitted).toBe(1);
+  });
+});
+
 describe('rebuildTraceGraph aggregation', () => {
   // checkout(svc) → orders(svc) → postgres(db); checkout runs on k8s workload shop/checkout
   const spans: TraceSpan[] = [

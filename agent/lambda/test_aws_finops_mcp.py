@@ -46,6 +46,10 @@ CASES = {
             "recommendedType": "m5.large",
             "performanceRisk": 1.0,
             "migrationEffort": "VeryLow",
+            "lastRefreshTimestamp": None, "lookbackDays": None, "recommendationRank": 1,
+            "currentPerformanceRisk": None, "utilizationMetrics": [], "projectedUtilizationMetrics": [],
+            "missingUtilizationMetrics": ["cpu", "memory", "io"], "utilizationTruncated": True,
+            "projectedUtilizationTruncated": True,
         },
     },
     "rds": {
@@ -66,6 +70,11 @@ CASES = {
             "engine": "postgres",
             "finding": "Overprovisioned",
             "recommendedDBInstanceClass": "db.m5.large",
+            "lastRefreshTimestamp": None, "lookbackDays": None, "recommendationRank": 1,
+            "performanceRisk": None, "currentPerformanceRisk": None,
+            "utilizationMetrics": [], "projectedUtilizationMetrics": [],
+            "missingUtilizationMetrics": ["cpu", "memory", "io"], "utilizationTruncated": True,
+            "projectedUtilizationTruncated": True,
         },
     },
     "ecs": {
@@ -187,6 +196,61 @@ def test_explicit_zero_remains_known(stubber, resource_type):
     body = invoke(resource_type)
     assert body["results"][resource_type]["recommendations"][0]["estimatedMonthlySavings"] == 0.0
     assert body["totalEstimatedMonthlySavings"] == 0.0
+
+
+@pytest.mark.parametrize("resource_type", ["ec2", "rds"])
+def test_absent_performance_risk_is_unknown_not_a_safe_zero(stubber, resource_type):
+    response = response_for(resource_type)
+    first_option(response, resource_type).pop("performanceRisk", None)
+    enqueue(stubber, resource_type, response)
+    recommendation = invoke(resource_type)["results"][resource_type]["recommendations"][0]
+    assert recommendation["performanceRisk"] is None
+
+
+@pytest.mark.parametrize("resource_type,lookback_key,cpu", [
+    ("ec2", "lookBackPeriodInDays", "Cpu"), ("rds", "lookbackPeriodInDays", "CPU"),
+])
+def test_preserves_provider_freshness_lookback_and_missing_utilization(stubber, resource_type, lookback_key, cpu):
+    from datetime import datetime, timezone
+    response = response_for(resource_type)
+    record = response[CASES[resource_type]["collection"]][0]
+    record.update(lastRefreshTimestamp=datetime(2026, 11, 1, tzinfo=timezone.utc), **{lookback_key: 32.0})
+    record["utilizationMetrics"] = [{"name": cpu, "statistic": "MAXIMUM", "value": 17.0}]
+    enqueue(stubber, resource_type, response)
+    recommendation = invoke(resource_type)["results"][resource_type]["recommendations"][0]
+    assert recommendation["lastRefreshTimestamp"] == "2026-11-01T00:00:00+00:00"
+    assert recommendation["lookbackDays"] == 32.0
+    assert recommendation["recommendationRank"] == 1
+    assert recommendation["utilizationMetrics"] == [{"name": cpu, "statistic": "MAXIMUM", "value": 17.0}]
+    assert recommendation["missingUtilizationMetrics"] == ["memory", "io"]
+
+
+def test_storage_capacity_metric_is_not_io_evidence(stubber):
+    response = response_for("rds")
+    record = response[CASES["rds"]["collection"]][0]
+    record["utilizationMetrics"] = [{"name": "CPU", "statistic": "MAXIMUM", "value": 17.0},
+                                    {"name": "EBSVolumeStorageSpaceUtilization", "statistic": "MAXIMUM", "value": 40.0}]
+    enqueue(stubber, "rds", response)
+    recommendation = invoke("rds")["results"]["rds"]["recommendations"][0]
+    assert recommendation["missingUtilizationMetrics"] == ["memory", "io"]
+
+
+@pytest.mark.parametrize("resource_type", ["ec2", "rds"])
+def test_selects_the_lowest_provider_rank_independently_of_response_order(stubber, resource_type):
+    response = response_for(resource_type)
+    options = response[CASES[resource_type]["collection"]][0][CASES[resource_type]["options"]]
+    second = copy.deepcopy(options[0])
+    options[0]["rank"] = 2
+    options[0]["performanceRisk"] = 4.0
+    second.update(rank=1, performanceRisk=0.5)
+    type_key = "instanceType" if resource_type == "ec2" else "dbInstanceClass"
+    second[type_key] = "m5.medium" if resource_type == "ec2" else "db.m5.medium"
+    options.append(second)
+    enqueue(stubber, resource_type, response)
+    recommendation = invoke(resource_type)["results"][resource_type]["recommendations"][0]
+    assert recommendation["recommendationRank"] == 1
+    assert recommendation["performanceRisk"] == 0.5
+    assert recommendation["recommendedType" if resource_type == "ec2" else "recommendedDBInstanceClass"] == second[type_key]
 
 
 @pytest.mark.parametrize("resource_type", CASES)
