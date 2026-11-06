@@ -508,3 +508,19 @@ def test_redact_context_masks_host_valued_names_but_keeps_service_names():
     assert facts["from_name"] == "orders-api" and facts["instance_type"] == "db.r6g.large"
     assert endpoint not in facts["reason"] and "<host>" in facts["reason"]
     assert out["evidence"][0]["id"] == "e1" and out["evidence"][0]["resource_ids"] == ["r1"]
+
+
+def test_redact_context_masks_two_label_hosts_mapping_keys_and_any_hostname_value():
+    from diagnosis.evidence import redact_context
+    out = redact_context({"evidence": [{"id": "e1", "resource_ids": ["r1"], "facts": {
+        "to_name": "orders.internal", "relation": "ledger.svc.cluster.local",
+        "dimensions": [{"Name": "Endpoint", "Value": "cache.internal"}],
+        "xray": {"payments.internal": {"calls": 3}, "billing.internal": {"calls": 1}, "orders-api": {"calls": 2}},
+        "instance_type": "db.r6g.large", "version": "8.0.mysql_aurora.3.05", "value": "1.5"}}]})
+    facts = out["evidence"][0]["facts"]
+    assert facts["to_name"] == facts["relation"] == "<host>"
+    assert facts["dimensions"][0]["Value"] == "<host>"
+    assert set(facts["xray"]) == {"<host>", "<host#2>", "orders-api"}
+    assert "payments.internal" not in str(out) and "billing.internal" not in str(out)
+    assert facts["instance_type"] == "db.r6g.large" and facts["version"] == "8.0.mysql_aurora.3.05"
+    assert facts["value"] == "1.5"

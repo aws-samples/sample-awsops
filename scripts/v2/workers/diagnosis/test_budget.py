@@ -28,11 +28,13 @@ def test_concurrent_reservations_cannot_overrun_ceiling_or_final_review():
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         admitted = [value for value in pool.map(reserve, range(30)) if value]
-    assert len(admitted) == 11
-    assert len(set(admitted)) == 11
-    final = budget.reserve("final_review", "model", 10, 8192)
+    # The holdback is the heaviest review allocation (8192 + Opus thinking headroom).
+    assert len(admitted) == 10
+    assert len(set(admitted)) == 10
+    opus = "global.anthropic.claude-opus-5-5"
+    final = budget.reserve("final_review", opus, 10, 8192 + 8000)
     budget.record(final, "succeeded", {"input_tokens": 5, "output_tokens": 20})
-    assert budget.snapshot()["reserved_output_tokens"] == 12 * 8192
+    assert budget.snapshot()["reserved_output_tokens"] == 10 * 8192 + 16192
 
 
 def test_failed_and_retried_attempts_remain_charged_usage_unknown():

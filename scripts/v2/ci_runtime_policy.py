@@ -326,6 +326,77 @@ def _check_target_policy(resource, targets, project, expected):
     _check_accounts({**after, "policy": policy}, expected)
 
 
+MEMBER_ROLE = re.compile(r"arn:aws:iam::(\d{12}):role/AWSopsReadOnlyRole")
+MEMBER_POLICY = 'aws_iam_role_policy.worker_diagnosis_evidence["task"]'
+MEMBER_TASK = "aws_ecs_task_definition.worker[0]"
+
+
+def member_roles(value, host):
+    """diagnosis_member_role_arns: exact foreign AWSopsReadOnlyRole ARNs, as variables.tf validates."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 32 or len(set(value)) != len(value):
+        raise ValueError("Invalid diagnosis member roles")
+    for arn in value:
+        match = MEMBER_ROLE.fullmatch(arn) if isinstance(arn, str) else None
+        if not match or match[1] == host:
+            raise ValueError("Invalid diagnosis member roles")
+    return value
+
+
+def _check_member_positions(resource, members, project, expected):
+    """Exempt only the configured member ARNs in their two exact positions; scan everything else."""
+    after = resource["change"].get("after")
+    address, kind = resource["address"], resource["type"]
+    if not members or not isinstance(after, dict) or (address, kind) not in (
+            (MEMBER_POLICY, "aws_iam_role_policy"), (MEMBER_TASK, "aws_ecs_task_definition")):
+        return False
+    try:
+        if kind == "aws_iam_role_policy":
+            if after.get("name") != f"{project}-worker-task-diagnosis-evidence-read":
+                raise ValueError
+            policy = json.loads(after["policy"])
+            found = 0
+            for statement in policy["Statement"]:
+                actions = statement.get("Action")
+                actions = [actions] if isinstance(actions, str) else actions
+                if not isinstance(actions, list) or "NotAction" in statement or "NotResource" in statement:
+                    raise ValueError
+                if any(not isinstance(a, str) for a in actions):
+                    raise ValueError
+                if any(fnmatch.fnmatchcase("sts:assumerole", a.lower()) for a in actions):
+                    condition = statement.get("Condition")
+                    if (statement.get("Sid") != "DiagnosisRegisteredMemberReadOnly" or actions != ["sts:AssumeRole"]
+                            or statement.get("Effect") != "Allow"
+                            or set(statement) != {"Sid", "Effect", "Action", "Resource", "Condition"}
+                            or not isinstance(condition, dict)
+                            or condition.get("StringLike") != {"sts:ExternalId": "?*"}
+                            or statement.get("Resource") != members):
+                        raise ValueError
+                    found += 1
+                    statement["Resource"] = []  # Local parsed copy only.
+            if found != 1:
+                raise ValueError
+            scanned = {**after, "policy": policy}
+        else:
+            containers = json.loads(after["container_definitions"])
+            found = 0
+            for container in containers:
+                for entry in container.get("environment") or []:
+                    if entry.get("name") == "DIAGNOSIS_MEMBER_ROLE_ARNS":
+                        if json.loads(entry.get("value")) != members:
+                            raise ValueError
+                        found += 1
+                        entry["value"] = "[]"  # Local parsed copy only.
+            if found != 1:
+                raise ValueError
+            scanned = {**after, "container_definitions": containers}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("Invalid diagnosis member role position") from None
+    _check_accounts(scanned, expected)
+    return True
+
+
 def check_plan(plan, target, scope, expected_account, *, advisory=False):
     if scope not in SCOPES or not isinstance(plan, dict) or not plan.get("format_version"):
         raise ValueError("Invalid runtime plan scope or document")
@@ -334,6 +405,7 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     profile = variables.get("ci_runtime_profile_enabled", False)
     readiness = variables.get("ci_readiness_enabled", False)
     targets = verification_targets(variables.get("runtime_verification_targets", []), expected_account)
+    members = member_roles(variables.get("diagnosis_member_role_arns"), expected_account)
     if targets and (target != "dev" or scope != "full" or profile is not True
                     or variables.get("inventory_host_only") is not False
                     or any(variables.get(flag) is not True for flag in RUNTIME_FLAGS[:3])):
@@ -388,7 +460,8 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
                 action not in ("create", "update", "delete", "forget") for action in actions):
             raise ValueError("Invalid resource actions")
         after = change.get("after")
-        _check_target_policy(resource, targets, project, expected)
+        if not _check_member_positions(resource, members, project, expected):
+            _check_target_policy(resource, targets, project, expected)
         if rollout and (kind.startswith(("aws_route53", "aws_acm_")) or kind in NETWORK_TYPES):
             raise ValueError("Runtime operations must preserve public DNS, certificates and network topology")
         if scope == "runtime-ecr-bootstrap":

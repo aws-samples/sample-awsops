@@ -177,21 +177,32 @@ _REFERENCE_FIELDS = {
 
 # DNS names (RDS endpoints, resolver queries, trace hosts) identify the account's resources
 # but carry no ARN/IP shape that redact() recognizes: their values never reach a model.
-# Host-valued keys are always masked; name-valued keys (X-Ray/trace node names, which are a
-# service name or a remote host) are masked when the value is hostname-shaped; any AWS
-# service DNS name is masked wherever it appears.
+# Host-valued keys are always masked. Any other string (and any mapping key) that is a whole
+# dotted hostname is masked, except code-owned type/version vocabularies such as
+# db.r6g.large; AWS service DNS names are masked wherever they appear inside text.
 _HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host", "query_name", "dns_source_id"}
-_NAME_KEYS = {"from_name", "to_name", "service_name", "service", "name", "Name"}
-_HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.){2,}[a-z][a-z0-9-]{0,62}\.?")
+_TYPE_KEYS = {"instance_type", "class", "current_type", "recommended_type", "storage_type",
+              "storageType", "engine", "version", "unit", "metric_name", "namespace", "statistic"}
+_HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?")
 _AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
 
 
 def _scrub_text(value, key):
     if not value:
         return value
-    if key in _HOST_KEYS or (key in _NAME_KEYS and _HOSTNAME.fullmatch(value)):
+    if key in _HOST_KEYS or (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())):
         return "<host>"
     return _AWS_HOST.sub("<host>", redact(value))
+
+
+def _scrub_key(key, taken):
+    if not isinstance(key, str) or not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+        return key
+    masked, n = "<host>", 1
+    while masked in taken:
+        n += 1
+        masked = f"<host#{n}>"
+    return masked
 
 
 def redact_context(context):
@@ -202,7 +213,10 @@ def redact_context(context):
         if isinstance(value, list):
             return [scrub(item, key) for item in value]
         if isinstance(value, dict):
-            return {k: scrub(item, k) for k, item in value.items()}
+            out = {}
+            for k, item in value.items():
+                out[_scrub_key(k, out)] = scrub(item, k)
+            return out
         return value
 
     result = scrub(context)
