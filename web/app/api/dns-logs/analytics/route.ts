@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { isTransientRead } from '@/lib/bounded-cache';
 import { dnsLogStatus, dnsAnalytics, coreDnsGroups, coreDnsAnalytics } from '@/lib/dns-logs';
 
 export const dynamic = 'force-dynamic';
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
     }
     return Response.json({ source, group, range, ...(await dnsAnalytics(group, range)) });
   } catch (e) {
+    if (isTransientRead(e)) return unavailable();
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }
 }

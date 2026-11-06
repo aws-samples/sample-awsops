@@ -41,4 +41,13 @@ describe('GET /api/nfm/query', () => {
     const { GET } = await import('./route');
     expect((await GET(req())).status).toBe(404);
   });
+
+  it('a saturated top-contributors read is a retryable 503 without the internal message', async () => {
+    nfmStatus.mockResolvedValue({ monitors: [{ name: 'nfm-vpc-all' }] });
+    nfmTopContributors.mockRejectedValue(new CacheUnavailableError('capacity'));
+    const { GET } = await import('./route');
+    const res = await GET(req());
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(await res.json())).not.toContain('capacity reached');
+  });
 });

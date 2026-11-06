@@ -7,7 +7,6 @@ export interface BoundedTtlCacheOptions {
   now?: () => number;
 }
 
-/** Transient cache saturation or a load deadline: callers report it as retryable, never as absence. */
 /** Cache saturation/deadline or an SDK request timeout: retry later, never treat as absence. */
 export function isTransientRead(error: unknown): boolean {
   if (error instanceof CacheUnavailableError) return true;
@@ -16,8 +15,11 @@ export function isTransientRead(error: unknown): boolean {
 }
 
 export class CacheUnavailableError extends Error {
-  constructor(readonly reason: 'capacity' | 'deadline') {
+  // Explicit field (no parameter property): Node's strip-only TypeScript can import this file.
+  readonly reason: 'capacity' | 'deadline';
+  constructor(reason: 'capacity' | 'deadline') {
     super(reason === 'capacity' ? 'Cache in-flight capacity reached' : 'Cache load deadline exceeded');
+    this.reason = reason;
     this.name = 'CacheUnavailableError';
   }
 }

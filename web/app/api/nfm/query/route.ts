@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { isTransientRead } from '@/lib/bounded-cache';
 import { nfmStatus, nfmTopContributors, NFM_METRICS, NFM_CATEGORIES, type NfmMetric, type NfmCategory } from '@/lib/nfm';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +39,10 @@ export async function GET(request: Request) {
     const result = await nfmTopContributors(monitor, metric as NfmMetric, category as NfmCategory, range);
     return Response.json({ monitor, metric, category, range, ...result });
   } catch (e) {
+    if (isTransientRead(e)) {
+      return Response.json({ status: 'error', message: 'NFM query temporarily unavailable', retryable: true },
+        { status: 503, headers: { 'Retry-After': '5' } });
+    }
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }
 }

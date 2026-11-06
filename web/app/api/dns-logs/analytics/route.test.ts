@@ -42,6 +42,15 @@ describe('GET /api/dns-logs/analytics', () => {
     expect(coreDnsAnalytics).not.toHaveBeenCalled();
   });
 
+  it('a saturated analytics read is a retryable 503 without the internal message', async () => {
+    dnsLogStatus.mockResolvedValue({ configs: [], groups: ['/g'] });
+    dnsAnalytics.mockRejectedValue(new CacheUnavailableError('capacity'));
+    const { GET } = await import('./route');
+    const res = await GET(req('group=/g'));
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(await res.json())).not.toContain('capacity reached');
+  });
+
   it('keeps 404 for a group absent from a successful lookup', async () => {
     dnsLogStatus.mockResolvedValue({ configs: [], groups: ['/other'] });
     coreDnsGroups.mockResolvedValue([{ group: '/other' }]);
