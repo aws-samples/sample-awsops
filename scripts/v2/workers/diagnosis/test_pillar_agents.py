@@ -151,14 +151,39 @@ def test_transient_retry_is_explicit_and_every_attempt_charged(monkeypatch):
     ("end_turn", {"findings": [{"id": "missing fields"}]}),
 ])
 def test_truncated_or_invalid_json_is_failed_evidence(monkeypatch, stop, value):
-    client = FakeClient([response(value, stop=stop)])
+    client = FakeClient([response(value, stop=stop)] * 2)
     monkeypatch.setattr(agents, "_client", lambda *_: client)
     budget = ReportBudget("light")
-    with pytest.raises(agents.ModelStageError):
+    with pytest.raises(agents.ModelStageError, match="invalid_output"):
         agents.analyze("security", EvidenceIndex(bundle(), ACCOUNT),
                        model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
-    assert budget.snapshot()["attempts"][0]["outcome"] == "invalid_output"
-    assert budget.snapshot()["actual_usage"] == {"input_tokens": 100, "output_tokens": 200}
+    # One bounded corrective retry, then the stage fails; every attempt is charged.
+    assert len(client.calls) == 2
+    assert [row["outcome"] for row in budget.snapshot()["attempts"]] == ["invalid_output"] * 2
+    assert budget.snapshot()["actual_usage"] == {"input_tokens": 200, "output_tokens": 400}
+
+
+@pytest.mark.parametrize("stage,schema", [("specialist", agents.FINDINGS_SCHEMA),
+                                          ("review", agents.REVIEW_SCHEMA)])
+def test_output_contract_is_sent_and_invalid_output_is_corrected_once(monkeypatch, stage, schema):
+    good = ({"findings": []} if stage == "specialist" else
+            {"finding_ids": [], "reject_ids": [], "follow_up": [], "rerun_pillars": [], "issues": []})
+    client = FakeClient([response({"wrong": True}), response(good)])
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("light")
+    kwargs = {"model_id": "global.anthropic.claude-sonnet-5-5", "budget": budget}
+    index = EvidenceIndex(bundle(), ACCOUNT)
+    result = (agents.analyze("security", index, **kwargs) if stage == "specialist"
+              else agents.review([], index, **kwargs))
+    first, second = (json.loads(call["body"]) for call in client.calls)
+    assert agents._serialize(schema) in first["system"]
+    assert all(enum in first["system"] for enum in (
+        ("critical", "coverage_gap", "graph_refresh") if stage == "specialist" else ("rerun_pillars",)))
+    assert len(first["messages"][0]["content"]) == 1
+    assert second["messages"][0]["content"][:1] == first["messages"][0]["content"]
+    assert second["messages"][0]["content"][1]["text"] == agents._CORRECTIVE
+    assert [row["outcome"] for row in budget.snapshot()["attempts"]] == ["invalid_output", "succeeded"]
+    assert result["_stage"]["status"] == "succeeded"
 
 
 def test_opus_request_matches_report_thinking_fields_and_headroom(monkeypatch):

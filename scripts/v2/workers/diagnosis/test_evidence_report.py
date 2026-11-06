@@ -54,6 +54,23 @@ def test_broken_discovery_connection_is_never_reused(monkeypatch):
         report.generate(object(), "self")
 
 
+def test_analysis_heartbeat_reaches_report_progress_per_pillar(monkeypatch):
+    from diagnosis import loop
+    from diagnosis.evidence import PILLARS
+    prepare(monkeypatch)
+
+    def run(*args, progress, **kwargs):
+        for stage in (*PILLARS, "review"):
+            progress(stage)
+        return analysis()
+
+    monkeypatch.setattr(loop, "run", run)
+    beats = []
+    report.generate(object(), "self", on_progress=lambda *a: beats.append(a))
+    sections = [row[2] for row in beats if row[2].startswith("Six pillars: ")]
+    assert sections == [f"Six pillars: {stage}" for stage in (*PILLARS, "review")]
+
+
 def test_summary_persists_only_projected_rejections(monkeypatch):
     prepare(monkeypatch, findings=analysis(rejected=[{"id": "x", "reason": "r", "explanation": "prose"}]))
     assert report.generate(object(), "self")[1]["rejected_findings"] == [{"id": "x", "reason": "r"}]
@@ -170,6 +187,43 @@ def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, ex
     assert state["finished"]["summary"]["budget"]["attempt_count"] == 0
 
 
+@pytest.mark.parametrize("failure", [True, False])
+def test_handler_never_writes_through_a_broken_discovery_connection(monkeypatch, failure):
+    import db as wdb
+    import handlers
+    from diagnosis import db as ddb
+    conns, writes = [], []
+
+    class Conn:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "false")
+    monkeypatch.setattr(wdb, "connect", lambda: conns.append(Conn()) or conns[-1])
+
+    def generate(*args, **kwargs):
+        if failure:  # discovery broke (and closed) the connection before analysis
+            raise RuntimeError("database_connection_broken")
+        # A follow-up graph refresh broke it mid-analysis; the report still renders.
+        return "# r", {"degraded": ["database_connection_broken"], "title_and_tags": None}, []
+
+    monkeypatch.setattr(report, "generate", generate)
+    monkeypatch.setattr(report, "make_title_and_tags", lambda *a: {"title": "T", "tags": []})
+    monkeypatch.setattr(handlers, "_upload_markdown", lambda *a: "s3://test/report.md")
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda *a: None)
+    monkeypatch.setattr(ddb, "finish_report", lambda conn, *a, **kw: writes.append((conn, kw["status"])))
+    if failure:
+        with pytest.raises(RuntimeError, match="database_connection_broken"):
+            handlers._report({"account": "self", "report_id": 1}, dry_run=False)
+    else:
+        assert handlers._report({"account": "self", "report_id": 1}, dry_run=False)[0]["status"] == "partial"
+    assert len(conns) == 2 and len(writes) == 1
+    assert writes[0] == (conns[1], "failed" if failure else "partial")
+    assert all(conn.closed for conn in conns)
+
+
 @pytest.mark.parametrize("meta", [None, {"title": None}, "x"])
 def test_handler_malformed_local_title_falls_back(monkeypatch, meta):
     import db as wdb
@@ -265,7 +319,7 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
             assert "temperature" not in request
             context = json.loads(request["messages"][0]["content"][0]["text"])
             if "findings" not in context:
-                pillar = request["system"].split("Required pillar key: ")[1].rstrip(".")
+                pillar = request["system"].split("Required pillar key: ")[1].split(".", 1)[0]
                 rows = []
                 if pillar == "reliability":
                     rows = [finding(), finding(id="fabricated", evidence_ids=["invented"])]
@@ -326,7 +380,7 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
             request = json.loads(body)
             context = json.loads(request["messages"][0]["content"][0]["text"])
             if "Required pillar key: " in request["system"]:
-                pillar = request["system"].split("Required pillar key: ")[1].rstrip(".")
+                pillar = request["system"].split("Required pillar key: ")[1].split(".", 1)[0]
                 findings = []
                 if pillar == "reliability":
                     resources = {row["id"]: row for row in context["resources"]}
@@ -399,3 +453,22 @@ def test_read_only_prerequisites_do_not_degrade_render(monkeypatch):
     prepare(monkeypatch)
     _, summary, _ = report.generate(object(), "self", lang="en")
     assert summary["render_degraded"] == []
+
+
+@pytest.mark.parametrize("model_id", ["global.openai.gpt-6.1-terra", "claude-sonnet-5-5"])
+def test_non_bedrock_claude_provider_model_degrades_without_model_calls(monkeypatch, model_id):
+    """bedrock_openai / anthropic_api diagnosis models cannot run the evidence loop."""
+    from diagnosis import discovery, pillar_agents, supporting
+    from diagnosis.budget import ReportBudget
+    from diagnosis.test_evidence import ACCOUNT, bundle as actual_bundle
+    monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
+    monkeypatch.setattr(report, "_MODEL_SONNET", model_id)
+    monkeypatch.setattr(discovery, "collect", lambda *a, **kw: actual_bundle())
+    monkeypatch.setattr(supporting, "collect", lambda value, *a, **kw: value)
+    monkeypatch.setattr(pillar_agents, "_client", lambda *a: pytest.fail("model call"))
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a: pytest.fail("free Markdown inference"))
+    md, summary, _ = report.generate(object(), ACCOUNT, "mid", lang="en", budget=ReportBudget("mid"))
+    assert "analysis:unsupported_model" in summary["degraded"] and md
+    assert summary["budget"]["attempt_count"] == 0
+    assert {row["status"] for row in summary["pillar_coverage"].values()} == {"failed"}

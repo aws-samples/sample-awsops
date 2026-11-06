@@ -16,7 +16,8 @@ _IDENTIFIER_TOKEN = re.compile(
     r"\b(?:db\.)?[a-z][a-z0-9-]*\d[a-z0-9-]*\.(?:nano|micro|small|medium|large|\d*xlarge|metal)\b"
     r"|\b[a-z]{2}(?:-gov)?-[a-z]+-\d\b"
     r"|\b[a-z]{1,8}-[0-9a-f]{8,17}\b"
-    r"|\b[a-z]{1,7}:[0-9a-f]{32}\b")
+    r"|\bsummary-[0-9a-f]{24}\b"
+    r"|\b[a-z]{1,7}:[0-9a-f]{32}\b", re.IGNORECASE)
 
 
 def _failure_reason(exc):
@@ -162,7 +163,16 @@ def _admit_outputs(outputs, index, coverage, degraded, incomplete):
     return admitted
 
 
-def _run_specialists(pillars, index, *, model_id, budget, lang, coverage, stages, degraded, incomplete):
+def _notify(progress, stage):
+    if progress is not None:
+        try:
+            progress(stage)
+        except Exception:  # a heartbeat failure never aborts analysis
+            pass
+
+
+def _run_specialists(pillars, index, *, model_id, budget, lang, coverage, stages, degraded, incomplete,
+                     progress=None):
     outputs = {}
     # At most four owned threads and six/two scheduled calls; no nested pools.
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
@@ -186,6 +196,7 @@ def _run_specialists(pillars, index, *, model_id, budget, lang, coverage, stages
                                "reason": reason, "model_id": model_id,
                                "prompt_version": agents.PROMPT_VERSION,
                                "schema_version": agents.SCHEMA_VERSION})
+            _notify(progress, pillar)  # caller thread only: the heartbeat shares the DB connection
     return _admit_outputs(outputs, index, coverage, degraded, incomplete)
 
 
@@ -227,7 +238,7 @@ def _run_review(findings, index, *, model_id, budget, lang, stages, degraded, in
         return findings, {"status": "failed", "follow_up": [], "rerun_pillars": [], "issues": []}
 
 
-def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang="en"):
+def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang="en", progress=None):
     agents.validate_language(lang)
     if tier not in {"light", "mid", "deep"}:
         raise ValueError("unknown diagnosis tier")
@@ -236,12 +247,30 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
     index = EvidenceIndex(bundle, account)
     degraded, incomplete = list(index.degraded), list(index.incomplete)
     coverage, stages = {}, []
+    try:
+        agents.model_capabilities(model_id)
+    except agents.ModelUnsupported:
+        # Only Bedrock Claude Sonnet/Opus 5.5 run the evidence loop (e.g. a bedrock_openai or
+        # anthropic_api model_provider): one visible degraded marker, no model calls.
+        return {
+            "findings": [], "rejected": [], "passes": 0,
+            "pillar_coverage": {p: {"status": "failed", "findings": 0, "rejected": 0} for p in PILLARS},
+            "review": {"status": "failed", "follow_up": [], "rerun_pillars": [], "issues": []},
+            "degraded": list(dict.fromkeys([*degraded, "analysis:unsupported_model"])),
+            "incomplete": list(dict.fromkeys([*incomplete, "six_pillars"])),
+            "model_stages": [{"stage": "analysis", "status": "failed", "reason": "unsupported_model",
+                              "model_id": model_id, "prompt_version": agents.PROMPT_VERSION,
+                              "schema_version": agents.SCHEMA_VERSION}],
+            "prompt_version": agents.PROMPT_VERSION, "schema_version": agents.SCHEMA_VERSION,
+            "budget": budget.snapshot(), "evidence_bundle": index.admitted_bundle(),
+        }
     findings = _run_specialists(
         PILLARS, index, model_id=model_id, budget=budget, lang=lang, coverage=coverage,
-        stages=stages, degraded=degraded, incomplete=incomplete)
+        stages=stages, degraded=degraded, incomplete=incomplete, progress=progress)
     findings, review = _run_review(
         findings, index, model_id=model_id, budget=budget, lang=lang, stages=stages,
         degraded=degraded, incomplete=incomplete)
+    _notify(progress, "review")
     passes = 1
     requests = review.get("follow_up", [])
     reruns = review.get("rerun_pillars", [])
@@ -268,17 +297,29 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
                             valid = next_index.validate_finding(row)
                             if valid is not None:
                                 retained.append(valid)
-                    rejected_history = [*index.rejected, *index.downgraded]
+                    # Pillars not rerun keep pass-1 coverage only if revalidation kept every finding.
+                    for pillar, state in coverage.items():
+                        if pillar in reruns or state.get("status") == "failed":
+                            continue
+                        kept = sum(row["pillar"] == pillar for row in retained)
+                        if kept != state.get("findings"):
+                            coverage[pillar] = {**state, "status": "partial", "findings": kept,
+                                                "revalidation_dropped": state.get("findings", 0) - kept}
+                            degraded.append(f"pillar:{pillar}:revalidation_dropped")
+                    # Pass-1 downgrades stay downgrades; only rejections join the rejected history.
+                    first_rejected, first_downgraded = index.rejected, index.downgraded
                     index = next_index
-                    index.rejected.extend(rejected_history)
+                    index.rejected.extend(first_rejected)
+                    index.downgraded.extend(first_downgraded)
                     degraded.extend(index.degraded)
                     incomplete.extend(index.incomplete)
                     findings = retained + _run_specialists(
                         reruns, index, model_id=model_id, budget=budget, lang=lang, coverage=coverage,
-                        stages=stages, degraded=degraded, incomplete=incomplete)
+                        stages=stages, degraded=degraded, incomplete=incomplete, progress=progress)
                     findings, review = _run_review(
                         findings, index, model_id=model_id, budget=budget, lang=lang, stages=stages,
                         degraded=degraded, incomplete=incomplete, final=True)
+                    _notify(progress, "final_review")
             except Exception as exc:
                 reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "collection_failed"
                 degraded.append(f"follow_up:{reason}")

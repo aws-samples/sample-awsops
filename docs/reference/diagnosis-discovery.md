@@ -30,6 +30,20 @@ principal and its STS account must match. Any failed authorization or verificati
 leaves an explicit gap and makes no substitute host read. Account registration
 alone does not grant the worker permission to assume a role.
 
+## Model requirement
+
+The specialist and review stages call Bedrock `InvokeModel` directly and accept only
+Claude Sonnet 5.5 or Opus 5.5 model IDs (bare or a supported `global.`, `us.`, `eu.`,
+`au.` or Opus-only `jp.` inference profile). The diagnosis model comes from
+`DIAGNOSIS_MODEL_SONNET` (Opus for deep tier when selected), which
+[`model_provider`](../runbooks/model-provider.md) sets. With `bedrock_claude` or
+`mixed`, the loop runs. With `bedrock_openai` (`global.openai.*`) or `anthropic_api`
+(bare `claude-*` IDs over the Anthropic API), the loop makes no model call: the report
+still renders discovery evidence and intended-vs-actual results, every pillar is
+`failed`, and the summary records the degraded marker `analysis:unsupported_model`
+and the incomplete marker `six_pillars`, so the report is `partial`. The disabled
+(legacy) diagnosis path keeps using the configured provider.
+
 ## Identity and connection strength
 
 Resources and graph nodes retain account and region identity. Inventory sampling

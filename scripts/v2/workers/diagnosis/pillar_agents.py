@@ -17,7 +17,7 @@ from .evidence import CLAIMS, PILLARS, VERIFICATIONS, redact_context
 from .report import _thinking_fields
 
 
-PROMPT_VERSION = "diagnosis-pillars-2026-11-05-v2"
+PROMPT_VERSION = "diagnosis-pillars-2026-11-06-v3"
 SCHEMA_VERSION = "diagnosis-findings-v1"
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_FINDINGS = 8
@@ -226,6 +226,21 @@ def _serialize(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+_CONTRACT = ("Required output contract: return exactly one JSON object (no prose or code "
+             "fences) matching this JSON Schema; every listed key is required, no other keys "
+             "are allowed and enum values are exact: ")
+_CORRECTIVE = ("Your previous response did not match the required output contract. Return only "
+               "the JSON object exactly as specified in the system prompt.")
+
+
+def _corrected(body):
+    """One bounded corrective retry after invalid_output; None if it no longer fits."""
+    request = json.loads(body)
+    request["messages"][0]["content"].append({"type": "text", "text": _CORRECTIVE})
+    serialized = _serialize(request)
+    return serialized if len(serialized.encode()) <= MAX_INPUT_BYTES else None
+
+
 def _body(prompt, context, schema, capabilities):
     # Same request shape as report._bedrock_render: thinking fields from
     # report._thinking_fields (omitted = adaptive on Opus 5.5) and Opus headroom.
@@ -235,7 +250,8 @@ def _body(prompt, context, schema, capabilities):
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": attempt_tokens(model_id),
         **_thinking_fields(model_id),
-        "system": prompt,
+        # Trusted output contract: _validate_shape enforces this exact schema.
+        "system": prompt + "\n" + _CONTRACT + _serialize(schema),
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": _serialize(context)}
         ]}],
@@ -383,6 +399,11 @@ def _structured(stage, prompt, index, schema, *, model_id, budget, extra=None):
             outcome = ("deadline_exhausted" if isinstance(exc, BudgetExceeded) else
                        "invalid_output" if isinstance(exc, ModelStageError) else "provider_error")
             budget.record(attempt, outcome, usage)
+            corrected = (_corrected(body) if outcome == "invalid_output"
+                         and number + 1 < MAX_MODEL_ATTEMPTS and budget.remaining() >= 130 else None)
+            if corrected is not None:
+                body = corrected
+                continue
             if isinstance(exc, (ModelStageError, BudgetExceeded)):
                 raise
             raise ModelStageError("provider_error") from exc

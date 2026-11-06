@@ -297,3 +297,56 @@ def test_specialist_concurrency_never_exceeds_four(monkeypatch):
     result = loop.run(bundle(), account=ACCOUNT, tier="mid",
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"))
     assert peak == 4 and not result["degraded"]
+
+
+def test_opaque_summary_and_uppercase_identifiers_are_not_numeric_issues(monkeypatch):
+    issue = "Confirm summary-0123456789abcdef01234567 against I-0123456789ABCDEF0 in AP-NORTHEAST-2"
+    install_models(monkeypatch, [{"issues": [issue]}])
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"))
+    assert result["review"]["issues"] == [issue]
+
+
+def test_follow_up_revalidation_updates_coverage_of_pillars_not_rerun(monkeypatch):
+    install_models(monkeypatch, [{"follow_up": [
+        {"capability": "graph_refresh", "resource_ids": [oid("r-instance")]}],
+        "rerun_pillars": ["performance_efficiency"]}])
+    refreshed = bundle()
+    refreshed["evidence"] = [row for row in refreshed["evidence"] if row["id"] != oid("e-observed")]
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
+                      collect_follow_up=lambda _: refreshed)
+    assert result["passes"] == 2 and result["findings"] == []
+    assert result["pillar_coverage"]["reliability"] == {
+        "status": "partial", "findings": 0, "rejected": 0, "downgraded": 0, "revalidation_dropped": 1}
+    assert "pillar:reliability:revalidation_dropped" in result["degraded"]
+
+
+def test_pass_one_downgrades_are_not_carried_as_rejections(monkeypatch):
+    install_models(monkeypatch, [{"follow_up": [
+        {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}],
+        "rerun_pillars": ["performance_efficiency"]}])
+    monkeypatch.setattr(loop.agents, "analyze", lambda pillar, index, **kw: {"findings": [finding(
+        id="finding-reliability", evidence_ids=[oid("e-config")])] if pillar == "reliability" else []})
+    refreshed = bundle()
+    refreshed["evidence"][2]["facts"]["window_days"] = 15
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
+                      collect_follow_up=lambda _: refreshed)
+    assert result["passes"] == 2
+    assert result["rejected"] == [{"id": "finding-reliability", "reason": "unconfirmed_observation"}]
+    assert "evidence:downgraded" in result["degraded"] and "evidence:rejected" not in result["degraded"]
+
+
+def test_progress_heartbeat_fires_per_pillar_and_per_pass(monkeypatch):
+    install_models(monkeypatch, [{"follow_up": [
+        {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}],
+        "rerun_pillars": ["performance_efficiency"]}])
+    refreshed = bundle()
+    refreshed["evidence"][2]["facts"]["window_days"] = 15
+    beats = []
+    loop.run(bundle(), account=ACCOUNT, tier="mid", model_id="global.anthropic.claude-sonnet-5-5",
+             budget=ReportBudget("mid"), collect_follow_up=lambda _: refreshed,
+             progress=lambda stage: beats.append(stage) or 1 / 0)  # a failing heartbeat is ignored
+    assert set(beats[:6]) == set(PILLARS)
+    assert beats[6:] == ["review", "performance_efficiency", "final_review"]

@@ -61,6 +61,20 @@ def _export_artifacts(md, report_id):
             print(f"[export] {ext} generation failed (non-fatal):\n{traceback.format_exc()}")
 
 
+def _finish_report(wdb, ddb, conn, broken, report_id, **fields):
+    """Discovery closes a desynced connection; write the report row through a fresh one."""
+    if not broken:
+        return ddb.finish_report(conn, report_id, **fields)
+    fresh = wdb.connect()
+    try:
+        return ddb.finish_report(fresh, report_id, **fields)
+    finally:
+        try:
+            fresh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _report(payload, dry_run):
     """AI Diagnosis report. payload: {account, tier, requested_by, report_id}.
     The BFF creates the diagnosis_reports row (running) and passes report_id — this fixes the
@@ -91,6 +105,7 @@ def _report(payload, dry_run):
         from diagnosis.budget import ReportBudget
         budget = ReportBudget(tier, started_at=entry_started)
     conn = wdb.connect()
+    broken = False  # set once discovery reports (and closes) a desynced connection
     try:  # [PR#37 review CRITICAL] always release the pg8000 connection (was leaked every call → Aurora pool exhaustion under retries)
         # Fallback: if BFF didn't pre-create (older enqueue), create now (worker_job_id stays NULL).
         if not report_id:
@@ -121,9 +136,10 @@ def _report(payload, dry_run):
             partial = (summary.get("degraded") or summary.get("render_degraded")
                        or summary.get("budget_incomplete"))
             status = "partial" if partial else "succeeded"
-            ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
-                              summary=summary, artifact_uri=artifact_uri,
-                              title=meta["title"], tags=meta["tags"])
+            broken = "database_connection_broken" in (summary.get("degraded") or [])
+            _finish_report(wdb, ddb, conn, broken, report_id, status=status,
+                           sources_used=sources_used, summary=summary, artifact_uri=artifact_uri,
+                           title=meta["title"], tags=meta["tags"])
             # GOVERNANCE (ADR-007/ADR-013[legacy 040/041] external-comms): notification is no longer published here —
             # a completed report just leaves diagnosis_reports.notified_at NULL. A periodic digest
             # Lambda (diagnosis_digest.py, ~15min) batches everything with notified_at IS NULL into
@@ -136,7 +152,8 @@ def _report(payload, dry_run):
         except Exception as e:  # noqa: BLE001
             print(traceback.format_exc())  # full trace → CloudWatch logs only
             # [review MINOR] str(e) to the DB (the error field reaches the client via /api/diagnosis/[id])
-            ddb.finish_report(conn, report_id, status="failed", error=str(e))
+            broken = broken or str(e) == "database_connection_broken"
+            _finish_report(wdb, ddb, conn, broken, report_id, status="failed", error=str(e))
             raise
     finally:
         try:

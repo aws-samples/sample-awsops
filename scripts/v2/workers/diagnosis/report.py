@@ -919,8 +919,10 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         return bundle
 
     try:
+        # Per-pillar/per-pass heartbeat keeps the reaper's RUNNING_STALE_MIN clock fresh.
         analysis = loop.run(bundle, account=account, tier=tier, model_id=model_id,
-                            budget=budget, collect_follow_up=follow_up, lang=lang)
+                            budget=budget, collect_follow_up=follow_up, lang=lang,
+                            progress=lambda stage: emit(0, f"Six pillars: {stage}", "render"))
     except Exception as exc:  # fail closed; never reuse unvalidated model output
         print(f"evidence report analysis failed: {type(exc).__name__}", file=sys.stderr)
         analysis = {"findings": [], "pillar_coverage": {}, "rejected": [],
