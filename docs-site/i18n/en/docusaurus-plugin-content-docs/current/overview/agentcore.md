@@ -45,7 +45,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 | **Engine** | Strands Agent Framework |
 | **Container** | Docker arm64 (stored in ECR, via `make agentcore`) |
 | **Execution Environment** | AgentCore managed service (Bedrock AgentCore Runtime) |
-| **Model** | Claude Haiku-class (routing classifier) / **the Runtime itself only runs a Sonnet-class model** (fixed in `agent/agent.py`). The Opus-class model isn't used by the Runtime — it's an optional Deep-tier choice in the separate **AI Diagnosis (async worker)** feature |
+| **Model** | Chat Runtime defaults to **GPT-6 Luna**, and the Terraform variable `agentcore_chat_model_id` rolls it back to Claude Sonnet 5.5 (the applied value is written on every provisioning run). Explore query generation uses GPT-6.1 Terra → Claude Sonnet 5.5 fallback; AI Diagnosis uses Sonnet 5.5 / optional Deep-tier Opus 5.5, and routing/help uses Haiku 5.5 |
 
 ### Status
 

@@ -116,7 +116,7 @@ limits, prompt propagation and missing-evidence failures.
 | One source or rendered file | 8 MiB |
 | Successfully staged source bytes / rendered bytes | 32 MiB each |
 | Complete filtered diff (raw and scrubbed) | 6,000 lines / 128 KiB per review call |
-| Batched review of a larger diff | At most 8 file-boundary batches, each within 7/8 of the byte limit, at most 4 in flight per wave (two waves, fresh credentials each); every batch must pass |
+| Batched review of a larger diff | At most 10 file-boundary batches, each within 7/8 of the byte limit, at most 5 in flight per wave (two waves, fresh credentials each); every batch must pass |
 | Published comment body | `comment_bytes` 60,000 (GitHub caps comments at 65,536 characters) |
 | Comprehensive reviewer report (scrubbed) | 60,000 bytes per vendor |
 | Panel bundle / envelope reserve | 120,000 bytes / 1,024 bytes |
@@ -217,16 +217,16 @@ index or partial PASS.
 
 A filtered diff over one call's limit is reviewed in complete batches
 (`scripts/pr-review/review_batches.py`). Admission splits it at file boundaries into at most
-8 batches, each within 7/8 of the byte limit less a 12 KiB paths header and within the line
+10 batches, each within 7/8 of the byte limit less a 12 KiB paths header and within the line
 limit less the header's 400 lines, and admits
 every batch with the same `input_scope.py` checks. Each batch gets both vendor reviews and its own
-chair inside the existing panel and chair steps. At most `max_parallel_batches` (4) batches run at
-once, i.e. up to eight reviewer CLIs or four chairs, sized for the `sample-awsops` runner pod
-(2 CPU, 8 GiB request, 12 GiB limit). Batches 5–8 form a second wave: each wave of each phase is
+chair inside the existing panel and chair steps. At most `max_parallel_batches` (5) batches run at
+once, i.e. up to ten reviewer CLIs or five chairs, sized for the `sample-awsops` runner pod
+(2 CPU, 8 GiB request, 12 GiB limit). Batches 6–10 form a second wave: each wave of each phase is
 its own workflow step (`scripts/pr-review/run-batches.sh`) after a fresh one-hour AWS session,
 which is the `sample-awsops-ci-review` role's maximum, so no wave outlives its credentials. The job
 timeout (190 minutes) covers two worst-case waves of each phase plus staging and publication.
-Admission refuses a filtered diff larger than 8 batch budgets plus one call limit (928 KiB)
+Admission refuses a filtered diff larger than 10 batch budgets plus one call limit (1,128 KiB)
 before reading it. The per-batch scope note added to the trusted
 prompt contains only fixed text (batch number, rules), never PR file names. Batch 1 holds every file under `.github/`,
 `scripts/pr-review/`, `terraform/` (including the edge Lambda), `agent/`, `scripts/v2/agentcore/`,
@@ -265,7 +265,7 @@ stays retrievable; each wave logs its batches before its exit status is checked.
 directories, the batch index and the gate's scratch file are removed at the end of every job, and
 admission writes batch copies owner-only. The combined
 comment has one section per batch, and the PR passes only if
-every batch passes. One file over the per-batch budget, or a diff needing more than 8 batches, is
+every batch passes. One file over the per-batch budget, or a diff needing more than 10 batches, is
 rejected before any model call. A diff within one call's limit keeps the single-review path. Input failures publish a distinct incomplete-input diagnosis;
 no panel or chair is called. Failed panel coverage skips the chair but publishes
 fixed diagnostics and unadjudicated severity-keyword presence booleans; it never asserts
@@ -279,7 +279,7 @@ attestations remain incomplete coverage, separately from unreadable report bytes
 These changes reduce normal review calls from eight panel calls plus a chair to two
 panel calls plus a chair; existing retry/model/timeout choices remain. They do not
 promise a wall-clock speedup. A diff over one call's bounds is reviewed in the complete
-batches described above; a promotion that needs more than 8 batches, or whose sensitive
+batches described above; a promotion that needs more than 10 batches, or whose sensitive
 files exceed batch 1, is still rejected, and exact-commit coverage reuse is not
 implemented. Splitting feature PRs alone does not reduce an existing dev-to-main
 cumulative diff. Do not

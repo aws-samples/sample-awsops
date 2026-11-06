@@ -8,6 +8,9 @@ importing agent, so the pure helper `_filter_tools` can be imported and tested i
 isolation. This keeps the change within Task 2's file scope (agent.py + test_agent.py).
 """
 import asyncio
+import io
+from contextlib import redirect_stdout
+import os
 import sys
 import types
 import unittest
@@ -52,7 +55,9 @@ def _install_stubs():
 _install_stubs()
 # Gateway discovery shells out at import time; an offline unit suite must never
 # discover resources using the developer/runner's ambient AWS credentials.
-with patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
+startup_output = io.StringIO()
+with redirect_stdout(startup_output), patch.dict(os.environ, {"AGENT_MODEL_ID": ""}), \
+        patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
     import agent  # noqa: E402  (import after stubs are installed)
 # The agent retains its helper-test bindings; other suites must import real SDKs.
 # In particular, Lambda cross-account tests construct actual botocore Credentials.
@@ -61,6 +66,19 @@ for _name, _original in _stubbed_modules.items():
         sys.modules.pop(_name, None)
     else:
         sys.modules[_name] = _original
+
+
+class ChatModelTest(unittest.TestCase):
+    def test_resolved_model_is_printed_at_startup(self):
+        self.assertIn(f"[Agent] resolved chat model: {agent.MODEL_ID}", startup_output.getvalue())
+
+    def test_default_chat_model_is_gpt6_luna(self):
+        self.assertEqual(agent.MODEL_ID, "global.openai.gpt-6-luna")
+
+    def test_prompt_cache_only_for_claude(self):
+        self.assertFalse(agent.supports_prompt_cache("global.openai.gpt-6-luna"))
+        self.assertFalse(agent.supports_prompt_cache("global.openai.gpt-6.1-terra"))
+        self.assertTrue(agent.supports_prompt_cache("global.anthropic.claude-sonnet-5-5"))
 
 
 class ReadinessEntrypointTest(unittest.TestCase):

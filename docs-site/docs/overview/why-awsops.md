@@ -83,7 +83,7 @@ EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront
 
 - **단일 EC2 t4g.2xlarge (ARM64 Graviton)** — Steampipe 임베디드 PostgreSQL을 같이 돌려 **별도 관리형 DB 비용이 없습니다**.
 - **AgentCore는 서버리스** — AI 런타임/게이트웨이는 호출 시에만 과금.
-- Bedrock 모델은 작업에 맞게 선택 — 기본 답변·진단은 **Sonnet급**, 분류·라우팅과 빠르고 저렴한 작업은 **Haiku급**, 진단 Deep 단계 선택지는 **Opus급**, 프롬프트 캐싱 적용.
+- Bedrock 모델은 작업에 맞게 선택 — 채팅은 **GPT-6 Luna**, 쿼리 생성은 **GPT-6.1 Terra**와 **Sonnet 5.5** fallback, 기본 진단은 **Sonnet급**, 분류·라우팅은 **Haiku급**, 진단 Deep 단계 선택지는 **Opus급**입니다. 명시적 프롬프트 캐싱은 Claude 경로에만 적용하며 Luna의 자동 캐시 효과는 배포 전에 검증해야 합니다.
 
 그리고 도구가 **고객 인프라의 비용도 절감**합니다 — Cost Explorer 분석, 유휴 리소스 탐지, FinOps 권고가 진단 리포트에 포함됩니다.
 

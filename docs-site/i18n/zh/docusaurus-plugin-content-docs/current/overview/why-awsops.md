@@ -82,7 +82,7 @@ EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudF
 
 - **单台 EC2 t4g.2xlarge（ARM64 Graviton）** — 同机运行 Steampipe 内嵌 PostgreSQL，**没有额外的托管数据库成本**。
 - **AgentCore 是无服务器的** — AI 运行时/网关仅在调用时计费。
-- Bedrock 模型按任务选择 — 回答与诊断默认用 **Sonnet 级**，分类·路由与快速低成本任务用 **Haiku 级**，诊断 Deep 阶段可选 **Opus 级**，并应用提示词缓存。
+- Bedrock 模型按任务选择 — 聊天使用 **GPT-6 Luna**，查询生成使用 **GPT-6.1 Terra** 和 **Sonnet 5.5** 回退，诊断使用 **Sonnet 级**，分类·路由使用 **Haiku 级**，诊断 Deep 阶段可选 **Opus 级**。显式提示词缓存仅用于 Claude 路径；上线前必须验证 Luna 自动缓存的效果。
 
 而且这个工具还能**降低客户基础设施的成本** — Cost Explorer 分析、闲置资源检测、FinOps 建议都包含在诊断报告中。
 

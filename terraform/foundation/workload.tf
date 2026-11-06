@@ -274,6 +274,40 @@ resource "aws_iam_role_policy" "task_classifier_bedrock" {
   })
 }
 
+# Ungated web Bedrock calls: the Explore "AI generate" query generator (web/lib/datasource-querygen.ts:
+# GPT-6.1 Terra first, Claude Sonnet 5.5 fallback) and the product-help assistant (web/lib/assistant.ts:
+# Haiku 5.5). Both run on every stack, so their grant must not depend on hybrid_routing_enabled.
+# Haiku overlaps the classifier, so its InvokeModel IAM backstop is removed; the code gate remains.
+# Sonnet overlaps synthesis, but this non-stream grant leaves its InvokeModelWithResponseStream
+# IAM backstop in the gated task_synthesis_bedrock policy. Synthesis remains gated in code.
+# Bare IDs and dated suffixes follow the classifier grant.
+resource "aws_iam_role_policy" "task_web_models" {
+  name = "${var.project}-task-web-models"
+  role = aws_iam_role.task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "WebDirectModels"
+      Effect = "Allow"
+      Action = ["bedrock:InvokeModel"]
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
+        "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra-*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6.1-terra",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.openai.gpt-6.1-terra-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5-*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5-*",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5-*",
+      ]
+    }]
+  })
+}
+
 # ADR-003[legacy 044]: cross-domain auto-synthesis (web/lib/synthesize.ts calls Bedrock directly from the web
 # task, not via AgentCore's unrestricted role). PR #153 review: this had no matching IAM grant —
 # only the Haiku classifier policy above existed on this role, so a live invoke would AccessDenied.

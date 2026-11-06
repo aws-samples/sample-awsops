@@ -229,7 +229,7 @@ Explore 페이지에서는 등록된 데이터소스에 직접 쿼리를 실행�
 
 ### AI 쿼리 생성
 
-**AI Assist** 토글을 활성화하면 자연어로 쿼리를 작성할 수 있습니다. Bedrock Sonnet이 데이터소스 타입에 맞는 쿼리를 자동 생성하고 설명 배너를 표시합니다.
+**AI Assist** 토글을 활성화하면 자연어로 쿼리를 작성할 수 있습니다. GPT-6.1 Terra(검증 실패 또는 호출 오류 시 Claude Sonnet 5.5 폴백)가 데이터소스 타입에 맞는 쿼리를 자동 생성하고 설명 배너를 표시합니다.
 
 **데이터소스 타입별 예시 프롬프트:**
 
@@ -245,7 +245,7 @@ Explore 페이지에서는 등록된 데이터소스에 직접 쿼리를 실행�
 1. AI Assist 토글을 ON으로 전환
 2. 자연어로 원하는 데이터를 설명
 3. **Ctrl+Enter** 또는 실행 버튼 클릭
-4. Bedrock Sonnet이 PromQL/LogQL/SQL 쿼리를 생성
+4. GPT-6.1 Terra(검증 실패 또는 호출 오류 시 Claude Sonnet 5.5 폴백)가 PromQL/LogQL/SQL 쿼리를 생성
 5. 생성된 쿼리와 함께 설명 배너가 표시됨
 
 :::tip AI Assist 단축키

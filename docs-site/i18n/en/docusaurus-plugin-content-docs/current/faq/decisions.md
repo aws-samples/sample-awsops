@@ -113,7 +113,7 @@ The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. A f
 
 They are **optimized through prompt caching and per-depth model selection**.
 
-- **Prompt caching** — an ~59% hit rate reduces recomputation of repeated context.
+- **Prompt caching** — explicit cache points on Claude paths only reduce recomputation of repeated context (GPT-6 Luna chat sends none).
 - **Per-depth models** — AI diagnosis uses Sonnet by default for Light and Mid (8+1 sections); Deep (15+1 sections) uses Sonnet by default with Opus as an option (cost-gate). Classification and routing use a cheaper Haiku-class model.
 - The Aurora durable token budget (persisted budget) is implemented in v1; wiring it into the current web-chat path is follow-up work.
 

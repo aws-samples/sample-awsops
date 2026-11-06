@@ -198,7 +198,7 @@ export default function AgentCoreFlow(): React.ReactElement {
     const runtimeX = centerX - runtimeW / 2;
     drawBox(runtimeX, runtimeY, runtimeW, runtimeH, THEME.green);
     drawText('AgentCore Runtime', centerX, runtimeY + 25 * scale, THEME.text, 16);
-    drawText('Strands Agent Framework + Claude Sonnet-class', centerX, runtimeY + 50 * scale, THEME.muted, 11);
+    drawText('Strands Agent Framework + GPT-6 Luna', centerX, runtimeY + 50 * scale, THEME.muted, 11);
 
     // Stats badges
     const badge1X = centerX - 80 * scale;

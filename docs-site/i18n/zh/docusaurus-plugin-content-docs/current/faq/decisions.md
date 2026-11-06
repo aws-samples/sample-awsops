@@ -113,7 +113,7 @@ AWSops 将 v1 的**单台 EC2 单体架构**重构为**基于 Terraform 的 MSA*
 
 **通过提示词缓存与按任务深度选择模型进行优化**。
 
-- **提示词缓存** — 以约 59% 命中率减少重复上下文的重新计算。
+- **提示词缓存** — 仅 Claude 路径使用显式缓存点减少重复上下文的重新计算（GPT-6 Luna 聊天不发送）。
 - **按任务深度选择模型** — AI 诊断的 Light·Mid（8+1 章节，共 9）默认 Sonnet，Deep（15+1 章节，共 16）默认 Sonnet·可选 Opus（cost-gate）。分类·路由使用低成本的 Haiku 级模型。
 - Aurora durable token budget（预算持久化）已在 v1 实现，与当前 web 聊天路径的对接是后续课题。
 

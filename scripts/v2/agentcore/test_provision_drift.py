@@ -293,5 +293,47 @@ class TestReadinessFlag(unittest.TestCase):
             self.assertEqual(env["DEPLOYMENT_READINESS_ENABLED"], "true" if value is True else "false")
 
 
+class TestAgentModelLever(unittest.TestCase):
+    AC = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
+          "ecr_uri": "fixture.example.test/agent"}
+
+    def _run(self, model_env, shell=None):
+        ctrl = mock.Mock()
+        ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+        ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
+        ac = dict(self.AC) if model_env is None else {**self.AC, "model_env": model_env}
+        environ = {"AGENT_MODEL_ID": shell} if shell is not None else {}
+        with mock.patch.dict(os.environ, environ), \
+             mock.patch.object(provision, "_wait_runtime_ready", return_value=True), \
+             redirect_stdout(io.StringIO()):
+            result = provision.ensure_runtime(ctrl, ac, {})
+        return ctrl, result
+
+    def _env(self, ctrl):
+        return ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
+
+    def test_applied_rollback_model_is_written_on_every_run(self):
+        ctrl, _ = self._run({"AGENT_MODEL_ID": "global.anthropic.claude-sonnet-5-5"})
+        self.assertEqual(self._env(ctrl)["AGENT_MODEL_ID"], "global.anthropic.claude-sonnet-5-5")
+
+    def test_absent_model_env_keeps_the_default(self):
+        for model_env in (None, {}, {"AGENT_MODEL_ID": ""}, "not-a-map"):
+            ctrl, _ = self._run(model_env)
+            self.assertNotIn("AGENT_MODEL_ID", self._env(ctrl))
+
+    def test_deployer_shell_cannot_change_the_model(self):
+        ctrl, _ = self._run({}, shell="global.anthropic.claude-sonnet-5-5")
+        self.assertNotIn("AGENT_MODEL_ID", self._env(ctrl))
+        ctrl, _ = self._run({"AGENT_MODEL_ID": "global.openai.gpt-6-luna"}, shell="global.anthropic.claude-sonnet-5-5")
+        self.assertEqual(self._env(ctrl)["AGENT_MODEL_ID"], "global.openai.gpt-6-luna")
+
+    def test_unreviewed_model_refuses_the_runtime_update(self):
+        for bad in ("global.anthropic.claude-opus-5-5", 7):
+            ctrl, result = self._run({"AGENT_MODEL_ID": bad})
+            self.assertEqual(result, "")
+            ctrl.create_agent_runtime.assert_not_called()
+            ctrl.update_agent_runtime.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

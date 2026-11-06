@@ -350,3 +350,44 @@ run "steampipe_dns_is_still_dns_even_with_external_certificates" {
     error_message = "First-time Steampipe requires Cloud Map DNS writes; the CI all-DNS gate must reject this plan."
   }
 }
+
+run "chat_model_rollback_reaches_provisioning" {
+  command = plan
+  variables {
+    agentcore_enabled       = true
+    agentcore_chat_model_id = "global.anthropic.claude-sonnet-5-5"
+  }
+  override_resource {
+    target          = aws_ecr_repository.agentcore[0]
+    override_during = plan
+    values          = { repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/fixture-agent" }
+  }
+  assert {
+    condition     = length(output.agentcore.model_env) == 1 && output.agentcore.model_env["AGENT_MODEL_ID"] == "global.anthropic.claude-sonnet-5-5"
+    error_message = "The applied chat model rollback must reach every provisioning run."
+  }
+}
+
+run "chat_model_default_sends_no_override" {
+  command = plan
+  variables {
+    agentcore_enabled = true
+  }
+  override_resource {
+    target          = aws_ecr_repository.agentcore[0]
+    override_during = plan
+    values          = { repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/fixture-agent" }
+  }
+  assert {
+    condition     = length(output.agentcore.model_env) == 0
+    error_message = "The default chat model must leave agent.py's Luna default in place."
+  }
+}
+
+run "chat_model_rejects_unreviewed_models" {
+  command = plan
+  variables {
+    agentcore_chat_model_id = "global.anthropic.claude-opus-5-5"
+  }
+  expect_failures = [var.agentcore_chat_model_id]
+}
