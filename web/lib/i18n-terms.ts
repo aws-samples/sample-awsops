@@ -7,6 +7,21 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '네트워크 토폴로지': { en: 'Network topology', zh: '网络拓扑', ja: 'ネットワークトポロジー' },
+  '선택한 VPC를 AZ·서브넷·리소스 단위로 표시합니다. 연결된 외부 VPC를 클릭하면 상세에 추가됩니다.': { en: 'Shows the selected VPCs by AZ, subnet and resource. Click a connected external VPC to add it to the detail view.', zh: '按可用区、子网和资源显示所选 VPC。点击已连接的外部 VPC 可将其加入详情视图。', ja: '選択した VPC を AZ・サブネット・リソース単位で表示します。接続された外部 VPC をクリックすると詳細に追加されます。' },
+  '계정·리전별 VPC와 TGW·피어링 연결을 표시합니다. VPC를 클릭해 선택한 뒤 상세 보기로 이동하세요.': { en: 'Shows VPCs by account and region with TGW and peering connections. Click VPCs to select them, then open the detail view.', zh: '按账户和区域显示 VPC 及 TGW、对等连接。点击 VPC 进行选择，然后打开详情视图。', ja: 'アカウント・リージョン別の VPC と TGW・ピアリング接続を表示します。VPC をクリックして選択し、詳細表示に進んでください。' },
+  '← 전체 맵': { en: '← Fleet map', zh: '← 全局图', ja: '← 全体マップ' },
+  '상세 보기': { en: 'Open detail', zh: '查看详情', ja: '詳細を表示' },
+  '선택한 VPC': { en: 'Selected VPCs', zh: '已选 VPC', ja: '選択した VPC' },
+  '설정 기반 구성도이며 트래픽 도달성을 의미하지 않습니다.': { en: 'A configuration diagram; it does not imply traffic reachability.', zh: '这是基于配置的结构图，不代表流量可达性。', ja: '設定に基づく構成図であり、トラフィックの到達性を意味しません。' },
+  '수집 시각': { en: 'Captured', zh: '采集时间', ja: '収集時刻' },
+  '비활성 연결 제외': { en: 'Inactive connections excluded', zh: '已排除非活动连接', ja: '非アクティブな接続を除外' },
+  '충돌하는 연결 기록 보류': { en: 'Conflicting connection records withheld', zh: '已保留冲突的连接记录', ja: '矛盾する接続記録を保留' },
+  '표시 한도로 묶인 리소스': { en: 'Resources grouped by the display limit', zh: '因显示上限而合并的资源', ja: '表示上限でまとめたリソース' },
+  '인벤토리 읽기 한도에 도달해 일부만 표시합니다.': { en: 'The inventory read limit was reached; only part of the fleet is shown.', zh: '已达到清单读取上限，仅显示部分内容。', ja: 'インベントリの読み取り上限に達したため、一部のみ表示しています。' },
+  '선택 범위가 올바르지 않습니다.': { en: 'The selection is invalid.', zh: '选择范围无效。', ja: '選択範囲が正しくありません。' },
+  '네트워크 토폴로지를 불러오지 못했습니다.': { en: 'Could not load the network topology.', zh: '无法加载网络拓扑。', ja: 'ネットワークトポロジーを読み込めませんでした。' },
+  '표시할 VPC가 없습니다. 인벤토리 동기화 상태를 확인하세요.': { en: 'No VPCs to show. Check the inventory sync status.', zh: '没有可显示的 VPC。请检查清单同步状态。', ja: '表示する VPC がありません。インベントリの同期状態を確認してください。' },
   '설정 미확인': { en: 'Configuration unconfirmed', zh: '配置未确认', ja: '設定未確認' },
   '추가 후보가 있습니다. 계정 범위를 좁혀 확인하세요.': { en: 'More candidates exist. Narrow the account scope to inspect them.', zh: '还有其他候选资源。请缩小账户范围后查看。', ja: 'ほかの候補があります。アカウントの範囲を絞って確認してください。' },
   '설정됨': { en: 'Configured', zh: '已配置', ja: '設定済み' },

@@ -72,8 +72,8 @@ describe('topology sub-navigation', () => {
   const src = read('./Sidebar.tsx');
   const fixed = src.slice(src.indexOf('const FIXED'), src.indexOf('];', src.indexOf('const FIXED')));
   it('lists request flow, infra layout and service map under Topology', () => {
-    for (const href of ["'/topology/infra'", "'/topology/services'"]) expect(fixed).toContain(href);
-    for (const key of ['nav.topologyFlow', 'nav.topologyInfra', 'nav.topologyServices']) expect(fixed).toContain(key);
+    for (const href of ["'/topology/infra'", "'/topology/network'", "'/topology/services'"]) expect(fixed).toContain(href);
+    for (const key of ['nav.topologyFlow', 'nav.topologyInfra', 'nav.topologyNetwork', 'nav.topologyServices']) expect(fixed).toContain(key);
   });
   it('renders FIXED children as a collapsible, instance-scoped panel that opens on topology paths', () => {
     expect(src).toContain('item.children ? renderFixedGroup(item)');

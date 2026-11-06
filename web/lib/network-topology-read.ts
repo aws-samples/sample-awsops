@@ -27,7 +27,8 @@ export async function readNetworkRows(vpcIds: string[]): Promise<{ rows: NetRow[
   }
   const result = await getPool().query(sql, params);
   const fleet: NetRow[] = [], detail: NetRow[] = [];
-  for (const r of result.rows as Array<NetRow & { part: string; captured_at: unknown }>) {
+  type Raw = Omit<NetRow, 'captured_at'> & { part: string; captured_at: unknown };
+  for (const r of result.rows as Raw[]) {
     const row: NetRow = {
       resource_type: r.resource_type, account_id: r.account_id, region: r.region, resource_id: r.resource_id,
       data: r.data && typeof r.data === 'object' ? r.data : {},
