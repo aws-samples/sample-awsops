@@ -67,7 +67,7 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
 per review call and up to 32 supported HEAD images under the existing byte/codec
-bounds. A larger diff is reviewed in at most 8 complete file-boundary batches that
+bounds. A larger diff is reviewed in at most 10 complete file-boundary batches that
 must all pass (`pr-review-head-images.md`). An accumulated dev-to-main promotion
 can still exceed that even if each feature PR was independently reviewed. It stays blocked; rerunning unchanged input cannot
 restore missing scope, and historical feature-review comments are not proof of

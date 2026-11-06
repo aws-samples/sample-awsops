@@ -325,7 +325,7 @@ target. See [GitHub's platform announcement](https://github.blog/changelog/2025-
 The workflow gives Codex and Claude one independent comprehensive review each,
 covering L2–L5, with at most two 1200-second attempts per vendor. Each report must
 attest all four checklists. Input admission precedes model credentials: complete
-filtered diff up to 6,000 lines/128 KiB per call (larger diffs: at most 8 complete batches that
+filtered diff up to 6,000 lines/128 KiB per call (larger diffs: at most 10 complete batches that
 must all pass) and complete hash-valid image evidence.
 Comprehensive reports allow 60,000 bytes each, 120,000 bytes combined, with a
 256 KiB bound on actual chair stdin. Incomplete panel coverage skips chair calls
