@@ -160,6 +160,20 @@ describe('model runtime client', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('anthropic_api requests never follow redirects (the key must not reach another host)', async () => {
+    process.env.MODEL_PROVIDER = 'anthropic_api';
+    process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';
+    vi.spyOn(SecretsManagerClient.prototype, 'send').mockResolvedValue({ SecretString: 'sk' } as never);
+    const seen: RequestInit[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => {
+      seen.push(init);
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+    }));
+    const { modelRuntimeClient } = await load();
+    await modelRuntimeClient({ region: 'x' }).send(new ConverseCommand({ modelId: 'claude-haiku-5-5', messages: [] }));
+    expect(seen[0].redirect).toBe('error');
+  });
+
   it('anthropic_api stream that ends without a terminal event is an error, not a complete answer', async () => {
     process.env.MODEL_PROVIDER = 'anthropic_api';
     process.env.ANTHROPIC_API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:anthropic';

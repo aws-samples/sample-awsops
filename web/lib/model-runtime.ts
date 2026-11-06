@@ -177,6 +177,8 @@ class AnthropicApiClient {
           headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': await anthropicApiKey() },
           body: JSON.stringify(body),
           signal,
+          // Fixed endpoint: never follow a redirect (x-api-key and the prompt would go to its Location).
+          redirect: 'error',
         });
       } catch (error) {
         if (signal?.aborted || attempt >= RETRY_ATTEMPTS) throw error;
