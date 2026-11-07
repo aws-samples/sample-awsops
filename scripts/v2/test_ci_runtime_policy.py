@@ -581,10 +581,22 @@ class RuntimePolicyTests(unittest.TestCase):
              "expressions": {"policy_arn": {"references": ["each.value.arn", "each.value"]}},
              "for_each_expression": {"references": ["aws_iam_policy.worker_diagnosis_network"]}}]
         self.module.check_plan(network, "dev", "full", ACCOUNT)
-        hidden = copy.deepcopy(network)
-        hidden["configuration"]["root_module"]["resources"][-1]["for_each_expression"] = {"references": ["local.policies"]}
+        for for_each, arn in (
+                (["local.policies"], ["each.value.arn", "each.value"]),
+                (["aws_iam_policy.worker_diagnosis_network", "data.aws_iam_policy.evidence"], ["each.value.arn"]),
+                (["aws_iam_policy.worker_diagnosis_network"], ["data.aws_iam_policy.evidence.arn"]),
+                (["aws_iam_policy.worker_diagnosis_network"], ["each.value.arn", "var.extra"]),
+                (["aws_iam_policy.worker_diagnosis_evidence"], ["each.value.arn"])):
+            hidden = copy.deepcopy(network)
+            entry = hidden["configuration"]["root_module"]["resources"][-1]
+            entry["for_each_expression"] = {"references": for_each}
+            entry["expressions"]["policy_arn"] = {"references": arn}
+            with self.subTest(for_each=for_each, arn=arn), self.assertRaises(ValueError):
+                self.module.check_plan(hidden, "dev", "full", ACCOUNT)
+        nested = copy.deepcopy(network)
+        nested["resource_changes"][-1]["address"] = 'module.x.aws_iam_role_policy_attachment.worker_diagnosis_network["task"]'
         with self.assertRaises(ValueError):
-            self.module.check_plan(hidden, "dev", "full", ACCOUNT)
+            self.module.check_plan(nested, "dev", "full", ACCOUNT)
         # Replacing the designated attachment is accepted.
         replaced = copy.deepcopy(plan)
         replaced["resource_changes"][2]["change"]["actions"] = ["delete", "create"]

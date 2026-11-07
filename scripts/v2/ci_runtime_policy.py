@@ -347,6 +347,35 @@ def _config_resources(module):
     return found
 
 
+def _references(expression):
+    value = expression.get("references") if isinstance(expression, dict) else None
+    return set(value) if isinstance(value, list) and all(isinstance(v, str) for v in value) else None
+
+
+def _attachment_of_other_managed_policy(resource, root):
+    """An attachment whose ARN is unknown until apply, proven to come from one other root policy.
+
+    Exactly: a root-module aws_iam_role_policy_attachment whose for_each references only
+    aws_iam_policy.<N> (N != worker_diagnosis_evidence) and whose policy_arn references only
+    each.value / each.value.arn. Module-nested, data-source, local, variable or function-derived
+    ARNs fail closed.
+    """
+    address = resource.get("address") or ""
+    if resource.get("type") != "aws_iam_role_policy_attachment" or address.startswith("module."):
+        return False
+    config = root.get(re.sub(r"\[[^\]]*\]$", "", address))
+    if not isinstance(config, dict):
+        return False
+    for_each = _references(config.get("for_each_expression"))
+    expressions = config.get("expressions") if isinstance(config.get("expressions"), dict) else {}
+    arn = _references(expressions.get("policy_arn"))
+    if not for_each or len(for_each) != 1 or arn is None or not arn or not arn <= {"each.value", "each.value.arn"}:
+        return False
+    (source,) = for_each
+    return bool(re.fullmatch(r"aws_iam_policy\.[A-Za-z0-9_-]+", source)) and \
+        source != "aws_iam_policy.worker_diagnosis_evidence"
+
+
 def _member_policy_attached_only_to_worker(plan, project):
     """The exempt managed policy is attached exactly once, to the worker task role.
 
@@ -369,7 +398,8 @@ def _member_policy_attached_only_to_worker(plan, project):
     resources = _config_resources((plan.get("configuration") or {}).get("root_module"))
     if not resources:
         return False
-    configured = {r.get("address"): r for r in resources if isinstance(r, dict)}
+    root = {r.get("address"): r for r in (((plan.get("configuration") or {}).get("root_module") or {})
+                                        .get("resources") or []) if isinstance(r, dict)}
     for resource in changes:
         if resource.get("type") not in ATTACHMENT_TYPES or resource.get("address") == MEMBER_ATTACHMENT:
             continue
@@ -380,16 +410,7 @@ def _member_policy_attached_only_to_worker(plan, project):
         if policy_name in json.dumps(other.get("after")):
             return False
         if any(unknown.get(key) for key in ("policy_arn", "policy_arns", "managed_policy_arns")):
-            # An ARN known only after apply is acceptable when the configuration proves it comes
-            # straight from another managed policy resource (e.g. worker_diagnosis_network's own
-            # attachment), never via a local, variable or module output that could hide this one.
-            address = re.sub(r"\[[^\]]*\]$", "", resource.get("address") or "")
-            config = configured.get(address)
-            refs = json.dumps(config.get("for_each_expression", {}) if config else {}) + json.dumps(
-                (config or {}).get("expressions", {}).get("policy_arn", {}))
-            sources = set(re.findall(r'"(aws_iam_policy\.[A-Za-z0-9_-]+)', refs))
-            if (not config or not sources or "aws_iam_policy.worker_diagnosis_evidence" in sources
-                    or re.search(r'"(?:local|var|module)\.', refs)):
+            if not _attachment_of_other_managed_policy(resource, root):
                 return False
     consumers = set()
     for resource in resources:
