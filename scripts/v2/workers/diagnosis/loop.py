@@ -33,8 +33,11 @@ def _failure_reason(exc):
 
 
 def _fingerprint(index):
-    """Compare scoped facts and qualification rather than capture-generated IDs."""
-    context = index.model_context()
+    """Compare scoped facts and qualification rather than capture-generated IDs.
+
+    Code-side only: raw identities (never the redacted model view, where distinct ARNs all read
+    <arn>) and multiplicity are kept, so a new attribute-identical resource or edge is progress."""
+    context = index.raw_context()
     def key(value):
         return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -64,6 +67,7 @@ def _fingerprint(index):
             for row in current or rows
         })
     evidence = {value for values in qualifications.values() for value in values}
+    # Raw endpoints keep distinct edges apart; a retained-history copy of the same edge is no news.
     relationships = {
         key({"source": resources[row["source"]], "target": resources[row["target"]],
              "kind": row["kind"], "evidence": sorted({
@@ -72,7 +76,7 @@ def _fingerprint(index):
              })})
         for row in context["relationships"]
     }
-    material = {"resources": sorted(set(resources.values())), "evidence": sorted(evidence),
+    material = {"resources": sorted(resources.values()), "evidence": sorted(evidence),
                 "relationships": sorted(relationships)}
     return hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":")).encode()).hexdigest()

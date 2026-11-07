@@ -411,3 +411,29 @@ def test_hyphenated_prose_numbers_are_not_region_identifiers():
     from diagnosis import loop
     assert loop._NUMBER.search(loop._IDENTIFIER_TOKEN.sub(" ", "Retries go up-to-9 times"))
     assert not loop._NUMBER.search(loop._IDENTIFIER_TOKEN.sub(" ", "Verify the peer in ap-northeast-2"))
+
+
+def test_fingerprint_counts_new_attribute_identical_resources():
+    from copy import deepcopy
+    from diagnosis.evidence import EvidenceIndex
+    data = bundle()
+    grown = deepcopy(data)
+    twin = deepcopy(grown["resources"][0])
+    twin["id"] = oid("r-twin")
+    twin["resource_id"] = str(twin["resource_id"]) + "-twin"
+    grown["resources"].append(twin)
+    assert loop._fingerprint(EvidenceIndex(grown, ACCOUNT)) != loop._fingerprint(EvidenceIndex(data, ACCOUNT))
+
+
+def test_fingerprint_distinguishes_resources_that_redact_identically():
+    from copy import deepcopy
+    from diagnosis.evidence import EvidenceIndex
+    data = bundle()
+    arn = "arn:aws:rds:ap-northeast-2:111111111111:db:{}"
+    data["resources"][1]["resource_id"] = arn.format("orders")
+    swapped = deepcopy(data)
+    swapped["resources"][1]["resource_id"] = arn.format("billing")
+    a, b = EvidenceIndex(data, ACCOUNT), EvidenceIndex(swapped, ACCOUNT)
+    strip = lambda ctx: [{k: v for k, v in r.items() if k != "id"} for r in ctx["resources"]]
+    assert strip(a.model_context()) == strip(b.model_context())  # both read <arn> to a model
+    assert loop._fingerprint(a) != loop._fingerprint(b)
