@@ -156,6 +156,46 @@ describe('buildNetworkTopology', () => {
         seen.add(n.id);
       }
     });
+
+    it('attributes participant-collected tiles to the collecting account in a shared VPC', () => {
+      const t = build([...base, row('subnet', B, R, 'subnet-pub', { vpc_id: 'vpc-aaaaaaaa', availability_zone: `${R}a`, name: 'subnet-pub' }),
+        row('vpc', B, R, 'vpc-aaaaaaaa', { owner_id: A, name: 'hub' }),
+        row('ec2', B, R, 'i-0000000000000000b', { vpc_id: 'vpc-aaaaaaaa', subnet_id: 'subnet-pub', name: 'member-web' })],
+        { accounts: '__all__', vpcs: [vpcKey] });
+      const tileNode = t.nodes.find((n) => n.resourceId === 'i-0000000000000000b')!;
+      expect(tileNode).toMatchObject({ id: `ec2:${B}/${R}/i-0000000000000000b`, accountId: B, vpcKey, parent: `subnet:${A}/${R}/subnet-pub` });
+    });
+
+    it('groups shared subnets by AZ id so owner and participant copies share one column', () => {
+      const t = build([...base,
+        row('subnet', 'self', R, 'subnet-shared', { vpc_id: 'vpc-aaaaaaaa', availability_zone: `${R}a`, availability_zone_id: 'apne2-az1', name: 'shared' }),
+        row('vpc', B, R, 'vpc-aaaaaaaa', { owner_id: A, name: 'hub' }),
+        row('subnet', B, R, 'subnet-shared', { vpc_id: 'vpc-aaaaaaaa', availability_zone: `${R}c`, availability_zone_id: 'apne2-az1', name: 'shared' })],
+        { accounts: '__all__', vpcs: [vpcKey] });
+      const azs = t.nodes.filter((n) => n.kind === 'az' && n.id.endsWith('apne2-az1'));
+      expect(azs).toHaveLength(1);
+      expect(azs[0].label).toBe(`${R}a`);
+      expect(t.nodes.find((n) => n.id === `subnet:${A}/${R}/subnet-shared`)?.parent).toBe(azs[0].id);
+    });
+
+    it('treats IPv6 IGW default routes as public and blackhole routes as not public', () => {
+      const t = build([...base,
+        subnet('subnet-v6', `${R}a`), subnet('subnet-bh', `${R}a`),
+        rt('rtb-v6', [{ SubnetId: 'subnet-v6' }], [{ DestinationIpv6CidrBlock: '::/0', GatewayId: 'igw-0123', State: 'active' }]),
+        rt('rtb-bh', [{ SubnetId: 'subnet-bh' }], [{ DestinationCidrBlock: '0.0.0.0/0', GatewayId: 'igw-0123', State: 'blackhole' }])],
+        { accounts: '__all__', vpcs: [vpcKey] });
+      const tier = (id: string) => t.nodes.find((n) => n.id === `subnet:${A}/${R}/${id}`)?.tier;
+      expect(tier('subnet-v6')).toBe('public');
+      expect(tier('subnet-bh')).toBe('private');
+    });
+  });
+
+  it('lets the freshest copy of a link decide whether it is live', () => {
+    const live = { ...att('self', 'tgw-attach-0000000000000000f', 'tgw-0123456789abcdef0', A, 'vpc-bbbbbbbb', B), captured_at: '2026-11-06T12:00:00Z' };
+    const stale = { ...att(B, 'tgw-attach-0000000000000000f', 'tgw-0123456789abcdef0', A, 'vpc-bbbbbbbb', B, 'pending'), captured_at: '2026-11-06T09:00:00Z' };
+    const t = build([vpc('self', 'vpc-aaaaaaaa', 'hub'), vpc(B, 'vpc-bbbbbbbb', 'spoke'), stale, live]);
+    expect(t.edges.some((e) => e.recordId === 'tgw-attach-0000000000000000f')).toBe(true);
+    expect(t.omitted.inactive).toBe(0);
   });
 
   it('reports the oldest captured_at of fleet rows', () => {

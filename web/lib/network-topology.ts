@@ -21,9 +21,12 @@ const pick = (o: unknown, ...keys: string[]): unknown => {
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const nameOf = (data: Record<string, unknown>, fallback: string) =>
   str(data.name) || str(pick(data.tags, 'Name')) || str(data.description) || fallback;
+/** captured_at → epoch ms (Date-safe); NaN when absent or unparsable. */
+const ms = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : NaN);
+const ageMs = (v: unknown) => { const n = ms(v); return Number.isFinite(n) ? n : -Infinity; };
 
 interface VpcInfo { key: string; accountId: string; region: string; vpcId: string; label: string; cidr: string }
-interface Link { id: string; kind: 'tgw' | 'peering'; a: string; b: string; tgw?: { owner: string; region: string; id: string }; active: boolean }
+interface Link { id: string; kind: 'tgw' | 'peering'; a: string; b: string; tgw?: { owner: string; region: string; id: string }; active: boolean; capturedMs?: number }
 
 export function buildNetworkTopology(rows: NetRow[], opts: {
   hostAccountId: string | null; aliases: Record<string, string>;
@@ -70,7 +73,10 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     const prior = links.get(link.id);
     if (!prior) { links.set(link.id, link); return; }
     if (signature(prior) !== signature(link)) { links.delete(link.id); conflicts.add(link.id); return; }
-    prior.active = prior.active && link.active; // a stale non-active copy is not live evidence
+    // The freshest copy decides; equal-age copies (including both undated) must all be live.
+    const priorMs = prior.capturedMs ?? -Infinity, linkMs = link.capturedMs ?? -Infinity;
+    if (linkMs > priorMs) { prior.active = link.active; prior.capturedMs = linkMs; }
+    else if (linkMs === priorMs) prior.active = prior.active && link.active;
   }
   for (const r of of('transit_gateway_attachment')) {
     if (str(r.data.attached_resource_type) !== 'vpc') continue;
@@ -79,7 +85,7 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     if (!tgwId || !vpcId) continue;
     const tgw = { owner: owner(r.data.transit_gateway_owner_id, collector), region: r.region!, id: tgwId };
     admit({ id: r.resource_id, kind: 'tgw', a: `${owner(r.data.resource_owner_id, collector)}/${r.region}/${vpcId}`,
-      b: `${tgw.owner}/${tgw.region}/${tgw.id}`, tgw, active: str(r.data.state) === 'available' });
+      b: `${tgw.owner}/${tgw.region}/${tgw.id}`, tgw, active: str(r.data.state) === 'available', capturedMs: ageMs(r.captured_at as unknown) });
   }
   for (const r of of('vpc_peering_connection')) {
     const collector = acct(r.account_id);
@@ -89,7 +95,7 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     };
     const a = end('requester'), b = end('accepter');
     if (!a || !b || a === b) continue;
-    admit({ id: r.resource_id, kind: 'peering', a, b, active: str(r.data.status_code) === 'active' });
+    admit({ id: r.resource_id, kind: 'peering', a, b, active: str(r.data.status_code) === 'active', capturedMs: ageMs(r.captured_at as unknown) });
   }
   omitted.conflicting = conflicts.size;
   const live: Link[] = [];
@@ -171,9 +177,13 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
       const key = scopeOf(r, str(r.data.vpc_id));
       if (!key || !expanded.has(key)) continue;
       const v = vpcs.get(key)!;
-      const az = str(r.data.availability_zone) || 'unknown-az';
-      const azId = put({ id: `az:${key}/${az}`, kind: 'az', parent: `vpc:${key}`, label: az, accountId: v.accountId, region: v.region, vpcKey: key });
-      const id = put({ id: `subnet:${v.accountId}/${v.region}/${r.resource_id}`, kind: 'subnet', parent: azId,
+      const subnetId = `subnet:${v.accountId}/${v.region}/${r.resource_id}`;
+      if (nodes.has(subnetId)) continue; // first collected copy of a shared subnet places it
+      // AZ names map to physical AZs per account; the AZ id is stable across owner and participants.
+      const azKey = str(r.data.availability_zone_id) || str(r.data.availability_zone) || 'unknown-az';
+      const azLabel = str(r.data.availability_zone) || azKey;
+      const azId = put({ id: `az:${key}/${azKey}`, kind: 'az', parent: `vpc:${key}`, label: azLabel, accountId: v.accountId, region: v.region, vpcKey: key });
+      const id = put({ id: subnetId, kind: 'subnet', parent: azId,
         label: nameOf(r.data, r.resource_id), sub: str(r.data.cidr_block), accountId: v.accountId, region: v.region,
         resourceId: r.resource_id, tier: tiers.get(`${key}|${r.resource_id}`) ?? 'unknown', vpcKey: key });
       subnetNode.set(`${key}|${r.resource_id}`, id);
@@ -183,11 +193,12 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     const tiles = new Map<string, NetNode[]>();
     function tile(kind: NetKind, r: NetRow, key: string, subnets: string[], sub?: string, state?: string) {
       const v = vpcs.get(key)!;
+      const owner = acct(r.account_id); // the collecting account owns the resource, not the VPC owner
       const placed = [...subnets].sort().map((s) => subnetNode.get(`${key}|${s}`)).find(Boolean);
       const parent = placed ?? `vpc:${key}`;
       const list = tiles.get(parent) ?? [];
-      list.push({ id: `${kind}:${v.accountId}/${v.region}/${r.resource_id}`, kind, parent, label: nameOf(r.data, r.resource_id),
-        sub: sub || undefined, state: state || undefined, accountId: v.accountId, region: v.region, resourceId: r.resource_id, vpcKey: key });
+      list.push({ id: `${kind}:${owner}/${v.region}/${r.resource_id}`, kind, parent, label: nameOf(r.data, r.resource_id),
+        sub: sub || undefined, state: state || undefined, accountId: owner, region: v.region, resourceId: r.resource_id, vpcKey: key });
       tiles.set(parent, list);
     }
     const inVpc = (r: NetRow) => { const k = scopeOf(r, str(r.data.vpc_id)); return k && expanded.has(k) ? k : null; };
@@ -235,8 +246,10 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
       const key = vpcByScope.get(`${acct(r.account_id)}|${r.region}|${str(r.data.vpc_id)}`);
       if (!key) continue;
       const routes = arr(pick(r.data, 'routes', 'Routes'));
-      const isPublic = routes.some((rt) => str(pick(rt, 'DestinationCidrBlock', 'destination_cidr_block')) === '0.0.0.0/0' &&
-        str(pick(rt, 'GatewayId', 'gateway_id')).startsWith('igw-'));
+      const isPublic = routes.some((rt) => (str(pick(rt, 'DestinationCidrBlock', 'destination_cidr_block')) === '0.0.0.0/0' ||
+          str(pick(rt, 'DestinationIpv6CidrBlock', 'destination_ipv6_cidr_block')) === '::/0') &&
+        str(pick(rt, 'GatewayId', 'gateway_id')).startsWith('igw-') &&
+        str(pick(rt, 'State', 'state')) !== 'blackhole');
       for (const a of arr(pick(r.data, 'associations', 'Associations'))) {
         const subnet = str(pick(a, 'SubnetId', 'subnet_id'));
         if (subnet) explicit.set(`${key}|${subnet}`, isPublic);
@@ -261,7 +274,6 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
 
   // Oldest capture over contributing rows: fleet types in fleet mode, every row in detail mode
   // (the read path returns detail rows only for the selected VPCs). Numeric, Date-safe.
-  const ms = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : NaN);
   const finite = rows.filter((r) => detail || FLEET_TYPES.has(r.resource_type))
     .map((r) => ms(r.captured_at as unknown)).filter((n) => Number.isFinite(n));
   const capturedAt = finite.length ? new Date(Math.min(...finite)).toISOString() : null;
