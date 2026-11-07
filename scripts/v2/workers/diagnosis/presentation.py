@@ -32,16 +32,19 @@ _WITHHELD = {
 # followed by a capitalized service name ("AWS Lambda") or a known prose word ("the AWS
 # account") is kept, since anything else may be a copyable command.
 _COMMAND = re.compile(r"(?i)https?://|```|(?<![\w-])(?:curl|wget|sudo|kubectl|terraform)\s+\S")
-# An AWS CLI invocation is `aws` + a flag, or `aws <service> <operation|flag>`, where the
-# operation is hyphenated (describe-instances) or an s3 verb. Prose in any language ("AWS 계정",
-# "AWS config best practices", "AWS Lambda retries") does not have that shape.
-_AWS_CLI = re.compile(
-    r"(?i)(?<![\w-])aws\s+(?:--?[a-z]|[a-z0-9-]+\s+(?:--?[a-z]|[a-z][a-z0-9]*-[a-z0-9-]+"
-    r"|(?:ls|cp|mv|rm|sync|mb|rb|presign|website|wait)\b))")
+# AWS CLI invocations are recognized with report.py's own tokenizer (options skipped,
+# hyphenated and single-word operations, s3 commands), in any case: `aws` is folded first so
+# "AWS Lambda invoke" is caught too. Prose in any language ("AWS 계정", "AWS Lambda retries")
+# has no operation-shaped token after the service.
+_AWS_WORD = re.compile(r"(?i)(?<![\w-])aws(?![\w-])")
+_AWS_FLAG = re.compile(r"(?i)(?<![\w-])aws\s+--?[a-z]")
 
 
 def _commandlike(value):
-    return bool(_COMMAND.search(value) or _AWS_CLI.search(value))
+    from .report import _cli_commands
+    if _COMMAND.search(value) or _AWS_FLAG.search(value):
+        return True
+    return next(_cli_commands(_AWS_WORD.sub("aws", value)), None) is not None
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),

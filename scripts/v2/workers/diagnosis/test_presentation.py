@@ -293,3 +293,11 @@ def test_rendered_fact_and_coverage_values_are_scrubbed():
     text = html.unescape("\n".join(body for _, body in presentation.render(
         SECTIONS, data, analysis(findings=[finding(evidence_ids=[cited])]), lang="en")))
     assert "rds.amazonaws.com" not in text and "10.1.2.3" not in text and "fd00::1" not in text
+
+
+@pytest.mark.parametrize("unsafe", ["aws lambda invoke --function-name f out.json", "AWS SNS publish --message x",
+                                    "aws configure set region x", "aws cloudformation deploy --template-file t",
+                                    "aws --profile p ec2 terminate-instances", "AWS Lambda Invoke now"])
+def test_prose_guard_catches_single_word_and_option_prefixed_cli(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""
