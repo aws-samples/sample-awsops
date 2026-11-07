@@ -327,7 +327,9 @@ def test_sections_carry_a_code_owned_severity_marker(severity, marker):
     if marker is None:
         assert not marked
     else:
-        assert len(marked) == 1 and dict(bodies)[marked[0]].startswith(marker)
+        assert marked and all(dict(bodies)[key].startswith(marker) for key in marked)
+        # The primary section reflects referenced findings too, not only homed ones.
+        assert "executive_summary" in marked
 
 
 @pytest.mark.parametrize("unsafe", [
