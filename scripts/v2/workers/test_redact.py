@@ -96,3 +96,16 @@ def test_ipv6_scan_is_linear_on_long_punctuation_runs():
         assert time.monotonic() - started < 1.0
     assert redact.redact(":" * 50 + " peer 2001:db8::1. done").endswith(" peer <ip>. done")
     assert redact.redact("fe80::1%eth0, ::ffff:10.0.0.1:") == "<ip>, <ip>:"
+
+
+@pytest.mark.parametrize("host", ["mybucket.s3.amazonaws.com", "fs-1.efs.amazonaws.com",
+                                  "b.s3-website-us-east-1.amazonaws.com", "q.sqs.amazonaws.com",
+                                  "d111.cloudfront.net", "x.lambda-url.us-east-1.on.aws"])
+def test_regionless_and_edge_resource_hosts_are_masked(host):
+    assert redact.redact(f"connect to {host} failed") == "connect to <host> failed"
+
+
+@pytest.mark.parametrize("host", ["ec2.amazonaws.com", "sts.ap-northeast-2.amazonaws.com",
+                                  "bedrock-runtime.us-east-1.amazonaws.com"])
+def test_exact_service_endpoints_stay_visible(host):
+    assert redact.redact(f"connect to {host} failed") == f"connect to {host} failed"

@@ -201,11 +201,15 @@ _HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][
 # before a regional service (bucket.s3.<region>), S3 dash-region names, and always-resource
 # suffixes. Regional service endpoints (sts.<region>.amazonaws.com) stay visible.
 _REGION = r"[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d"
+# Every AWS-hosted DNS name is masked; only the exact service-endpoint shapes
+# <service>.amazonaws.com and <service>.<region>.amazonaws.com stay readable.
 _AWS_HOST = re.compile(
-    r"(?i)\b(?:(?:[a-z0-9-]+\.)+" + _REGION + r"\.(?:[a-z0-9-]+\.)+amazonaws\.com(?:\.cn)?"
-    r"|(?:[a-z0-9-]+\.){2,}" + _REGION + r"\.amazonaws\.com(?:\.cn)?"
-    r"|(?:[a-z0-9-]+\.)+s3-" + _REGION + r"\.amazonaws\.com"
-    r"|[a-z0-9_.-]+\.(?:on\.aws|cloudfront\.net))\b\.?")
+    r"(?i)\b(?:[a-z0-9_-]+\.)+(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
+_AWS_SERVICE_ENDPOINT = re.compile(r"(?i)[a-z0-9-]+(?:\." + _REGION + r")?\.amazonaws\.com(?:\.cn)?\.?")
+
+
+def _aws_host(match):
+    return match.group(0) if _AWS_SERVICE_ENDPOINT.fullmatch(match.group(0)) else "<host>"
 # IPv6 literals (including compressed and IPv4-mapped forms), validated before masking.
 _IPV6_CANDIDATE = re.compile(r"(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{0,4})(?![0-9a-z:.])")
 
@@ -230,13 +234,13 @@ def _scrub_text(value, key):
     if (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())
             and not _SERVICE_ENDPOINT.fullmatch(value.strip())):
         return "<host>"
-    return _AWS_HOST.sub("<host>", redact(_mask_ipv6(value)))
+    return _AWS_HOST.sub(_aws_host, redact(_mask_ipv6(value)))
 
 
 def _scrub_key(key, taken):
     if not isinstance(key, str):
         return key
-    if not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+    if not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.sub(_aws_host, key) != key):
         cleaned = redact(_mask_ipv6(key))
         if cleaned == key:
             return key

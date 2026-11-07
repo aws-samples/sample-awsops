@@ -613,3 +613,10 @@ def test_model_context_is_redacted_unless_raw_is_requested_explicitly():
     assert "10.0.1.5" not in repr(index.model_context())
     assert index.model_context() == index.model_context(redacted=True)
     assert "10.0.1.5" in repr(index.raw_context())
+
+
+@pytest.mark.parametrize("host", ["mybucket.s3.amazonaws.com", "fs-1.efs.amazonaws.com", "d111.cloudfront.net"])
+def test_model_context_masks_regionless_resource_hosts(host):
+    from diagnosis.evidence import redact_context
+    out = redact_context({"evidence": [{"id": "e1", "resource_ids": [], "facts": {"reason": f"to {host} failed"}}]})
+    assert out["evidence"][0]["facts"]["reason"] == "to <host> failed"
