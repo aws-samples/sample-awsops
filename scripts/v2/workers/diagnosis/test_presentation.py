@@ -258,3 +258,18 @@ def test_prose_naming_aws_is_kept_and_withheld_prose_is_disclosed():
                                                        prerequisites=["Use kubectl get pods"])]), lang="en")))
     assert "describe-instances" not in text and "kubectl" not in text
     assert text.count(presentation._WITHHELD["en"]) == 2
+
+
+@pytest.mark.parametrize("unsafe", ["See HTTPS://example.test", "Run Curl -X POST", "Use KUBECTL get pods",
+                                    "Run AWS ec2 terminate-instances", "Run aws EC2 describe-instances",
+                                    "AWS S3 RM everything", "Paste ``` output", "Run sudo -i"])
+def test_prose_guard_is_case_insensitive_for_links_and_commands(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""
+
+
+@pytest.mark.parametrize("prose", ["AWS Lambda retries need verification.", "Check the AWS account owner.",
+                                   "Confirm with AWS Support whether AWS and the vendor agree."])
+def test_prose_guard_keeps_ordinary_aws_prose(prose):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(prose)

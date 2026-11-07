@@ -28,9 +28,26 @@ _WITHHELD = {
     "zh": "_(已保留模型文本：其中包含数字、链接或命令)_",
     "ja": "_(モデルの文章を保留: 数値・リンク・コマンドを含むため)_",
 }
-# Command-shaped only (lowercase tool word followed by an argument), so prose such as
-# "AWS Lambda" or "the AWS account" is kept.
-_COMMAND = re.compile(r"https?://|```|(?<![\w-])(?:aws|curl|wget|sudo|kubectl|terraform)\s+-{0,2}[a-z]")
+# Links, fences and tool words followed by any argument are refused in every case. Only `aws`
+# followed by a capitalized service name ("AWS Lambda") or a known prose word ("the AWS
+# account") is kept, since anything else may be a copyable command.
+_COMMAND = re.compile(r"(?i)https?://|```|(?<![\w-])(?:curl|wget|sudo|kubectl|terraform)\s+\S")
+_AWS_WORD = re.compile(r"(?i)(?<![\w-])aws\s+(\S+)")
+_AWS_PROSE = {"account", "accounts", "console", "region", "regions", "resource", "resources",
+              "service", "services", "organization", "organizations", "environment", "and", "or",
+              "to", "in", "for", "the", "is", "are", "was", "with", "side", "managed", "best"}
+
+
+def _commandlike(value):
+    if _COMMAND.search(value):
+        return True
+    for match in _AWS_WORD.finditer(value):
+        token = match.group(1)
+        if token[0].isupper() and not token.isupper():
+            continue
+        if token.lower().strip(".,;:!?)") not in _AWS_PROSE:
+            return True
+    return False
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),
@@ -136,7 +153,7 @@ def _ordered(analysis):
 def _safe_explanation(value):
     # Numeric observations and targets belong to code-owned facts. Refuse unsafe prose
     # defensively even though EvidenceIndex already rejects these before presentation.
-    if not isinstance(value, str) or _NUMBER.search(value) or _COMMAND.search(value):
+    if not isinstance(value, str) or _NUMBER.search(value) or _commandlike(value):
         return ""
     return _cell(value, 600)
 
