@@ -238,3 +238,23 @@ def test_withheld_tolerates_missing_none_or_nonstring_ids_and_reasons():
         {"id": "invalid", "reason": "x"}, {"id": "invalid", "reason": "y"},
         {"id": "invalid", "reason": "invalid"}, {"id": "ok-id", "reason": "z"}]
     assert presentation.withheld({"rejected": "bad"}) == []
+
+
+@pytest.mark.parametrize("lang", ["en", "ko", "ja", "zh"])
+def test_code_owned_metric_observation_text_survives_the_prose_guard(lang):
+    from diagnosis import presentation
+    from diagnosis.evidence import METRIC_OBSERVATION_TEXT
+    assert presentation._safe_explanation(METRIC_OBSERVATION_TEXT[lang])
+
+
+def test_prose_naming_aws_is_kept_and_withheld_prose_is_disclosed():
+    from diagnosis import presentation
+    kept = "AWS Lambda retries need verification in the AWS account."
+    text = html.unescape("\n".join(body for _, body in presentation.render(
+        SECTIONS, bundle(), analysis(findings=[finding(explanation=kept)]), lang="en")))
+    assert kept in text
+    text = html.unescape("\n".join(body for _, body in presentation.render(
+        SECTIONS, bundle(), analysis(findings=[finding(explanation="Run aws ec2 describe-instances",
+                                                       prerequisites=["Use kubectl get pods"])]), lang="en")))
+    assert "describe-instances" not in text and "kubectl" not in text
+    assert text.count(presentation._WITHHELD["en"]) == 2

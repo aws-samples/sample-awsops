@@ -21,6 +21,16 @@ _COPY = {
            "検証済み診断なし。カバレッジは未確認です。", "未解決の前提条件",
            "読み取り専用の検証", "カバレッジと保留された主張"),
 }
+# Disclosed in place of model prose the guard withholds, so a finding never silently loses it.
+_WITHHELD = {
+    "en": "_(model text withheld: it contained a number, link or command)_",
+    "ko": "_(모델 문구 보류: 숫자·링크·명령이 포함됨)_",
+    "zh": "_(已保留模型文本：其中包含数字、链接或命令)_",
+    "ja": "_(モデルの文章を保留: 数値・リンク・コマンドを含むため)_",
+}
+# Command-shaped only (lowercase tool word followed by an argument), so prose such as
+# "AWS Lambda" or "the AWS account" is kept.
+_COMMAND = re.compile(r"https?://|```|(?<![\w-])(?:aws|curl|wget|sudo|kubectl|terraform)\s+-{0,2}[a-z]")
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),
@@ -126,8 +136,7 @@ def _ordered(analysis):
 def _safe_explanation(value):
     # Numeric observations and targets belong to code-owned facts. Refuse unsafe prose
     # defensively even though EvidenceIndex already rejects these before presentation.
-    if not isinstance(value, str) or _NUMBER.search(value) or re.search(
-            r"https?://|```|\b(?:aws|curl|wget|sudo|kubectl|terraform)\b", value, re.I):
+    if not isinstance(value, str) or _NUMBER.search(value) or _COMMAND.search(value):
         return ""
     return _cell(value, 600)
 
@@ -150,9 +159,12 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
               f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}",
               ", ".join(_code(r["resource_id"]) for r in targets), ""]
     explanation = _safe_explanation(finding.get("explanation"))
+    withheld_note = _WITHHELD.get(lang, _WITHHELD["ko"])
     if explanation:
         # Explanatory language is always a hypothesis, even for an observed metric/call.
         output += [f"_{copy[4]}_: {explanation}", ""]
+    elif isinstance(finding.get("explanation"), str) and finding["explanation"].strip():
+        output += [f"_{copy[4]}_: {withheld_note}", ""]
     refs = [evidence[eid] for eid in finding.get("evidence_ids", []) if eid in evidence]
     if refs:
         output += [f"| {copy[1]} | {copy[2]} | {copy[3]} |",
@@ -182,6 +194,8 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
             for cell in [_safe_explanation(p)] if cell]
     if safe:
         output += ["", f"**{copy[8]}:** " + ", ".join(safe)]
+    if len(safe) < len(prerequisites) - len(mutating):
+        output += ["", f"**{copy[8]}:** {withheld_note}"]
     if mutating:
         output += ["", _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()]
     return "\n".join(output)
