@@ -66,3 +66,13 @@ def test_regional_service_endpoints_stay_visible_but_resource_endpoints_are_mask
                  "vpce-0a1b.sts.ap-northeast-2.vpce.amazonaws.com",
                  "ec2-54-1-2-3.ap-northeast-2.compute.amazonaws.com"):
         assert redact.redact(f"via {host} failed") == "via <host> failed"
+
+
+def test_ipv6_scan_is_linear_on_long_punctuation_runs():
+    import time
+    for blob in (":" * 20000, ".:" * 10000, "::" + "0:" * 10000 + "g", "a:" * 10000 + "::"):
+        started = time.monotonic()
+        redact.redact(blob)
+        assert time.monotonic() - started < 1.0
+    assert redact.redact(":" * 50 + " peer 2001:db8::1. done").endswith(" peer <ip>. done")
+    assert redact.redact("fe80::1%eth0, ::ffff:10.0.0.1:") == "<ip>, <ip>:"

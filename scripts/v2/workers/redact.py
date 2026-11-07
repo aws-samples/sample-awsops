@@ -34,16 +34,23 @@ REDACTORS = [
 
 # Validate candidates rather than treating clock strings or citation IDs as IPs.
 # Run before IPv4 substitution so IPv4-mapped IPv6 is scrubbed as one address.
+# Every quantifier is bounded: textual IPv6 is at most 45 characters plus a zone id, so a long
+# ":"/"." run in prompt text costs linear work instead of quadratic backtracking and retries.
 IPV6_CANDIDATES = re.compile(
-    r"(?<![A-Za-z0-9_.])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]*"
-    r"(?:%[A-Za-z0-9_.-]+)?(?![A-Za-z0-9_])")
+    r"(?<![A-Za-z0-9_.])(?:[0-9A-Fa-f]{0,4}:){2,9}[0-9A-Fa-f:.]{0,45}"
+    r"(?:%[A-Za-z0-9_.-]{1,64})?(?![A-Za-z0-9_])")
+_IPV6_MAX = 45 + 1 + 64
 
 
 def _ipv6(match):
     value = match.group(0)
+    core = value.rstrip(".:")
+    if len(core) > _IPV6_MAX:
+        return value
     # Sentence punctuation ("peer 2001:db8::1.") is eaten by the greedy body: retry without
-    # trailing [.:] characters and re-emit them after the placeholder.
-    for end in range(len(value.rstrip(".:")), len(value) + 1):
+    # trailing [.:] characters and re-emit them after the placeholder. An address ends in at
+    # most "::", so only two stripped characters are ever worth restoring.
+    for end in range(len(core), min(len(value), len(core) + 2) + 1):
         try:
             ipaddress.IPv6Address(value[:end])
         except ValueError:
