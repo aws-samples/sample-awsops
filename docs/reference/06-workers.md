@@ -128,6 +128,13 @@ The bundle keeps the report's two kinds of gap apart
 `configured_dependency` relationships, such as an RDS Proxy target, record configuration
 only. They never prove that an application calls the target.
 
+A model-proposed `observation` is kept only when code can confirm it. For one resource that
+means a cited, complete 14-day metrics row with the full measured pressure set (CPU, memory and
+I/O, plus replica lag for replicas). For a pair it means an exact observed edge. Anything else is
+downgraded to `hypothesis` (`unconfirmed_observation`). Model text is never parsed for meaning:
+reports print the admitted values, and numerals in model text are rejected.
+`EvidenceIndex.model_context()` is redacted by default; `raw_context()` is for code-side checks.
+
 ## Decisions (ADRs) / 결정
 
 - **ADR-005 — AWS mutation & autonomy (FROZEN)** — P2

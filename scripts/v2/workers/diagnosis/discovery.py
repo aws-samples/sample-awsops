@@ -460,9 +460,11 @@ def _graph_state(value, cls):
     max_age = _graph_max_age()
     fresh = _fresh(state.get("captured"), max_age)
     complete = state.get("status") in ("ok", "empty")
-    fresh = fresh and complete and not any(details.get(k) is True for k in
-                ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated",
-                 "infraUnavailable"))
+    # A recognized flag with an invalid type ("true", 1) is treated like metadata loss and
+    # disqualifies, as web/lib/graph-state.ts does; only a real False/absent value passes.
+    fresh = fresh and complete and not any(
+        k in details and details[k] is not False for k in
+        ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated", "infraUnavailable"))
     # Positive trace loss counters (docs/api-reference.md) and any failureReason
     # disqualify; instanceObservationDrops is a legacy counter kept harmless.
     drops = _number(details.get("instanceObservationDrops")) or 0
@@ -797,7 +799,11 @@ def _xray(bundle, budget, regions):
         except Exception:
             coverage["complete"] = False
             _mark(bundle, "degraded", "xray_read_failed")
-        # Decide completeness before emitting any row, so no row claims complete coverage.
+        # Decide completeness before emitting any row, so no row claims complete coverage. The
+        # resource share for X-Ray nodes (MAX_XRAY_RESOURCES) is a cap too.
+        if len(services) > MAX_XRAY_RESOURCES:
+            coverage["complete"] = False
+            _mark(bundle, "incomplete", "xray_resource_cap")
         if any(not isinstance(svc.get("Edges") or [], list) or len(svc.get("Edges") or []) > MAX_RELATIONSHIPS
                for svc in services.values()):
             coverage["complete"] = False
@@ -1200,19 +1206,57 @@ def _finish(bundle):
     # dangling citations enter the evidence index.
     original = {k: max(len(bundle[k]), bundle["coverage"].get(k, {}).get("matched", 0))
                 for k in ("resources", "evidence", "relationships")}
-    while len(json.dumps(bundle, ensure_ascii=False, default=str).encode()) > MAX_BYTES - 512:
+    def size(value):
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode())
+
+    limit = MAX_BYTES - 512
+    total = size(bundle)
+    if total > limit and bundle["evidence"]:
+        # One eviction plan and per-row sizes instead of re-serializing the whole bundle per row
+        # (O(n) not O(n^2)). Evict the newest low-priority evidence first (X-Ray, then graph);
+        # sizing, metrics and FinOps rows outlast them; inventory goes last; within a class,
+        # stale/superseded rows go before current ones.
+        _mark(bundle, "incomplete", "context_byte_cap")
+        rows = bundle["evidence"]
+        order = sorted(range(len(rows)), key=lambda i: (
+            _EVICTION.get(rows[i].get("source"), 2), rows[i].get("fresh") is True, -i))
+        cites = {}
+        for rel in bundle["relationships"]:
+            for eid in rel.get("evidence_ids", []):
+                cites.setdefault(eid, []).append(rel)
+        removed, dropped_rels = set(), set()
+        evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
+        for i in order:
+            if total <= limit:
+                break
+            row = rows[i]
+            removed.add(i)
+            evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
+            total -= size(row) + 2  # ", " list separator
+            for rel in cites.get(row["id"], []):
+                if id(rel) not in dropped_rels:
+                    dropped_rels.add(id(rel))
+                    total -= size(rel) + 2
+        bundle["evidence"] = [row for i, row in enumerate(rows) if i not in removed]
+        bundle["relationships"] = [r for r in bundle["relationships"] if id(r) not in dropped_rels]
+    for key in ("relationships", "resources"):
+        # Same linear estimate when evidence alone cannot fit the bound.
+        total = size(bundle)
+        # Resources go only after every citing relationship: no dangling references.
+        if (total > limit and not bundle["evidence"] and bundle[key]
+                and (key == "relationships" or not bundle["relationships"])):
+            _mark(bundle, "incomplete", "context_byte_cap")
+            keep = len(bundle[key])
+            while keep and total > limit:
+                keep -= 1
+                total -= size(bundle[key][keep]) + 2
+            bundle[key] = bundle[key][:keep]
+    # The estimate is exact up to separators; a short exact pass covers any remainder.
+    while size(bundle) > limit:
         _mark(bundle, "incomplete", "context_byte_cap")
         if bundle["evidence"]:
-            # Evict the newest low-priority evidence first (X-Ray, then graph);
-            # sizing, metrics and FinOps rows outlast them; inventory goes last.
-            rows = bundle["evidence"]
-            # Within a class, stale/superseded rows go before current ones.
-            row = rows.pop(min(range(len(rows)), key=lambda i: (
-                _EVICTION.get(rows[i].get("source"), 2), rows[i].get("fresh") is True, -i)))
-            evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
-            evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
-            removed = row["id"]
-            bundle["relationships"] = [r for r in bundle["relationships"] if removed not in r["evidence_ids"]]
+            row = bundle["evidence"].pop()
+            bundle["relationships"] = [r for r in bundle["relationships"] if row["id"] not in r["evidence_ids"]]
         elif bundle["relationships"]:
             bundle["relationships"].pop()
         elif bundle["resources"]:

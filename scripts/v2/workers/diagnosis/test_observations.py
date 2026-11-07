@@ -145,7 +145,7 @@ def test_context_and_admission_keep_weak_binding_as_hypothesis():
         "claim": "observation", "explanation": "The scoped peer is a dependency candidate.",
         "prerequisites": [], "verification": "graph_refresh"}
     assert index.validate_finding(finding)["claim"] == "hypothesis"
-    admitted = next(e for e in index.model_context()["evidence"] if e["id"] == row["id"])
+    admitted = next(e for e in index.raw_context()["evidence"] if e["id"] == row["id"])
     assert admitted["facts"]["ttl_known"] is False
     assert admitted["facts"]["direction"] == "undirected"
     assert admitted["facts"]["query_name"] == "orders.example.test"
@@ -416,7 +416,7 @@ def test_inventory_scope_and_source_provenance_survive_without_raw_metadata():
     assert not project(data)["relationships"]
     fake = Provider()
     collected = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
-    admitted = EvidenceIndex(collected, ACCOUNT).model_context()
+    admitted = EvidenceIndex(collected, ACCOUNT).raw_context()
     dns_row = next(e for e in admitted["evidence"] if e["kind"] == "observed_dns_resolution")
     network_row = next(e for e in admitted["evidence"] if e["kind"] == "observed_network_flow")
     assert dns_row["facts"]["source_id"].startswith("source:")

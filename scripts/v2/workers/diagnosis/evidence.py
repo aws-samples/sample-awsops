@@ -410,9 +410,9 @@ class EvidenceIndex:
             self.relationships[row["id"]] = {key: deepcopy(row[key]) for key in
                                             ("id", "source", "target", "kind", "evidence_ids")}
 
-    def model_context(self, redacted=False):
-        """Admitted, projected records. Every model prompt carries ``redacted=True``
-        (or redact_context() of a trimmed copy); unredacted is for code-side checks only."""
+    def model_context(self, redacted=True):
+        """Admitted, projected records, redacted by default so a model-bound caller cannot forget
+        it. Code-side checks that need raw identities call raw_context() explicitly."""
         context = deepcopy({
             "resources": list(self.resources.values()), "evidence": list(self.evidence.values()),
             "relationships": list(self.relationships.values()), "coverage": self.coverage,
@@ -420,9 +420,13 @@ class EvidenceIndex:
         })
         return redact_context(context) if redacted else context
 
+    def raw_context(self):
+        """Unredacted admitted records for code-side checks only; never send to a model."""
+        return self.model_context(redacted=False)
+
     def admitted_bundle(self):
         """The exact admitted (unredacted) records used for analysis and deterministic rendering."""
-        return self.model_context()
+        return self.raw_context()
 
     @staticmethod
     def _complete(row, *, sampled=False):
@@ -439,8 +443,16 @@ class EvidenceIndex:
         if not cited or any(not row["fresh"] for row in cited):
             return False
         if len(refs) == 1:
+            # Free text is never parsed for meaning, so a single-resource observation is confirmed
+            # only by the full measured pressure set (CPU, memory, I/O; replica lag for replicas),
+            # never by one complete series such as CPU alone. Reports print the admitted values,
+            # not the model's prose, as the observation.
+            resource = self.resources.get(refs[0], {})
             return any(row["kind"] == "metrics" and row["resource_ids"] == refs
-                       and self._complete(row, sampled=True) for row in cited)
+                       and self._complete(row, sampled=True) and isinstance(row["facts"], dict)
+                       and self._pressure_supported(row["facts"].get("metrics"), resource.get("kind"),
+                                                    row["facts"].get("replica_source"))
+                       for row in cited)
         # A referenced scoped edge must preserve the actual pair. Sharing a
         # service/SG or joining independent aggregates never creates an observed edge.
         return len(refs) == 2 and any(

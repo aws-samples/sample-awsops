@@ -1146,3 +1146,37 @@ def test_malformed_memory_result_never_fails_collection(provider, monkeypatch):
     assert "memory_metrics_read_failed" in bundle["degraded"]
     row = next(e for e in bundle["evidence"] if e["kind"] == "metrics")
     assert row["facts"]["missing_memory"] is True and row["coverage"]["complete"] is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes"])
+def test_mistyped_graph_state_flags_disqualify_like_metadata_loss(provider, value):
+    db = graph_fixture()
+    db.states[0][4]["metadataTruncated"] = value
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert bundle["coverage"]["graph"]["trace"]["complete"] is False
+
+
+def test_xray_nodes_beyond_their_resource_share_mark_coverage_incomplete(provider):
+    count = discovery.MAX_XRAY_RESOURCES + 1
+    provider.xray = [{"Services": [{"ReferenceId": i, "Name": f"s{i}",
+                                    "Edges": [{"ReferenceId": (i + 1) % count}]} for i in range(count)]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert "xray_resource_cap" in bundle["incomplete"]
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["coverage"]["complete"] is False for e in rows)
+
+
+def test_byte_cap_eviction_serializes_the_bundle_a_bounded_number_of_times(provider, monkeypatch):
+    rows = [inventory("ec2", f"i-{n:017x}", {"instance_type": "m7g.large"}) for n in range(150)]
+    calls = {"n": 0}
+    real = discovery.json.dumps
+
+    def counting(value, *args, **kwargs):
+        if isinstance(value, dict) and "evidence" in value and "coverage" in value:
+            calls["n"] += 1
+        return real(value, *args, **kwargs)
+    monkeypatch.setattr(discovery, "MAX_BYTES", 20_000)
+    monkeypatch.setattr(discovery.json, "dumps", counting)
+    bundle = discovery.collect(Database(rows), ACCOUNT, Budget())
+    assert "context_byte_cap" in bundle["incomplete"]
+    assert calls["n"] <= 12
