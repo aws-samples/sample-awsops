@@ -637,6 +637,13 @@ def _read_graph(conn, bundle, budget, scope):
                     {k: _text(v) for k, v in meta.items() if k in ("host", "service", "sourceId", "namespace", "deployment")})
         if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
             _mark(bundle, "incomplete", "graph_cap")
+            # Read-side truncation: the per-class projection is no longer complete, and rows from a
+            # truncated class are not current evidence of absence.
+            truncated = {row[5] for row in nodes[600:]} | {row[6] for row in edges[MAX_RELATIONSHIPS:]}
+            for cls in truncated & set(qualification):
+                fresh_cls, coverage_cls, window_cls = qualification[cls]
+                coverage_cls.update(complete=False, read_truncated=True)
+                qualification[cls] = (False, coverage_cls, window_cls)
         observation_count = 0
         for source, target, rel, confidence, raw_meta, captured, cls in edges[:MAX_RELATIONSHIPS]:
             fresh, coverage, window = qualification[cls]
@@ -801,7 +808,9 @@ def _xray(bundle, budget, regions):
             _mark(bundle, "degraded", "xray_read_failed")
         # Decide completeness before emitting any row, so no row claims complete coverage. The
         # resource share for X-Ray nodes (MAX_XRAY_RESOURCES) is a cap too.
-        if len(services) > MAX_XRAY_RESOURCES:
+        # The X-Ray share is global across regions: count what earlier regions already used.
+        used = sum(_is_xray(r) for r in bundle["resources"])
+        if len(services) > MAX_XRAY_RESOURCES - used:
             coverage["complete"] = False
             _mark(bundle, "incomplete", "xray_resource_cap")
         if any(not isinstance(svc.get("Edges") or [], list) or len(svc.get("Edges") or []) > MAX_RELATIONSHIPS
@@ -1065,9 +1074,11 @@ def _provider_row(bundle, r, row, kind):
              "guard_hits": guards, "missing_memory": not memory, "missing_io": not io,
              "utilization": utilization, "projected_utilization": _utilization(top.get("projectedUtilizationMetrics")),
              "multi_az": r["facts"].get("multi_az"), "replica_source": replica}
+    # Complete only when the provider saw memory and I/O over a full lookback, like cloudwatch rows.
+    measured = bool(memory and io and lookback is not None and lookback >= 14)
     _evidence(bundle, "compute_optimizer", "provider_sizing", [r["id"]], facts, generated,
-              region=r["region"], fresh=fresh, coverage={"complete": True, "lookback_days": lookback,
-              "sample_ratio": 1 if memory and io and lookback is not None and lookback >= 14 else 0})
+              region=r["region"], fresh=fresh, coverage={"complete": measured and fresh, "lookback_days": lookback,
+              "sample_ratio": 1 if measured else 0})
 
 
 def _provider_sizing(bundle, budget, resources, *, client_factory=None):

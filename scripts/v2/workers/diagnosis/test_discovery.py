@@ -1180,3 +1180,21 @@ def test_byte_cap_eviction_serializes_the_bundle_a_bounded_number_of_times(provi
     bundle = discovery.collect(Database(rows), ACCOUNT, Budget())
     assert "context_byte_cap" in bundle["incomplete"]
     assert calls["n"] <= 12
+
+
+def test_read_side_graph_truncation_demotes_the_class_coverage(provider):
+    db = graph_fixture()
+    extra = [[f"svc:x{i}", "service", f"x{i}", {"accountId": ACCOUNT, "region": REGION}, NOW, "trace"] for i in range(601)]
+    db.nodes.extend(extra)
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "graph_cap" in bundle["incomplete"]
+    assert bundle["coverage"]["graph"]["trace"]["complete"] is False
+    assert not any(e["fresh"] for e in bundle["evidence"] if e["source"] == "stored_graph"
+                   and e["coverage"].get("sources_ref") == "coverage.graph.trace")
+
+
+def test_memory_blind_provider_rows_never_claim_complete_coverage(provider):
+    provider.ec2 = [{"instanceRecommendations": [recommendation()]}]  # CPU only: no memory/IO
+    bundle = discovery.collect(Database([inventory("ec2", I1, {"instance_type": "m7g.xlarge"})]), ACCOUNT, Budget())
+    item = evidence(bundle, "provider_sizing")[0]
+    assert item["coverage"]["complete"] is False and item["coverage"]["sample_ratio"] == 0
