@@ -10,7 +10,7 @@ from diagnosis.test_evidence import oid
 @pytest.mark.parametrize("value", [
     "http://attacker.example/reset", "www.attacker.example",
     "<script>alert('leak')</script>", "left | right",
-    "`` attacker ` value ```", "[HIGH] …[truncated] (report size bound)",
+    "`` attacker ` value ```", "[HIGH] …[truncated] (report size bound, degraded)",
 ])
 def test_untrusted_cells_are_inert_literals_without_fence_or_marker_escape(value):
     from diagnosis import presentation
@@ -32,7 +32,7 @@ def test_valid_identifiers_remain_copyable_inside_code_spans():
 
 
 @pytest.mark.parametrize("value", [
-    "malformed | identity", "[HIGH] …[truncated] (report size bound)",
+    "malformed | identity", "[HIGH] …[truncated] (report size bound, degraded)",
     "http://attacker.example/``identity`",
 ])
 def test_malformed_native_identifiers_cannot_escape_literal_guards(value):
@@ -142,13 +142,13 @@ def test_cells_rows_and_total_markdown_are_bounded_with_explicit_markers(monkeyp
     monkeypatch.setattr(presentation, "MAX_MARKDOWN_BYTES", 2000)
     bodies = dict(presentation.render(SECTIONS, data, analysis(), lang="en"))
     assert sum(len(b.encode()) for b in bodies.values()) <= 2000
-    assert bodies["compute_infrastructure"].endswith("\n…[truncated] (report size bound)")
+    assert "\n" + presentation.SIZE_MARK + " " in bodies["compute_infrastructure"]
     verdicts = "VERDICT " * 100
     bodies = dict(presentation.render(list(SECTIONS) + [INTENDED_VS_ACTUAL_SECTION], data, analysis(),
                                       lang="en", invariant_md=verdicts))
     assert bodies["intended_vs_actual"] == verdicts
     assert sum(len(b.encode()) for b in bodies.values()) <= 2000
-    assert presentation._trim("a" * 1000, 600, "en") == "a" * 344 + presentation.SIZE_MARK
+    assert presentation._trim("a" * 1000, 600, "en").startswith("a" * 344 + presentation.SIZE_MARK)
 
 
 @pytest.mark.parametrize("pillar,deep,shared", [("reliability", "reliability_ha", "network_architecture"),
@@ -348,3 +348,29 @@ def test_prose_guard_refuses_glued_and_non_aws_commands(unsafe):
 def test_prose_guard_keeps_tool_names_used_as_nouns(prose):
     from diagnosis import presentation
     assert presentation._safe_explanation(prose)
+
+
+@pytest.mark.parametrize("unsafe", ["sh payload.sh", "cat .env", "rm state.tfstate", "dd if=/dev/zero of=/dev/sda",
+                                    "python exploit.py 실행"])
+def test_prose_guard_refuses_generic_commands_with_bare_file_arguments(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""
+
+
+def test_clean_summary_and_truncation_markers_drive_the_ui_icon():
+    from diagnosis import presentation
+    data = bundle()
+    data["degraded"], data["gaps"], data["incomplete"] = [], [], []
+    body = dict(presentation.render(SECTIONS, data, analysis(findings=[]), lang="ko"))["executive_summary"]
+    assert not re.search(r"degraded", body, re.I)
+    trimmed = presentation._trim("x\n" * 500, 600, "ko")
+    assert "(report size bound, degraded)" in trimmed and "잘렸습니다" in trimmed
+
+
+def test_title_scrubs_arn_identities():
+    from diagnosis import presentation
+    data = bundle()
+    data["resources"][0]["resource_id"] = "arn:aws:rds:ap-northeast-2:111111111111:db:orders"
+    target = data["resources"][0]["id"]
+    meta = presentation.title_and_tags(data, analysis(findings=[finding(resource_ids=[target])]), lang="en")
+    assert "111111111111" not in meta["title"] and "arn:aws" not in meta["title"]

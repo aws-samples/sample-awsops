@@ -40,7 +40,7 @@ _COMMAND = re.compile(
     r"pip|npm|npx|yarn|apt|apt-get|yum|dnf|brew|powershell|pwsh)" + _E + r"\s+[A-Za-z0-9./~$'\"-]"
     # Generic words that are also shell commands: only with a flag or path argument.
     r"|" + _B + r"(?:rm|cp|mv|dd|kill|git|sed|sh|bash|python3?|node|cat|tee|truncate)" + _E +
-    r"\s+(?:-|/|~|\./|\$)"
+    r"\s+(?:-|/|~|\.|\$|[A-Za-z0-9_-]*[./=])"
     # Destructive SQL and double-dash flags read as commands in any language.
     r"|" + _B + r"(?:drop|truncate|alter)\s+(?:table|database|schema|index|user|role|view)" + _E +
     r"|" + _B + r"delete\s+from" + _E + r"|(?<![\w-])--[a-z][a-z0-9-]+")
@@ -105,7 +105,11 @@ _VERIFY = {
 
 MAX_MARKDOWN_BYTES = 256 * 1024
 _TRUNCATED = "…[truncated]"
-SIZE_MARK = _TRUNCATED + " (report size bound)"  # code-only: cells escape "[" so models cannot forge it
+# Code-only marker (cells escape "[" so models cannot forge it). "(degraded)" keeps the UI
+# section icon non-green, as the legacy renderer's localized _TRUNCATED_MARK does.
+SIZE_MARK = _TRUNCATED + " (report size bound, degraded)"
+_SIZE_NOTE = {"ko": "출력 크기 한도로 이 섹션이 잘렸습니다.", "en": "This section was cut at the report size limit.",
+              "zh": "此章节因报告大小上限被截断。", "ja": "レポートサイズの上限によりこのセクションは切れました。"}
 
 
 def _clip(value, limit):
@@ -271,7 +275,10 @@ def _coverage(bundle, analysis, copy):
                    "pillar_coverage": analysis.get("pillar_coverage", {}),
                    "withheld": withheld(analysis)}
     rows = [f"**{copy[10]}**", "", "| Field | Value |", "| --- | --- |"]
-    rows.extend(f"| {_cell(k)} | {_cell(_scrubbed(v), 2500)} |" for k, v in diagnostics.items())
+    # Empty values are omitted: the UI reads a literal "degraded" anywhere as a warning, so the
+    # row only appears when something actually degraded.
+    rows.extend(f"| {_cell(k)} | {_cell(_scrubbed(v), 2500)} |" for k, v in diagnostics.items()
+                if v not in ([], {}, None))
     return "\n".join(rows)
 
 
@@ -334,7 +341,8 @@ def _trim(body, limit, lang):
     """Reserve room for the marker and a read-only sweep mark; cut at a line boundary if any."""
     kept = body.encode()[:max(0, limit - 256)].decode(errors="ignore")
     cut = kept.rfind("\n")
-    return _swept((kept[:cut + 1] if cut >= 0 else kept) + SIZE_MARK, lang)
+    note = f" {_SIZE_NOTE.get(lang, _SIZE_NOTE['ko'])}"
+    return _swept((kept[:cut + 1] if cut >= 0 else kept) + SIZE_MARK + note, lang)
 
 
 def title_and_tags(bundle, analysis, *, lang="ko"):
@@ -350,6 +358,8 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
     resources = {r["id"]: r for r in bundle.get("resources", [])}
     targets = [resources[rid]["resource_id"] for rid in top.get("resource_ids", []) if rid in resources]
     # Titles are plain text; never echo model prose or telemetry labels.
-    title = label + (" — " + str(targets[0])[:100] if targets else "")
+    # The title reaches the SNS digest; scrub identities (ARNs, account ids) like the body.
+    from .evidence import _scrub_text
+    title = label + (" — " + _scrub_text(str(targets[0]), "")[:100] if targets else "")
     return {"title": title[:200],
             "tags": list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))[:6]}
