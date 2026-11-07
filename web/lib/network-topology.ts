@@ -73,9 +73,9 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
     prior.active = prior.active && link.active; // a stale non-active copy is not live evidence
   }
   for (const r of of('transit_gateway_attachment')) {
-    if (str(r.data.resource_type) !== 'vpc') continue;
+    if (str(r.data.attached_resource_type) !== 'vpc') continue;
     const collector = acct(r.account_id);
-    const tgwId = str(r.data.transit_gateway_id), vpcId = str(r.data.resource_id);
+    const tgwId = str(r.data.transit_gateway_id), vpcId = str(r.data.attached_resource_id);
     if (!tgwId || !vpcId) continue;
     const tgw = { owner: owner(r.data.transit_gateway_owner_id, collector), region: r.region!, id: tgwId };
     admit({ id: r.resource_id, kind: 'tgw', a: `${owner(r.data.resource_owner_id, collector)}/${r.region}/${vpcId}`,
@@ -100,7 +100,8 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
   const scopeAccounts = opts.selection.accounts === '__all__' ? null : new Set(opts.selection.accounts.map(acct));
   const expanded = new Set(opts.selection.vpcs.filter((k) => vpcs.has(k)));
   const accountInScope = (id: string) => scopeAccounts === null || scopeAccounts.has(id);
-  const vpcVisible = (key: string) => (detail ? expanded.has(key) : vpcs.has(key) && accountInScope(vpcs.get(key)!.accountId));
+  const vpcVisible = (key: string) => (detail ? expanded.has(key)
+    : vpcs.has(key) && accountInScope(vpcs.get(key)!.accountId) && collecting.has(vpcs.get(key)!.accountId));
   const anchoredTgws = new Set<string>();
   for (const l of live) {
     if (l.kind !== 'tgw') continue;
@@ -131,7 +132,10 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
       accountId: t.owner, region: t.region, resourceId: t.id, outOfScope: boxed ? undefined : true });
   };
 
-  for (const v of vpcs.values()) if (vpcVisible(v.key)) vpcNode(v);
+  for (const v of vpcs.values()) {
+    if (vpcVisible(v.key)) vpcNode(v);
+    else if (!detail && accountInScope(v.accountId) && !collecting.has(v.accountId)) endpoint(v.key);
+  }
   if (!detail) {
     for (const r of of('transit_gateway')) {
       const t = { owner: owner(r.data.owner_id, acct(r.account_id)), region: r.region!, id: r.resource_id };
@@ -255,7 +259,12 @@ export function buildNetworkTopology(rows: NetRow[], opts: {
   const ordered = [...nodes.values()].map((n) => ({ n, d: depth(n) }))
     .sort((x, y) => x.d - y.d || x.n.label.localeCompare(y.n.label) || x.n.id.localeCompare(y.n.id)).map((x) => x.n);
 
-  const captures = rows.filter((r) => FLEET_TYPES.has(r.resource_type)).map((r) => str(r.captured_at)).filter(Boolean).sort();
+  // Oldest capture over contributing rows: fleet types in fleet mode, every row in detail mode
+  // (the read path returns detail rows only for the selected VPCs). Numeric, Date-safe.
+  const ms = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : NaN);
+  const finite = rows.filter((r) => detail || FLEET_TYPES.has(r.resource_type))
+    .map((r) => ms(r.captured_at as unknown)).filter((n) => Number.isFinite(n));
+  const capturedAt = finite.length ? new Date(Math.min(...finite)).toISOString() : null;
   return { level: detail ? 'detail' : 'fleet', nodes: ordered, edges, omitted,
-    truncated: opts.truncated === true, capturedAt: captures[0] ?? null };
+    truncated: opts.truncated === true, capturedAt };
 }

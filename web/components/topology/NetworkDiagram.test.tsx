@@ -11,9 +11,9 @@ const rows = [
   row('vpc', B, 'vpc-bbbbbbbb', { owner_id: B, name: 'spoke' }),
   row('vpc', B, 'vpc-dddddddd', { owner_id: B, name: 'peer' }),
   row('transit_gateway_attachment', 'self', 'tgw-attach-0000000000000000a', { transit_gateway_id: 'tgw-0123456789abcdef0',
-    transit_gateway_owner_id: A, resource_type: 'vpc', resource_id: 'vpc-aaaaaaaa', resource_owner_id: A, state: 'available' }),
+    transit_gateway_owner_id: A, attached_resource_type: 'vpc', attached_resource_id: 'vpc-aaaaaaaa', resource_owner_id: A, state: 'available' }),
   row('transit_gateway_attachment', 'self', 'tgw-attach-0000000000000000b', { transit_gateway_id: 'tgw-0123456789abcdef0',
-    transit_gateway_owner_id: A, resource_type: 'vpc', resource_id: 'vpc-bbbbbbbb', resource_owner_id: B, state: 'available' }),
+    transit_gateway_owner_id: A, attached_resource_type: 'vpc', attached_resource_id: 'vpc-bbbbbbbb', resource_owner_id: B, state: 'available' }),
   row('vpc_peering_connection', B, 'pcx-11111111', { status_code: 'active', requester_owner_id: B, requester_region: R,
     requester_vpc_id: 'vpc-bbbbbbbb', accepter_owner_id: B, accepter_region: R, accepter_vpc_id: 'vpc-dddddddd' }),
 ];

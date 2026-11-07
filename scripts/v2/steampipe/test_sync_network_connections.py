@@ -8,7 +8,7 @@ import sync_lambda  # PYTHONPATH must include scripts/v2/steampipe
 CASES = {
     "transit_gateway_attachment": (
         "aws_ec2_transit_gateway_vpc_attachment", "transit_gateway_attachment_id",
-        ("transit_gateway_id", "transit_gateway_owner_id", "resource_type", "resource_id",
+        ("transit_gateway_id", "transit_gateway_owner_id", "attached_resource_type", "attached_resource_id",
          "resource_owner_id", "state", "association_state",
          "association_transit_gateway_route_table_id", "creation_time", "tags"),
     ),
@@ -44,3 +44,17 @@ def test_network_connection_queries_are_select_only(resource_type):
     sql = sync_lambda.QUERIES[resource_type][0]
     assert sql.startswith("SELECT ")
     assert ";" not in sql
+
+
+def test_attachment_columns_are_aliased_and_match_the_web_projection():
+    sql = sync_lambda.QUERIES["transit_gateway_attachment"][0]
+    assert "resource_type AS attached_resource_type" in sql
+    assert "resource_id AS attached_resource_id" in sql
+    # No bare `resource_id` column may reach `data` (it would shadow the row id in the UI).
+    select_list = sql.split(" FROM ")[0]
+    cols = [c.strip().split(" AS ")[-1] for c in select_list[len("SELECT "):].split(",")]
+    assert "resource_id" not in cols and "resource_type" not in cols
+    # Lockstep with the web projection that reads these fields.
+    from pathlib import Path
+    web = (Path(__file__).resolve().parents[3] / "web/lib/network-topology.ts").read_text()
+    assert "data.attached_resource_type" in web and "data.attached_resource_id" in web

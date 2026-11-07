@@ -324,9 +324,12 @@ QUERIES = {
     # aws_ec2_transit_gateway_vpc_attachment returns every attachment visible to the caller —
     # a TGW owner also sees member-account attachments, so the same attachment id can appear
     # under two accounts; consumers dedupe by attachment id and never by CIDR.
+    # Attached-resource columns are aliased so they never shadow the row's own resource_id
+    # in the inventory UI.
     "transit_gateway_attachment": (
         "SELECT transit_gateway_attachment_id, region, account_id, transit_gateway_id, "
-        "transit_gateway_owner_id, resource_type, resource_id, resource_owner_id, state, "
+        "transit_gateway_owner_id, resource_type AS attached_resource_type, "
+        "resource_id AS attached_resource_id, resource_owner_id, state, "
         "association_state, association_transit_gateway_route_table_id, creation_time, tags "
         "FROM aws_ec2_transit_gateway_vpc_attachment ORDER BY transit_gateway_attachment_id",
         "transit_gateway_attachment_id",

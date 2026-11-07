@@ -364,7 +364,7 @@ describe('worstFirst (gap L68)', () => {
 
 describe('network connection inventory types', () => {
   const FIELDS: Record<string, string[]> = {
-    transit_gateway_attachment: ['transit_gateway_id', 'transit_gateway_owner_id', 'resource_type', 'resource_id',
+    transit_gateway_attachment: ['transit_gateway_id', 'transit_gateway_owner_id', 'attached_resource_type', 'attached_resource_id',
       'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id', 'creation_time', 'tags'],
     vpc_peering_connection: ['status_code', 'requester_owner_id', 'requester_region', 'requester_vpc_id',
       'requester_cidr_block', 'accepter_owner_id', 'accepter_region', 'accepter_vpc_id', 'accepter_cidr_block',

@@ -293,15 +293,15 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
   // Network-connection inventory (cross-account network topology inputs). The same record id
   // can be collected under both accounts of a cross-account link; this page lists each row.
   transit_gateway_attachment: { label: 'TGW Attachments', group: 'Network', stateKey: 'state', distKey: 'state', columns: [
-    { key: 'transit_gateway_id', label: 'TGW' }, { key: 'resource_type', label: 'Type' },
-    { key: 'resource_id', label: 'Resource' }, { key: 'resource_owner_id', label: 'Resource owner' },
+    { key: 'transit_gateway_id', label: 'TGW' }, { key: 'attached_resource_type', label: 'Type' },
+    { key: 'attached_resource_id', label: 'Resource' }, { key: 'resource_owner_id', label: 'Resource owner' },
     { key: 'state', label: 'State' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'creation_time'] },
-      { label: 'Connection', keys: ['transit_gateway_id', 'transit_gateway_owner_id', 'resource_type', 'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id'] },
+      { label: 'Connection', keys: ['transit_gateway_id', 'transit_gateway_owner_id', 'attached_resource_type', 'attached_resource_id', 'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id'] },
       { label: 'Tags', keys: ['tags'] },
     ],
-    filterKeys: ['region', 'resource_type'] },
+    filterKeys: ['region', 'attached_resource_type'] },
   vpc_peering_connection: { label: 'VPC Peering', group: 'Network', stateKey: 'status_code', distKey: 'status_code', columns: [
     { key: 'requester_vpc_id', label: 'Requester VPC' }, { key: 'requester_owner_id', label: 'Requester owner' },
     { key: 'accepter_vpc_id', label: 'Accepter VPC' }, { key: 'accepter_owner_id', label: 'Accepter owner' },

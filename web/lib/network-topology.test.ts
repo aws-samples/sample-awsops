@@ -10,7 +10,7 @@ const vpc = (acct: string, id: string, name: string, extra: Record<string, unkno
   row('vpc', acct, R, id, { owner_id: acct === 'self' ? A : acct, name, cidr_block: '10.0.0.0/16', ...extra });
 const att = (acct: string, id: string, tgw: string, tgwOwner: string, vpcId: string, vpcOwner: string, state = 'available') =>
   row('transit_gateway_attachment', acct, R, id, { transit_gateway_id: tgw, transit_gateway_owner_id: tgwOwner,
-    resource_type: 'vpc', resource_id: vpcId, resource_owner_id: vpcOwner, state });
+    attached_resource_type: 'vpc', attached_resource_id: vpcId, resource_owner_id: vpcOwner, state });
 const build = (rows: NetRow[], selection: NetworkSelection = { accounts: '__all__', vpcs: [] }, hostAccountId: string | null = A) =>
   buildNetworkTopology(rows, { hostAccountId, aliases: { [A]: 'host', [B]: 'member' }, selection });
 
@@ -91,6 +91,13 @@ describe('buildNetworkTopology', () => {
     expect(t.nodes.find((n) => n.id === `tgw:${C}/${R}/tgw-0fedcba9876543210`)).toMatchObject({ parent: null, outOfScope: true });
   });
 
+  it('renders a VPC whose owner never collected inventory as an expandable stub, not an account box', () => {
+    const C = '333333333333';
+    const t = build([vpc(B, 'vpc-bbbbbbbb', 'spoke'), row('vpc', B, R, 'vpc-cccccccc', { owner_id: C, name: 'shared-from-c' })]);
+    expect(t.nodes.some((n) => n.id === `account:${C}`)).toBe(false);
+    expect(t.nodes.find((n) => n.id === `external:${C}/${R}/vpc-cccccccc`)).toMatchObject({ kind: 'external', inInventory: true, label: 'shared-from-c' });
+  });
+
   it('marks whether an external stub exists in inventory', () => {
     const t = build([vpc('self', 'vpc-aaaaaaaa', 'hub'), ...fleet.slice(2),
       att('self', 'tgw-attach-0000000000000000e', 'tgw-0123456789abcdef0', A, 'vpc-eeeeeeee', '333333333333')], { accounts: [A], vpcs: [] });
@@ -153,6 +160,13 @@ describe('buildNetworkTopology', () => {
 
   it('reports the oldest captured_at of fleet rows', () => {
     const t = build([vpc('self', 'vpc-aaaaaaaa', 'hub'), { ...vpc(B, 'vpc-bbbbbbbb', 'spoke'), captured_at: '2026-11-06T08:00:00Z' }]);
-    expect(t.capturedAt).toBe('2026-11-06T08:00:00Z');
+    expect(t.capturedAt).toBe('2026-11-06T08:00:00.000Z');
+  });
+
+  it('includes detail rows and Date values in capturedAt', () => {
+    const rows = [...fleet, row('subnet', 'self', R, 'subnet-old', { vpc_id: 'vpc-aaaaaaaa', availability_zone: `${R}a` },
+      new Date('2026-11-05T01:00:00Z') as unknown as string)];
+    expect(build(rows, { accounts: '__all__', vpcs: [`${A}/${R}/vpc-aaaaaaaa`] }).capturedAt).toBe('2026-11-05T01:00:00.000Z');
+    expect(build(rows, { accounts: '__all__', vpcs: [] }).capturedAt).toBe('2026-11-06T10:00:00.000Z');
   });
 });

@@ -11,8 +11,8 @@ import { GET } from './route';
 const A = '111111111111', B = '222222222222', R = 'ap-northeast-2';
 const att = (account_id: string, id: string, vpc: string, vpcOwner: string) => ({
   resource_type: 'transit_gateway_attachment', account_id, region: R, resource_id: id, captured_at: new Date('2026-11-06T10:00:00Z'),
-  data: { transit_gateway_id: 'tgw-0123456789abcdef0', transit_gateway_owner_id: A, resource_type: 'vpc',
-    resource_id: vpc, resource_owner_id: vpcOwner, state: 'available' },
+  data: { transit_gateway_id: 'tgw-0123456789abcdef0', transit_gateway_owner_id: A, attached_resource_type: 'vpc',
+    attached_resource_id: vpc, resource_owner_id: vpcOwner, state: 'available' },
 });
 const fleetRows = [
   { resource_type: 'vpc', account_id: 'self', region: R, resource_id: 'vpc-aaaaaaaa', data: { owner_id: A, name: 'hub' }, captured_at: null },
