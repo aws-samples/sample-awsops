@@ -608,6 +608,11 @@ def _read_graph(conn, bundle, budget, scope):
                                  and isinstance(v, str) and len(v) <= 512} for r in nodes[:600]}
         graph_resources = {}
         qualification = {cls: _graph_state(by_class.get(cls), cls) for cls in classes}
+        if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
+            # Writer qualification cannot certify this truncated read projection.
+            _mark(bundle, "incomplete", "graph_cap")
+            qualification = {cls: (False, {**coverage, "complete": False}, window)
+                             for cls, (_, coverage, window) in qualification.items()}
         bundle["coverage"]["graph"] = {cls: coverage for cls, (_, coverage, _) in qualification.items()}
         for cls, (fresh, _, _) in qualification.items():
             if not fresh:
@@ -625,8 +630,6 @@ def _read_graph(conn, bundle, budget, scope):
                     and meta.get("region") in bundle["coverage"].get("regions", {}).get("selected", []):
                 graph_resources[(cls, node_id)] = _resource(bundle, account, meta["region"], kind, node_id,
                     {k: _text(v) for k, v in meta.items() if k in ("host", "service", "sourceId", "namespace", "deployment")})
-        if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
-            _mark(bundle, "incomplete", "graph_cap")
         observation_count = 0
         for source, target, rel, confidence, raw_meta, captured, cls in edges[:MAX_RELATIONSHIPS]:
             fresh, coverage, window = qualification[cls]
@@ -793,6 +796,22 @@ def _xray(bundle, budget, regions):
                for service in services.values()):
             coverage["complete"] = False
             _mark(bundle, "incomplete", "xray_edge_cap")
+        xray_resources = [r for r in bundle["resources"] if _is_xray(r)]
+        remaining = MAX_XRAY_RESOURCES - len(xray_resources)
+        existing = {r["resource_id"] for r in xray_resources
+                    if r["account"] == account and r["region"] == region}
+        planned = {f"xray:{ref}" for ref in services}
+        for service in services.values():
+            if len(planned - existing) > remaining:
+                break
+            planned.update(f"xray:{edge['ReferenceId']}"
+                           for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]
+                           if isinstance(edge.get("ReferenceId"), int))
+        if len(planned - existing) > remaining:
+            # The share is global, while completeness is recorded per region.
+            # Qualify before copying coverage into any emitted regional row.
+            coverage["complete"] = False
+            _mark(bundle, "incomplete", "xray_resource_cap")
         for ref, service in services.items():
             for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]:
                 target = edge.get("ReferenceId")
@@ -1042,9 +1061,11 @@ def _provider_row(bundle, r, row, kind):
              "guard_hits": guards, "missing_memory": not memory, "missing_io": not io,
              "utilization": utilization, "projected_utilization": _utilization(top.get("projectedUtilizationMetrics")),
              "multi_az": r["facts"].get("multi_az"), "replica_source": replica}
+    pressure_complete = memory and io and lookback is not None and lookback >= METRIC_DAYS
     _evidence(bundle, "compute_optimizer", "provider_sizing", [r["id"]], facts, generated,
-              region=r["region"], fresh=fresh, coverage={"complete": True, "lookback_days": lookback,
-              "sample_ratio": 1 if memory and io and lookback is not None and lookback >= 14 else 0})
+              region=r["region"], fresh=fresh,
+              coverage={"complete": fresh and pressure_complete, "lookback_days": lookback,
+                        "sample_ratio": 1 if pressure_complete else 0})
 
 
 def _provider_sizing(bundle, budget, resources, *, client_factory=None):

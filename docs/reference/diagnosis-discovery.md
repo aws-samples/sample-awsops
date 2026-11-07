@@ -59,6 +59,9 @@ identities and live proxies, within the total cap of 200. The graph reader
 prioritizes selected-resource neighborhoods across graph classes, bounded to two
 hops, 20 neighbors per expansion, 600 nodes and 400 edges. Caps and missing types
 remain visible; the graph is not a claim of complete discovery.
+Hitting either graph read cap disqualifies completeness and freshness for the
+requested graph classes and their emitted rows, even when the stored writer
+metadata was qualified.
 
 | Evidence | Admission | Meaning and limit |
 | --- | --- | --- |
@@ -78,6 +81,10 @@ X-Ray checks raw page and per-service edge counts before clipping. Exceeding
 those bounds records `xray_node_cap` or `xray_edge_cap`; all emitted X-Ray rows
 in that region disclose incomplete coverage and are not fresh. Missing pages,
 targets and bounded discovery remain explicit limitations.
+The 40-resource X-Ray share applies across regions. Each region is qualified
+against the remaining share before evidence is emitted; overflow records
+`xray_resource_cap` and disqualifies that region. Reusing its existing scoped
+X-Ray identities does not consume the share again.
 
 NFM uses up to eight regions, two monitors, six top-contributor queries and 50 rows
 per query. The current query window is five minutes and incomplete categories and
@@ -130,6 +137,10 @@ place. CPU and Compute Optimizer recommendations do not substitute for measured
 memory. Custom namespaces and Windows memory instrumentation are not supported
 by this collector. Provider recommendations still pass the existing sizing
 guards; a complete memory series alone does not authorize resizing.
+Compute Optimizer recommendation coverage is complete only when the provider
+snapshot is fresh and includes memory, both I/O directions and at least 14 days
+of observation. Missing pressure dimensions, an unknown or shorter window, or
+stale recommendations remain incomplete; the existing sizing vetoes still apply.
 
 ## Cache bounds and infrastructure choice
 
