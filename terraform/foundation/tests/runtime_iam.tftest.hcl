@@ -66,7 +66,7 @@ run "diagnosis_evidence_defaults_remain_dark" {
   command = plan
   variables { workers_enabled = true }
   assert {
-    condition     = !var.diagnosis_evidence_loop_enabled && length(aws_iam_role_policy.worker_diagnosis_evidence) == 0
+    condition     = !var.diagnosis_evidence_loop_enabled && length(aws_iam_policy.worker_diagnosis_evidence) == 0
     error_message = "The evidence loop must be default-off with no additional IAM."
   }
   assert {
@@ -82,11 +82,11 @@ run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
     diagnosis_evidence_loop_enabled = true
   }
   assert {
-    condition     = keys(aws_iam_role_policy.worker_diagnosis_evidence) == ["task"] && length(aws_iam_role_policy.worker_finops_baseline) == 0
+    condition     = keys(aws_iam_policy.worker_diagnosis_evidence) == ["task"] && length(aws_iam_role_policy.worker_finops_baseline) == 0
     error_message = "Diagnosis provider reads must be separately gated from FinOps on each worker role."
   }
   assert {
-    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+    condition = alltrue([for p in aws_iam_policy.worker_diagnosis_evidence :
       jsondecode(p.policy).Statement[0].Action == ["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"] &&
       jsondecode(p.policy).Statement[0].Effect == "Allow" &&
       jsondecode(p.policy).Statement[0].Resource == "*" &&
@@ -95,7 +95,7 @@ run "diagnosis_evidence_gate_adds_only_scoped_provider_reads" {
     error_message = "Only the two provider reads in supported runtime regions may be added."
   }
   assert {
-    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+    condition = alltrue([for p in aws_iam_policy.worker_diagnosis_evidence :
       length(jsondecode(p.policy).Statement) == 2 &&
       jsondecode(p.policy).Statement[1].Action == ["cloudwatch:ListMetrics"] &&
       [for s in jsondecode(p.policy).Statement : s.Sid] == ["DiagnosisProviderSizingReadOnly", "DiagnosisMeasuredMemoryReadOnly"]
@@ -129,7 +129,7 @@ run "diagnosis_network_defaults_remain_dark" {
     diagnosis_evidence_loop_enabled = true
   }
   assert {
-    condition     = !var.diagnosis_network_evidence_enabled && length(aws_iam_role_policy.worker_diagnosis_network) == 0
+    condition     = !var.diagnosis_network_evidence_enabled && length(aws_iam_policy.worker_diagnosis_network) == 0
     error_message = "Network observations must require a separate default-off source gate."
   }
 }
@@ -153,26 +153,34 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
     diagnosis_member_role_arns         = ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"]
   }
   assert {
-    condition = keys(aws_iam_role_policy.worker_diagnosis_network) == ["task"] && alltrue([for p in aws_iam_role_policy.worker_diagnosis_network :
+    condition = keys(aws_iam_policy.worker_diagnosis_network) == ["task"] && alltrue([for p in aws_iam_policy.worker_diagnosis_network :
       length(jsondecode(p.policy).Statement) == 4 &&
       jsondecode(p.policy).Statement[0].Action == ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"] &&
       jsondecode(p.policy).Statement[1].Action == ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"] &&
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:logs:ap-northeast-2:123456789012:log-group:/resolver/approved:*"] &&
       jsondecode(p.policy).Statement[2].Action == ["logs:StartQuery"] &&
       jsondecode(p.policy).Statement[3].Action == ["logs:GetQueryResults", "logs:StopQuery"] &&
-      jsondecode(p.policy).Statement[1].Resource == [for region in ["ap-northeast-2", "eu-west-1", "us-east-1"] : "arn:aws:networkflowmonitor:${region}:123456789012:monitor/*"] &&
+      jsondecode(p.policy).Statement[1].Resource == ["arn:aws:networkflowmonitor:*:123456789012:monitor/*"] &&
       alltrue([for s in jsondecode(p.policy).Statement : can(s.Condition.StringEquals["aws:RequestedRegion"])])
     ])
     error_message = "Observation permissions must remain host/account/region scoped with explicit Resolver groups."
   }
   assert {
-    condition = alltrue([for p in aws_iam_role_policy.worker_diagnosis_evidence :
+    condition = alltrue([for p in aws_iam_policy.worker_diagnosis_evidence :
       length(jsondecode(p.policy).Statement) == 3 &&
       [for s in jsondecode(p.policy).Statement : s.Action] == [["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"], ["cloudwatch:ListMetrics"], ["sts:AssumeRole"]] &&
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"] &&
-      jsondecode(p.policy).Statement[2].Condition.StringLike["sts:ExternalId"] == "?*"
+      !can(jsondecode(p.policy).Statement[2].Condition.StringLike) &&
+      can(jsondecode(p.policy).Statement[2].Condition.StringEquals["aws:RequestedRegion"])
     ])
-    error_message = "Member reads add exactly one sts:AssumeRole statement on the explicit role with an external ID."
+    error_message = "Member reads add exactly one region-scoped sts:AssumeRole statement on the explicit role (ExternalId per ADR-011)."
+  }
+  assert {
+    condition = keys(aws_iam_role_policy_attachment.worker_diagnosis_evidence) == ["task"] && keys(aws_iam_role_policy_attachment.worker_diagnosis_network) == ["task"] && alltrue([
+      for a in concat(values(aws_iam_role_policy_attachment.worker_diagnosis_evidence), values(aws_iam_role_policy_attachment.worker_diagnosis_network)) :
+      a.role == aws_iam_role.worker_task[0].name
+    ])
+    error_message = "Both managed diagnosis policies attach only to the worker task role (kept out of the inline-policy quota)."
   }
   assert {
     condition = (!contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_NETWORK_EVIDENCE_ENABLED") &&

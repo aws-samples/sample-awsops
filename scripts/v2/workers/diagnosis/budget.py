@@ -6,13 +6,15 @@ import threading
 import time
 
 
-# The single parse of the task ledger; report.py imports these so the render
-# deadline and this analysis ledger cannot desynchronize.
+# Task ledger. Until the evidence loop is wired into report.py (a follow-up change that makes
+# report.py import these), report.py parses the same two variables independently with the same
+# defaults; keep them in step by hand.
 TASK_SECONDS = int(os.environ.get("DIAGNOSIS_TASK_BUDGET_S", "3300"))
 EXPORT_RESERVE_SECONDS = int(os.environ.get("DIAGNOSIS_POST_RENDER_RESERVE_S", "600"))
 MAX_INPUT_BYTES = 96 * 1024
 MAX_OUTPUT_TOKENS = 8192
-# Opus 5.x cannot disable thinking, which spends from max_tokens; report.py shares this parse.
+# Opus 5.x cannot disable thinking, which spends from max_tokens. report.py parses the same
+# variable independently (same default); this module owns only the ReportBudget ledger.
 OPUS_THINKING_HEADROOM = max(0, int(os.environ.get("DIAGNOSIS_OPUS_THINKING_HEADROOM", "8000")))
 
 

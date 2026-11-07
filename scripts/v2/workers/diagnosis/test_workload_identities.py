@@ -268,3 +268,86 @@ def test_proxy_provider_error_is_a_gap_and_defect_is_degraded():
     identities.collect_proxies(bundle, Budget(), lambda *args: Broken())
     assert "proxy_projection_failed" in bundle["degraded"]
     assert "proxy_configuration_unavailable" not in bundle["gaps"]
+
+
+
+def test_in_scope_unavailable_proxy_is_a_gap_and_cluster_deadline_is_a_bound():
+    bundle = _proxy_bundle()
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "modifying", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"},
+                    {"DBProxyName": "q", "Status": "modifying", "VpcId": "vpc-other",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-2"}]}
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert bundle["gaps"].count("proxy_not_available") == 1
+
+    class Deadline:
+        def __init__(self):
+            self.left = 3
+
+        def remaining(self, analysis=True):
+            self.left -= 1
+            return 100 if self.left > 0 else 0
+    bundle = _proxy_bundle()
+
+    class Cluster(Rds):
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:c1", "Type": "TRACKED_CLUSTER"}]}
+    budget = Budget()
+    calls = {"n": 0}
+    real = budget.remaining
+
+    def remaining(analysis=True):
+        calls["n"] += 1
+        return real(analysis=analysis) if calls["n"] < 6 else 0
+    budget.remaining = remaining
+    identities.collect_proxies(bundle, budget, lambda *args: Cluster())
+    assert "discovery_deadline" in bundle["incomplete"]
+    assert "proxy_target_unresolved" not in bundle["gaps"]
+
+
+def test_one_unreadable_cluster_target_does_not_blank_the_region():
+    from botocore.exceptions import ClientError
+    bundle = _proxy_bundle()
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:c1", "Type": "TRACKED_CLUSTER"},
+                                {"TargetArn": arn, "Type": "RDS_INSTANCE", "Port": 5432}]}
+
+        def describe_db_clusters(self, **kwargs):
+            raise ClientError({"Error": {"Code": "Throttling", "Message": "x"}}, "DescribeDBClusters")
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert "proxy_target_unresolved" in bundle["gaps"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]
+    assert any(r["kind"] == "configured_dependency" for r in bundle["relationships"])
+
+
+def test_proxy_cap_applies_after_scope_filtering():
+    bundle = _proxy_bundle()
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+    foreign = [{"DBProxyName": f"f{i}", "Status": "available", "VpcId": "vpc-other",
+                "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-f{i}"} for i in range(5)]
+    ours = {"DBProxyName": "ours", "Status": "available", "VpcId": "vpc-a",
+            "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-ours"}
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": foreign + [ours]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": arn, "Type": "RDS_INSTANCE", "Port": 5432}]}
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert any(r["kind"] == "configured_dependency" for r in bundle["relationships"])
+    assert "proxy_cap" not in bundle["incomplete"]

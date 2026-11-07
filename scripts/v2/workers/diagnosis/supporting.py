@@ -16,10 +16,14 @@ _MAX_PAGES = 3
 _REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 
+class _SupportingDeadline(Exception):
+    """The worker's own analysis budget ran out. A provider/socket TimeoutError is not this."""
+
+
 def _client(service, region, budget):
     remaining = budget.remaining()
     if remaining < 10:
-        raise TimeoutError("supporting_deadline_exhausted")
+        raise _SupportingDeadline()
     timeout = min(15, max(1, int(remaining - 5)))
     key = (service, region, timeout)
     with _lock:
@@ -60,7 +64,7 @@ def _cost(client, account, budget, bundle, now):
     groups, token, seen, complete = [], None, set(), True
     for page_number in range(_MAX_PAGES):
         if budget.remaining() < 10:
-            raise TimeoutError("supporting_deadline_exhausted")
+            raise _SupportingDeadline()
         params = {"TimePeriod": {"Start": start, "End": end}, "Granularity": "MONTHLY",
                   "Metrics": ["UnblendedCost"],
                   "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
@@ -179,7 +183,7 @@ def _commitment(client, account, budget, bundle, now):
     # IAM ce:GetReservationCoverage/GetSavingsPlansCoverage (below; us-east-1): workers.tf worker_diagnosis Sid DiagnosisDataSourcesReadOnly (runtime_read_condition).
     ri = client.get_reservation_coverage(**params)
     if budget.remaining() < 10:
-        raise TimeoutError("supporting_deadline_exhausted")
+        raise _SupportingDeadline()
     ri_percent = _numeric(ri.get("Total", {}).get("CoverageHours", {}).get(
         "CoverageHoursPercentage"), percent=True)
     rows = [{"service": "ReservedInstances", "percentage": ri_percent}]
@@ -188,7 +192,7 @@ def _commitment(client, account, budget, bundle, now):
     more, token, seen = bool(ri.get("NextPageToken")), None, set()
     for page_number in range(_MAX_PAGES):
         if budget.remaining() < 10:
-            raise TimeoutError("supporting_deadline_exhausted")
+            raise _SupportingDeadline()
         sp = client.get_savings_plans_coverage(**params, Granularity="MONTHLY", MaxResults=20,
                                                **({"NextToken": token} if token else {}))
         for row in sp.get("SavingsPlansCoverages", [])[:20]:
@@ -229,7 +233,10 @@ def collect(bundle, budget, *, scope):
     ]
     for key, service, region, fn in plans:
         if budget.remaining() < 10:
-            _mark(result, "degraded", "supporting_deadline_exhausted")
+            # A self-imposed bound, never data-quality loss: incomplete, with remaining plans unread.
+            _mark(result, "incomplete", "supporting_deadline_exhausted")
+            for later, *_ in plans[plans.index((key, service, region, fn)):]:
+                result.setdefault("native_sources", {})[later] = {"status": "not_collected", "reason": "deadline"}
             break
         try:
             client = _client(service, region, budget)
@@ -259,8 +266,8 @@ def collect(bundle, budget, *, scope):
             missing = f"{key}_not_collected"
             if missing in result["gaps"]:
                 result["gaps"].remove(missing)
-        except TimeoutError:  # the shared deadline ran out mid-plan: not a provider failure
-            _mark(result, "degraded", "supporting_deadline_exhausted")
+        except _SupportingDeadline:  # the shared deadline ran out mid-plan: not a provider failure
+            _mark(result, "incomplete", "supporting_deadline_exhausted")
             result.setdefault("native_sources", {})[key] = {"status": "not_collected", "reason": "deadline"}
         except Exception:  # fixed diagnostics; no provider exception data in reports
             _mark(result, "degraded", f"{key}_read_failed")

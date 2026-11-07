@@ -16,6 +16,18 @@ from .scoped_clients import ScopeError
 _SOURCE_ERRORS = (ClientError, BotoCoreError, ScopeError, ValueError)
 
 
+OBSERVATION_LAG = dt.timedelta(minutes=5)
+OBSERVATION_WINDOW = dt.timedelta(minutes=5)
+
+
+def _binding_age():
+    """Oldest observation the window can hold (lag + window): the inventory and binding tolerance.
+
+    Read at call time so tests (and a tuned lag) keep window and tolerance in step.
+    """
+    return int((OBSERVATION_LAG + OBSERVATION_WINDOW).total_seconds())
+
+
 class _NetworkBound(TimeoutError):
     """The stage deadline or analysis budget: already disclosed as incomplete, never a source gap."""
 
@@ -77,7 +89,7 @@ def _qualified(bundle):
         stamp = d._stamp(item.get("captured_at"))
         if (item.get("kind") == "inventory" and item.get("fresh") is True
                 and item.get("coverage", {}).get("complete") is True
-                and item.get("account") == account and stamp and d._fresh(stamp, 300)):
+                and item.get("account") == account and stamp and d._fresh(stamp, _binding_age())):
             for rid in item.get("resource_ids", []):
                 resource = resources.get(rid)
                 facts = resource.get("facts", {}) if resource else {}
@@ -158,7 +170,7 @@ def _dns_binding(bundle, row, qualified, start, end):
     addresses, aliases = answer
     local = [(r, capture) for r, capture in qualified if r["region"] == region
              and r.get("facts", {}).get("vpc_id") == vpc
-             and abs((stamp - capture).total_seconds()) <= 300]
+             and abs((stamp - capture).total_seconds()) <= _binding_age()]
     instance = row.get("instance")
     sources = [r for r, _ in local if r["kind"] in {"ec2", "ecs_task"}
                and _ip(r.get("facts", {}).get("private_ip_address")) == source_ip
@@ -259,7 +271,7 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
                  "binding": "dns_window_correlation", "direction": "undirected",
                  "source_id": d._id("source", binding["source_id"] or "resolver_query_logs")}
         evidence = d._evidence(bundle, "resolver_query_logs", "observed_dns_resolution", resources,
-            facts, binding["stamp"], region=binding["region"], fresh=d._fresh(binding["stamp"], 300),
+            facts, binding["stamp"], region=binding["region"], fresh=d._fresh(binding["stamp"], _binding_age()),
             window=window, coverage={"complete": False, "sampled": True})
         d._relationship(bundle, *resources, "observed_dns_resolution", evidence)
         emitted += 1
@@ -280,7 +292,7 @@ def project(bundle, dns_rows, flow_rows, *, start, end, source_id):
                  "source_id": d._id("source", row.get("query_source") or source_id), "metric_name": "DATA_TRANSFERRED",
                  "value": row["value"], "unit": "Bytes", "port": row.get("targetPort"),
                  "destination_category": row.get("destinationCategory")},
-                end, region=binding["region"], fresh=d._fresh(end, 300), window=window,
+                end, region=binding["region"], fresh=d._fresh(end, _binding_age()), window=window,
                 coverage={"complete": False, "sampled": True})
             d._relationship(bundle, *resources, "observed_network_flow", item)
             emitted += 1
@@ -428,6 +440,10 @@ def _dns(reads, region, approved, vpcs, start, end):
                 reads.pause(attempt)
             if not finished:
                 d._mark(reads.bundle, "incomplete", "dns_query_poll_cap")
+        except _NetworkBound:
+            # Keep rows from groups already read (their scan is paid); the bound is disclosed.
+            reads.bounded = True
+            return rows
         finally:
             if query_id and not finished:
                 # IAM logs:StopQuery: workers.tf worker_diagnosis_network Sid DiagnosisQueryResultsAndCancellation.
@@ -537,14 +553,18 @@ def collect(bundle, budget, *, scope, client_factory):
     approved, invalid = _groups(account, regions)
     if invalid:
         d._mark(bundle, "gaps", "dns_allowlist_invalid")
-    end = d._now()
-    start = end - dt.timedelta(minutes=5)
+    # Resolver query logs and NFM top contributors publish minutes behind real time: ending the
+    # window at "now" would read the not-yet-delivered tail and report empty sources as gaps.
+    end = d._now() - OBSERVATION_LAG
+    start = end - OBSERVATION_WINDOW
     dns_rows = []
     for region in regions:
         if region not in approved:
             continue
         try:
             dns_rows.extend(_dns(reads, region, approved[region], vpcs[region], start, end))
+            if reads.bounded:
+                break
         except _NetworkBound:
             break
         except _SOURCE_ERRORS:

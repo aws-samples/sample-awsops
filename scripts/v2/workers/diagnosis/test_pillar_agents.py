@@ -250,7 +250,7 @@ def test_context_is_bounded_without_silent_complete_coverage(monkeypatch):
     for n in range(180):
         data["resources"].append({
             "id": oid(f"r-resource-{n}"), "account": ACCOUNT, "region": "ap-northeast-2",
-            "kind": "ec2", "resource_id": f"i-{n}", "facts": {"endpoint": "x" * 1024},
+            "kind": "ec2", "resource_id": f"i-{n}", "facts": {"name": "x" * 1024},
         })
     client = FakeClient([response({"findings": []})])
     monkeypatch.setattr(agents, "_client", lambda *_: client)

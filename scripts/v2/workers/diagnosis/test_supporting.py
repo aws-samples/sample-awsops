@@ -131,11 +131,22 @@ def test_posture_sample_is_highest_severity_first_with_unsorted_fallback_disclos
 def test_deadline_mid_plan_is_not_reported_as_a_provider_failure(providers, monkeypatch):
     class Slow(Client):
         def get_findings(self, **kwargs):
-            raise TimeoutError("supporting_deadline_exhausted")
+            raise providers._SupportingDeadline()
     monkeypatch.setattr(providers, "_client", lambda *a: Slow())
     result = providers.collect(base(), Budget(), scope="self")
     assert "posture_read_failed" not in result["degraded"]
+    assert "supporting_deadline_exhausted" in result["incomplete"]
     assert result["native_sources"]["posture"] == {"status": "not_collected", "reason": "deadline"}
+
+
+def test_a_provider_socket_timeout_is_a_read_failure_not_the_budget(providers, monkeypatch):
+    class Timeout(Client):
+        def get_findings(self, **kwargs):
+            raise TimeoutError("read timed out")  # socket.timeout is TimeoutError since Python 3.10
+    monkeypatch.setattr(providers, "_client", lambda *a: Timeout())
+    result = providers.collect(base(), Budget(), scope="self")
+    assert "posture_read_failed" in result["degraded"]
+    assert "supporting_deadline_exhausted" not in result["incomplete"]
 
 
 def test_repeated_cost_page_tokens_stop_at_bound(providers, monkeypatch):
@@ -153,7 +164,10 @@ def test_deadline_exhaustion_skips_all_provider_calls(providers, monkeypatch):
             return 0
     monkeypatch.setattr(providers, "_client", lambda *a: pytest.fail("expired call"))
     result = providers.collect(base(), Expired(), scope="self")
-    assert not result["evidence"] and "supporting_deadline_exhausted" in result["degraded"]
+    assert not result["evidence"] and "supporting_deadline_exhausted" in result["incomplete"]
+    assert "supporting_deadline_exhausted" not in result["degraded"]
+    assert all(result["native_sources"][k] == {"status": "not_collected", "reason": "deadline"}
+               for k in ("cost", "posture", "what_changed", "commitment"))
 
 
 def test_all_native_requests_match_locked_sdk_shapes(providers, monkeypatch):
@@ -237,7 +251,6 @@ def test_absent_or_mismatched_host_identity_marks_the_skip(providers, monkeypatc
             monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", value)
         result = providers.collect(base(), Budget(), scope="self")
         assert "supporting_host_unknown" in result["gaps"] and not result["evidence"]
-        assert "supporting_host_unknown" in result["degraded"]
     member = base()
     member["coverage"].update(account="999900001111", storage_scope="999900001111")
     assert "supporting_host_unknown" not in providers.collect(member, Budget(), scope="999900001111")["gaps"]

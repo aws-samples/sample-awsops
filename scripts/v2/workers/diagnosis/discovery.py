@@ -266,6 +266,9 @@ def _facts(data, *, account=None, region=None):
                 and x.get("Name") in ("subnetId", "privateIPv4Address", "networkInterfaceId")
                 and isinstance(x.get("Value"), str)]}
                 for a in value if isinstance(a, dict) and isinstance(a.get("Details"), list)]
+            # Non-ENI shapes (EBS/IGW attachments carry no Details) are not projected: say so,
+            # so an attached volume never reads as unattached.
+            out["attachments_complete"] = len(out[key]) == len(value)
         elif key == "read_replica_source_db_instance_identifier" and key in data:
             # Presence matters: a synced null means standalone, an absent key means unknown.
             out[key] = _text(value, 200) if isinstance(value, str) else ""
@@ -446,15 +449,22 @@ def _read_inventory(conn, bundle, budget, scope):
         _mark(bundle, "degraded", "task_projection_failed")
 
 
+def _graph_max_age():
+    """Class window in seconds (web/lib/graph-state.ts: max(15, interval * 2) minutes)."""
+    return max(15, _bounded_int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS"), 0, 1440) * 2) * 60
+
+
 def _graph_state(value, cls):
     state = value or {}
     details = _dict(state.get("details"))
-    max_age = max(15, _bounded_int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS"), 0, 1440) * 2) * 60
+    max_age = _graph_max_age()
     fresh = _fresh(state.get("captured"), max_age)
     complete = state.get("status") in ("ok", "empty")
-    fresh = fresh and complete and not any(details.get(k) is True for k in
-                ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated",
-                 "infraUnavailable"))
+    # A recognized flag with an invalid type ("true", 1) is treated like metadata loss and
+    # disqualifies, as web/lib/graph-state.ts does; only a real False/absent value passes.
+    fresh = fresh and complete and not any(
+        k in details and details[k] is not False for k in
+        ("retainedPrevious", "metadataTruncated", "inputTruncated", "graphTruncated", "infraUnavailable"))
     # Positive trace loss counters (docs/api-reference.md) and any failureReason
     # disqualify; instanceObservationDrops is a legacy counter kept harmless.
     drops = _number(details.get("instanceObservationDrops")) or 0
@@ -608,11 +618,6 @@ def _read_graph(conn, bundle, budget, scope):
                                  and isinstance(v, str) and len(v) <= 512} for r in nodes[:600]}
         graph_resources = {}
         qualification = {cls: _graph_state(by_class.get(cls), cls) for cls in classes}
-        if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
-            # Writer qualification cannot certify this truncated read projection.
-            _mark(bundle, "incomplete", "graph_cap")
-            qualification = {cls: (False, {**coverage, "complete": False}, window)
-                             for cls, (_, coverage, window) in qualification.items()}
         bundle["coverage"]["graph"] = {cls: coverage for cls, (_, coverage, _) in qualification.items()}
         for cls, (fresh, _, _) in qualification.items():
             if not fresh:
@@ -630,6 +635,21 @@ def _read_graph(conn, bundle, budget, scope):
                     and meta.get("region") in bundle["coverage"].get("regions", {}).get("selected", []):
                 graph_resources[(cls, node_id)] = _resource(bundle, account, meta["region"], kind, node_id,
                     {k: _text(v) for k, v in meta.items() if k in ("host", "service", "sourceId", "namespace", "deployment")})
+        if len(nodes) > 600 or len(edges) > MAX_RELATIONSHIPS:
+            _mark(bundle, "incomplete", "graph_cap")
+            # Read-side truncation: the per-class projection is no longer complete, and rows from a
+            # truncated class are not current evidence of absence.
+            # Rows are interleaved across classes by per-class rank, so the sentinel names at most
+            # one class: every class with rows in a truncated list is treated as truncated.
+            truncated = set()
+            if len(nodes) > 600:
+                truncated |= {row[5] for row in nodes}
+            if len(edges) > MAX_RELATIONSHIPS:
+                truncated |= {row[6] for row in edges}
+            for cls in truncated & set(qualification):
+                fresh_cls, coverage_cls, window_cls = qualification[cls]
+                coverage_cls.update(complete=False, read_truncated=True)
+                qualification[cls] = (False, coverage_cls, window_cls)
         observation_count = 0
         for source, target, rel, confidence, raw_meta, captured, cls in edges[:MAX_RELATIONSHIPS]:
             fresh, coverage, window = qualification[cls]
@@ -642,7 +662,7 @@ def _read_graph(conn, bundle, budget, scope):
                     if _number(meta.get(key)) is not None:
                         facts[key] = meta[key]
                 item = _evidence(bundle, "stored_graph", kind, [source_r["id"], target_r["id"]],
-                    facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, 1800),
+                    facts, captured, region=source_r["region"], fresh=fresh and _fresh(captured, _graph_max_age()),
                     window=window, coverage=_row_coverage(coverage, cls))
                 _relationship(bundle, source_r["id"], target_r["id"], kind, item)
             else:
@@ -703,7 +723,7 @@ def _read_graph(conn, bundle, budget, scope):
                     r["id"] in e["resource_ids"] for e in bundle["evidence"]) for r in (instance, database))
                 item = _evidence(bundle, "stored_graph", "observed_call", [instance["id"], database["id"]],
                     facts, pair["observed_at_ms"], region=instance["region"],
-                    fresh=fresh and inventory_fresh and _fresh(observed, 1800),
+                    fresh=fresh and inventory_fresh and _fresh(observed, _graph_max_age()),
                     window=window, coverage=pair_coverage)
                 _relationship(bundle, instance["id"], database["id"], "observed_call", item)
         if any(row["id"] in retired and row["coverage"].get("status") == "refresh_pending"
@@ -777,43 +797,43 @@ def _xray(bundle, budget, regions):
             for page in _pages(client, "get_service_graph", {"StartTime": start, "EndTime": end},
                                bundle, budget, coverage):
                 page_services = page.get("Services") or []
-                if len(page_services) > MAX_RESOURCES:
-                    coverage["complete"] = False
-                    _mark(bundle, "incomplete", "xray_node_cap")
-                for service in page_services[:MAX_RESOURCES]:
-                    ref = service.get("ReferenceId")
-                    if isinstance(ref, int) and len(services) < MAX_RESOURCES:
+                if not isinstance(page_services, list):
+                    raise ValueError("xray_services_malformed")
+                for service in page_services:
+                    ref = service.get("ReferenceId") if isinstance(service, dict) else None
+                    if not isinstance(ref, int):
+                        coverage["complete"] = False
+                        _mark(bundle, "incomplete", "xray_node_unresolved")
+                    elif len(services) < MAX_RESOURCES:
                         services[ref] = service
-                    else:
+                    else:  # checked before any slice: a single oversized page is disclosed too
                         coverage["complete"] = False
                         _mark(bundle, "incomplete", "xray_node_cap")
         except Exception:
             coverage["complete"] = False
             _mark(bundle, "degraded", "xray_read_failed")
-        # Qualify the entire region before emitting any evidence. A later clipped
-        # service must not leave earlier edges claiming complete, fresh coverage.
-        if any(len(service.get("Edges") or []) > MAX_RELATIONSHIPS
-               for service in services.values()):
-            coverage["complete"] = False
-            _mark(bundle, "incomplete", "xray_edge_cap")
-        xray_resources = [r for r in bundle["resources"] if _is_xray(r)]
-        remaining = MAX_XRAY_RESOURCES - len(xray_resources)
-        existing = {r["resource_id"] for r in xray_resources
-                    if r["account"] == account and r["region"] == region}
+        # Decide completeness before emitting any row, so no row claims complete coverage. The
+        # resource share for X-Ray nodes (MAX_XRAY_RESOURCES) is a cap too.
+        # The X-Ray share is global across regions: count what earlier regions already used. Rows
+        # this region already holds are reused by _resource, so only new identities (services and
+        # edge-only targets) consume the remaining share.
+        xray_rows = [r for r in bundle["resources"] if _is_xray(r)]
+        existing = {r["resource_id"] for r in xray_rows if r["region"] == region}
         planned = {f"xray:{ref}" for ref in services}
-        for service in services.values():
-            if len(planned - existing) > remaining:
-                break
-            planned.update(f"xray:{edge['ReferenceId']}"
-                           for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]
-                           if isinstance(edge.get("ReferenceId"), int))
-        if len(planned - existing) > remaining:
-            # The share is global, while completeness is recorded per region.
-            # Qualify before copying coverage into any emitted regional row.
+        for svc in services.values():
+            edges = svc.get("Edges") or []
+            planned.update(f"xray:{e.get('ReferenceId')}" for e in (edges if isinstance(edges, list) else [])
+                           [:MAX_RELATIONSHIPS] if isinstance(e, dict) and isinstance(e.get("ReferenceId"), int))
+        if len(planned - existing) > MAX_XRAY_RESOURCES - len(xray_rows):
             coverage["complete"] = False
             _mark(bundle, "incomplete", "xray_resource_cap")
+        if any(not isinstance(svc.get("Edges") or [], list) or len(svc.get("Edges") or []) > MAX_RELATIONSHIPS
+               for svc in services.values()):
+            coverage["complete"] = False
+            _mark(bundle, "incomplete", "xray_edge_cap")
         for ref, service in services.items():
-            for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]:
+            edges = service.get("Edges") or []
+            for edge in (edges if isinstance(edges, list) else [])[:MAX_RELATIONSHIPS]:
                 target = edge.get("ReferenceId")
                 if not isinstance(target, int):
                     _mark(bundle, "incomplete", "xray_unresolved_target")
@@ -955,14 +975,21 @@ def _metrics(bundle, budget, resources, *, client_factory=None):
                                          for v in metrics.get(name, {}).values()) for name in io_names)
                 missing_memory = not metrics.get("FreeableMemory", {}).get("Minimum", {}).get("samples")
                 if r["kind"] == "ec2":
-                    observed = memory.get(r["id"], {})
+                    observed = memory.get(r["id"], {}) if isinstance(memory, dict) else {}
+                    observed = observed if isinstance(observed, dict) else {}
                     missing_memory = observed.get("complete") is not True
                     if observed.get("metric"):
                         metrics["MemoryUtilization"] = {"Maximum": observed["metric"]}
-                        ratios.append(observed["sample_ratio"])
-                        statuses.append(observed["metric"]["status"])
+                        ratio, status = observed.get("sample_ratio"), _dict(observed["metric"]).get("status")
+                        if _number(ratio) is None or not isinstance(status, str):
+                            # A malformed collector result leaves memory unknown; never fails collect().
+                            _mark(bundle, "degraded", "memory_metrics_read_failed")
+                            ratio, status, missing_memory = 0, "missing", True
+                        ratios.append(ratio)
+                        statuses.append(status)
                     if missing_memory:
-                        _mark(bundle, "gaps", observed.get("reason") or "memory_metric_absent")
+                        reason = observed.get("reason")
+                        _mark(bundle, "gaps", reason if isinstance(reason, str) and reason else "memory_metric_absent")
                 ratio = min(ratios) if ratios else 0
                 complete = page_coverage["complete"] and ratio >= 0.9 and all(s == "Complete" for s in statuses)
                 if not complete:
@@ -1061,11 +1088,11 @@ def _provider_row(bundle, r, row, kind):
              "guard_hits": guards, "missing_memory": not memory, "missing_io": not io,
              "utilization": utilization, "projected_utilization": _utilization(top.get("projectedUtilizationMetrics")),
              "multi_az": r["facts"].get("multi_az"), "replica_source": replica}
-    pressure_complete = memory and io and lookback is not None and lookback >= METRIC_DAYS
+    # Complete only when the provider saw memory and I/O over a full lookback, like cloudwatch rows.
+    measured = bool(memory and io and lookback is not None and lookback >= 14)
     _evidence(bundle, "compute_optimizer", "provider_sizing", [r["id"]], facts, generated,
-              region=r["region"], fresh=fresh,
-              coverage={"complete": fresh and pressure_complete, "lookback_days": lookback,
-                        "sample_ratio": 1 if pressure_complete else 0})
+              region=r["region"], fresh=fresh, coverage={"complete": measured and fresh, "lookback_days": lookback,
+              "sample_ratio": 1 if measured else 0})
 
 
 def _provider_sizing(bundle, budget, resources, *, client_factory=None):
@@ -1074,7 +1101,11 @@ def _provider_sizing(bundle, budget, resources, *, client_factory=None):
         return
     for region in sorted({r["region"] for r in resources}):
         for kind in ("ec2", "rds"):
-            selected = [r for r in resources if r["region"] == region and r["kind"] == kind and _arn(r)]
+            candidates = [r for r in resources if r["region"] == region and r["kind"] == kind]
+            selected = [r for r in candidates if _arn(r)]
+            if len(selected) < len(candidates):
+                # "Not queried" must stay distinguishable from "no recommendation".
+                _mark(bundle, "incomplete", "provider_identity_unresolved")
             if not selected or not _available(bundle, budget):
                 continue
             try:
@@ -1200,19 +1231,57 @@ def _finish(bundle):
     # dangling citations enter the evidence index.
     original = {k: max(len(bundle[k]), bundle["coverage"].get(k, {}).get("matched", 0))
                 for k in ("resources", "evidence", "relationships")}
-    while len(json.dumps(bundle, ensure_ascii=False, default=str).encode()) > MAX_BYTES - 512:
+    def size(value):
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode())
+
+    limit = MAX_BYTES - 512
+    total = size(bundle)
+    if total > limit and bundle["evidence"]:
+        # One eviction plan and per-row sizes instead of re-serializing the whole bundle per row
+        # (O(n) not O(n^2)). Evict the newest low-priority evidence first (X-Ray, then graph);
+        # sizing, metrics and FinOps rows outlast them; inventory goes last; within a class,
+        # stale/superseded rows go before current ones.
+        _mark(bundle, "incomplete", "context_byte_cap")
+        rows = bundle["evidence"]
+        order = sorted(range(len(rows)), key=lambda i: (
+            _EVICTION.get(rows[i].get("source"), 2), rows[i].get("fresh") is True, -i))
+        cites = {}
+        for rel in bundle["relationships"]:
+            for eid in rel.get("evidence_ids", []):
+                cites.setdefault(eid, []).append(rel)
+        removed, dropped_rels = set(), set()
+        evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
+        for i in order:
+            if total <= limit:
+                break
+            row = rows[i]
+            removed.add(i)
+            evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
+            total -= size(row) + 2  # ", " list separator
+            for rel in cites.get(row["id"], []):
+                if id(rel) not in dropped_rels:
+                    dropped_rels.add(id(rel))
+                    total -= size(rel) + 2
+        bundle["evidence"] = [row for i, row in enumerate(rows) if i not in removed]
+        bundle["relationships"] = [r for r in bundle["relationships"] if id(r) not in dropped_rels]
+    for key in ("relationships", "resources"):
+        # Same linear estimate when evidence alone cannot fit the bound.
+        total = size(bundle)
+        # Resources go only after every citing relationship: no dangling references.
+        if (total > limit and not bundle["evidence"] and bundle[key]
+                and (key == "relationships" or not bundle["relationships"])):
+            _mark(bundle, "incomplete", "context_byte_cap")
+            keep = len(bundle[key])
+            while keep and total > limit:
+                keep -= 1
+                total -= size(bundle[key][keep]) + 2
+            bundle[key] = bundle[key][:keep]
+    # The estimate is exact up to separators; a short exact pass covers any remainder.
+    while size(bundle) > limit:
         _mark(bundle, "incomplete", "context_byte_cap")
         if bundle["evidence"]:
-            # Evict the newest low-priority evidence first (X-Ray, then graph);
-            # sizing, metrics and FinOps rows outlast them; inventory goes last.
-            rows = bundle["evidence"]
-            # Within a class, stale/superseded rows go before current ones.
-            row = rows.pop(min(range(len(rows)), key=lambda i: (
-                _EVICTION.get(rows[i].get("source"), 2), rows[i].get("fresh") is True, -i)))
-            evicted = bundle["coverage"].setdefault("byte_cap_evicted", {})
-            evicted[row.get("source")] = evicted.get(row.get("source"), 0) + 1
-            removed = row["id"]
-            bundle["relationships"] = [r for r in bundle["relationships"] if removed not in r["evidence_ids"]]
+            row = bundle["evidence"].pop()
+            bundle["relationships"] = [r for r in bundle["relationships"] if row["id"] not in r["evidence_ids"]]
         elif bundle["relationships"]:
             bundle["relationships"].pop()
         elif bundle["resources"]:

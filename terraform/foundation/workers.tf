@@ -904,10 +904,12 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
 # ADR-020's CUR-absence scoping) and must not carry IAM ahead of code that uses it — this repo's
 # `worker_diagnosis` policy sets the "exactly the actions the worker calls" precedent this follows.
 # Add CE/COH/Budgets actions here ONLY when a rule that actually calls them ships.
-resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
+# Customer-managed (not inline): with up to 32 member ARNs and the all-regions read condition the
+# two diagnosis policies would push the worker task role toward IAM's 10,240-character aggregate
+# inline-policy quota. Each managed policy stays under its own 6,144-character limit.
+resource "aws_iam_policy" "worker_diagnosis_evidence" {
   for_each = local.diagnosis_evidence_roles
   name     = "${var.project}-worker-${each.key}-diagnosis-evidence-read"
-  role     = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([{
@@ -926,22 +928,28 @@ resource "aws_iam_role_policy" "worker_diagnosis_evidence" {
       Resource  = "*"
       Condition = local.runtime_read_condition
       }], length(var.diagnosis_member_role_arns) > 0 ? [{
+      # ExternalId is enforced by the member trust policy (third-party) or replaced by its pin
+      # on this worker role (first-party, ADR-011); the worker sends a registered value.
       Sid      = "DiagnosisRegisteredMemberReadOnly"
       Effect   = "Allow"
       Action   = ["sts:AssumeRole"]
       Resource = var.diagnosis_member_role_arns
       Condition = {
-        StringLike   = { "sts:ExternalId" = "?*" }
         StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
       }
     }] : [])
   })
 }
 
-resource "aws_iam_role_policy" "worker_diagnosis_network" {
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_evidence" {
+  for_each   = aws_iam_policy.worker_diagnosis_evidence
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
+resource "aws_iam_policy" "worker_diagnosis_network" {
   for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
   name     = "${var.project}-worker-${each.key}-diagnosis-network-read"
-  role     = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([{
@@ -952,10 +960,11 @@ resource "aws_iam_role_policy" "worker_diagnosis_network" {
       Condition = local.runtime_read_condition
       }, {
       # Query creation/cancellation affect analysis jobs only, never monitors or AWS workloads.
-      Sid       = "DiagnosisMonitorObservationQuery"
-      Effect    = "Allow"
-      Action    = ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"]
-      Resource  = [for region in local.runtime_read_regions : "arn:aws:networkflowmonitor:${region}:${local.acct}:monitor/*"]
+      Sid    = "DiagnosisMonitorObservationQuery"
+      Effect = "Allow"
+      Action = ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"]
+      # Region is bounded by the condition; a per-region ARN fan-out would only add policy size.
+      Resource  = ["arn:aws:networkflowmonitor:*:${local.acct}:monitor/*"]
       Condition = local.runtime_read_condition
       }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
       Sid       = "DiagnosisApprovedResolverLogRead"
@@ -973,6 +982,12 @@ resource "aws_iam_role_policy" "worker_diagnosis_network" {
       Condition = local.runtime_read_condition
     }] : [])
   })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_network" {
+  for_each   = aws_iam_policy.worker_diagnosis_network
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
 }
 
 resource "aws_iam_role_policy" "worker_finops_baseline" {

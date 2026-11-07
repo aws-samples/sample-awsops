@@ -32,7 +32,7 @@ Internet -> CloudFront (TLS, Lambda@Edge Cognito auth) -> VPC Origin (https-only
   -> async workers: POST /api/jobs -> SQS -> Step Functions -> Lambda or Fargate worker
 ```
 
-Stats: 41 pages, 104 API routes, 118 components (`web/`), 21 consolidated ADRs, Terraform-managed (`terraform/foundation`, no CDK).
+Stats: 42 pages, 105 API routes, 119 components (`web/`), 21 consolidated ADRs, Terraform-managed (`terraform/foundation`, no CDK).
 
 > **No public ALB.** The edge is fully private — CloudFront reaches the ALB only through a VPC Origin, and the ALB only accepts traffic from CloudFront's managed security group. v2's posture is a **read-only ops dashboard + AI diagnosis**: AWS-resource mutation and autonomous remediation are FROZEN by design (ADR-005) — infra changes stay with the operator's own IaC/Change Manager, with two narrowly-scoped owner-override exceptions: self-healing service restarts (ADR-015) and, when `connector_target_sync_enabled` is on, registering a just-added datasource's connector target on this stack's own AgentCore gateways (create/update only, never delete). (ADR-019's SG-rules Athena role is a separate, ordinary GATED feature — ADR-019 concludes it sits inside the existing read-only invariant and is not an ADR-005 exception.)
 
@@ -162,7 +162,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | `diagnosis_evidence_loop_enabled` | Default `false`. Evidence-backed six-pillar diagnosis with bounded review and local fact rendering; Terraform requires `workers_enabled`. Analysis runs only with a supported Bedrock Claude diagnosis model under `mixed` or `bedrock_claude`; other providers produce `partial` reports without model calls. Analysis only; no remediation execution |
 | `diagnosis_network_evidence_enabled` | Default `false`; requires the evidence loop. Reads existing host-account Resolver logs, Network Flow Monitor and RDS Proxy configuration; creates no monitoring resources |
 | `diagnosis_dns_log_group_arns` | Default `[]`, at most eight exact host-account log-group ARNs; network evidence also verifies each group's active Resolver/VPC association |
-| `diagnosis_member_role_arns` | Default `[]`, at most 32 exact registered member `AWSopsReadOnlyRole` ARNs; requires the evidence loop, target trust for the worker role, and the same nonempty ExternalId in trust policy and account registration |
+| `diagnosis_member_role_arns` | Default `[]`, at most 32 exact registered member `AWSopsReadOnlyRole` ARNs; requires the evidence loop and target trust for the worker role; the worker sends the registered ExternalId when the account has one (ADR-011) |
 | `model_provider` | model family for chat, query generation, synthesis, routing and AI Diagnosis: `mixed` (default, unchanged), `bedrock_claude`, `bedrock_openai` or `anthropic_api` (Claude through the Anthropic API; needs `anthropic_api_key_secret_arn`, a Secrets Manager secret holding the key). Bedrock model grants shrink to the chosen family; `anthropic_api` grants only that secret. Under `anthropic_api` the AI usage/cost pages, which read Bedrock invocation logs, show no usage. See `docs/runbooks/model-provider.md` |
 
 Runtime IAM narrowing is independent of these opt-in flags: the next apply changes permissions on already-enabled stacks, including main (three web SSM parameters, runtime discovery/token actions, own-cluster task control and the models of the selected `model_provider` family). Known regions include future opt-ins; this is not live-access proof.
@@ -184,7 +184,7 @@ AgentCore's own config (runtime ARN, Memory ID, Code Interpreter ID) is written 
 
 ```
 awsops/
-  web/                    # Next.js thin-BFF: 41 pages, 104 API routes, 118 components
+  web/                    # Next.js thin-BFF: 42 pages, 105 API routes, 119 components
   agent/                  # Strands Agent (Runtime source) + MCP Lambda tool sources
   terraform/foundation/  # single Terraform root: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/             # configure/deploy/migrate/agentcore/workers tooling (all Node.js/Python)
@@ -238,7 +238,7 @@ including the conditional documentation build and full presentation archive chec
 
 ## API Documentation
 
-The 104 API routes live under `web/app/api/`. Key routes: `health` (public), `stream` (SSE chat), `db` (Aurora ping), `jobs` (+`/[id]`, async job submission/status), `security`, `compliance`, `auth/login`. See the docs site for user-facing guidance.
+The 105 API routes live under `web/app/api/`. Key routes: `health` (public), `stream` (SSE chat), `db` (Aurora ping), `jobs` (+`/[id]`, async job submission/status), `security`, `compliance`, `auth/login`. See the docs site for user-facing guidance.
 
 ## Contributing
 
@@ -280,7 +280,7 @@ Internet -> CloudFront (TLS, Lambda@Edge Cognito 인증) -> VPC Origin (https-on
   -> 비동기 워커: POST /api/jobs -> SQS -> Step Functions -> Lambda 또는 Fargate 워커
 ```
 
-현황: 41 페이지, 104 API 라우트, 118 컴포넌트(`web/`), 21개 통합 ADR, Terraform 관리(`terraform/foundation`, CDK 없음).
+현황: 42 페이지, 105 API 라우트, 119 컴포넌트(`web/`), 21개 통합 ADR, Terraform 관리(`terraform/foundation`, CDK 없음).
 
 > **공개 ALB 없음.** 엣지는 완전히 비공개입니다 — CloudFront는 VPC Origin을 통해서만 ALB에 도달하고, ALB는 CloudFront 관리형 보안 그룹의 트래픽만 허용합니다. v2의 자세는 **read-only 운영 대시보드 + AI 진단**입니다: AWS 리소스 변경·자율 조치는 설계상 FROZEN(ADR-005) — 인프라 변경은 운영자 자신의 IaC/Change Manager가 담당하며, 좁게 한정된 owner-override 예외는 두 가지뿐입니다: 자가치유 서비스 재시작(ADR-015), 그리고 `connector_target_sync_enabled`가 켜졌을 때 방금 추가한 데이터소스의 커넥터 target을 이 스택 자신의 AgentCore gateway에 등록하는 것(생성·갱신만, 삭제 없음). (ADR-019의 SG-rules Athena role은 별개의 일반 GATED 기능입니다 — ADR-019는 이것이 기존 read-only 불변식 내부에 있다고 결론 내리며, ADR-005 예외가 아닙니다.)
 
@@ -405,7 +405,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `diagnosis_evidence_loop_enabled` | 기본 `false`. 근거 기반 6개 필러 진단, 제한된 리뷰와 로컬 사실 렌더링. Terraform은 `workers_enabled`를 요구함. 분석은 `mixed` 또는 `bedrock_claude`의 지원되는 Bedrock Claude 진단 모델에서만 실행하며, 다른 제공자는 모델 호출 없이 `partial` 리포트를 생성함. 분석 전용이며 복구를 실행하지 않음 |
 | `diagnosis_network_evidence_enabled` | 기본 `false`, 근거 루프 필요. 기존 호스트 계정 Resolver 로그·Network Flow Monitor·RDS Proxy 설정을 읽으며 모니터링 리소스를 생성하지 않음 |
 | `diagnosis_dns_log_group_arns` | 기본 `[]`, 정확한 호스트 계정 로그 그룹 ARN 최대 8개. 네트워크 근거는 각 그룹의 활성 Resolver/VPC 연결도 검증 |
-| `diagnosis_member_role_arns` | 기본 `[]`, 등록된 멤버 `AWSopsReadOnlyRole`의 정확한 ARN 최대 32개. 근거 루프, 대상 역할의 워커 역할 신뢰, 신뢰 정책과 계정 등록에 동일한 비어 있지 않은 ExternalId 필요 |
+| `diagnosis_member_role_arns` | 기본 `[]`, 등록된 멤버 `AWSopsReadOnlyRole`의 정확한 ARN 최대 32개. 근거 루프와 대상 역할의 워커 역할 신뢰 필요. 계정 등록에 ExternalId가 있으면 워커가 이를 함께 보냄(ADR-011) |
 | `model_provider` | 채팅·쿼리 생성·합성·라우팅·AI 진단에 쓸 모델 계열: `mixed`(기본값, 기존과 동일), `bedrock_claude`, `bedrock_openai`, `anthropic_api`(Anthropic API의 Claude; 키를 담은 Secrets Manager 시크릿 `anthropic_api_key_secret_arn` 필요). Bedrock 모델 권한은 선택한 계열로 좁혀지고 `anthropic_api`는 해당 시크릿 읽기만 부여합니다. `anthropic_api`에서는 Bedrock 호출 로그를 읽는 AI 사용량·비용 화면에 사용량이 표시되지 않습니다. `docs/runbooks/model-provider.md` 참고 |
 
 런타임 IAM 축소는 위 선택 플래그와 무관하며 main 등 기존 활성 스택의 다음 apply에 적용됩니다(웹 SSM 세 파라미터·런타임 조회/토큰 동작·자체 클러스터 태스크 제어·선택한 `model_provider` 계열 모델). 알려진 리전에는 이후 opt-in 리전도 포함되며 실제 접근 성공의 증거는 아닙니다.
@@ -427,7 +427,7 @@ AgentCore 자체 설정(runtime ARN, Memory ID, Code Interpreter ID)은 provisio
 
 ```
 awsops/
-  web/                      # Next.js thin-BFF: 41 페이지, 104 API 라우트, 118 컴포넌트
+  web/                      # Next.js thin-BFF: 42 페이지, 105 API 라우트, 119 컴포넌트
   agent/                    # Strands Agent(Runtime 소스) + MCP Lambda 도구 소스
   terraform/foundation/  # 단일 Terraform 루트: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/               # configure/deploy/migrate/agentcore/workers 도구(전부 Node.js/Python)
@@ -481,7 +481,7 @@ controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install 
 
 ## API 문서
 
-104개 API 라우트가 `web/app/api/`에 있습니다. 주요 라우트: `health`(공개), `stream`(SSE 채팅), `db`(Aurora ping), `jobs`(+`/[id]`, 비동기 작업 제출/상태), `security`, `compliance`, `auth/login`. 사용자 가이드는 docs site를 참고하세요.
+105개 API 라우트가 `web/app/api/`에 있습니다. 주요 라우트: `health`(공개), `stream`(SSE 채팅), `db`(Aurora ping), `jobs`(+`/[id]`, 비동기 작업 제출/상태), `security`, `compliance`, `auth/login`. 사용자 가이드는 docs site를 참고하세요.
 
 ## 기여 방법
 

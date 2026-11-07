@@ -421,7 +421,8 @@ def test_graph_projection_caps_disqualify_class_and_emitted_rows(provider, cap):
     bundle = discovery.collect(db, ACCOUNT, Budget())
     assert "graph_cap" in bundle["incomplete"]
     assert bundle["coverage"]["graph"]["trace"]["complete"] is False
-    assert bundle["coverage"]["graph"]["infra"]["complete"] is False
+    # Rows interleave by per-class rank, so a class absent from a truncated edge list had no edges.
+    assert bundle["coverage"]["graph"]["infra"]["complete"] is (cap == "edges")
     rows = [e for e in bundle["evidence"] if e["source"] == "stored_graph"]
     assert rows and all(not e["fresh"] and not e["coverage"]["complete"] for e in rows)
     assert len([e for e in rows if e["facts"].get("correlation_id")]) == 2
@@ -665,10 +666,11 @@ def test_provider_requests_respect_sdk_resource_list_bound(provider):
         f"arn:aws:ec2:{REGION}:{ACCOUNT}:instance/i-{i:017x}" for i in range(count)}
 
 
-def test_database_timeout_restores_existing_policy_after_read_error(provider):
+@pytest.mark.parametrize("prior", [30, None])  # worker db.connect() passes no timeout: gettimeout() is None
+def test_database_timeout_restores_existing_policy_after_read_error(provider, prior):
     class Socket:
         def __init__(self):
-            self.timeout, self.changes = 30, []
+            self.timeout, self.changes = prior, []
         def gettimeout(self):
             return self.timeout
         def settimeout(self, seconds):
@@ -689,8 +691,8 @@ def test_database_timeout_restores_existing_policy_after_read_error(provider):
     changes = [args["timeout"] for sql, args in db.queries if "set_config('statement_timeout'" in sql]
     # The server cancels before the 4s transport timeout closes the connection.
     assert "2000ms" in changes and changes[-1] == "30s"
-    assert 4 in db._usock.changes and max(db._usock.changes[:-1]) <= 30
-    assert db._usock.timeout == 30
+    assert 4 in db._usock.changes and max(c for c in db._usock.changes if c is not None) <= 30
+    assert db._usock.timeout == prior
     assert "inventory_read_failed" in bundle["degraded"]
 
 
@@ -1186,3 +1188,129 @@ def test_host_trace_nodes_without_account_bind_and_unbound_edges_are_disclosed(p
     db.nodes[-1][3]["region"] = "eu-west-1"  # db:two cannot be scoped
     bundle = discovery.collect(db, ACCOUNT, Budget())
     assert "unresolved_graph_edge" in bundle["incomplete"]
+
+
+
+def test_evidence_loop_is_off_when_the_flag_is_absent(provider, monkeypatch):
+    monkeypatch.delenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED")
+    db = Database([inventory("ec2", I1, {})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert not db.queries and not provider.client_calls
+    assert "evidence_loop_disabled" in bundle["gaps"]
+    merged = discovery.follow_up(Database(), ACCOUNT, bundle, [], Budget())
+    assert "follow_up_rejected" in merged["gaps"] and not provider.client_calls
+
+
+def test_metric_requests_stay_under_the_cloudwatch_query_limit(provider):
+    provider.metrics = metric_response
+    rows = [inventory("ec2", f"i-{n:017x}", {}) for n in range(120)]
+    rows += [inventory("rds", f"db{n}", {"db_instance_identifier": f"db{n}",
+                                         "read_replica_source_db_instance_identifier": "src"}) for n in range(80)]
+    discovery.collect(Database(rows), ACCOUNT, Budget())
+    calls = [args for op, args in provider.calls if op == "metrics"]
+    assert calls and all(len(c["MetricDataQueries"]) <= 500 for c in calls)
+
+
+def test_row_freshness_follows_the_configured_graph_window(provider, monkeypatch):
+    monkeypatch.setenv("GRAPH_REBUILD_INTERVAL_MINS", "60")  # class window: 120 minutes
+    db = graph_fixture()
+    old = NOW - dt.timedelta(minutes=45)
+    for edge in db.edges:
+        edge[5] = old
+    for state in db.states:
+        state[2] = state[3] = old
+    import diagnosis.discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    rows = [e for e in bundle["evidence"] if e["source"] == "stored_graph" and e["kind"] == "configured_dependency"
+            or (e["source"] == "stored_graph" and not e["facts"].get("correlation_id"))]
+    assert rows and all(e["fresh"] for e in rows)
+
+
+def test_non_eni_attachments_are_disclosed_not_reported_unattached(provider):
+    db = Database([inventory("ebs_volume", "vol-1", {"attachments": [{"Device": "/dev/xvda", "InstanceId": I1,
+                                                                        "State": "attached"}]})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    facts = resource(bundle, "vol-1")["facts"]
+    assert facts["attachments"] == [] and facts["attachments_complete"] is False
+
+
+def test_single_oversized_xray_page_and_edge_list_are_disclosed(provider):
+    services = [{"ReferenceId": i, "Name": f"s{i}", "Edges": []} for i in range(discovery.MAX_RESOURCES + 5)]
+    services[0]["Edges"] = [{"ReferenceId": 1} for _ in range(discovery.MAX_RELATIONSHIPS + 1)]
+    provider.xray = [{"Services": services}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert {"xray_node_cap", "xray_edge_cap"} <= set(bundle["incomplete"])
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["coverage"]["complete"] is False and e["fresh"] is False for e in rows)
+
+
+def test_unsized_resources_are_disclosed_not_silently_skipped(provider):
+    db = Database([inventory("ec2", I1, {"arn": f"arn:aws:ec2:{REGION}:999900001111:instance/{I1}"})])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "provider_identity_unresolved" in bundle["incomplete"]
+
+
+def test_malformed_memory_result_never_fails_collection(provider, monkeypatch):
+    from diagnosis import memory_metrics
+    provider.metrics = metric_response
+    monkeypatch.setattr(memory_metrics, "collect", lambda client, batch, start, end, budget: {
+        r["id"]: {"metric": {"unit": "Percent"}, "complete": True} for r in batch})
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert bundle["coverage"]["inventory"]["total"] == 1
+    assert "memory_metrics_read_failed" in bundle["degraded"]
+    row = next(e for e in bundle["evidence"] if e["kind"] == "metrics")
+    assert row["facts"]["missing_memory"] is True and row["coverage"]["complete"] is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes"])
+def test_mistyped_graph_state_flags_disqualify_like_metadata_loss(provider, value):
+    db = graph_fixture()
+    db.states[0][4]["metadataTruncated"] = value
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert bundle["coverage"]["graph"]["trace"]["complete"] is False
+
+
+def test_xray_nodes_beyond_their_resource_share_mark_coverage_incomplete(provider):
+    count = discovery.MAX_XRAY_RESOURCES + 1
+    provider.xray = [{"Services": [{"ReferenceId": i, "Name": f"s{i}",
+                                    "Edges": [{"ReferenceId": (i + 1) % count}]} for i in range(count)]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert "xray_resource_cap" in bundle["incomplete"]
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["coverage"]["complete"] is False for e in rows)
+
+
+def test_byte_cap_eviction_serializes_the_bundle_a_bounded_number_of_times(provider, monkeypatch):
+    rows = [inventory("ec2", f"i-{n:017x}", {"instance_type": "m7g.large"}) for n in range(150)]
+    calls = {"n": 0}
+    real = discovery.json.dumps
+
+    def counting(value, *args, **kwargs):
+        if isinstance(value, dict) and "evidence" in value and "coverage" in value:
+            calls["n"] += 1
+        return real(value, *args, **kwargs)
+    monkeypatch.setattr(discovery, "MAX_BYTES", 20_000)
+    monkeypatch.setattr(discovery.json, "dumps", counting)
+    bundle = discovery.collect(Database(rows), ACCOUNT, Budget())
+    assert "context_byte_cap" in bundle["incomplete"]
+    assert calls["n"] <= 12
+
+
+def test_read_side_graph_truncation_demotes_the_class_coverage(provider):
+    db = graph_fixture()
+    extra = [[f"svc:x{i}", "service", f"x{i}", {"accountId": ACCOUNT, "region": REGION}, NOW, "trace"] for i in range(601)]
+    db.nodes.extend(extra)
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "graph_cap" in bundle["incomplete"]
+    # Interleaved rows: every class present in a truncated read is demoted, not just the sentinel's.
+    assert bundle["coverage"]["graph"]["trace"]["complete"] is False
+    assert bundle["coverage"]["graph"]["infra"]["complete"] is False
+    assert not any(e["fresh"] for e in bundle["evidence"] if e["source"] == "stored_graph")
+
+
+def test_memory_blind_provider_rows_never_claim_complete_coverage(provider):
+    provider.ec2 = [{"instanceRecommendations": [recommendation()]}]  # CPU only: no memory/IO
+    bundle = discovery.collect(Database([inventory("ec2", I1, {"instance_type": "m7g.xlarge"})]), ACCOUNT, Budget())
+    item = evidence(bundle, "provider_sizing")[0]
+    assert item["coverage"]["complete"] is False and item["coverage"]["sample_ratio"] == 0

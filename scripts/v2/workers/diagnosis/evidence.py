@@ -6,6 +6,7 @@ redact.redact to every non-citation string and masks host-valued fields.
 """
 from copy import deepcopy
 from datetime import datetime
+import ipaddress
 import math
 import re
 
@@ -187,24 +188,64 @@ _REFERENCE_FIELDS = {
 # dotted hostname is masked, except code-owned type/version vocabularies such as
 # db.r6g.large; AWS service DNS names are masked wherever they appear inside text.
 _HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host", "query_name", "dns_source_id"}
-_TYPE_KEYS = {"instance_type", "class", "db_instance_class", "graph_class",
-              "current_type", "recommended_type", "storage_type",
-              "storageType", "engine", "version", "unit", "metric_name", "namespace", "statistic"}
+_TYPE_KEYS = {"instance_type", "class", "db_instance_class", "current_type", "recommended_type",
+              "storage_type", "storageType", "engine", "version", "unit", "metric_name", "namespace",
+              "statistic", "graph_class"}
+_IP_KEYS = {"answer_ips", "private_ip", "private_ips", "private_ip_address"}
+# Regional service endpoints and service principals name an AWS service, not an account resource:
+# kept so a connectivity error still says which service was unreachable (redact.py parity).
+_SERVICE_ENDPOINT = re.compile(r"(?i)[a-z0-9-]+(?:\.[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d)?\.amazonaws\.com(?:\.cn)?\.?")
 _HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?")
-_AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
+# Self-contained here (not delegated to redact()): AWS resource endpoints embedded in text —
+# a label after the region (orders.cluster-x.<region>.rds.amazonaws.com), a resource label
+# before a regional service (bucket.s3.<region>), S3 dash-region names, and always-resource
+# suffixes. Regional service endpoints (sts.<region>.amazonaws.com) stay visible.
+_REGION = r"[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d"
+_AWS_HOST = re.compile(
+    r"(?i)\b(?:(?:[a-z0-9-]+\.)+" + _REGION + r"\.(?:[a-z0-9-]+\.)+amazonaws\.com(?:\.cn)?"
+    r"|(?:[a-z0-9-]+\.){2,}" + _REGION + r"\.amazonaws\.com(?:\.cn)?"
+    r"|(?:[a-z0-9-]+\.)+s3-" + _REGION + r"\.amazonaws\.com"
+    r"|[a-z0-9_.-]+\.(?:on\.aws|cloudfront\.net))\b\.?")
+# IPv6 literals (including compressed and IPv4-mapped forms), validated before masking.
+_IPV6_CANDIDATE = re.compile(r"(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{0,4})(?![0-9a-z:.])")
+
+
+def _mask_ipv6(text):
+    def one(match):
+        try:
+            ipaddress.IPv6Address(match.group(0))
+        except ValueError:
+            return match.group(0)
+        return "<ip>"
+    return _IPV6_CANDIDATE.sub(one, text) if ":" in text else text
 
 
 def _scrub_text(value, key):
     if not value:
         return value
-    if key in _HOST_KEYS or (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())):
+    if key in _IP_KEYS:
+        return "<ip>"
+    if key in _HOST_KEYS:
         return "<host>"
-    return _AWS_HOST.sub("<host>", redact(value))
+    if (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())
+            and not _SERVICE_ENDPOINT.fullmatch(value.strip())):
+        return "<host>"
+    return _AWS_HOST.sub("<host>", redact(_mask_ipv6(value)))
 
 
 def _scrub_key(key, taken):
-    if not isinstance(key, str) or not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+    if not isinstance(key, str):
         return key
+    if not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+        cleaned = redact(_mask_ipv6(key))
+        if cleaned == key:
+            return key
+        key = cleaned  # e.g. an access-key-shaped mapping key
+        masked, n = key, 1
+        while masked in taken:
+            n += 1
+            masked = f"{key}#{n}"
+        return masked
     masked, n = "<host>", 1
     while masked in taken:
         n += 1
@@ -375,9 +416,9 @@ class EvidenceIndex:
             self.relationships[row["id"]] = {key: deepcopy(row[key]) for key in
                                             ("id", "source", "target", "kind", "evidence_ids")}
 
-    def model_context(self, redacted=False):
-        """Admitted, projected records. Every model prompt carries ``redacted=True``
-        (or redact_context() of a trimmed copy); unredacted is for code-side checks only."""
+    def model_context(self, redacted=True):
+        """Admitted, projected records, redacted by default so a model-bound caller cannot forget
+        it. Code-side checks that need raw identities call raw_context() explicitly."""
         context = deepcopy({
             "resources": list(self.resources.values()), "evidence": list(self.evidence.values()),
             "relationships": list(self.relationships.values()), "coverage": self.coverage,
@@ -385,9 +426,13 @@ class EvidenceIndex:
         })
         return redact_context(context) if redacted else context
 
+    def raw_context(self):
+        """Unredacted admitted records for code-side checks only; never send to a model."""
+        return self.model_context(redacted=False)
+
     def admitted_bundle(self):
         """The exact admitted (unredacted) records used for analysis and deterministic rendering."""
-        return self.model_context()
+        return self.raw_context()
 
     @staticmethod
     def _complete(row, *, sampled=False):
@@ -404,11 +449,19 @@ class EvidenceIndex:
         if not cited or any(not row["fresh"] for row in cited):
             return False
         if len(refs) == 1:
-            # Numeric metrics cannot certify arbitrary backup/security/configuration
-            # prose. Only this code-owned collection statement can be an observation.
-            return (finding["explanation"].strip() in METRIC_OBSERVATION_TEXT.values()
-                    and any(row["kind"] == "metrics" and row["resource_ids"] == refs
-                            and self._complete(row, sampled=True) for row in cited))
+            # Free text is never parsed for meaning, so a single-resource observation is confirmed
+            # only by the full measured pressure set (CPU, memory, I/O; replica lag for replicas),
+            # never by one complete series such as CPU alone. Reports print the admitted values,
+            # not the model's prose, as the observation; the only admitted prose is the
+            # code-owned collection statement.
+            resource = self.resources.get(refs[0], {})
+            if finding["explanation"].strip() not in METRIC_OBSERVATION_TEXT.values():
+                return False
+            return any(row["kind"] == "metrics" and row["resource_ids"] == refs
+                       and self._complete(row, sampled=True) and isinstance(row["facts"], dict)
+                       and self._pressure_supported(row["facts"].get("metrics"), resource.get("kind"),
+                                                    row["facts"].get("replica_source"))
+                       for row in cited)
         # A referenced scoped edge must preserve the actual pair. Sharing a
         # service/SG or joining independent aggregates never creates an observed edge.
         return len(refs) == 2 and any(

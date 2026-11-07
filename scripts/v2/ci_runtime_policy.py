@@ -327,15 +327,110 @@ def _check_target_policy(resource, targets, project, expected):
 
 
 MEMBER_ROLE = re.compile(r"arn:aws:iam::(\d{12}):role/AWSopsReadOnlyRole")
-MEMBER_POLICY = 'aws_iam_role_policy.worker_diagnosis_evidence["task"]'
+MEMBER_POLICY = 'aws_iam_policy.worker_diagnosis_evidence["task"]'
+MEMBER_ATTACHMENT = 'aws_iam_role_policy_attachment.worker_diagnosis_evidence["task"]'
 MEMBER_TASK = "aws_ecs_task_definition.worker[0]"
+
+
+ATTACHMENT_TYPES = {"aws_iam_role_policy_attachment", "aws_iam_policy_attachment",
+                    "aws_iam_user_policy_attachment", "aws_iam_group_policy_attachment",
+                    "aws_iam_role_policy_attachments_exclusive", "aws_iam_role"}
+
+
+def _config_resources(module):
+    """Every configured resource, including child modules (configuration.root_module tree)."""
+    if not isinstance(module, dict):
+        return []
+    found = list(module.get("resources") or [])
+    for call in (module.get("module_calls") or {}).values():
+        found.extend(_config_resources((call or {}).get("module")))
+    return found
+
+
+def _references(expression):
+    value = expression.get("references") if isinstance(expression, dict) else None
+    return set(value) if isinstance(value, list) and all(isinstance(v, str) for v in value) else None
+
+
+def _attachment_of_other_managed_policy(resource, root):
+    """An attachment whose ARN is unknown until apply, proven to come from one other root policy.
+
+    Exactly: a root-module aws_iam_role_policy_attachment whose for_each references only
+    aws_iam_policy.<N> (N != worker_diagnosis_evidence) and whose policy_arn references only
+    each.value / each.value.arn. Module-nested, data-source, local, variable or function-derived
+    ARNs fail closed.
+    """
+    address = resource.get("address") or ""
+    if resource.get("type") != "aws_iam_role_policy_attachment" or address.startswith("module."):
+        return False
+    config = root.get(re.sub(r"\[[^\]]*\]$", "", address))
+    if not isinstance(config, dict):
+        return False
+    for_each = _references(config.get("for_each_expression"))
+    expressions = config.get("expressions") if isinstance(config.get("expressions"), dict) else {}
+    arn = _references(expressions.get("policy_arn"))
+    if not for_each or len(for_each) != 1 or arn is None or not arn or not arn <= {"each.value", "each.value.arn"}:
+        return False
+    (source,) = for_each
+    return bool(re.fullmatch(r"aws_iam_policy\.[A-Za-z0-9_-]+", source)) and \
+        source != "aws_iam_policy.worker_diagnosis_evidence"
+
+
+def _member_policy_attached_only_to_worker(plan, project):
+    """The exempt managed policy is attached exactly once, to the worker task role.
+
+    The designated attachment's value pins the role. Configuration references (all modules)
+    prove no other resource consumes the policy, and no other planned attachment carries its
+    name in a hardcoded ARN or an unknown policy ARN that could resolve to it.
+    """
+    policy_name = f"{project}-worker-task-diagnosis-evidence-read"
+    changes = [r for r in plan.get("resource_changes", []) if isinstance(r, dict)]
+    designated = [r for r in changes if r.get("address") == MEMBER_ATTACHMENT]
+    if len(designated) != 1:
+        return False
+    change = designated[0].get("change") or {}
+    after = change.get("after")
+    if (designated[0].get("type") != "aws_iam_role_policy_attachment" or not isinstance(after, dict)
+            or after.get("role") != f"{project}-worker-task"
+            or change.get("actions") not in (["create"], ["update"], ["no-op"],
+                                             ["delete", "create"], ["create", "delete"])):
+        return False
+    resources = _config_resources((plan.get("configuration") or {}).get("root_module"))
+    if not resources:
+        return False
+    root = {r.get("address"): r for r in (((plan.get("configuration") or {}).get("root_module") or {})
+                                        .get("resources") or []) if isinstance(r, dict)}
+    for resource in changes:
+        if resource.get("type") not in ATTACHMENT_TYPES or resource.get("address") == MEMBER_ATTACHMENT:
+            continue
+        other = resource.get("change") or {}
+        if "delete" in (other.get("actions") or []) and other.get("after") is None:
+            continue
+        unknown = other.get("after_unknown") or {}
+        if policy_name in json.dumps(other.get("after")):
+            return False
+        if any(unknown.get(key) for key in ("policy_arn", "policy_arns", "managed_policy_arns")):
+            if not _attachment_of_other_managed_policy(resource, root):
+                return False
+    consumers = set()
+    for resource in resources:
+        if not isinstance(resource, dict):
+            return False
+        if resource.get("address") == "aws_iam_policy.worker_diagnosis_evidence":
+            continue
+        body = {k: v for k, v in resource.items() if k not in ("address", "name", "type", "mode")}
+        text = json.dumps(body)
+        if "aws_iam_policy.worker_diagnosis_evidence" in text or policy_name in text:
+            consumers.add(resource.get("address"))
+    return consumers == {"aws_iam_role_policy_attachment.worker_diagnosis_evidence"}
 
 
 def member_roles(value, host):
     """diagnosis_member_role_arns: exact foreign AWSopsReadOnlyRole ARNs, as variables.tf validates."""
     if value is None:
         return []
-    if not isinstance(value, list) or len(value) > 32 or len(set(value)) != len(value):
+    if (not isinstance(value, list) or len(value) > 32 or any(not isinstance(v, str) for v in value)
+            or len(set(value)) != len(value)):
         raise ValueError("Invalid diagnosis member roles")
     for arn in value:
         match = MEMBER_ROLE.fullmatch(arn) if isinstance(arn, str) else None
@@ -344,17 +439,16 @@ def member_roles(value, host):
     return value
 
 
-def _check_member_positions(resource, members, project, expected):
+def _check_member_positions(resource, members, project, expected, attached=False):
     """Exempt only the configured member ARNs in their two exact positions; scan everything else."""
     after = resource["change"].get("after")
     address, kind = resource["address"], resource["type"]
     if not members or not isinstance(after, dict) or (address, kind) not in (
-            (MEMBER_POLICY, "aws_iam_role_policy"), (MEMBER_TASK, "aws_ecs_task_definition")):
+            (MEMBER_POLICY, "aws_iam_policy"), (MEMBER_TASK, "aws_ecs_task_definition")):
         return False
     try:
-        if kind == "aws_iam_role_policy":
-            if (after.get("name") != f"{project}-worker-task-diagnosis-evidence-read"
-                    or after.get("role") != f"{project}-worker-task"):
+        if kind == "aws_iam_policy":
+            if after.get("name") != f"{project}-worker-task-diagnosis-evidence-read" or not attached:
                 raise ValueError
             policy = json.loads(after["policy"])
             found = 0
@@ -370,8 +464,7 @@ def _check_member_positions(resource, members, project, expected):
                     if (statement.get("Sid") != "DiagnosisRegisteredMemberReadOnly" or actions != ["sts:AssumeRole"]
                             or statement.get("Effect") != "Allow"
                             or set(statement) != {"Sid", "Effect", "Action", "Resource", "Condition"}
-                            or not isinstance(condition, dict) or set(condition) != {"StringLike", "StringEquals"}
-                            or condition.get("StringLike") != {"sts:ExternalId": "?*"}
+                            or not isinstance(condition, dict) or set(condition) != {"StringEquals"}
                             or not isinstance(condition.get("StringEquals"), dict)
                             or set(condition["StringEquals"]) != {"aws:RequestedRegion"}
                             or not isinstance(condition["StringEquals"]["aws:RequestedRegion"], (str, list))
@@ -384,7 +477,7 @@ def _check_member_positions(resource, members, project, expected):
                 raise ValueError
             scanned = {**after, "policy": policy}
         else:
-            if after.get("family") != f"{project}-worker":
+            if after.get("family") != f"{project}-worker" or not attached:
                 raise ValueError
             containers = json.loads(after["container_definitions"])
             found = 0
@@ -414,6 +507,18 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     readiness = variables.get("ci_readiness_enabled", False)
     targets = verification_targets(variables.get("runtime_verification_targets", []), expected_account)
     members = member_roles(variables.get("diagnosis_member_role_arns"), expected_account)
+    # Exempt only on full dev plans with workers and the evidence loop applied. Elsewhere no foreign
+    # member ARN is exempt, so any that appears still fails the account scan.
+    if members and (target != "dev" or scope != "full" or variables.get("workers_enabled") is not True
+                    or variables.get("diagnosis_evidence_loop_enabled") is not True):
+        members = []
+    if members:
+        # Cross-account read roles never ship beside a mutation/write gate (the runtime-target
+        # exemption gets this through the read-only profile; this one enforces it directly).
+        for flag in READONLY_PROFILE_FLAGS:
+            if variables.get(flag) is not False:
+                raise ValueError(f"Diagnosis member roles require {flag}=false")
+    attached = bool(members) and _member_policy_attached_only_to_worker(plan, variables.get("project"))
     if targets and (target != "dev" or scope != "full" or profile is not True
                     or variables.get("inventory_host_only") is not False
                     or any(variables.get(flag) is not True for flag in RUNTIME_FLAGS[:3])):
@@ -468,7 +573,7 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
                 action not in ("create", "update", "delete", "forget") for action in actions):
             raise ValueError("Invalid resource actions")
         after = change.get("after")
-        if not _check_member_positions(resource, members, project, expected):
+        if not _check_member_positions(resource, members, project, expected, attached):
             _check_target_policy(resource, targets, project, expected)
         if rollout and (kind.startswith(("aws_route53", "aws_acm_")) or kind in NETWORK_TYPES):
             raise ValueError("Runtime operations must preserve public DNS, certificates and network topology")

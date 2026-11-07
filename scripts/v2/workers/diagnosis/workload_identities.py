@@ -115,21 +115,31 @@ def collect_proxies(bundle, budget, client_factory):
             response = read("describe_db_proxies", MaxRecords=20)
             if response.get("Marker"):
                 d._mark(bundle, "incomplete", "proxy_cap")
-            for row in response.get("DBProxies", [])[:4]:
+            vpcs = {r["facts"].get("vpc_id") for r in databases if r["region"] == region}
+            scoped = []
+            for row in response.get("DBProxies", []):
+                vpc, arn = row.get("VpcId"), row.get("DBProxyArn", "")
+                if not _vpc(vpc):
+                    d._mark(bundle, "gaps", "proxy_target_unresolved")
+                elif vpc in vpcs:
+                    if isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:"):
+                        scoped.append(row)
+                    else:  # in the diagnosed VPC but without a provable identity: disclosed, not dropped
+                        d._mark(bundle, "gaps", "proxy_identity_unresolved")
+                # Another account/VPC's proxy is outside this diagnosis, not missing evidence.
+            # Scope first, then cap: a cap never drops the diagnosed database's proxy for an
+            # out-of-scope one that happened to be listed earlier.
+            if len(scoped) > 4:
+                d._mark(bundle, "incomplete", "proxy_cap")
+            for row in scoped[:4]:
                 if not d._available(bundle, budget):
                     return
                 name, vpc, arn = row.get("DBProxyName"), row.get("VpcId"), row.get("DBProxyArn", "")
-                if not _vpc(vpc):
-                    d._mark(bundle, "gaps", "proxy_target_unresolved")
-                    continue
-                if vpc not in {r["facts"].get("vpc_id") for r in databases if r["region"] == region}:
-                    continue
                 if row.get("Status") != "available":
+                    # e.g. 'modifying' during maintenance: present but not usable as configuration evidence.
                     d._mark(bundle, "gaps", "proxy_not_available")
                     continue
-                if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", name)
-                        or not isinstance(arn, str)
-                        or not arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")):
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", name):
                     d._mark(bundle, "gaps", "proxy_identity_unresolved")
                     continue
                 proxy = d._resource(bundle, account, region, "rds_proxy", arn,
@@ -141,7 +151,8 @@ def collect_proxies(bundle, budget, client_factory):
                             proxy["facts"], captured, region=region, fresh=True, coverage={"complete": True})
                 try:
                     targets = read("describe_db_proxy_targets", DBProxyName=name, MaxRecords=20)
-                except (ClientError, BotoCoreError, ScopeError):
+                except (ClientError, BotoCoreError):
+                    # One unreadable proxy leaves its targets unresolved; later proxies are still read.
                     d._mark(bundle, "gaps", "proxy_target_unresolved")
                     continue
                 if targets.get("Marker"):
@@ -151,9 +162,10 @@ def collect_proxies(bundle, budget, client_factory):
                     if database is None and target.get("Type") == "TRACKED_CLUSTER":
                         try:
                             database = _cluster_target(bundle, budget, read, target, databases, account, region, vpc)
-                        except (ClientError, BotoCoreError, ScopeError):
-                            d._mark(bundle, "gaps", "proxy_target_unresolved")
-                            continue
+                        except (ClientError, BotoCoreError):
+                            # One unreadable cluster target leaves only that target unresolved; the
+                            # proxy's other targets and the remaining regions are still read.
+                            database = None
                     if database is None:
                         d._mark(bundle, "gaps", "proxy_target_unresolved")
                         continue
@@ -161,8 +173,6 @@ def collect_proxies(bundle, budget, client_factory):
                         [proxy["id"], database["id"]], {"relation": "proxy_target", "port": target.get("Port")},
                         captured, region=region, fresh=True, coverage={"complete": not bool(targets.get("Marker"))})
                     d._relationship(bundle, proxy["id"], database["id"], "configured_dependency", evidence)
-            if len(response.get("DBProxies", [])) > 4:
-                d._mark(bundle, "incomplete", "proxy_cap")
         except _ProxyBound:
             return  # The call budget is shared across regions: stop instead of re-recording per region.
         except (ClientError, BotoCoreError, ScopeError):
@@ -179,8 +189,8 @@ def _cluster_target(bundle, budget, read, target, databases, account, region, vp
     if not _vpc(vpc) or not isinstance(arn, str) or not re.fullmatch(
             rf"arn:aws:rds:{re.escape(region)}:{re.escape(account)}:cluster:[A-Za-z0-9-]+", arn):
         return None
-    if not d._available(bundle, budget):
-        raise _ProxyBound()
+    if not d._available(bundle, budget):  # marks discovery_deadline
+        raise _ProxyBound()  # an unattempted lookup is a bound, never an unresolved target
     response = read("describe_db_clusters", DBClusterIdentifier=arn)
     clusters = response.get("DBClusters", [])
     if len(clusters) != 1 or response.get("Marker"):

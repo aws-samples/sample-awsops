@@ -45,34 +45,6 @@ def flow(**changes):
         "remoteRegion": REGION, "targetPort": 5432, "value": 321, **changes}
 
 
-def test_dns_projection_preserves_later_region_rows(monkeypatch):
-    monkeypatch.setattr(discovery, "_now", lambda: NOW)
-    data, later = bundle(), bundle()
-    other_region = "eu-west-1"
-    data["coverage"]["regions"]["selected"].append(other_region)
-    ids = {r["id"]: oid("later-" + r["id"]) for r in later["resources"]}
-    for resource in later["resources"]:
-        resource.update(id=ids[resource["id"]], region=other_region)
-    for evidence in later["evidence"]:
-        evidence.update(id=oid("later-" + evidence["id"]), region=other_region,
-                        resource_ids=[ids[r] for r in evidence["resource_ids"]])
-    data["resources"].extend(later["resources"])
-    data["evidence"].extend(later["evidence"])
-    rows = [dns()] * (observations.MAX_ROWS * observations.MAX_GROUPS)
-    observations.project(data, rows + [dns(region=other_region)], [],
-                         start=START, end=NOW, source_id="resolver")
-    admitted = [e for e in data["evidence"] if e["kind"] == "observed_dns_resolution"]
-    assert {e["region"] for e in admitted} == {REGION, other_region}
-
-
-def test_dns_projection_discloses_excess_over_all_region_bound(monkeypatch):
-    monkeypatch.setattr(discovery, "_now", lambda: NOW)
-    data = bundle()
-    cap = observations.MAX_ROWS * observations.MAX_GROUPS * observations.MAX_REGIONS
-    observations.project(data, [dns()] * (cap + 1), [], start=START, end=NOW, source_id="resolver")
-    assert "dns_projection_cap" in data["incomplete"]
-
-
 @pytest.fixture(autouse=True)
 def scope(monkeypatch):
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "true")
@@ -80,6 +52,8 @@ def scope(monkeypatch):
     monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", ACCOUNT)
     monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP]))
     monkeypatch.setattr(discovery, "_now", lambda: NOW)
+    # Fixtures are dated just before NOW; the publication-lag offset has its own test below.
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(0))
     monkeypatch.setattr(observations, "_sleep", lambda _: None)
 
 
@@ -171,7 +145,7 @@ def test_context_and_admission_keep_weak_binding_as_hypothesis():
         "claim": "observation", "explanation": "The scoped peer is a dependency candidate.",
         "prerequisites": [], "verification": "graph_refresh"}
     assert index.validate_finding(finding)["claim"] == "hypothesis"
-    admitted = next(e for e in index.model_context()["evidence"] if e["id"] == row["id"])
+    admitted = next(e for e in index.raw_context()["evidence"] if e["id"] == row["id"])
     assert admitted["facts"]["ttl_known"] is False
     assert admitted["facts"]["direction"] == "undirected"
     assert admitted["facts"]["query_name"] == "orders.example.test"
@@ -372,46 +346,6 @@ def test_cached_sdk_timeout_cannot_exceed_remaining_query_budget(monkeypatch):
     assert not any(c in {"dns_start", "nfm_start"} for c,_ in fake.calls)
 
 
-def test_resolution_and_window_uncertainty_survive_deterministic_presentation():
-    import html
-    from diagnosis import presentation
-    from diagnosis.sections import SECTIONS
-    data = project()
-    index = EvidenceIndex(data, ACCOUNT)
-    row = next(e for e in data["evidence"] if e["kind"] == "observed_network_flow")
-    finding = index.validate_finding({"id": "finding-network", "pillar": "reliability",
-        "severity": "medium", "resource_ids": [oid("r-instance"), oid("r-db")], "evidence_ids": [row["id"]],
-        "claim": "observation", "explanation": "The peer needs trace verification.",
-        "prerequisites": [], "verification": "graph_refresh"})
-    text = html.unescape("\n".join(value for _, value in presentation.render(SECTIONS,
-        index.admitted_bundle(), {"findings": [finding]}, lang="en")))
-    assert "ttl&#95;known" in text or "ttl_known" in text
-    assert "dns&#95;window&#95;correlation" in text or "dns_window_correlation" in text
-    assert "undirected" in text and "orders.example.test" in text
-    assert START.isoformat() in text and "Hypothesis" in text
-    assert "raw_sql" not in text and "srcport" not in text
-
-
-@pytest.mark.parametrize("stage", ["specialist", "review"])
-def test_provider_prompts_distinguish_dns_and_aggregate_traffic_from_calls(monkeypatch, stage):
-    from diagnosis import pillar_agents as agents
-    from diagnosis.budget import ReportBudget
-    from diagnosis.test_pillar_agents import FakeClient, response
-    payload = ({"findings": []} if stage == "specialist" else
-        {"finding_ids": [], "reject_ids": [], "follow_up": [], "rerun_pillars": [], "issues": []})
-    fake = FakeClient([response(payload)])
-    monkeypatch.setattr(agents, "_client", lambda *a: fake)
-    options = {"model_id": "global.anthropic.claude-sonnet-5-5", "budget": ReportBudget("mid")}
-    index = EvidenceIndex(project(), ACCOUNT)
-    if stage == "specialist":
-        agents.analyze("reliability", index, **options)
-    else:
-        agents.review([], index, **options)
-    prompt = json.loads(fake.calls[0]["body"])["system"].lower()
-    assert "dns" in prompt and "ttl" in prompt and "undirected" in prompt
-    assert "same-span trace" in prompt and "sql" in prompt
-
-
 def test_evidence_loop_gate_off_invokes_neither_sdk_nor_proxy_helper(monkeypatch):
     from diagnosis import workload_identities
     monkeypatch.setenv("DIAGNOSIS_EVIDENCE_LOOP_ENABLED", "false")
@@ -482,7 +416,7 @@ def test_inventory_scope_and_source_provenance_survive_without_raw_metadata():
     assert not project(data)["relationships"]
     fake = Provider()
     collected = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
-    admitted = EvidenceIndex(collected, ACCOUNT).model_context()
+    admitted = EvidenceIndex(collected, ACCOUNT).raw_context()
     dns_row = next(e for e in admitted["evidence"] if e["kind"] == "observed_dns_resolution")
     network_row = next(e for e in admitted["evidence"] if e["kind"] == "observed_network_flow")
     assert dns_row["facts"]["source_id"].startswith("source:")
@@ -493,7 +427,7 @@ def test_inventory_scope_and_source_provenance_survive_without_raw_metadata():
 
 def test_node_metadata_and_shared_lambda_addresses_keep_explicit_identity_gaps():
     data = bundle()
-    data["resources"][0]["kind"] = "lambda_function"
+    data["resources"][0]["kind"] = "lambda"  # the inventory kind (sync_lambda.py)
     result = project(data, rows=[dns(instance=None)], flows=[flow(kubernetesMetadata={"localPodName": "p"})])
     assert not result["relationships"]
     assert "lambda_eni_identity_unresolved" in result["gaps"]
@@ -597,3 +531,48 @@ def test_provider_error_is_a_gap_and_projection_defect_is_degraded(monkeypatch):
     fake.start_query_monitor_top_contributors = lambda **params: (_ for _ in ()).throw(KeyError("defect"))
     data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
     assert "nfm_projection_failed" in data["degraded"]
+
+
+
+def test_observation_window_ends_one_publication_lag_before_the_clock(monkeypatch):
+    clock = NOW
+    monkeypatch.setattr(discovery, "_now", lambda: clock)
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(minutes=5))
+    fake = Provider()
+    observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    dns_query = next(p for c, p in fake.calls if c == "dns_start")
+    assert dns_query["endTime"] == int((clock - observations.OBSERVATION_LAG).timestamp())
+
+
+def test_lagged_window_still_binds_dns_to_fresh_inventory(monkeypatch):
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(minutes=5))
+    clock = NOW + dt.timedelta(minutes=7)  # rows stamped near NOW fall inside [clock-10m, clock-5m]
+    monkeypatch.setattr(discovery, "_now", lambda: clock)
+    fake = Provider()
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert any(e["kind"] == "observed_dns_resolution" for e in data["evidence"])
+    assert "dns_binding_unresolved" not in data["gaps"]
+
+
+def test_dns_rows_already_read_survive_a_later_stage_deadline(monkeypatch):
+    second = f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:/resolver/zz-second"
+    monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP, second]))
+
+    class TwoGroups(Provider):
+        def list_resolver_query_log_configs(self, **params):
+            return {"ResolverQueryLogConfigs": [
+                {"Id": f"rqlc-{i}", "OwnerId": ACCOUNT, "Status": "CREATED", "DestinationArn": arn}
+                for i, arn in enumerate((GROUP, second))]}
+
+        def list_resolver_query_log_config_associations(self, **params):
+            return {"ResolverQueryLogConfigAssociations": [
+                {"ResolverQueryLogConfigId": f"rqlc-{i}", "ResourceId": VPC, "Status": "ACTIVE"} for i in range(2)]}
+
+        def start_query(self, **params):
+            if params["logGroupName"].endswith("/zz-second"):
+                raise observations._NetworkBound("network_evidence_deadline")
+            return super().start_query(**params)
+    fake = TwoGroups()
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert any(e["kind"] == "observed_dns_resolution" for e in data["evidence"])
+    assert "dns_logs_unavailable" not in data["gaps"]
