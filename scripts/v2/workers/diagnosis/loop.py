@@ -15,9 +15,13 @@ MAX_RERUNS = 2
 _IDENTIFIER_TOKEN = re.compile(
     r"\b(?:db\.)?[a-z][a-z0-9-]*\d[a-z0-9-]*\.(?:nano|micro|small|medium|large|\d*xlarge|metal)\b"
     r"|\b[a-z]{2}(?:-gov)?-[a-z]+-\d\b"
-    r"|\b[a-z]{1,8}-[0-9a-f]{8,17}\b"
     r"|\bsummary-[0-9a-f]{24}\b"
     r"|\b[a-z]{1,7}:[0-9a-f]{32}\b", re.IGNORECASE)
+# Opaque AWS resource ids carry a fixed lowercase prefix; any other word-hyphen-hex token
+# ("usd-00000500") is a numeric assertion, not an identifier.
+_RESOURCE_ID = re.compile(
+    r"\b(?:i|vol|sg|subnet|vpc|eni|ami|snap|rtb|igw|nat|acl|vpce|tgw|pcx|eipalloc|lt|db|cluster|prx)"
+    r"-[0-9a-f]{8,17}\b", re.IGNORECASE)
 
 
 def _failure_reason(exc):
@@ -102,7 +106,7 @@ def _validate_review(value, findings, index):
     for item in issues:
         # Identifier tokens (m5.large, ap-northeast-2, opaque IDs) are not numeric assertions.
         if (not isinstance(item, str) or len(item) > 1000
-                or _NUMBER.search(_IDENTIFIER_TOKEN.sub(" ", item))):
+                or _NUMBER.search(_RESOURCE_ID.sub(" ", _IDENTIFIER_TOKEN.sub(" ", item)))):
             index._reject("", "invalid_review_issue", "review")
         else:
             kept_issues.append(item)

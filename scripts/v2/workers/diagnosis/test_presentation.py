@@ -273,3 +273,23 @@ def test_prose_guard_is_case_insensitive_for_links_and_commands(unsafe):
 def test_prose_guard_keeps_ordinary_aws_prose(prose):
     from diagnosis import presentation
     assert presentation._safe_explanation(prose)
+
+
+@pytest.mark.parametrize("prose", ["AWS 계정 소유자를 확인하세요.", "AWS アカウントの所有者を確認してください。",
+                                   "请确认 AWS 账户所有者。", "Review AWS config best practices.",
+                                   "Check the AWS (account) owner."])
+def test_prose_guard_is_locale_independent(prose):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(prose)
+
+
+def test_rendered_fact_and_coverage_values_are_scrubbed():
+    from diagnosis import presentation
+    data = bundle()
+    data["evidence"][0]["facts"]["endpoint_address"] = "orders.cluster-x.ap-northeast-2.rds.amazonaws.com"
+    data["evidence"][0]["facts"]["reason"] = "connect to 10.1.2.3 / fd00::1 failed"
+    data["coverage"]["memory"] = {"reason": "Could not connect to mydb.abc.ap-northeast-2.rds.amazonaws.com"}
+    cited = data["evidence"][0]["id"]
+    text = html.unescape("\n".join(body for _, body in presentation.render(
+        SECTIONS, data, analysis(findings=[finding(evidence_ids=[cited])]), lang="en")))
+    assert "rds.amazonaws.com" not in text and "10.1.2.3" not in text and "fd00::1" not in text

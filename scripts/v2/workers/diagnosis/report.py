@@ -928,6 +928,9 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         analysis = {"findings": [], "pillar_coverage": {}, "rejected": [],
                     "degraded": ["analysis_failed"], "incomplete": ["six_pillars"],
                     "passes": 0, "model_stages": []}
+    # A follow-up read can break (and close) the connection after the report is built. Keep
+    # the rendered report, skip further reads on it, and let the handler reconnect to write.
+    connection_lost = discovery.connection_broken(bundle)
     # This is the exact projected/admitted index used by the specialists, including
     # follow-up facts. Raw discovery fields cannot reappear through presentation.
     bundle = analysis.get("evidence_bundle", bundle)
@@ -950,7 +953,8 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     md = build_markdown(rendered, account, tier, lang=lang, generated_at=now)
     sources_used = list(dict.fromkeys(
         record.get("source", "discovery") for record in bundle.get("evidence", [])))
-    degraded = list(dict.fromkeys(bundle.get("degraded", []) + analysis.get("degraded", [])))
+    degraded = list(dict.fromkeys(bundle.get("degraded", []) + analysis.get("degraded", [])
+                                  + ([discovery.DATABASE_CONNECTION_BROKEN] if connection_lost else [])))
     incomplete = list(dict.fromkeys(bundle.get("incomplete", []) + analysis.get("incomplete", [])))
     summary = {
         "sections": total, "sources_used": sources_used, "degraded": degraded,
@@ -972,7 +976,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         "title_and_tags": presentation.title_and_tags(bundle, analysis, lang=lang),
         "budget": budget.snapshot(),
     }
-    if report_id is not None:
+    if report_id is not None and not connection_lost:
         parent_id, _ = ddb.get_report_summary(conn, report_id)
         if parent_id is not None:
             _, parent_summary = ddb.get_report_summary(conn, parent_id)

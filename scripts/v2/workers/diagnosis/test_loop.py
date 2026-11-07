@@ -363,3 +363,11 @@ def test_progress_heartbeat_fires_per_pillar_and_per_pass(monkeypatch):
              progress=lambda stage: beats.append(stage) or 1 / 0)  # a failing heartbeat is ignored
     assert set(beats[:6]) == set(PILLARS)
     assert beats[6:] == ["review", "performance_efficiency", "final_review"]
+
+
+def test_word_hex_tokens_are_numeric_assertions_not_identifiers():
+    from diagnosis import loop
+    assert loop._RESOURCE_ID.sub(" ", "Downsize savings approx usd-00000500 monthly") \
+        == "Downsize savings approx usd-00000500 monthly"
+    assert loop._NUMBER.search(loop._RESOURCE_ID.sub(" ", loop._IDENTIFIER_TOKEN.sub(
+        " ", "Downsize savings approx usd-00000500 monthly")))

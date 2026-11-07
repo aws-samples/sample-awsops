@@ -32,22 +32,16 @@ _WITHHELD = {
 # followed by a capitalized service name ("AWS Lambda") or a known prose word ("the AWS
 # account") is kept, since anything else may be a copyable command.
 _COMMAND = re.compile(r"(?i)https?://|```|(?<![\w-])(?:curl|wget|sudo|kubectl|terraform)\s+\S")
-_AWS_WORD = re.compile(r"(?i)(?<![\w-])aws\s+(\S+)")
-_AWS_PROSE = {"account", "accounts", "console", "region", "regions", "resource", "resources",
-              "service", "services", "organization", "organizations", "environment", "and", "or",
-              "to", "in", "for", "the", "is", "are", "was", "with", "side", "managed", "best"}
+# An AWS CLI invocation is `aws` + a flag, or `aws <service> <operation|flag>`, where the
+# operation is hyphenated (describe-instances) or an s3 verb. Prose in any language ("AWS 계정",
+# "AWS config best practices", "AWS Lambda retries") does not have that shape.
+_AWS_CLI = re.compile(
+    r"(?i)(?<![\w-])aws\s+(?:--?[a-z]|[a-z0-9-]+\s+(?:--?[a-z]|[a-z][a-z0-9]*-[a-z0-9-]+"
+    r"|(?:ls|cp|mv|rm|sync|mb|rb|presign|website|wait)\b))")
 
 
 def _commandlike(value):
-    if _COMMAND.search(value):
-        return True
-    for match in _AWS_WORD.finditer(value):
-        token = match.group(1)
-        if token[0].isupper() and not token.isupper():
-            continue
-        if token.lower().strip(".,;:!?)") not in _AWS_PROSE:
-            return True
-    return False
+    return bool(_COMMAND.search(value) or _AWS_CLI.search(value))
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),
@@ -116,6 +110,20 @@ def _cell(value, limit=700):
     """Literal table text: never allow telemetry/model text to become Markdown/HTML."""
     text = _clip(value, limit).translate(str.maketrans({"|": "｜", "[": "［", "]": "］"}))
     return _literal(text)
+
+
+def _scrubbed(value, key=""):
+    """Rendered fact/coverage values get the same scrub as the model boundary (report.py's
+    _invariant_text parity): raw provider error text, hosts and IPs never reach the artifact.
+    Resource identities render separately through _code and stay literal."""
+    from .evidence import _scrub_text
+    if isinstance(value, str):
+        return _scrub_text(value, key)
+    if isinstance(value, dict):
+        return {k: _scrubbed(v, k if isinstance(k, str) else "") for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrubbed(v, key) for v in value]
+    return value
 
 
 def _literal(value):
@@ -197,7 +205,7 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
             rows = rows[:40] + [(_TRUNCATED, f"{len(rows) - 40} rows omitted")]
         for field, value in rows:
             output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
-                          f"| {_cell(scope)} | {_cell(field)} = {_cell(value)} |")
+                          f"| {_cell(scope)} | {_cell(field)} = {_cell(_scrubbed(value, field.rsplit('.', 1)[-1]))} |")
     prerequisites = finding.get("prerequisites", [])
     prerequisites = [p if isinstance(p, str) else _json(p) for p in
                      (prerequisites if isinstance(prerequisites, list) else [prerequisites])]
@@ -240,7 +248,7 @@ def _coverage(bundle, analysis, copy):
                    "pillar_coverage": analysis.get("pillar_coverage", {}),
                    "withheld": withheld(analysis)}
     rows = [f"**{copy[10]}**", "", "| Field | Value |", "| --- | --- |"]
-    rows.extend(f"| {_cell(k)} | {_cell(v, 2500)} |" for k, v in diagnostics.items())
+    rows.extend(f"| {_cell(k)} | {_cell(_scrubbed(v), 2500)} |" for k, v in diagnostics.items())
     return "\n".join(rows)
 
 

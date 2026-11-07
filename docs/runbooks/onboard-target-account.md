@@ -239,11 +239,7 @@ an allowlist edit revokes every previously configured read path.
   registered `AWSopsReadOnlyRole` ARN in the host's applied `diagnosis_member_role_arns`
   allowlist; account registration alone does not authorize that worker read.
 - **3rd-party only**: a chosen **ExternalId** string (8–1224 ASCII letters, digits or `_+=,.@:/-` for the browser path), same value in the CFN and `/accounts`.
-  1st-party (same-org) accounts can omit it for the existing web and other worker reads.
-  The diagnosis evidence loop requires a nonempty ExternalId for every member, including
-  same-org accounts. Set the same value in the target role trust policy and `/accounts`;
-  diagnosis rejects a missing value before STS and its IAM policy requires ExternalId.
-  See [diagnosis discovery](../reference/diagnosis-discovery.md#activation-and-scope).
+  1st-party (same-org) accounts can omit it.
 
 ## Manual CLI alternative
 

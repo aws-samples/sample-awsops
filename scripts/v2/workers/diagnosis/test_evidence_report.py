@@ -569,3 +569,22 @@ def test_non_bedrock_claude_provider_model_degrades_without_model_calls(monkeypa
     assert "analysis:unsupported_model" in summary["degraded"] and md
     assert summary["budget"]["attempt_count"] == 0
     assert {row["status"] for row in summary["pillar_coverage"].values()} == {"failed"}
+
+
+def test_connection_broken_during_follow_up_keeps_the_rendered_report(monkeypatch):
+    from diagnosis import discovery, loop
+    prepare(monkeypatch)
+
+    def broken_follow_up(conn, account, data, requests, budget):
+        data["coverage"]["database_connection_broken"] = True
+        return data
+
+    def run(data, **options):
+        options["collect_follow_up"]([{"resource_id": "r"}])
+        return analysis()
+
+    monkeypatch.setattr(discovery, "follow_up", broken_follow_up)
+    monkeypatch.setattr(loop, "run", run)
+    monkeypatch.setattr(report.ddb, "get_report_summary", lambda *a: pytest.fail("reused a closed conn"))
+    md, summary, _ = report.generate(object(), "self", report_id=4)
+    assert md and "database_connection_broken" in summary["degraded"] and "diff" not in summary

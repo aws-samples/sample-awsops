@@ -51,7 +51,7 @@ def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
         scoped_clients.member_factory(Registry(rows), ACCOUNT, Budget())
 
 
-@pytest.mark.parametrize("external", ["external"])
+@pytest.mark.parametrize("external", ["external", None, ""])
 def test_assumed_principal_must_match_registered_account(monkeypatch, external):
     called = []
 

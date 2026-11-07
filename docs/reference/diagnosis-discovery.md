@@ -28,10 +28,11 @@ registration, its registered role and external ID, and an exact role ARN in
 onboarding `AWSopsReadOnlyRole`, so a privileged role cannot be allowlisted). The assumed
 principal and its STS account must match. Any failed authorization or verification
 leaves an explicit gap and makes no substitute host read. Account registration
-alone does not grant the worker permission to assume a role. Missing or empty
-ExternalId values are rejected before STS, including for same-org members. The
-target trust policy must include the host worker role and the same ExternalId;
-see [member onboarding](../runbooks/onboard-target-account.md#prerequisites).
+alone does not grant the worker permission to assume a role. Per ADR-011 the
+registered ExternalId is sent when present and may be omitted for first-party
+members, whose trust pins the host worker role ARN; third-party members must
+register the same ExternalId as their trust policy. The target trust policy must
+include the host worker role; see [member onboarding](../runbooks/onboard-target-account.md#prerequisites).
 
 ## Model requirement
 
