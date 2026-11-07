@@ -537,3 +537,15 @@ def test_redact_context_masks_ipv6_answers_and_keeps_classes_and_service_endpoin
     assert facts["db_instance_class"] == "db.r6g.large"
     assert facts["service_name"] == "sts.ap-northeast-2.amazonaws.com"
     assert "sts.ap-northeast-2.amazonaws.com" in facts["reason"]
+
+
+def test_model_boundary_masks_embedded_resource_hosts_and_ipv6_itself():
+    from diagnosis.evidence import redact_context
+    out = redact_context({"evidence": [{"id": "e1", "resource_ids": ["r1"], "facts": {
+        "reason": "timeout to mydb.abc123.ap-northeast-2.rds.amazonaws.com via fd00::1 and ::ffff:10.0.0.1",
+        "note": "sts.ap-northeast-2.amazonaws.com unreachable at 12:00:00",
+        "dimensions": {"AKIAABCDEFGHIJKLMNOP": 1}}}]})
+    facts = out["evidence"][0]["facts"]
+    assert facts["reason"] == "timeout to <host> via <ip> and <ip>"
+    assert facts["note"] == "sts.ap-northeast-2.amazonaws.com unreachable at 12:00:00"
+    assert "AKIAABCDEFGHIJKLMNOP" not in str(facts)

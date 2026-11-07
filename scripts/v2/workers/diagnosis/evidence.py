@@ -6,6 +6,7 @@ redact.redact to every non-citation string and masks host-valued fields.
 """
 from copy import deepcopy
 from datetime import datetime
+import ipaddress
 import math
 import re
 
@@ -189,8 +190,28 @@ _IP_KEYS = {"answer_ips", "private_ip", "private_ips", "private_ip_address"}
 # kept so a connectivity error still says which service was unreachable (redact.py parity).
 _SERVICE_ENDPOINT = re.compile(r"(?i)[a-z0-9-]+(?:\.[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d)?\.amazonaws\.com(?:\.cn)?\.?")
 _HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?")
-# amazonaws.com resource endpoints are masked by redact(); these suffixes are always resource-named.
-_AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:on\.aws|cloudfront\.net)\b\.?")
+# Self-contained here (not delegated to redact()): AWS resource endpoints embedded in text —
+# a label after the region (orders.cluster-x.<region>.rds.amazonaws.com), a resource label
+# before a regional service (bucket.s3.<region>), S3 dash-region names, and always-resource
+# suffixes. Regional service endpoints (sts.<region>.amazonaws.com) stay visible.
+_REGION = r"[a-z]{2}(?:-gov|-iso[a-z]?)?-[a-z]+-\d"
+_AWS_HOST = re.compile(
+    r"(?i)\b(?:(?:[a-z0-9-]+\.)+" + _REGION + r"\.(?:[a-z0-9-]+\.)+amazonaws\.com(?:\.cn)?"
+    r"|(?:[a-z0-9-]+\.){2,}" + _REGION + r"\.amazonaws\.com(?:\.cn)?"
+    r"|(?:[a-z0-9-]+\.)+s3-" + _REGION + r"\.amazonaws\.com"
+    r"|[a-z0-9_.-]+\.(?:on\.aws|cloudfront\.net))\b\.?")
+# IPv6 literals (including compressed and IPv4-mapped forms), validated before masking.
+_IPV6_CANDIDATE = re.compile(r"(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{0,4})(?![0-9a-z:.])")
+
+
+def _mask_ipv6(text):
+    def one(match):
+        try:
+            ipaddress.IPv6Address(match.group(0))
+        except ValueError:
+            return match.group(0)
+        return "<ip>"
+    return _IPV6_CANDIDATE.sub(one, text) if ":" in text else text
 
 
 def _scrub_text(value, key):
@@ -203,12 +224,22 @@ def _scrub_text(value, key):
     if (key not in _TYPE_KEYS and _HOSTNAME.fullmatch(value.strip())
             and not _SERVICE_ENDPOINT.fullmatch(value.strip())):
         return "<host>"
-    return _AWS_HOST.sub("<host>", redact(value))
+    return _AWS_HOST.sub("<host>", redact(_mask_ipv6(value)))
 
 
 def _scrub_key(key, taken):
-    if not isinstance(key, str) or not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+    if not isinstance(key, str):
         return key
+    if not (_HOSTNAME.fullmatch(key.strip()) or _AWS_HOST.search(key)):
+        cleaned = redact(_mask_ipv6(key))
+        if cleaned == key:
+            return key
+        key = cleaned  # e.g. an access-key-shaped mapping key
+        masked, n = key, 1
+        while masked in taken:
+            n += 1
+            masked = f"{key}#{n}"
+        return masked
     masked, n = "<host>", 1
     while masked in taken:
         n += 1

@@ -366,6 +366,10 @@ def _member_policy_attached_only_to_worker(plan, project):
             or change.get("actions") not in (["create"], ["update"], ["no-op"],
                                              ["delete", "create"], ["create", "delete"])):
         return False
+    resources = _config_resources((plan.get("configuration") or {}).get("root_module"))
+    if not resources:
+        return False
+    configured = {r.get("address"): r for r in resources if isinstance(r, dict)}
     for resource in changes:
         if resource.get("type") not in ATTACHMENT_TYPES or resource.get("address") == MEMBER_ATTACHMENT:
             continue
@@ -373,12 +377,20 @@ def _member_policy_attached_only_to_worker(plan, project):
         if "delete" in (other.get("actions") or []) and other.get("after") is None:
             continue
         unknown = other.get("after_unknown") or {}
-        if (policy_name in json.dumps(other.get("after"))
-                or any(unknown.get(key) for key in ("policy_arn", "policy_arns", "managed_policy_arns"))):
+        if policy_name in json.dumps(other.get("after")):
             return False
-    resources = _config_resources((plan.get("configuration") or {}).get("root_module"))
-    if not resources:
-        return False
+        if any(unknown.get(key) for key in ("policy_arn", "policy_arns", "managed_policy_arns")):
+            # An ARN known only after apply is acceptable when the configuration proves it comes
+            # straight from another managed policy resource (e.g. worker_diagnosis_network's own
+            # attachment), never via a local, variable or module output that could hide this one.
+            address = re.sub(r"\[[^\]]*\]$", "", resource.get("address") or "")
+            config = configured.get(address)
+            refs = json.dumps(config.get("for_each_expression", {}) if config else {}) + json.dumps(
+                (config or {}).get("expressions", {}).get("policy_arn", {}))
+            sources = set(re.findall(r'"(aws_iam_policy\.[A-Za-z0-9_-]+)', refs))
+            if (not config or not sources or "aws_iam_policy.worker_diagnosis_evidence" in sources
+                    or re.search(r'"(?:local|var|module)\.', refs)):
+                return False
     consumers = set()
     for resource in resources:
         if not isinstance(resource, dict):

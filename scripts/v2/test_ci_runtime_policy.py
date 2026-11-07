@@ -569,6 +569,22 @@ class RuntimePolicyTests(unittest.TestCase):
                 "aws_iam_policy.worker_diagnosis_evidence[\"task\"].arn"]}}}]}}}
         with self.assertRaises(ValueError):
             self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # The network policy's own attachment (ARN unknown until apply) does not block the exemption.
+        network = copy.deepcopy(plan)
+        attach = self.change('aws_iam_role_policy_attachment.worker_diagnosis_network["task"]',
+                             "aws_iam_role_policy_attachment", {"role": "awsops-dev-worker-task"})
+        attach["change"]["after_unknown"] = {"policy_arn": True}
+        network["resource_changes"].append(attach)
+        network["configuration"]["root_module"]["resources"] += [
+            {"address": "aws_iam_policy.worker_diagnosis_network", "expressions": {"name": {}}},
+            {"address": "aws_iam_role_policy_attachment.worker_diagnosis_network",
+             "expressions": {"policy_arn": {"references": ["each.value.arn", "each.value"]}},
+             "for_each_expression": {"references": ["aws_iam_policy.worker_diagnosis_network"]}}]
+        self.module.check_plan(network, "dev", "full", ACCOUNT)
+        hidden = copy.deepcopy(network)
+        hidden["configuration"]["root_module"]["resources"][-1]["for_each_expression"] = {"references": ["local.policies"]}
+        with self.assertRaises(ValueError):
+            self.module.check_plan(hidden, "dev", "full", ACCOUNT)
         # Replacing the designated attachment is accepted.
         replaced = copy.deepcopy(plan)
         replaced["resource_changes"][2]["change"]["actions"] = ["delete", "create"]

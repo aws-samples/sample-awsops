@@ -542,3 +542,37 @@ def test_observation_window_ends_one_publication_lag_before_the_clock(monkeypatc
     observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
     dns_query = next(p for c, p in fake.calls if c == "dns_start")
     assert dns_query["endTime"] == int((clock - observations.OBSERVATION_LAG).timestamp())
+
+
+def test_lagged_window_still_binds_dns_to_fresh_inventory(monkeypatch):
+    monkeypatch.setattr(observations, "OBSERVATION_LAG", dt.timedelta(minutes=5))
+    clock = NOW + dt.timedelta(minutes=7)  # rows stamped near NOW fall inside [clock-10m, clock-5m]
+    monkeypatch.setattr(discovery, "_now", lambda: clock)
+    fake = Provider()
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert any(e["kind"] == "observed_dns_resolution" for e in data["evidence"])
+    assert "dns_binding_unresolved" not in data["gaps"]
+
+
+def test_dns_rows_already_read_survive_a_later_stage_deadline(monkeypatch):
+    second = f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:/resolver/zz-second"
+    monkeypatch.setenv("DIAGNOSIS_DNS_LOG_GROUP_ARNS", json.dumps([GROUP, second]))
+
+    class TwoGroups(Provider):
+        def list_resolver_query_log_configs(self, **params):
+            return {"ResolverQueryLogConfigs": [
+                {"Id": f"rqlc-{i}", "OwnerId": ACCOUNT, "Status": "CREATED", "DestinationArn": arn}
+                for i, arn in enumerate((GROUP, second))]}
+
+        def list_resolver_query_log_config_associations(self, **params):
+            return {"ResolverQueryLogConfigAssociations": [
+                {"ResolverQueryLogConfigId": f"rqlc-{i}", "ResourceId": VPC, "Status": "ACTIVE"} for i in range(2)]}
+
+        def start_query(self, **params):
+            if params["logGroupName"].endswith("/zz-second"):
+                raise observations._NetworkBound("network_evidence_deadline")
+            return super().start_query(**params)
+    fake = TwoGroups()
+    data = observations.collect(bundle(), Budget(), scope="self", client_factory=lambda *a: fake)
+    assert any(e["kind"] == "observed_dns_resolution" for e in data["evidence"])
+    assert "dns_logs_unavailable" not in data["gaps"]
