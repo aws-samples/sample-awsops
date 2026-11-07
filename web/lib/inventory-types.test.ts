@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { TYPE_ICON } from './type-icons';
 import {
   INVENTORY_TYPES, inventoryGroups, isDeprecatedRuntime, DEPRECATED_RUNTIMES,
   navTree, overviewGroups, groupBySlug, groupForPath, RESERVED_NAV_SLUGS,
@@ -6,7 +7,7 @@ import {
 } from './inventory-types';
 
 describe('INVENTORY_TYPES registry', () => {
-  it('has the 43 registered types (41 + waf_rule_group + waf_ip_set)', () => {
+  it('has the 46 registered types (41 + waf_rule_group + waf_ip_set + 3 network connections)', () => {
     const keys = Object.keys(INVENTORY_TYPES);
     expect(keys).toContain('ec2'); expect(keys).toContain('s3'); expect(keys).toContain('iam_role');
     expect(keys).toContain('cloudfront'); expect(keys).toContain('cloudwatch_alarm'); expect(keys).toContain('msk');
@@ -17,7 +18,8 @@ describe('INVENTORY_TYPES registry', () => {
     expect(keys).toContain('apigatewayv2_route'); expect(keys).toContain('alb_listener_rule');
     // security findings source (denial-safe S3 public-access sync)
     expect(keys).toContain('s3_public_access');
-    expect(keys.length).toBe(43);
+    expect(keys).toContain('transit_gateway_attachment'); expect(keys).toContain('vpc_peering_connection'); expect(keys).toContain('vpc_endpoint');
+    expect(keys.length).toBe(46);
   });
   it('every type has a label, group, and >=1 column', () => {
     for (const [k, v] of Object.entries(INVENTORY_TYPES)) {
@@ -94,11 +96,11 @@ describe('navTree (sidebar IA hierarchy)', () => {
     expect(tree.map((g) => g.slug)).toEqual(['compute', 'storage', 'network', 'security', 'monitoring']);
   });
 
-  it('places every inventory type exactly once (no drop, no dup) — 43 total', () => {
+  it('places every inventory type exactly once (no drop, no dup) — 46 total', () => {
     const placed = tree.flatMap((g) => invTypesOf(g.slug));
     expect(new Set(placed).size).toBe(placed.length); // no duplicates
     expect(new Set(placed)).toEqual(new Set(Object.keys(INVENTORY_TYPES)));
-    expect(placed.length).toBe(43);
+    expect(placed.length).toBe(46);
   });
 
   it('Compute nests the EKS family as a feature-link subgroup + the ECS subgroup', () => {
@@ -125,7 +127,7 @@ describe('navTree (sidebar IA hierarchy)', () => {
       .toEqual(['apigatewayv2_api', 'apigatewayv2_integration', 'apigatewayv2_route']);
     const direct = n.items.filter((l) => l.kind === 'inventory').map((l) => l.type);
     // security_group moved into the securityGroup subgroup (see below) — no longer a direct item.
-    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
+    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
   });
 
   it('Network nests a Security Group subgroup (existing inventory route + the new Rules/Usage links, in that order)', () => {
@@ -357,5 +359,31 @@ describe('worstFirst (gap L68)', () => {
   });
   it('cloudwatch_alarm spec carries the worst-first config', () => {
     expect(INVENTORY_TYPES.cloudwatch_alarm.worstFirst?.rank.ALARM).toBe(0);
+  });
+});
+
+describe('network connection inventory types', () => {
+  const FIELDS: Record<string, string[]> = {
+    transit_gateway_attachment: ['transit_gateway_id', 'transit_gateway_owner_id', 'attached_resource_type', 'attached_resource_id',
+      'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id', 'creation_time', 'tags'],
+    vpc_peering_connection: ['status_code', 'requester_owner_id', 'requester_region', 'requester_vpc_id',
+      'requester_cidr_block', 'accepter_owner_id', 'accepter_region', 'accepter_vpc_id', 'accepter_cidr_block',
+      'expiration_time', 'tags'],
+    vpc_endpoint: ['vpc_endpoint_type', 'service_name', 'vpc_id', 'owner_id', 'state', 'subnet_ids',
+      'route_table_ids', 'private_dns_enabled', 'requester_managed', 'creation_timestamp', 'tags'],
+  };
+  it('are registered in the Network group with icons and synced-field sections', () => {
+    const network = navTree().find((g) => g.group === 'Network');
+    const ordered = network ? [...network.items, ...network.subgroups.flatMap((s) => s.items)].map((i) => i.key) : [];
+    for (const [type, fields] of Object.entries(FIELDS)) {
+      const spec = INVENTORY_TYPES[type];
+      expect(spec?.group, type).toBe('Network');
+      expect(ordered, type).toContain(type);
+      expect(TYPE_ICON[type], type).toBeDefined();
+      const allowed = new Set([...fields, 'resource_id', 'account_id', 'region']);
+      for (const key of [...spec.columns.map((c) => c.key), ...(spec.sections ?? []).flatMap((s) => s.keys)]) {
+        expect(allowed.has(key), `${type}.${key}`).toBe(true);
+      }
+    }
   });
 });

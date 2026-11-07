@@ -276,7 +276,7 @@ healthy evidence. Qualified empty/unproven telemetry retains the previous graph.
 Failed, retained, skipped or unattempted host infra still withholds trace collection.
 A clean confirmed-empty host publication is valid; zero nodes alone are not proof.
 Member-only gaps remain in fleet-wide counts/reasons and CLI exit 1/2. None of these
-presentation rules relaxes the strict 43-type, zero-unknown runtime release gate.
+presentation rules relaxes the strict 46-type, zero-unknown runtime release gate.
 
 | Exact diagnostic | Meaning and next check |
 |---|---|

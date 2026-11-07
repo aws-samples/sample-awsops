@@ -320,6 +320,38 @@ QUERIES = {
         "transit_gateway_id",
         "region",
     ),
+    # Network-connection inventory for the cross-account network topology projection.
+    # aws_ec2_transit_gateway_vpc_attachment returns every attachment visible to the caller —
+    # a TGW owner also sees member-account attachments, so the same attachment id can appear
+    # under two accounts; consumers dedupe by attachment id and never by CIDR.
+    # Attached-resource columns are aliased so they never shadow the row's own resource_id
+    # in the inventory UI.
+    "transit_gateway_attachment": (
+        "SELECT transit_gateway_attachment_id, region, account_id, transit_gateway_id, "
+        "transit_gateway_owner_id, resource_type AS attached_resource_type, "
+        "resource_id AS attached_resource_id, resource_owner_id, state, "
+        "association_state, association_transit_gateway_route_table_id, creation_time, tags "
+        "FROM aws_ec2_transit_gateway_vpc_attachment ORDER BY transit_gateway_attachment_id",
+        "transit_gateway_attachment_id",
+        "region",
+    ),
+    # Both requester and accepter accounts list the same pcx id; dedupe by id downstream.
+    "vpc_peering_connection": (
+        "SELECT id, region, account_id, status_code, requester_owner_id, requester_region, "
+        "requester_vpc_id, requester_cidr_block, accepter_owner_id, accepter_region, "
+        "accepter_vpc_id, accepter_cidr_block, expiration_time, tags "
+        "FROM aws_vpc_peering_connection ORDER BY id",
+        "id",
+        "region",
+    ),
+    "vpc_endpoint": (
+        "SELECT vpc_endpoint_id, region, account_id, vpc_endpoint_type, service_name, vpc_id, "
+        "owner_id, state, subnet_ids, route_table_ids, private_dns_enabled, requester_managed, "
+        "creation_timestamp, tags "
+        "FROM aws_vpc_endpoint ORDER BY vpc_endpoint_id",
+        "vpc_endpoint_id",
+        "region",
+    ),
     "elasticache_replication_group": (
         "SELECT replication_group_id, region, account_id, arn, description, status, "
         "automatic_failover, multi_az, cluster_enabled, cache_node_type, "

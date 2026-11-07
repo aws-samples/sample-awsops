@@ -40,6 +40,7 @@ const FIXED: FixedItem[] = [
   { href: '/topology', tkey: 'nav.topology', icon: Network, children: [
     { href: '/topology', tkey: 'nav.topologyFlow', icon: Route },
     { href: '/topology/infra', tkey: 'nav.topologyInfra', icon: Layers },
+    { href: '/topology/network', tkey: 'nav.topologyNetwork', icon: Waypoints },
     { href: '/topology/services', tkey: 'nav.topologyServices', icon: Boxes },
   ] },
   { href: '/security', tkey: 'nav.security', icon: Shield },
