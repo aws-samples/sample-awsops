@@ -53,8 +53,9 @@ ID under a supported provider remains a distinct `analysis:unsupported_model`.
 ## Identity and connection strength
 
 Resources and graph nodes retain account and region identity. Inventory sampling
-rotates across resource types, with up to 180 initial resources and a total cap of
-200, reserving space for trace identities and live proxies. The graph reader
+rotates across resource types with up to 140 inventory resources. X-Ray service
+nodes have a separate share of 40, and 20 more slots are reserved for trace
+identities and live proxies, within the total cap of 200. The graph reader
 prioritizes selected-resource neighborhoods across graph classes, bounded to two
 hops, 20 neighbors per expansion, 600 nodes and 400 edges. Caps and missing types
 remain visible; the graph is not a claim of complete discovery.

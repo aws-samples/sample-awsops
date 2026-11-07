@@ -305,9 +305,6 @@ synthetic 표시는 선언일 뿐 자동 비식별화가 아닙니다. 원격 �
 새 장애, 조치 안전성, 운영 신뢰성을 검증할 수 없습니다.
 비교 시 fixture 버전·예측 파일·모델 ID/리전·프롬프트 버전을 보관하세요.
 
-API reference / API 참고:
-[Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).
-
 ## Discovery-driven six-pillar report acceptance
 
 The worker's `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` environment variable selects a
@@ -416,3 +413,6 @@ Deployment remains an operator action. Apply reviewed worker IAM/configuration,
 ship the trace adapter and worker image, then obtain explicit authorization for
 live discovery/model acceptance; source verification alone does not activate
 the flag or establish release readiness.
+
+API reference / API 참고:
+[Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).
