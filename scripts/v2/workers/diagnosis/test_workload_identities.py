@@ -237,3 +237,22 @@ def test_one_unreadable_cluster_target_does_not_blank_the_region():
     assert "proxy_target_unresolved" in bundle["gaps"]
     assert "proxy_configuration_unavailable" not in bundle["gaps"]
     assert any(r["kind"] == "configured_dependency" for r in bundle["relationships"])
+
+
+def test_proxy_cap_applies_after_scope_filtering():
+    bundle = _proxy_bundle()
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+    foreign = [{"DBProxyName": f"f{i}", "Status": "available", "VpcId": "vpc-other",
+                "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-f{i}"} for i in range(5)]
+    ours = {"DBProxyName": "ours", "Status": "available", "VpcId": "vpc-a",
+            "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-ours"}
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": foreign + [ours]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": arn, "Type": "RDS_INSTANCE", "Port": 5432}]}
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert any(r["kind"] == "configured_dependency" for r in bundle["relationships"])
+    assert "proxy_cap" not in bundle["incomplete"]

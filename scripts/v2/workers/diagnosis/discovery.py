@@ -639,7 +639,13 @@ def _read_graph(conn, bundle, budget, scope):
             _mark(bundle, "incomplete", "graph_cap")
             # Read-side truncation: the per-class projection is no longer complete, and rows from a
             # truncated class are not current evidence of absence.
-            truncated = {row[5] for row in nodes[600:]} | {row[6] for row in edges[MAX_RELATIONSHIPS:]}
+            # Rows are interleaved across classes by per-class rank, so the sentinel names at most
+            # one class: every class with rows in a truncated list is treated as truncated.
+            truncated = set()
+            if len(nodes) > 600:
+                truncated |= {row[5] for row in nodes}
+            if len(edges) > MAX_RELATIONSHIPS:
+                truncated |= {row[6] for row in edges}
             for cls in truncated & set(qualification):
                 fresh_cls, coverage_cls, window_cls = qualification[cls]
                 coverage_cls.update(complete=False, read_truncated=True)

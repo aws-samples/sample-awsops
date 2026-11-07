@@ -115,17 +115,24 @@ def collect_proxies(bundle, budget, client_factory):
             response = read("describe_db_proxies", MaxRecords=20)
             if response.get("Marker"):
                 d._mark(bundle, "incomplete", "proxy_cap")
-            for row in response.get("DBProxies", [])[:4]:
+            vpcs = {r["facts"].get("vpc_id") for r in databases if r["region"] == region}
+            scoped = []
+            for row in response.get("DBProxies", []):
+                vpc, arn = row.get("VpcId"), row.get("DBProxyArn", "")
+                if not _vpc(vpc):
+                    d._mark(bundle, "gaps", "proxy_target_unresolved")
+                elif (isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
+                        and vpc in vpcs):
+                    scoped.append(row)
+                # Another account/VPC's proxy is outside this diagnosis, not missing evidence.
+            # Scope first, then cap: a cap never drops the diagnosed database's proxy for an
+            # out-of-scope one that happened to be listed earlier.
+            if len(scoped) > 4:
+                d._mark(bundle, "incomplete", "proxy_cap")
+            for row in scoped[:4]:
                 if not d._available(bundle, budget):
                     return
                 name, vpc, arn = row.get("DBProxyName"), row.get("VpcId"), row.get("DBProxyArn", "")
-                if not _vpc(vpc):
-                    d._mark(bundle, "gaps", "proxy_target_unresolved")
-                    continue
-                in_scope = (isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
-                            and vpc in {r["facts"].get("vpc_id") for r in databases if r["region"] == region})
-                if not in_scope:
-                    continue  # Another account/VPC's proxy is outside this diagnosis, not missing evidence.
                 if row.get("Status") != "available":
                     # e.g. 'modifying' during maintenance: present but not usable as configuration evidence.
                     d._mark(bundle, "gaps", "proxy_not_available")
@@ -159,8 +166,6 @@ def collect_proxies(bundle, budget, client_factory):
                         [proxy["id"], database["id"]], {"relation": "proxy_target", "port": target.get("Port")},
                         captured, region=region, fresh=True, coverage={"complete": not bool(targets.get("Marker"))})
                     d._relationship(bundle, proxy["id"], database["id"], "configured_dependency", evidence)
-            if len(response.get("DBProxies", [])) > 4:
-                d._mark(bundle, "incomplete", "proxy_cap")
         except _ProxyBound:
             return  # The call budget is shared across regions: stop instead of re-recording per region.
         except (ClientError, BotoCoreError, ScopeError):

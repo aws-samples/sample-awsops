@@ -1188,9 +1188,10 @@ def test_read_side_graph_truncation_demotes_the_class_coverage(provider):
     db.nodes.extend(extra)
     bundle = discovery.collect(db, ACCOUNT, Budget())
     assert "graph_cap" in bundle["incomplete"]
+    # Interleaved rows: every class present in a truncated read is demoted, not just the sentinel's.
     assert bundle["coverage"]["graph"]["trace"]["complete"] is False
-    assert not any(e["fresh"] for e in bundle["evidence"] if e["source"] == "stored_graph"
-                   and e["coverage"].get("sources_ref") == "coverage.graph.trace")
+    assert bundle["coverage"]["graph"]["infra"]["complete"] is False
+    assert not any(e["fresh"] for e in bundle["evidence"] if e["source"] == "stored_graph")
 
 
 def test_memory_blind_provider_rows_never_claim_complete_coverage(provider):

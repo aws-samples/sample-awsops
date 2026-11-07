@@ -544,6 +544,12 @@ class RuntimePolicyTests(unittest.TestCase):
         del bad["configuration"]
         with self.assertRaises(ValueError):
             self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Member roles never pass beside a mutation/write gate.
+        for flag in self.module.READONLY_PROFILE_FLAGS:
+            bad = copy.deepcopy(plan)
+            bad["variables"][flag] = {"value": True}
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, flag):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
         # Fence: only full dev plans with the applied evidence loop honor the exemption.
         for target, scope, flag in (("atomoh", "full", True), ("dev", "ecr-bootstrap", True), ("dev", "full", False)):
             bad = copy.deepcopy(plan)

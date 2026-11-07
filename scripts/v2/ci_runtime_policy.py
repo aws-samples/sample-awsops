@@ -507,11 +507,17 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     readiness = variables.get("ci_readiness_enabled", False)
     targets = verification_targets(variables.get("runtime_verification_targets", []), expected_account)
     members = member_roles(variables.get("diagnosis_member_role_arns"), expected_account)
-    # Same fence as runtime targets: full dev plans with the applied loop only. Elsewhere no foreign
+    # Exempt only on full dev plans with workers and the evidence loop applied. Elsewhere no foreign
     # member ARN is exempt, so any that appears still fails the account scan.
     if members and (target != "dev" or scope != "full" or variables.get("workers_enabled") is not True
                     or variables.get("diagnosis_evidence_loop_enabled") is not True):
         members = []
+    if members:
+        # Cross-account read roles never ship beside a mutation/write gate (the runtime-target
+        # exemption gets this through the read-only profile; this one enforces it directly).
+        for flag in READONLY_PROFILE_FLAGS:
+            if variables.get(flag) is not False:
+                raise ValueError(f"Diagnosis member roles require {flag}=false")
     attached = bool(members) and _member_policy_attached_only_to_worker(plan, variables.get("project"))
     if targets and (target != "dev" or scope != "full" or profile is not True
                     or variables.get("inventory_host_only") is not False
