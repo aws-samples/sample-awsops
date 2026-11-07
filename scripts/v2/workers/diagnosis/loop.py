@@ -299,6 +299,8 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
         degraded=degraded, incomplete=incomplete)
     _notify(progress, "review")
     passes = 1
+    # Post-review baseline: reviewer withholdings are not revalidation drops.
+    reviewed = {pillar: sum(row["pillar"] == pillar for row in findings) for pillar in PILLARS}
     requests = review.get("follow_up", [])
     reruns = review.get("rerun_pillars", [])
     if reruns and not requests:
@@ -332,9 +334,9 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
                         if pillar in reruns or state.get("status") == "failed":
                             continue
                         kept = sum(row["pillar"] == pillar for row in retained)
-                        if kept != state.get("findings"):
+                        if kept != reviewed.get(pillar, 0):
                             coverage[pillar] = {**state, "status": "partial", "findings": kept,
-                                                "revalidation_dropped": state.get("findings", 0) - kept}
+                                                "revalidation_dropped": reviewed.get(pillar, 0) - kept}
                             degraded.append(f"pillar:{pillar}:revalidation_dropped")
                     # Pass-1 downgrades stay downgrades; only rejections join the rejected history.
                     first_rejected, first_downgraded = index.rejected, index.downgraded

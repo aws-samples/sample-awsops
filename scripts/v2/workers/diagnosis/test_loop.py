@@ -437,3 +437,21 @@ def test_fingerprint_distinguishes_resources_that_redact_identically():
     strip = lambda ctx: [{k: v for k, v in r.items() if k != "id"} for r in ctx["resources"]]
     assert strip(a.model_context()) == strip(b.model_context())  # both read <arn> to a model
     assert loop._fingerprint(a) != loop._fingerprint(b)
+
+
+def test_review_withholding_is_not_reported_as_revalidation_drop(monkeypatch):
+    request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
+    install_models(monkeypatch, [{"finding_ids": [], "reject_ids": ["rel:finding-reliability"],
+                                  "follow_up": [request], "rerun_pillars": ["performance_efficiency"]}])
+
+    def follow_up(requests):
+        data = bundle()
+        data["evidence"][2]["facts"]["metrics"]["CPUUtilization"]["p95"]["max"] = 30
+        return data
+
+    result = loop.run(bundle(), account=ACCOUNT, tier="deep",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("deep"),
+                      collect_follow_up=follow_up)
+    assert result["passes"] == 2
+    assert "pillar:reliability:revalidation_dropped" not in result["degraded"]
+    assert "revalidation_dropped" not in result["pillar_coverage"]["reliability"]
