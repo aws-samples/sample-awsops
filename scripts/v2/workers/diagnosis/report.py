@@ -960,7 +960,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         "sections": total, "sources_used": sources_used, "degraded": degraded,
         "incomplete": incomplete,  # by-design caps; never make the report partial
         "budget_incomplete": [k for k in incomplete
-                              if k.endswith(("_deadline", ":uncompleted", ":budget_exhausted"))],
+                              if k.endswith(("_deadline", "_exhausted", ":uncompleted"))],
         "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + [
             key for key, body in bodies if presentation.SIZE_MARK in body])),
         "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),

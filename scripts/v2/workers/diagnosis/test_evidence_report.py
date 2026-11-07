@@ -348,10 +348,12 @@ def test_size_bound_truncation_degrades_render(monkeypatch):
 
 def test_evidence_summary_separates_budget_cutoffs_from_caps(monkeypatch):
     data = bundle()
-    data["incomplete"] = ["inventory_cap", "discovery_deadline"]
+    data["incomplete"] = ["inventory_cap", "discovery_deadline", "supporting_deadline_exhausted",
+                          "follow_up:budget_exhausted", "proxy_cap"]
     prepare(monkeypatch, data=data)
     summary = report.generate(object(), "self")[1]
-    assert summary["budget_incomplete"] == ["discovery_deadline"]
+    assert summary["budget_incomplete"] == ["discovery_deadline", "supporting_deadline_exhausted",
+                                            "follow_up:budget_exhausted"]
 
 
 def test_payload_cannot_enable_evidence_path(monkeypatch):
