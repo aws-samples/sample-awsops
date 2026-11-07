@@ -38,13 +38,17 @@ _COMMAND = re.compile(r"(?i)https?://|```|(?<![\w-])(?:curl|wget|sudo|kubectl|te
 # has no operation-shaped token after the service.
 _AWS_WORD = re.compile(r"(?i)(?<![\w-])aws(?![\w-])")
 _AWS_FLAG = re.compile(r"(?i)(?<![\w-])aws\s+--?[a-z]")
+# Punctuation, CJK particles and other non-CLI characters glued to a token ("terminate-instances.",
+# "invoke를", "rm,") become separators, so a trailing character never hides an operation.
+_NON_CLI = re.compile(r"[^A-Za-z0-9\s_/:=@+-]|\.(?=\s|$)")
 
 
 def _commandlike(value):
     from .report import _cli_commands
     if _COMMAND.search(value) or _AWS_FLAG.search(value):
         return True
-    return next(_cli_commands(_AWS_WORD.sub("aws", value)), None) is not None
+    text = _NON_CLI.sub(" ", _AWS_WORD.sub("aws", value))
+    return next(_cli_commands(text), None) is not None
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),

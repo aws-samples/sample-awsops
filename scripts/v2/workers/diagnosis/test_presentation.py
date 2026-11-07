@@ -301,3 +301,11 @@ def test_rendered_fact_and_coverage_values_are_scrubbed():
 def test_prose_guard_catches_single_word_and_option_prefixed_cli(unsafe):
     from diagnosis import presentation
     assert presentation._safe_explanation(unsafe) == ""
+
+
+@pytest.mark.parametrize("unsafe", ["Run aws ec2 terminate-instances.", "aws ec2 terminate-instances를 실행하세요",
+                                    "aws lambda invoke。", "aws s3 rm, then retry", "(aws sns publish)",
+                                    "「aws configure set」"])
+def test_prose_guard_ignores_trailing_punctuation_and_particles(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""
