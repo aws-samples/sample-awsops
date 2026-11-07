@@ -215,3 +215,25 @@ def test_in_scope_unavailable_proxy_is_a_gap_and_cluster_deadline_is_a_bound():
     identities.collect_proxies(bundle, budget, lambda *args: Cluster())
     assert "discovery_deadline" in bundle["incomplete"]
     assert "proxy_target_unresolved" not in bundle["gaps"]
+
+
+def test_one_unreadable_cluster_target_does_not_blank_the_region():
+    from botocore.exceptions import ClientError
+    bundle = _proxy_bundle()
+    arn = f"arn:aws:rds:{REGION}:{ACCOUNT}:db:orders"
+
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{"DBProxyName": "p", "Status": "available", "VpcId": "vpc-a",
+                    "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}]}
+
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": [{"TargetArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:c1", "Type": "TRACKED_CLUSTER"},
+                                {"TargetArn": arn, "Type": "RDS_INSTANCE", "Port": 5432}]}
+
+        def describe_db_clusters(self, **kwargs):
+            raise ClientError({"Error": {"Code": "Throttling", "Message": "x"}}, "DescribeDBClusters")
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert "proxy_target_unresolved" in bundle["gaps"]
+    assert "proxy_configuration_unavailable" not in bundle["gaps"]
+    assert any(r["kind"] == "configured_dependency" for r in bundle["relationships"])

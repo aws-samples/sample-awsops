@@ -28,12 +28,12 @@ def member_factory(conn, account, budget):
     if len(rows) != 1 or len(rows[0]) != 2:
         raise ScopeError("member_not_registered")
     role, external = rows[0]
-    if external in (None, ""):
-        # The member path always sends an ExternalId (IAM requires sts:ExternalId ?*). A
-        # first-party registration without one stays an explicit gap, never an unbound assume.
-        raise ScopeError("member_external_id_required")
+    # ADR-011 (amended 2026-06-26; migration 01KW39F7...): ExternalId is optional only for a
+    # first-party registration whose target trust pins the AWSops role ARN; the onboarding API
+    # stores NULL only behind that explicit firstParty confirmation. A registered value is sent.
     if (not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9_+=,.@-]{1,64}", role)
-            or not isinstance(external, str) or not re.fullmatch(r"[A-Za-z0-9+=,.@:/-]{2,1224}", external)):
+            or (external not in (None, "") and (not isinstance(external, str)
+                or not re.fullmatch(r"[A-Za-z0-9+=,.@:/-]{2,1224}", external)))):
         raise ScopeError("member_registry_unqualified")
     role_arn = f"arn:aws:iam::{account}:role/{role}"
     try:
@@ -48,13 +48,13 @@ def member_factory(conn, account, budget):
             raise ScopeError("member_discovery_deadline")
         config = Config(connect_timeout=1, read_timeout=min(10, max(1, int(budget.remaining(analysis=True) - 2))),
                         retries={"total_max_attempts": 1, "mode": "standard"})
-        # ExternalId is required here even though onboarding allows first-party rows without one.
+        # ExternalId is sent when registered (third-party); first-party rows rely on the trust pin.
         # 3600s is the role-chaining maximum (sg_rule_scan parity); refreshed before expiry.
         # IAM sts:AssumeRole: workers.tf worker_diagnosis_evidence Sid DiagnosisRegisteredMemberReadOnly
-        # (exactly diagnosis_member_role_arns, ExternalId ?*, runtime regions). GetCallerIdentity needs no grant.
+        # (exactly diagnosis_member_role_arns, runtime regions). GetCallerIdentity needs no grant.
         result = boto3.client("sts", config=config).assume_role(
             RoleArn=role_arn, RoleSessionName="awsops-diagnosis-read", DurationSeconds=3600,
-            ExternalId=external)
+            **({"ExternalId": external} if external else {}))
         expected = f"arn:aws:sts::{account}:assumed-role/{role}/"
         if not result.get("AssumedRoleUser", {}).get("Arn", "").startswith(expected):
             raise ScopeError("member_principal_mismatch")

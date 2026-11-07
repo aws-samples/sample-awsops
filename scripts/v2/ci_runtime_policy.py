@@ -464,8 +464,7 @@ def _check_member_positions(resource, members, project, expected, attached=False
                     if (statement.get("Sid") != "DiagnosisRegisteredMemberReadOnly" or actions != ["sts:AssumeRole"]
                             or statement.get("Effect") != "Allow"
                             or set(statement) != {"Sid", "Effect", "Action", "Resource", "Condition"}
-                            or not isinstance(condition, dict) or set(condition) != {"StringLike", "StringEquals"}
-                            or condition.get("StringLike") != {"sts:ExternalId": "?*"}
+                            or not isinstance(condition, dict) or set(condition) != {"StringEquals"}
                             or not isinstance(condition.get("StringEquals"), dict)
                             or set(condition["StringEquals"]) != {"aws:RequestedRegion"}
                             or not isinstance(condition["StringEquals"]["aws:RequestedRegion"], (str, list))

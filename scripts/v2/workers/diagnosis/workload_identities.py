@@ -146,7 +146,12 @@ def collect_proxies(bundle, budget, client_factory):
                 for target in targets.get("Targets", [])[:20]:
                     database = proxy_target(target, databases, account, region, vpc)
                     if database is None and target.get("Type") == "TRACKED_CLUSTER":
-                        database = _cluster_target(bundle, budget, read, target, databases, account, region, vpc)
+                        try:
+                            database = _cluster_target(bundle, budget, read, target, databases, account, region, vpc)
+                        except (ClientError, BotoCoreError):
+                            # One unreadable cluster target leaves only that target unresolved; the
+                            # proxy's other targets and the remaining regions are still read.
+                            database = None
                     if database is None:
                         d._mark(bundle, "gaps", "proxy_target_unresolved")
                         continue

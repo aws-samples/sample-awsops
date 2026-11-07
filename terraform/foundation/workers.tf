@@ -928,12 +928,13 @@ resource "aws_iam_policy" "worker_diagnosis_evidence" {
       Resource  = "*"
       Condition = local.runtime_read_condition
       }], length(var.diagnosis_member_role_arns) > 0 ? [{
+      # ExternalId is enforced by the member trust policy (third-party) or replaced by its pin
+      # on this worker role (first-party, ADR-011); the worker sends a registered value.
       Sid      = "DiagnosisRegisteredMemberReadOnly"
       Effect   = "Allow"
       Action   = ["sts:AssumeRole"]
       Resource = var.diagnosis_member_role_arns
       Condition = {
-        StringLike   = { "sts:ExternalId" = "?*" }
         StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
       }
     }] : [])

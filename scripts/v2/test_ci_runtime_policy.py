@@ -490,8 +490,7 @@ class RuntimePolicyTests(unittest.TestCase):
             {"Sid": "DiagnosisProviderSizingReadOnly", "Effect": "Allow",
              "Action": ["compute-optimizer:GetEC2InstanceRecommendations"], "Resource": "*"},
             {"Sid": "DiagnosisRegisteredMemberReadOnly", "Effect": "Allow", "Action": ["sts:AssumeRole"],
-             "Resource": [member], "Condition": {"StringLike": {"sts:ExternalId": "?*"},
-                                                 "StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]}}}]}
+             "Resource": [member], "Condition": {"StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]}}}]}
         policy_after = {"name": "awsops-dev-worker-task-diagnosis-evidence-read", "policy": json.dumps(policy)}
         containers = [{"name": "worker", "environment": [
             {"name": "DIAGNOSIS_MEMBER_ROLE_ARNS", "value": json.dumps([member])},
@@ -619,7 +618,9 @@ class RuntimePolicyTests(unittest.TestCase):
         self.module.check_plan(off, "dev", "full", ACCOUNT)
         for change in ({"Resource": ["arn:aws:iam::888888888888:role/AWSopsReadOnlyRole"]}, {"Resource": "*"},
                        {"Condition": {}}, {"Condition": {"StringLike": {"sts:ExternalId": "?*"}}},
-                       {"Condition": {"StringLike": {"sts:ExternalId": "?*"}, "StringEquals": {"aws:SourceIp": "1.2.3.4"}}},
+                       {"Condition": {"StringEquals": {"aws:SourceIp": "1.2.3.4"}}},
+                       {"Condition": {"StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]},
+                                      "StringNotEquals": {"aws:PrincipalTag/x": "y"}}},
                        {"Action": ["sts:AssumeRole", "iam:PassRole"]}, {"Sid": "Other"}):
             bad = copy.deepcopy(plan)
             after = bad["resource_changes"][0]["change"]["after"]

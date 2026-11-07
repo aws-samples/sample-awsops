@@ -50,14 +50,7 @@ def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):
         scoped_clients.member_factory(Registry(rows), ACCOUNT, Budget())
 
 
-@pytest.mark.parametrize("external", [None, ""])
-def test_missing_external_id_is_refused_before_any_sts_call(monkeypatch, external):
-    monkeypatch.setattr(scoped_clients.boto3, "client", lambda *a, **k: pytest.fail("no STS call"))
-    with pytest.raises(scoped_clients.ScopeError, match="member_external_id_required"):
-        scoped_clients.member_factory(Registry([["ReadOnly", external]]), ACCOUNT, Budget())
-
-
-@pytest.mark.parametrize("external", ["external"])
+@pytest.mark.parametrize("external", ["external", None, ""])
 def test_assumed_principal_must_match_registered_account(monkeypatch, external):
     called = []
 
@@ -70,7 +63,8 @@ def test_assumed_principal_must_match_registered_account(monkeypatch, external):
     monkeypatch.setattr(scoped_clients.boto3, "client", lambda *a, **k: Sts())
     with pytest.raises(scoped_clients.ScopeError):
         scoped_clients.member_factory(Registry([["ReadOnly", external]]), ACCOUNT, Budget())
-    assert called == [external]
+    # ADR-011: a first-party row (NULL ExternalId) assumes without one; a registered value is sent.
+    assert called == [external or None]
 
 
 @pytest.mark.parametrize("reported_account", [ACCOUNT, "111122223333"])

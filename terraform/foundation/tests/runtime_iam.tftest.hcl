@@ -170,9 +170,10 @@ run "diagnosis_network_queries_are_host_scoped_and_allowlisted" {
       length(jsondecode(p.policy).Statement) == 3 &&
       [for s in jsondecode(p.policy).Statement : s.Action] == [["compute-optimizer:GetEC2InstanceRecommendations", "compute-optimizer:GetRDSDatabaseRecommendations"], ["cloudwatch:ListMetrics"], ["sts:AssumeRole"]] &&
       jsondecode(p.policy).Statement[2].Resource == ["arn:aws:iam::999900001111:role/AWSopsReadOnlyRole"] &&
-      jsondecode(p.policy).Statement[2].Condition.StringLike["sts:ExternalId"] == "?*"
+      !can(jsondecode(p.policy).Statement[2].Condition.StringLike) &&
+      can(jsondecode(p.policy).Statement[2].Condition.StringEquals["aws:RequestedRegion"])
     ])
-    error_message = "Member reads add exactly one sts:AssumeRole statement on the explicit role with an external ID."
+    error_message = "Member reads add exactly one region-scoped sts:AssumeRole statement on the explicit role (ExternalId per ADR-011)."
   }
   assert {
     condition = keys(aws_iam_role_policy_attachment.worker_diagnosis_evidence) == ["task"] && keys(aws_iam_role_policy_attachment.worker_diagnosis_network) == ["task"] && alltrue([
