@@ -1,4 +1,5 @@
 import redact
+import pytest
 
 
 def test_redact_strips_pii():
@@ -22,3 +23,56 @@ def test_redact_leaves_non_standalone_digit_runs_alone():
     assert '<acct>' not in s
     assert '1234567890123' in s
     assert '12345' in s
+
+
+@pytest.mark.parametrize('address', [
+    'fd00:1234::7', '2001:db8:1234:5678:abcd:ef01:2345:6789',
+    '::1', '::', '::ffff:192.0.2.7', 'fe80::1%eth0',
+])
+def test_redact_valid_ipv6_in_source_strings(address):
+    assert redact.redact('answer "' + address + '"') == 'answer "<ip>"'
+    assert redact.redact('peer ' + address + '.') == 'peer <ip>.'
+    assert redact.redact('peer ' + address + ': down') == 'peer <ip>: down'
+
+
+@pytest.mark.parametrize('partition', ['aws-cn', 'aws-us-gov', 'aws-iso', 'aws-iso-b', 'aws-iso-f', 'aws-eusc'])
+def test_redact_noncommercial_arn(partition):
+    assert redact.redact(f'arn:{partition}:rds:region:123456789012:db:orders') == '<arn>'
+
+
+def test_ipv6_redaction_preserves_timestamps_units_and_opaque_identifiers():
+    text = '2026-11-05T12:00:00+00:00 12:00:00 e:abc123 r:123abc Count/Second bad:de:ad'
+    assert redact.redact(text) == text
+
+
+def test_redact_dns_answer_ip_lists_including_ipv6():
+    s = redact.redact('answer_ips ["2001:db8::7", "fd00:1234::7", "192.0.2.9", "::ffff:192.0.2.7"]')
+    assert s == 'answer_ips ["<ip>", "<ip>", "<ip>", "<ip>"]'
+
+
+def test_redact_region_qualified_aws_endpoints_but_keeps_service_principals():
+    s = redact.redact('db orders.cluster-abc123.ap-northeast-2.rds.amazonaws.com lb a-1.us-east-1.elb.amazonaws.com '
+                      'via ec2.amazonaws.com')
+    assert s == 'db <host> lb <host> via ec2.amazonaws.com'
+
+
+def test_regional_service_endpoints_stay_visible_but_resource_endpoints_are_masked():
+    kept = ['Could not connect to the endpoint URL: "https://sts.ap-northeast-2.amazonaws.com/"',
+            "bedrock-runtime.us-east-1.amazonaws.com", "s3.ap-northeast-2.amazonaws.com", "ec2.amazonaws.com"]
+    for text in kept:
+        assert redact.redact(text) == text
+    for host in ("mybucket.s3.ap-northeast-2.amazonaws.com", "mybucket.s3-us-west-2.amazonaws.com",
+                 "abc123.execute-api.ap-northeast-2.amazonaws.com",
+                 "vpce-0a1b.sts.ap-northeast-2.vpce.amazonaws.com",
+                 "ec2-54-1-2-3.ap-northeast-2.compute.amazonaws.com"):
+        assert redact.redact(f"via {host} failed") == "via <host> failed"
+
+
+def test_ipv6_scan_is_linear_on_long_punctuation_runs():
+    import time
+    for blob in (":" * 20000, ".:" * 10000, "::" + "0:" * 10000 + "g", "a:" * 10000 + "::"):
+        started = time.monotonic()
+        redact.redact(blob)
+        assert time.monotonic() - started < 1.0
+    assert redact.redact(":" * 50 + " peer 2001:db8::1. done").endswith(" peer <ip>. done")
+    assert redact.redact("fe80::1%eth0, ::ffff:10.0.0.1:") == "<ip>, <ip>:"

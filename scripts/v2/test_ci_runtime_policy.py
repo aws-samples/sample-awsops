@@ -484,6 +484,178 @@ class RuntimePolicyTests(unittest.TestCase):
         plan["variables"]["runtime_verification_targets"] = {"value": [member]}
         return plan
 
+    def member_plan(self):
+        member = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"
+        policy = {"Version": "2012-10-17", "Statement": [
+            {"Sid": "DiagnosisProviderSizingReadOnly", "Effect": "Allow",
+             "Action": ["compute-optimizer:GetEC2InstanceRecommendations"], "Resource": "*"},
+            {"Sid": "DiagnosisRegisteredMemberReadOnly", "Effect": "Allow", "Action": ["sts:AssumeRole"],
+             "Resource": [member], "Condition": {"StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]}}}]}
+        policy_after = {"name": "awsops-dev-worker-task-diagnosis-evidence-read", "policy": json.dumps(policy)}
+        containers = [{"name": "worker", "environment": [
+            {"name": "DIAGNOSIS_MEMBER_ROLE_ARNS", "value": json.dumps([member])},
+            {"name": "DIAGNOSIS_HOST_ACCOUNT_ID", "value": ACCOUNT}]}]
+        task_after = {"family": "awsops-dev-worker", "container_definitions": json.dumps(containers),
+                      "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/awsops-dev-worker-task"}
+        plan = self.plan([
+            self.change('aws_iam_policy.worker_diagnosis_evidence["task"]', "aws_iam_policy", policy_after),
+            self.change("aws_ecs_task_definition.worker[0]", "aws_ecs_task_definition", task_after),
+            self.change('aws_iam_role_policy_attachment.worker_diagnosis_evidence["task"]',
+                        "aws_iam_role_policy_attachment", {"role": "awsops-dev-worker-task"})])
+        plan["variables"]["diagnosis_member_role_arns"] = {"value": [member]}
+        plan["variables"]["workers_enabled"] = {"value": True}
+        plan["variables"]["diagnosis_evidence_loop_enabled"] = {"value": True}
+        plan["configuration"] = {"root_module": {"resources": [
+            {"address": "aws_iam_policy.worker_diagnosis_evidence", "expressions": {"name": {}}},
+            {"address": "aws_iam_role_policy_attachment.worker_diagnosis_evidence", "expressions": {
+                "role": {"references": ["aws_iam_role.worker_task[0].name", "aws_iam_role.worker_task"]},
+                "policy_arn": {"references": ["each.value.arn", "each.value"]}},
+             "for_each_expression": {"references": ["aws_iam_policy.worker_diagnosis_evidence"]}}]}}
+        return plan
+
+    def test_member_role_exception_covers_only_the_exact_allowlisted_positions(self):
+        plan = self.member_plan()
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        unset = copy.deepcopy(plan)
+        del unset["variables"]["diagnosis_member_role_arns"]
+        with self.assertRaisesRegex(ValueError, "different account"):
+            self.module.check_plan(unset, "dev", "full", ACCOUNT)
+        for bad_roles in (["arn:aws:iam::999999999999:role/Admin"], [f"arn:aws:iam::{ACCOUNT}:role/AWSopsReadOnlyRole"],
+                          "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"):
+            bad = copy.deepcopy(plan)
+            bad["variables"]["diagnosis_member_role_arns"] = {"value": bad_roles}
+            with self.subTest(roles=bad_roles), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][0]["change"]["after"]["name"] = "awsops-dev-other"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # The managed policy must be attached only to the worker task role.
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][2]["change"]["after"]["role"] = "awsops-dev-web-task"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["configuration"]["root_module"]["resources"].append({"address": "aws_iam_role_policy_attachment.web_extra",
+            "expressions": {"policy_arn": {"references": ["aws_iam_policy.worker_diagnosis_evidence[\"task\"].arn"]}}})
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        del bad["configuration"]
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Member roles never pass beside a mutation/write gate.
+        for flag in self.module.READONLY_PROFILE_FLAGS:
+            bad = copy.deepcopy(plan)
+            bad["variables"][flag] = {"value": True}
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, flag):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Fence: only full dev plans with the applied evidence loop honor the exemption.
+        for target, scope, flag in (("atomoh", "full", True), ("dev", "ecr-bootstrap", True), ("dev", "full", False)):
+            bad = copy.deepcopy(plan)
+            bad["variables"]["diagnosis_evidence_loop_enabled"] = {"value": flag}
+            with self.subTest(target=target, scope=scope, flag=flag), self.assertRaises(ValueError):
+                self.module.check_plan(bad, target, scope, ACCOUNT)
+        # A second attachment reaching the policy by hardcoded ARN, unknown ARN or a child module fails.
+        hardcoded = self.change("aws_iam_role_policy_attachment.web_extra", "aws_iam_role_policy_attachment",
+            {"role": "awsops-dev-web-task",
+             "policy_arn": f"arn:aws:iam::{ACCOUNT}:policy/awsops-dev-worker-task-diagnosis-evidence-read"})
+        unknown = self.change("aws_iam_role_policy_attachment.web_unknown", "aws_iam_role_policy_attachment",
+            {"role": "awsops-dev-web-task"})
+        unknown["change"]["after_unknown"] = {"policy_arn": True}
+        for extra in (hardcoded, unknown):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"].append(extra)
+            with self.subTest(extra=extra["address"]), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["configuration"]["root_module"]["module_calls"] = {"x": {"module": {"resources": [
+            {"address": "aws_iam_role_policy_attachment.other", "expressions": {"policy_arn": {"references": [
+                "aws_iam_policy.worker_diagnosis_evidence[\"task\"].arn"]}}}]}}}
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # The network policy's own attachment (ARN unknown until apply) does not block the exemption.
+        network = copy.deepcopy(plan)
+        attach = self.change('aws_iam_role_policy_attachment.worker_diagnosis_network["task"]',
+                             "aws_iam_role_policy_attachment", {"role": "awsops-dev-worker-task"})
+        attach["change"]["after_unknown"] = {"policy_arn": True}
+        network["resource_changes"].append(attach)
+        network["configuration"]["root_module"]["resources"] += [
+            {"address": "aws_iam_policy.worker_diagnosis_network", "expressions": {"name": {}}},
+            {"address": "aws_iam_role_policy_attachment.worker_diagnosis_network",
+             "expressions": {"policy_arn": {"references": ["each.value.arn", "each.value"]}},
+             "for_each_expression": {"references": ["aws_iam_policy.worker_diagnosis_network"]}}]
+        self.module.check_plan(network, "dev", "full", ACCOUNT)
+        for for_each, arn in (
+                (["local.policies"], ["each.value.arn", "each.value"]),
+                (["aws_iam_policy.worker_diagnosis_network", "data.aws_iam_policy.evidence"], ["each.value.arn"]),
+                (["aws_iam_policy.worker_diagnosis_network"], ["data.aws_iam_policy.evidence.arn"]),
+                (["aws_iam_policy.worker_diagnosis_network"], ["each.value.arn", "var.extra"]),
+                (["aws_iam_policy.worker_diagnosis_evidence"], ["each.value.arn"])):
+            hidden = copy.deepcopy(network)
+            entry = hidden["configuration"]["root_module"]["resources"][-1]
+            entry["for_each_expression"] = {"references": for_each}
+            entry["expressions"]["policy_arn"] = {"references": arn}
+            with self.subTest(for_each=for_each, arn=arn), self.assertRaises(ValueError):
+                self.module.check_plan(hidden, "dev", "full", ACCOUNT)
+        nested = copy.deepcopy(network)
+        nested["resource_changes"][-1]["address"] = 'module.x.aws_iam_role_policy_attachment.worker_diagnosis_network["task"]'
+        with self.assertRaises(ValueError):
+            self.module.check_plan(nested, "dev", "full", ACCOUNT)
+        # Replacing the designated attachment is accepted.
+        replaced = copy.deepcopy(plan)
+        replaced["resource_changes"][2]["change"]["actions"] = ["delete", "create"]
+        self.module.check_plan(replaced, "dev", "full", ACCOUNT)
+        # The task definition exemption also requires the attachment proof.
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"] = [r for r in bad["resource_changes"] if "attachment" not in r["address"]]
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        bad["resource_changes"][1]["change"]["after"]["family"] = "awsops-dev-web"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # Loop off: the task definition carries no member env entry, which is not a failure.
+        off = copy.deepcopy(plan)
+        after = off["resource_changes"][1]["change"]["after"]
+        containers = json.loads(after["container_definitions"])
+        containers[0]["environment"] = containers[0]["environment"][1:]
+        after["container_definitions"] = json.dumps(containers)
+        self.module.check_plan(off, "dev", "full", ACCOUNT)
+        for change in ({"Resource": ["arn:aws:iam::888888888888:role/AWSopsReadOnlyRole"]}, {"Resource": "*"},
+                       {"Condition": {}}, {"Condition": {"StringLike": {"sts:ExternalId": "?*"}}},
+                       {"Condition": {"StringEquals": {"aws:SourceIp": "1.2.3.4"}}},
+                       {"Condition": {"StringEquals": {"aws:RequestedRegion": ["ap-northeast-2"]},
+                                      "StringNotEquals": {"aws:PrincipalTag/x": "y"}}},
+                       {"Action": ["sts:AssumeRole", "iam:PassRole"]}, {"Sid": "Other"}):
+            bad = copy.deepcopy(plan)
+            after = bad["resource_changes"][0]["change"]["after"]
+            policy = json.loads(after["policy"])
+            policy["Statement"][1].update(change)
+            after["policy"] = json.dumps(policy)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        # A foreign ARN anywhere else in the policy or task definition still fails.
+        bad = copy.deepcopy(plan)
+        after = bad["resource_changes"][0]["change"]["after"]
+        policy = json.loads(after["policy"])
+        policy["Statement"][0]["Resource"] = "arn:aws:s3:::x/arn:aws:iam::999999999999:role/Other"
+        after["policy"] = json.dumps(policy)
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        after = bad["resource_changes"][1]["change"]["after"]
+        containers = json.loads(after["container_definitions"])
+        containers[0]["environment"][0]["value"] = json.dumps(["arn:aws:iam::888888888888:role/AWSopsReadOnlyRole"])
+        after["container_definitions"] = json.dumps(containers)
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        after = bad["resource_changes"][1]["change"]["after"]
+        after["execution_role_arn"] = "arn:aws:iam::999999999999:role/Exec"
+        with self.assertRaisesRegex(ValueError, "different account"):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
+
     def test_foreign_exception_is_only_exact_configured_assume_role_resource_in_owned_policy(self):
         plan = self.target_plan()
         self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT)["runtime_policy"], "verified")

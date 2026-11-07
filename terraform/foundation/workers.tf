@@ -52,6 +52,19 @@ locals {
     HOST_ACCOUNT_ID          = local.acct
     PROJECT                  = var.project
   } : {}
+  # The diagnosis loop is analysis-only and has a separate default-off gate.
+  # Bind self reads to the applied account, independently of datasource flags.
+  diagnosis_evidence_roles = var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([]) # report runs on Fargate only
+  diagnosis_evidence_env_map = var.diagnosis_evidence_loop_enabled ? {
+    DIAGNOSIS_EVIDENCE_LOOP_ENABLED    = "true"
+    DIAGNOSIS_HOST_ACCOUNT_ID          = local.acct
+    GRAPH_REBUILD_INTERVAL_MINS        = tostring(var.graph_rebuild_interval_mins)
+    INVENTORY_STALE_AFTER_MINUTES      = tostring(var.inventory_stale_after_minutes)
+    DIAGNOSIS_MEMBER_ROLE_ARNS         = jsonencode(var.diagnosis_member_role_arns)
+    DIAGNOSIS_NETWORK_EVIDENCE_ENABLED = tostring(var.diagnosis_network_evidence_enabled)
+    DIAGNOSIS_DNS_LOG_GROUP_ARNS       = jsonencode(var.diagnosis_dns_log_group_arns)
+  } : {}
+  diagnosis_evidence_env_list = [for name, value in local.diagnosis_evidence_env_map : { name = name, value = value }]
   # finops_baseline (ADR-020, extends ADR-012) — deterministic FinOps baseline-recommendations rule
   # engine. Requires workers_enabled (validated in variables.tf); runs on the same Fargate worker as
   # the diagnosis job but as its own job type (finops_baseline), not inside it. Default false → 0
@@ -555,7 +568,7 @@ resource "aws_ecs_task_definition" "worker" {
         # _compliance fails fast with a clear error.
         { name = "STEAMPIPE_HOST", value = "steampipe.${var.project}.internal" },
         { name = "STEAMPIPE_SECRET_ARN", value = try(aws_secretsmanager_secret.steampipe[0].arn, "") }
-      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
+      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.diagnosis_evidence_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -891,6 +904,92 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
 # ADR-020's CUR-absence scoping) and must not carry IAM ahead of code that uses it — this repo's
 # `worker_diagnosis` policy sets the "exactly the actions the worker calls" precedent this follows.
 # Add CE/COH/Budgets actions here ONLY when a rule that actually calls them ships.
+# Customer-managed (not inline): with up to 32 member ARNs and the all-regions read condition the
+# two diagnosis policies would push the worker task role toward IAM's 10,240-character aggregate
+# inline-policy quota. Each managed policy stays under its own 6,144-character limit.
+resource "aws_iam_policy" "worker_diagnosis_evidence" {
+  for_each = local.diagnosis_evidence_roles
+  name     = "${var.project}-worker-${each.key}-diagnosis-evidence-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid    = "DiagnosisProviderSizingReadOnly"
+      Effect = "Allow"
+      Action = [
+        "compute-optimizer:GetEC2InstanceRecommendations",
+        "compute-optimizer:GetRDSDatabaseRecommendations",
+      ]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }, {
+      Sid       = "DiagnosisMeasuredMemoryReadOnly"
+      Effect    = "Allow"
+      Action    = ["cloudwatch:ListMetrics"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_member_role_arns) > 0 ? [{
+      # ExternalId is enforced by the member trust policy (third-party) or replaced by its pin
+      # on this worker role (first-party, ADR-011); the worker sends a registered value.
+      Sid      = "DiagnosisRegisteredMemberReadOnly"
+      Effect   = "Allow"
+      Action   = ["sts:AssumeRole"]
+      Resource = var.diagnosis_member_role_arns
+      Condition = {
+        StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
+      }
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_evidence" {
+  for_each   = aws_iam_policy.worker_diagnosis_evidence
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
+resource "aws_iam_policy" "worker_diagnosis_network" {
+  for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
+  name     = "${var.project}-worker-${each.key}-diagnosis-network-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid       = "DiagnosisObservationDiscovery"
+      Effect    = "Allow"
+      Action    = ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }, {
+      # Query creation/cancellation affect analysis jobs only, never monitors or AWS workloads.
+      Sid    = "DiagnosisMonitorObservationQuery"
+      Effect = "Allow"
+      Action = ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"]
+      # Region is bounded by the condition; a per-region ARN fan-out would only add policy size.
+      Resource  = ["arn:aws:networkflowmonitor:*:${local.acct}:monitor/*"]
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
+      Sid       = "DiagnosisApprovedResolverLogRead"
+      Effect    = "Allow"
+      Action    = ["logs:StartQuery"]
+      Resource  = [for arn in var.diagnosis_dns_log_group_arns : endswith(arn, ":*") ? arn : "${arn}:*"]
+      Condition = local.runtime_read_condition
+      }, {
+      # GetQueryResults / StopQuery do not support resource-level scoping; results are reachable
+      # only by query ID, and queries can start only on the allowlisted groups above.
+      Sid       = "DiagnosisQueryResultsAndCancellation"
+      Effect    = "Allow"
+      Action    = ["logs:GetQueryResults", "logs:StopQuery"]
+      Resource  = ["*"]
+      Condition = local.runtime_read_condition
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_network" {
+  for_each   = aws_iam_policy.worker_diagnosis_network
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
 resource "aws_iam_role_policy" "worker_finops_baseline" {
   count = local.fnb
   name  = "${var.project}-worker-finops-baseline-read"

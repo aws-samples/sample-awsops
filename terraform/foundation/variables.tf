@@ -256,6 +256,60 @@ variable "diagnosis_notify_enabled" {
   default     = false
 }
 
+variable "diagnosis_evidence_loop_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only six-pillar diagnosis evidence loop. Adds worker-only configuration with an applied host-account binding and, on the Fargate task role only (independently of FinOps), exactly: compute-optimizer:GetEC2InstanceRecommendations and compute-optimizer:GetRDSDatabaseRecommendations on * and cloudwatch:ListMetrics on *, conditioned on the runtime read regions (all known regions); plus, only when diagnosis_member_role_arns is non-empty, sts:AssumeRole on exactly those ARNs (the registered ExternalId is sent; ADR-011 first-party rows rely on the member trust pin). No mutation, autonomous remediation, new connector or scheduled job. Disabled leaves worker environment and IAM unchanged."
+  validation {
+    condition     = !var.diagnosis_evidence_loop_enabled || var.workers_enabled
+    error_message = "diagnosis_evidence_loop_enabled requires workers_enabled."
+  }
+}
+
+variable "diagnosis_network_evidence_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only DNS/NFM observation queries for diagnosis; requires the evidence loop. Grants the Fargate task role, conditioned on the runtime read regions (all known regions): route53resolver:ListResolverQueryLogConfigs/ListResolverQueryLogConfigAssociations, networkflowmonitor:ListMonitors and rds:DescribeDBProxies/DescribeDBProxyTargets/DescribeDBClusters on *; networkflowmonitor Start/GetQueryStatus/GetQueryResults/StopQueryMonitorTopContributors on host monitors; and, only when diagnosis_dns_log_group_arns is non-empty, logs:StartQuery on exactly those groups plus logs:GetQueryResults/StopQuery on *. Does not create logging, monitors or instrumentation."
+  validation {
+    condition     = !var.diagnosis_network_evidence_enabled || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_network_evidence_enabled requires diagnosis_evidence_loop_enabled."
+  }
+}
+
+variable "diagnosis_dns_log_group_arns" {
+  type        = list(string)
+  default     = []
+  description = "Reviewed Resolver CloudWatch log-group ARN allowlist for bounded diagnosis queries. Empty disables DNS log reads; configs must also be associated with the selected VPC."
+  validation {
+    condition = length(var.diagnosis_dns_log_group_arns) <= 8 && alltrue([for arn in var.diagnosis_dns_log_group_arns :
+      can(regex("^arn:aws:logs:[a-z0-9-]+:[0-9]{12}:log-group:[A-Za-z0-9_./#-]+(:\\*)?$", arn)) &&
+      try(split(":", arn)[4] == data.aws_caller_identity.current.account_id, false)
+    ])
+    error_message = "Use at most eight explicit host-account log-group ARNs without wildcard group names."
+  }
+}
+
+variable "diagnosis_member_role_arns" {
+  type        = list(string)
+  default     = []
+  description = "Explicit reviewed member AWSopsReadOnlyRole ARN allowlist (the onboarding read-only role name is pinned); an enabled account registry row (with its ExternalId, unless first-party per ADR-011) and a verified assumed identity are also required. Empty disables member live reads."
+  validation {
+    condition = length(var.diagnosis_member_role_arns) <= 32 && alltrue([for arn in var.diagnosis_member_role_arns :
+      can(regex("^arn:aws:iam::[0-9]{12}:role/AWSopsReadOnlyRole$", arn)) &&
+      try(split(":", arn)[4] != data.aws_caller_identity.current.account_id, false)
+    ])
+    error_message = "Use at most 32 foreign-account AWSopsReadOnlyRole ARNs without wildcards or paths."
+  }
+  validation {
+    condition     = length(distinct(var.diagnosis_member_role_arns)) == length(var.diagnosis_member_role_arns)
+    error_message = "diagnosis_member_role_arns must not repeat an ARN."
+  }
+  validation {
+    condition     = length(var.diagnosis_member_role_arns) == 0 || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_member_role_arns requires diagnosis_evidence_loop_enabled; clear it before turning the loop off."
+  }
+}
+
 variable "ai_insights_enabled" {
   type        = bool
   description = "AI Insights dashboard panel: a daily worker collects K8s events + CloudWatch alarms + cost anomalies (all read-only) and an LLM synthesizes 3-5 prioritized admin bullets, cached in ai_insights and shown on the Overview dashboard with manual refresh. Requires workers_enabled (reuses worker role/pg8000/VPC + jobs queue; adds read-only cloudwatch:DescribeAlarms/GetMetricData, ce:GetCostAndUsage, eks:DescribeCluster, sqs:SendMessage). K8s events also need the worker role's EKS access entry, registered out-of-band (scripts/v2/eks/register-insight-access.sh). false (default) = 0 resources/IAM, $0, runtime fail-closed (AI_INSIGHTS_ENABLED unset)."
