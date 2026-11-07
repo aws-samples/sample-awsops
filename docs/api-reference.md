@@ -315,6 +315,12 @@ All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
+## network-topology (1)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/network-topology` | GET | Configuration-only, cross-account network topology projected from central inventory. Optional `accounts` (`__all__` default, or comma-separated `self`/12-digit IDs) scopes the fleet view; optional `vpcs` (at most 4 `<account>/<region>/<vpc-id>` keys) switches to the detail view. One bounded statement reads fleet rows (VPC, TGW, TGW attachments, VPC peering; 20,000-row cap) and detail rows for the selected VPCs (8,000-row cap); overflow sets `truncated`. Cross-account links resolve by attachment or peering ID, never by CIDR; conflicting duplicates and non-active links are counted in `omitted`. Out-of-scope peers are `external` stubs. Edges are configured attachments/peerings, not reachability. Repeated or malformed scope parameters return `400 invalid_request`; read failures return `503 network_topology_unavailable`. All replies use `Cache-Control: private, no-store`. | `verifyUser` |
+
 ## vpc-connectivity (1)
 
 | Path | Method | Role | Auth |

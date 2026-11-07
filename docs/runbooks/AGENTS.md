@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 714a49f5a91f · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 82ed41aabe32 · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -226,13 +226,13 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-Require every pinned baseline name (currently 43, source-AST checked); valid growth
+Require every pinned baseline name (currently 46, source-AST checked); valid growth
 is allowed up to 128 and every returned type needs strict proof. Both modes default
 to the enabled host only; explicit applied targets require exact enabled registration.
 Collect additionally requires measured SQL reachability with zero unreachable accounts
 and fresh account-bound EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
 counts; CI permits host-only/null only for five source-AST-pinned SDK types, not
-43-type coverage for every member. Only Terraform onboarding
+46-type coverage for every member. Only Terraform onboarding
 preflight permits approved subsets; apply reads the restored plan, not a newer secret.
 Runtime release stays exact. Preserve isolated
 AWS CLI environments, first chronological terminal failure and stopped admission;

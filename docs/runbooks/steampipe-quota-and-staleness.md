@@ -132,7 +132,7 @@ observe a complete cycle under [safe tuning](#6-안전한-튜닝--safe-tuning).
 Apply only the exact reviewed plan outside active collector/runtime proof, then
 confirm service stability and the effective `steampipe_limiter_config` event.
 Preserve bucket 4, plugin/Lambda/collector concurrency 4, schedule, timeouts and IAM.
-Require all 43 baseline types and every current catalog type to complete with zero
+Require all 46 baseline types and every current catalog type to complete with zero
 unknown attributes, plus authentication/DB, model and both owned worker proofs.
 Do not remove fields, accept fallback data as complete, or disable gates to pass.
 
@@ -404,7 +404,7 @@ and unknown attributes still stop release, and every configured member still nee
 fresh known-resource evidence alongside the aggregate catalog proof.
 `collection_attempts` retains this bounded scope; null scope means no valid scope
 was reported yet. These RPC/log fields do not turn the singleton ledger into a
-per-account coverage report or assert that all 43 types cover each member.
+per-account coverage report or assert that all 46 types cover each member.
 Enabled accounts with no enabled region and `all_regions=false` are excluded by
 `_enabled_target_accounts`; the metric must not imply they were measured. In explicit
 target mode the renderer rejects such registered members, and the exact member-proof
