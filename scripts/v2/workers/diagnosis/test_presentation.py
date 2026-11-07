@@ -309,3 +309,10 @@ def test_prose_guard_catches_single_word_and_option_prefixed_cli(unsafe):
 def test_prose_guard_ignores_trailing_punctuation_and_particles(unsafe):
     from diagnosis import presentation
     assert presentation._safe_explanation(unsafe) == ""
+
+
+@pytest.mark.parametrize("unsafe", ["aws ec2 --filters Name=a,Values=b terminate-instances",
+                                    "aws s3 --exclude a,b rm s3://x/", "aws ec2 --tag-specifications {a,b} run-instances."])
+def test_prose_guard_keeps_option_values_intact(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""

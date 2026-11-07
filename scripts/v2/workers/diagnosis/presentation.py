@@ -47,8 +47,11 @@ def _commandlike(value):
     from .report import _cli_commands
     if _COMMAND.search(value) or _AWS_FLAG.search(value):
         return True
-    text = _NON_CLI.sub(" ", _AWS_WORD.sub("aws", value))
-    return next(_cli_commands(text), None) is not None
+    # Either reading is enough: the folded original keeps option values intact
+    # ("--filters Name=a,Values=b"), the separated form exposes glued punctuation.
+    folded = _AWS_WORD.sub("aws", value)
+    return any(next(_cli_commands(text), None) is not None
+               for text in (folded, _NON_CLI.sub(" ", folded)))
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),
