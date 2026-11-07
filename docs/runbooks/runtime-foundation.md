@@ -453,9 +453,9 @@ milliseconds and request/response times inside the observed prepare interval, wi
 DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
 `collectionStartedAt`; subsequent time is `rawNow + (DB time - request start)`.
 The existing controller deadline shifts by that same offset, preserving time remaining.
-Every current catalog type (43 at this revision) must succeed after that marker with
+Every current catalog type (46 at this revision) must succeed after that marker with
 known counts and zero unknown attributes. The returned catalog must contain every
-member of the controller's pinned baseline of 43 type names, not merely 43 arbitrary
+member of the controller's pinned baseline of 46 type names, not merely 46 arbitrary
 names. A source-AST regression ties that baseline to the checked-in `QUERIES` and
 `SDK_SYNCS` catalogs. Valid additional returned types are allowed up to 128 total;
 every returned type remains required, permitting growth without replacing a baseline member.

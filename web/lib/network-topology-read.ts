@@ -9,12 +9,16 @@ export const FLEET_TYPES = ['vpc', 'transit_gateway', 'transit_gateway_attachmen
 export const DETAIL_TYPES = ['subnet', 'route_table', 'internet_gateway', 'nat_gateway', 'vpc_endpoint', 'ec2', 'alb', 'nlb', 'rds', 'lambda'];
 const FLEET_LIMIT = 20000, DETAIL_LIMIT = 8000;
 const COLUMNS = 'resource_type, account_id, region, resource_id, data, captured_at';
-const ORDER = 'ORDER BY resource_type, account_id, region, resource_id';
+const CONNECTION_TYPES_SQL = "'transit_gateway_attachment', 'vpc_peering_connection', 'transit_gateway'";
 
 export async function readNetworkRows(vpcIds: string[]): Promise<{ rows: NetRow[]; truncated: boolean }> {
   const params: unknown[] = [FLEET_TYPES];
+  // Connections first so the cap trims plain VPC rows, never the links the view exists to show.
+  const fleetOrder = vpcIds.length
+    ? `ORDER BY CASE WHEN resource_type IN (${CONNECTION_TYPES_SQL}) THEN 0 WHEN resource_type = 'vpc' AND resource_id = ANY($3) THEN 1 ELSE 2 END, resource_type, account_id, region, resource_id`
+    : `ORDER BY CASE WHEN resource_type IN (${CONNECTION_TYPES_SQL}) THEN 0 ELSE 1 END, resource_type, account_id, region, resource_id`;
   let sql = `(SELECT ${COLUMNS}, 'fleet' AS part FROM inventory_resources
-    WHERE resource_type = ANY($1) ${ORDER} LIMIT ${FLEET_LIMIT + 1})`;
+    WHERE resource_type = ANY($1) ${fleetOrder} LIMIT ${FLEET_LIMIT + 1})`;
   if (vpcIds.length) {
     params.push(DETAIL_TYPES, vpcIds);
     // vpc_id alone is not unique across accounts; the builder re-scopes by account+region.

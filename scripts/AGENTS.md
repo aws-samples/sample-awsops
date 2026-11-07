@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a199844b16dc · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c60071532258 · generated-at: 2026-11-06 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -262,7 +262,7 @@ verification. Dev releases verify exact ECS/image proof first and pass `EXPECTED
 Full releases require collect mode (including login/DB); prepare never establishes full readiness.
 Explicit activation remains separate and inactive prerequisites cannot be skipped.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
-Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
+Require the pinned 46-name baseline, source-AST checked; valid growth is allowed up
 to 128 types. Every returned type
 needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
@@ -274,7 +274,7 @@ host/member registration, measured SQL reachability over enabled scan accounts w
 unreachable accounts and fresh account-bound EC2/CloudFront member evidence from one
 exact minimal `/api/deployment/member-inventory` lookup. Explicit scope preserves null for
 host-only/unmeasured counts; CI allows host-only/null only for five source-AST-pinned
-SDK types, not 43-type coverage for every member. Only Terraform onboarding preflight permits approved subsets;
+SDK types, not 46-type coverage for every member. Only Terraform onboarding preflight permits approved subsets;
 apply reads the restored saved plan, never a newer secret. Runtime release stays exact.
 AWS CLI children use an explicit
 credential/settings allowlist, pinned path, disabled config/credential files/metadata

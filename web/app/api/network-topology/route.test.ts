@@ -51,6 +51,18 @@ describe('GET /api/network-topology', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('400 for more than 100 accounts', async () => {
+    const ids = Array.from({ length: 101 }, (_, i) => String(100000000000 + i)).join(',');
+    expect((await get(`?accounts=${ids}`)).status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('dedupes repeated vpc keys', async () => {
+    const res = await get(`?vpcs=${A}/${R}/vpc-aaaaaaaa,${A}/${R}/vpc-aaaaaaaa`);
+    expect(res.status).toBe(200);
+    expect(query.mock.calls[0][1][2]).toEqual(['vpc-aaaaaaaa']);
+  });
+
   it('400 when a scope parameter repeats', async () => {
     expect((await get(`?accounts=${A}&accounts=${B}`)).status).toBe(400);
     expect(query).not.toHaveBeenCalled();
@@ -78,6 +90,7 @@ describe('GET /api/network-topology', () => {
     expect(query).toHaveBeenCalledTimes(1);
     expect(sql).toContain('LIMIT 20001');
     expect(sql).not.toContain('LIMIT 8001');
+    expect(sql).toContain("CASE WHEN resource_type IN ('transit_gateway_attachment', 'vpc_peering_connection', 'transit_gateway') THEN 0 ELSE 1 END");
     expect(params).toHaveLength(1);
   });
 
@@ -91,6 +104,7 @@ describe('GET /api/network-topology', () => {
     expect(sql).toContain('LIMIT 8001');
     expect(sql).toContain('UNION ALL');
     expect(params[2]).toEqual(['vpc-aaaaaaaa', 'vpc-cccccccc']);
+    expect(sql).toContain("WHEN resource_type = 'vpc' AND resource_id = ANY($3) THEN 1");
     // Structural rows sort ahead of tiles so the detail cap never drops the AZ/subnet skeleton.
     expect(sql).toMatch(/ORDER BY \(resource_type NOT IN \('subnet', 'route_table', 'internet_gateway', 'nat_gateway'\)\), resource_type/);
   });

@@ -7,6 +7,8 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '인벤토리 읽기 한도에 도달해 선택한 VPC를 불러오지 못했을 수 있습니다.': { en: 'The inventory read limit was reached; the selected VPCs may not have been loaded.', zh: '已达到清单读取上限，所选 VPC 可能未能加载。', ja: 'インベントリの読み取り上限に達したため、選択した VPC を読み込めていない可能性があります。' },
+  '계정': { en: 'Accounts', zh: '账户', ja: 'アカウント' },
   '선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.': { en: 'The selected VPCs are not in inventory. Select again from the fleet map.', zh: '所选 VPC 不在清单中。请在全局图中重新选择。', ja: '選択した VPC はインベントリにありません。全体マップから選び直してください。' },
   '네트워크 토폴로지': { en: 'Network topology', zh: '网络拓扑', ja: 'ネットワークトポロジー' },
   '선택한 VPC를 AZ·서브넷·리소스 단위로 표시합니다. 연결된 외부 VPC를 클릭하면 상세에 추가됩니다.': { en: 'Shows the selected VPCs by AZ, subnet and resource. Click a connected external VPC to add it to the detail view.', zh: '按可用区、子网和资源显示所选 VPC。点击已连接的外部 VPC 可将其加入详情视图。', ja: '選択した VPC を AZ・サブネット・リソース単位で表示します。接続された外部 VPC をクリックすると詳細に追加されます。' },

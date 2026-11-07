@@ -10,7 +10,7 @@ import { MAX_DETAIL_VPCS, type NetworkTopology } from '@/lib/network-topology-ty
 
 interface AccountRow { accountId: string; alias: string; isHost: boolean; enabled: boolean }
 
-const list = (v: string | null) => (v ? v.split(',').filter(Boolean) : []);
+const list = (v: string | null) => (v ? v.split(',').filter((x) => x && x !== '__all__') : []);
 
 /** 다중 계정 네트워크 토폴로지 — 전체 맵(계정·VPC·TGW·피어링)과 선택 VPC 상세(AWS 다이어그램). */
 function NetworkTopologyPageInner() {
@@ -122,7 +122,7 @@ function NetworkTopologyPageInner() {
         {busy && <div className="absolute left-4 top-2 z-10 text-[12px] text-ink-400">{tt('로딩 중…')}</div>}
         {error && <div className="p-6 text-[13px] text-ink-500">{tt(error === 'invalid' ? '선택 범위가 올바르지 않습니다.' : '네트워크 토폴로지를 불러오지 못했습니다.')}</div>}
         {topology && !error && (detail && !topology.nodes.some((n) => n.kind === 'vpc')
-          ? <div className="p-6 text-[13px] text-ink-500">{tt('선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.')}</div>
+          ? <div className="p-6 text-[13px] text-ink-500">{tt(topology.truncated ? '인벤토리 읽기 한도에 도달해 선택한 VPC를 불러오지 못했을 수 있습니다.' : '선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.')}</div>
           : topology.nodes.length
             ? <NetworkDiagram topology={topology} theme={theme} onSelectVpc={onSelectVpc} />
             : <div className="p-6 text-[13px] text-ink-500">{tt('표시할 VPC가 없습니다. 인벤토리 동기화 상태를 확인하세요.')}</div>)}
