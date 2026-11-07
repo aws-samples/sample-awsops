@@ -66,7 +66,7 @@ def test_initial_specialists_finish_before_review_and_light_has_no_follow_up(mon
 def test_follow_up_dedup_two_targeted_reruns_then_final_review(monkeypatch):
     request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
     events = install_models(monkeypatch, [{"follow_up": [request, request],
-        "rerun_pillars": ["performance_efficiency", "cost_optimization", "reliability"]}])
+        "rerun_pillars": ["performance_efficiency", "cost_optimization"]}])
     collected = []
 
     def follow_up(requests):
@@ -371,3 +371,22 @@ def test_word_hex_tokens_are_numeric_assertions_not_identifiers():
         == "Downsize savings approx usd-00000500 monthly"
     assert loop._NUMBER.search(loop._RESOURCE_ID.sub(" ", loop._IDENTIFIER_TOKEN.sub(
         " ", "Downsize savings approx usd-00000500 monthly")))
+
+
+def test_over_limit_rerun_request_rejects_the_review_instead_of_trimming(monkeypatch):
+    request = {"capability": "resource_metrics", "resource_ids": [oid("r-instance")]}
+    install_models(monkeypatch, [{"follow_up": [request],
+        "rerun_pillars": ["performance_efficiency", "cost_optimization", "reliability"]}])
+    result = loop.run(bundle(), account=ACCOUNT, tier="deep",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("deep"),
+                      collect_follow_up=lambda requests: pytest.fail("trimmed rerun was executed"))
+    assert result["passes"] == 1 and result["review"]["status"] != "completed"
+    assert any(r.get("reason") == "review_rerun_limit" for r in result["rejected"])
+
+
+def test_rerun_without_follow_up_is_disclosed(monkeypatch):
+    install_models(monkeypatch, [{"rerun_pillars": ["reliability"]}])
+    result = loop.run(bundle(), account=ACCOUNT, tier="deep",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("deep"),
+                      collect_follow_up=lambda requests: pytest.fail("no follow-up was requested"))
+    assert "rerun:no_follow_up" in result["incomplete"]

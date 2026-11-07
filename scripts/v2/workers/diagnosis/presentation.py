@@ -286,6 +286,14 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
             output[key] = invariant_md
             continue
         parts = []
+        homed = [f for f in findings if home[id(f)] == key]
+        # Code-owned severity marker (report.py _render_intended_vs_actual parity) so the UI
+        # section icon reflects admitted findings; model text can never forge it (cells escape [ ]).
+        ranks = [_SEVERITY.get(f.get("severity"), 5) for f in homed]
+        if ranks and min(ranks) <= _SEVERITY["high"]:
+            parts.append("[Critical]")
+        elif ranks and min(ranks) <= _SEVERITY["medium"]:
+            parts.append("[Warning]")
         for f in findings:
             if home[id(f)] == key:
                 parts.append(_finding_body(f, evidence, resources, copy, lang=lang))

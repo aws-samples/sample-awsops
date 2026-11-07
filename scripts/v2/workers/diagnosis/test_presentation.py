@@ -316,3 +316,15 @@ def test_prose_guard_ignores_trailing_punctuation_and_particles(unsafe):
 def test_prose_guard_keeps_option_values_intact(unsafe):
     from diagnosis import presentation
     assert presentation._safe_explanation(unsafe) == ""
+
+
+@pytest.mark.parametrize("severity,marker", [("critical", "[Critical]"), ("high", "[Critical]"),
+                                             ("medium", "[Warning]"), ("low", None)])
+def test_sections_carry_a_code_owned_severity_marker(severity, marker):
+    from diagnosis import presentation
+    bodies = presentation.render(SECTIONS, bundle(), analysis(findings=[finding(severity=severity)]), lang="en")
+    marked = [key for key, body in bodies if body.startswith(("[Critical]", "[Warning]"))]
+    if marker is None:
+        assert not marked
+    else:
+        assert len(marked) == 1 and dict(bodies)[marked[0]].startswith(marker)

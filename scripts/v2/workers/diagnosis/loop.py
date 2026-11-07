@@ -98,6 +98,10 @@ def _validate_review(value, findings, index):
             or len(set(pillars)) != len(pillars)):
         index._reject("", "invalid_review_pillar", "review")
         return None
+    if len(pillars) > MAX_RERUNS:
+        # Fail closed like an over-limit follow_up: a rerun request is never silently trimmed.
+        index._reject("", "review_rerun_limit", "review")
+        return None
     issues = value["issues"]
     if not isinstance(issues, list) or len(issues) > 16:
         index._reject("", "invalid_review_issue", "review")
@@ -126,7 +130,7 @@ def _validate_review(value, findings, index):
     if len(requests) > MAX_FOLLOW_UP_REQUESTS:
         index._reject("", "follow_up_limit", "review")
         return None
-    return {**value, "issues": kept_issues, "follow_up": requests, "rerun_pillars": pillars[:MAX_RERUNS]}
+    return {**value, "issues": kept_issues, "follow_up": requests, "rerun_pillars": pillars}
 
 
 def _admit_outputs(outputs, index, coverage, degraded, incomplete):
@@ -280,6 +284,9 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
     passes = 1
     requests = review.get("follow_up", [])
     reruns = review.get("rerun_pillars", [])
+    if reruns and not requests:
+        # A rerun is only run with new evidence; disclose the unmet reviewer request.
+        incomplete.append("rerun:no_follow_up")
     if requests:
         if tier == "light" or collect_follow_up is None:
             incomplete.append("follow_up:unavailable")
@@ -332,6 +339,8 @@ def run(bundle, *, account, tier, model_id, budget, collect_follow_up=None, lang
     # Final review cannot request a third pass. Retain unresolved questions visibly.
     if passes == 2 and review.get("follow_up"):
         incomplete.append("follow_up:pass_limit")
+    if passes == 2 and review.get("rerun_pillars"):
+        incomplete.append("rerun:pass_limit")
     if index.rejected:
         degraded.append("evidence:rejected")
     if index.downgraded:
