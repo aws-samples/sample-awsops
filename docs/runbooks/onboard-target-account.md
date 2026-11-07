@@ -232,10 +232,12 @@ an allowlist edit revokes every previously configured read path.
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
   WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
   Network Path Check's live-identity resolution (`network_path.py`'s `resolve_live_identity()`/
-  `fetch_live_topology()`, see `docs/runbooks/network-path-eks-access.md`). Neither worker's task
-  role is trusted by this account until `WorkerTaskRoleArn` below is set — omitting it leaves those
-  two features correctly failing closed (AccessDenied) against this account, exactly as if it were
-  never onboarded for worker-driven reads at all.
+  `fetch_live_topology()`, see `docs/runbooks/network-path-eks-access.md`), or the default-off
+  diagnosis evidence loop's member metrics and Compute Optimizer reads. The worker task
+  role is not trusted by this account until `WorkerTaskRoleArn` below is set; omitting it
+  leaves these worker reads failing closed. Diagnosis additionally requires the exact
+  registered `AWSopsReadOnlyRole` ARN in the host's applied `diagnosis_member_role_arns`
+  allowlist; account registration alone does not authorize that worker read.
 - **3rd-party only**: a chosen **ExternalId** string (8–1224 ASCII letters, digits or `_+=,.@:/-` for the browser path), same value in the CFN and `/accounts`.
   1st-party (same-org) accounts can omit it.
 

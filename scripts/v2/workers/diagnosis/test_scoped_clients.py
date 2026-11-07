@@ -42,6 +42,7 @@ def test_unregistered_member_makes_no_sts_call(monkeypatch):
         scoped_clients.member_factory(Registry([]), ACCOUNT, Budget())
 
 
+# ExternalId is optional for first-party members (ADR-011), so None/"" are valid registrations.
 @pytest.mark.parametrize("rows", [[["ReadOnly", 7]], [["ReadOnly", "x"]], [["bad/path", "external"]],
                                  [["ReadOnly", "external"], ["ReadOnly", "external"]]])
 def test_invalid_registry_is_refused_before_assumption(monkeypatch, rows):

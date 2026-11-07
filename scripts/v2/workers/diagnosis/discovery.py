@@ -814,9 +814,17 @@ def _xray(bundle, budget, regions):
             _mark(bundle, "degraded", "xray_read_failed")
         # Decide completeness before emitting any row, so no row claims complete coverage. The
         # resource share for X-Ray nodes (MAX_XRAY_RESOURCES) is a cap too.
-        # The X-Ray share is global across regions: count what earlier regions already used.
-        used = sum(_is_xray(r) for r in bundle["resources"])
-        if len(services) > MAX_XRAY_RESOURCES - used:
+        # The X-Ray share is global across regions: count what earlier regions already used. Rows
+        # this region already holds are reused by _resource, so only new identities (services and
+        # edge-only targets) consume the remaining share.
+        xray_rows = [r for r in bundle["resources"] if _is_xray(r)]
+        existing = {r["resource_id"] for r in xray_rows if r["region"] == region}
+        planned = {f"xray:{ref}" for ref in services}
+        for svc in services.values():
+            edges = svc.get("Edges") or []
+            planned.update(f"xray:{e.get('ReferenceId')}" for e in (edges if isinstance(edges, list) else [])
+                           [:MAX_RELATIONSHIPS] if isinstance(e, dict) and isinstance(e.get("ReferenceId"), int))
+        if len(planned - existing) > MAX_XRAY_RESOURCES - len(xray_rows):
             coverage["complete"] = False
             _mark(bundle, "incomplete", "xray_resource_cap")
         if any(not isinstance(svc.get("Edges") or [], list) or len(svc.get("Edges") or []) > MAX_RELATIONSHIPS
@@ -1301,7 +1309,7 @@ def collect(conn, account, budget, *, scope="self"):
     for key in bundle["native_sources"]:
         _mark(bundle, "gaps", f"{key}_not_collected")
     if os.environ.get("DIAGNOSIS_EVIDENCE_LOOP_ENABLED") != "true":
-        # This flag is the gate: report.generate does not route here yet (a later change wires it).
+        # Defense in depth: report.generate only routes here when this flag is applied.
         _mark(bundle, "gaps", "evidence_loop_disabled")
         return _finish(bundle)
     if not isinstance(account, str) or not _ACCOUNT.fullmatch(account) or scope not in ("self", account):

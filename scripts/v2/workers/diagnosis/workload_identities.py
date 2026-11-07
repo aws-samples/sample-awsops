@@ -121,9 +121,11 @@ def collect_proxies(bundle, budget, client_factory):
                 vpc, arn = row.get("VpcId"), row.get("DBProxyArn", "")
                 if not _vpc(vpc):
                     d._mark(bundle, "gaps", "proxy_target_unresolved")
-                elif (isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:")
-                        and vpc in vpcs):
-                    scoped.append(row)
+                elif vpc in vpcs:
+                    if isinstance(arn, str) and arn.startswith(f"arn:aws:rds:{region}:{account}:db-proxy:"):
+                        scoped.append(row)
+                    else:  # in the diagnosed VPC but without a provable identity: disclosed, not dropped
+                        d._mark(bundle, "gaps", "proxy_identity_unresolved")
                 # Another account/VPC's proxy is outside this diagnosis, not missing evidence.
             # Scope first, then cap: a cap never drops the diagnosed database's proxy for an
             # out-of-scope one that happened to be listed earlier.
@@ -147,7 +149,12 @@ def collect_proxies(bundle, budget, client_factory):
                 captured = d._now()
                 d._evidence(bundle, "rds_proxy_configuration", "inventory", [proxy["id"]],
                             proxy["facts"], captured, region=region, fresh=True, coverage={"complete": True})
-                targets = read("describe_db_proxy_targets", DBProxyName=name, MaxRecords=20)
+                try:
+                    targets = read("describe_db_proxy_targets", DBProxyName=name, MaxRecords=20)
+                except (ClientError, BotoCoreError):
+                    # One unreadable proxy leaves its targets unresolved; later proxies are still read.
+                    d._mark(bundle, "gaps", "proxy_target_unresolved")
+                    continue
                 if targets.get("Marker"):
                     d._mark(bundle, "incomplete", "proxy_target_cap")
                 for target in targets.get("Targets", [])[:20]:

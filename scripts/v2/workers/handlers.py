@@ -61,11 +61,35 @@ def _export_artifacts(md, report_id):
             print(f"[export] {ext} generation failed (non-fatal):\n{traceback.format_exc()}")
 
 
+def _finish_report(wdb, ddb, conn, broken, report_id, **fields):
+    """Retry an idempotent report update once after discarding a failed connection."""
+    if not broken:
+        try:
+            return ddb.finish_report(conn, report_id, **fields)
+        except Exception:  # noqa: BLE001 — release a failed transaction before the single retry
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    fresh = wdb.connect()
+    try:
+        return ddb.finish_report(fresh, report_id, **fields)
+    finally:
+        try:
+            fresh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _report(payload, dry_run):
     """AI Diagnosis report. payload: {account, tier, requested_by, report_id}.
     The BFF creates the diagnosis_reports row (running) and passes report_id — this fixes the
     worker_job_id FK (handlers receive only `payload`, never job_id) and the UI race. _report
     uploads the markdown to S3 itself and writes artifact_uri. Read-only AWS data sources."""
+    # This timestamp precedes DB connection and collection. Enabled-mode analysis
+    # and local title selection share the same worker deadline.
+    import time
+    entry_started = time.monotonic()
     account = str(payload.get("account", ""))
     tier = payload.get("tier", "mid")
     model = payload.get("model", "sonnet")  # deep-tier may select 'opus'; resolver pins others to sonnet
@@ -82,30 +106,49 @@ def _report(payload, dry_run):
     from diagnosis import db as ddb
     from diagnosis import report as rpt
     import traceback
+    budget = None
     conn = wdb.connect()
+    broken = False  # set once discovery reports (and closes) a desynced connection
     try:  # [PR#37 review CRITICAL] always release the pg8000 connection (was leaked every call → Aurora pool exhaustion under retries)
         # Fallback: if BFF didn't pre-create (older enqueue), create now (worker_job_id stays NULL).
         if not report_id:
             report_id = ddb.create_report(conn, worker_job_id=None, tier=tier, requested_by=requested_by)
         try:
+            if rpt.evidence_loop_enabled():
+                from diagnosis.budget import ReportBudget
+                budget = ReportBudget(tier, started_at=entry_started)
             # A4 (V1 parity): stream per-section progress to diagnosis_reports as generate() advances.
             on_progress = (lambda c, t, s, p, done=None: ddb.update_progress(
                 conn, report_id, current=c, total=t, section=s, phase=p, completed=done))
             scope = payload.get("scope") or "self"
+            budget_kwargs = {"budget": budget} if budget is not None else {}
             md, summary, sources_used = rpt.generate(
                 conn, account, tier, report_id=report_id, on_progress=on_progress, model=model,
-                scope=scope, lang=lang)
+                scope=scope, lang=lang, **budget_kwargs)
+            broken = "database_connection_broken" in (summary.get("degraded") or [])
             artifact_uri = _upload_markdown(md, report_id)
             _export_artifacts(md, report_id)  # best-effort DOCX+PDF; never fails the report
-            try:  # auto title + suggested tags — best-effort, never fails the report
-                meta = rpt.make_title_and_tags(md, lang)
-            except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
-                meta = {"title": None, "tags": []}
+            meta = summary.get("title_and_tags") if budget is not None else None
+            if not (isinstance(meta, dict) and isinstance(meta.get("title"), str)
+                    and isinstance(meta.get("tags"), list)):
+                if budget is not None:
+                    # Enabled mode never adds an unbudgeted model call for metadata.
+                    meta = {"title": None, "tags": []}
+                else:
+                    try:  # legacy auto title — best-effort, never fails the report
+                        meta = rpt.make_title_and_tags(md, lang)
+                    except Exception:  # noqa: BLE001
+                        meta = {"title": None, "tags": []}
+            if budget is not None:
+                summary["budget"] = budget.snapshot()
             # A failed/cut-off section degrades the report just like a failed collector.
-            status = "partial" if summary.get("degraded") or summary.get("render_degraded") else "succeeded"
-            ddb.finish_report(conn, report_id, status=status, sources_used=sources_used,
-                              summary=summary, artifact_uri=artifact_uri,
-                              title=meta["title"], tags=meta["tags"])
+            # `incomplete` lists by-design caps; only budget/stage cut-offs make the report partial.
+            partial = (summary.get("degraded") or summary.get("render_degraded")
+                       or summary.get("budget_incomplete"))
+            status = "partial" if partial else "succeeded"
+            _finish_report(wdb, ddb, conn, broken, report_id, status=status,
+                           sources_used=sources_used, summary=summary, artifact_uri=artifact_uri,
+                           title=meta["title"], tags=meta["tags"])
             # GOVERNANCE (ADR-007/ADR-013[legacy 040/041] external-comms): notification is no longer published here —
             # a completed report just leaves diagnosis_reports.notified_at NULL. A periodic digest
             # Lambda (diagnosis_digest.py, ~15min) batches everything with notified_at IS NULL into
@@ -118,7 +161,8 @@ def _report(payload, dry_run):
         except Exception as e:  # noqa: BLE001
             print(traceback.format_exc())  # full trace → CloudWatch logs only
             # [review MINOR] str(e) to the DB (the error field reaches the client via /api/diagnosis/[id])
-            ddb.finish_report(conn, report_id, status="failed", error=str(e))
+            broken = broken or str(e) == "database_connection_broken"
+            _finish_report(wdb, ddb, conn, broken, report_id, status="failed", error=str(e))
             raise
     finally:
         try:

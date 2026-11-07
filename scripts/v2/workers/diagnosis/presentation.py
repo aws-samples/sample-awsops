@@ -1,0 +1,368 @@
+"""Deterministic report presentation. Models select claims; code prints admitted facts."""
+import json
+import re
+from .evidence import _NUMBER
+
+_COPY = {
+    "en": ("Finding", "Evidence", "Scope / window", "Observation", "Hypothesis",
+           "Provider candidate — manual verification required", "Coverage gap",
+           "No admitted findings; coverage remains unknown.", "Unresolved prerequisites",
+           "Read-only verification", "Coverage and withheld claims"),
+    "ko": ("진단", "근거", "범위 / 기간", "관측", "가설",
+           "공급자 후보 — 수동 검증 필요", "커버리지 공백",
+           "검증된 진단 없음; 커버리지는 미확인입니다.", "미해결 전제 조건",
+           "읽기 전용 검증", "커버리지 및 보류된 주장"),
+    "zh": ("诊断", "证据", "范围 / 时间", "观测", "假设",
+           "提供商候选 — 需要手动验证", "覆盖缺口",
+           "没有已验证的诊断；覆盖情况仍未知。", "未解决的前提",
+           "只读验证", "覆盖情况和已保留的结论"),
+    "ja": ("診断", "根拠", "範囲 / 期間", "観測", "仮説",
+           "プロバイダー候補 — 手動検証が必要", "カバレッジの不足",
+           "検証済み診断なし。カバレッジは未確認です。", "未解決の前提条件",
+           "読み取り専用の検証", "カバレッジと保留された主張"),
+}
+# Disclosed in place of model prose the guard withholds, so a finding never silently loses it.
+_WITHHELD = {
+    "en": "_(model text withheld: it contained a number, link or command)_",
+    "ko": "_(모델 문구 보류: 숫자·링크·명령이 포함됨)_",
+    "zh": "_(已保留模型文本：其中包含数字、链接或命令)_",
+    "ja": "_(モデルの文章を保留: 数値・リンク・コマンドを含むため)_",
+}
+# Model prose is refused (and disclosed as withheld) when it carries anything copyable as a
+# command. Word boundaries are ASCII-only so CJK letters glued to a tool word ("AWS의 rds ...")
+# never hide it, and every check is case-insensitive.
+_B, _E = r"(?<![A-Za-z0-9_-])", r"(?![A-Za-z0-9_-])"
+_COMMAND = re.compile(
+    r"(?i)https?://|```|\$\(|&&|\|\|?\s*(?:sh|bash)" + _E +
+    # Distinctive operator tools: any ASCII argument makes it a command.
+    r"|" + _B + r"(?:curl|wget|sudo|su|kubectl|terraform|helm|docker|podman|eksctl|psql|mysql|"
+    r"mongosh|mongo|redis-cli|systemctl|ssh|scp|rsync|chmod|chown|mkfs|pkill|killall|gcloud|az|"
+    r"pip|npm|npx|yarn|apt|apt-get|yum|dnf|brew|powershell|pwsh)" + _E + r"\s+[A-Za-z0-9./~$'\"-]"
+    # Generic words that are also shell commands: only with a flag or path argument.
+    r"|" + _B + r"(?:rm|cp|mv|dd|kill|git|sed|sh|bash|python3?|node|cat|tee|truncate)" + _E +
+    r"\s+(?:-|/|~|\.|\$|[A-Za-z0-9_-]*[./=])"
+    # Destructive SQL and double-dash flags read as commands in any language.
+    r"|" + _B + r"(?:drop|truncate|alter)\s+(?:table|database|schema|index|user|role|view)" + _E +
+    r"|" + _B + r"delete\s+from" + _E + r"|(?<![\w-])--[a-z][a-z0-9-]+")
+# AWS CLI invocations use report.py's own tokenizer (options skipped, hyphenated and single-word
+# operations, s3 commands). `aws` is folded to lowercase in both readings.
+_AWS_WORD = re.compile(r"(?i)" + _B + r"aws" + _E)
+_AWS_FLAG = re.compile(r"(?i)" + _B + r"aws\s+--?[a-z]")
+# Punctuation, CJK particles and other non-CLI characters glued to a token ("terminate-instances.",
+# "invoke를", "rm,") become separators, so a trailing character never hides an operation.
+_NON_CLI = re.compile(r"[^A-Za-z0-9\s_/:=@+-]|\.(?=\s|$)")
+
+
+def _commandlike(value):
+    from .report import _cli_commands
+    # Either reading is enough: the original keeps option values intact
+    # ("--filters Name=a,Values=b"), the separated form exposes glued punctuation/particles.
+    for text in (value, _NON_CLI.sub(" ", value)):
+        folded = _AWS_WORD.sub("aws", text)
+        if (_COMMAND.search(folded) or _AWS_FLAG.search(folded)
+                or next(_cli_commands(folded), None) is not None):
+            return True
+    return False
+
+
+_PILLARS = {
+    "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
+    "security": ("Security", "セキュリティ", "安全性", "보안"),
+    "reliability": ("Reliability", "信頼性", "可靠性", "안정성"),
+    "performance_efficiency": ("Performance Efficiency", "パフォーマンス効率", "性能效率", "성능 효율성"),
+    "cost_optimization": ("Cost Optimization", "コスト最適化", "成本优化", "비용 최적화"),
+    "sustainability": ("Sustainability", "持続可能性", "可持续性", "지속 가능성"),
+}
+_SECTION_PILLARS = {
+    "security_posture": {"security"}, "identity_access": {"security"},
+    "data_protection": {"security"}, "network_exposure": {"security"},
+    "network_architecture": {"security", "reliability"},
+    "reliability_ha": {"reliability"},
+    "compute_infrastructure": {"performance_efficiency", "reliability", "sustainability"},
+    "database_storage": {"performance_efficiency", "reliability"},
+    "cost_overview": {"cost_optimization", "sustainability"},
+    "cost_optimization": {"cost_optimization", "performance_efficiency", "sustainability"},
+    "recent_changes": {"operational_excellence"},
+    "observability_coverage": {"operational_excellence"},
+    "external_obs_signals": {"operational_excellence", "reliability"},
+}
+# Deep-only sections dedicated to one pillar outrank the shared sections that precede them.
+_DEDICATED = {"reliability": "reliability_ha", "cost_optimization": "cost_optimization"}
+_SEVERITY = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+# Templates are instructions for the operator, never executed and never model supplied.
+_VERIFY = {
+    "resource_metrics": "aws cloudwatch get-metric-data --region <evidence-region> "
+                        "--metric-data-queries file://reviewed-queries.json "
+                        "--start-time <window-start> --end-time <window-end>",
+    "provider_sizing": "aws compute-optimizer get-ec2-instance-recommendations "
+                       "--region <evidence-region> --instance-arns <verified-instance-arn>; "
+                       "aws compute-optimizer get-rds-database-recommendations "
+                       "--region <evidence-region> --resource-arns <verified-db-arn>",
+    "graph_refresh": "aws xray get-service-graph --region <evidence-region> "
+                     "--start-time <window-start> --end-time <window-end>",
+}
+
+
+MAX_MARKDOWN_BYTES = 256 * 1024
+_TRUNCATED = "…[truncated]"
+# Code-only marker (cells escape "[" so models cannot forge it). "(degraded)" keeps the UI
+# section icon non-green, as the legacy renderer's localized _TRUNCATED_MARK does.
+SIZE_MARK = _TRUNCATED + " (report size bound, degraded)"
+_SIZE_NOTE = {"ko": "출력 크기 한도로 이 섹션이 잘렸습니다.", "en": "This section was cut at the report size limit.",
+              "zh": "此章节因报告大小上限被截断。", "ja": "レポートサイズの上限によりこのセクションは切れました。"}
+
+
+def _clip(value, limit):
+    """Bound text/JSON at a token or element boundary, never inside a number."""
+    if isinstance(value, (list, dict)):
+        items = sorted(value.items()) if isinstance(value, dict) else list(value)
+        size, kept = 2, 0
+        for item in items:
+            size += len(_json(dict([item]) if isinstance(value, dict) else item)) + 2
+            if size > limit:
+                break
+            kept += 1
+        if kept == len(items):
+            return _json(value)
+        part = dict(items[:kept]) if isinstance(value, dict) else items[:kept]
+        return f"{_json(part)}{_TRUNCATED} {len(items) - kept} more"
+    value = value if isinstance(value, str) else _json(value)
+    if len(value) <= limit:
+        return value
+    cut = re.search(r"[\w.+-]*$", value[:limit]).start() if re.match(r"[\w.+-]", value[limit]) else limit
+    return value[:cut] + _TRUNCATED
+
+
+def _cell(value, limit=700):
+    """Literal table text: never allow telemetry/model text to become Markdown/HTML."""
+    text = _clip(value, limit).translate(str.maketrans({"|": "｜", "[": "［", "]": "］"}))
+    return _literal(text)
+
+
+def _scrubbed(value, key=""):
+    """Rendered fact/coverage values get the same scrub as the model boundary (report.py's
+    _invariant_text parity): raw provider error text, hosts and IPs never reach the artifact.
+    Resource identities render separately through _code and stay literal."""
+    from .evidence import _scrub_text
+    if isinstance(value, str):
+        return _scrub_text(value, key)
+    if isinstance(value, dict):
+        return {k: _scrubbed(v, k if isinstance(k, str) else "") for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrubbed(v, key) for v in value]
+    return value
+
+
+def _literal(value):
+    """Use a collision-free code span; entities remain literal inside code spans."""
+    text = " ".join(str(value).split())
+    text = "".join(char if char.isprintable() else " " for char in text)
+    fence = "`" * (1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+    return f"{fence} {text} {fence}"
+
+
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _swept(body, lang):
+    """Final read-only sweep of an assembled body (render_section parity)."""
+    from .report import _MUTATING_MARK, _has_mutating_cli
+    mark = _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()
+    return body + "\n\n" + mark if mark not in body and _has_mutating_cli(body) else body
+
+
+def _code(value):
+    # Ordinary AWS identifiers stay literal within the existing presentation bound;
+    # malformed stored identities
+    # still cannot introduce table columns or code-owned severity/size markers.
+    text = _clip(value, 700).translate(str.maketrans({"|": "｜", "[": "［", "]": "］"}))
+    return _literal(text)
+
+
+def _ordered(analysis):
+    return sorted(analysis.get("findings", []),
+                  key=lambda f: (_SEVERITY.get(f.get("severity"), 5), str(f.get("id", ""))))
+
+
+def _safe_explanation(value):
+    # Numeric observations and targets belong to code-owned facts. Refuse unsafe prose
+    # defensively even though EvidenceIndex already rejects these before presentation.
+    if not isinstance(value, str) or _NUMBER.search(value) or _commandlike(value):
+        return ""
+    return _cell(value, 600)
+
+
+def _facts(value, prefix="", depth=0):
+    if isinstance(value, dict) and depth < 4:
+        return [row for key, item in sorted(value.items())
+                for row in _facts(item, f"{prefix}.{key}" if prefix else str(key), depth + 1)]
+    return [(prefix, value)]
+
+
+def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
+    claims = {"observation": copy[3], "hypothesis": copy[4],
+              "sizing_candidate": copy[5], "coverage_gap": copy[6]}
+    claim = finding.get("claim", "hypothesis")
+    label = claims.get(claim, copy[4])
+    target_ids = finding.get("resource_ids", [])
+    targets = [resources[rid] for rid in target_ids if rid in resources]
+    output = [f"**{copy[0]} {_code(finding.get('id', ''))} — {_cell(label)}**",
+              f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}",
+              ", ".join(_code(r["resource_id"]) for r in targets), ""]
+    explanation = _safe_explanation(finding.get("explanation"))
+    withheld_note = _WITHHELD.get(lang, _WITHHELD["ko"])
+    if explanation:
+        # Explanatory language is always a hypothesis, even for an observed metric/call.
+        output += [f"_{copy[4]}_: {explanation}", ""]
+    elif isinstance(finding.get("explanation"), str) and finding["explanation"].strip():
+        output += [f"_{copy[4]}_: {withheld_note}", ""]
+    refs = [evidence[eid] for eid in finding.get("evidence_ids", []) if eid in evidence]
+    if refs:
+        output += [f"| {copy[1]} | {copy[2]} | {copy[3]} |",
+                   "| --- | --- | --- |"]
+    for record in refs:
+        scope = {"account": record.get("account"), "region": record.get("region"),
+                 "regions": record.get("regions"),
+                 "captured_at": record.get("captured_at"), "window": record.get("window"),
+                 "coverage": record.get("coverage"), "fresh": record.get("fresh"),
+                 "kind": record.get("kind"), "resource_ids": record.get("resource_ids")}
+        rows = _facts(record.get("facts", {})) or [("unknown", None)]
+        if len(rows) > 40:
+            rows = rows[:40] + [(_TRUNCATED, f"{len(rows) - 40} rows omitted")]
+        for field, value in rows:
+            output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
+                          f"| {_cell(scope)} | {_cell(field)} = {_cell(_scrubbed(value, field.rsplit('.', 1)[-1]))} |")
+    prerequisites = finding.get("prerequisites", [])
+    prerequisites = [p if isinstance(p, str) else _json(p) for p in
+                     (prerequisites if isinstance(prerequisites, list) else [prerequisites])]
+    # Model-authored prerequisites get the base renderer's read-only CLI rule. A
+    # mutating command is withheld (never printed) and the section carries the mark.
+    # Each remaining one passes the explanation prose guard (URLs, numerals, fences,
+    # CLI words); an unsafe prerequisite is withheld exactly like an unsafe explanation.
+    from .report import _MUTATING_MARK, _has_mutating_cli
+    mutating = [p for p in prerequisites if _has_mutating_cli(p)]
+    safe = [cell for p in prerequisites if not _has_mutating_cli(p)
+            for cell in [_safe_explanation(p)] if cell]
+    if safe:
+        output += ["", f"**{copy[8]}:** " + ", ".join(safe)]
+    if len(safe) < len(prerequisites) - len(mutating):
+        output += ["", f"**{copy[8]}:** {withheld_note}"]
+    if mutating:
+        output += ["", _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()]
+    return "\n".join(output)
+
+
+def withheld(analysis):
+    """Code-owned {id, reason} only; model prose never reaches rendering or persistence."""
+    rows = analysis.get("rejected") if isinstance(analysis, dict) else None
+    result = []
+    for r in rows[:200] if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        value = r.get("id")
+        valid = isinstance(value, str) and re.fullmatch(r"[\w:.-]{1,128}", value)
+        reason = r.get("reason")
+        result.append({"id": value if valid else "invalid",
+                       "reason": reason[:64] if isinstance(reason, str) else "invalid"})
+    return result
+
+
+def _coverage(bundle, analysis, copy):
+    diagnostics = {"coverage": bundle.get("coverage", {}), "gaps": bundle.get("gaps", []),
+                   "degraded": list(bundle.get("degraded", [])) + list(analysis.get("degraded", [])),
+                   "incomplete": list(bundle.get("incomplete", [])) + list(analysis.get("incomplete", [])),
+                   "pillar_coverage": analysis.get("pillar_coverage", {}),
+                   "withheld": withheld(analysis)}
+    rows = [f"**{copy[10]}**", "", "| Field | Value |", "| --- | --- |"]
+    # Empty values are omitted: the UI reads a literal "degraded" anywhere as a warning, so the
+    # row only appears when something actually degraded.
+    rows.extend(f"| {_cell(k)} | {_cell(_scrubbed(v), 2500)} |" for k, v in diagnostics.items()
+                if v not in ([], {}, None))
+    return "\n".join(rows)
+
+
+def _reference(finding, copy):
+    return (f"- {copy[0]} {_code(finding.get('id', ''))} — "
+            f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}")
+
+
+def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
+    """Return catalog-ordered bodies; each admitted finding renders in full exactly once."""
+    copy = _COPY.get(lang, _COPY["ko"])
+    evidence = {e["id"]: e for e in bundle.get("evidence", [])}
+    resources = {r["id"]: r for r in bundle.get("resources", [])}
+    findings = _ordered(analysis)
+    keys = [s["key"] for s in catalog]
+    summary = "executive_summary" if "executive_summary" in keys else keys[0] if keys else None
+    # Primary section: the pillar's dedicated section when cataloged, else the first catalog
+    # section covering the pillar (else the summary).
+    home = {id(f): _DEDICATED.get(f.get("pillar")) if _DEDICATED.get(f.get("pillar")) in keys
+            else next((k for k in keys if f.get("pillar") in _SECTION_PILLARS.get(k, ())), summary)
+            for f in findings}
+    top, output = {id(f) for f in findings[:12]}, {}
+    for key in keys:
+        if key == "intended_vs_actual":
+            output[key] = invariant_md
+            continue
+        parts = []
+        shown = [f for f in findings if home[id(f)] == key
+                 or (key in {"executive_summary", "recommendations"} and id(f) in top)
+                 or f.get("pillar") in _SECTION_PILLARS.get(key, ())]
+        # Code-owned severity marker (report.py _render_intended_vs_actual parity) so the UI
+        # section icon reflects every admitted finding the section shows, in full or by
+        # reference; model text can never forge it (cells escape [ ]).
+        ranks = [_SEVERITY.get(f.get("severity"), 5) for f in shown]
+        if ranks and min(ranks) <= _SEVERITY["high"]:
+            parts.append("[Critical]")
+        elif ranks and min(ranks) <= _SEVERITY["medium"]:
+            parts.append("[Warning]")
+        for f in findings:
+            if home[id(f)] == key:
+                parts.append(_finding_body(f, evidence, resources, copy, lang=lang))
+            elif (key in {"executive_summary", "recommendations"} and id(f) in top
+                    or f.get("pillar") in _SECTION_PILLARS.get(key, ())):
+                parts.append(_reference(f, copy))
+                capability = f.get("verification")
+                if key == "recommendations" and capability in _VERIFY:
+                    parts.append(f"**{copy[9]}:** `{_VERIFY[capability]}`")
+        output[key] = "\n\n".join(parts) or copy[7]
+        if key == summary:
+            # Missing discovery/sizing prerequisites are stated once, not per section.
+            output[key] += "\n\n" + _coverage(bundle, analysis, copy)
+    bodies = {key: _swept(output[key], lang) for key in keys}
+    # Trim the largest sections first; the deterministic intended-vs-actual verdicts go last.
+    for key in sorted(keys, key=lambda k: (k == "intended_vs_actual", -len(bodies[k].encode()))):
+        over = sum(len(b.encode()) for b in bodies.values()) - MAX_MARKDOWN_BYTES
+        if over <= 0:
+            break
+        bodies[key] = _trim(bodies[key], len(bodies[key].encode()) - over, lang)
+    return [(key, bodies[key]) for key in keys]
+
+
+def _trim(body, limit, lang):
+    """Reserve room for the marker and a read-only sweep mark; cut at a line boundary if any."""
+    kept = body.encode()[:max(0, limit - 256)].decode(errors="ignore")
+    cut = kept.rfind("\n")
+    note = f" {_SIZE_NOTE.get(lang, _SIZE_NOTE['ko'])}"
+    return _swept((kept[:cut + 1] if cut >= 0 else kept) + SIZE_MARK + note, lang)
+
+
+def title_and_tags(bundle, analysis, *, lang="ko"):
+    findings = _ordered(analysis)
+    default = {"ko": "근거 기반 AWS 진단", "en": "Evidence-based AWS diagnosis",
+               "zh": "基于证据的 AWS 诊断", "ja": "根拠に基づく AWS 診断"}
+    if not findings:
+        return {"title": default.get(lang, default["ko"]), "tags": ["diagnosis"]}
+    top = findings[0]
+    pillar = top.get("pillar")
+    names = _PILLARS.get(pillar, ("AWS",) * 4)
+    label = names[{"en": 0, "ja": 1, "zh": 2, "ko": 3}.get(lang, 3)]
+    resources = {r["id"]: r for r in bundle.get("resources", [])}
+    targets = [resources[rid]["resource_id"] for rid in top.get("resource_ids", []) if rid in resources]
+    # Titles are plain text; never echo model prose or telemetry labels.
+    # The title reaches the SNS digest; scrub identities (ARNs, account ids) like the body.
+    from .evidence import _scrub_text
+    title = label + (" — " + _scrub_text(str(targets[0]), "")[:100] if targets else "")
+    return {"title": title[:200],
+            "tags": list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))[:6]}

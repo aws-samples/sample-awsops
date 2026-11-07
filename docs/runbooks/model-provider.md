@@ -11,6 +11,15 @@ the product-help assistant and the AI Diagnosis / insight / FinOps workers.
 | `bedrock_openai` | `global.openai.gpt-6-luna` | `global.openai.gpt-6-luna` | `global.openai.gpt-6.1-terra` | `global.openai.gpt-6.1-terra` | none |
 | `anthropic_api` | `claude-sonnet-5-5` | `claude-haiku-5-5` | `claude-sonnet-5-5` | `claude-opus-5-5` | none |
 
+Exception: the optional AI Diagnosis evidence loop (`diagnosis_evidence_loop_enabled`) runs
+its six-pillar specialists and reviewer only on Bedrock Claude Sonnet 5.5 or Opus 5.5. Under
+`bedrock_openai` or `anthropic_api` those stages are skipped without a model call, and the
+report completes as `partial` with the degraded marker `analysis:model_provider_unsupported`.
+An unsupported model ID under a supported provider is reported separately as
+`analysis:unsupported_model`. With the evidence loop off, AI Diagnosis uses the provider
+in the table. See
+[diagnosis discovery](../reference/diagnosis-discovery.md#model-requirement).
+
 `mixed` sets no role environment and keeps the existing grants, so the default plan is unchanged.
 The other values pass `MODEL_PROVIDER` plus one model ID per role to the web task, the worker
 Lambda and Fargate task, and (through the `agentcore` output and `make agentcore`) the AgentCore

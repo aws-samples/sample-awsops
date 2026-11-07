@@ -224,6 +224,7 @@ def collect(bundle, budget, *, scope):
         return result
     if not account or account != os.environ.get("DIAGNOSIS_HOST_ACCOUNT_ID"):
         _mark(result, "gaps", "supporting_host_unknown")  # host identity absent/mismatched: all skipped
+        _mark(result, "degraded", "supporting_host_unknown")
         return result
     now = _now()
     plans = [

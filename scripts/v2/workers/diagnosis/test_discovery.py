@@ -7,6 +7,31 @@ import pytest
 
 from diagnosis import discovery
 
+
+@pytest.mark.parametrize("overflow,marker", [
+    ("services", "xray_node_cap"), ("edges", "xray_edge_cap"),
+    ("later_edges", "xray_edge_cap"),
+])
+def test_xray_clipping_disqualifies_region_and_emitted_evidence(provider, overflow, marker):
+    services = [{"ReferenceId": 1, "Name": "app", "Edges": [
+        {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 1}}]},
+        {"ReferenceId": 2, "Name": "database", "Edges": []}]
+    if overflow == "services":
+        services.extend({"ReferenceId": n, "Name": "extra", "Edges": []}
+                        for n in range(3, discovery.MAX_RESOURCES + 2))
+    else:
+        source, target = (1, 1) if overflow == "later_edges" else (0, 2)
+        services[source]["Edges"] = [
+            {"ReferenceId": target, "SummaryStatistics": {"TotalCount": n + 1}}
+            for n in range(discovery.MAX_RELATIONSHIPS + 1)]
+    provider.xray = [{"Services": services}]
+    collected = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert marker in collected["incomplete"]
+    assert collected["coverage"]["xray"][REGION]["complete"] is False
+    observed = [row for row in collected["evidence"] if row["source"] == "xray"]
+    assert observed and all(row["fresh"] is False and row["coverage"]["complete"] is False
+                            for row in observed)
+
 NOW = dt.datetime(2026, 11, 4, 12, tzinfo=dt.timezone.utc)
 ACCOUNT = "111122223333"
 REGION = "ap-northeast-2"
@@ -352,6 +377,96 @@ def test_provider_foreign_scope_is_not_admitted(provider):
     bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
     assert not evidence(bundle, "provider_sizing")
     assert "provider_scope_mismatch" in bundle["incomplete"]
+
+
+@pytest.mark.parametrize("fault", [
+    "missing_memory", "missing_read", "missing_write", "unknown_window",
+    "short_window", "stale", "qualified",
+])
+def test_provider_coverage_requires_fresh_complete_pressure_and_window(provider, fault):
+    row = recommendation()
+    row["utilizationMetrics"] = [
+        {"name": name, "statistic": "Maximum", "value": 10}
+        for name in ("Cpu", "Memory", "EBSReadOpsPerSecond", "EBSWriteOpsPerSecond")
+    ]
+    omitted = {"missing_memory": "Memory", "missing_read": "EBSReadOpsPerSecond",
+               "missing_write": "EBSWriteOpsPerSecond"}.get(fault)
+    if omitted:
+        row["utilizationMetrics"] = [m for m in row["utilizationMetrics"] if m["name"] != omitted]
+    if fault == "unknown_window":
+        row.pop("lookBackPeriodInDays")
+    elif fault == "short_window":
+        row["lookBackPeriodInDays"] = 7
+    elif fault == "stale":
+        row["lastRefreshTimestamp"] = NOW - dt.timedelta(hours=25)
+    provider.ec2 = [{"instanceRecommendations": [row]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    item = evidence(bundle, "provider_sizing")[0]
+    assert item["coverage"]["complete"] is (fault == "qualified")
+    assert item["fresh"] is (fault != "stale")
+    assert item["coverage"]["sample_ratio"] == (1 if fault in ("qualified", "stale") else 0)
+
+
+@pytest.mark.parametrize("cap", ["nodes", "edges"])
+def test_graph_projection_caps_disqualify_class_and_emitted_rows(provider, cap):
+    db = graph_fixture()
+    if cap == "nodes":
+        db.nodes.extend([
+            f"noise:{n}", "service", "noise", {"accountId": ACCOUNT, "region": REGION}, NOW, "trace"
+        ] for n in range(601 - len(db.nodes)))
+    else:
+        db.edges.extend([
+            f"noise:{n}", f"noise:{n + 1}", "queries", "observed", {}, NOW, "trace"
+        ] for n in range(401 - len(db.edges)))
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "graph_cap" in bundle["incomplete"]
+    assert bundle["coverage"]["graph"]["trace"]["complete"] is False
+    # Rows interleave by per-class rank, so a class absent from a truncated edge list had no edges.
+    assert bundle["coverage"]["graph"]["infra"]["complete"] is (cap == "edges")
+    rows = [e for e in bundle["evidence"] if e["source"] == "stored_graph"]
+    assert rows and all(not e["fresh"] and not e["coverage"]["complete"] for e in rows)
+    assert len([e for e in rows if e["facts"].get("correlation_id")]) == 2
+
+
+@pytest.mark.parametrize("regions,overflow", [
+    ([REGION, "us-east-1"], False), ([REGION], True),
+])
+def test_xray_global_share_is_qualified_before_emitting_rows(provider, regions, overflow):
+    count = discovery.MAX_XRAY_RESOURCES + int(overflow)
+    services = [{"ReferenceId": n, "Name": f"service-{n}", "Edges": []}
+                for n in range(count)]
+    services[0]["Edges"] = [
+        {"ReferenceId": n, "SummaryStatistics": {"TotalCount": 1}}
+        for n in range(1, count)
+    ]
+    provider.xray = [{"Services": services}]
+    db = Database([inventory("ec2", f"i-{n:017x}", {}, region=region)
+                   for n, region in enumerate(regions)])
+    bundle = discovery.collect(db, ACCOUNT, Budget())
+    assert "xray_resource_cap" in bundle["incomplete"]
+    assert bundle["coverage"]["xray"][regions[-1]]["complete"] is False
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows
+    if overflow:
+        assert all(not e["fresh"] and not e["coverage"]["complete"] for e in rows)
+    else:
+        assert bundle["coverage"]["xray"][REGION]["complete"] is True
+        assert all(e["region"] == REGION and e["fresh"] for e in rows)
+
+
+def test_xray_existing_region_identities_reuse_the_full_share(provider):
+    count = discovery.MAX_XRAY_RESOURCES
+    provider.xray = [{"Services": [
+        {"ReferenceId": n, "Name": f"service-{n}", "Edges": [
+            {"ReferenceId": (n + 1) % count, "SummaryStatistics": {"TotalCount": 1}}
+        ]} for n in range(count)
+    ]}]
+    bundle = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    discovery._xray(bundle, Budget(), [REGION])
+    assert bundle["coverage"]["xray"][REGION]["complete"] is True
+    assert "xray_resource_cap" not in bundle["incomplete"]
+    rows = [e for e in bundle["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["fresh"] and e["coverage"]["complete"] for e in rows)
 
 
 def test_deadline_stops_before_any_provider_operation(provider):
