@@ -111,7 +111,7 @@ def test_fabricated_reviewer_selection_and_requests_fail_closed(monkeypatch):
     ({"issues": ["Confirm only one subnet route"]}, 1, ["Confirm only one subnet route"]),
     ({"issues": ["CPU at 99", "Verify the m5.large peer in ap-northeast-2"]}, 1,
      ["Verify the m5.large peer in ap-northeast-2"]),
-    ({"issues": ["CPU at 99"], "finding_ids": [], "reject_ids": ["finding-reliability"]}, 0, []),
+    ({"issues": ["CPU at 99"], "finding_ids": [], "reject_ids": ["rel:finding-reliability"]}, 0, []),
 ])
 def test_numeric_review_issue_is_dropped_per_item(monkeypatch, review, kept, issues):
     install_models(monkeypatch, [review])
@@ -347,7 +347,7 @@ def test_pass_one_downgrades_are_not_carried_as_rejections(monkeypatch):
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"),
                       collect_follow_up=lambda _: refreshed)
     assert result["passes"] == 2
-    assert result["rejected"] == [{"id": "finding-reliability", "reason": "unconfirmed_observation"}]
+    assert result["rejected"] == [{"id": "rel:finding-reliability", "reason": "unconfirmed_observation"}]
     assert "evidence:downgraded" in result["degraded"] and "evidence:rejected" not in result["degraded"]
 
 
@@ -390,3 +390,24 @@ def test_rerun_without_follow_up_is_disclosed(monkeypatch):
                       model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("deep"),
                       collect_follow_up=lambda requests: pytest.fail("no follow-up was requested"))
     assert "rerun:no_follow_up" in result["incomplete"]
+
+
+def test_same_finding_id_from_two_pillars_is_admitted_for_both(monkeypatch):
+    install_models(monkeypatch)
+
+    def analyze(pillar, index, *, model_id, budget, lang="en"):
+        if pillar in ("reliability", "security"):
+            return {"findings": [finding(id="1", pillar=pillar, claim="hypothesis")]}
+        return {"findings": []}
+
+    monkeypatch.setattr(loop.agents, "analyze", analyze)
+    result = loop.run(bundle(), account=ACCOUNT, tier="mid",
+                      model_id="global.anthropic.claude-sonnet-5-5", budget=ReportBudget("mid"))
+    assert sorted(f["id"] for f in result["findings"]) == ["rel:1", "sec:1"]
+    assert not any(r.get("reason") == "duplicate_finding_id" for r in result["rejected"])
+
+
+def test_hyphenated_prose_numbers_are_not_region_identifiers():
+    from diagnosis import loop
+    assert loop._NUMBER.search(loop._IDENTIFIER_TOKEN.sub(" ", "Retries go up-to-9 times"))
+    assert not loop._NUMBER.search(loop._IDENTIFIER_TOKEN.sub(" ", "Verify the peer in ap-northeast-2"))

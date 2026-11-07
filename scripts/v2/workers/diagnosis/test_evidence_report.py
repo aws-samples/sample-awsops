@@ -451,7 +451,7 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
                                        budget=ReportBudget("light"))
     assert summary["budget"]["attempt_count"] == 7
     assert summary["pillar_coverage"]["reliability"]["status"] == "partial"
-    assert any(row["id"] == "fabricated" for row in summary["rejected_findings"])
+    assert any(row["id"] == "rel:fabricated" for row in summary["rejected_findings"])
     assert "123.75" in md and "USD" in md and "posture" in used
     assert "` posture_counts.HIGH ` = ` 7 `" in md
     assert "i-0123456789abcdef0" in md and "database" in md

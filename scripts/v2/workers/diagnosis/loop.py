@@ -14,7 +14,7 @@ MAX_FOLLOW_UP_REQUESTS = 4
 MAX_RERUNS = 2
 _IDENTIFIER_TOKEN = re.compile(
     r"\b(?:db\.)?[a-z][a-z0-9-]*\d[a-z0-9-]*\.(?:nano|micro|small|medium|large|\d*xlarge|metal)\b"
-    r"|\b[a-z]{2}(?:-gov)?-[a-z]+-\d\b"
+    r"|\b[a-z]{2}(?:-gov)?-(?:north|south|east|west|central|northeast|southeast|northwest|southwest)-\d\b"
     r"|\bsummary-[0-9a-f]{24}\b"
     r"|\b[a-z]{1,7}:[0-9a-f]{32}\b", re.IGNORECASE)
 # Opaque AWS resource ids carry a fixed lowercase prefix; any other word-hyphen-hex token
@@ -133,6 +133,19 @@ def _validate_review(value, findings, index):
     return {**value, "issues": kept_issues, "follow_up": requests, "rerun_pillars": pillars}
 
 
+# Specialists are independent calls whose ids are unconstrained ("1", "f1"), so each pillar's
+# ids are namespaced before the shared index's duplicate check; one pillar can never displace
+# another pillar's finding.
+_ID_PREFIX = {"operational_excellence": "ops", "security": "sec", "reliability": "rel",
+              "performance_efficiency": "perf", "cost_optimization": "cost", "sustainability": "sus"}
+
+
+def _namespaced(row, pillar):
+    if isinstance(row, dict) and isinstance(row.get("id"), str):
+        return {**row, "id": f"{_ID_PREFIX[pillar]}:{row['id']}"}
+    return row
+
+
 def _admit_outputs(outputs, index, coverage, degraded, incomplete):
     admitted = []
     for pillar in PILLARS:
@@ -153,7 +166,7 @@ def _admit_outputs(outputs, index, coverage, degraded, incomplete):
             continue
         found = []
         for row in rows:
-            valid = index.validate_finding(row, pillar=pillar)
+            valid = index.validate_finding(_namespaced(row, pillar), pillar=pillar)
             if valid is not None:
                 found.append(valid)
         rejected = len(index.rejected) - before
