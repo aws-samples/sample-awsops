@@ -28,16 +28,26 @@ _WITHHELD = {
     "zh": "_(已保留模型文本：其中包含数字、链接或命令)_",
     "ja": "_(モデルの文章を保留: 数値・リンク・コマンドを含むため)_",
 }
-# Links, fences and tool words followed by any argument are refused in every case. Only `aws`
-# followed by a capitalized service name ("AWS Lambda") or a known prose word ("the AWS
-# account") is kept, since anything else may be a copyable command.
-_COMMAND = re.compile(r"(?i)https?://|```|(?<![\w-])(?:curl|wget|sudo|kubectl|terraform)\s+\S")
-# AWS CLI invocations are recognized with report.py's own tokenizer (options skipped,
-# hyphenated and single-word operations, s3 commands), in any case: `aws` is folded first so
-# "AWS Lambda invoke" is caught too. Prose in any language ("AWS 계정", "AWS Lambda retries")
-# has no operation-shaped token after the service.
-_AWS_WORD = re.compile(r"(?i)(?<![\w-])aws(?![\w-])")
-_AWS_FLAG = re.compile(r"(?i)(?<![\w-])aws\s+--?[a-z]")
+# Model prose is refused (and disclosed as withheld) when it carries anything copyable as a
+# command. Word boundaries are ASCII-only so CJK letters glued to a tool word ("AWS의 rds ...")
+# never hide it, and every check is case-insensitive.
+_B, _E = r"(?<![A-Za-z0-9_-])", r"(?![A-Za-z0-9_-])"
+_COMMAND = re.compile(
+    r"(?i)https?://|```|\$\(|&&|\|\|?\s*(?:sh|bash)" + _E +
+    # Distinctive operator tools: any ASCII argument makes it a command.
+    r"|" + _B + r"(?:curl|wget|sudo|su|kubectl|terraform|helm|docker|podman|eksctl|psql|mysql|"
+    r"mongosh|mongo|redis-cli|systemctl|ssh|scp|rsync|chmod|chown|mkfs|pkill|killall|gcloud|az|"
+    r"pip|npm|npx|yarn|apt|apt-get|yum|dnf|brew|powershell|pwsh)" + _E + r"\s+[A-Za-z0-9./~$'\"-]"
+    # Generic words that are also shell commands: only with a flag or path argument.
+    r"|" + _B + r"(?:rm|cp|mv|dd|kill|git|sed|sh|bash|python3?|node|cat|tee|truncate)" + _E +
+    r"\s+(?:-|/|~|\./|\$)"
+    # Destructive SQL and double-dash flags read as commands in any language.
+    r"|" + _B + r"(?:drop|truncate|alter)\s+(?:table|database|schema|index|user|role|view)" + _E +
+    r"|" + _B + r"delete\s+from" + _E + r"|(?<![\w-])--[a-z][a-z0-9-]+")
+# AWS CLI invocations use report.py's own tokenizer (options skipped, hyphenated and single-word
+# operations, s3 commands). `aws` is folded to lowercase in both readings.
+_AWS_WORD = re.compile(r"(?i)" + _B + r"aws" + _E)
+_AWS_FLAG = re.compile(r"(?i)" + _B + r"aws\s+--?[a-z]")
 # Punctuation, CJK particles and other non-CLI characters glued to a token ("terminate-instances.",
 # "invoke를", "rm,") become separators, so a trailing character never hides an operation.
 _NON_CLI = re.compile(r"[^A-Za-z0-9\s_/:=@+-]|\.(?=\s|$)")
@@ -45,13 +55,16 @@ _NON_CLI = re.compile(r"[^A-Za-z0-9\s_/:=@+-]|\.(?=\s|$)")
 
 def _commandlike(value):
     from .report import _cli_commands
-    if _COMMAND.search(value) or _AWS_FLAG.search(value):
-        return True
-    # Either reading is enough: the folded original keeps option values intact
-    # ("--filters Name=a,Values=b"), the separated form exposes glued punctuation.
-    folded = _AWS_WORD.sub("aws", value)
-    return any(next(_cli_commands(text), None) is not None
-               for text in (folded, _NON_CLI.sub(" ", folded)))
+    # Either reading is enough: the original keeps option values intact
+    # ("--filters Name=a,Values=b"), the separated form exposes glued punctuation/particles.
+    for text in (value, _NON_CLI.sub(" ", value)):
+        folded = _AWS_WORD.sub("aws", text)
+        if (_COMMAND.search(folded) or _AWS_FLAG.search(folded)
+                or next(_cli_commands(folded), None) is not None):
+            return True
+    return False
+
+
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),

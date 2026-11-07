@@ -328,3 +328,23 @@ def test_sections_carry_a_code_owned_severity_marker(severity, marker):
         assert not marked
     else:
         assert len(marked) == 1 and dict(bodies)[marked[0]].startswith(marker)
+
+
+@pytest.mark.parametrize("unsafe", [
+    "AWS의 rds delete-db-instance --db-instance-identifier orders 명령으로 정리",
+    "AWSの ec2 terminate-instances を実行", "AWS的 lambda invoke 调用",
+    "Run helm uninstall payments", "rm -rf /var/lib/app", "docker system prune",
+    "psql -c 'DROP TABLE orders'", "DROP TABLE orders 로 정리", "delete from orders 실행",
+    "kubectl을 쓰지 말고 kubectl delete ns app", "echo $(whoami)", "ssh admin@host 접속",
+    "Use --force to retry"])
+def test_prose_guard_refuses_glued_and_non_aws_commands(unsafe):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(unsafe) == ""
+
+
+@pytest.mark.parametrize("prose", ["AWS의 계정 구성을 확인하세요.", "Docker 이미지 크기를 검토하세요.",
+                                   "The kill switch stays off.",
+                                   "Copy the policy for review.", "SQL에서 테이블 정리가 필요할 수 있습니다."])
+def test_prose_guard_keeps_tool_names_used_as_nouns(prose):
+    from diagnosis import presentation
+    assert presentation._safe_explanation(prose)
