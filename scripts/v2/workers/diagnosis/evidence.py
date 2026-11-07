@@ -18,6 +18,12 @@ PILLARS = (
 )
 CLAIMS = ("observation", "hypothesis", "sizing_candidate", "coverage_gap")
 VERIFICATIONS = ("none", "resource_metrics", "provider_sizing", "graph_refresh")
+METRIC_OBSERVATION_TEXT = {
+    "en": "Metrics were collected for this resource in the disclosed window.",
+    "ko": "표시된 기간에 이 리소스의 지표가 수집되었습니다.",
+    "ja": "表示された期間にこのリソースのメトリクスが収集されました。",
+    "zh": "在所示时间范围内已收集此资源的指标。",
+}
 KINDS = {
     "observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency",
     "allowed_path", "candidate", "metrics", "provider_sizing", "inventory", "scope_summary",
@@ -181,7 +187,8 @@ _REFERENCE_FIELDS = {
 # dotted hostname is masked, except code-owned type/version vocabularies such as
 # db.r6g.large; AWS service DNS names are masked wherever they appear inside text.
 _HOST_KEYS = {"db_host", "endpoint_address", "endpoint", "host", "query_name", "dns_source_id"}
-_TYPE_KEYS = {"instance_type", "class", "current_type", "recommended_type", "storage_type",
+_TYPE_KEYS = {"instance_type", "class", "db_instance_class", "graph_class",
+              "current_type", "recommended_type", "storage_type",
               "storageType", "engine", "version", "unit", "metric_name", "namespace", "statistic"}
 _HOSTNAME = re.compile(r"(?i)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?")
 _AWS_HOST = re.compile(r"(?i)\b[a-z0-9_.-]+\.(?:amazonaws\.com(?:\.cn)?|amazonaws-us-gov\.com|on\.aws|cloudfront\.net)\b\.?")
@@ -397,8 +404,11 @@ class EvidenceIndex:
         if not cited or any(not row["fresh"] for row in cited):
             return False
         if len(refs) == 1:
-            return any(row["kind"] == "metrics" and row["resource_ids"] == refs
-                       and self._complete(row, sampled=True) for row in cited)
+            # Numeric metrics cannot certify arbitrary backup/security/configuration
+            # prose. Only this code-owned collection statement can be an observation.
+            return (finding["explanation"].strip() in METRIC_OBSERVATION_TEXT.values()
+                    and any(row["kind"] == "metrics" and row["resource_ids"] == refs
+                            and self._complete(row, sampled=True) for row in cited))
         # A referenced scoped edge must preserve the actual pair. Sharing a
         # service/SG or joining independent aggregates never creates an observed edge.
         return len(refs) == 2 and any(

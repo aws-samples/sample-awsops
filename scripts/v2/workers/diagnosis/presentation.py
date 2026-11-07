@@ -1,5 +1,4 @@
 """Deterministic report presentation. Models select claims; code prints admitted facts."""
-import html
 import json
 import re
 from .evidence import _NUMBER
@@ -88,11 +87,16 @@ def _clip(value, limit):
 
 def _cell(value, limit=700):
     """Literal table text: never allow telemetry/model text to become Markdown/HTML."""
-    return (html.escape(_clip(value, limit), quote=True).replace("|", "&#124;")
-            .replace("\n", " ").replace("\r", " ").replace("`", "&#96;")
-            .replace("[", "&#91;").replace("]", "&#93;")
-            .replace("*", "&#42;").replace("_", "&#95;")
-            .replace("\\", "&#92;"))
+    text = _clip(value, limit).translate(str.maketrans({"|": "｜", "[": "［", "]": "］"}))
+    return _literal(text)
+
+
+def _literal(value):
+    """Use a collision-free code span; entities remain literal inside code spans."""
+    text = " ".join(str(value).split())
+    text = "".join(char if char.isprintable() else " " for char in text)
+    fence = "`" * (1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+    return f"{fence} {text} {fence}"
 
 
 def _json(value):
@@ -107,7 +111,11 @@ def _swept(body, lang):
 
 
 def _code(value):
-    return f"`{_cell(value)}`"
+    # Ordinary AWS identifiers stay literal within the existing presentation bound;
+    # malformed stored identities
+    # still cannot introduce table columns or code-owned severity/size markers.
+    text = _clip(value, 700).translate(str.maketrans({"|": "｜", "[": "［", "]": "］"}))
+    return _literal(text)
 
 
 def _ordered(analysis):

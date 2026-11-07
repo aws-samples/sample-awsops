@@ -7,6 +7,31 @@ import pytest
 
 from diagnosis import discovery
 
+
+@pytest.mark.parametrize("overflow,marker", [
+    ("services", "xray_node_cap"), ("edges", "xray_edge_cap"),
+    ("later_edges", "xray_edge_cap"),
+])
+def test_xray_clipping_disqualifies_region_and_emitted_evidence(provider, overflow, marker):
+    services = [{"ReferenceId": 1, "Name": "app", "Edges": [
+        {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 1}}]},
+        {"ReferenceId": 2, "Name": "database", "Edges": []}]
+    if overflow == "services":
+        services.extend({"ReferenceId": n, "Name": "extra", "Edges": []}
+                        for n in range(3, discovery.MAX_RESOURCES + 2))
+    else:
+        source, target = (1, 1) if overflow == "later_edges" else (0, 2)
+        services[source]["Edges"] = [
+            {"ReferenceId": target, "SummaryStatistics": {"TotalCount": n + 1}}
+            for n in range(discovery.MAX_RELATIONSHIPS + 1)]
+    provider.xray = [{"Services": services}]
+    collected = discovery.collect(Database([inventory("ec2", I1, {})]), ACCOUNT, Budget())
+    assert marker in collected["incomplete"]
+    assert collected["coverage"]["xray"][REGION]["complete"] is False
+    observed = [row for row in collected["evidence"] if row["source"] == "xray"]
+    assert observed and all(row["fresh"] is False and row["coverage"]["complete"] is False
+                            for row in observed)
+
 NOW = dt.datetime(2026, 11, 4, 12, tzinfo=dt.timezone.utc)
 ACCOUNT = "111122223333"
 REGION = "ap-northeast-2"

@@ -1,6 +1,48 @@
 """ENI ownership and DB proxy configuration need exact scoped corroboration."""
 from diagnosis import workload_identities as identities
 from diagnosis.test_discovery import ACCOUNT, REGION, NOW, Budget
+import pytest
+
+
+@pytest.mark.parametrize("change,marker", [
+    ({"Status": "modifying"}, "proxy_not_available"),
+    ({"DBProxyName": "invalid:name"}, "proxy_identity_unresolved"),
+    ({"DBProxyArn": None}, "proxy_identity_unresolved"),
+])
+def test_unqualified_in_scope_proxy_is_disclosed_and_later_proxy_survives(monkeypatch, change, marker):
+    from diagnosis import discovery as d
+    monkeypatch.setattr(d, "_now", lambda: NOW)
+    db = {"id": "r:db", "resource_id": "orders", "kind": "rds", "region": REGION,
+          "account": ACCOUNT, "facts": {"vpc_id": "vpc-a"}}
+    bundle = {"resources": [db], "relationships": [], "coverage": {"account": ACCOUNT},
+              "gaps": [], "incomplete": [], "degraded": [], "evidence": [
+        {"id": "e:db", "kind": "inventory", "source": "inventory", "resource_ids": [db["id"]],
+         "fresh": True, "coverage": {"complete": True}}]}
+    base = {"DBProxyName": "orders-proxy", "Status": "available", "VpcId": "vpc-a",
+            "DBProxyArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:db-proxy:prx-1"}
+    class Rds:
+        def describe_db_proxies(self, **kwargs):
+            return {"DBProxies": [{**base, **change},
+                    {**base, **change, "VpcId": "vpc-other"},
+                    {**base, "DBProxyArn": base["DBProxyArn"] + "-later"}]}
+        def describe_db_proxy_targets(self, **kwargs):
+            return {"Targets": []}
+    identities.collect_proxies(bundle, Budget(), lambda *args: Rds())
+    assert bundle["gaps"] == [marker]
+    assert any(row["resource_id"].endswith("-later") for row in bundle["resources"])
+    assert len(bundle["resources"]) == 2
+
+
+def test_cluster_deadline_is_a_bound_and_never_an_unresolved_target():
+    from diagnosis import discovery as d
+    bundle = {"coverage": {}, "incomplete": [], "gaps": []}
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No provider call after deadline")
+    with pytest.raises(identities._ProxyBound):
+        identities._cluster_target(bundle, Budget(seconds=0), forbidden,
+            {"TargetArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:orders"},
+            [], ACCOUNT, REGION, "vpc-a")
+    assert bundle["incomplete"] == ["discovery_deadline"] and bundle["gaps"] == []
 
 
 def test_proxy_aurora_cluster_links_only_exact_qualified_members(monkeypatch):

@@ -773,7 +773,11 @@ def _xray(bundle, budget, regions):
             client = _client("xray", region, budget)
             for page in _pages(client, "get_service_graph", {"StartTime": start, "EndTime": end},
                                bundle, budget, coverage):
-                for service in (page.get("Services") or [])[:MAX_RESOURCES]:
+                page_services = page.get("Services") or []
+                if len(page_services) > MAX_RESOURCES:
+                    coverage["complete"] = False
+                    _mark(bundle, "incomplete", "xray_node_cap")
+                for service in page_services[:MAX_RESOURCES]:
                     ref = service.get("ReferenceId")
                     if isinstance(ref, int) and len(services) < MAX_RESOURCES:
                         services[ref] = service
@@ -783,6 +787,12 @@ def _xray(bundle, budget, regions):
         except Exception:
             coverage["complete"] = False
             _mark(bundle, "degraded", "xray_read_failed")
+        # Qualify the entire region before emitting any evidence. A later clipped
+        # service must not leave earlier edges claiming complete, fresh coverage.
+        if any(len(service.get("Edges") or []) > MAX_RELATIONSHIPS
+               for service in services.values()):
+            coverage["complete"] = False
+            _mark(bundle, "incomplete", "xray_edge_cap")
         for ref, service in services.items():
             for edge in (service.get("Edges") or [])[:MAX_RELATIONSHIPS]:
                 target = edge.get("ReferenceId")

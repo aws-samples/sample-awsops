@@ -14,11 +14,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 
 from .budget import BudgetExceeded, MAX_INPUT_BYTES, attempt_tokens
-from .evidence import CLAIMS, PILLARS, VERIFICATIONS, redact_context
+from .evidence import CLAIMS, METRIC_OBSERVATION_TEXT, PILLARS, VERIFICATIONS, redact_context
 from .report import _thinking_fields
 
 
-PROMPT_VERSION = "diagnosis-pillars-2026-11-06-v3"
+PROMPT_VERSION = "diagnosis-pillars-2026-11-07-v4"
 SCHEMA_VERSION = "diagnosis-findings-v1"
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_FINDINGS = 8
@@ -158,7 +158,11 @@ def validate_language(lang):
 def _language_prompt(lang):
     validate_language(lang)
     return (f"Write all human-readable prose in {LANGUAGE_NAMES[lang]} (locale: {lang}). "
-            "Keep JSON property names, enum values and opaque IDs unchanged.")
+            "Keep JSON property names, enum values and opaque IDs unchanged. "
+            "For a single-resource metrics observation, explanation must be exactly: "
+            f"{METRIC_OBSERVATION_TEXT[lang]} "
+            "Otherwise use hypothesis or coverage_gap. Metrics do not establish "
+            "backup, security or configuration assertions.")
 
 
 def model_capabilities(model_id):

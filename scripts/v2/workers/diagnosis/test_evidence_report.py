@@ -451,9 +451,9 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
     assert summary["pillar_coverage"]["reliability"]["status"] == "partial"
     assert any(row["id"] == "fabricated" for row in summary["rejected_findings"])
     assert "123.75" in md and "USD" in md and "posture" in used
-    assert "posture&#95;counts.HIGH = 7" in md
+    assert "` posture_counts.HIGH ` = ` 7 `" in md
     assert "i-0123456789abcdef0" in md and "database" in md
-    assert "scope&#95;summary" in md and "global" in md
+    assert "scope_summary" in md and "global" in md
 
 
 def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch):
@@ -512,8 +512,8 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
     assert summary["pillar_coverage"]["reliability"]["status"] == "completed"
     assert summary["budget"]["attempt_count"] == 7
     md = html.unescape(md)
-    assert f"`{I1}`, `db1`" in md and f"`{I2}`, `db2`" in md
-    assert f"`{I1}`, `db2`" not in md and f"`{I2}`, `db1`" not in md
+    assert f"` {I1} `, ` db1 `" in md and f"` {I2} `, ` db2 `" in md
+    assert f"` {I1} `, ` db2 `" not in md and f"` {I2} `, ` db1 `" not in md
 
 
 @pytest.mark.parametrize("stage,error", [("observations", KeyError), ("supporting", TimeoutError)])

@@ -2,8 +2,46 @@
 import html
 import json
 import pytest
+import re
 from diagnosis.sections import SECTIONS, INTENDED_VS_ACTUAL_SECTION
 from diagnosis.test_evidence import oid
+
+
+@pytest.mark.parametrize("value", [
+    "http://attacker.example/reset", "www.attacker.example",
+    "<script>alert('leak')</script>", "left | right",
+    "`` attacker ` value ```", "[HIGH] …[truncated] (report size bound)",
+])
+def test_untrusted_cells_are_inert_literals_without_fence_or_marker_escape(value):
+    from diagnosis import presentation
+    cell = presentation._cell(value)
+    match = re.fullmatch(r"(`+) (.*) \1", cell)
+    assert match, "Telemetry must be a code literal, never autolinkable prose"
+    assert match[1] not in match[2]
+    assert "|" not in match[2] and "[HIGH]" not in cell
+    assert presentation.SIZE_MARK not in cell
+
+
+def test_valid_identifiers_remain_copyable_inside_code_spans():
+    from diagnosis import presentation
+    value = "prod_db_writer-logs/active"
+    code = presentation._code(value)
+    assert re.fullmatch(r"` ?prod_db_writer-logs/active ?`", code)
+    assert "&#" not in code
+    assert presentation._code("x " + "1234567890" * 80) == "` x …［truncated］ `"
+
+
+@pytest.mark.parametrize("value", [
+    "malformed | identity", "[HIGH] …[truncated] (report size bound)",
+    "http://attacker.example/``identity`",
+])
+def test_malformed_native_identifiers_cannot_escape_literal_guards(value):
+    from diagnosis import presentation
+    code = presentation._code(value)
+    match = re.fullmatch(r"(`+) (.*) \1", code)
+    assert match and match[1] not in match[2]
+    assert "|" not in match[2] and "[HIGH]" not in code
+    assert presentation.SIZE_MARK not in code
 
 
 @pytest.mark.parametrize("lang,prose", [
@@ -88,12 +126,12 @@ def test_executive_and_recommendations_select_only_admitted_ids():
     text = "\n".join(result.values())
     assert text.count("17.25") == 1 and "finding-a" in result["database_storage"]
     assert text.count("Coverage and withheld claims") == 1
-    assert "memory&#95;unknown" in result["executive_summary"]
+    assert "memory_unknown" in result["executive_summary"]
 
 
 def test_cells_rows_and_total_markdown_are_bounded_with_explicit_markers(monkeypatch):
     from diagnosis import presentation
-    assert presentation._cell("x " + "1234567890" * 80).endswith("x …&#91;truncated&#93;")
+    assert presentation._cell("x " + "1234567890" * 80) == "` x …［truncated］ `"
     kept, more = presentation._clip(list(range(400)), 50).split("…[truncated] ")
     assert len(kept) <= 50 and json.loads(kept) == list(range(len(json.loads(kept))))
     assert int(more.split()[0]) == 400 - len(json.loads(kept))
@@ -149,7 +187,7 @@ def test_only_cited_facts_are_rendered_and_markdown_injection_is_escaped():
     text = "\n".join(body for _, body in presentation.render(
         SECTIONS, data, analysis(), lang="en", invariant_md=""))
     assert "987654321" not in text
-    assert "<script>" not in text
+    assert "` <script>alert('leak')</script> ｜ column `" in text
     assert "\n| column" not in text
 
 

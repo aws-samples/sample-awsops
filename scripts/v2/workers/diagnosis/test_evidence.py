@@ -7,6 +7,44 @@ from diagnosis import discovery
 from diagnosis.evidence import FACT_KEYS, EvidenceIndex, PILLARS
 
 
+def test_code_owned_rds_and_graph_types_survive_model_redaction():
+    data = bundle()
+    data["resources"][1]["facts"].update(
+        db_instance_class="db.r6g.large", graph_class="trace.resource",
+        endpoint_address="private.database.internal", private_ip_address="2001:db8::1f")
+    facts = EvidenceIndex(data, ACCOUNT).model_context(redacted=True)["resources"][1]["facts"]
+    assert facts["db_instance_class"] == "db.r6g.large"
+    assert facts["graph_class"] == "trace.resource"
+    assert facts["endpoint_address"] == "<host>" and facts["private_ip_address"] == "<ip>"
+
+
+@pytest.mark.parametrize("prose", [
+    "Backups are disabled.", "The database is publicly accessible.",
+    "The resource is encrypted.", "CPU pressure proves the backup configuration.",
+])
+def test_cpu_metrics_do_not_certify_unrelated_qualitative_observations(prose):
+    index = EvidenceIndex(bundle(), ACCOUNT)
+    result = index.validate_finding(finding(
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")], explanation=prose))
+    assert result["claim"] == "hypothesis"
+    assert index.downgraded == [{"id": "finding-a", "reason": "unconfirmed_observation"}]
+
+
+@pytest.mark.parametrize("prose", [
+    "Metrics were collected for this resource in the disclosed window.",
+    "표시된 기간에 이 리소스의 지표가 수집되었습니다.",
+    "表示された期間にこのリソースのメトリクスが収集されました。",
+    "在所示时间范围内已收集此资源的指标。",
+])
+def test_code_owned_metrics_observation_requires_qualified_measurements(prose):
+    candidate = finding(resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")],
+                        explanation=prose)
+    assert EvidenceIndex(bundle(), ACCOUNT).validate_finding(candidate)["claim"] == "observation"
+    data = bundle()
+    data["evidence"][2]["coverage"]["complete"] = False
+    assert EvidenceIndex(data, ACCOUNT).validate_finding(candidate)["claim"] == "hypothesis"
+
+
 ACCOUNT = "111111111111"
 REGION = "ap-northeast-2"
 
@@ -410,7 +448,8 @@ def test_metric_observation_requires_complete_representative_coverage(coverage, 
     data = bundle()
     data["evidence"][2]["coverage"] = coverage
     result = EvidenceIndex(data, ACCOUNT).validate_finding(finding(
-        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")],
+        explanation="Metrics were collected for this resource in the disclosed window."))
     assert result["claim"] == expected
 
 
@@ -468,10 +507,13 @@ def test_singleton_observation_requires_that_resources_own_metrics_row():
     data["evidence"][2]["resource_ids"] = [oid("r-instance"), oid("r-db")]
     data["evidence"][2]["region"] = REGION
     index = EvidenceIndex(data, ACCOUNT)
-    result = index.validate_finding(finding(resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))
+    result = index.validate_finding(finding(
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")],
+        explanation="Metrics were collected for this resource in the disclosed window."))
     assert result["claim"] == "hypothesis"
     assert EvidenceIndex(bundle(), ACCOUNT).validate_finding(finding(
-        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")]))["claim"] == "observation"
+        resource_ids=[oid("r-instance")], evidence_ids=[oid("e-metrics")],
+        explanation="Metrics were collected for this resource in the disclosed window."))["claim"] == "observation"
 
 
 def test_redacted_model_context_carries_no_account_ip_arn_or_db_host():

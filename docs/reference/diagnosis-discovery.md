@@ -66,6 +66,18 @@ remain visible; the graph is not a claim of complete discovery.
 | Network observation | DNS/IP candidate plus compatible NFM contributor, VPC/region/native identity and port when known | Partial, undirected window correlation; no per-flow timestamp or successful SQL claim |
 | Application call | Existing same-trace/span identifier admission | Stronger request evidence, kept separate from configuration and traffic |
 
+Single-resource metrics observations require the resource's own fresh, complete,
+representative metrics and an exact code-owned collection statement in the report
+locale. The English statement is "Metrics were collected for this resource in
+the disclosed window." Arbitrary backup, security, configuration or other
+qualitative assertions are downgraded to hypotheses, even when they cite valid
+CPU metrics. Metrics do not establish those properties.
+
+X-Ray checks raw page and per-service edge counts before clipping. Exceeding
+those bounds records `xray_node_cap` or `xray_edge_cap`; all emitted X-Ray rows
+in that region disclose incomplete coverage and are not fresh. Missing pages,
+targets and bounded discovery remain explicit limitations.
+
 NFM uses up to eight regions, two monitors, six top-contributor queries and 50 rows
 per query. The current query window is five minutes and incomplete categories and
 sampling are disclosed. Collectors check deadlines before SDK calls and polling.
@@ -85,7 +97,10 @@ identifiers and VPCs; unresolved members remain gaps.
 An individual denied target read or deleted cluster records `proxy_target_unresolved`
 and continues to the next target or proxy. A region's initial provider failure
 records `proxy_configuration_unavailable`; shared deadlines and query caps still
-stop the stage. DNS projection admits up to eight regions' bounded query rows and
+stop the stage. In-scope proxies that are not available record `proxy_not_available`;
+malformed names or account/region ARNs record `proxy_identity_unresolved`. Later
+qualified proxies are still collected; rows outside the selected VPCs are excluded.
+DNS projection admits up to eight regions' bounded query rows and
 records `dns_projection_cap` if that producer bound is exceeded.
 
 Missing or mismatched host identity skips all native supporting sources and
