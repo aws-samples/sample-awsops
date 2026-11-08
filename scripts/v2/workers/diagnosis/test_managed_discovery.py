@@ -256,6 +256,77 @@ def test_signals_bad_row_does_not_void_valid_dependency(managed_provider):
     assert EvidenceIndex(bundle, ACCOUNT).relationships
 
 
+@pytest.mark.parametrize("member", [False, True])
+def test_late_page_timeout_stops_host_and_member_reads_and_disqualifies_prior_rows(
+        managed_provider, monkeypatch, member):
+    from botocore.config import Config
+    signals_pages(managed_provider)
+    managed_provider._client_config = Config(connect_timeout=1, read_timeout=10)
+    budget = Budget()
+    conn = database()
+    if member:
+        from diagnosis import scoped_clients
+        monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", "999900001111")
+        monkeypatch.setattr(scoped_clients, "member_factory",
+                            lambda *args: lambda *args: managed_provider)
+        monkeypatch.setattr(discovery, "_client",
+                            lambda *args: pytest.fail("host client used for member"))
+        for row in conn.rows:
+            row[0] = ACCOUNT
+    original = managed_provider.get_paginator
+    def paginator(operation):
+        if operation != "list_service_dependencies":
+            return original(operation)
+        class Pager:
+            def paginate(self, **params):
+                managed_provider.calls.append((operation, params))
+                # The first response used most of the remaining budget.
+                budget.seconds = 3
+                yield {**managed_provider.pages[operation][0], "NextToken": "later"}
+                pytest.fail("A second HTTP request exceeded the remaining timeout budget.")
+        return Pager()
+    managed_provider.get_paginator = paginator
+    bundle = discovery.collect(conn, ACCOUNT, budget, scope=ACCOUNT if member else "self")
+    assert calls(bundle), "At least one earlier observation must be disqualified."
+    assert all(not e["fresh"] and not e["coverage"]["complete"] for e in calls(bundle))
+    assert bundle["coverage"]["application_signals"][REGION]["requests"] == 2
+    assert "managed_discovery_deadline" in bundle["incomplete"]
+
+
+@pytest.mark.parametrize("seconds", [3, 11])
+def test_initial_client_timeout_is_deadline_not_empty_catalog(managed_provider, monkeypatch, seconds):
+    from botocore.config import Config
+    monkeypatch.setenv("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED", "false")
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    signals_pages(managed_provider)
+    managed_provider.calls.clear()
+    managed_provider._client_config = Config(connect_timeout=1, read_timeout=10)
+    managed._signals(bundle, Budget(seconds=seconds), REGION, discovery._client)
+    assert managed_provider.calls == []
+    assert bundle["coverage"]["application_signals"][REGION]["requests"] == 0
+    assert "managed_discovery_deadline" in bundle["incomplete"]
+    assert "application_signals_no_observations" not in bundle["gaps"]
+
+
+def test_empty_paginator_does_not_count_an_unissued_request(managed_provider):
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert bundle["coverage"]["application_signals"][REGION]["requests"] == 0
+
+
+def test_failed_page_attempt_is_counted_without_error_payload(managed_provider, monkeypatch):
+    monkeypatch.setenv("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED", "false")
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    class Pager:
+        def paginate(self, **params):
+            raise RuntimeError("provider-secret")
+            yield  # paginator remains lazy; failure is at the request boundary.
+    managed_provider.get_paginator = lambda operation: Pager()
+    managed._signals(bundle, Budget(), REGION, discovery._client)
+    assert bundle["coverage"]["application_signals"][REGION]["requests"] == 1
+    assert "application_signals_read_failed" in bundle["degraded"]
+    assert "provider-secret" not in json.dumps(bundle)
+
+
 def test_managed_share_preserves_native_proxy_and_trace_reserve(managed_provider):
     conn = Database([inventory("ec2", f"i-{i:017x}", {}) for i in range(160)])
     bundle = discovery.collect(conn, ACCOUNT, Budget())

@@ -269,7 +269,7 @@ variable "diagnosis_evidence_loop_enabled" {
 variable "diagnosis_managed_discovery_enabled" {
   type        = bool
   default     = false
-  description = "Bounded read-only Application Signals discovery for the Fargate diagnosis worker. No instrumentation or grant creation. The private Omni adapter remains inactive pending a verified read-only, per-space credential IAM boundary."
+  description = "Bounded read-only Application Signals discovery for the Fargate diagnosis worker, with a narrow region-conditioned worker IAM grant. No instrumentation, service, space or space access-grant creation. The private Omni adapter remains inactive pending a verified read-only, per-space credential IAM boundary."
   validation {
     condition     = !var.diagnosis_managed_discovery_enabled || var.diagnosis_evidence_loop_enabled
     error_message = "diagnosis_managed_discovery_enabled requires diagnosis_evidence_loop_enabled."

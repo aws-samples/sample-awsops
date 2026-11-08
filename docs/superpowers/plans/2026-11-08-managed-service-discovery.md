@@ -28,7 +28,9 @@ and prose grant preflight cannot prove effective read-only privileges. Therefore
 - `diagnosis_managed_discovery_enabled` defaults off and requires the evidence loop.
 - Existing registered member roles, ExternalId and identity checks remain mandatory.
 - Three pages per operation, 16 requests and 40 nodes per provider/region; Omni
-  adapter fan-out is at most 50 edges. Shared analysis deadlines remain enforced.
+  adapter fan-out is at most 50 edges. Every page request checks that the remaining
+  analysis budget exceeds the client connect-plus-read timeout. Deadline stops
+  disqualify prior batch rows and do not masquerade as empty results.
 - Overall caps remain 200 resources, 400 relationships, 1,200 evidence rows and
   192 KiB. When managed discovery is enabled, its 20 logical slots are separate
   from the 20 native proxy/trace reserve and 40 X-Ray slots; inventory has 120 slots.
@@ -48,7 +50,7 @@ and prose grant preflight cannot prove effective read-only privileges. Therefore
 - [x] Reserve managed resource capacity separately and retain native eviction priority.
 - [x] Enforce the Omni activation hold in production code, Terraform and docs.
 - [x] Verify the final delta: diagnosis/runtime policy/Terraform read tests
-  passed (1,428 tests, 194 subtests; 36 pre-existing skips), including 76 managed
+  passed (1,434 tests, 194 subtests; 36 pre-existing skips), including 82 managed
   adapter tests. Terraform validation and all 52 mocked runtime IAM tests passed.
 - [ ] Require both configured AI reviewers and required checks on the latest PR
   HEAD before reporting review completion. Review feedback is applied through the

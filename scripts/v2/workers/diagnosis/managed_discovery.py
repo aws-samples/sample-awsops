@@ -63,15 +63,25 @@ def _pages(client, operation, arguments, bundle, budget, coverage, state, *, tok
     seen = set()
     for _ in range(_d().MAX_PAGES):
         if not _d()._available(bundle, budget):
-            coverage["complete"] = False
+            _fail(bundle, coverage, "managed_discovery_deadline")
+            return
+        config = getattr(client, "_client_config", None)
+        if (config is not None and
+                budget.remaining(analysis=True) <= config.connect_timeout + config.read_timeout):
+            _d()._mark(bundle, "incomplete", "discovery_deadline")
+            _fail(bundle, coverage, "managed_discovery_deadline")
             return
         if state["calls"] >= MAX_CALLS:
             _fail(bundle, coverage, "managed_discovery_request_cap")
             return
-        state["calls"] += 1
-        page = next(iterator, None)
-        if page is None:
+        try:
+            page = next(iterator)
+        except StopIteration:
             return
+        except Exception:
+            state["calls"] += 1  # A failed HTTP attempt still consumed the request bound.
+            raise
+        state["calls"] += 1
         if not isinstance(page, dict):
             raise ValueError("managed_page_malformed")
         coverage["pages"] += 1
@@ -315,13 +325,14 @@ def _signals(bundle, budget, region, client_factory):
                            "operations": [v for v in (d._text(dep.get("OperationName")),
                                                       d._text(dep.get("DependencyOperationName"))) if v]},
                           d._now(), window, coverage)
-        if not services:
+        if not services and coverage["complete"]:
             d._mark(bundle, "gaps", "application_signals_no_observations")
     except Exception:
         # Fixed diagnostics: never include provider payloads or credential material.
         _fail(bundle, coverage, "application_signals_read_failed", category="degraded")
-    coverage["requests"] = state["calls"]
-    _qualify(bundle, "application_signals", region, coverage)
+    finally:
+        coverage["requests"] = state["calls"]
+        _qualify(bundle, "application_signals", region, coverage)
 
 
 def _space(account, region):
@@ -480,7 +491,7 @@ def _omni(bundle, budget, region, control_factory):
                       (last or end) if observed else end,
                       {"start": start.isoformat(), "end": end.isoformat()}, coverage,
                       fresh=fresh if observed else True)
-        if not nodes:
+        if not nodes and coverage["complete"]:
             d._mark(bundle, "gaps", "omni_no_observations")
     except Exception:
         _fail(bundle, coverage, "omni_read_failed", category="degraded")
