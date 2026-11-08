@@ -87,6 +87,49 @@ credential path. Member registration and role verification still precede any
 member-space read; the organization credential API is an explicit control-plane
 path, not a substitute for failed member authorization.
 
+### Managed provider activation preflight
+
+Keep both flags disabled and the space map empty until an operator records the
+following review for each configured account/region/space. This collector neither
+audits nor changes the grants itself. STS proves the returned account identity,
+not its effective permissions.
+
+- Verify the existing space UUID, active organization membership, delegated
+  administrator or management-account authority, and registered member role.
+- Inspect **all effective direct and inherited space grants** for the worker
+  principal. Require a Custom grant limited to `cloudwatch:GetContextGraph` and
+  the required read scope; no Editor, Space Admin or additional write grants.
+  Grant permissions are additive, so one narrow grant does not narrow another.
+- Review the existing space operator role and its permissions boundary together
+  with those grants. Its ceiling is shared across spaces in the account.
+  Credential retrieval can expose permissions outside this collector's calls;
+  do not treat the broad `CloudWatchOmniSpaceAccessPolicy` as a read-only policy
+  or attach it to the worker to resolve access failures.
+- Record the approved principal, space UUID, effective grant actions/scopes,
+  operator-role ceiling and review date in the deployment's operator record.
+  Recheck after grant/role changes and before each activation.
+- On member offboarding, remove that account's `diagnosis_omni_spaces` entries
+  along with its diagnosis allowlist/registration. Review residual grants and
+  existing one-hour sessions through the organization's normal access process.
+
+Terraform's credential statement currently has `Resource: "*"`, constrained by
+configured regions. The UUID map constrains application requests, **not IAM**.
+The public action API and IAM guide describe space-scoped credentials and space
+resource types but do not establish the action-specific ARN/condition contract
+for `GetSpaceCredentialsForOrganization`. This change therefore does not invent
+a per-space IAM condition or claim a tested ARN boundary. Treat that scope as a
+reviewed activation prerequisite, keep the map empty if it is unacceptable, and
+revisit exact IAM scoping when the action contract can be verified. No IAM
+simulation or live deployment was performed as part of this code change.
+
+Primary AWS contracts:
+[credential API](https://docs.aws.amazon.com/cloudwatch-omni/latest/APIReference/API_GetSpaceCredentialsForOrganization.html),
+[identity and space access model](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-identity-and-access-management-for-cloudwatch-omni.html),
+and [policy permissions](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-iam-policies-to-use-cloudwatch-omni.html).
+The SDK service name is `cloudwatchomni`; IAM actions and SigV4 use `cloudwatch`.
+Member gaps labeled `member_xray_network_sources_unsupported` refer to direct
+X-Ray/Resolver/Network Flow Monitor collectors, not configured managed telemetry.
+
 Omni enumerates account/region-filtered nodes at depth zero, reading bounded pages
 before resolving edges whose targets appear on a later page. Native resource
 binding requires a unique identifier in fresh, complete inventory. Merged

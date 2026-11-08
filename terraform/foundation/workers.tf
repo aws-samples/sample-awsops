@@ -963,9 +963,17 @@ resource "aws_iam_policy" "worker_diagnosis_managed" {
       Resource  = "*"
       Condition = local.runtime_read_condition
       }], length(var.diagnosis_omni_spaces) > 0 ? [{
-      # Credential retrieval never creates spaces or grants. The service additionally
-      # requires an existing organization/delegated-admin identity and access grant.
-      # GetContextGraph is authorized in the resulting space session, not this host role.
+      # Credential vending is not equivalent to a resource-list read. The public
+      # GetSpaceCredentialsForOrganization API/IAM guide does not establish this
+      # action's per-space ARN/condition contract; do not invent one. Resource "*"
+      # below is an explicit residual IAM scope, limited only by configured regions.
+      # The UUID map limits application requests, not IAM. Before enabling, the
+      # operator must review effective direct/inherited grants for every configured
+      # space and the shared operator-role ceiling: exact GetContextGraph read only,
+      # no Editor/Space Admin or additive write grants. Record this outside Terraform.
+      # See docs/reference/diagnosis-discovery.md, managed provider activation preflight,
+      # and the primary AWS IAM/API links there. STS identity is not permissions proof.
+      # Retrieval creates no spaces/grants; GetContextGraph uses the space session.
       Sid      = "DiagnosisExistingOmniSpaceCredentials"
       Effect   = "Allow"
       Action   = ["cloudwatch:GetSpaceCredentialsForOrganization"]

@@ -851,7 +851,7 @@ def _xray(bundle, budget, regions):
                          "to_name": _text(services.get(target, {}).get("Name")), "calls": calls,
                          "error_rate": errors / calls if errors is not None and calls else None,
                          "fault_rate": faults / calls if faults is not None and calls else None,
-                         "resource_binding": "unresolved"}
+                         "resource_binding": "unresolved", "provenance_family": "application_telemetry"}
                 if target not in services:
                     _mark(bundle, "incomplete", "xray_unresolved_target")
                 item = _evidence(bundle, "xray", "observed_call", [source_r["id"], target_r["id"]],
@@ -1297,6 +1297,31 @@ def _finish(bundle):
     return bundle
 
 
+def _managed_collect(bundle, budget, regions, client_factory):
+    if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") != "true":
+        return
+    try:
+        from . import managed_discovery
+        managed_discovery.collect(bundle, budget, regions, client_factory=client_factory,
+                                  control_factory=_client)
+    except Exception:
+        # Optional provider/import/qualification failures must preserve inventory,
+        # metrics and existing trace/network evidence. Never serialize the error.
+        _mark(bundle, "degraded", "managed_discovery_failed")
+        _mark(bundle, "gaps", "managed_discovery_failed")
+        for source in ("application_signals", "cloudwatch_omni"):
+            for coverage in bundle["coverage"].get(source, {}).values():
+                coverage["complete"] = False
+            for row in bundle["evidence"]:
+                if row["source"] == source:
+                    row["fresh"] = False
+                    row["coverage"]["complete"] = False
+            for row in bundle["relationships"]:
+                if row["source"] == source:
+                    row["fresh"] = False
+                    row["coverage"]["complete"] = False
+
+
 def collect(conn, account, budget, *, scope="self"):
     bundle = {"resources": [], "evidence": [], "relationships": [],
               "coverage": {"account": account, "storage_scope": scope},
@@ -1333,9 +1358,7 @@ def collect(conn, account, budget, *, scope="self"):
         _metrics(bundle, budget, resources)
         _finops(conn, bundle, budget)
         _provider_sizing(bundle, budget, resources)
-        if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") == "true":
-            from . import managed_discovery
-            managed_discovery.collect(bundle, budget, regions, client_factory=_client, control_factory=_client)
+        _managed_collect(bundle, budget, regions, _client)
     elif connection_broken(bundle):
         _mark(bundle, "gaps", "member_live_sources_unsupported")
     else:
@@ -1347,14 +1370,11 @@ def collect(conn, account, budget, *, scope="self"):
         else:
             _metrics(bundle, budget, resources, client_factory=client_factory)
             _provider_sizing(bundle, budget, resources, client_factory=client_factory)
-            if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") == "true":
-                from . import managed_discovery
-                regions = bundle["coverage"].get("regions", {}).get("selected", [])
-                # Control-plane space credentials are an explicit organization path,
-                # admitted only after member registry/session authorization succeeds.
-                managed_discovery.collect(bundle, budget, regions, client_factory=client_factory,
-                                          control_factory=_client)
-            _mark(bundle, "gaps", "member_trace_network_sources_unsupported")
+            regions = bundle["coverage"].get("regions", {}).get("selected", [])
+            # Control-plane space credentials are an explicit organization path,
+            # admitted only after member registry/session authorization succeeds.
+            _managed_collect(bundle, budget, regions, client_factory)
+            _mark(bundle, "gaps", "member_xray_network_sources_unsupported")
     return _finish(bundle)
 
 

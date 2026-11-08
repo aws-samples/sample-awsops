@@ -18,10 +18,10 @@ MAX_NODES = 40
 MAX_NEW_RESOURCES = 20
 MAX_EDGES_PER_NODE = 50
 _SPACE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
-_IDENTITY_ATTRIBUTES = (
-    "cloud.resource_id", "aws.ec2.instance.id", "aws.ecs.task.arn",
-    "aws.rds.db_instance.arn", "aws.rds.db_instance.id",
-)
+_IDENTITY_ATTRIBUTES = {
+    "cloud.resource_id": None, "aws.ec2.instance.id": "ec2", "aws.ecs.task.arn": "ecs_task",
+    "aws.rds.db_instance.arn": "rds", "aws.rds.db_instance.id": "rds",
+}
 _KINDS = {"AWS::EC2::Instance": "ec2", "AWS::RDS::DBInstance": "rds",
           "AWS::ECS::Task": "ecs_task", "AWS::Lambda::Function": "lambda"}
 _KEYS = {"Type", "Name", "Environment", "ResourceType", "Identifier"}
@@ -142,7 +142,7 @@ def _native(bundle, region, identities, *, kind=None):
     return next(iter(matches.values())) if len(matches) == 1 else None
 
 
-def _logical(bundle, region, source, identity, name):
+def _logical(bundle, region, source, identity, name, coverage):
     d = _d()
     native = "managed:" + d._id(source, identity)
     if sum(str(r["resource_id"]).startswith("managed:") for r in bundle["resources"]) >= MAX_NEW_RESOURCES:
@@ -150,22 +150,47 @@ def _logical(bundle, region, source, identity, name):
                          and r["region"] == region), None)
         if existing:
             return existing
-        d._mark(bundle, "incomplete", "managed_discovery_resource_cap")
+        _fail(bundle, coverage, "managed_discovery_resource_cap")
         return None
-    return d._resource(bundle, bundle["coverage"]["account"], region, "service", native,
-                       {"name": d._text(name), "resource_binding": "unresolved"})
+    resource = d._resource(bundle, bundle["coverage"]["account"], region, "service", native,
+                           {"name": d._text(name), "resource_binding": "unresolved"})
+    if resource is None:
+        _fail(bundle, coverage, "managed_discovery_resource_cap")
+    return resource
 
 
-def _signals_binding(bundle, region, key, attributes=None):
-    identities = [key.get("Identifier")]
-    attributes = [] if attributes is None else attributes
+def _typed_binding(bundle, region, identity, attributes, *, kind=None):
+    """Every explicit identity must agree, including its declared resource kind."""
+    candidates = [] if identity is None else [(identity, kind)]
     if not isinstance(attributes, list) or len(attributes) > 10:
         return None
     for attrs in attributes:
         if not isinstance(attrs, dict) or len(attrs) > 100:
             return None
-        identities.extend(attrs.get(k) for k in _IDENTITY_ATTRIBUTES)
-    return _native(bundle, region, identities, kind=_KINDS.get(key.get("ResourceType")))
+        for name, typed_kind in _IDENTITY_ATTRIBUTES.items():
+            if name in attrs:
+                if kind and typed_kind and kind != typed_kind:
+                    return None
+                candidates.append((attrs[name], typed_kind or kind))
+    if not candidates:
+        return None
+    bound = None
+    for value, expected_kind in candidates:
+        if not isinstance(value, str) or not 1 <= len(value) <= 512:
+            return None
+        current = _native(bundle, region, [value], kind=expected_kind)
+        if current is None or (bound and current["id"] != bound["id"]):
+            return None
+        bound = current
+    return bound
+
+
+def _signals_binding(bundle, region, key, attributes=None):
+    kind = _KINDS.get(key.get("ResourceType"))
+    if key.get("ResourceType") and kind is None:
+        return None
+    return _typed_binding(bundle, region, key.get("Identifier"),
+                          [] if attributes is None else attributes, kind=kind)
 
 
 def _endpoint_alias(bundle, region, source, logical, hostname, captured, coverage):
@@ -247,12 +272,17 @@ def _signals(bundle, budget, region, client_factory):
                 else:
                     services[identity] = row
         for identity, row in services.items():
-            if row is None or not d._available(bundle, budget):
+            if not d._available(bundle, budget):
+                _fail(bundle, coverage, "managed_discovery_deadline")
+                break
+            if row is None:
                 continue
             key = row["KeyAttributes"]
             bound_source = _signals_binding(bundle, region, key, row.get("AttributeMaps", []))
             # The service catalog is not a same-span instance-call binding.
-            source = _logical(bundle, region, "application_signals", identity, key.get("Name"))
+            source = _logical(bundle, region, "application_signals", identity, key.get("Name"), coverage)
+            if source is None:
+                break
             if bound_source:
                 _emit(bundle, region, "application_signals", source, bound_source, "configured_dependency",
                       {"relation": "RUNS_ON", "resource_binding": "service_membership",
@@ -272,7 +302,7 @@ def _signals(bundle, budget, region, client_factory):
                         continue
                     bound_target = _signals_binding(bundle, region, target_key)
                     target = bound_target or _logical(bundle, region, "application_signals",
-                                                      d._json(target_key), target_key.get("Name"))
+                                                      d._json(target_key), target_key.get("Name"), coverage)
                     if not bound_target and target_key.get("Type") == "RemoteService":
                         _endpoint_alias(bundle, region, "application_signals", target, target_key.get("Name"),
                                         d._now(), coverage)
@@ -347,7 +377,8 @@ def _omni(bundle, budget, region, control_factory):
                 "topology_complete": False}
     bundle["coverage"].setdefault("cloudwatch_omni", {})[region] = coverage
     state, nodes, ambiguous = {"calls": 0}, {}, set()
-    end, start = d._now(), d._now() - dt.timedelta(hours=3)
+    end = d._now()
+    start = end - dt.timedelta(hours=3)
     try:
         space = _space(bundle["coverage"]["account"], region)
         if not space:
@@ -388,15 +419,19 @@ def _omni(bundle, budget, region, control_factory):
                 continue
             # Merged SERVICE attributes describe membership, not the instance
             # responsible for an aggregate service edge.
-            native = (_native(bundle, region, [identity] + [attrs.get(k) for k in _IDENTITY_ATTRIBUTES])
+            native = (_typed_binding(bundle, region, identity, [attrs])
                       if node["nodeType"] == "RESOURCE" else None)
             bound[identity] = native
-            resources[identity] = native or _logical(bundle, region, "cloudwatch_omni", identity, node.get("name"))
+            resources[identity] = native or _logical(
+                bundle, region, "cloudwatch_omni", identity, node.get("name"), coverage)
             if not native and node["nodeType"] == "REMOTE_SERVICE":
                 _endpoint_alias(bundle, region, "cloudwatch_omni", resources[identity],
                                 attrs.get("server.address") or node.get("name"), end, coverage)
         edges = 0
         for identity, node in nodes.items():
+            if edges > d.MAX_RELATIONSHIPS or not d._available(bundle, budget):
+                coverage["complete"] = False
+                break
             rows = _rows(node, "edges", bundle, coverage, limit=MAX_EDGES_PER_NODE)
             if len(rows) >= MAX_EDGES_PER_NODE:
                 _fail(bundle, coverage, "omni_edge_fanout_unconfirmed")
@@ -414,6 +449,9 @@ def _omni(bundle, budget, region, control_factory):
                 left, right = resources.get(identity), resources.get(edge.get("to"))
                 if not left or not right or edge.get("to") in ambiguous:
                     _fail(bundle, coverage, "omni_edge_target_unresolved")
+                    continue
+                if left["id"] == right["id"]:
+                    _fail(bundle, coverage, "omni_self_edge_unconfirmed", category="gaps")
                     continue
                 first, last = _time(edge.get("firstObservedAt")), _time(edge.get("lastObservedAt"))
                 sources, signals = edge.get("sources"), edge.get("signalTypes")
@@ -438,7 +476,7 @@ def _omni(bundle, budget, region, control_factory):
                       {"resource_binding": "exact" if exact else "unresolved",
                        "relation": edge["edgeType"], "discovery_sources": sources, "signal_types": signals,
                        "provenance_family": "application_telemetry" if "TELEMETRY" in sources else "configuration"},
-                      last or end if observed else end,
+                      (last or end) if observed else end,
                       {"start": start.isoformat(), "end": end.isoformat()}, coverage,
                       fresh=fresh if observed else True)
         if not nodes:

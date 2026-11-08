@@ -112,7 +112,12 @@ contract is in [Diagnosis discovery](diagnosis-discovery.md).
 | `diagnosis_managed_discovery_enabled` (`false`, requires the loop) | Sets `DIAGNOSIS_MANAGED_DISCOVERY_ENABLED` and attaches the Fargate-only `worker_diagnosis_managed` policy for `application-signals:ListServices` and `ListServiceDependencies`, conditioned on runtime read regions. Existing instrumentation is required; no service is activated. |
 | `diagnosis_omni_spaces` (`{}`, requires managed discovery when nonempty) | Sets the nonsecret `DIAGNOSIS_OMNI_SPACES` map of existing space UUIDs keyed by account/region. A nonempty map adds only `cloudwatch:GetSpaceCredentialsForOrganization`, conditioned on configured space regions. Existing organization access and space read grants are required; STS verifies returned space credentials before graph reads. See [managed provider prerequisites](diagnosis-discovery.md#managed-discovery-providers). |
 
-All grants are read-only and region-conditioned, and ADR-005 is unchanged. The NFM and Logs
+The inventory/telemetry read grants are region-conditioned, and ADR-005 is unchanged.
+Optional Omni credentials come from existing organization spaces; retrieval creates
+no space or grant. The resulting session's effective privileges depend on existing
+additive grants and the shared operator role, so the
+[activation preflight](diagnosis-discovery.md#managed-provider-activation-preflight)
+is required before configuring spaces. The NFM and Logs
 query actions only create and stop analysis queries. They never create monitors, logging or
 instrumentation. If `DIAGNOSIS_HOST_ACCOUNT_ID` is unset or malformed, both the host and the
 member paths fail closed (`untrusted_host_scope`).

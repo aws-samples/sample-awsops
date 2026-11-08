@@ -79,6 +79,120 @@ def calls(bundle, source="application_signals"):
     return [e for e in bundle["evidence"] if e["source"] == source and e["kind"] == "observed_call"]
 
 
+@pytest.mark.parametrize("member", [False, True])
+def test_optional_managed_failure_preserves_inventory(managed_provider, monkeypatch, member):
+    if member:
+        from diagnosis import scoped_clients
+        monkeypatch.setenv("DIAGNOSIS_HOST_ACCOUNT_ID", "999900001111")
+        monkeypatch.setattr(scoped_clients, "member_factory",
+                            lambda *args: lambda *args: managed_provider)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("provider-secret-must-not-appear")
+
+    monkeypatch.setattr(managed, "collect", broken)
+    conn = database()
+    if member:
+        for row in conn.rows:
+            row[0] = ACCOUNT
+    bundle = discovery.collect(conn, ACCOUNT, Budget(), scope=ACCOUNT if member else "self")
+    assert {I1, "orders"} <= {r["resource_id"] for r in bundle["resources"]}
+    assert any(e["kind"] == "inventory" for e in bundle["evidence"])
+    assert "managed_discovery_failed" in bundle["degraded"]
+    assert "provider-secret" not in json.dumps(bundle)
+
+
+def test_optional_failure_disqualifies_already_emitted_managed_batch(managed_provider, monkeypatch):
+    signals_pages(managed_provider)
+    original = managed.collect
+    def broken(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("late qualification failure")
+    monkeypatch.setattr(managed, "collect", broken)
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert calls(bundle)
+    assert all(not e["fresh"] and not e["coverage"]["complete"] for e in calls(bundle))
+    assert all(not r["fresh"] and not r["coverage"]["complete"]
+               for r in bundle["relationships"] if r["source"] == "application_signals")
+    assert all(e["fresh"] for e in bundle["evidence"] if e["kind"] == "inventory")
+
+
+def test_xray_telemetry_family_survives_admission(managed_provider):
+    managed_provider.xray = [{"Services": [
+        {"ReferenceId": 1, "Name": "checkout", "Edges": [
+            {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 1}}]},
+        {"ReferenceId": 2, "Name": "db"}]}]
+    index = EvidenceIndex(discovery.collect(database(), ACCOUNT, Budget()), ACCOUNT)
+    rows = [e for e in index.admitted_bundle()["evidence"] if e["source"] == "xray"]
+    assert rows and all(e["facts"]["provenance_family"] == "application_telemetry" for e in rows)
+
+
+@pytest.mark.parametrize("attrs", [
+    [{"aws.rds.db_instance.id": I1}],
+    [{"cloud.resource_id": I1, "aws.rds.db_instance.id": I1}],
+    [{"aws.ec2.instance.id": I1, "aws.rds.db_instance.id": "missing-db"}],
+])
+def test_typed_host_attributes_never_bind_the_wrong_kind(managed_provider, attrs):
+    signals_pages(managed_provider, service=summary(AttributeMaps=attrs))
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert not any(e["source"] == "application_signals"
+                   and e["facts"].get("relation") == "RUNS_ON" for e in bundle["evidence"])
+
+
+def test_late_orphan_logical_cap_disqualifies_prior_calls(managed_provider):
+    signals_pages(managed_provider)
+    services = [summary(KeyAttributes={**SERVICE, "Name": f"service-{i}"}, AttributeMaps=[])
+                for i in range(3)]
+    managed_provider.pages["list_services"][0]["ServiceSummaries"] = services
+    original = managed_provider.get_paginator
+
+    def paginator(operation):
+        if operation != "list_service_dependencies":
+            return original(operation)
+        class Pager:
+            def paginate(self, **params):
+                deps = [dependency()] if params["KeyAttributes"]["Name"] == "service-0" else []
+                yield {"StartTime": NOW - dt.timedelta(hours=3), "EndTime": NOW,
+                       "ServiceDependencies": deps}
+        return Pager()
+    managed_provider.get_paginator = paginator
+    # Reach the late orphan resource cap before the independent request cap.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(managed, "MAX_NEW_RESOURCES", 2)
+        bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert "managed_discovery_resource_cap" in bundle["incomplete"]
+    assert calls(bundle)
+    assert bundle["coverage"]["application_signals"][REGION]["complete"] is False
+    assert all(not e["fresh"] and not e["coverage"]["complete"] for e in calls(bundle))
+
+
+def test_deadline_between_service_iterations_disqualifies_prior_calls(managed_provider, monkeypatch):
+    signals_pages(managed_provider)
+    managed_provider.pages["list_services"][0]["ServiceSummaries"].append(
+        summary(KeyAttributes={**SERVICE, "Name": "later"}))
+    # Inventory is collected first; inject exhaustion only into managed processing.
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle["evidence"] = [e for e in bundle["evidence"] if e["source"] != "application_signals"]
+    bundle["relationships"] = [r for r in bundle["relationships"] if r["source"] != "application_signals"]
+    monkeypatch.setattr(discovery, "_available",
+                        lambda b, budget: not bool(calls(b)))
+    managed._signals(bundle, Budget(), REGION, discovery._client)
+    assert calls(bundle)
+    assert bundle["coverage"]["application_signals"][REGION]["complete"] is False
+    assert all(not e["fresh"] for e in calls(bundle))
+
+
+def test_managed_regional_coverage_survives_model_and_report_projection(managed_provider):
+    signals_pages(managed_provider)
+    index = EvidenceIndex(discovery.collect(database(), ACCOUNT, Budget()), ACCOUNT)
+    for projected in (index.admitted_bundle(), index.model_context()):
+        signals = projected["coverage"]["application_signals"][REGION]
+        assert signals["complete"] is True
+        assert signals["requests"] == 2 and signals["pages"] == 2
+        assert signals["sampled"] is True and signals["topology_complete"] is False
+        assert projected["coverage"]["cloudwatch_omni"][REGION]["complete"] is False
+
+
 def test_signals_connects_service_compute_and_db_without_fanning_out_calls(managed_provider):
     managed_provider.pages = {"list_services": [{"StartTime": NOW - dt.timedelta(hours=3),
                                                 "EndTime": NOW, "ServiceSummaries": [summary()]}],
@@ -221,6 +335,27 @@ def test_omni_uses_space_credentials_and_matches_native_pair(omni_provider):
     assert request["includeMetadata"] is False and request["depth"] == 0
     serialized = json.dumps(bundle)
     assert "fixture-secret" not in serialized and "fixture-token" not in serialized
+
+
+@pytest.mark.parametrize("attrs", [
+    {"aws.rds.db_instance.id": I1},
+    {"cloud.resource_id": INSTANCE_ARN, "aws.rds.db_instance.id": I1},
+])
+def test_omni_typed_identity_conflict_cannot_confirm_native_call(omni_provider, attrs):
+    omni_provider.pages["get_context_graph"][0]["nodes"][0]["telemetryAttributes"] = attrs
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert calls(bundle, "cloudwatch_omni")
+    assert all(e["facts"]["resource_binding"] == "unresolved"
+               for e in calls(bundle, "cloudwatch_omni"))
+
+
+def test_omni_self_edge_is_disclosed_without_duplicate_resource_evidence(omni_provider):
+    source = omni_provider.pages["get_context_graph"][0]["nodes"][0]
+    source["edges"][0]["to"] = INSTANCE_ARN
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert not calls(bundle, "cloudwatch_omni")
+    assert "omni_self_edge_unconfirmed" in bundle["gaps"]
+    assert bundle["coverage"]["cloudwatch_omni"][REGION]["complete"] is False
 
 
 @pytest.mark.parametrize("mode", ["configuration", "iam_policy", "stale", "missing_time", "metrics_only"])

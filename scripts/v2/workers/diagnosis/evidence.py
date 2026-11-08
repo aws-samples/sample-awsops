@@ -150,6 +150,7 @@ def _project(value, depth=0, *, mapping=False):
                     continue
                 result[key] = _project(item, depth + 1, mapping=key in {
                     "metrics", "dimensions", "posture_counts", "xray",
+                    "application_signals", "cloudwatch_omni",
                 })
         return result
     return None
