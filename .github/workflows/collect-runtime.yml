@@ -61,6 +61,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Ensure Node runtime libraries
+        # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
+        run: |
+          has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
+          if ! has_libatomic; then
+            sudo -n apt-get update -qq
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1
+          fi
+          has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: 26
