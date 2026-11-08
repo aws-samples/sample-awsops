@@ -69,8 +69,10 @@ jobs:
         run: |
           has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
           if ! has_libatomic; then
-            sudo -n apt-get update -qq
-            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
           fi
           has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4

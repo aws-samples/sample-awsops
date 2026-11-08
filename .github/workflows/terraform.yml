@@ -212,12 +212,15 @@ jobs:
           python3 ../../scripts/v2/ci_runtime_policy.py overrides
 
       - name: Ensure Node runtime libraries
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
         run: |
           has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
           if ! has_libatomic; then
-            sudo -n apt-get update -qq
-            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
           fi
           has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
@@ -775,12 +778,15 @@ jobs:
             python3 -c 'import json,os,sys; p=json.load(sys.stdin); v=p["variables"]["ci_runtime_profile_enabled"]["value"]; assert type(v) is bool; print("required="+str(v and os.environ["TARGET"]=="dev" and os.environ["PLAN_SCOPE"]=="full").lower())' >> "$GITHUB_OUTPUT"
 
       - name: Ensure Node runtime libraries
+        if: steps.approved_host.outputs.required == 'true'
         # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
         run: |
           has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
           if ! has_libatomic; then
-            sudo -n apt-get update -qq
-            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
           fi
           has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
