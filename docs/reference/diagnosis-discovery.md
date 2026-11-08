@@ -34,6 +34,79 @@ members, whose trust pins the host worker role ARN; third-party members must
 register the same ExternalId as their trust policy. The target trust policy must
 include the host worker role; see [member onboarding](../runbooks/onboard-target-account.md#prerequisites).
 
+## Managed discovery providers
+
+`diagnosis_managed_discovery_enabled` defaults to `false` and requires the evidence
+loop. It adds Application Signals and, when configured, CloudWatch Omni to the
+Fargate diagnosis worker. It installs no instrumentation and creates no domain,
+space, access grant or graph database. These providers extend the existing
+DNS/inventory, X-Ray and Network Flow Monitor evidence; they do not establish
+complete CloudFront-to-database coverage.
+
+Application Signals reads `ListServices` and `ListServiceDependencies` over three
+completed hours in the selected account and regions. Existing instrumentation and
+the corresponding read permissions are prerequisites. Host reads exclude linked
+accounts. Member reads use only the verified, registered member session; that
+role also needs both Application Signals read actions. A metric reference's optional
+account ID must match when present; its absence uses the verified session and
+explicitly account-filtered service catalog. This collector does not retrieve
+latency or error-rate metrics.
+
+Service dependencies retain a logical service source. A unique native identifier
+in service attributes can add a configured `RUNS_ON` relationship to its compute
+resource, but that membership does not prove which instance made a service call.
+An exact, unique DB identifier can bind the dependency target to qualified
+inventory. A matching inventory DB hostname adds a configured `endpoint_alias`,
+separately from timestamped Resolver DNS answers. Display names, shared tags and
+aggregate service edges never produce instance-to-DB call fan-out.
+
+`diagnosis_omni_spaces` defaults to `{}`. Its keys are `<account-id>/<region>` and
+its values are existing space UUIDs, with at most 32 entries. Accounts must be the
+host or explicitly allowlisted diagnosis members. For example:
+
+```hcl
+diagnosis_managed_discovery_enabled = true
+diagnosis_omni_spaces = {
+  "123456789012/us-east-1" = "12345678-1234-1234-1234-123456789abc"
+}
+```
+
+Omni requires an existing organization space in the selected account and region.
+The host worker principal must already have organization-management or delegated
+administrator access and the space access needed for
+`GetSpaceCredentialsForOrganization`. Terraform adds only that exact credential
+read action, conditioned on configured space regions, when the map is nonempty.
+It grants no space administration or general host-session graph access. The
+returned `SPACE_OPERATION` credentials are held only in memory, checked for
+expiration and verified with STS against the selected account, then used for
+`GetContextGraph`. The existing space role and access grant must permit that read;
+review their effective permissions separately and use a read-only grant. This
+collector does not implement interactive sign-in for standalone-account spaces.
+Missing or denied access records a gap/degraded source without another graph
+credential path. Member registration and role verification still precede any
+member-space read; the organization credential API is an explicit control-plane
+path, not a substitute for failed member authorization.
+
+Omni enumerates account/region-filtered nodes at depth zero, reading bounded pages
+before resolving edges whose targets appear on a later page. Native resource
+binding requires a unique identifier in fresh, complete inventory. Merged
+`SERVICE` attributes do not prove native instance ownership of a call. Only
+`CALLS` edges with telemetry, traces and a confirmed recent observation timestamp
+become fresh application-call evidence. Policy, configuration, `ACCESSES` and
+`RUNS_ON` edges remain configuration. Stale or missing-time trace edges remain
+unqualified observations.
+
+Each provider has a per-region limit of 16 requests, 40 nodes and three pages per
+operation; Omni includes credential retrieval and STS in its request count and
+limits node fan-out to 50 edges. At most 20 new logical managed resources share
+the existing overall bundle limits and analysis deadline. Late caps, malformed
+pages and read failures disqualify earlier evidence from the affected batch.
+Empty results and missing targets stay visible. Coverage always discloses
+`managed_discovery_not_exhaustive`; it cannot prove absent traffic or justify
+right-sizing on its own. Application Signals, Omni telemetry and X-Ray can project
+the same application telemetry, so specialists and the cross-pillar review must
+not count them as independent corroboration.
+
 ## Model requirement
 
 The specialist and review stages use the shared provider wrapper and accept only
@@ -69,7 +142,7 @@ metadata was qualified.
 | Configured dependency | Scoped inventory/graph identifiers; exact RDS Proxy target ARN and qualified cluster members | Configuration, not a successful request |
 | DNS resolution | Fresh qualified compute IP/VPC, timestamped Resolver row, unique scoped DB endpoint | A name was resolved; no trustworthy TTL is assumed |
 | Network observation | DNS/IP candidate plus compatible NFM contributor, VPC/region/native identity and port when known | Partial, undirected window correlation; no per-flow timestamp or successful SQL claim |
-| Application call | Existing same-trace/span identifier admission | Stronger request evidence, kept separate from configuration and traffic |
+| Application call | Exact same-trace/span pairs or qualified managed call edges in the disclosed window | Request evidence, separate from configuration and traffic; aggregate service edges do not identify an instance caller |
 
 Single-resource metrics observations require the resource's own fresh, complete,
 representative metrics and an exact code-owned collection statement in the report

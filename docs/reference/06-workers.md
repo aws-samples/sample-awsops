@@ -97,7 +97,8 @@ env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 �
 `scripts/v2/workers/diagnosis/` contains a bounded discovery and evidence core:
 `discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`,
 `scoped_clients.py`, and the DNS/NFM and supporting-source collectors `observations.py` and
-`supporting.py`. `report.generate` routes to it (`loop.run`) only when
+`supporting.py`, plus the optional managed providers in `managed_discovery.py`.
+`report.generate` routes to it (`loop.run`) only when
 `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` is applied (`report.evidence_loop_enabled()`).
 `discovery.collect()` and `discovery.follow_up()` check the same flag again. The full
 contract is in [Diagnosis discovery](diagnosis-discovery.md).
@@ -108,6 +109,8 @@ contract is in [Diagnosis discovery](diagnosis-discovery.md).
 | `diagnosis_member_role_arns` (`[]`, requires the loop) | Adds `sts:AssumeRole` only on these foreign-account `AWSopsReadOnlyRole` ARNs, conditioned on the runtime read regions. ExternalId follows ADR-011: the worker sends the registered value (required for third-party accounts and enforced by their trust policy); a first-party registration has none and relies on the member trust policy pinning this worker task role ARN. Member reads also need an enabled account-registry row, and the assumed identity is verified before any service client is built. The dev plan guard (`scripts/v2/ci_runtime_policy.py`) accepts these foreign ARNs only in that `DiagnosisRegisteredMemberReadOnly` statement and the worker task's `DIAGNOSIS_MEMBER_ROLE_ARNS` value, only when they equal the variable, and only while the policy is attached solely to the worker task role; any other foreign ARN still fails the plan. |
 | `diagnosis_network_evidence_enabled` (`false`, requires the loop) | Attaches the customer-managed policy `worker_diagnosis_network`: Resolver query-log config listing, NFM monitor listing and top-contributor queries on host monitors, and `rds:DescribeDBProxies`/`DescribeDBProxyTargets`/`DescribeDBClusters`. |
 | `diagnosis_dns_log_group_arns` (`[]`) | Adds `logs:StartQuery` only on these host log groups, plus `logs:GetQueryResults`/`StopQuery`. |
+| `diagnosis_managed_discovery_enabled` (`false`, requires the loop) | Sets `DIAGNOSIS_MANAGED_DISCOVERY_ENABLED` and attaches the Fargate-only `worker_diagnosis_managed` policy for `application-signals:ListServices` and `ListServiceDependencies`, conditioned on runtime read regions. Existing instrumentation is required; no service is activated. |
+| `diagnosis_omni_spaces` (`{}`, requires managed discovery when nonempty) | Sets the nonsecret `DIAGNOSIS_OMNI_SPACES` map of existing space UUIDs keyed by account/region. A nonempty map adds only `cloudwatch:GetSpaceCredentialsForOrganization`, conditioned on configured space regions. Existing organization access and space read grants are required; STS verifies returned space credentials before graph reads. See [managed provider prerequisites](diagnosis-discovery.md#managed-discovery-providers). |
 
 All grants are read-only and region-conditioned, and ADR-005 is unchanged. The NFM and Logs
 query actions only create and stop analysis queries. They never create monitors, logging or

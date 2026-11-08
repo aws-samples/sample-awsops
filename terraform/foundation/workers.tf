@@ -65,6 +65,10 @@ locals {
     DIAGNOSIS_DNS_LOG_GROUP_ARNS       = jsonencode(var.diagnosis_dns_log_group_arns)
   } : {}
   diagnosis_evidence_env_list = [for name, value in local.diagnosis_evidence_env_map : { name = name, value = value }]
+  diagnosis_managed_env_list = var.diagnosis_managed_discovery_enabled ? [
+    { name = "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED", value = "true" },
+    { name = "DIAGNOSIS_OMNI_SPACES", value = jsonencode(var.diagnosis_omni_spaces) },
+  ] : []
   # finops_baseline (ADR-020, extends ADR-012) — deterministic FinOps baseline-recommendations rule
   # engine. Requires workers_enabled (validated in variables.tf); runs on the same Fargate worker as
   # the diagnosis job but as its own job type (finops_baseline), not inside it. Default false → 0
@@ -568,7 +572,7 @@ resource "aws_ecs_task_definition" "worker" {
         # _compliance fails fast with a clear error.
         { name = "STEAMPIPE_HOST", value = "steampipe.${var.project}.internal" },
         { name = "STEAMPIPE_SECRET_ARN", value = try(aws_secretsmanager_secret.steampipe[0].arn, "") }
-      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.diagnosis_evidence_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
+      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.diagnosis_evidence_env_list, local.diagnosis_managed_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -943,6 +947,38 @@ resource "aws_iam_policy" "worker_diagnosis_evidence" {
 
 resource "aws_iam_role_policy_attachment" "worker_diagnosis_evidence" {
   for_each   = aws_iam_policy.worker_diagnosis_evidence
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
+resource "aws_iam_policy" "worker_diagnosis_managed" {
+  for_each = var.diagnosis_managed_discovery_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
+  name     = "${var.project}-worker-${each.key}-diagnosis-managed-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid       = "DiagnosisApplicationSignalsReadOnly"
+      Effect    = "Allow"
+      Action    = ["application-signals:ListServices", "application-signals:ListServiceDependencies"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_omni_spaces) > 0 ? [{
+      # Credential retrieval never creates spaces or grants. The service additionally
+      # requires an existing organization/delegated-admin identity and access grant.
+      # GetContextGraph is authorized in the resulting space session, not this host role.
+      Sid      = "DiagnosisExistingOmniSpaceCredentials"
+      Effect   = "Allow"
+      Action   = ["cloudwatch:GetSpaceCredentialsForOrganization"]
+      Resource = "*"
+      Condition = { StringEquals = {
+        "aws:RequestedRegion" = sort(distinct([for key in keys(var.diagnosis_omni_spaces) : split("/", key)[1]]))
+      } }
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_managed" {
+  for_each   = aws_iam_policy.worker_diagnosis_managed
   role       = aws_iam_role.worker_task[0].name
   policy_arn = each.value.arn
 }

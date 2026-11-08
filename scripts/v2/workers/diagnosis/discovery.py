@@ -1333,6 +1333,9 @@ def collect(conn, account, budget, *, scope="self"):
         _metrics(bundle, budget, resources)
         _finops(conn, bundle, budget)
         _provider_sizing(bundle, budget, resources)
+        if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") == "true":
+            from . import managed_discovery
+            managed_discovery.collect(bundle, budget, regions, client_factory=_client, control_factory=_client)
     elif connection_broken(bundle):
         _mark(bundle, "gaps", "member_live_sources_unsupported")
     else:
@@ -1344,6 +1347,13 @@ def collect(conn, account, budget, *, scope="self"):
         else:
             _metrics(bundle, budget, resources, client_factory=client_factory)
             _provider_sizing(bundle, budget, resources, client_factory=client_factory)
+            if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") == "true":
+                from . import managed_discovery
+                regions = bundle["coverage"].get("regions", {}).get("selected", [])
+                # Control-plane space credentials are an explicit organization path,
+                # admitted only after member registry/session authorization succeeds.
+                managed_discovery.collect(bundle, budget, regions, client_factory=client_factory,
+                                          control_factory=_client)
             _mark(bundle, "gaps", "member_trace_network_sources_unsupported")
     return _finish(bundle)
 

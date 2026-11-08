@@ -266,6 +266,35 @@ variable "diagnosis_evidence_loop_enabled" {
   }
 }
 
+variable "diagnosis_managed_discovery_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded Application Signals and CloudWatch Omni discovery for the Fargate diagnosis worker. Read-only; no instrumentation, domain, space or grant creation. Omni requires pre-existing organization-space access and an organization management/delegated-admin worker principal."
+  validation {
+    condition     = !var.diagnosis_managed_discovery_enabled || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_managed_discovery_enabled requires diagnosis_evidence_loop_enabled."
+  }
+}
+
+variable "diagnosis_omni_spaces" {
+  type        = map(string)
+  default     = {}
+  description = "At most 32 reviewed existing organization-space UUIDs, keyed by account/region. Accounts must be the host or an explicitly allowlisted diagnosis member role. Empty disables Omni without disabling Application Signals."
+  validation {
+    condition = length(var.diagnosis_omni_spaces) <= 32 && alltrue([for key, space in var.diagnosis_omni_spaces :
+      can(regex("^[0-9]{12}/[a-z]{2}(-gov)?-[a-z]+-[0-9]$", key)) &&
+      can(regex("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", space)) &&
+      contains(concat([data.aws_caller_identity.current.account_id],
+      [for arn in var.diagnosis_member_role_arns : try(split(":", arn)[4], "")]), try(split("/", key)[0], ""))
+    ])
+    error_message = "Use at most 32 existing space UUIDs with valid account/region keys in the host or reviewed member accounts."
+  }
+  validation {
+    condition     = length(var.diagnosis_omni_spaces) == 0 || var.diagnosis_managed_discovery_enabled
+    error_message = "diagnosis_omni_spaces requires diagnosis_managed_discovery_enabled; clear spaces before disabling it."
+  }
+}
+
 variable "diagnosis_network_evidence_enabled" {
   type        = bool
   default     = false
