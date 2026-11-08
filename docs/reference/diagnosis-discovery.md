@@ -34,6 +34,93 @@ members, whose trust pins the host worker role ARN; third-party members must
 register the same ExternalId as their trust policy. The target trust policy must
 include the host worker role; see [member onboarding](../runbooks/onboard-target-account.md#prerequisites).
 
+## Managed discovery providers
+
+`diagnosis_managed_discovery_enabled` defaults to `false` and requires the evidence
+loop. It adds Application Signals to the Fargate diagnosis worker. It installs no
+instrumentation and creates no domain, space, access grant or graph database.
+Existing DNS/inventory, X-Ray and Network Flow Monitor evidence remains separate;
+these providers cannot prove complete CloudFront-to-database coverage.
+
+Application Signals reads `ListServices` and `ListServiceDependencies` over three
+completed hours in the selected account and regions. Existing instrumentation and
+both read permissions are prerequisites. Host reads exclude linked accounts.
+Member reads use only the verified, registered member session; that role also
+needs both read actions. An optional metric-reference account ID must match when
+present; its absence uses the verified session and account-filtered catalog.
+This collector does not retrieve latency or error-rate metrics.
+
+Service dependencies retain a logical service source. A unique native identifier
+in service attributes can add a configured `RUNS_ON` relationship to its compute
+resource, but membership does not prove which instance made a service call. Every
+explicit typed identifier must resolve to the same qualified native resource.
+An exact DB identifier can bind the dependency target to fresh, complete inventory.
+A matching inventory DB hostname adds a configured `endpoint_alias`, separately
+from timestamped Resolver answers. Names, tags and aggregate service edges never
+produce instance-to-DB call fan-out.
+
+### Managed provider activation preflight
+
+**Omni activation is held as of 2026-11-08.** `diagnosis_omni_spaces` is a reserved
+compatibility input with default `{}`; Terraform rejects every nonempty map,
+including host and registered member spaces. The worker has no Omni environment
+wiring or credential-vending IAM statement. The production collector invokes only
+Application Signals, even if `DIAGNOSIS_OMNI_SPACES` is manually injected. Omni
+coverage is `disabled_pending_iam_scope`, with zero requests and an explicit gap.
+Operator attestation or a space grant cannot bypass this hold.
+
+The retained private adapter is tested directly with simulated boundaries and the
+locked SDK. It is not a supported production route. A separately reviewed release
+must establish enforceable, read-only per-space scope for
+`GetSpaceCredentialsForOrganization` before adding activation wiring. The API and
+IAM guides describe space sessions but do not establish the action-specific
+ARN/condition contract used by this implementation; no unverified IAM condition
+is invented. A UUID map is an application guard, not an IAM boundary. STS confirms
+account identity, not effective permissions. Space grants are additive and the
+operator-role ceiling is shared across spaces, so a narrow read grant alone does
+not prove that vended credentials cannot write. Member-space access would also
+need an explicit reviewed authorization contract without bypassing registered
+member trust. No IAM simulation or live deployment was performed here.
+
+Primary AWS contracts:
+[credential API](https://docs.aws.amazon.com/cloudwatch-omni/latest/APIReference/API_GetSpaceCredentialsForOrganization.html),
+[identity and space access model](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-identity-and-access-management-for-cloudwatch-omni.html),
+and [policy permissions](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-iam-policies-to-use-cloudwatch-omni.html).
+The SDK service name is `cloudwatchomni`; IAM actions and SigV4 use `cloudwatch`.
+The activation decision is recorded in the
+[implementation plan](../superpowers/plans/2026-11-08-managed-service-discovery.md#omni-activation-decision-2026-11-08).
+Member gaps labeled `member_xray_network_sources_unsupported` describe direct
+X-Ray/Resolver/Network Flow Monitor collectors, separately from Signals reads.
+
+### Bounds and evidence qualification
+
+Each adapter has a per-region limit of 16 requests, 40 nodes and three pages per
+operation. The inactive Omni adapter also limits fan-out to 50 edges per node.
+Managed logical resources have a separate 20-slot share when the feature is on:
+120 inventory anchors, 20 native trace identities/live DB proxies, 20 managed
+logical nodes and 40 X-Ray service nodes fit the existing 200-resource cap.
+With the feature off, the original 140 inventory slots and 20 native reserve
+remain. Under the byte cap, managed evidence is evicted before X-Ray and inventory.
+
+Pagination faults, caps, missing response windows, deadlines and read failures
+disqualify earlier rows from the affected provider batch. Isolated malformed,
+unscoped or ambiguous identities and unresolved external edges are skipped with
+fixed gaps; other valid scoped rows remain usable. Batch completeness means the
+bounded request completed, never exhaustive topology coverage. Escaped optional
+collector failures also remove relationships citing disqualified managed evidence
+while preserving native inventory, metrics and trace evidence.
+
+The inactive Omni adapter reads account/region-filtered nodes at depth zero before
+resolving later-page targets. Only native-to-native `CALLS` edges with telemetry,
+traces and a confirmed recent timestamp can be fresh application calls. Merged
+service attributes describe membership. Policy, configuration, `ACCESSES` and
+`RUNS_ON` edges remain configuration; stale or missing-time traces are unqualified.
+
+Coverage always discloses `managed_discovery_not_exhaustive`; it cannot prove
+absent traffic or justify sizing alone. Signals, Omni telemetry and X-Ray may
+project the same telemetry, so specialist and cross-pillar review must not count
+those projections as independent corroboration.
+
 ## Model requirement
 
 The specialist and review stages use the shared provider wrapper and accept only
@@ -69,7 +156,7 @@ metadata was qualified.
 | Configured dependency | Scoped inventory/graph identifiers; exact RDS Proxy target ARN and qualified cluster members | Configuration, not a successful request |
 | DNS resolution | Fresh qualified compute IP/VPC, timestamped Resolver row, unique scoped DB endpoint | A name was resolved; no trustworthy TTL is assumed |
 | Network observation | DNS/IP candidate plus compatible NFM contributor, VPC/region/native identity and port when known | Partial, undirected window correlation; no per-flow timestamp or successful SQL claim |
-| Application call | Existing same-trace/span identifier admission | Stronger request evidence, kept separate from configuration and traffic |
+| Application call | Exact same-trace/span pairs or qualified managed call edges in the disclosed window | Request evidence, separate from configuration and traffic; aggregate service edges do not identify an instance caller |
 
 Single-resource metrics observations require the resource's own fresh, complete,
 representative metrics and an exact code-owned collection statement in the report

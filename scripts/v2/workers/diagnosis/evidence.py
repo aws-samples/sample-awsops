@@ -91,6 +91,8 @@ FACT_KEYS = {
     "engine_version", "availability_zone", "allocated_storage", "iops", "endpoint_port",
     "read_replica_source_db_instance_identifier", "arn", "attachments", "attachments_complete",
     "Type", "Details", "task_arn", "cluster_arn", "task_group", "last_status",
+    "operations", "provenance_family", "discovery_sources", "signal_types",
+    "topology_complete", "requests", "application_signals", "cloudwatch_omni",
 }
 # Compute Optimizer directions that are downsizing opportunities (finops/rules.py parity).
 # Underprovisioned (upsize) and Optimized rows never validate as sizing candidates.
@@ -148,6 +150,7 @@ def _project(value, depth=0, *, mapping=False):
                     continue
                 result[key] = _project(item, depth + 1, mapping=key in {
                     "metrics", "dimensions", "posture_counts", "xray",
+                    "application_signals", "cloudwatch_omni",
                 })
         return result
     return None

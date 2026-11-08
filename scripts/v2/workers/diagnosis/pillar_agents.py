@@ -18,7 +18,7 @@ from .evidence import CLAIMS, METRIC_OBSERVATION_TEXT, PILLARS, VERIFICATIONS, r
 from .report import _thinking_fields
 
 
-PROMPT_VERSION = "diagnosis-pillars-2026-11-07-v4"
+PROMPT_VERSION = "diagnosis-pillars-2026-11-08-v5"
 SCHEMA_VERSION = "diagnosis-findings-v1"
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_FINDINGS = 8
@@ -83,6 +83,9 @@ _TRUSTED_RULES = (
     "DNS resolution has unknown TTL and is not an application call. NFM top contributors "
     "are partial, aggregate and undirected; DNS window correlation is only a dependency "
     "hypothesis. Prefer the exact same-span trace pair for application-call evidence. "
+    "Application Signals, Omni and X-Ray can project the same application telemetry: "
+    "matching provenance_family is not independent corroboration. RUNS_ON and endpoint_alias "
+    "are configuration, never instance-to-database calls; do not fan out service dependencies. "
     "Cite every affected resource and evidence. Use coverage_gap when evidence is missing. "
     "verification selects a controlled read-only capability; do not output CLI/SQL/URLs. "
     "Return concise conclusions and uncertainty; never return private reasoning. "
@@ -95,7 +98,10 @@ _REVIEW_RULES = (
     "DNS window correlation or undirected aggregate flow to an application call or SQL success. "
     "Unknown DNS TTL, IP reuse, partial contributors and absent Pod/shared ENI ownership "
     "remain gaps. Exact same-span trace evidence is stronger. You cannot promote a "
-    "hypothesis or modify finding claims. Select existing finding IDs only; reject unsupported "
+    "hypothesis or modify finding claims. Never promote a managed service dependency "
+    "or RUNS_ON/endpoint_alias path to an instance call. Application Signals, Omni and "
+    "X-Ray with the same provenance_family are not independent evidence. "
+    "Select existing finding IDs only; reject unsupported "
     "findings. Request only resource_metrics, provider_sizing or graph_refresh for supplied "
     "admitted resource IDs, with no scope/query/action fields. Request at most four distinct "
     "capability/resource sets and at most two affected pillar reruns. Missing evidence stays "

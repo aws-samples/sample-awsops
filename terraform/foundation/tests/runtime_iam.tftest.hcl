@@ -62,6 +62,79 @@ variables {
   existing_private_subnet_ids  = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
 }
 
+run "managed_discovery_default_off" {
+  command = plan
+  variables {
+    workers_enabled                 = true
+    diagnosis_evidence_loop_enabled = true
+  }
+  assert {
+    condition     = !var.diagnosis_managed_discovery_enabled && length(aws_iam_policy.worker_diagnosis_managed) == 0
+    error_message = "Managed discovery must be default-off without any new policy."
+  }
+  assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if startswith(e.name, "DIAGNOSIS_OMNI") || e.name == "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED"]) == 0
+    error_message = "The disabled gate must not change worker configuration."
+  }
+}
+
+run "managed_discovery_requires_loop" {
+  command = plan
+  variables {
+    workers_enabled                     = true
+    diagnosis_managed_discovery_enabled = true
+  }
+  expect_failures = [var.diagnosis_managed_discovery_enabled]
+}
+
+run "managed_discovery_signals_only" {
+  command = plan
+  variables {
+    workers_enabled                     = true
+    diagnosis_evidence_loop_enabled     = true
+    diagnosis_managed_discovery_enabled = true
+  }
+  assert {
+    condition     = keys(aws_iam_policy.worker_diagnosis_managed) == ["task"] && length(jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement) == 1
+    error_message = "The Signals-only gate must not grant space credential access."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement[0].Action == ["application-signals:ListServices", "application-signals:ListServiceDependencies"] && jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"] == ["ap-northeast-2", "eu-west-1", "us-east-1"]
+    error_message = "Only bounded-region service dependency reads are granted."
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED"] == ["true"] && aws_iam_role_policy_attachment.worker_diagnosis_managed["task"].role == aws_iam_role.worker_task[0].name
+    error_message = "Managed discovery must run only on the Fargate report worker."
+  }
+  assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if startswith(e.name, "DIAGNOSIS_OMNI")]) == 0
+    error_message = "The inactive Omni adapter must have no worker environment wiring."
+  }
+}
+
+run "managed_discovery_rejects_host_space_activation" {
+  command = plan
+  variables {
+    workers_enabled                     = true
+    diagnosis_evidence_loop_enabled     = true
+    diagnosis_managed_discovery_enabled = true
+    diagnosis_omni_spaces               = { "123456789012/ap-northeast-2" = "11111111-1111-1111-1111-111111111111" }
+  }
+  expect_failures = [var.diagnosis_omni_spaces]
+}
+
+run "managed_discovery_rejects_registered_member_space_activation" {
+  command = plan
+  variables {
+    workers_enabled                     = true
+    diagnosis_evidence_loop_enabled     = true
+    diagnosis_managed_discovery_enabled = true
+    diagnosis_member_role_arns          = ["arn:aws:iam::444455556666:role/AWSopsReadOnlyRole"]
+    diagnosis_omni_spaces               = { "444455556666/ap-northeast-2" = "11111111-1111-1111-1111-111111111111" }
+  }
+  expect_failures = [var.diagnosis_omni_spaces]
+}
+
 run "diagnosis_evidence_defaults_remain_dark" {
   command = plan
   variables { workers_enabled = true }

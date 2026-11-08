@@ -266,6 +266,26 @@ variable "diagnosis_evidence_loop_enabled" {
   }
 }
 
+variable "diagnosis_managed_discovery_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only Application Signals discovery for the Fargate diagnosis worker, with a narrow region-conditioned worker IAM grant. No instrumentation, service, space or space access-grant creation. The private Omni adapter remains inactive pending a verified read-only, per-space credential IAM boundary."
+  validation {
+    condition     = !var.diagnosis_managed_discovery_enabled || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_managed_discovery_enabled requires diagnosis_evidence_loop_enabled."
+  }
+}
+
+variable "diagnosis_omni_spaces" {
+  type        = map(string)
+  default     = {}
+  description = "Reserved compatibility input; must remain empty. Omni credential vending and graph collection are inactive until a separately reviewed release proves a read-only, per-space IAM boundary."
+  validation {
+    condition     = length(var.diagnosis_omni_spaces) == 0
+    error_message = "diagnosis_omni_spaces must be empty: Omni is inactive pending verified read-only, per-space credential IAM scope."
+  }
+}
+
 variable "diagnosis_network_evidence_enabled" {
   type        = bool
   default     = false
