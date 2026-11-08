@@ -106,9 +106,13 @@ run "managed_discovery_signals_only" {
     condition     = !contains(keys(aws_lambda_function.worker[0].environment[0].variables), "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") && [for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e.value if e.name == "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED"] == ["true"] && aws_iam_role_policy_attachment.worker_diagnosis_managed["task"].role == aws_iam_role.worker_task[0].name
     error_message = "Managed discovery must run only on the Fargate report worker."
   }
+  assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].environment : e if startswith(e.name, "DIAGNOSIS_OMNI")]) == 0
+    error_message = "The inactive Omni adapter must have no worker environment wiring."
+  }
 }
 
-run "managed_discovery_space_credentials_are_explicit" {
+run "managed_discovery_rejects_host_space_activation" {
   command = plan
   variables {
     workers_enabled                     = true
@@ -116,22 +120,16 @@ run "managed_discovery_space_credentials_are_explicit" {
     diagnosis_managed_discovery_enabled = true
     diagnosis_omni_spaces               = { "123456789012/ap-northeast-2" = "11111111-1111-1111-1111-111111111111" }
   }
-  assert {
-    condition     = length(jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement) == 2 && jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement[1].Action == ["cloudwatch:GetSpaceCredentialsForOrganization"]
-    error_message = "An explicit existing-space configuration grants credential retrieval only."
-  }
-  assert {
-    condition     = jsondecode(aws_iam_policy.worker_diagnosis_managed["task"].policy).Statement[1].Condition.StringEquals["aws:RequestedRegion"] == ["ap-northeast-2"] && !var.remediation_enabled && !var.integrations_write_enabled
-    error_message = "Space credential requests must be region-bound without enabling mutations."
-  }
+  expect_failures = [var.diagnosis_omni_spaces]
 }
 
-run "managed_discovery_rejects_unregistered_space_account" {
+run "managed_discovery_rejects_registered_member_space_activation" {
   command = plan
   variables {
     workers_enabled                     = true
     diagnosis_evidence_loop_enabled     = true
     diagnosis_managed_discovery_enabled = true
+    diagnosis_member_role_arns          = ["arn:aws:iam::444455556666:role/AWSopsReadOnlyRole"]
     diagnosis_omni_spaces               = { "444455556666/ap-northeast-2" = "11111111-1111-1111-1111-111111111111" }
   }
   expect_failures = [var.diagnosis_omni_spaces]

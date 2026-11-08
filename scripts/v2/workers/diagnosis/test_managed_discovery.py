@@ -105,15 +105,19 @@ def test_optional_managed_failure_preserves_inventory(managed_provider, monkeypa
 def test_optional_failure_disqualifies_already_emitted_managed_batch(managed_provider, monkeypatch):
     signals_pages(managed_provider)
     original = managed.collect
+    emitted = []
     def broken(*args, **kwargs):
         original(*args, **kwargs)
+        ids = {e["id"] for e in args[0]["evidence"] if e["source"] == "application_signals"}
+        emitted.extend(r for r in args[0]["relationships"] if ids.intersection(r["evidence_ids"]))
         raise RuntimeError("late qualification failure")
     monkeypatch.setattr(managed, "collect", broken)
     bundle = discovery.collect(database(), ACCOUNT, Budget())
     assert calls(bundle)
     assert all(not e["fresh"] and not e["coverage"]["complete"] for e in calls(bundle))
-    assert all(not r["fresh"] and not r["coverage"]["complete"]
-               for r in bundle["relationships"] if r["source"] == "application_signals")
+    assert emitted, "The failure must follow actual relationship emission."
+    ids = {e["id"] for e in calls(bundle)}
+    assert not any(ids.intersection(r["evidence_ids"]) for r in bundle["relationships"])
     assert all(e["fresh"] for e in bundle["evidence"] if e["kind"] == "inventory")
 
 
@@ -172,8 +176,9 @@ def test_deadline_between_service_iterations_disqualifies_prior_calls(managed_pr
         summary(KeyAttributes={**SERVICE, "Name": "later"}))
     # Inventory is collected first; inject exhaustion only into managed processing.
     bundle = discovery.collect(database(), ACCOUNT, Budget())
+    ids = {e["id"] for e in bundle["evidence"] if e["source"] == "application_signals"}
     bundle["evidence"] = [e for e in bundle["evidence"] if e["source"] != "application_signals"]
-    bundle["relationships"] = [r for r in bundle["relationships"] if r["source"] != "application_signals"]
+    bundle["relationships"] = [r for r in bundle["relationships"] if not ids.intersection(r["evidence_ids"])]
     monkeypatch.setattr(discovery, "_available",
                         lambda b, budget: not bool(calls(b)))
     managed._signals(bundle, Budget(), REGION, discovery._client)
@@ -213,7 +218,7 @@ def test_signals_connects_service_compute_and_db_without_fanning_out_calls(manag
     request = next(p for operation, p in managed_provider.calls if operation == "list_services")
     assert request["IncludeLinkedAccounts"] is False
     assert request["AwsAccountId"] == ACCOUNT
-    assert "omni_space_not_configured" in bundle["gaps"]
+    assert "omni_disabled_pending_iam_scope" in bundle["gaps"]
 
 
 def signals_pages(provider, *, service=None, dep=None):
@@ -221,6 +226,69 @@ def signals_pages(provider, *, service=None, dep=None):
                                          "ServiceSummaries": [summary() if service is None else service]}],
                       "list_service_dependencies": [{"StartTime": NOW - dt.timedelta(hours=3), "EndTime": NOW,
                                                      "ServiceDependencies": [dependency() if dep is None else dep]}]}
+
+
+@pytest.mark.parametrize("config", [
+    "{}", "invalid json", "[]", json.dumps({f"{ACCOUNT}/{REGION}": SPACE}),
+    json.dumps({f"999900001111/{REGION}": SPACE}),
+])
+def test_production_omni_hold_ignores_every_space_configuration(managed_provider, monkeypatch, config):
+    monkeypatch.setenv("DIAGNOSIS_OMNI_SPACES", config)
+    signals_pages(managed_provider)
+    def forbidden(*args, **kwargs):
+        pytest.fail("Production must not invoke the inactive Omni adapter.")
+    monkeypatch.setattr(managed, "_omni", forbidden)
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert calls(bundle) and all(e["fresh"] for e in calls(bundle))
+    assert bundle["coverage"]["cloudwatch_omni"][REGION]["status"] == "disabled_pending_iam_scope"
+    assert "omni_disabled_pending_iam_scope" in bundle["gaps"]
+    assert not any(op in ("get_context_graph", "get_space_credentials_for_organization")
+                   for op, _ in managed_provider.calls)
+
+
+def test_signals_bad_row_does_not_void_valid_dependency(managed_provider):
+    signals_pages(managed_provider)
+    managed_provider.pages["list_service_dependencies"][0]["ServiceDependencies"].append(
+        dependency(MetricReferences=[{"AccountId": "999900001111"}]))
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    assert calls(bundle) and all(e["fresh"] and e["coverage"]["complete"] for e in calls(bundle))
+    assert "application_signals_identity_unconfirmed" in bundle["gaps"]
+    assert EvidenceIndex(bundle, ACCOUNT).relationships
+
+
+def test_managed_share_preserves_native_proxy_and_trace_reserve(managed_provider):
+    conn = Database([inventory("ec2", f"i-{i:017x}", {}) for i in range(160)])
+    bundle = discovery.collect(conn, ACCOUNT, Budget())
+    assert len([r for r in bundle["resources"] if r["kind"] != "service"]) == 120
+    for i in range(20):
+        assert discovery._resource(bundle, ACCOUNT, REGION, "service", f"managed:{i}", {})
+    assert discovery._resource(bundle, ACCOUNT, REGION, "service", "managed:overflow", {}) is None
+    for i in range(20):
+        assert discovery._resource(bundle, ACCOUNT, REGION, "rds_proxy", f"proxy-{i}", {})
+    for i in range(40):
+        assert discovery._resource(bundle, ACCOUNT, REGION, "service", f"xray:{i}", {})
+    assert len(bundle["resources"]) == discovery.MAX_RESOURCES
+
+
+def test_disabled_managed_gate_preserves_original_inventory_share(managed_provider, monkeypatch):
+    monkeypatch.delenv("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED")
+    conn = Database([inventory("ec2", f"i-{i:017x}", {}) for i in range(160)])
+    bundle = discovery.collect(conn, ACCOUNT, Budget())
+    assert len([r for r in bundle["resources"] if r["kind"] != "service"]) == 140
+
+
+def test_byte_cap_evicts_managed_evidence_before_native_trace(managed_provider, monkeypatch):
+    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    resources = [r["id"] for r in bundle["resources"]][:2]
+    for source in ("xray", "application_signals", "cloudwatch_omni"):
+        discovery._evidence(bundle, source, "observed_call", resources,
+                            {"padding": "x" * 1000}, NOW, region=REGION,
+                            fresh=True, coverage={"complete": True})
+    size = len(json.dumps(bundle, ensure_ascii=False, default=str).encode())
+    monkeypatch.setattr(discovery, "MAX_BYTES", size - 2000 + 512)
+    discovery._finish(bundle)
+    assert any(e["source"] == "xray" for e in bundle["evidence"])
+    assert not any(e["source"] in {"application_signals", "cloudwatch_omni"} for e in bundle["evidence"])
 
 
 @pytest.mark.parametrize("change", ["foreign_metric", "foreign_arn", "wrong_region", "missing_window"])
@@ -323,8 +391,15 @@ def omni_provider(managed_provider, monkeypatch):
     return managed_provider
 
 
-def test_omni_uses_space_credentials_and_matches_native_pair(omni_provider):
+def private_omni_bundle():
+    """Exercise the inactive adapter directly, separately from production wiring."""
     bundle = discovery.collect(database(), ACCOUNT, Budget())
+    managed._omni(bundle, Budget(), REGION, discovery._client)
+    return discovery._finish(bundle)
+
+
+def test_omni_uses_space_credentials_and_matches_native_pair(omni_provider):
+    bundle = private_omni_bundle()
     observed = calls(bundle, "cloudwatch_omni")
     assert len(observed) == 1 and observed[0]["fresh"]
     assert observed[0]["facts"]["resource_binding"] == "exact"
@@ -343,7 +418,7 @@ def test_omni_uses_space_credentials_and_matches_native_pair(omni_provider):
 ])
 def test_omni_typed_identity_conflict_cannot_confirm_native_call(omni_provider, attrs):
     omni_provider.pages["get_context_graph"][0]["nodes"][0]["telemetryAttributes"] = attrs
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert calls(bundle, "cloudwatch_omni")
     assert all(e["facts"]["resource_binding"] == "unresolved"
                for e in calls(bundle, "cloudwatch_omni"))
@@ -352,10 +427,10 @@ def test_omni_typed_identity_conflict_cannot_confirm_native_call(omni_provider, 
 def test_omni_self_edge_is_disclosed_without_duplicate_resource_evidence(omni_provider):
     source = omni_provider.pages["get_context_graph"][0]["nodes"][0]
     source["edges"][0]["to"] = INSTANCE_ARN
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert not calls(bundle, "cloudwatch_omni")
     assert "omni_self_edge_unconfirmed" in bundle["gaps"]
-    assert bundle["coverage"]["cloudwatch_omni"][REGION]["complete"] is False
+    assert bundle["coverage"]["cloudwatch_omni"][REGION]["complete"] is True
 
 
 @pytest.mark.parametrize("mode", ["configuration", "iam_policy", "stale", "missing_time", "metrics_only"])
@@ -371,8 +446,12 @@ def test_omni_configuration_or_stale_signals_never_become_fresh_calls(omni_provi
         del graph_edge["lastObservedAt"]
     else:
         graph_edge["signalTypes"] = ["METRICS"]
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert not any(e["fresh"] for e in calls(bundle, "cloudwatch_omni"))
+    if mode not in ("stale", "missing_time"):
+        configured = [e for e in bundle["evidence"] if e["source"] == "cloudwatch_omni"
+                      and e["kind"] == "configured_dependency"]
+        assert configured and not calls(bundle, "cloudwatch_omni")
     if mode in ("stale", "missing_time"):
         assert calls(bundle, "cloudwatch_omni")
         assert not any(e["source"] == "cloudwatch_omni" and e["kind"] == "configured_dependency"
@@ -384,7 +463,7 @@ def test_omni_service_attribute_does_not_promote_aggregate_to_instance_call(omni
     source.update(nodeType="SERVICE", nodeId="service:checkout",
                   telemetryAttributes={"aws.ec2.instance.id": I1})
     source["edges"][0]["from"] = "service:checkout"
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     observed = calls(bundle, "cloudwatch_omni")
     assert observed and observed[0]["facts"]["resource_binding"] == "unresolved"
 
@@ -393,13 +472,30 @@ def test_omni_resolves_edges_to_nodes_on_later_pages(omni_provider):
     nodes = omni_provider.pages["get_context_graph"][0]["nodes"]
     omni_provider.pages["get_context_graph"] = [
         {"nodes": [nodes[0]], "nextToken": "later"}, {"nodes": [nodes[1]]}]
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert calls(bundle, "cloudwatch_omni")[0]["facts"]["resource_binding"] == "exact"
+
+
+@pytest.mark.parametrize("extra", [
+    edge(to="external:uncollected"),
+    edge(to=INSTANCE_ARN),
+    edge(sources=["unsupported"]),
+    edge(edgeType="UNKNOWN"),
+    {"from": "wrong-source"},
+])
+def test_private_omni_partial_row_keeps_valid_scoped_edge(omni_provider, extra):
+    omni_provider.pages["get_context_graph"][0]["nodes"][0]["edges"].append(extra)
+    bundle = private_omni_bundle()
+    observed = calls(bundle, "cloudwatch_omni")
+    assert len(observed) == 1 and observed[0]["fresh"] and observed[0]["coverage"]["complete"]
+    assert observed[0]["facts"]["resource_binding"] == "exact"
+    assert any(g.startswith("omni_") for g in bundle["gaps"])
+    assert EvidenceIndex(bundle, ACCOUNT).relationships
 
 
 @pytest.mark.parametrize("mode", ["foreign_account", "foreign_region", "duplicate", "target_missing",
                                  "fanout", "page_cap", "row_cap"])
-def test_omni_incomplete_or_unscoped_graph_disqualifies_rows(omni_provider, mode):
+def test_private_omni_cap_disqualifies_batch_but_unscoped_rows_are_skipped(omni_provider, mode):
     nodes = omni_provider.pages["get_context_graph"][0]["nodes"]
     if mode == "foreign_account":
         nodes[1]["nodeProperties"]["sourceAccountId"] = "999900001111"
@@ -416,15 +512,15 @@ def test_omni_incomplete_or_unscoped_graph_disqualifies_rows(omni_provider, mode
             {"nodes": copy.deepcopy(nodes), "nextToken": str(i)} for i in range(discovery.MAX_PAGES + 1)]
     else:
         nodes.extend(node(f"service-{i}") for i in range(managed.MAX_NODES))
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
-    assert bundle["coverage"]["cloudwatch_omni"][REGION]["complete"] is False
+    bundle = private_omni_bundle()
+    assert bundle["coverage"]["cloudwatch_omni"][REGION]["complete"] is (mode not in {"fanout", "page_cap", "row_cap"})
     assert not any(e["fresh"] for e in calls(bundle, "cloudwatch_omni"))
 
 
 @pytest.mark.parametrize("config", ["{}", "invalid json", "[]", '{"wrong":"bad"}'])
 def test_missing_or_bad_space_configuration_never_uses_host_graph(omni_provider, monkeypatch, config):
     monkeypatch.setenv("DIAGNOSIS_OMNI_SPACES", config)
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert not any(op in ("get_context_graph", "get_space_credentials_for_organization")
                    for op, _ in omni_provider.calls)
     assert not calls(bundle, "cloudwatch_omni")
@@ -442,7 +538,7 @@ def test_space_identity_failure_never_falls_back_or_leaks_credentials(omni_provi
                     return {"Account": "999900001111"}
             return Identity()
     monkeypatch.setattr(managed.boto3, "Session", Session)
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert "omni_read_failed" in bundle["degraded"]
     assert not any(op == "get_context_graph" for op, _ in omni_provider.calls)
     assert "fixture-secret" not in json.dumps(bundle)
@@ -512,7 +608,7 @@ def test_unusable_space_credentials_never_create_a_graph_session(omni_provider, 
     omni_provider.get_space_credentials_for_organization = invalid_credentials
     monkeypatch.setattr(managed.boto3, "Session",
                         lambda **kwargs: pytest.fail("unverified credentials reached the graph session"))
-    bundle = discovery.collect(database(), ACCOUNT, Budget())
+    bundle = private_omni_bundle()
     assert "omni_read_failed" in bundle["degraded"]
     assert not calls(bundle, "cloudwatch_omni")
     assert "fixture-secret" not in json.dumps(bundle)

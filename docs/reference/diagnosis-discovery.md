@@ -37,118 +37,89 @@ include the host worker role; see [member onboarding](../runbooks/onboard-target
 ## Managed discovery providers
 
 `diagnosis_managed_discovery_enabled` defaults to `false` and requires the evidence
-loop. It adds Application Signals and, when configured, CloudWatch Omni to the
-Fargate diagnosis worker. It installs no instrumentation and creates no domain,
-space, access grant or graph database. These providers extend the existing
-DNS/inventory, X-Ray and Network Flow Monitor evidence; they do not establish
-complete CloudFront-to-database coverage.
+loop. It adds Application Signals to the Fargate diagnosis worker. It installs no
+instrumentation and creates no domain, space, access grant or graph database.
+Existing DNS/inventory, X-Ray and Network Flow Monitor evidence remains separate;
+these providers cannot prove complete CloudFront-to-database coverage.
 
 Application Signals reads `ListServices` and `ListServiceDependencies` over three
 completed hours in the selected account and regions. Existing instrumentation and
-the corresponding read permissions are prerequisites. Host reads exclude linked
-accounts. Member reads use only the verified, registered member session; that
-role also needs both Application Signals read actions. A metric reference's optional
-account ID must match when present; its absence uses the verified session and
-explicitly account-filtered service catalog. This collector does not retrieve
-latency or error-rate metrics.
+both read permissions are prerequisites. Host reads exclude linked accounts.
+Member reads use only the verified, registered member session; that role also
+needs both read actions. An optional metric-reference account ID must match when
+present; its absence uses the verified session and account-filtered catalog.
+This collector does not retrieve latency or error-rate metrics.
 
 Service dependencies retain a logical service source. A unique native identifier
 in service attributes can add a configured `RUNS_ON` relationship to its compute
-resource, but that membership does not prove which instance made a service call.
-An exact, unique DB identifier can bind the dependency target to qualified
-inventory. A matching inventory DB hostname adds a configured `endpoint_alias`,
-separately from timestamped Resolver DNS answers. Display names, shared tags and
-aggregate service edges never produce instance-to-DB call fan-out.
-
-`diagnosis_omni_spaces` defaults to `{}`. Its keys are `<account-id>/<region>` and
-its values are existing space UUIDs, with at most 32 entries. Accounts must be the
-host or explicitly allowlisted diagnosis members. For example:
-
-```hcl
-diagnosis_managed_discovery_enabled = true
-diagnosis_omni_spaces = {
-  "123456789012/us-east-1" = "12345678-1234-1234-1234-123456789abc"
-}
-```
-
-Omni requires an existing organization space in the selected account and region.
-The host worker principal must already have organization-management or delegated
-administrator access and the space access needed for
-`GetSpaceCredentialsForOrganization`. Terraform adds only that exact credential
-read action, conditioned on configured space regions, when the map is nonempty.
-It grants no space administration or general host-session graph access. The
-returned `SPACE_OPERATION` credentials are held only in memory, checked for
-expiration and verified with STS against the selected account, then used for
-`GetContextGraph`. The existing space role and access grant must permit that read;
-review their effective permissions separately and use a read-only grant. This
-collector does not implement interactive sign-in for standalone-account spaces.
-Missing or denied access records a gap/degraded source without another graph
-credential path. Member registration and role verification still precede any
-member-space read; the organization credential API is an explicit control-plane
-path, not a substitute for failed member authorization.
+resource, but membership does not prove which instance made a service call. Every
+explicit typed identifier must resolve to the same qualified native resource.
+An exact DB identifier can bind the dependency target to fresh, complete inventory.
+A matching inventory DB hostname adds a configured `endpoint_alias`, separately
+from timestamped Resolver answers. Names, tags and aggregate service edges never
+produce instance-to-DB call fan-out.
 
 ### Managed provider activation preflight
 
-Keep both flags disabled and the space map empty until an operator records the
-following review for each configured account/region/space. This collector neither
-audits nor changes the grants itself. STS proves the returned account identity,
-not its effective permissions.
+**Omni activation is held as of 2026-11-08.** `diagnosis_omni_spaces` is a reserved
+compatibility input with default `{}`; Terraform rejects every nonempty map,
+including host and registered member spaces. The worker has no Omni environment
+wiring or credential-vending IAM statement. The production collector invokes only
+Application Signals, even if `DIAGNOSIS_OMNI_SPACES` is manually injected. Omni
+coverage is `disabled_pending_iam_scope`, with zero requests and an explicit gap.
+Operator attestation or a space grant cannot bypass this hold.
 
-- Verify the existing space UUID, active organization membership, delegated
-  administrator or management-account authority, and registered member role.
-- Inspect **all effective direct and inherited space grants** for the worker
-  principal. Require a Custom grant limited to `cloudwatch:GetContextGraph` and
-  the required read scope; no Editor, Space Admin or additional write grants.
-  Grant permissions are additive, so one narrow grant does not narrow another.
-- Review the existing space operator role and its permissions boundary together
-  with those grants. Its ceiling is shared across spaces in the account.
-  Credential retrieval can expose permissions outside this collector's calls;
-  do not treat the broad `CloudWatchOmniSpaceAccessPolicy` as a read-only policy
-  or attach it to the worker to resolve access failures.
-- Record the approved principal, space UUID, effective grant actions/scopes,
-  operator-role ceiling and review date in the deployment's operator record.
-  Recheck after grant/role changes and before each activation.
-- On member offboarding, remove that account's `diagnosis_omni_spaces` entries
-  along with its diagnosis allowlist/registration. Review residual grants and
-  existing one-hour sessions through the organization's normal access process.
-
-Terraform's credential statement currently has `Resource: "*"`, constrained by
-configured regions. The UUID map constrains application requests, **not IAM**.
-The public action API and IAM guide describe space-scoped credentials and space
-resource types but do not establish the action-specific ARN/condition contract
-for `GetSpaceCredentialsForOrganization`. This change therefore does not invent
-a per-space IAM condition or claim a tested ARN boundary. Treat that scope as a
-reviewed activation prerequisite, keep the map empty if it is unacceptable, and
-revisit exact IAM scoping when the action contract can be verified. No IAM
-simulation or live deployment was performed as part of this code change.
+The retained private adapter is tested directly with simulated boundaries and the
+locked SDK. It is not a supported production route. A separately reviewed release
+must establish enforceable, read-only per-space scope for
+`GetSpaceCredentialsForOrganization` before adding activation wiring. The API and
+IAM guides describe space sessions but do not establish the action-specific
+ARN/condition contract used by this implementation; no unverified IAM condition
+is invented. A UUID map is an application guard, not an IAM boundary. STS confirms
+account identity, not effective permissions. Space grants are additive and the
+operator-role ceiling is shared across spaces, so a narrow read grant alone does
+not prove that vended credentials cannot write. Member-space access would also
+need an explicit reviewed authorization contract without bypassing registered
+member trust. No IAM simulation or live deployment was performed here.
 
 Primary AWS contracts:
 [credential API](https://docs.aws.amazon.com/cloudwatch-omni/latest/APIReference/API_GetSpaceCredentialsForOrganization.html),
 [identity and space access model](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-identity-and-access-management-for-cloudwatch-omni.html),
 and [policy permissions](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-iam-policies-to-use-cloudwatch-omni.html).
 The SDK service name is `cloudwatchomni`; IAM actions and SigV4 use `cloudwatch`.
-Member gaps labeled `member_xray_network_sources_unsupported` refer to direct
-X-Ray/Resolver/Network Flow Monitor collectors, not configured managed telemetry.
+The activation decision is recorded in the
+[implementation plan](../superpowers/plans/2026-11-08-managed-service-discovery.md#omni-activation-decision-2026-11-08).
+Member gaps labeled `member_xray_network_sources_unsupported` describe direct
+X-Ray/Resolver/Network Flow Monitor collectors, separately from Signals reads.
 
-Omni enumerates account/region-filtered nodes at depth zero, reading bounded pages
-before resolving edges whose targets appear on a later page. Native resource
-binding requires a unique identifier in fresh, complete inventory. Merged
-`SERVICE` attributes do not prove native instance ownership of a call. Only
-`CALLS` edges with telemetry, traces and a confirmed recent observation timestamp
-become fresh application-call evidence. Policy, configuration, `ACCESSES` and
-`RUNS_ON` edges remain configuration. Stale or missing-time trace edges remain
-unqualified observations.
+### Bounds and evidence qualification
 
-Each provider has a per-region limit of 16 requests, 40 nodes and three pages per
-operation; Omni includes credential retrieval and STS in its request count and
-limits node fan-out to 50 edges. At most 20 new logical managed resources share
-the existing overall bundle limits and analysis deadline. Late caps, malformed
-pages and read failures disqualify earlier evidence from the affected batch.
-Empty results and missing targets stay visible. Coverage always discloses
-`managed_discovery_not_exhaustive`; it cannot prove absent traffic or justify
-right-sizing on its own. Application Signals, Omni telemetry and X-Ray can project
-the same application telemetry, so specialists and the cross-pillar review must
-not count them as independent corroboration.
+Each adapter has a per-region limit of 16 requests, 40 nodes and three pages per
+operation. The inactive Omni adapter also limits fan-out to 50 edges per node.
+Managed logical resources have a separate 20-slot share when the feature is on:
+120 inventory anchors, 20 native trace identities/live DB proxies, 20 managed
+logical nodes and 40 X-Ray service nodes fit the existing 200-resource cap.
+With the feature off, the original 140 inventory slots and 20 native reserve
+remain. Under the byte cap, managed evidence is evicted before X-Ray and inventory.
+
+Pagination faults, caps, missing response windows, deadlines and read failures
+disqualify earlier rows from the affected provider batch. Isolated malformed,
+unscoped or ambiguous identities and unresolved external edges are skipped with
+fixed gaps; other valid scoped rows remain usable. Batch completeness means the
+bounded request completed, never exhaustive topology coverage. Escaped optional
+collector failures also remove relationships citing disqualified managed evidence
+while preserving native inventory, metrics and trace evidence.
+
+The inactive Omni adapter reads account/region-filtered nodes at depth zero before
+resolving later-page targets. Only native-to-native `CALLS` edges with telemetry,
+traces and a confirmed recent timestamp can be fresh application calls. Merged
+service attributes describe membership. Policy, configuration, `ACCESSES` and
+`RUNS_ON` edges remain configuration; stale or missing-time traces are unqualified.
+
+Coverage always discloses `managed_discovery_not_exhaustive`; it cannot prove
+absent traffic or justify sizing alone. Signals, Omni telemetry and X-Ray may
+project the same telemetry, so specialist and cross-pillar review must not count
+those projections as independent corroboration.
 
 ## Model requirement
 

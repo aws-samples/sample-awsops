@@ -2,8 +2,8 @@
 
 Inventory/DNS identity and telemetry are different claims. Provider display names
 are never EC2/DB identities; unresolved endpoints remain logical service nodes.
-Omni uses existing organization spaces and temporary space credentials, never an
-ordinary host-session GetContextGraph fallback.
+Omni is an inactive private adapter: production cannot vend space credentials
+until a read-only, per-space IAM boundary has been independently verified.
 """
 import datetime as dt
 import json
@@ -261,11 +261,11 @@ def _signals(bundle, budget, region, client_factory):
                 key = _keys(row.get("KeyAttributes")) if isinstance(row, dict) else None
                 if (not key or not _references(row.get("MetricReferences"), bundle["coverage"]["account"])
                         or not window):
-                    _fail(bundle, coverage, "application_signals_identity_unconfirmed")
+                    d._mark(bundle, "gaps", "application_signals_identity_unconfirmed")
                     continue
                 identity = d._json(key)
                 if identity in services and services[identity] != row:
-                    _fail(bundle, coverage, "application_signals_ambiguous_service")
+                    d._mark(bundle, "gaps", "application_signals_ambiguous_service")
                     services[identity] = None
                 elif len(services) >= MAX_NODES and identity not in services:
                     _fail(bundle, coverage, "managed_discovery_node_cap")
@@ -298,7 +298,7 @@ def _signals(bundle, budget, region, client_factory):
                     target_key = _keys(dep.get("DependencyKeyAttributes")) if isinstance(dep, dict) else None
                     if (not target_key or not window or
                             not _references(dep.get("MetricReferences"), bundle["coverage"]["account"])):
-                        _fail(bundle, coverage, "application_signals_identity_unconfirmed")
+                        d._mark(bundle, "gaps", "application_signals_identity_unconfirmed")
                         continue
                     bound_target = _signals_binding(bundle, region, target_key)
                     target = bound_target or _logical(bundle, region, "application_signals",
@@ -312,8 +312,8 @@ def _signals(bundle, budget, region, client_factory):
                     _emit(bundle, region, "application_signals", source, target, "observed_call",
                           {"resource_binding": "exact" if exact else "unresolved",
                            "provenance_family": "application_telemetry",
-                           "operations": [d._text(dep.get("OperationName")),
-                                          d._text(dep.get("DependencyOperationName"))]},
+                           "operations": [v for v in (d._text(dep.get("OperationName")),
+                                                      d._text(dep.get("DependencyOperationName"))) if v]},
                           d._now(), window, coverage)
         if not services:
             d._mark(bundle, "gaps", "application_signals_no_observations")
@@ -372,6 +372,7 @@ def _space_client(account, region, space, budget, control_factory):
 
 
 def _omni(bundle, budget, region, control_factory):
+    """Inactive adapter, exercised directly by tests; never called by collect."""
     d = _d()
     coverage = {"pages": 0, "complete": True, "continuation": False, "sampled": True,
                 "topology_complete": False}
@@ -400,11 +401,11 @@ def _omni(bundle, budget, region, control_factory):
                         or not isinstance(props, dict) or props.get("sourceAccountId") != bundle["coverage"]["account"]
                         or props.get("region") != region or props.get("cloudProvider", "aws") != "aws"
                         or node.get("nodeType") not in {"SERVICE", "RESOURCE", "REMOTE_SERVICE"}):
-                    _fail(bundle, coverage, "omni_node_scope_unconfirmed")
+                    d._mark(bundle, "gaps", "omni_node_scope_unconfirmed")
                     continue
                 if identity in nodes and nodes[identity] != node:
                     ambiguous.add(identity)
-                    _fail(bundle, coverage, "omni_ambiguous_node")
+                    d._mark(bundle, "gaps", "omni_ambiguous_node")
                 elif identity not in nodes and len(nodes) >= MAX_NODES:
                     _fail(bundle, coverage, "managed_discovery_node_cap")
                 else:
@@ -415,7 +416,7 @@ def _omni(bundle, budget, region, control_factory):
                 continue
             attrs = node.get("telemetryAttributes", {})
             if not isinstance(attrs, dict) or len(attrs) > 100:
-                _fail(bundle, coverage, "omni_identity_unconfirmed")
+                d._mark(bundle, "gaps", "omni_identity_unconfirmed")
                 continue
             # Merged SERVICE attributes describe membership, not the instance
             # responsible for an aggregate service edge.
@@ -444,14 +445,14 @@ def _omni(bundle, budget, region, control_factory):
                     _fail(bundle, coverage, "managed_discovery_edge_cap")
                     break
                 if not isinstance(edge, dict) or edge.get("from") != identity:
-                    _fail(bundle, coverage, "omni_edge_identity_unconfirmed")
+                    d._mark(bundle, "gaps", "omni_edge_identity_unconfirmed")
                     continue
                 left, right = resources.get(identity), resources.get(edge.get("to"))
                 if not left or not right or edge.get("to") in ambiguous:
-                    _fail(bundle, coverage, "omni_edge_target_unresolved")
+                    d._mark(bundle, "gaps", "omni_edge_target_unresolved")
                     continue
                 if left["id"] == right["id"]:
-                    _fail(bundle, coverage, "omni_self_edge_unconfirmed", category="gaps")
+                    d._mark(bundle, "gaps", "omni_self_edge_unconfirmed")
                     continue
                 first, last = _time(edge.get("firstObservedAt")), _time(edge.get("lastObservedAt"))
                 sources, signals = edge.get("sources"), edge.get("signalTypes")
@@ -459,10 +460,10 @@ def _omni(bundle, budget, region, control_factory):
                         or any(s not in _SOURCES for s in sources)
                         or not isinstance(signals, list) or len(signals) > 5
                         or any(s not in _SIGNALS for s in signals)):
-                    _fail(bundle, coverage, "omni_edge_provenance_unconfirmed")
+                    d._mark(bundle, "gaps", "omni_edge_provenance_unconfirmed")
                     continue
                 if edge.get("edgeType") not in {"CALLS", "ACCESSES", "RUNS_ON"}:
-                    _fail(bundle, coverage, "omni_edge_type_unconfirmed")
+                    d._mark(bundle, "gaps", "omni_edge_type_unconfirmed")
                     continue
                 observed = (edge.get("edgeType") == "CALLS" and "TELEMETRY" in sources and "TRACES" in signals)
                 fresh = first is not None and last is not None and first <= last and start <= last <= end
@@ -488,15 +489,18 @@ def _omni(bundle, budget, region, control_factory):
         _qualify(bundle, "cloudwatch_omni", region, coverage)
 
 
-def collect(bundle, budget, regions, *, client_factory, control_factory):
+def collect(bundle, budget, regions, *, client_factory):
     if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") != "true":
         return
     d = _d()
     d._mark(bundle, "gaps", "managed_discovery_not_exhaustive")
+    d._mark(bundle, "gaps", "omni_disabled_pending_iam_scope")
     for region in regions[:d.MAX_REGIONS]:
+        # Even manually injected space configuration cannot activate credential
+        # vending. Only Signals uses the verified host/member client factory.
+        bundle["coverage"].setdefault("cloudwatch_omni", {})[region] = {
+            "status": "disabled_pending_iam_scope", "complete": False,
+            "topology_complete": False, "requests": 0, "pages": 0}
         if not d._available(bundle, budget):
             return
         _signals(bundle, budget, region, client_factory)
-        if not d._available(bundle, budget):
-            return
-        _omni(bundle, budget, region, control_factory)

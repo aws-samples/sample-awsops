@@ -67,7 +67,6 @@ locals {
   diagnosis_evidence_env_list = [for name, value in local.diagnosis_evidence_env_map : { name = name, value = value }]
   diagnosis_managed_env_list = var.diagnosis_managed_discovery_enabled ? [
     { name = "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED", value = "true" },
-    { name = "DIAGNOSIS_OMNI_SPACES", value = jsonencode(var.diagnosis_omni_spaces) },
   ] : []
   # finops_baseline (ADR-020, extends ADR-012) — deterministic FinOps baseline-recommendations rule
   # engine. Requires workers_enabled (validated in variables.tf); runs on the same Fargate worker as
@@ -956,32 +955,13 @@ resource "aws_iam_policy" "worker_diagnosis_managed" {
   name     = "${var.project}-worker-${each.key}-diagnosis-managed-read"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat([{
+    Statement = [{
       Sid       = "DiagnosisApplicationSignalsReadOnly"
       Effect    = "Allow"
       Action    = ["application-signals:ListServices", "application-signals:ListServiceDependencies"]
       Resource  = "*"
       Condition = local.runtime_read_condition
-      }], length(var.diagnosis_omni_spaces) > 0 ? [{
-      # Credential vending is not equivalent to a resource-list read. The public
-      # GetSpaceCredentialsForOrganization API/IAM guide does not establish this
-      # action's per-space ARN/condition contract; do not invent one. Resource "*"
-      # below is an explicit residual IAM scope, limited only by configured regions.
-      # The UUID map limits application requests, not IAM. Before enabling, the
-      # operator must review effective direct/inherited grants for every configured
-      # space and the shared operator-role ceiling: exact GetContextGraph read only,
-      # no Editor/Space Admin or additive write grants. Record this outside Terraform.
-      # See docs/reference/diagnosis-discovery.md, managed provider activation preflight,
-      # and the primary AWS IAM/API links there. STS identity is not permissions proof.
-      # Retrieval creates no spaces/grants; GetContextGraph uses the space session.
-      Sid      = "DiagnosisExistingOmniSpaceCredentials"
-      Effect   = "Allow"
-      Action   = ["cloudwatch:GetSpaceCredentialsForOrganization"]
-      Resource = "*"
-      Condition = { StringEquals = {
-        "aws:RequestedRegion" = sort(distinct([for key in keys(var.diagnosis_omni_spaces) : split("/", key)[1]]))
-      } }
-    }] : [])
+    }]
   })
 }
 

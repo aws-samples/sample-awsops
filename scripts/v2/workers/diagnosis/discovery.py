@@ -32,6 +32,7 @@ MAX_REGIONS = 8
 MAX_PAGES = 3
 MAX_RESOURCES = 200
 MAX_XRAY_RESOURCES = 40  # X-Ray service nodes have their own share; inventory cannot starve it.
+MAX_MANAGED_RESOURCES = 20  # Optional logical nodes cannot consume the native proxy/trace reserve.
 # Reserve space for trace identities and live DB proxies inside the non-X-Ray share.
 MAX_INVENTORY_RESOURCES = MAX_RESOURCES - MAX_XRAY_RESOURCES - 20
 DATABASE_CONNECTION_BROKEN = "database_connection_broken"
@@ -302,11 +303,21 @@ def _resource(bundle, account, region, kind, native_id, facts):
     if existing:
         return existing
     used = sum(_is_xray(r) for r in bundle["resources"])
-    if _is_xray({"kind": kind, "resource_id": native_id}):
+    managed = sum(_is_managed(r) for r in bundle["resources"])
+    candidate = {"kind": kind, "resource_id": native_id}
+    if _is_xray(candidate):
         if used >= MAX_XRAY_RESOURCES:
             _mark(bundle, "incomplete", "xray_resource_cap")
             return None
-    elif len(bundle["resources"]) - used >= MAX_RESOURCES - MAX_XRAY_RESOURCES:
+    elif _is_managed(candidate):
+        if managed >= MAX_MANAGED_RESOURCES:
+            _mark(bundle, "incomplete", "managed_discovery_resource_cap")
+            return None
+    elif len(bundle["resources"]) - used - managed >= (
+            MAX_RESOURCES - MAX_XRAY_RESOURCES - _managed_resource_share()):
+        _mark(bundle, "incomplete", "resource_cap")
+        return None
+    if len(bundle["resources"]) >= MAX_RESOURCES:
         _mark(bundle, "incomplete", "resource_cap")
         return None
     item = {"id": rid, "account": account, "region": region, "kind": kind,
@@ -317,6 +328,14 @@ def _resource(bundle, account, region, kind, native_id, facts):
 
 def _is_xray(r):
     return r["kind"] == "service" and str(r["resource_id"]).startswith("xray:")
+
+
+def _is_managed(r):
+    return r["kind"] == "service" and str(r["resource_id"]).startswith("managed:")
+
+
+def _managed_resource_share():
+    return MAX_MANAGED_RESOURCES if os.environ.get("DIAGNOSIS_MANAGED_DISCOVERY_ENABLED") == "true" else 0
 
 
 def _evidence(bundle, source, kind, resources, facts, captured, *, region, fresh,
@@ -395,7 +414,8 @@ def _read_inventory(conn, bundle, budget, scope):
         for row in sorted(rows, key=lambda r: (r[2], r[1], r[3])):
             groups.setdefault(row[2], []).append(row)
         rows = [row for i in range(max((len(g) for g in groups.values()), default=0))
-                for g in groups.values() if i < len(g) for row in [g[i]]][:MAX_INVENTORY_RESOURCES]
+                for g in groups.values() if i < len(g) for row in [g[i]]][
+                    :MAX_INVENTORY_RESOURCES - _managed_resource_share()]
         runs = _db_read(conn, bundle, budget,
             "SELECT resource_type,status,finished_at,last_success_at,row_count,unknown_attribute_count,started_at "
             "FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY(:resource_types)",
@@ -1191,7 +1211,8 @@ def _finops(conn, bundle, budget):
         _mark(bundle, "degraded", "finops_read_failed")
 
 
-_EVICTION = {"xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer": 3, "finops": 3,
+_EVICTION = {"application_signals": -1, "cloudwatch_omni": -1,
+             "xray": 0, "stored_graph": 1, "cloudwatch": 3, "compute_optimizer": 3, "finops": 3,
              "inventory": 4}  # inventory anchors every resource; evicted last
 
 
@@ -1238,7 +1259,7 @@ def _finish(bundle):
     total = size(bundle)
     if total > limit and bundle["evidence"]:
         # One eviction plan and per-row sizes instead of re-serializing the whole bundle per row
-        # (O(n) not O(n^2)). Evict the newest low-priority evidence first (X-Ray, then graph);
+        # (O(n) not O(n^2)). Evict managed projections first, then X-Ray and stored graph;
         # sizing, metrics and FinOps rows outlast them; inventory goes last; within a class,
         # stale/superseded rows go before current ones.
         _mark(bundle, "incomplete", "context_byte_cap")
@@ -1302,13 +1323,13 @@ def _managed_collect(bundle, budget, regions, client_factory):
         return
     try:
         from . import managed_discovery
-        managed_discovery.collect(bundle, budget, regions, client_factory=client_factory,
-                                  control_factory=_client)
+        managed_discovery.collect(bundle, budget, regions, client_factory=client_factory)
     except Exception:
         # Optional provider/import/qualification failures must preserve inventory,
         # metrics and existing trace/network evidence. Never serialize the error.
         _mark(bundle, "degraded", "managed_discovery_failed")
         _mark(bundle, "gaps", "managed_discovery_failed")
+        disqualified = set()
         for source in ("application_signals", "cloudwatch_omni"):
             for coverage in bundle["coverage"].get(source, {}).values():
                 coverage["complete"] = False
@@ -1316,10 +1337,10 @@ def _managed_collect(bundle, budget, regions, client_factory):
                 if row["source"] == source:
                     row["fresh"] = False
                     row["coverage"]["complete"] = False
-            for row in bundle["relationships"]:
-                if row["source"] == source:
-                    row["fresh"] = False
-                    row["coverage"]["complete"] = False
+                    disqualified.add(row["id"])
+        bundle["relationships"] = [
+            row for row in bundle["relationships"]
+            if not disqualified.intersection(row["evidence_ids"])]
 
 
 def collect(conn, account, budget, *, scope="self"):
