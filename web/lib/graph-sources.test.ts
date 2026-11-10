@@ -8,7 +8,7 @@ vi.mock('@/lib/datasources', () => ({
 }));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: vi.fn(async () => ({ rows: [] })) }));
 import { loadGraphSources } from './graph-sources';
-import { ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource } from './trace-source';
+import { ClickHouseOtelAggregateSource, ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource } from './trace-source';
 
 // Adapter internals (connector calls, credential resolution) are covered by trace-source.test.ts —
 // this file only tests the mapper→adapter selection/wiring logic, so no need to mock datasources/
@@ -18,7 +18,7 @@ function mockPool(rows: unknown[]) {
 }
 
 describe('loadGraphSources', () => {
-  it('maps an otel_v1 ready row to a ClickHouseOtelTraceSource carrying the schema-driven SQL template', async () => {
+  it('keeps a non-catalog otel_v1 template on the span reader with its SQL template', async () => {
     const pool = mockPool([
       { integration_id: 7, query: { tool: 'clickhouse_query', mapper: 'otel_v1', args_template: { sql: 'SELECT 1 FROM t LIMIT {cap}' } } },
     ]);
@@ -29,6 +29,18 @@ describe('loadGraphSources', () => {
     const s = sources[0] as unknown as { instanceId: number; sqlTemplate?: string };
     expect(s.instanceId).toBe(7);
     expect(s.sqlTemplate).toBe('SELECT 1 FROM t LIMIT {cap}');
+  });
+
+  it('reads the catalog exporter-schema otel_v1 template as whole-window aggregates of the same table', async () => {
+    const sql = 'SELECT TraceId, SpanId, ParentSpanId, ServiceName, SpanKind, Timestamp, Duration, ' +
+      'ResourceAttributes, SpanAttributes, StatusCode FROM `otel`.`otel_traces` WHERE Timestamp >= now() - ' +
+      'INTERVAL {window} MINUTE AND Timestamp <= now() ORDER BY Timestamp DESC LIMIT {cap}';
+    const pool = mockPool([{ integration_id: 7, query: { tool: 'clickhouse_query', mapper: 'otel_v1', args_template: { sql } } }]);
+    const { sources } = await loadGraphSources(pool);
+    expect(sources[0]).toBeInstanceOf(ClickHouseOtelAggregateSource);
+    expect(sources[0] as unknown).toMatchObject({
+      instanceId: 7, shape: { table: '`otel`.`otel_traces`', spanKind: true, statusCode: true, links: false },
+    });
   });
 
   it('maps a tempo_v1 ready row to a TempoTraceSource', async () => {
@@ -65,19 +77,19 @@ describe('loadGraphSources', () => {
     const { sources, metricsSources } = await loadGraphSources(pool);
     // none of the 3 rows produced a usable adapter → the empty-result fallback kicks in (1 bare default)
     expect(sources).toHaveLength(1);
-    expect(sources[0]).toBeInstanceOf(ClickHouseOtelTraceSource);
+    expect(sources[0]).toBeInstanceOf(ClickHouseOtelAggregateSource);
     expect((sources[0] as unknown as { instanceId?: number }).instanceId).toBeUndefined();
     expect(metricsSources).toHaveLength(0);
   });
 
-  it('falls back to a bare default ClickHouseOtelTraceSource when no ready rows exist yet', async () => {
+  it('falls back to a bare default aggregate ClickHouse source when no ready rows exist yet', async () => {
     const pool = mockPool([]);
     const { sources, metricsSources } = await loadGraphSources(pool);
     expect(sources).toHaveLength(1);
-    expect(sources[0]).toBeInstanceOf(ClickHouseOtelTraceSource);
-    const s = sources[0] as unknown as { instanceId?: number; sqlTemplate?: string };
+    expect(sources[0]).toBeInstanceOf(ClickHouseOtelAggregateSource);
+    const s = sources[0] as unknown as { instanceId?: number; shape: { table: string } };
     expect(s.instanceId).toBeUndefined();
-    expect(s.sqlTemplate).toBeUndefined();
+    expect(s.shape.table).toBe('otel_traces');
     expect(metricsSources).toHaveLength(0);
   });
 
@@ -101,7 +113,7 @@ describe('loadGraphSources', () => {
     const pool = { query } as unknown as import('pg').Pool;
     const { sources } = await loadGraphSources(pool);
     expect(sources).toHaveLength(1); // no ready rows survived the join → bare default fallback
-    expect(sources[0]).toBeInstanceOf(ClickHouseOtelTraceSource);
+    expect(sources[0]).toBeInstanceOf(ClickHouseOtelAggregateSource);
     expect((sources[0] as unknown as { instanceId?: number }).instanceId).toBeUndefined();
   });
 });

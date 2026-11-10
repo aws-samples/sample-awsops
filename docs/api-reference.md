@@ -544,6 +544,35 @@ runtime payloads for compatibility with older or malformed responses.
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
+### Trace graph sources
+
+A ClickHouse datasource whose registry query is the catalog's exporter-schema `otel_v1` template
+(exactly the bare exporter columns; generated or aliased templates are excluded), or the
+unregistered default, is read as whole-window aggregates of the same table, not as the newest
+spans. Two bounded read-only queries return service/kind/status attribute groups with span counts
+and parent→child service pairs; a third returns span-link pairs when the table has `Links`
+columns. Each is limited to 1,000 rows and to the connector's execution budget. If an aggregate
+query fails (for example the join exceeds that budget), the same table is read with the bounded
+newest-span reader instead and the source is `partial` with `incomplete_collection`. A malformed
+response envelope fails the read; malformed individual rows are skipped as `malformed_rows`, a
+saturated limit adds `cap_reached`, rows outside the window add `incomplete_collection`, and an
+unproven empty result adds `empty_not_confirmed` (a partial read that may publish nodes without
+edges). Without those reasons, node and edge `spanCount` count the window's spans, and
+source-counted pairs produce no `orphanSpans`. A child whose parent started before the window is
+not counted as a pair and is not disclosed. Grouping keeps only EC2 instance IDs and ARNs from the
+instance claim attributes, plus a fixed marker for any other `cloud.resource_id` (which still
+vetoes binding). Generated or custom templates, Tempo and other sources keep span sampling, and a
+graph mixing them sums both kinds of count.
+
+Publication keeps at most 200 nodes and 500 edges (`nodeDrops`/`edgeDrops`). Nodes are selected
+from the heaviest edges first, both endpoints together, so a kept database, queue or workload
+always keeps its caller; remaining capacity goes to other nodes by span and metric volume.
+
+Service-graph metrics contribute service→service `calls` only. Rows whose Tempo
+`connection_type` is `database`, `messaging_system` or `virtual_node` name a database, queue or
+uninstrumented peer rather than a service and are not drawn; databases and queues come from trace
+spans with their host-qualified identity.
+
 ### Trace edge instance observations
 
 Trace `queries` edges (service → `db`) may carry three additive, optional `meta` fields built by
@@ -555,6 +584,8 @@ no bound observation was recorded, not that no instance queried the database.
 | `instance_observations[]` | Distinct (`instance_ref`, `database_ref`) pairs from outbound `CLIENT` spans only. Each entry carries `instance_id`, `instance_ref`, `database_ref`, `account`, `region`, `db_host`, `observed_at_ms` (latest span start), `first_observed_at_ms`, `observation_count`, an opaque `correlation_id` naming the latest span, optional `source_id`, and `provenance: "trace_span"`. At most 200 pairs per edge. |
 | `instance_observations_omitted` | Count of further distinct pairs dropped by the 200-pair cap. |
 | `instance_observations_unbound` | Count of spans whose EC2 claim could not be bound: missing or invalid account/region/clock, or no unique inventory EC2 instance and RDS instance endpoint in the same account and region. |
+
+For aggregate sources, `observation_count` and `instance_observations_unbound` count the spans behind each aggregate row, and `correlation_id` names one sample span of the row.
 
 These are sampled telemetry claims bound to inventory, not authority: a pair shows that the
 sampled spans named that instance and endpoint within the trace window. It does not prove

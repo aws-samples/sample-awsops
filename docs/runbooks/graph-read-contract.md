@@ -220,6 +220,22 @@ Oversized valid Tempo children keep a bounded structured OTLP projection and can
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
+### Whole-window ClickHouse aggregates
+
+The ClickHouse adapter for the catalog's exporter-schema template reads node groups,
+parent→child pairs and (when present) span links as whole-window aggregates; see
+[trace graph sources](../api-reference.md#trace-graph-sources). The aggregates form one source
+read. A failed aggregate query (including one that exceeds the connector's `max_execution_time`)
+falls back to the bounded newest-span reader for that rebuild and is disclosed as
+`incomplete_collection`, so a busy table degrades to sampling instead of retaining a frozen graph;
+a malformed response envelope fails the read. Nodes therefore never publish from a partial set of
+aggregates. Malformed individual rows are skipped as partial evidence, and each aggregate needs its
+own empty proof: confirmed nodes with an unproven-empty pair query publish as `partial` with
+`empty_not_confirmed`. Row limits disclose `cap_reached` like other bounded sources. The join sides
+project only the sorted identity attributes. Node-cap selection keeps edge endpoints together.
+The adapter and builder contracts run without PostgreSQL:
+`cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts`.
+
 ## Rebuild capacity
 
 Flow and infra input allow 8192 rows within the same bounded read envelope. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the

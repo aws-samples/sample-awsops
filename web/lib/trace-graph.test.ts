@@ -226,3 +226,73 @@ describe('same-span EC2 and DB observations', () => {
       expect(queries[0].meta).not.toHaveProperty('instance_observations_unbound');
     });
 });
+
+describe('source-aggregated rows and service-graph connection types', () => {
+  const svc = (graph: ReturnType<typeof buildTraceGraph>, name: string) =>
+    graph.nodes.find(node => node.kind === 'service' && node.label === name);
+
+  it('counts an aggregate row as its weight on nodes, DB edges, pods and instance pairs', () => {
+    const graph = buildTraceGraph([dbSpan({
+      weight: 40, firstStartMs: 1_793_999_000_000, status: 'error', durationMs: 120,
+      k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: ['checkout-a', 'checkout-b'],
+    })], [], inventory());
+    expect(svc(graph, 'checkout')?.meta).toMatchObject({ spanCount: 40, errorSpanCount: 40, sampledDurationMs: 120 });
+    const query = graph.edges.find(edge => edge.rel === 'queries')!;
+    expect(query.meta.spanCount).toBe(40);
+    expect(query.meta.instance_observations?.[0]).toMatchObject({
+      observation_count: 40, first_observed_at_ms: 1_793_999_000_000, observed_at_ms: 1_794_000_000_000,
+    });
+    expect(graph.edges.find(edge => edge.rel === 'runs_on')?.meta.spanCount).toBe(40);
+    expect(graph.nodes.find(node => node.kind === 'workload')?.meta.pods).toEqual(['checkout-a', 'checkout-b']);
+  });
+
+  it('draws source-counted span pairs as span evidence on the same service nodes, never as self-loops', () => {
+    const identity = { sourceId: 'clickhouse:3', environment: 'prod' };
+    const graph = buildTraceGraph(
+      [dbSpan({ sourceId: 'clickhouse:3', environment: 'prod', accountId: undefined, region: undefined, weight: 5 })],
+      [
+        { client: 'frontend', server: 'checkout', count: 17, evidence: 'trace', rel: 'calls',
+          clientIdentity: identity, serverIdentity: identity },
+        { client: 'worker', server: 'checkout', count: 3, evidence: 'trace', rel: 'linked',
+          clientIdentity: identity, serverIdentity: identity },
+        { client: 'checkout', server: 'checkout', count: 9, evidence: 'trace', rel: 'calls',
+          clientIdentity: identity, serverIdentity: identity },
+      ], []);
+    const checkout = svc(graph, 'checkout')!;
+    expect(graph.nodes.filter(node => node.label === 'checkout')).toHaveLength(1);
+    const calls = graph.edges.find(edge => edge.rel === 'calls')!;
+    expect(calls).toMatchObject({ source: svc(graph, 'frontend')!.id, target: checkout.id,
+      meta: { spanCount: 17, metricCount: 0 } });
+    expect(graph.edges.find(edge => edge.rel === 'linked')?.meta.spanCount).toBe(3);
+    expect(graph.edges.some(edge => edge.source === edge.target)).toBe(false);
+    expect(graph.orphanSpans).toBe(0);
+  });
+
+  it('draws only service calls from metrics; database, queue and virtual-node rows are not services', () => {
+    const graph = buildTraceGraph([], [
+      { client: 'review', server: 'reviews', count: 10, connectionType: 'database' },
+      { client: 'order', server: 'orders-topic', count: 4, connectionType: 'messaging_system' },
+      { client: 'user', server: 'payment', count: 6, connectionType: 'virtual_node' },
+      { client: 'payment', server: 'ledger', count: 2 },
+      { client: 'pricing', server: 'catalog', count: 3, connectionType: 'unknown' },
+    ], []);
+    expect(graph.nodes.map(node => node.label).sort()).toEqual(['catalog', 'ledger', 'payment', 'pricing']);
+    expect(graph.nodes.every(node => node.kind === 'service')).toBe(true);
+    expect(graph.edges.map(edge => edge.meta.metricCount).sort()).toEqual([2, 3]);
+    expect(graph.nonServiceMetricCalls).toBe(3);
+    expect(svc(graph, 'payment')?.meta.metricCount).toBe(2);
+  });
+
+  it('keeps the cloud.resource_id veto for the aggregate unbindable marker and caps merged pods', () => {
+    const vetoed = buildTraceGraph([dbSpan({ cloudResourceId: 'unbindable', weight: 3 })], [], inventory());
+    const query = vetoed.edges.find(edge => edge.rel === 'queries')!;
+    expect(query.meta.instance_observations).toBeUndefined();
+    expect(query.meta.instance_observations_unbound).toBe(3);
+    const pods = Array.from({ length: 30 }, (_, i) => `pod-${i}`);
+    const graph = buildTraceGraph([
+      dbSpan({ spanId: 'a', k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: pods }),
+      dbSpan({ spanId: 'b', k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: pods.map(p => `${p}-x`) }),
+    ], [], inventory());
+    expect(graph.nodes.find(node => node.kind === 'workload')?.meta.pods).toHaveLength(50);
+  });
+});

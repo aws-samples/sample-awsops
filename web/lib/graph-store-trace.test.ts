@@ -86,6 +86,50 @@ describe('trusted host account DB bridge', () => {
   });
 });
 
+describe('source-aggregated trace edges', () => {
+  it('publishes span-pair edges a trace source aggregated beside its node rows', async () => {
+    const { pool, params } = mockPool([]);
+    const source = {
+      available: async () => true,
+      recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+        sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], windowStartMs: endMs - 3_600_000, windowEndMs: endMs,
+        items: [span({ service: 'checkout', startMs: endMs - 1_000, weight: 9 })],
+        calls: [{ client: 'frontend', server: 'checkout', count: 17, evidence: 'trace' as const, rel: 'calls' as const }],
+      }),
+    };
+    await rebuildTraceGraph(pool as never, [source]);
+    const services = params.filter(p => p[1] === 'service').map(p => JSON.parse(String(p[3])));
+    expect(services.map(meta => [meta.service, meta.sourceId]).sort()).toEqual([
+      ['checkout', 'clickhouse:3'], ['frontend', 'clickhouse:3'],
+    ]);
+    const edges = params.filter(p => p.includes('calls'));
+    expect(edges).toHaveLength(1);
+    expect(JSON.parse(String(edges[0][7]))).toEqual({ spanCount: 17, metricCount: 0 });
+  });
+});
+
+describe('trace node cap selection', () => {
+  it('keeps the calling service when many span-derived databases exceed the node cap', async () => {
+    const { pool, params } = mockPool([]);
+    const now = Date.now();
+    const spans = Array.from({ length: 260 }, (_, i) => span({
+      service: 'tenant-api', spanId: `s${i}`, kind: 'CLIENT', dbSystem: 'postgresql',
+      dbHost: `tenant-${i}.db.example.internal`, startMs: now - 1_000, weight: i + 1,
+    }));
+    const source = { available: async () => true, recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+      sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], items: spans,
+      windowStartMs: endMs - 3_600_000, windowEndMs: endMs }) };
+    await rebuildTraceGraph(pool as never, [source]);
+    const kinds = params.filter(p => p[1] === 'service' || p[1] === 'db').map(p => p[1]);
+    expect(kinds.filter(kind => kind === 'service')).toHaveLength(1);
+    expect(kinds).toHaveLength(200);
+    // Every published query edge keeps its caller, and the heaviest databases are the ones kept.
+    const hosts = params.filter(p => p[1] === 'db').map(p => JSON.parse(String(p[3])).host as string);
+    expect(hosts).toContain('tenant-259.db.example.internal');
+    expect(hosts).not.toContain('tenant-0.db.example.internal');
+  });
+});
+
 describe('instance observation publication', () => {
   const account = '111122223333', region = 'ap-northeast-2', instanceId = 'i-0123456789abcdef0';
   const infra = [

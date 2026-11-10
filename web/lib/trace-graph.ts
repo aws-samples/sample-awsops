@@ -32,6 +32,7 @@ export interface TraceEdge {
 }
 export interface InfraNodeLike { id: string; kind?: string; meta?: Record<string, unknown> | null }
 const INSTANCE_OBSERVATION_CAP = 200;
+const WORKLOAD_POD_CAP = 50;
 const INSTANCE_ID = /^i-(?:[0-9a-f]{8}|[0-9a-f]{17})$/;
 const EC2_ARN = /^arn:(aws(?:-[a-z0-9-]+)?):ec2:([a-z0-9-]+):(\d{12}):instance\/(i-(?:[0-9a-f]{8}|[0-9a-f]{17}))$/;
 
@@ -126,7 +127,8 @@ function observedInstanceDatabasePair(
   };
 }
 
-/** A sampled dependency graph. Counts describe evidence, never a probability of correctness. */
+/** A dependency graph from sampled spans, source-aggregated span rows and metric calls.
+ *  Counts describe evidence, never a probability of correctness. */
 export function buildTraceGraph(
   spans: TraceSpan[],
   metricCalls: ServiceGraphCall[],
@@ -179,11 +181,13 @@ export function buildTraceGraph(
   };
 
   for (const span of byId.values()) {
+    // An aggregate row stands for `weight` spans; a raw span for one.
+    const w = Number.isSafeInteger(span.weight) && span.weight! > 0 ? span.weight! : 1;
     const sid = serviceNode(span.service, span);
     const meta = nodes.get(sid)!.meta;
-    meta.spanCount = Number(meta.spanCount) + 1;
-    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + 1;
-    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + 1;
+    meta.spanCount = Number(meta.spanCount) + w;
+    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + w;
+    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + w;
     meta.sampledDurationMs = Number(meta.sampledDurationMs) + Math.max(0, Number(span.durationMs) || 0);
     const traceIds = meta.traceIds as string[];
     if (traceIds.length < 20 && !traceIds.includes(span.traceId)) traceIds.push(span.traceId);
@@ -219,21 +223,25 @@ export function buildTraceGraph(
           accountId: span.accountId ?? null, region: span.region ?? null,
           ...(infraRef ? { infra_ref: infraRef } : {}) },
       });
-      const queryEdge = edge(sid, id, 'queries');
+      const queryEdge = edge(sid, id, 'queries', w);
       // Only an outbound client call is evidence that this instance queried the database;
       // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
       const observation = span.kind === 'CLIENT'
         ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
-      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + 1;
+      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + w;
       else if (observation) {
+        observation.observation_count = w;
+        const first = Number.isSafeInteger(span.firstStartMs) && span.firstStartMs! >= 0
+          ? Math.min(span.firstStartMs!, observation.observed_at_ms) : observation.observed_at_ms;
+        observation.first_observed_at_ms = first;
         const observations = queryEdge.meta.instance_observations ??= [];
         let index = pairIndex.get(queryEdge);
         if (!index) pairIndex.set(queryEdge, index = { kept: new Map(), omitted: new Set() });
         const key = JSON.stringify([observation.instance_ref, observation.database_ref]);
         const existing = index.kept.get(key);
         if (existing) {
-          existing.observation_count++;
-          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, observation.observed_at_ms);
+          existing.observation_count += w;
+          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, first);
           if (observation.observed_at_ms > existing.observed_at_ms
             || (observation.observed_at_ms === existing.observed_at_ms
               && observation.correlation_id > existing.correlation_id)) {
@@ -260,8 +268,11 @@ export function buildTraceGraph(
           sourceId: span.sourceId ?? null, pods: [] },
       });
       const pods = nodes.get(id)!.meta.pods as string[];
-      if (span.k8sPod && !pods.includes(span.k8sPod)) pods.push(span.k8sPod);
-      edge(sid, id, 'runs_on');
+      for (const pod of span.k8sPods ?? (span.k8sPod ? [span.k8sPod] : [])) {
+        if (pods.length >= WORKLOAD_POD_CAP) break;
+        if (!pods.includes(pod)) pods.push(pod);
+      }
+      edge(sid, id, 'runs_on', w);
     }
     if (span.messagingSystem && span.messagingDestination) {
       const destination = span.messagingDestination.trim();
@@ -290,15 +301,33 @@ export function buildTraceGraph(
           broker: qualified ? null : span.messagingBroker ?? null,
           cluster: qualified ? null : span.k8sCluster ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null }) });
-      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes');
-      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes');
+      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes', w);
+      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes', w);
     }
   }
+  // Metric sources contribute service→service calls only. Tempo marks rows whose server is a
+  // database or queue (its label is a db.name or destination, not a service) or whose other side
+  // is uninstrumented (virtual_node); those are not service calls and are not drawn. Databases and
+  // queues come from trace spans, which carry their host-qualified identity.
+  let nonServiceMetricCalls = 0;
+  const metricWeight = (id: string, count: number) => {
+    const meta = nodes.get(id)!.meta;
+    meta.metricCount = Number(meta.metricCount ?? 0) + count;
+  };
   for (const call of metricCalls) {
     if (!Number.isFinite(call.count) || call.count <= 0) continue;
-    edge(serviceNode(call.client, call.clientIdentity ?? {}),
-      serviceNode(call.server, call.serverIdentity ?? {}), 'calls', 0, call.count);
+    if (call.evidence === 'trace') {
+      const client = serviceNode(call.client, call.clientIdentity ?? {});
+      const server = serviceNode(call.server, call.serverIdentity ?? {});
+      if (client !== server) edge(client, server, call.rel ?? 'calls', call.count, 0);
+      continue;
+    }
+    if (call.connectionType && call.connectionType !== 'unknown') { nonServiceMetricCalls++; continue; }
+    const client = serviceNode(call.client, call.clientIdentity ?? {});
+    const server = serviceNode(call.server, call.serverIdentity ?? {});
+    edge(client, server, 'calls', 0, call.count);
+    metricWeight(client, call.count); metricWeight(server, call.count);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
-    unresolvedMessaging };
+    unresolvedMessaging, nonServiceMetricCalls };
 }

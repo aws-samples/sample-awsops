@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
-import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
+import type { TraceSource, TraceRead, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
@@ -301,7 +301,7 @@ export async function rebuildTraceGraph(
     windowStartMs: startMs, windowEndMs: endMs,
   });
   // Adapter status, not a separate readiness probe, distinguishes absent config from a failed read.
-  const spanReads = await Promise.all(sources.map(async (source, i) => {
+  const spanReads = await Promise.all(sources.map(async (source, i): Promise<TraceRead> => {
     try { return await source.recentSpans(TRACE_WINDOW_MINS, TRACE_SPAN_CAP, endMs); }
     catch { return failed<TraceSpan>(`trace:${i}`); }
   }));
@@ -318,11 +318,13 @@ export async function rebuildTraceGraph(
   const cannotSweep = reads.some((read) => read.canSweep === false);
   const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
-  const calls = metricReads.flatMap((read) => read.items.map((call) => ({
-    ...call,
-    clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
-    serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
-  })));
+  // Aggregate trace sources return span-pair edges beside their node rows; same sourceId stamping.
+  const calls = [...spanReads.map((read) => ({ ...read, items: read.calls ?? [] })), ...metricReads]
+    .flatMap((read) => read.items.map((call) => ({
+      ...call,
+      clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
+      serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
+    })));
   // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
   // bounded reads continue through the existing atomic partial-snapshot publisher.
   if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
@@ -352,14 +354,23 @@ export async function rebuildTraceGraph(
     infraUnavailable = true;
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
-  // Preserve structurally important DB/queue/workload nodes before ranking service volume.
-  const rank = (kind: string) => kind === 'service' ? 0 : 1;
-  const nodes = graph.nodes.sort((a, b) => rank(b.kind) - rank(a.kind)
-    || Number(b.meta.spanCount ?? 0) - Number(a.meta.spanCount ?? 0)).slice(0, TRACE_NODE_CAP);
-  const kept = new Set(nodes.map((node) => node.id));
-  const edges = graph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
-    .sort((a, b) => (b.meta.spanCount + b.meta.metricCount) - (a.meta.spanCount + a.meta.metricCount))
-    .slice(0, TRACE_EDGE_CAP);
+  // Node selection follows edge volume: the heaviest edges claim both endpoints first, so a kept
+  // dependency (db/queue/workload) always keeps its caller and many low-volume dependencies cannot
+  // evict the services that use them. Remaining capacity goes to the remaining nodes by volume.
+  const weight = (edge: { meta: { spanCount: number; metricCount: number } }) => edge.meta.spanCount + edge.meta.metricCount;
+  const volume = (meta: Record<string, unknown>) => Number(meta.spanCount ?? 0) + Number(meta.metricCount ?? 0);
+  const byWeight = [...graph.edges].sort((a, b) => weight(b) - weight(a));
+  const kept = new Set<string>();
+  for (const edge of byWeight) {
+    const need = Number(!kept.has(edge.source)) + Number(!kept.has(edge.target));
+    if (need && kept.size + need <= TRACE_NODE_CAP) { kept.add(edge.source); kept.add(edge.target); }
+  }
+  for (const node of [...graph.nodes].sort((a, b) => volume(b.meta) - volume(a.meta))) {
+    if (kept.size >= TRACE_NODE_CAP) break;
+    kept.add(node.id);
+  }
+  const nodes = graph.nodes.filter((node) => kept.has(node.id));
+  const edges = byWeight.filter((edge) => kept.has(edge.source) && kept.has(edge.target)).slice(0, TRACE_EDGE_CAP);
   const nodeDrops = graph.nodes.length - nodes.length;
   const edgeDrops = graph.edges.length - edges.length;
   const incomplete = partial || infraUnavailable || nodeDrops > 0 || edgeDrops > 0

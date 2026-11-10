@@ -26,7 +26,8 @@ editing this catalog forces a rebuild even when the datasource's schema is uncha
 
 # v3: preserve span operation/status/links and metric identity scopes. Rebuild cached queries so
 # source adapters receive metadata before aggregation, and both time bounds share one anchor.
-CATALOG_VERSION = "v3"
+# v4: service-graph PromQL keeps connection_type; rebuild so indexed instances pick it up.
+CATALOG_VERSION = "v4"
 
 # The OTel ClickHouse exporter's default `otel_traces` column shape. A table matching this column
 # SET (regardless of its actual name) is treated as the span source.
@@ -121,7 +122,9 @@ def _servicegraph_calls(kind, schema):
     if isinstance(schema, dict):
         metrics = {m for m in (schema.get("metrics") or []) if isinstance(m, str)}
     if _SERVICEGRAPH_METRIC in metrics:
-        labels = ",".join(("client", "server") + _IDENTITY_LABELS)
+        # connection_type separates database/messaging/virtual-node rows from service calls; dropping
+        # it would merge a db.name server label into a same-named service node.
+        labels = ",".join(("client", "server", "connection_type") + _IDENTITY_LABELS)
         expr = f"sum by ({labels}) (increase({_SERVICEGRAPH_METRIC}[{{window}}m]))"
         return {"query_key": "servicegraph_calls", "status": "ready",
                 "query": {"tool": tool, "mapper": "servicegraph_v1", "args_template": {"query": expr}},
