@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Graph refresh after a web restart: when a rebuild finds an inventory collection still in progress, the background graph timer retries every two minutes until the collection finishes (bounded by the collector's seven-minute limit) instead of keeping the previous request-flow, infrastructure and service-map graphs until the timing happens to shift, which could last indefinitely after a restart.
 - Native observability connectors: connection tests verify bounded query access instead of public health endpoints. Explicit instance reads require ID-bound credentials; migrated defaults must be backfilled through the administrator save flow before rollout. Prometheus and Mimir default to a 10-second execution ceiling, configurable per datasource and tightened by Explore; provider response bytes and body reads are bounded. Valid short Jaeger trace IDs are retained, and local loss, search saturation and unknown results carry distinct completeness evidence.
 - Security scanning hardening: deployment workflows select only explicit preview secrets; chat history deletion hides internal errors and session IDs always use cryptographic randomness. The configurator escapes literal HCL strings, screenshot login requires exact configured origins and valid TLS, presenter titles retain text semantics, datasource hostname classification checks the AWS DNS suffix including root-dot and China-partition forms, and rotation diagnostics omit unrelated secret identifiers.
 - AgentCore Gateway inbound authentication: the provisioner creates every section gateway with IAM (SigV4) inbound authentication instead of none. Because a gateway's authorizer type cannot be changed after creation, `make agentcore` fails on any existing gateway that still accepts unauthenticated calls, and the AgentCore reference documents the operator replacement procedure.
@@ -718,6 +719,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### 수정
 
+- web 재시작 후 그래프 갱신: 그래프 재생성 시점에 인벤토리 수집이 진행 중이면 백그라운드 타이머가 수집이 끝날 때까지 2분 간격으로 다시 시도합니다(수집기의 7분 제한까지). 이전에는 재시작 시각에 따라 요청 흐름·인프라·서비스 맵 그래프가 계속 이전 상태로 남을 수 있었습니다.
 - 외부 관측 데이터소스: 연결 테스트가 공개 상태 엔드포인트 대신 제한된 실제 조회 권한을 검증합니다. 인스턴스 ID 조회는 해당 ID의 자격 증명만 허용하며, 이전 기본 연결은 배포 전에 관리자 저장 흐름으로 자격 증명을 보완해야 합니다. Prometheus·Mimir의 기본 실행 제한은 10초이며 데이터소스별 설정과 Explore의 더 짧은 제한을 적용합니다. 응답 크기와 본문 읽기 시간을 제한하고, 짧은 Jaeger trace ID를 보존하며 실제 누락·조회 한도 도달·판별 불가 결과를 구분합니다.
 - 보안 검사 개선: 배포 워크플로가 명시된 미리보기 시크릿만 선택하며, 채팅 기록 삭제 오류는 내부 정보를 숨기고 세션 ID는 암호학적 난수만 사용합니다. 설정 도구는 HCL 문자열을 안전하게 인코딩하고, 스크린샷 로그인은 지정한 정확한 출처와 유효한 TLS를 요구합니다. 발표자 제목은 텍스트로 보존하며, 데이터소스 호스트 분류는 DNS 루트 점과 중국 파티션을 포함한 AWS 도메인 접미사를 확인하고, 회전 진단에서는 무관한 시크릿 식별자를 생략합니다.
 - AgentCore Gateway 유입 인증: 프로비저너가 모든 섹션 Gateway를 인증 없음 대신 IAM(SigV4) 유입 인증으로 생성합니다. Gateway의 인증 방식은 생성 후 바꿀 수 없으므로, 아직 인증 없는 호출을 받는 기존 Gateway가 있으면 `make agentcore`가 실패하며, 운영자 교체 절차는 AgentCore 참조 문서에 안내합니다.

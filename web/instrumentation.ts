@@ -23,6 +23,7 @@ export async function register() {
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
     const { executeGraphLayer } = await import('./lib/graph-execution');
+    const { inventoryRetryPlan, needsInventoryRetry, withInventoryRetry } = await import('./lib/graph-rebuild-retry');
     const pool = getPool();
     const execute = async (stage: string, action: () => ReturnType<typeof rebuildGraph>) => {
       return executeGraphLayer(stage, action, (line, failed) => console[failed ? 'error' : 'log'](line));
@@ -34,18 +35,21 @@ export async function register() {
     // would pile up duplicate concurrent read/source calls. Skipping a tick (not queuing it) is fine:
     // the next interval fires regardless, and a rebuild is idempotent.
     let running = false;
-    const run = async () => {
-      if (running) return;
+    // Returns whether a flow/infra layer waited on a running inventory producer.
+    const cycle = async (): Promise<boolean> => {
+      if (running) return false;
       running = true;
+      let waited = false;
       try {
-        await execute('flow', () => rebuildGraph(pool));
+        const flow = await execute('flow', () => rebuildGraph(pool));
         const infra = await execute('infra', () => rebuildInfraGraph(pool));
+        waited = needsInventoryRetry([flow, infra]);
         const qualification = infra.selfInfraStatus === 'degraded' || infra.selfInfraStatus === 'stale' ? infra.selfInfraStatus : undefined;
         if (!infra.selfInfraComplete && !qualification) {
           console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
             : '[graph-rebuild] trace skipped: infra publication incomplete');
           await execute('trace', () => recordTraceDependencySkip(pool));
-          return;
+          return waited;
         }
         if (qualification) console.error(`[graph-rebuild] trace qualified: self infra ${qualification}`);
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
@@ -67,9 +71,14 @@ export async function register() {
       } finally {
         running = false;
       }
+      return waited;
     };
+    // A cycle withheld by a running inventory producer retries in bounded 2-minute steps across the
+    // producer's runtime budget (see lib/graph-rebuild-retry.ts); otherwise a restart can
+    // phase-lock every tick onto the sync.
+    const run = withInventoryRetry(cycle, inventoryRetryPlan(mins));
 
-    setTimeout(run, 60_000); // first attempt ~60s after boot; interval ticks keep the same overlap guard
-    setInterval(run, mins * 60_000);
+    setTimeout(() => run(), 60_000); // first attempt ~60s after boot; interval ticks keep the same overlap guard
+    setInterval(() => run(), mins * 60_000);
   }
 }

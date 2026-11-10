@@ -57,7 +57,8 @@ function run(options: Record<string, unknown> = {}) {
         if (sql.includes('FROM inventory_sync_runs')) {
           const now = fixtureNow - (stage === 'infra' && input.infraOutcome === 'stale' ? 3600000 : 0);
           return { rows: args[0].map(resource_type => ({ resource_type, account_id: 'self',
-            status: stage === 'infra' && input.infraOutcome === 'retained' && resource_type === 'vpc' ? 'failed' : 'succeeded',
+            status: stage === 'infra' && input.infraOutcome === 'retained' && resource_type === 'vpc' ? 'failed'
+              : stage === 'infra' && input.infraOutcome === 'running' && resource_type === 'vpc' ? 'running' : 'succeeded',
             row_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
             unknown_attribute_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0, version: '1',
             started_at: new Date(now - 2000).toISOString(),
@@ -160,6 +161,23 @@ function run(options: Record<string, unknown> = {}) {
 }
 
 const cycles = (timer: boolean) => timer ? 2 : 1;
+describe('inventory-running retry on the timer', () => {
+  const env = { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '15' };
+  it('starts one bounded retry chain when a running inventory producer withholds infra', () => {
+    const result = run({ timer: true, infraOutcome: 'running', env });
+    expect(result.errors).toContain('[graph-rebuild] trace skipped: infra publication incomplete');
+    const infra = result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'));
+    expect(JSON.parse(infra.split(': ').slice(1).join(': ')).reasons).toContain('inventory_running');
+    // Boot timeout + interval, then exactly one pending 2-minute retry despite later ticks also waiting.
+    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 900000], ['timeout', 120000]]);
+  });
+
+  it('does not retry a failed (not running) producer', () => {
+    const result = run({ timer: true, infraOutcome: 'retained', env });
+    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 900000]]);
+  });
+});
+
 describe('graph execution and publication contract', () => {
   it.each([false, true])('uses real publisher totals and writes trace (timer=%s)', timer => {
     const result = run({ timer });

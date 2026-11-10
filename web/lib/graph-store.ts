@@ -69,7 +69,7 @@ export const SELF_INFRA_STATES = ['complete', 'degraded', 'stale', 'retained', '
 export const GRAPH_REBUILD_REASONS: ReadonlySet<string> = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
   'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
   'graph_limit', 'account_failed', 'rebuild_deadline', 'collection_ok', 'collection_empty', 'collection_partial',
-  'collection_unavailable', 'collection_error']);
+  'collection_unavailable', 'collection_error', 'inventory_running']);
 
 const emptyResult = (): GraphRebuildResult =>
   ({ nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] });
@@ -207,6 +207,12 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
           counts ??= await inventoryCounts(pool, types));
         attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
         if (snapshot.truncated) reason('snapshot_limit');
+        // A producer that is still writing withholds publication only until it finalizes; the
+        // timer uses this reason to retry once after the run instead of waiting a full interval.
+        const sources = Array.isArray(attempt.details.sources) ? attempt.details.sources as { producerStatus?: unknown }[] : [];
+        if (!attempt.publish && sources.some(source => source?.producerStatus === 'running')) {
+          reason('inventory_running');
+        }
         const graph = attempt.publish ? build(snapshot.rows, account) : { nodes: [], edges: [] };
         if (graph.nodes.length > 4000 || graph.edges.length > 8000
           || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
