@@ -162,18 +162,19 @@ function run(options: Record<string, unknown> = {}) {
 
 const cycles = (timer: boolean) => timer ? 2 : 1;
 describe('inventory-running retry on the timer', () => {
-  it('schedules one bounded retry when a running inventory producer withholds infra', () => {
-    const result = run({ timer: true, infraOutcome: 'running' });
+  const env = { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '15' };
+  it('starts one bounded retry chain when a running inventory producer withholds infra', () => {
+    const result = run({ timer: true, infraOutcome: 'running', env });
     expect(result.errors).toContain('[graph-rebuild] trace skipped: infra publication incomplete');
     const infra = result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'));
     expect(JSON.parse(infra.split(': ').slice(1).join(': ')).reasons).toContain('inventory_running');
-    // Boot timeout + interval, then exactly one retry timeout despite later ticks also waiting.
-    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 60000], ['timeout', 60000]]);
+    // Boot timeout + interval, then exactly one pending 2-minute retry despite later ticks also waiting.
+    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 900000], ['timeout', 120000]]);
   });
 
-  it('does not schedule a retry for a failed (not running) producer', () => {
-    const result = run({ timer: true, infraOutcome: 'retained' });
-    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 60000]]);
+  it('does not retry a failed (not running) producer', () => {
+    const result = run({ timer: true, infraOutcome: 'retained', env });
+    expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 900000]]);
   });
 });
 

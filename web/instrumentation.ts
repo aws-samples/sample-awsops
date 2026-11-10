@@ -23,7 +23,7 @@ export async function register() {
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
     const { executeGraphLayer } = await import('./lib/graph-execution');
-    const { inventoryRetryDelayMs, needsInventoryRetry, withInventoryRetry } = await import('./lib/graph-rebuild-retry');
+    const { inventoryRetryPlan, needsInventoryRetry, withInventoryRetry } = await import('./lib/graph-rebuild-retry');
     const pool = getPool();
     const execute = async (stage: string, action: () => ReturnType<typeof rebuildGraph>) => {
       return executeGraphLayer(stage, action, (line, failed) => console[failed ? 'error' : 'log'](line));
@@ -73,9 +73,10 @@ export async function register() {
       }
       return waited;
     };
-    // A cycle withheld by a running inventory producer retries once after it should have finished
-    // (see lib/graph-rebuild-retry.ts); otherwise a restart can phase-lock every tick onto the sync.
-    const run = withInventoryRetry(cycle, inventoryRetryDelayMs(mins));
+    // A cycle withheld by a running inventory producer retries in bounded 2-minute steps across the
+    // producer's runtime budget (see lib/graph-rebuild-retry.ts); otherwise a restart can
+    // phase-lock every tick onto the sync.
+    const run = withInventoryRetry(cycle, inventoryRetryPlan(mins));
 
     setTimeout(() => run(), 60_000); // first attempt ~60s after boot; interval ticks keep the same overlap guard
     setInterval(() => run(), mins * 60_000);
