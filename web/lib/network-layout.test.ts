@@ -66,6 +66,16 @@ describe('layoutNetwork', () => {
     expect(layoutNetwork(detail)).toEqual(layoutNetwork(detail));
   });
 
+  it('places regional hubs above VPC cards so links do not run through card labels', () => {
+    const { byId } = check(fleet);
+    for (const hub of fleet.nodes.filter(n => n.kind === 'tgw' && n.parent)) {
+      const hubBox = byId.get(hub.id)!;
+      for (const vpc of fleet.nodes.filter(n => n.kind === 'vpc' && n.parent === hub.parent)) {
+        expect(hubBox.y + hubBox.height).toBeLessThan(byId.get(vpc.id)!.y);
+      }
+    }
+  });
+
   it('puts out-of-scope stubs above account boxes', () => {
     const { placed } = check(scoped);
     const top = placed.filter((p) => !p.parentId);
