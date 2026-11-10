@@ -6,8 +6,11 @@ import { useMemo, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Handle, Position, type Node, type Edge, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { highlightClosure, searchMatches, type MapGraph, type MapKind, type MapNode } from '@/lib/infra-map';
+import { searchMatches, type MapGraph, type MapKind, type MapNode } from '@/lib/infra-map';
+import { selectGraphPaths } from '@/lib/graph-display';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import useGraphViewport from './useGraphViewport';
+import { layoutFlow } from '@/lib/flow-layout';
 
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 const Background = dynamic(() => import('@xyflow/react').then((m) => m.Background), { ssr: false });
@@ -72,10 +75,10 @@ export function MapLegend({ graph, theme }: { graph: MapGraph; theme: 'light' | 
   );
 }
 
-interface CardData extends Record<string, unknown> { mapNode: MapNode; theme: 'light' | 'dark' }
+interface CardData extends Record<string, unknown> { mapNode: MapNode; theme: 'light' | 'dark'; vertical: boolean }
 
 function CardNode({ data }: NodeProps) {
-  const { mapNode: n, theme } = data as CardData;
+  const { mapNode: n, theme, vertical } = data as CardData;
   const [lb, lbo, db, dbo] = KIND_COLORS[n.kind];
   const [bg, border] = theme === 'dark' ? [db, dbo] : [lb, lbo];
   return (
@@ -83,8 +86,8 @@ function CardNode({ data }: NodeProps) {
       className="rounded-lg px-2.5 py-1.5"
       style={{ width: CARD_W, background: bg, border: `1.5px solid ${border}`, color: theme === 'dark' ? '#E8EDF2' : '#16202A' }}
     >
-      <Handle type="target" position={Position.Left} style={{ opacity: 0, pointerEvents: 'none' }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="target" position={vertical ? Position.Top : Position.Left} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="source" position={vertical ? Position.Bottom : Position.Right} style={{ opacity: 0, pointerEvents: 'none' }} />
       <div className="flex items-center gap-1.5">
         {n.status && <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: STATUS_DOT[n.status] }} />}
         <span className="truncate text-[12px] font-semibold" title={n.label}>{n.label}</span>
@@ -102,32 +105,39 @@ export default function MapCanvas({ graph, columns, query, theme, onSelect }:
   { graph: MapGraph; columns: { title: string }[]; query: string; theme: 'light' | 'dark'; onSelect?: (node: MapNode | null) => void }) {
   const { tt } = useI18n();
   const [selected, setSelected] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
 
-  const lit = useMemo(() => {
+  const visible = useMemo(() => {
     const m = searchMatches(graph, query);
-    if (m.size > 0) return m; // an active search wins over a prior selection
-    if (query.trim()) return null; // searching with no hits → dim nothing (empty-result state)
-    if (selected && graph.nodes.some((n) => n.id === selected)) return highlightClosure(graph, selected);
-    return null;
+    if (query.trim()) return selectGraphPaths(graph, [...m]);
+    if (selected && graph.nodes.some(n => n.id === selected)) return selectGraphPaths(graph, [selected]);
+    return graph;
   }, [graph, selected, query]);
+  const roots = graph.nodes.filter(n => n.kind === 'vpc');
+  const chooseVpc = roots.length > 1 && graph.nodes.length > 40 && !selected && !query.trim() && !showAll;
+  const viewport = useGraphViewport(visible.nodes, visible.edges);
 
   const { nodes, edges } = useMemo(() => {
     const stack: number[] = columns.map(() => 0);
-    const nodes: Node[] = graph.nodes.map((n) => {
+    const verticalPositions = viewport.vertical ? new Map(layoutFlow(visible, {
+      rankdir: 'TB', nodeSize: () => ({ width: CARD_W, height: 62 }),
+    }).map(p => [p.id, p])) : null;
+    const nodes: Node[] = visible.nodes.map((n) => {
       const y = stack[n.column] * ROW_H;
       stack[n.column] += 1;
       return {
         id: n.id,
         type: 'card',
-        position: { x: n.column * COL_X, y },
-        data: { mapNode: n, theme } satisfies CardData,
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-        style: { opacity: lit && !lit.has(n.id) ? 0.22 : 1 },
+        position: verticalPositions?.get(n.id) ?? { x: n.column * COL_X, y },
+        data: { mapNode: n, theme, vertical: viewport.vertical } satisfies CardData,
+        sourcePosition: viewport.vertical ? Position.Bottom : Position.Right,
+        targetPosition: viewport.vertical ? Position.Top : Position.Left,
+        style: { width: CARD_W, height: 62 },
       };
     });
     // Column titles as static nodes so they pan/zoom with the canvas.
     columns.forEach((c, i) => {
+      if (viewport.vertical || !visible.nodes.some(n => n.column === i)) return;
       nodes.push({
         id: `__col${i}`, type: 'default', position: { x: i * COL_X, y: TITLE_Y }, draggable: false, selectable: false,
         data: { label: c.title },
@@ -137,16 +147,15 @@ export default function MapCanvas({ graph, columns, query, theme, onSelect }:
         },
       });
     });
-    const edges: Edge[] = graph.edges.map((e, i) => {
-      const on = !lit || (lit.has(e.source) && lit.has(e.target));
+    const edges: Edge[] = visible.edges.map((e, i) => {
       return {
         id: `e${i}:${e.source}->${e.target}`, source: e.source, target: e.target,
         type: 'smoothstep',
-        style: { stroke: theme === 'dark' ? '#586773' : '#9AA6B2', opacity: on ? 0.9 : 0.12, strokeWidth: on && lit ? 1.8 : 1.2 },
+        style: { stroke: theme === 'dark' ? '#586773' : '#9AA6B2', strokeWidth: 1.4 },
       };
     });
     return { nodes, edges };
-  }, [graph, columns, lit, theme]);
+  }, [visible, columns, theme, viewport.vertical]);
 
   const handleNodeClick = useCallback((_: unknown, node: Node) => {
     if (node.id.startsWith('__col')) return;
@@ -158,23 +167,39 @@ export default function MapCanvas({ graph, columns, query, theme, onSelect }:
   }, [graph, onSelect]);
 
   return (
-    <div className="relative min-h-0 flex-1">
-      {selected && (
-        <button
-          onClick={() => { setSelected(null); onSelect?.(null); }}
-          className="absolute right-3 top-3 z-10 rounded-md border border-ink-200 bg-card px-2 py-1 text-[11px] hover:bg-ink-50"
-        >
-          {tt('선택 해제')}
-        </button>
-      )}
-      <ReactFlow
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-ink-100 px-4 py-2 text-xs">
+        <label>VPC <select aria-label={tt('VPC 선택')} value={roots.some(n => n.id === selected) ? selected! : ''}
+          onChange={e => { setSelected(e.target.value || null); onSelect?.(graph.nodes.find(n => n.id === e.target.value) ?? null); }}
+          className="max-w-[240px] rounded-md border border-ink-200 bg-card px-2 py-1">
+          <option value="">{tt('전체')}</option>{roots.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
+        </select></label>
+        <span className="text-ink-500">{chooseVpc ? `VPC: ${roots.length}` : `${tt('표시')}: ${visible.nodes.length}/${graph.nodes.length} · ${tt('연결')}: ${visible.edges.length}/${graph.edges.length}`}</span>
+        <button type="button" onClick={() => { setSelected(null); setShowAll(v => !v); onSelect?.(null); }}
+          className="ml-auto rounded-md border border-ink-200 bg-card px-2 py-1">{tt(showAll ? 'VPC 중심 보기' : '전체 그래프')}</button>
+        {selected && <button type="button" onClick={() => { setSelected(null); onSelect?.(null); }}
+          className="rounded-md border border-ink-200 bg-card px-2 py-1">{tt('선택 해제')}</button>}
+      </div>
+      <div ref={viewport.container} className="relative min-h-64 flex-1">
+      {chooseVpc ? <div className="h-full overflow-y-auto p-4">
+        <p className="mb-3 text-sm text-ink-600">{tt('VPC를 선택하면 연결된 게이트웨이·서브넷·리소스를 표시합니다.')}</p>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {roots.map(n => <button key={n.id} type="button" onClick={() => { setSelected(n.id); onSelect?.(n); }}
+            className="rounded-lg border border-ink-200 bg-card p-3 text-left hover:border-brand-400">
+            <span className="block truncate text-sm font-semibold" title={n.label}>{n.label}</span>
+            <span className="mt-1 block truncate text-xs text-ink-500">{n.sub}</span>
+            <span className="mt-2 block text-xs text-brand-700">{tt('경로 보기 →')}</span>
+          </button>)}
+        </div>
+      </div> : !visible.nodes.length ? <div className="p-6 text-sm text-ink-500">{tt('검색 결과가 없습니다.')}</div> : <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
         onPaneClick={() => { setSelected(null); onSelect?.(null); }}
         fitView
-        fitViewOptions={{ padding: 0.12 }}
+        onInit={viewport.onInit}
+        fitViewOptions={{ padding: 0.16, maxZoom: 1 }}
         minZoom={0.05}
         colorMode={theme}
         proOptions={{ hideAttribution: true }}
@@ -182,8 +207,9 @@ export default function MapCanvas({ graph, columns, query, theme, onSelect }:
         nodesConnectable={false}
       >
         <Background />
-        <Controls />
-      </ReactFlow>
+        <Controls showInteractive={false} />
+      </ReactFlow>}
+      </div>
     </div>
   );
 }

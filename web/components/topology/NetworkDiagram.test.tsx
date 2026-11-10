@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { selectableVpcKey, toFlowElements } from './NetworkDiagram';
 import { buildNetworkTopology } from '@/lib/network-topology';
 import type { NetRow } from '@/lib/network-topology-types';
+import { networkDisplay } from '@/lib/network-display';
 
 const A = '111111111111', B = '222222222222', R = 'ap-northeast-2';
 const row = (resource_type: string, account_id: string, resource_id: string, data: Record<string, unknown>): NetRow =>
@@ -54,5 +55,31 @@ describe('NetworkDiagram elements', () => {
     const pcx = toFlowElements(all, 'dark').edges.find((e) => e.id === 'edge:pcx:pcx-11111111')!;
     expect(pcx.style?.strokeDasharray).toBe('6 4');
     expect(pcx.style?.stroke).toBe('#00A4A6');
+  });
+
+  it('searches source names while retaining cross-account context and nested parents', () => {
+    const all = buildNetworkTopology(rows, { hostAccountId: A, aliases: {}, selection: { accounts: '__all__', vpcs: [] } });
+    const filtered = networkDisplay(all, 'hub', false);
+    expect(filtered.nodes.some(n => n.label === 'peer')).toBe(false);
+    expect(filtered.nodes.some(n => n.kind === 'tgw')).toBe(true);
+    const ids = new Set(filtered.nodes.map(n => n.id));
+    expect(filtered.nodes.every(n => !n.parent || ids.has(n.parent))).toBe(true);
+    expect(filtered.omitted).toBe(all.omitted);
+    expect(filtered.truncated).toBe(all.truncated);
+    expect(networkDisplay(all, 'missing-resource', false).nodes).toEqual([]);
+  });
+
+  it('connects facing card sides and draws links below labels', () => {
+    const diagram = toFlowElements({
+      ...topology,
+      nodes: [
+        { id: 'vpc', kind: 'vpc', parent: null, label: 'VPC', accountId: A, region: R },
+        { id: 'tgw', kind: 'tgw', parent: null, label: 'Hub', accountId: A, region: R },
+      ],
+      edges: [{ id: 'link', source: 'tgw', target: 'vpc', kind: 'tgw', recordId: 'attachment', crossAccount: false }],
+    }, 'light');
+    expect(diagram.edges[0].sourceHandle).toBe('left-source');
+    expect(diagram.edges[0].targetHandle).toBe('right-target');
+    expect(diagram.edges[0].zIndex).toBeLessThan(diagram.nodes.find(n => n.id === 'vpc')!.zIndex!);
   });
 });

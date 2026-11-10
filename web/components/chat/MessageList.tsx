@@ -138,7 +138,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                   : null)
                 : m.streaming
                   ? <StreamingMarkdown content={m.content} />
-                  : <Markdown>{m.content}</Markdown>}
+                  : <Markdown visualizeTables>{m.content}</Markdown>}
             {m.streaming && (!m.content && m.status ? null : <span className="ml-0.5 inline-block h-3 w-[6px] translate-y-0.5 animate-pulse bg-brand-500 align-middle" />)}
             {!me && !m.streaming && sec && (
               <div className="mt-3 border-t border-ink-100 pt-2.5">

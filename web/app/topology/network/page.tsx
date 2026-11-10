@@ -7,6 +7,7 @@ import NetworkDiagram from '@/components/topology/NetworkDiagram';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useTheme } from '@/lib/use-theme';
 import { MAX_DETAIL_VPCS, type NetworkTopology } from '@/lib/network-topology-types';
+import { networkDisplay } from '@/lib/network-display';
 
 interface AccountRow { accountId: string; alias: string; isHost: boolean; enabled: boolean }
 
@@ -27,6 +28,9 @@ function NetworkTopologyPageInner() {
   const [topology, setTopology] = useState<NetworkTopology | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState('');
+  const [connectedOnly, setConnectedOnly] = useState(false);
+  const shown = topology && !detail ? networkDisplay(topology, search, connectedOnly) : topology;
 
   useEffect(() => {
     fetch('/api/accounts').then((r) => (r.ok ? r.json() : null))
@@ -118,14 +122,22 @@ function NetworkTopologyPageInner() {
         {o && o.resourcesCapped > 0 && <span>{tt('표시 한도로 묶인 리소스')}: {o.resourcesCapped}</span>}
         {topology?.truncated && <span className="text-amber-600">{tt('인벤토리 읽기 한도에 도달해 일부만 표시합니다.')}</span>}
       </div>
+      {!detail && <div className="flex flex-wrap items-center gap-3 border-b border-ink-100 px-4 py-2 text-xs">
+        <input aria-label={tt('네트워크 리소스 검색')} placeholder={tt('VPC·계정·리전 검색')} value={search}
+          onChange={e => setSearch(e.target.value)} className="min-w-0 flex-1 rounded-md border border-ink-200 bg-card px-3 py-2 sm:max-w-xs" />
+        <label className="flex items-center gap-1.5"><input type="checkbox" checked={connectedOnly}
+          onChange={e => setConnectedOnly(e.target.checked)} />{tt('연결된 리소스만')}</label>
+        {shown && topology && <span className="text-ink-500">{tt('표시')}: {shown.nodes.filter(n => ['vpc', 'external', 'tgw'].includes(n.kind)).length}/{topology.nodes.filter(n => ['vpc', 'external', 'tgw'].includes(n.kind)).length}
+          {' · '}{tt('연결')}: {shown.edges.length}/{topology.edges.length}</span>}
+      </div>}
       <div className="relative min-h-0 flex-1">
         {busy && <div className="absolute left-4 top-2 z-10 text-[12px] text-ink-400">{tt('로딩 중…')}</div>}
         {error && <div className="p-6 text-[13px] text-ink-500">{tt(error === 'invalid' ? '선택 범위가 올바르지 않습니다.' : '네트워크 토폴로지를 불러오지 못했습니다.')}</div>}
-        {topology && !error && (detail && !topology.nodes.some((n) => n.kind === 'vpc')
-          ? <div className="p-6 text-[13px] text-ink-500">{tt(topology.truncated ? '인벤토리 읽기 한도에 도달해 선택한 VPC를 불러오지 못했을 수 있습니다.' : '선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.')}</div>
-          : topology.nodes.length
-            ? <NetworkDiagram topology={topology} theme={theme} onSelectVpc={onSelectVpc} />
-            : <div className="p-6 text-[13px] text-ink-500">{tt('표시할 VPC가 없습니다. 인벤토리 동기화 상태를 확인하세요.')}</div>)}
+        {shown && !error && (detail && !shown.nodes.some((n) => n.kind === 'vpc')
+          ? <div className="p-6 text-[13px] text-ink-500">{tt(shown.truncated ? '인벤토리 읽기 한도에 도달해 선택한 VPC를 불러오지 못했을 수 있습니다.' : '선택한 VPC가 인벤토리에 없습니다. 전체 맵에서 다시 선택하세요.')}</div>
+          : shown.nodes.length
+            ? <NetworkDiagram topology={shown} theme={theme} onSelectVpc={onSelectVpc} />
+            : <div className="p-6 text-[13px] text-ink-500">{tt(search.trim() || connectedOnly ? '선택한 표시 조건에 맞는 리소스가 없습니다.' : '표시할 VPC가 없습니다. 인벤토리 동기화 상태를 확인하세요.')}</div>)}
       </div>
     </div>
   );

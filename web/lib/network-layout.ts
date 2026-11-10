@@ -67,6 +67,17 @@ export function layoutNetwork(t: NetworkTopology): Placed[] {
         let x = 0, h = 0;
         for (const { i } of azs) { pos[i] = { x, y: y0 }; x += sizes[i].w + GAP; h = Math.max(h, sizes[i].h); }
         content = { pos, w: Math.max(top.w, azs.length ? x - GAP : 0), h: y0 + h };
+      } else if (n.kind === 'region' && t.level === 'fleet' && kids.some(k => k.kind === 'tgw')) {
+        // Regional hubs get their own band; attachments branch to VPCs below.
+        const hubs = kids.map((k, i) => ({ k, i })).filter(({ k }) => k.kind === 'tgw');
+        const others = kids.map((k, i) => ({ k, i })).filter(({ k }) => k.kind !== 'tgw');
+        const top = flow(hubs.map(({ i }) => sizes[i]), ACCOUNT_INNER);
+        const bottom = flow(others.map(({ i }) => sizes[i]), ACCOUNT_INNER);
+        const w = Math.max(top.w, bottom.w), y0 = top.h + GAP * 3;
+        const pos: Pos[] = new Array(kids.length);
+        hubs.forEach(({ i }, j) => { pos[i] = { x: top.pos[j].x + (w - top.w) / 2, y: top.pos[j].y }; });
+        others.forEach(({ i }, j) => { pos[i] = { x: bottom.pos[j].x, y: y0 + bottom.pos[j].y }; });
+        content = { pos, w, h: others.length ? y0 + bottom.h : top.h };
       } else {
         content = flow(sizes, ACCOUNT_INNER);
       }

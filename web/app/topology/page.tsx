@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
-import { Background, Controls, MiniMap, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
+import { Background, Controls, MiniMap, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
@@ -18,6 +18,8 @@ import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { infraNodeId } from '@/lib/graph-identity';
+import { selectGraphPaths } from '@/lib/graph-display';
+import useGraphViewport from '@/components/topology/useGraphViewport';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -340,6 +342,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
   const [query, setQuery] = useState('');
+  const [showWholeGraph, setShowWholeGraph] = useState(false);
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
@@ -539,31 +542,17 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
     return gFull;
   }, [full, entryId, clusterFilter]);
 
-  const { nodes, edges } = useMemo(() => {
+  const focusedGraph = useMemo(() => {
     if (e2e) return { nodes: [], edges: [] };
-    const gFull = scopedGraph;
-    // Focus: clicking a node collapses the view to ITS connected path (up + downstream), then
-    // re-lays-out and re-centers (imperative fitView in the effect below) so the active subgraph
-    // fills the screen — instead of dimming the rest and letting it overflow/clip off one screen.
+    return selected && scopedGraph.nodes.some(n => n.id === selected.id)
+      ? selectGraphPaths(scopedGraph, [selected.id]) : scopedGraph;
+  }, [scopedGraph, selected, e2e]);
+  const viewport = useGraphViewport(focusedGraph.nodes, focusedGraph.edges, 1.2);
+  const { nodes, edges } = useMemo(() => {
+    const g = focusedGraph;
     const focusId = selected?.id ?? null;
-    let g = gFull;
-    if (focusId && gFull.nodes.some((n) => n.id === focusId)) {
-      const adj = new Map<string, string[]>();
-      for (const e of gFull.edges) {
-        (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
-        (adj.get(e.target) ?? adj.set(e.target, []).get(e.target)!).push(e.source);
-      }
-      const connected = new Set([focusId]);
-      const q = [focusId];
-      while (q.length) { const c = q.shift()!; for (const nb of adj.get(c) ?? []) if (!connected.has(nb)) { connected.add(nb); q.push(nb); } }
-      g = {
-        nodes: gFull.nodes.filter((n) => connected.has(n.id)),
-        edges: gFull.edges.filter((e) => connected.has(e.source) && connected.has(e.target)),
-      };
-    }
-    // In focus mode lay out top→bottom (TB): the active path is a thin chain that fits the tall,
-    // narrow column left of the docked detail panel far better than a wide LR row. Full graph = LR.
-    const rankdir: 'LR' | 'TB' = focusId ? 'TB' : 'LR';
+    // Narrow canvases and focused paths use vertical layout with matching handles.
+    const rankdir: 'LR' | 'TB' = focusId || viewport.vertical ? 'TB' : 'LR';
     const pos = Object.fromEntries(layoutFlow(g, { rankdir }).map((p) => [p.id, p]));
 
     const nodes: Node[] = g.nodes.map((n) => {
@@ -594,16 +583,10 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       style: e.confidence === 'inferred' ? { strokeDasharray: '4 4' } : {},
     }));
     return { nodes, edges };
-  }, [scopedGraph, dark, selected, e2e]);
+  }, [focusedGraph, dark, selected, viewport.vertical]);
 
-  // Re-center imperatively (NOT by remounting — a remount destroys the user's pan/zoom and makes
-  // dragging feel broken). Keep one mounted instance; refit when the entry filter or focus changes.
-  // rAF defers the fit until after the detail panel has docked and the layout has settled.
-  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
-  useEffect(() => {
-    const id = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 300, maxZoom: 1.2 }));
-    return () => cancelAnimationFrame(id);
-  }, [entryId, clusterFilter, selected?.id]);
+  const chooseEntry = !showWholeGraph && !entryId && !clusterFilter && !selected
+    && full.nodes.length > 40 && entryOptions.cf.length + entryOptions.lb.length > 0;
 
   // Detail for the clicked node: resource nodes show their full inventory row (every field —
   // vpc, subnet, tags …); target/origin nodes synthesize a small detail from their meta.
@@ -760,12 +743,13 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
     backHref={viewHref(false)} onRefresh={() => void load()} />;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col overflow-y-auto">
       <PageHeader
         title="Topology"
         subtitle="요청 흐름 그래프 (Route53 → CloudFront → LB → Target Group → 타깃)"
+        className="lg:flex-col lg:items-stretch"
         right={
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <div className="relative">
               <div className="flex items-center gap-1 rounded-md border border-ink-200 bg-card px-2 py-1">
                 <Search size={13} className="text-ink-400" />
@@ -857,15 +841,30 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
                   );
                 })}
               </div>
-              <div className="flex-1 min-h-0 w-full rounded-lg border border-ink-100 bg-card">
-                <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}
-                  onInit={(inst) => { rfRef.current = inst; }}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-ink-500">{tt('진입점을 선택하면 해당 요청 경로를 펼칩니다.')}</span>
+                <button type="button" onClick={() => { setShowWholeGraph(v => !v); setEntryId(''); setSelected(null); }}
+                  className="ml-auto rounded-md border border-ink-200 bg-card px-3 py-1.5">{tt(showWholeGraph ? '진입점 중심 보기' : '전체 그래프')}</button>
+              </div>
+              <div ref={viewport.container} className="min-h-[440px] min-w-0 flex-1 w-full overflow-hidden rounded-lg border border-ink-100 bg-card md:min-h-64">
+                {chooseEntry ? <div className="h-full overflow-y-auto p-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {[...entryOptions.cf, ...entryOptions.lb].map(n => <button key={n.id} type="button"
+                      onClick={() => { setEntryId(n.id); setSelected(null); }}
+                      className="min-w-0 rounded-lg border border-ink-200 bg-card p-4 text-left hover:border-brand-400">
+                      <span className="text-[10px] uppercase text-ink-500">{FLOW_KIND_LABELS[n.kind]}</span>
+                      <span className="mt-1 block truncate text-sm font-semibold" title={n.label}>{n.label}</span>
+                      <span className="mt-3 block text-xs text-brand-700">{tt('경로 보기 →')}</span>
+                    </button>)}
+                  </div>
+                </div> : <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.05} fitViewOptions={{ padding: 0.16, maxZoom: 1.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}
+                  onInit={viewport.onInit}
                   onNodeClick={(_, node) => setSelected(((node.data as { fnode?: FlowNode })?.fnode) ?? null)}
                   onPaneClick={() => setSelected(null)}>
                   <Background />
-                  <Controls />
-                  <MiniMap pannable zoomable />
-                </ReactFlow>
+                  <Controls showInteractive={false} />
+                  {showWholeGraph && <MiniMap className="hidden md:block" pannable zoomable />}
+                </ReactFlow>}
               </div>
             </>
           )

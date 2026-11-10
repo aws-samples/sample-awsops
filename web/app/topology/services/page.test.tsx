@@ -13,7 +13,7 @@ vi.mock('next/dynamic', () => ({
       onClick={() => onNodeClick(null, node)}>{node.data.label}</button>)}
   </div>,
 }));
-vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {} }));
+vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {}, MarkerType: { ArrowClosed: 'arrowclosed' } }));
 import ServiceMapPage from './page';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); push.mockReset(); });
@@ -64,4 +64,28 @@ it('reserves enough layout height for adjacent queue cards and their claim text'
   const height = Number.parseFloat(first.style.height);
   expect(height).toBeGreaterThan(100);
   expect(Math.abs(Number(first.dataset.y) - Number(second.dataset.y))).toBeGreaterThanOrEqual(height);
+});
+
+it('starts with a readable service path and explicitly restores workload context and other services', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+    nodes: [
+      { id: 'a', kind: 'service', label: 'checkout', meta: { sourceId: 'tempo:1' } },
+      { id: 'b', kind: 'service', label: 'unrelated', meta: { sourceId: 'tempo:2' } },
+      { id: 'db', kind: 'db', label: 'orders-db' },
+      { id: 'w', kind: 'workload', label: 'shop/checkout' },
+    ],
+    edges: [{ source: 'a', target: 'db', rel: 'queries' }, { source: 'b', target: 'db', rel: 'queries' },
+      { source: 'a', target: 'w', rel: 'runs_on' }], captured_at: null,
+  }) })));
+  render(<ServiceMapPage />);
+  expect(await screen.findByRole('button', { name: /service: checkout/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /service: unrelated/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /workload: shop\/checkout/ })).toBeNull();
+  fireEvent.click(screen.getByRole('checkbox', { name: '워크로드 표시' }));
+  expect(screen.getByRole('button', { name: /workload: shop\/checkout/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '전체 그래프' }));
+  expect(screen.getByRole('button', { name: /service: unrelated/ })).toBeTruthy();
+  fireEvent.change(screen.getByRole('textbox', { name: '서비스 검색' }), { target: { value: 'no-match' } });
+  expect(screen.queryByRole('button', { name: /service: checkout/ })).toBeNull();
+  expect(screen.getByText('검색 결과가 없습니다.')).toBeTruthy();
 });

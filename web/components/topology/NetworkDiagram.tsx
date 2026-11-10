@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { layoutNetwork } from '@/lib/network-layout';
 import type { NetKind, NetNode, NetworkTopology } from '@/lib/network-topology-types';
+import useGraphViewport from './useGraphViewport';
 
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 const Background = dynamic(() => import('@xyflow/react').then((m) => m.Background), { ssr: false });
@@ -51,10 +52,10 @@ interface NetData extends Record<string, unknown> { net: NetNode; theme: Theme; 
 
 const hidden = { opacity: 0, pointerEvents: 'none' as const };
 function Handles() {
-  return (<>
-    <Handle type="target" position={Position.Left} style={hidden} />
-    <Handle type="source" position={Position.Right} style={hidden} />
-  </>);
+  return <>{[Position.Left, Position.Right, Position.Top, Position.Bottom].flatMap(position =>
+    (['source', 'target'] as const).map(type =>
+      <Handle key={`${position}-${type}`} id={`${position}-${type}`} type={type} position={position} style={hidden} />
+    ))}</>;
 }
 
 function GroupNode({ data }: NodeProps) {
@@ -123,6 +124,18 @@ const nodeTypes = { netGroup: GroupNode, netCard: CardNode, netTile: TileNode };
 /** Pure conversion to xyflow elements (parents precede children, as xyflow requires). */
 export function toFlowElements(topology: NetworkTopology, theme: Theme): { nodes: Node[]; edges: Edge[] } {
   const placed = new Map(layoutNetwork(topology).map((p) => [p.id, p]));
+  const centers = new Map(topology.nodes.map(n => {
+    const p = placed.get(n.id)!;
+    let x = p.x + p.width / 2, y = p.y + p.height / 2, parent = p.parentId;
+    const visited = new Set([n.id]);
+    while (parent && !visited.has(parent)) {
+      visited.add(parent);
+      const ancestor = placed.get(parent);
+      if (!ancestor) break;
+      x += ancestor.x; y += ancestor.y; parent = ancestor.parentId;
+    }
+    return [n.id, { x, y }] as const;
+  }));
   const hasChildren = new Set(topology.nodes.map((n) => n.parent).filter((p): p is string => !!p));
   const nodes: Node[] = topology.nodes.map((n) => {
     const p = placed.get(n.id)!;
@@ -139,15 +152,24 @@ export function toFlowElements(topology: NetworkTopology, theme: Theme): { nodes
       zIndex: container ? 0 : 1,
     };
   });
-  const edges: Edge[] = topology.edges.map((e) => ({
-    id: e.id, source: e.source, target: e.target, type: 'smoothstep', zIndex: 2,
-    style: {
-      stroke: EDGE_COLOR[e.kind], strokeWidth: e.crossAccount ? 2.5 : 1.5,
-      ...(e.kind === 'peering' ? { strokeDasharray: '6 4' } : {}),
-    },
-    label: e.crossAccount ? 'cross-account' : undefined,
-    labelStyle: { fontSize: 9 },
-  }));
+  const edges: Edge[] = topology.edges.map(e => {
+    const source = centers.get(e.source), target = centers.get(e.target);
+    const dx = (target?.x ?? 0) - (source?.x ?? 0), dy = (target?.y ?? 0) - (source?.y ?? 0);
+    const verticalHub = topology.level === 'fleet' && e.kind === 'tgw' && Math.abs(dy) > 60;
+    const sides = !verticalHub && Math.abs(dx) >= Math.abs(dy)
+      ? dx >= 0 ? ['right', 'left'] : ['left', 'right']
+      : dy >= 0 ? ['bottom', 'top'] : ['top', 'bottom'];
+    return {
+      id: e.id, source: e.source, target: e.target, type: 'smoothstep', zIndex: 0,
+      sourceHandle: `${sides[0]}-source`, targetHandle: `${sides[1]}-target`,
+      style: {
+        stroke: EDGE_COLOR[e.kind], strokeWidth: e.crossAccount ? 2.5 : 1.5,
+        ...(e.kind === 'peering' ? { strokeDasharray: '6 4' } : {}),
+      },
+      label: e.crossAccount ? 'cross-account' : undefined,
+      labelStyle: { fontSize: 9 },
+    };
+  });
   return { nodes, edges };
 }
 
@@ -161,13 +183,17 @@ export function selectableVpcKey(node: Node): string | null {
 export default function NetworkDiagram({ topology, theme, onSelectVpc }:
   { topology: NetworkTopology; theme: Theme; onSelectVpc: (vpcKey: string) => void }) {
   const { nodes, edges } = useMemo(() => toFlowElements(topology, theme), [topology, theme]);
+  const viewport = useGraphViewport(nodes, edges);
   return (
+    <div ref={viewport.container} className="h-full min-h-64 min-w-0">
     <ReactFlow
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
       colorMode={theme}
       fitView
+      onInit={viewport.onInit}
+      fitViewOptions={{ padding: 0.16, maxZoom: 1 }}
       minZoom={0.05}
       nodesConnectable={false}
       onNodeClick={(_, node) => { const key = selectableVpcKey(node); if (key) onSelectVpc(key); }}
@@ -176,5 +202,6 @@ export default function NetworkDiagram({ topology, theme, onSelectVpc }:
       <Background gap={24} />
       <Controls showInteractive={false} />
     </ReactFlow>
+    </div>
   );
 }
