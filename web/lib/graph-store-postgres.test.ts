@@ -347,6 +347,16 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
     expect(await state('infra')).toMatchObject({ status: 'error', retainedPrevious: true });
   });
+  it('reports inventory_running only when a still-running producer withholds publication', async () => {
+    await seed('infra');
+    expect(await build('infra')).toMatchObject({ published: 1, reasons: [] });
+    await pool.query(`UPDATE inventory_sync_runs SET status='running' WHERE resource_type='vpc'`);
+    const waiting = await build('infra');
+    expect(waiting).toMatchObject({ published: 0, retained: 1 });
+    expect(waiting.reasons).toContain('inventory_running');
+    await pool.query(`UPDATE inventory_sync_runs SET status='failed' WHERE resource_type='vpc'`);
+    expect((await build('infra')).reasons).not.toContain('inventory_running');
+  });
   it.each(['flow', 'infra'].flatMap(cls => ['failed', 'partial', 'running'].map(status => [cls, status])))(
     '%s member first publication includes aggregate %s with no member rows/history for that type', async (cls, status) => {
       await seed(cls, recent, '111122223333');

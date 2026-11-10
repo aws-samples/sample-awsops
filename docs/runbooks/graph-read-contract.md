@@ -376,6 +376,14 @@ itself or relax source freshness limits: `INVENTORY_STALE_AFTER_MINUTES` and the
 existing source-quality/clock rules still apply. These steps describe operator
 work to perform; timer activation and a live release require separate evidence.
 
+The timer and the inventory sync share the 15-minute cadence, so a web restart can place
+every tick while an inventory producer is still `running`; each tick then retains flow/infra
+and skips trace. When a flow or infra attempt is withheld while a producer is `running`, the
+rebuild reports `inventory_running` and the timer runs one extra cycle after
+`min(3 minutes, half the interval)` (at least one minute). A retry never schedules another
+retry; the regular interval is unchanged. Logs show
+`[graph-rebuild] infra: {... "reasons":["inventory_running"]}` before the retry.
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
