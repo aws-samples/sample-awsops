@@ -38,3 +38,15 @@ it('reports additional metric columns instead of silently hiding them',()=>{
  expect(result.series).toHaveLength(4);
  expect(result.omittedSeries).toBe(2);
 });
+
+it('requires metric words rather than identifier substrings', () => {
+  for (const header of ['Account', 'Corporate number']) {
+    expect(tableTrends(['Time', header], [['08:30', '111122223333'], ['08:35', '444455556666']])).toBeNull();
+  }
+  const result = tableTrends(
+    ['Time', 'Account', 'Request count', 'Error rates'],
+    [['08:30', '111122223333', '10', '2'], ['08:35', '444455556666', '20', '3']],
+  )!;
+  expect(result.series.map(series => series.label)).toEqual(['Request count', 'Error rates']);
+  expect(result.data[0]).toEqual({ time: '08:30', metric1: 10, metric2: 2 });
+});

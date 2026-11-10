@@ -4,7 +4,7 @@ export interface TableTrend {
   omittedSeries: number;
 }
 const TIME_HEADER = /^(time(?:stamp)?|date|时[间刻]|時間|時刻|日時|시각|시간|날짜)(?:\s|[([]|$)/i;
-const METRIC_HEADER = /request|error|count|rate|latency|duration|p(?:50|90|95|99)|cpu|memory|bytes|throughput|요청|에러|오류|건수|비율|사용률|지연|메모리|请求|错误|延迟|リクエスト|エラー|レイテンシ/i;
+const METRIC_HEADER = /\b(?:requests?|errors?|counts?|rates?|latency|duration|p(?:50|90|95|99)|cpu|memory|bytes|throughput)\b|요청|에러|오류|건수|비율|사용률|지연|메모리|请求|错误|延迟|リクエスト|エラー|レイテンシ/i;
 const NON_METRIC = /(?:^|[\s_(])id(?:$|[\s_)])|id$|code|코드|代码|コード|graph|sparkline|그래프|图|グラフ/i;
 const MISSING = /^(?:—|–|-|n\/a|null|none)?$/i;
 

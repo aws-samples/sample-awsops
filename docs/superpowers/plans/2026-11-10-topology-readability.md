@@ -48,7 +48,8 @@ The final branch includes the latest dev whole-window trace aggregation change.
 Local validation uses Node 24.22.1; Merge Verify validates the locked dependencies
 under the project's Node 26 CI runtime before integration.
 
-- The full web suite passed: 374 suites, 5,737 tests; the existing four suites
+- After the shared-toolbar and service-identity fixes, the full web suite passed:
+  375 suites, 5,747 tests; the existing four suites
   and 279 tests remained skipped.
 
 - 17 targeted Vitest suites passed with 315 tests. After the regional hub layout
@@ -62,7 +63,8 @@ under the project's Node 26 CI runtime before integration.
   workload expansion, empty search, entry-point/VPC selection, sibling-path
   isolation, network filtering, metric charts and source-table switching at
   1440, 768 and 390 pixels, plus desktop/mobile resizing after asynchronous load.
-  All 10 browser tests passed again after integrating the latest dev commit. The graph rebuild timer is
+  All 10 browser tests passed again after the shared-toolbar and service-identity
+  fixes. The graph rebuild timer is
   disabled for the local server. The captured PNGs and browser JSON report are
   retained under `~/.tmp/topology-readability-20261110/`.
 - Review was limited to the local diff and regression/browser checks. No
@@ -72,7 +74,13 @@ under the project's Node 26 CI runtime before integration.
 - The first required PR review identified shared Kubernetes toolbar and scoped
   service-card regressions. Their fixes, graph limits, fleet-only filtering and
   numeric-table integrity checks passed seven targeted suites with 33 tests.
-  Broader checks must run again before the fix is committed.
+  The production build, full web suite and all browser fixtures also passed before
+  committing those fixes.
+- Subsequent review confirmed numeric `Account` values could match `count` inside
+  the header. English metric words now require word boundaries. A focused parser
+  regression rejects identifier substrings while preserving real count/rate
+  columns. The parser, Markdown and translation suites passed 17 tests after
+  this correction. Integration still requires checks and review on the final HEAD.
 - To reproduce local screenshot capture, set `AWSOPS_TOPOLOGY_ARTIFACTS` to a
   writable artifact directory when running `topology-readability.spec.ts`.
   The fixtures assert every intercepted API request uses GET.
