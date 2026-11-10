@@ -305,27 +305,11 @@ export function buildTraceGraph(
       if (span.kind === 'CONSUMER') edge(id, sid, 'consumes', w);
     }
   }
-  // Trace spans name databases and queues with host-qualified identity. Metric rows only carry
-  // Tempo's server label (the span's db.name, db.system or peer host for a database, or the
-  // destination for a queue), so a metric row is a duplicate only when a span from a compatibly
-  // scoped client of the same name names that same dependency. Only then is the row not drawn;
-  // any other metric row, including another dependency of the same client, is kept.
-  const scopeKeys = ['accountId', 'region', 'environment', 'serviceNamespace', 'k8sNamespace', 'k8sCluster'] as const;
-  const compatible = (span: TraceSpan, identity: TraceIdentity) =>
-    scopeKeys.every(key => span[key] === undefined || identity[key] === undefined || span[key] === identity[key]);
-  const names = (span: TraceSpan, database: boolean): string[] => database
-    ? [span.dbName, span.dbSystem, span.dbHost, span.dbHost?.split('.')[0]].filter((v): v is string => !!v)
-    : span.messagingDestination ? [span.messagingDestination.trim()] : [];
-  const spansByService = new Map<string, TraceSpan[]>();
-  for (const span of byId.values()) {
-    if (!span.dbSystem && !(span.messagingSystem && span.messagingDestination)) continue;
-    const list = spansByService.get(span.service);
-    if (list) list.push(span); else spansByService.set(span.service, [span]);
-  }
-  const shownBySpans = (call: ServiceGraphCall, database: boolean) =>
-    (spansByService.get(call.client) ?? []).some(span => (database ? !!span.dbSystem : !!span.messagingSystem)
-      && compatible(span, call.clientIdentity ?? {}) && names(span, database).includes(call.server));
-  let deferredMetricCalls = 0;
+  // Metric sources contribute service→service calls only. Tempo marks rows whose server is a
+  // database or queue (its label is a db.name or destination, not a service) or whose other side
+  // is uninstrumented (virtual_node); those are not service calls and are not drawn. Databases and
+  // queues come from trace spans, which carry their host-qualified identity.
+  let nonServiceMetricCalls = 0;
   const metricWeight = (id: string, count: number) => {
     const meta = nodes.get(id)!.meta;
     meta.metricCount = Number(meta.metricCount ?? 0) + count;
@@ -338,53 +322,12 @@ export function buildTraceGraph(
       if (client !== server) edge(client, server, call.rel ?? 'calls', call.count, 0);
       continue;
     }
-    const clientIdentity = call.clientIdentity ?? {}, serverIdentity = call.serverIdentity ?? {};
-    if (call.connectionType === 'database' || call.connectionType === 'messaging_system') {
-      const database = call.connectionType === 'database';
-      if (shownBySpans(call, database)) { deferredMetricCalls++; continue; }
-      // Caller labels scope the node ID (no cross-scope merge) but are not attribution: like
-      // queue claims, the database carries no account/region and never bridges to inventory.
-      const scoped = resourceScope({ ...clientIdentity, ...serverIdentity });
-      const id = nodeId(database ? 'db' : 'queue', scoped, `metric:${call.server}`);
-      if (!nodes.has(id)) nodes.set(id, database ? {
-        id, kind: 'db', label: call.server.slice(0, 240),
-        meta: { system: null, host: null, dbName: null, metricServer: call.server.slice(0, 240),
-          sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
-          accountId: null, region: null, identityProvenance: 'telemetry_claim',
-          provenance: 'service_graph_metric' },
-      } : {
-        id, kind: 'queue', label: call.server.slice(0, 240),
-        meta: queueClaimMeta({ system: null, destination: call.server, broker: null, cluster: null,
-          sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
-          provenance: 'service_graph_metric' }),
-      });
-      const client = serviceNode(call.client, clientIdentity);
-      edge(client, id, database ? 'queries' : 'publishes', 0, call.count);
-      metricWeight(client, call.count); metricWeight(id, call.count);
-      continue;
-    }
-    if (call.connectionType === 'virtual_node') {
-      // Tempo's service-graph processor names an uninstrumented caller "user" (its fixed default);
-      // otherwise the uninstrumented side is the server. A real service named "user" that calls an
-      // uninstrumented peer is indistinguishable in these labels and is drawn as the caller node.
-      const clientVirtual = call.client === 'user';
-      const external = (name: string, identity: TraceIdentity) => {
-        const id = nodeId('ext', resourceScope(identity), name);
-        if (!nodes.has(id)) nodes.set(id, { id, kind: 'external', label: name.slice(0, 240),
-          meta: { name: name.slice(0, 240), sourceId: identity.sourceId ?? null, environment: identity.environment ?? null,
-            provenance: 'service_graph_metric' } });
-        return id;
-      };
-      const source = clientVirtual ? external(call.client, clientIdentity) : serviceNode(call.client, clientIdentity);
-      const target = clientVirtual ? serviceNode(call.server, serverIdentity) : external(call.server, serverIdentity);
-      edge(source, target, 'calls', 0, call.count);
-      metricWeight(source, call.count); metricWeight(target, call.count);
-      continue;
-    }
-    const client = serviceNode(call.client, clientIdentity), server = serviceNode(call.server, serverIdentity);
+    if (call.connectionType && call.connectionType !== 'unknown') { nonServiceMetricCalls++; continue; }
+    const client = serviceNode(call.client, call.clientIdentity ?? {});
+    const server = serviceNode(call.server, call.serverIdentity ?? {});
     edge(client, server, 'calls', 0, call.count);
     metricWeight(client, call.count); metricWeight(server, call.count);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
-    unresolvedMessaging, deferredMetricCalls };
+    unresolvedMessaging, nonServiceMetricCalls };
 }

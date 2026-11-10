@@ -225,13 +225,14 @@ The shared query normalizer carries collection status into Explore. Marked parti
 The ClickHouse adapter for the catalog's exporter-schema template reads node groups,
 parent→child pairs and (when present) span links as whole-window aggregates; see
 [trace graph sources](../api-reference.md#trace-graph-sources). The aggregates form one source
-read. A failed query or malformed response envelope fails the whole read, so a failed pair query
-never publishes nodes without their edges. Malformed individual rows are skipped as partial
-evidence, and each aggregate needs its own empty proof: confirmed nodes with an unproven-empty pair
-query publish as `partial` with `empty_not_confirmed`. Row limits disclose `cap_reached` like other
-bounded sources. The join sides project only the sorted identity attributes, and the connector's
-`max_execution_time` bounds each query; a query that keeps exceeding it retains the previous graph.
-Metric-derived `external` and label-only `db`/`queue` nodes are additive trace node kinds.
+read. A failed aggregate query (including one that exceeds the connector's `max_execution_time`)
+falls back to the bounded newest-span reader for that rebuild and is disclosed as
+`incomplete_collection`, so a busy table degrades to sampling instead of retaining a frozen graph;
+a malformed response envelope fails the read. Nodes therefore never publish from a partial set of
+aggregates. Malformed individual rows are skipped as partial evidence, and each aggregate needs its
+own empty proof: confirmed nodes with an unproven-empty pair query publish as `partial` with
+`empty_not_confirmed`. Row limits disclose `cap_reached` like other bounded sources. The join sides
+project only the sorted identity attributes. Node-cap selection keeps edge endpoints together.
 The adapter and builder contracts run without PostgreSQL:
 `cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts`.
 

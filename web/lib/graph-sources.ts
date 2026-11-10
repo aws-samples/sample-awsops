@@ -64,7 +64,7 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
       // The catalog's exporter-schema template is read as whole-window aggregates; any other
       // (generated/custom) template keeps the bounded newest-span reader.
       const shape = otelAggregateShape(template);
-      sources.push(shape ? new ClickHouseOtelAggregateSource(row.integration_id, shape)
+      sources.push(shape ? new ClickHouseOtelAggregateSource(row.integration_id, shape, template)
         : new ClickHouseOtelTraceSource(row.integration_id, template));
     } else if (mapper === 'tempo_v1') {
       sources.push(new TempoTraceSource(row.integration_id));

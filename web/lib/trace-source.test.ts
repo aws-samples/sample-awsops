@@ -178,16 +178,35 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
     expect(invokeMcpLambdaTool.mock.calls.some(([{ args }]) => args.sql.includes('ARRAY JOIN'))).toBe(false);
   });
 
-  it('publishes nothing when any aggregate fails, so nodes never appear without their edges', async () => {
+  it('falls back to the bounded span reader when an aggregate query fails, never nodes without edges', async () => {
+    const spanRow = { TraceId: 't', SpanId: 's', Timestamp: END - 1_000, Duration: 1, ServiceName: 'a',
+      SpanAttributes: {}, ResourceAttributes: {} };
     invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) =>
-      args.sql.includes('INNER JOIN') ? { error: 'boom', collectionStatus: 'error' } : { rows: [group()], collectionStatus: 'ok' });
-    expect(await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).toMatchObject({
-      status: 'error', items: [], reasons: ['query_failed'],
-    });
+      args.sql.includes('INNER JOIN') ? { error: 'boom', collectionStatus: 'error' }
+        : args.sql.includes('GROUP BY') ? { rows: [group()], collectionStatus: 'ok' }
+          : { rows: [spanRow], collectionStatus: 'ok' });
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END);
+    expect(out).toMatchObject({ status: 'partial', reasons: ['incomplete_collection'] });
+    expect(out.items).toEqual([expect.objectContaining({ service: 'a', spanId: 's' })]);
+    expect(out.items[0].weight).toBeUndefined();
+    expect(out.calls).toBeUndefined();
+    const last = invokeMcpLambdaTool.mock.calls.at(-1)![0].args.sql as string;
+    expect(last).toMatch(/ORDER BY Timestamp DESC LIMIT 1000$/);
+
+    invokeMcpLambdaTool.mockReset();
     invokeMcpLambdaTool.mockRejectedValue(new Error('timeout'));
     expect(await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).toMatchObject({
       status: 'error', items: [], reasons: ['query_failed'],
     });
+  });
+
+  it('fails the read on a malformed aggregate envelope without falling back', async () => {
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) =>
+      args.sql.includes('INNER JOIN') ? { unexpected: true } : { rows: [group()], collectionStatus: 'ok' });
+    expect(await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).toMatchObject({
+      status: 'error', items: [], reasons: ['malformed_payload'],
+    });
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(3);
   });
 
   it('marks a saturated row limit and malformed rows as partial evidence', async () => {

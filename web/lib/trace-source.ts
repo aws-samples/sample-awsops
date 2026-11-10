@@ -503,9 +503,22 @@ function resourceIdentity(value: unknown, sourceId: string): TraceIdentity | und
 }
 
 /** Reads service nodes and span-pair edges as ClickHouse aggregates over the whole window, instead
- *  of the newest raw spans. Counts are complete for the window unless a row limit is reached. */
+ *  of the newest raw spans. Counts are complete for the window unless a row limit is reached. When
+ *  an aggregate query fails (for example the join exceeds the connector's execution budget on a
+ *  busy table), the same table is read with the bounded newest-span reader instead, disclosed as
+ *  incomplete_collection, so a busy datasource degrades to sampling rather than a frozen graph. */
 export class ClickHouseOtelAggregateSource implements TraceSource {
-  constructor(private readonly instanceId?: number, private readonly shape: OtelAggregateShape = DEFAULT_OTEL_SHAPE) {}
+  constructor(
+    private readonly instanceId?: number, private readonly shape: OtelAggregateShape = DEFAULT_OTEL_SHAPE,
+    private readonly spanTemplate?: string,
+  ) {}
+
+  private async sampled(windowMins: number, cap: number, endMs: number): Promise<TraceRead> {
+    const read = await new ClickHouseOtelTraceSource(this.instanceId, this.spanTemplate).recentSpans(windowMins, cap, endMs);
+    if (read.status === 'error' || read.status === 'unavailable') return read;
+    const reasons = read.reasons.includes('incomplete_collection') ? read.reasons : [...read.reasons, 'incomplete_collection'];
+    return { ...read, reasons, status: 'partial' };
+  }
   async available(): Promise<boolean> { return !(await resolveSource('clickhouse', this.instanceId)).reason; }
 
   async recentSpans(windowMins: number, cap: number, endMs = Date.now()): Promise<TraceRead> {
@@ -523,11 +536,13 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
     try {
       payloads = await Promise.all([sql.groups, sql.calls, ...(sql.links ? [sql.links] : [])].map(query));
     } catch {
-      return readResult(sourceId, window, [], ['query_failed']);
+      return this.sampled(windowMins, cap, endMs);
     }
     const reasons: Reason[] = [];
     const results = payloads.map(clickhouseRows);
     // Any failed aggregate leaves the window unproven; never publish nodes without their edges.
+    // A failed query falls back to sampling; a malformed response envelope fails the read.
+    if (results.some((result) => result.reasons.includes('query_failed'))) return this.sampled(windowMins, cap, endMs);
     for (const result of results) {
       if (!result.rows) return readResult(sourceId, window, [], result.reasons);
       reasons.push(...result.reasons);

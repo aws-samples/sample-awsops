@@ -551,25 +551,27 @@ A ClickHouse datasource whose registry query is the catalog's exporter-schema `o
 unregistered default, is read as whole-window aggregates of the same table, not as the newest
 spans. Two bounded read-only queries return service/kind/status attribute groups with span counts
 and parent→child service pairs; a third returns span-link pairs when the table has `Links`
-columns. Each is limited to 1,000 rows. A failed query or malformed response envelope fails the
-whole source read; malformed individual rows are skipped as `malformed_rows`, a saturated limit
-adds `cap_reached`, rows outside the window add `incomplete_collection`, and an unproven empty
-result adds `empty_not_confirmed` (a partial read that may publish nodes without edges). Without
-`cap_reached`, node and edge `spanCount` count the window's spans, and source-counted pairs produce
-no `orphanSpans`. A child whose parent started before the window is not counted as a pair and is
-not disclosed. Grouping keeps only EC2 instance IDs and ARNs from the instance claim attributes,
-plus a fixed marker for any other `cloud.resource_id` (which still vetoes binding). Publication
-still applies the 200-node/500-edge caps reported as `nodeDrops`/`edgeDrops`. Generated or custom
-templates, Tempo and other sources keep span sampling, and a graph mixing them sums both kinds of
-count.
+columns. Each is limited to 1,000 rows and to the connector's execution budget. If an aggregate
+query fails (for example the join exceeds that budget), the same table is read with the bounded
+newest-span reader instead and the source is `partial` with `incomplete_collection`. A malformed
+response envelope fails the read; malformed individual rows are skipped as `malformed_rows`, a
+saturated limit adds `cap_reached`, rows outside the window add `incomplete_collection`, and an
+unproven empty result adds `empty_not_confirmed` (a partial read that may publish nodes without
+edges). Without those reasons, node and edge `spanCount` count the window's spans, and
+source-counted pairs produce no `orphanSpans`. A child whose parent started before the window is
+not counted as a pair and is not disclosed. Grouping keeps only EC2 instance IDs and ARNs from the
+instance claim attributes, plus a fixed marker for any other `cloud.resource_id` (which still
+vetoes binding). Generated or custom templates, Tempo and other sources keep span sampling, and a
+graph mixing them sums both kinds of count.
 
-Service-graph metric rows keep Tempo's `connection_type`. A `database` or `messaging_system` row
-becomes a label-only `db`/`queue` node (`provenance: "service_graph_metric"`, no account/region
-attribution), unless a trace span from a compatibly scoped client of the same name already names
-that dependency (db name, system or host; queue destination), in which case the duplicate row is
-not drawn. `virtual_node` rows draw the uninstrumented side as an `external` node (Tempo names an
-uninstrumented caller `user`). Metric volume is kept as node `metricCount`; metric-derived nodes
-rank by volume with service nodes under the node cap.
+Publication keeps at most 200 nodes and 500 edges (`nodeDrops`/`edgeDrops`). Nodes are selected
+from the heaviest edges first, both endpoints together, so a kept database, queue or workload
+always keeps its caller; remaining capacity goes to other nodes by span and metric volume.
+
+Service-graph metrics contribute service→service `calls` only. Rows whose Tempo
+`connection_type` is `database`, `messaging_system` or `virtual_node` name a database, queue or
+uninstrumented peer rather than a service and are not drawn; databases and queues come from trace
+spans with their host-qualified identity.
 
 ### Trace edge instance observations
 

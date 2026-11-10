@@ -108,17 +108,25 @@ describe('source-aggregated trace edges', () => {
   });
 });
 
-describe('trace node cap ranking', () => {
-  it('ranks label-only metric db nodes by volume with services, so they cannot evict services', async () => {
+describe('trace node cap selection', () => {
+  it('keeps the calling service when many span-derived databases exceed the node cap', async () => {
     const { pool, params } = mockPool([]);
-    const calls = Array.from({ length: 260 }, (_, i) => ({
-      client: 'tenant-api', server: `tenant_${i}`, count: 1, connectionType: 'database' }));
-    const metrics = { available: async () => true, calls: async (_w: number, endMs = Date.now()) => ({
-      sourceId: 'prometheus:1', status: 'ok' as const, reasons: [], items: calls,
+    const now = Date.now();
+    const spans = Array.from({ length: 260 }, (_, i) => span({
+      service: 'tenant-api', spanId: `s${i}`, kind: 'CLIENT', dbSystem: 'postgresql',
+      dbHost: `tenant-${i}.db.example.internal`, startMs: now - 1_000, weight: i + 1,
+    }));
+    const source = { available: async () => true, recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+      sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], items: spans,
       windowStartMs: endMs - 3_600_000, windowEndMs: endMs }) };
-    await rebuildTraceGraph(pool as never, [new FakeTraceSource([])], undefined, [metrics]);
-    const services = params.filter(p => p[1] === 'service').map(p => JSON.parse(String(p[3])).service);
-    expect(services).toContain('tenant-api');
+    await rebuildTraceGraph(pool as never, [source]);
+    const kinds = params.filter(p => p[1] === 'service' || p[1] === 'db').map(p => p[1]);
+    expect(kinds.filter(kind => kind === 'service')).toHaveLength(1);
+    expect(kinds).toHaveLength(200);
+    // Every published query edge keeps its caller, and the heaviest databases are the ones kept.
+    const hosts = params.filter(p => p[1] === 'db').map(p => JSON.parse(String(p[3])).host as string);
+    expect(hosts).toContain('tenant-259.db.example.internal');
+    expect(hosts).not.toContain('tenant-0.db.example.internal');
   });
 });
 

@@ -354,18 +354,23 @@ export async function rebuildTraceGraph(
     infraUnavailable = true;
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
-  // Preserve structurally important DB/queue/workload nodes before ranking service volume.
-  // Metric-derived nodes (external peers, label-only db/queue) rank with services by volume, so a
-  // high-cardinality service-graph metric cannot fill the cap ahead of service nodes.
-  const rank = (node: { kind: string; meta: Record<string, unknown> }) => node.kind === 'service'
-    || node.kind === 'external' || node.meta.provenance === 'service_graph_metric' ? 0 : 1;
+  // Node selection follows edge volume: the heaviest edges claim both endpoints first, so a kept
+  // dependency (db/queue/workload) always keeps its caller and many low-volume dependencies cannot
+  // evict the services that use them. Remaining capacity goes to the remaining nodes by volume.
+  const weight = (edge: { meta: { spanCount: number; metricCount: number } }) => edge.meta.spanCount + edge.meta.metricCount;
   const volume = (meta: Record<string, unknown>) => Number(meta.spanCount ?? 0) + Number(meta.metricCount ?? 0);
-  const nodes = graph.nodes.sort((a, b) => rank(b) - rank(a)
-    || volume(b.meta) - volume(a.meta)).slice(0, TRACE_NODE_CAP);
-  const kept = new Set(nodes.map((node) => node.id));
-  const edges = graph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
-    .sort((a, b) => (b.meta.spanCount + b.meta.metricCount) - (a.meta.spanCount + a.meta.metricCount))
-    .slice(0, TRACE_EDGE_CAP);
+  const byWeight = [...graph.edges].sort((a, b) => weight(b) - weight(a));
+  const kept = new Set<string>();
+  for (const edge of byWeight) {
+    const need = Number(!kept.has(edge.source)) + Number(!kept.has(edge.target));
+    if (need && kept.size + need <= TRACE_NODE_CAP) { kept.add(edge.source); kept.add(edge.target); }
+  }
+  for (const node of [...graph.nodes].sort((a, b) => volume(b.meta) - volume(a.meta))) {
+    if (kept.size >= TRACE_NODE_CAP) break;
+    kept.add(node.id);
+  }
+  const nodes = graph.nodes.filter((node) => kept.has(node.id));
+  const edges = byWeight.filter((edge) => kept.has(edge.source) && kept.has(edge.target)).slice(0, TRACE_EDGE_CAP);
   const nodeDrops = graph.nodes.length - nodes.length;
   const edgeDrops = graph.edges.length - edges.length;
   const incomplete = partial || infraUnavailable || nodeDrops > 0 || edgeDrops > 0

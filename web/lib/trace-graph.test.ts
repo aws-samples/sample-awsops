@@ -268,51 +268,19 @@ describe('source-aggregated rows and service-graph connection types', () => {
     expect(graph.orphanSpans).toBe(0);
   });
 
-  it('keeps metric database/messaging servers off service nodes and defers to span evidence', () => {
-    const calls = [
+  it('draws only service calls from metrics; database, queue and virtual-node rows are not services', () => {
+    const graph = buildTraceGraph([], [
       { client: 'review', server: 'reviews', count: 10, connectionType: 'database' },
       { client: 'order', server: 'orders-topic', count: 4, connectionType: 'messaging_system' },
       { client: 'user', server: 'payment', count: 6, connectionType: 'virtual_node' },
-      { client: 'payment', server: 'stripe', count: 2, connectionType: 'virtual_node' },
-    ];
-    const metricsOnly = buildTraceGraph([], calls, []);
-    expect(metricsOnly.nodes.filter(node => node.kind === 'service').map(node => node.label).sort())
-      .toEqual(['order', 'payment', 'review']);
-    expect(metricsOnly.nodes.find(node => node.label === 'reviews')).toMatchObject({ kind: 'db',
-      meta: { provenance: 'service_graph_metric', host: null } });
-    expect(metricsOnly.nodes.find(node => node.label === 'orders-topic')?.kind).toBe('queue');
-    expect(metricsOnly.nodes.filter(node => node.kind === 'external').map(node => node.label).sort())
-      .toEqual(['stripe', 'user']);
-    const rel = (source: string, target: string) => metricsOnly.edges.find(edge =>
-      metricsOnly.nodes.find(n => n.id === edge.source)?.label === source
-      && metricsOnly.nodes.find(n => n.id === edge.target)?.label === target);
-    expect(rel('review', 'reviews')).toMatchObject({ rel: 'queries', meta: { metricCount: 10, spanCount: 0 } });
-    expect(rel('order', 'orders-topic')?.rel).toBe('publishes');
-    expect(rel('user', 'payment')?.rel).toBe('calls');
-    expect(rel('payment', 'stripe')?.rel).toBe('calls');
-
-    expect(metricsOnly.nodes.find(node => node.label === 'reviews')?.meta).toMatchObject({
-      accountId: null, region: null, identityProvenance: 'telemetry_claim' });
-    expect(svc(metricsOnly, 'payment')?.meta.metricCount).toBe(8);
-
-    // Span evidence for review's database defers only review's metric DB row; order's queue row
-    // (no span evidence for that client) is still drawn, and the deferral is counted.
-    const withSpans = buildTraceGraph([dbSpan({ service: 'review', dbName: 'reviews' })], calls, inventory());
-    expect(withSpans.nodes.filter(node => node.kind === 'db')).toHaveLength(1);
-    expect(withSpans.nodes.find(node => node.label === 'orders-topic')?.kind).toBe('queue');
-    expect(withSpans.deferredMetricCalls).toBe(1);
-
-    // Deferral is per dependency and per compatible scope: review's metrics-only cache and a
-    // staging review's reviews DB are still drawn beside the production span evidence.
-    const mixed = buildTraceGraph([dbSpan({ service: 'review', dbName: 'reviews', environment: 'prod' })], [
-      { client: 'review', server: 'reviews', count: 3, connectionType: 'database' },
-      { client: 'review', server: 'cache', count: 2, connectionType: 'database' },
-      { client: 'review', server: 'reviews', count: 1, connectionType: 'database',
-        clientIdentity: { environment: 'staging' } },
-    ], inventory());
-    expect(mixed.deferredMetricCalls).toBe(1);
-    expect(mixed.nodes.filter(node => node.meta.provenance === 'service_graph_metric').map(node => node.label).sort())
-      .toEqual(['cache', 'reviews']);
+      { client: 'payment', server: 'ledger', count: 2 },
+      { client: 'pricing', server: 'catalog', count: 3, connectionType: 'unknown' },
+    ], []);
+    expect(graph.nodes.map(node => node.label).sort()).toEqual(['catalog', 'ledger', 'payment', 'pricing']);
+    expect(graph.nodes.every(node => node.kind === 'service')).toBe(true);
+    expect(graph.edges.map(edge => edge.meta.metricCount).sort()).toEqual([2, 3]);
+    expect(graph.nonServiceMetricCalls).toBe(3);
+    expect(svc(graph, 'payment')?.meta.metricCount).toBe(2);
   });
 
   it('keeps the cloud.resource_id veto for the aggregate unbindable marker and caps merged pods', () => {
