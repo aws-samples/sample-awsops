@@ -48,9 +48,10 @@ The final branch includes the latest dev whole-window trace aggregation change.
 Local validation uses Node 24.22.1; Merge Verify validates the locked dependencies
 under the project's Node 26 CI runtime before integration.
 
-- After the shared-toolbar and service-identity fixes, the full web suite passed:
-  375 suites, 5,747 tests; the existing four suites
-  and 279 tests remained skipped.
+- On the dev baseline containing the shared-toolbar/service-identity fixes and
+  the independently merged graph retry change, the full web suite passed before
+  native-header normalization: 376 suites, 5,756 tests; four suites and 280 tests
+  remained skipped.
 
 - 17 targeted Vitest suites passed with 315 tests. After the regional hub layout
   change, the three network layout/topology/renderer suites passed with 35 tests
@@ -81,6 +82,12 @@ under the project's Node 26 CI runtime before integration.
   regression rejects identifier substrings while preserving real count/rate
   columns. The parser, Markdown and translation suites passed 17 tests after
   this correction. Integration still requires checks and review on the final HEAD.
+- Native SQL/CloudWatch headers are split at underscores, hyphens, camelCase and
+  acronym transitions before bounded English matching. This preserves
+  `request_count`, `CPUUtilization` and `FreeableMemory` without charting account
+  identifiers or status codes. Original series labels and numeric cells remain
+  unchanged. The parser, Markdown and translation suites passed 18 tests after
+  this normalization and plural-identifier hardening.
 - To reproduce local screenshot capture, set `AWSOPS_TOPOLOGY_ARTIFACTS` to a
   writable artifact directory when running `topology-readability.spec.ts`.
   The fixtures assert every intercepted API request uses GET.

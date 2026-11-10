@@ -40,7 +40,7 @@ it('reports additional metric columns instead of silently hiding them',()=>{
 });
 
 it('requires metric words rather than identifier substrings', () => {
-  for (const header of ['Account', 'Corporate number']) {
+  for (const header of ['Account', 'Corporate number', 'Account_ID', 'RequestIds', 'request_ids', 'ErrorCode']) {
     expect(tableTrends(['Time', header], [['08:30', '111122223333'], ['08:35', '444455556666']])).toBeNull();
   }
   const result = tableTrends(
@@ -49,4 +49,16 @@ it('requires metric words rather than identifier substrings', () => {
   )!;
   expect(result.series.map(series => series.label)).toEqual(['Request count', 'Error rates']);
   expect(result.data[0]).toEqual({ time: '08:30', metric1: 10, metric2: 2 });
+});
+
+it('preserves native SQL and CloudWatch metric naming without changing source labels', () => {
+  for (const header of [
+    'request_count', 'error_rate', 'latency_ms', 'request-count', 'RequestCount',
+    'CPUUtilization', 'EngineCPUUtilization', 'FreeableMemory',
+    'Durations', 'Latencies', 'Throughputs',
+  ]) {
+    const result = tableTrends(['Time', header], [['08:30', '10'], ['08:35', '20']]);
+    expect(result?.series, header).toEqual([{ key: 'metric0', label: header }]);
+    expect(result?.data, header).toEqual([{ time: '08:30', metric0: 10 }, { time: '08:35', metric0: 20 }]);
+  }
 });
