@@ -53,6 +53,9 @@ export default function TimeSeriesTable({ node, enabled, children }: {
     {view !== 'table' && <p className="my-2 text-[11px] text-ink-500">
       {tt('표에 있는 숫자를 지표별로 표시합니다. 단위·빈 값·부분 구간 표시는 원본 표를 확인하세요.')}
     </p>}
+    {view !== 'table' && trend.omittedSeries > 0 && <p className="my-2 text-xs text-ink-600" role="status">
+      {tt('차트 표시 한도로 생략된 지표')}: {trend.omittedSeries}. {tt('나머지 지표는 원본 표에서 확인하세요.')}
+    </p>}
     {view === 'table' ? table : <details>
       <summary className="cursor-pointer text-xs text-ink-600">{tt('원본 표 보기')}</summary>{table}
     </details>}

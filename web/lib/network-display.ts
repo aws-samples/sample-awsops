@@ -2,6 +2,7 @@ import type { NetworkTopology } from './network-topology-types';
 
 /** Display projection only; retain parent containers and source completeness metadata. */
 export function networkDisplay(topology: NetworkTopology, query: string, connectedOnly: boolean): NetworkTopology {
+  if (topology.level !== 'fleet') return topology;
   const needle = query.trim().toLowerCase();
   if (!needle && !connectedOnly) return topology;
   const endpoints = new Set(topology.edges.flatMap(edge => [edge.source, edge.target]));

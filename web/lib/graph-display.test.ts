@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectGraphPaths, serviceOverview } from './graph-display';
+import { selectGraphPaths, serviceOverview, boundGraphDisplay } from './graph-display';
 
 describe('display paths', () => {
   const graph = {
@@ -33,4 +33,19 @@ describe('display paths', () => {
     };
     expect(serviceOverview(input, false)).toEqual(input);
   });
+});
+
+it('bounds edges with endpoints before optional nodes and reports independent omissions', () => {
+ const graph = { nodes: Array.from({length:400}, (_,i)=>({id:String(i),meta:{sourceId:'original'}})),
+   edges: Array.from({length:399}, (_,i)=>({source:String(i),target:String(i+1)})) };
+ const result = boundGraphDisplay(graph);
+ expect(result.nodes).toHaveLength(350);
+ expect(result.edges).toHaveLength(349);
+ expect(result.omitted).toEqual({nodes:50,edges:50});
+ const ids=new Set(result.nodes.map(n=>n.id));
+ expect(result.edges.every(e=>ids.has(e.source)&&ids.has(e.target))).toBe(true);
+ expect(result.nodes[0]).toBe(graph.nodes[0]);
+ expect(graph.nodes).toHaveLength(400);
+ const manyEdges={nodes:graph.nodes.slice(0,3),edges:Array.from({length:801},()=>({source:'0',target:'1'}))};
+ expect(boundGraphDisplay(manyEdges).omitted).toEqual({nodes:0,edges:101});
 });

@@ -27,3 +27,14 @@ describe('explicit time-series tables', () => {
     expect(tableTrends(['Time', 'Requests'], [['08:30', '1K'], ['08:35', '2K']])).toBeNull();
   });
 });
+
+it('rejects HTTP status codes and ambiguous leading-zero comma decimal values',()=>{
+ expect(tableTrends(['Time','Error code'],[['08:30','404'],['08:35','500']])).toBeNull();
+ expect(tableTrends(['Time','Error rate'],[['08:30','0,223'],['08:35','0,218']])).toBeNull();
+ expect(tableTrends(['Time','Request count'],[['08:30','1,223'],['08:35','2,218']])!.data[0].metric0).toBe(1223);
+});
+it('reports additional metric columns instead of silently hiding them',()=>{
+ const result=tableTrends(['Time',...Array.from({length:6},(_,i)=>`Request count ${i}`)],[['08:30',...Array(6).fill('1')],['08:35',...Array(6).fill('2')]])!;
+ expect(result.series).toHaveLength(4);
+ expect(result.omittedSeries).toBe(2);
+});

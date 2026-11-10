@@ -9,7 +9,7 @@ import PageHeader from '@/components/ui/PageHeader';
 import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
 import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
-import { selectGraphPaths, serviceOverview } from '@/lib/graph-display';
+import { boundGraphDisplay, selectGraphPaths, serviceOverview } from '@/lib/graph-display';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useTheme } from '@/lib/use-theme';
 import GraphCollectionStatus, { type GraphCollection } from '@/components/topology/GraphCollectionStatus';
@@ -73,10 +73,11 @@ export default function ServiceMapPage() {
   }, [overview, query]);
   const focusId = overview.nodes.some(n => n.id === selectedId) ? selectedId : !showAll ? services[0]?.id ?? null : null;
   const selected = overview.nodes.find(n => n.id === focusId);
-  const visible = useMemo(() => {
+  const eligible = useMemo(() => {
     if (query.trim()) return selectGraphPaths(overview, matches.map(n => n.id), 2);
     return focusId && !showAll ? selectGraphPaths(overview, [focusId], 2) : overview;
   }, [overview, matches, query, focusId, showAll]);
+  const visible = useMemo(() => boundGraphDisplay(eligible, focusId ? [focusId] : []), [eligible, focusId]);
   const viewport = useGraphViewport(visible.nodes, visible.edges);
   const { nodes, edges } = useMemo(() => {
     const kinds = new Map(visible.nodes.map(n => [n.id, n.kind]));
@@ -85,13 +86,15 @@ export default function ServiceMapPage() {
     }) }).map(p => [p.id, p]));
     const nodes: Node[] = visible.nodes.map(n => {
       const [border, light, deep] = COLORS[n.kind] ?? ['#9AA6B2', '#EEF0F2', '#1F262D'];
-      const context = [n.meta?.cluster, n.meta?.namespace].filter(Boolean).join(' · ') || text(n.meta?.environment) || 'unknown';
+      const context = [text(n.meta?.environment) || 'unknown', n.meta?.cluster, n.meta?.namespace, n.meta?.broker].filter(Boolean).join(' · ');
+      const source = text(n.meta?.sourceId);
       return {
         id: n.id, position: pos.get(n.id) ?? { x: 0, y: 0 },
-        data: { label: <div className="nodrag nowheel text-left" title={`${n.kind}: ${n.label}\n${context}`}
+        data: { label: <div className="nodrag nowheel text-left" title={`${n.kind}: ${n.label}\n${context}\n${source}`}
           style={{ maxHeight: (n.kind === 'queue' ? QUEUE_HEIGHT : HEIGHT) - 18, overflowY: 'auto' }}>
           <div className="truncate text-[13px] font-semibold">{n.kind}: {n.label}</div>
           <div className="mt-1 truncate text-[10px] opacity-75">{context}</div>
+          {source && <div className="truncate text-[10px] opacity-75" title={source}>sourceId: {source}</div>}
           {n.kind === 'queue' && <div className="mt-1 text-[10px]" style={{ overflowWrap: 'anywhere' }}>
             {tt('Telemetry claim · AWS identity unverified')}<br />
             claimedAccountId: {text(n.meta?.claimedAccountId) || '—'}<br />
@@ -144,11 +147,15 @@ export default function ServiceMapPage() {
       {err && <GraphReadError reason={err} />}
       <div className="flex flex-wrap gap-2 px-4 py-2 text-[11px] text-ink-500" role="status">
         {busy && <span>{tt('불러오는 중…')}</span>}
-        <span>{tt('표시')}: {visible.nodes.length}/{scoped.nodes.length} · {tt('연결')}: {visible.edges.length}/{scoped.edges.length}</span>
+        <span>{tt('표시')}: {visible.nodes.length}/{eligible.nodes.length} · {tt('연결')}: {visible.edges.length}/{eligible.edges.length}</span>
+        <span>{tt('수집된 그래프')}: {scoped.nodes.length} · {scoped.edges.length}</span>
         {!showAll && focusId && !query.trim() && <span>{tt('선택한 서비스의 상·하위 2단계')}</span>}
-        {!showWorkloads && scoped.nodes.length > overview.nodes.length && <span>{tt('워크로드 문맥은 숨김')}</span>}
+        {!showWorkloads && scoped.nodes.length > overview.nodes.length && <span>{tt('보조 워크로드 문맥은 숨김')}</span>}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
       </div>
+      {(visible.omitted.nodes > 0 || visible.omitted.edges > 0) && <p className="mx-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800" role="status">
+        {tt('표시 한도에 따라 생략')}: {tt('노드')} {visible.omitted.nodes} · {tt('연결')} {visible.omitted.edges}. {tt('검색이나 서비스 선택으로 범위를 좁히세요.')}
+      </p>}
       <div className="flex min-h-[620px] flex-1 flex-col md:min-h-0 md:flex-row">
         <aside className="flex max-h-44 shrink-0 flex-col border-b border-ink-100 bg-card md:max-h-none md:w-64 md:border-b-0 md:border-r">
           <div className="px-4 py-2 text-xs font-semibold">{tt('서비스')} · {services.length}</div>
@@ -176,10 +183,12 @@ export default function ServiceMapPage() {
       </div>
       {selected && <details className="shrink-0 border-t border-ink-100 bg-card px-4 py-2 text-xs">
         <summary className="cursor-pointer font-medium">{tt('선택한 리소스 상세')} · {selected.kind}: {selected.label}</summary>
+        {selected.kind === 'queue' && <p className="pt-2">{tt('Telemetry claim · AWS identity unverified')}</p>}
         <dl className="grid max-h-40 grid-cols-[auto_1fr] gap-x-4 gap-y-1 overflow-y-auto pt-2">
-          {['environment','cluster','namespace','sourceId','host','system','spanCount','errorSpanCount','claimedAccountId','claimedRegion'].map(key =>
+          {['environment','cluster','namespace','sourceId','host','system','broker','destination','identityProvenance','deployment','pods','spanCount','errorSpanCount','unknownStatusSpanCount','claimedAccountId','claimedRegion'].map(key =>
             selected.meta?.[key] != null ? <div key={key} className="contents"><dt className="text-ink-500">{key}</dt><dd className="break-all">{String(selected.meta[key])}</dd></div> : null)}
         </dl>
+        {/* A claimed queue ARN is never an inventory bridge. */}
         {selected.kind === 'db' && text(selected.meta?.infra_ref) && <Link className="mt-2 inline-block text-brand-700" href={`/topology/resource/${encodeURIComponent(text(selected.meta?.infra_ref))}`}>{tt('인프라 리소스 보기 →')}</Link>}
         {selected.kind === 'workload' && text(selected.meta?.cluster) && <Link className="mt-2 inline-block text-brand-700" href={`/topology?cluster=${encodeURIComponent(`eks:${text(selected.meta?.cluster)}`)}`}>{tt('클러스터 요청 흐름 →')}</Link>}
       </details>}

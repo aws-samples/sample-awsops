@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import PageHeader from '@/components/ui/PageHeader';
 import NetworkDiagram from '@/components/topology/NetworkDiagram';
@@ -30,7 +30,8 @@ function NetworkTopologyPageInner() {
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [connectedOnly, setConnectedOnly] = useState(false);
-  const shown = topology && !detail ? networkDisplay(topology, search, connectedOnly) : topology;
+  const shown = useMemo(() => topology && !detail ? networkDisplay(topology, search, connectedOnly) : topology,
+    [topology, detail, search, connectedOnly]);
 
   useEffect(() => {
     fetch('/api/accounts').then((r) => (r.ok ? r.json() : null))

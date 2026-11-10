@@ -169,14 +169,15 @@ export default function MapCanvas({ graph, columns, query, theme, onSelect }:
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-ink-100 px-4 py-2 text-xs">
-        <label>VPC <select aria-label={tt('VPC 선택')} value={roots.some(n => n.id === selected) ? selected! : ''}
+        {roots.length > 0 && <label>VPC <select aria-label={tt('VPC 선택')} value={roots.some(n => n.id === selected) ? selected! : ''}
           onChange={e => { setSelected(e.target.value || null); onSelect?.(graph.nodes.find(n => n.id === e.target.value) ?? null); }}
           className="max-w-[240px] rounded-md border border-ink-200 bg-card px-2 py-1">
           <option value="">{tt('전체')}</option>{roots.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
-        </select></label>
+        </select></label>}
         <span className="text-ink-500">{chooseVpc ? `VPC: ${roots.length}` : `${tt('표시')}: ${visible.nodes.length}/${graph.nodes.length} · ${tt('연결')}: ${visible.edges.length}/${graph.edges.length}`}</span>
-        <button type="button" onClick={() => { setSelected(null); setShowAll(v => !v); onSelect?.(null); }}
-          className="ml-auto rounded-md border border-ink-200 bg-card px-2 py-1">{tt(showAll ? 'VPC 중심 보기' : '전체 그래프')}</button>
+        {roots.length > 0 && <button type="button" disabled={!!query.trim()}
+          onClick={() => { setSelected(null); setShowAll(v => !v); onSelect?.(null); }}
+          className="ml-auto rounded-md border border-ink-200 bg-card px-2 py-1 disabled:opacity-50">{tt(showAll ? 'VPC 중심 보기' : '전체 그래프')}</button>}
         {selected && <button type="button" onClick={() => { setSelected(null); onSelect?.(null); }}
           className="rounded-md border border-ink-200 bg-card px-2 py-1">{tt('선택 해제')}</button>}
       </div>

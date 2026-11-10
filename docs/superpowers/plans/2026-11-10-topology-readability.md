@@ -15,12 +15,18 @@ selection, not resource ownership, collection permissions, or evidence admission
   must not expand every sibling path.
 - Refit asynchronous/resized canvases without remounting them. Preserve full-map
   access and expose what the selected view leaves out.
+- Bound selected service displays to 350 nodes and 700 edges, retaining connection
+  endpoints before optional isolated nodes. Report omitted nodes/edges separately
+  from collection completeness. Cards retain environment, broker and source scope;
+  queue detail claims keep their unverified-identity disclosure.
 - Search fleet network resources without losing parent containers or connection
   counterparts. Place regional Transit Gateway hubs above VPC cards and route
   attachment lines behind labels.
 - Add charts only to completed, explicit time-series tables with numeric metrics.
   Keep original values/table, missing samples, units, and partial-row markers.
   Do not interpret arbitrary IDs or text bars as metric values.
+  Reject status-code columns and ambiguous leading-zero comma groups; disclose
+  eligible metric columns omitted by the four-chart limit in the source table.
 
 Verification: targeted Vitest graph/page/markdown regressions, production web
 build, and mocked browser fixtures at desktop and narrow widths. Local checks make no AWS calls and perform no account onboarding,
@@ -63,3 +69,10 @@ under the project's Node 26 CI runtime before integration.
   independent subagent was started because this host exposes no `close_agent`
   operation and the user's lifecycle rule requires closing every new agent.
   Independent PR review remains required before integration.
+- The first required PR review identified shared Kubernetes toolbar and scoped
+  service-card regressions. Their fixes, graph limits, fleet-only filtering and
+  numeric-table integrity checks passed seven targeted suites with 33 tests.
+  Broader checks must run again before the fix is committed.
+- To reproduce local screenshot capture, set `AWSOPS_TOPOLOGY_ARTIFACTS` to a
+  writable artifact directory when running `topology-readability.spec.ts`.
+  The fixtures assert every intercepted API request uses GET.

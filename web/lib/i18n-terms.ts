@@ -7,6 +7,12 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '수집된 그래프': { en: 'Collected graph', zh: '已收集的图', ja: '収集済みグラフ' },
+  '보조 워크로드 문맥은 숨김': { en: 'Auxiliary workload context hidden', zh: '已隐藏辅助工作负载上下文', ja: '補助ワークロードのコンテキストは非表示' },
+  '표시 한도에 따라 생략': { en: 'Omitted by display limits', zh: '因显示上限而省略', ja: '表示上限により省略' },
+  '검색이나 서비스 선택으로 범위를 좁히세요.': { en: 'Narrow the view with search or a service selection.', zh: '通过搜索或选择服务缩小范围。', ja: '検索またはサービス選択で範囲を絞ってください。' },
+  '차트 표시 한도로 생략된 지표': { en: 'Metrics omitted by the chart limit', zh: '因图表显示上限而省略的指标', ja: 'チャート表示上限により省略されたメトリクス' },
+  '나머지 지표는 원본 표에서 확인하세요.': { en: 'Find the remaining metrics in the original table.', zh: '请在原始表格中查看其余指标。', ja: '残りのメトリクスは元の表で確認してください。' },
   '서비스 검색': { en: 'Search services', zh: '搜索服务', ja: 'サービスを検索' },
   '서비스 중심 보기': { en: 'Service focus', zh: '服务聚焦视图', ja: 'サービス中心表示' },
   '서비스 호출과 데이터베이스 의존성을 살펴봅니다.': { en: 'Explore service calls and database dependencies.', zh: '查看服务调用和数据库依赖。', ja: 'サービス呼び出しとデータベースの依存関係を確認します。' },

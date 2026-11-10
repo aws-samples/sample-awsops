@@ -1,3 +1,26 @@
+/** Bound a display after selection; reserve connections/endpoints before isolated context. */
+export function boundGraphDisplay<N extends { id: string }, E extends { source: string; target: string }>(
+  graph: { nodes: N[]; edges: E[] }, pinned: string[] = [],
+) {
+  const present = new Set(graph.nodes.map(n => n.id));
+  const keep = new Set(pinned.filter(id => present.has(id)).slice(0, 350));
+  const edges: E[] = [];
+  for (const edge of graph.edges) {
+    if (edges.length >= 700) break;
+    if (!present.has(edge.source) || !present.has(edge.target)) continue;
+    const additions = new Set([edge.source, edge.target].filter(id => !keep.has(id)));
+    if (keep.size + additions.size > 350) continue;
+    additions.forEach(id => keep.add(id));
+    edges.push(edge);
+  }
+  for (const node of graph.nodes) {
+    if (keep.size >= 350) break;
+    keep.add(node.id);
+  }
+  const nodes = graph.nodes.filter(node => keep.has(node.id));
+  return { nodes, edges, omitted: { nodes: graph.nodes.length - nodes.length, edges: graph.edges.length - edges.length } };
+}
+
 /** Display-only selection. Keeps original identity, metadata and edge evidence. */
 export function selectGraphPaths<N extends { id: string }, E extends { source: string; target: string }>(
   graph: { nodes: N[]; edges: E[] }, seeds: string[], maxHops = Infinity,
