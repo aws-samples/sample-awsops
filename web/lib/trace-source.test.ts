@@ -156,6 +156,8 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
     }
     const groups = sqls.find(q => !q.includes('JOIN'))!;
     expect(groups).toContain("startsWith(v, 'arn:')");
+    expect(groups).toContain("k NOT IN ('host.id', 'service.instance.id')");
+    expect(groups).toContain("'unbindable'");
     expect(groups).toContain('intDiv(sum(Duration), 1000000) AS DurationMsSum');
     expect(sqls.find(q => q.includes('ARRAY JOIN'))).toContain('length(`Links.TraceId`) = length(`Links.SpanId`)');
   });
@@ -197,6 +199,14 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
     expect(out.reasons).toEqual(expect.arrayContaining(['cap_reached', 'malformed_rows']));
     expect(out.items).toHaveLength(1);
     expect(out.calls).toHaveLength(1);
+  });
+
+  it('clamps rows to the limit and discloses out-of-window aggregate rows', async () => {
+    answer([group({ LastTimestamp: END + 60_000, FirstTimestamp: END + 1 }), group({ SampleSpanId: 's2' }),
+      group({ SampleSpanId: 's3' })], [pair()]);
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 2, END);
+    expect(out.items).toHaveLength(1);
+    expect(out.reasons).toEqual(expect.arrayContaining(['incomplete_collection', 'cap_reached']));
   });
 
   it('requires proof before treating an empty window as empty', async () => {

@@ -420,10 +420,12 @@ export function otelAggregateShape(sqlTemplate?: string): OtelAggregateShape | u
 }
 
 const list = (keys: readonly string[]) => `[${keys.map((k) => `'${k}'`).join(', ')}]`;
-// Only the attributes spanMetadata reads are grouped. Pod names and per-process instance IDs would
-// multiply rows, so pods are collected as a bounded array. service.instance.id keeps every value
-// claimedInstance can act on: bare EC2 IDs bind, and ARNs bind or veto. Other values (process
-// UUIDs) are ignored by that check, so dropping them changes no binding.
+// Only the attributes spanMetadata reads are grouped. Pod names and per-host/per-process claims
+// would multiply rows, so pods are collected as a bounded array and the three EC2 claim keys are
+// reduced to what claimedInstance (trace-graph.ts) can act on: bare EC2 IDs bind and ARNs bind or
+// veto, both kept verbatim. Other host.id/service.instance.id values are ignored by that check and
+// dropped. Any other cloud.resource_id value vetoes binding, so it becomes one fixed 'unbindable'
+// value: the veto survives while host UUIDs stop splitting groups.
 const AGG_RESOURCE_KEYS = [
   'service.name', 'cloud.account.id', 'cloud.region', 'deployment.environment.name',
   'deployment.environment', 'service.namespace', 'service.version', 'cloud.resource_id', 'host.id',
@@ -439,6 +441,7 @@ const AGG_IDENTITY_KEYS = [
   'deployment.environment', 'service.namespace', 'k8s.namespace.name', 'k8s.cluster.name',
 ] as const;
 const AGG_POD_CAP = 20;
+const EC2_CLAIM = "match(v, '^i-[0-9a-f]{8}([0-9a-f]{9})?$') OR startsWith(v, 'arn:')";
 
 function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: number, limit: number) {
   const window = `Timestamp >= fromUnixTimestamp64Milli(${endMs}) - INTERVAL ${windowMins} MINUTE ` +
@@ -452,8 +455,9 @@ function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: numb
     `any(SpanId) AS SampleSpanId, groupUniqArray(${AGG_POD_CAP})(Pod) AS Pods FROM (` +
     `SELECT ServiceName, ${kind}, ${status}, Duration, Timestamp, TraceId, SpanId, ` +
     "ResourceAttributes['k8s.pod.name'] AS Pod, " +
-    `mapSort(mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k != 'service.instance.id' ` +
-    "OR match(v, '^i-[0-9a-f]{8}([0-9a-f]{9})?$') OR startsWith(v, 'arn:')), ResourceAttributes)) AS RA, " +
+    `mapSort(mapApply((k, v) -> (k, if(k = 'cloud.resource_id' AND NOT (${EC2_CLAIM}), 'unbindable', v)), ` +
+    `mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k NOT IN ('host.id', 'service.instance.id') ` +
+    `OR ${EC2_CLAIM}), ResourceAttributes))) AS RA, ` +
     "if(SpanAttributes['db.system'] != '' OR SpanAttributes['messaging.system'] != '', " +
     `mapSort(mapFilter((k, v) -> has(${list(AGG_SPAN_KEYS)}, k), SpanAttributes)), ` +
     'mapFilter((k, v) -> false, SpanAttributes)) AS SA ' +
@@ -529,7 +533,8 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
       reasons.push(...result.reasons);
       if (result.rows.length >= limit) reasons.push('cap_reached');
     }
-    const [groupRows, callRows, linkRows = []] = results.map((r) => r.rows!);
+    // Defensive clamp, as in the span reader: a connector ignoring max_rows stays bounded.
+    const [groupRows, callRows, linkRows = []] = results.map((r) => r.rows!.slice(0, limit));
     const items: TraceSpan[] = [];
     for (const value of groupRows) {
       const row = object(value);
@@ -552,7 +557,7 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
       if (this.shape.statusCode && text(row.StatusCode) && !item.status) reasons.push('malformed_rows');
       const pods = Array.isArray(row.Pods)
         ? [...new Set(row.Pods.filter((p): p is string => !!text(p)))].slice(0, AGG_POD_CAP) : [];
-      if (!inWindow(item, window)) continue;
+      if (!inWindow(item, window)) { reasons.push('incomplete_collection'); continue; }
       items.push({ ...item, sourceId, weight, durationMs: duration, firstStartMs: first,
         ...(pods.length ? { k8sPods: pods } : {}) });
     }

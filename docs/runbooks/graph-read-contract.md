@@ -225,11 +225,15 @@ The shared query normalizer carries collection status into Explore. Marked parti
 The ClickHouse adapter for the catalog's exporter-schema template reads node groups,
 parent→child pairs and (when present) span links as whole-window aggregates; see
 [trace graph sources](../api-reference.md#trace-graph-sources). The aggregates form one source
-read: a failed or malformed query result fails it, and every aggregate needs its own empty proof,
-so nodes never publish without their edges and an unproven pair query keeps the read partial.
-Row limits disclose `cap_reached` like other bounded sources. The join sides project only the
-sorted identity attributes. Metric-derived `external` nodes and deferred metric rows
-(`deferredMetricCalls`) are additive trace metadata.
+read. A failed query or malformed response envelope fails the whole read, so a failed pair query
+never publishes nodes without their edges. Malformed individual rows are skipped as partial
+evidence, and each aggregate needs its own empty proof: confirmed nodes with an unproven-empty pair
+query publish as `partial` with `empty_not_confirmed`. Row limits disclose `cap_reached` like other
+bounded sources. The join sides project only the sorted identity attributes, and the connector's
+`max_execution_time` bounds each query; a query that keeps exceeding it retains the previous graph.
+Metric-derived `external` and label-only `db`/`queue` nodes are additive trace node kinds.
+The adapter and builder contracts run without PostgreSQL:
+`cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts`.
 
 ## Rebuild capacity
 
@@ -420,8 +424,7 @@ docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
 npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts lib/graph-inventory-read-postgres.test.ts \
-  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts \
-  lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts
+  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 

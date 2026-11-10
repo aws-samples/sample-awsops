@@ -301,5 +301,30 @@ describe('source-aggregated rows and service-graph connection types', () => {
     expect(withSpans.nodes.filter(node => node.kind === 'db')).toHaveLength(1);
     expect(withSpans.nodes.find(node => node.label === 'orders-topic')?.kind).toBe('queue');
     expect(withSpans.deferredMetricCalls).toBe(1);
+
+    // Deferral is per dependency and per compatible scope: review's metrics-only cache and a
+    // staging review's reviews DB are still drawn beside the production span evidence.
+    const mixed = buildTraceGraph([dbSpan({ service: 'review', dbName: 'reviews', environment: 'prod' })], [
+      { client: 'review', server: 'reviews', count: 3, connectionType: 'database' },
+      { client: 'review', server: 'cache', count: 2, connectionType: 'database' },
+      { client: 'review', server: 'reviews', count: 1, connectionType: 'database',
+        clientIdentity: { environment: 'staging' } },
+    ], inventory());
+    expect(mixed.deferredMetricCalls).toBe(1);
+    expect(mixed.nodes.filter(node => node.meta.provenance === 'service_graph_metric').map(node => node.label).sort())
+      .toEqual(['cache', 'reviews']);
+  });
+
+  it('keeps the cloud.resource_id veto for the aggregate unbindable marker and caps merged pods', () => {
+    const vetoed = buildTraceGraph([dbSpan({ cloudResourceId: 'unbindable', weight: 3 })], [], inventory());
+    const query = vetoed.edges.find(edge => edge.rel === 'queries')!;
+    expect(query.meta.instance_observations).toBeUndefined();
+    expect(query.meta.instance_observations_unbound).toBe(3);
+    const pods = Array.from({ length: 30 }, (_, i) => `pod-${i}`);
+    const graph = buildTraceGraph([
+      dbSpan({ spanId: 'a', k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: pods }),
+      dbSpan({ spanId: 'b', k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: pods.map(p => `${p}-x`) }),
+    ], [], inventory());
+    expect(graph.nodes.find(node => node.kind === 'workload')?.meta.pods).toHaveLength(50);
   });
 });

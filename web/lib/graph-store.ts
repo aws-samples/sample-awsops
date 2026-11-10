@@ -355,10 +355,12 @@ export async function rebuildTraceGraph(
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
   // Preserve structurally important DB/queue/workload nodes before ranking service volume.
-  // Metric-only external peers rank with services by volume, so many virtual nodes cannot evict them.
-  const rank = (kind: string) => kind === 'service' || kind === 'external' ? 0 : 1;
+  // Metric-derived nodes (external peers, label-only db/queue) rank with services by volume, so a
+  // high-cardinality service-graph metric cannot fill the cap ahead of service nodes.
+  const rank = (node: { kind: string; meta: Record<string, unknown> }) => node.kind === 'service'
+    || node.kind === 'external' || node.meta.provenance === 'service_graph_metric' ? 0 : 1;
   const volume = (meta: Record<string, unknown>) => Number(meta.spanCount ?? 0) + Number(meta.metricCount ?? 0);
-  const nodes = graph.nodes.sort((a, b) => rank(b.kind) - rank(a.kind)
+  const nodes = graph.nodes.sort((a, b) => rank(b) - rank(a)
     || volume(b.meta) - volume(a.meta)).slice(0, TRACE_NODE_CAP);
   const kept = new Set(nodes.map((node) => node.id));
   const edges = graph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
@@ -375,7 +377,6 @@ export async function rebuildTraceGraph(
       sources: sourceDetails, retainedPrevious: false, windowStartMs: startMs, windowEndMs: endMs,
       nodeDrops, edgeDrops, orphanSpans: graph.orphanSpans, invalidSpans: graph.invalidSpans,
       unresolvedMessaging: graph.unresolvedMessaging,
-      ...(graph.deferredMetricCalls ? { deferredMetricCalls: graph.deferredMetricCalls } : {}),
       infraUnavailable,
     },
   });

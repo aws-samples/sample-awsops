@@ -32,6 +32,7 @@ export interface TraceEdge {
 }
 export interface InfraNodeLike { id: string; kind?: string; meta?: Record<string, unknown> | null }
 const INSTANCE_OBSERVATION_CAP = 200;
+const WORKLOAD_POD_CAP = 50;
 const INSTANCE_ID = /^i-(?:[0-9a-f]{8}|[0-9a-f]{17})$/;
 const EC2_ARN = /^arn:(aws(?:-[a-z0-9-]+)?):ec2:([a-z0-9-]+):(\d{12}):instance\/(i-(?:[0-9a-f]{8}|[0-9a-f]{17}))$/;
 
@@ -267,7 +268,10 @@ export function buildTraceGraph(
           sourceId: span.sourceId ?? null, pods: [] },
       });
       const pods = nodes.get(id)!.meta.pods as string[];
-      for (const pod of span.k8sPods ?? (span.k8sPod ? [span.k8sPod] : [])) if (!pods.includes(pod)) pods.push(pod);
+      for (const pod of span.k8sPods ?? (span.k8sPod ? [span.k8sPod] : [])) {
+        if (pods.length >= WORKLOAD_POD_CAP) break;
+        if (!pods.includes(pod)) pods.push(pod);
+      }
       edge(sid, id, 'runs_on', w);
     }
     if (span.messagingSystem && span.messagingDestination) {
@@ -302,15 +306,25 @@ export function buildTraceGraph(
     }
   }
   // Trace spans name databases and queues with host-qualified identity. Metric rows only carry
-  // Tempo's server label (a db.name such as "admin"), so a metric database/queue row is deferred
-  // when trace spans already show that same client service querying a database (or using a
-  // queue); otherwise the same dependency would appear twice under two names. Other services keep
-  // their metric rows, and every deferral is counted.
-  const spanDbClients = new Set<string>(), spanQueueClients = new Set<string>();
+  // Tempo's server label (the span's db.name, db.system or peer host for a database, or the
+  // destination for a queue), so a metric row is a duplicate only when a span from a compatibly
+  // scoped client of the same name names that same dependency. Only then is the row not drawn;
+  // any other metric row, including another dependency of the same client, is kept.
+  const scopeKeys = ['accountId', 'region', 'environment', 'serviceNamespace', 'k8sNamespace', 'k8sCluster'] as const;
+  const compatible = (span: TraceSpan, identity: TraceIdentity) =>
+    scopeKeys.every(key => span[key] === undefined || identity[key] === undefined || span[key] === identity[key]);
+  const names = (span: TraceSpan, database: boolean): string[] => database
+    ? [span.dbName, span.dbSystem, span.dbHost, span.dbHost?.split('.')[0]].filter((v): v is string => !!v)
+    : span.messagingDestination ? [span.messagingDestination.trim()] : [];
+  const spansByService = new Map<string, TraceSpan[]>();
   for (const span of byId.values()) {
-    if (span.dbSystem) spanDbClients.add(span.service);
-    if (span.messagingSystem && span.messagingDestination) spanQueueClients.add(span.service);
+    if (!span.dbSystem && !(span.messagingSystem && span.messagingDestination)) continue;
+    const list = spansByService.get(span.service);
+    if (list) list.push(span); else spansByService.set(span.service, [span]);
   }
+  const shownBySpans = (call: ServiceGraphCall, database: boolean) =>
+    (spansByService.get(call.client) ?? []).some(span => (database ? !!span.dbSystem : !!span.messagingSystem)
+      && compatible(span, call.clientIdentity ?? {}) && names(span, database).includes(call.server));
   let deferredMetricCalls = 0;
   const metricWeight = (id: string, count: number) => {
     const meta = nodes.get(id)!.meta;
@@ -327,14 +341,14 @@ export function buildTraceGraph(
     const clientIdentity = call.clientIdentity ?? {}, serverIdentity = call.serverIdentity ?? {};
     if (call.connectionType === 'database' || call.connectionType === 'messaging_system') {
       const database = call.connectionType === 'database';
-      if ((database ? spanDbClients : spanQueueClients).has(call.client)) { deferredMetricCalls++; continue; }
+      if (shownBySpans(call, database)) { deferredMetricCalls++; continue; }
       // Caller labels scope the node ID (no cross-scope merge) but are not attribution: like
       // queue claims, the database carries no account/region and never bridges to inventory.
       const scoped = resourceScope({ ...clientIdentity, ...serverIdentity });
       const id = nodeId(database ? 'db' : 'queue', scoped, `metric:${call.server}`);
       if (!nodes.has(id)) nodes.set(id, database ? {
         id, kind: 'db', label: call.server.slice(0, 240),
-        meta: { system: null, host: null, dbName: null, metricServer: call.server,
+        meta: { system: null, host: null, dbName: null, metricServer: call.server.slice(0, 240),
           sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
           accountId: null, region: null, identityProvenance: 'telemetry_claim',
           provenance: 'service_graph_metric' },
@@ -357,7 +371,7 @@ export function buildTraceGraph(
       const external = (name: string, identity: TraceIdentity) => {
         const id = nodeId('ext', resourceScope(identity), name);
         if (!nodes.has(id)) nodes.set(id, { id, kind: 'external', label: name.slice(0, 240),
-          meta: { name, sourceId: identity.sourceId ?? null, environment: identity.environment ?? null,
+          meta: { name: name.slice(0, 240), sourceId: identity.sourceId ?? null, environment: identity.environment ?? null,
             provenance: 'service_graph_metric' } });
         return id;
       };

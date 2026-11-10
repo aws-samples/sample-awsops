@@ -108,6 +108,20 @@ describe('source-aggregated trace edges', () => {
   });
 });
 
+describe('trace node cap ranking', () => {
+  it('ranks label-only metric db nodes by volume with services, so they cannot evict services', async () => {
+    const { pool, params } = mockPool([]);
+    const calls = Array.from({ length: 260 }, (_, i) => ({
+      client: 'tenant-api', server: `tenant_${i}`, count: 1, connectionType: 'database' }));
+    const metrics = { available: async () => true, calls: async (_w: number, endMs = Date.now()) => ({
+      sourceId: 'prometheus:1', status: 'ok' as const, reasons: [], items: calls,
+      windowStartMs: endMs - 3_600_000, windowEndMs: endMs }) };
+    await rebuildTraceGraph(pool as never, [new FakeTraceSource([])], undefined, [metrics]);
+    const services = params.filter(p => p[1] === 'service').map(p => JSON.parse(String(p[3])).service);
+    expect(services).toContain('tenant-api');
+  });
+});
+
 describe('instance observation publication', () => {
   const account = '111122223333', region = 'ap-northeast-2', instanceId = 'i-0123456789abcdef0';
   const infra = [
