@@ -6,7 +6,10 @@
 // single hardcoded default ClickHouse instance.
 
 import type { Pool } from 'pg';
-import { ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource, type TraceSource } from '@/lib/trace-source';
+import {
+  ClickHouseOtelAggregateSource, ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource,
+  otelAggregateShape, type TraceSource,
+} from '@/lib/trace-source';
 
 interface GraphQueryRow {
   integration_id: number;
@@ -57,7 +60,12 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
     const mapper = q?.mapper;
     if (mapper === 'otel_v1') {
       const sql = q?.args_template?.sql;
-      sources.push(new ClickHouseOtelTraceSource(row.integration_id, typeof sql === 'string' ? sql : undefined));
+      const template = typeof sql === 'string' ? sql : undefined;
+      // The catalog's exporter-schema template is read as whole-window aggregates; any other
+      // (generated/custom) template keeps the bounded newest-span reader.
+      const shape = otelAggregateShape(template);
+      sources.push(shape ? new ClickHouseOtelAggregateSource(row.integration_id, shape)
+        : new ClickHouseOtelTraceSource(row.integration_id, template));
     } else if (mapper === 'tempo_v1') {
       sources.push(new TempoTraceSource(row.integration_id));
     } else if (mapper === 'servicegraph_v1' || mapper === 'istio_v1') {
@@ -69,7 +77,7 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
   }
 
   if (sources.length === 0 && metricsSources.length === 0) {
-    sources.push(new ClickHouseOtelTraceSource());
+    sources.push(new ClickHouseOtelAggregateSource());
   }
   return { sources, metricsSources };
 }

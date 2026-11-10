@@ -126,7 +126,8 @@ function observedInstanceDatabasePair(
   };
 }
 
-/** A sampled dependency graph. Counts describe evidence, never a probability of correctness. */
+/** A dependency graph from sampled spans, source-aggregated span rows and metric calls.
+ *  Counts describe evidence, never a probability of correctness. */
 export function buildTraceGraph(
   spans: TraceSpan[],
   metricCalls: ServiceGraphCall[],
@@ -179,11 +180,13 @@ export function buildTraceGraph(
   };
 
   for (const span of byId.values()) {
+    // An aggregate row stands for `weight` spans; a raw span for one.
+    const w = Number.isSafeInteger(span.weight) && span.weight! > 0 ? span.weight! : 1;
     const sid = serviceNode(span.service, span);
     const meta = nodes.get(sid)!.meta;
-    meta.spanCount = Number(meta.spanCount) + 1;
-    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + 1;
-    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + 1;
+    meta.spanCount = Number(meta.spanCount) + w;
+    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + w;
+    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + w;
     meta.sampledDurationMs = Number(meta.sampledDurationMs) + Math.max(0, Number(span.durationMs) || 0);
     const traceIds = meta.traceIds as string[];
     if (traceIds.length < 20 && !traceIds.includes(span.traceId)) traceIds.push(span.traceId);
@@ -219,21 +222,25 @@ export function buildTraceGraph(
           accountId: span.accountId ?? null, region: span.region ?? null,
           ...(infraRef ? { infra_ref: infraRef } : {}) },
       });
-      const queryEdge = edge(sid, id, 'queries');
+      const queryEdge = edge(sid, id, 'queries', w);
       // Only an outbound client call is evidence that this instance queried the database;
       // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
       const observation = span.kind === 'CLIENT'
         ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
-      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + 1;
+      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + w;
       else if (observation) {
+        observation.observation_count = w;
+        const first = Number.isSafeInteger(span.firstStartMs) && span.firstStartMs! >= 0
+          ? Math.min(span.firstStartMs!, observation.observed_at_ms) : observation.observed_at_ms;
+        observation.first_observed_at_ms = first;
         const observations = queryEdge.meta.instance_observations ??= [];
         let index = pairIndex.get(queryEdge);
         if (!index) pairIndex.set(queryEdge, index = { kept: new Map(), omitted: new Set() });
         const key = JSON.stringify([observation.instance_ref, observation.database_ref]);
         const existing = index.kept.get(key);
         if (existing) {
-          existing.observation_count++;
-          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, observation.observed_at_ms);
+          existing.observation_count += w;
+          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, first);
           if (observation.observed_at_ms > existing.observed_at_ms
             || (observation.observed_at_ms === existing.observed_at_ms
               && observation.correlation_id > existing.correlation_id)) {
@@ -260,8 +267,8 @@ export function buildTraceGraph(
           sourceId: span.sourceId ?? null, pods: [] },
       });
       const pods = nodes.get(id)!.meta.pods as string[];
-      if (span.k8sPod && !pods.includes(span.k8sPod)) pods.push(span.k8sPod);
-      edge(sid, id, 'runs_on');
+      for (const pod of span.k8sPods ?? (span.k8sPod ? [span.k8sPod] : [])) if (!pods.includes(pod)) pods.push(pod);
+      edge(sid, id, 'runs_on', w);
     }
     if (span.messagingSystem && span.messagingDestination) {
       const destination = span.messagingDestination.trim();
@@ -290,14 +297,59 @@ export function buildTraceGraph(
           broker: qualified ? null : span.messagingBroker ?? null,
           cluster: qualified ? null : span.k8sCluster ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null }) });
-      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes');
-      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes');
+      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes', w);
+      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes', w);
     }
   }
+  // Trace spans name databases and queues with host-qualified identity. Metric rows only carry
+  // Tempo's server label (a db.name such as "admin"), so they draw those nodes only when no
+  // span evidence exists; otherwise the same database would appear twice under two names.
+  const spanEvidence = byId.size > 0;
   for (const call of metricCalls) {
     if (!Number.isFinite(call.count) || call.count <= 0) continue;
-    edge(serviceNode(call.client, call.clientIdentity ?? {}),
-      serviceNode(call.server, call.serverIdentity ?? {}), 'calls', 0, call.count);
+    if (call.evidence === 'trace') {
+      const client = serviceNode(call.client, call.clientIdentity ?? {});
+      const server = serviceNode(call.server, call.serverIdentity ?? {});
+      if (client !== server) edge(client, server, call.rel ?? 'calls', call.count, 0);
+      continue;
+    }
+    const clientIdentity = call.clientIdentity ?? {}, serverIdentity = call.serverIdentity ?? {};
+    if (call.connectionType === 'database' || call.connectionType === 'messaging_system') {
+      if (spanEvidence) continue;
+      const database = call.connectionType === 'database';
+      const scoped = resourceScope({ ...clientIdentity, ...serverIdentity });
+      const id = nodeId(database ? 'db' : 'queue', scoped, `metric:${call.server}`);
+      if (!nodes.has(id)) nodes.set(id, database ? {
+        id, kind: 'db', label: call.server.slice(0, 240),
+        meta: { system: null, host: null, dbName: null, metricServer: call.server,
+          sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
+          accountId: scoped.accountId ?? null, region: scoped.region ?? null, provenance: 'service_graph_metric' },
+      } : {
+        id, kind: 'queue', label: call.server.slice(0, 240),
+        meta: queueClaimMeta({ system: null, destination: call.server, broker: null, cluster: null,
+          sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
+          provenance: 'service_graph_metric' }),
+      });
+      edge(serviceNode(call.client, clientIdentity), id, database ? 'queries' : 'publishes', 0, call.count);
+      continue;
+    }
+    if (call.connectionType === 'virtual_node') {
+      // Tempo names an uninstrumented caller "user"; otherwise the uninstrumented side is the server.
+      const clientVirtual = call.client === 'user';
+      const external = (name: string, identity: TraceIdentity) => {
+        const id = nodeId('ext', resourceScope(identity), name);
+        if (!nodes.has(id)) nodes.set(id, { id, kind: 'external', label: name.slice(0, 240),
+          meta: { name, sourceId: identity.sourceId ?? null, environment: identity.environment ?? null,
+            provenance: 'service_graph_metric' } });
+        return id;
+      };
+      edge(clientVirtual ? external(call.client, clientIdentity) : serviceNode(call.client, clientIdentity),
+        clientVirtual ? serviceNode(call.server, serverIdentity) : external(call.server, serverIdentity),
+        'calls', 0, call.count);
+      continue;
+    }
+    edge(serviceNode(call.client, clientIdentity),
+      serviceNode(call.server, serverIdentity), 'calls', 0, call.count);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
     unresolvedMessaging };

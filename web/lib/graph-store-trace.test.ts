@@ -86,6 +86,28 @@ describe('trusted host account DB bridge', () => {
   });
 });
 
+describe('source-aggregated trace edges', () => {
+  it('publishes span-pair edges a trace source aggregated beside its node rows', async () => {
+    const { pool, params } = mockPool([]);
+    const source = {
+      available: async () => true,
+      recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+        sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], windowStartMs: endMs - 3_600_000, windowEndMs: endMs,
+        items: [span({ service: 'checkout', startMs: endMs - 1_000, weight: 9 })],
+        calls: [{ client: 'frontend', server: 'checkout', count: 17, evidence: 'trace' as const, rel: 'calls' as const }],
+      }),
+    };
+    await rebuildTraceGraph(pool as never, [source]);
+    const services = params.filter(p => p[1] === 'service').map(p => JSON.parse(String(p[3])));
+    expect(services.map(meta => [meta.service, meta.sourceId]).sort()).toEqual([
+      ['checkout', 'clickhouse:3'], ['frontend', 'clickhouse:3'],
+    ]);
+    const edges = params.filter(p => p.includes('calls'));
+    expect(edges).toHaveLength(1);
+    expect(JSON.parse(String(edges[0][7]))).toEqual({ spanCount: 17, metricCount: 0 });
+  });
+});
+
 describe('instance observation publication', () => {
   const account = '111122223333', region = 'ap-northeast-2', instanceId = 'i-0123456789abcdef0';
   const infra = [

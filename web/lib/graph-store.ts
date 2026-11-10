@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
-import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
+import type { TraceSource, TraceRead, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
@@ -303,7 +303,7 @@ export async function rebuildTraceGraph(
   // Adapter status, not a separate readiness probe, distinguishes absent config from a failed read.
   const spanReads = await Promise.all(sources.map(async (source, i) => {
     try { return await source.recentSpans(TRACE_WINDOW_MINS, TRACE_SPAN_CAP, endMs); }
-    catch { return failed<TraceSpan>(`trace:${i}`); }
+    catch { return failed(`trace:${i}`) as TraceRead; }
   }));
   const metricReads = await Promise.all(metricsSources.map(async (source, i) => {
     try { return await source.calls(TRACE_WINDOW_MINS, endMs); }
@@ -318,7 +318,9 @@ export async function rebuildTraceGraph(
   const cannotSweep = reads.some((read) => read.canSweep === false);
   const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
-  const calls = metricReads.flatMap((read) => read.items.map((call) => ({
+  // Aggregate trace sources return span-pair edges beside their node rows; same sourceId stamping.
+  const calls = [...spanReads.map((read) => ({ ...read, items: read.calls ?? [] })), ...metricReads]
+    .flatMap((read) => read.items.map((call) => ({
     ...call,
     clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
     serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },

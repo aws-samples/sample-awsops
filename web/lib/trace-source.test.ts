@@ -19,7 +19,9 @@ vi.mock('@/lib/mcp-lambda-invoke', () => ({
 
 import {
   FakeTraceSource,
+  ClickHouseOtelAggregateSource,
   ClickHouseOtelTraceSource,
+  otelAggregateShape,
   TempoTraceSource,
   MetricsCallsSource,
   mapOtelRow,
@@ -78,6 +80,101 @@ describe('mapOtelRow (real nested-map otel_traces shape)', () => {
     expect(s.dbSystem).toBeUndefined();
     expect(s.k8sNamespace).toBeUndefined();
     expect(s.parentSpanId).toBeUndefined();
+  });
+});
+
+describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
+  const END = 1_794_300_000_000;
+  const resource = { 'service.name': 'checkout', 'deployment.environment': 'prod', 'k8s.cluster.name': 'c1',
+    'k8s.namespace.name': 'shop', 'k8s.deployment.name': 'checkout' };
+  const group = (over: Record<string, unknown> = {}) => ({
+    ServiceName: 'checkout', SpanKind: 'Client', StatusCode: 'Error', ResourceAttributes: resource,
+    SpanAttributes: { 'db.system': 'postgresql', 'server.address': 'db.example.internal', 'db.name': 'orders' },
+    Weight: '42', DurationSum: '84000000', LastTimestamp: END - 1_000, FirstTimestamp: END - 3_000_000,
+    SampleTraceId: 't1', SampleSpanId: 's1', Pods: ['checkout-a', 'checkout-b', ''], ...over,
+  });
+  const pair = (over: Record<string, unknown> = {}) => ({
+    ClientService: 'frontend', ClientResource: { 'service.name': 'frontend', 'deployment.environment': 'prod' },
+    ServerService: 'checkout', ServerResource: resource, Weight: '17', ...over,
+  });
+  beforeEach(() => {
+    getDefaultDatasource.mockReset(); getDatasource.mockReset(); resolveConnConfig.mockReset(); invokeMcpLambdaTool.mockReset();
+    getDefaultDatasource.mockResolvedValue({ id: 3, kind: 'clickhouse', isDefault: true });
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://ch' });
+  });
+  const answer = (groups: unknown[], calls: unknown[], links: unknown[] = []) =>
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => {
+      const rows = args.sql.includes('ARRAY JOIN') ? links : args.sql.includes('INNER JOIN') ? calls : groups;
+      return { rows, collectionStatus: rows.length ? 'ok' : 'empty' };
+    });
+
+  it('accepts only the catalog exporter template and reads its optional columns', () => {
+    expect(otelAggregateShape(undefined)).toEqual({ table: 'otel_traces', spanKind: true, statusCode: true, links: true });
+    const catalog = 'SELECT TraceId, SpanId, ParentSpanId, ServiceName, Timestamp, Duration, ResourceAttributes, ' +
+      'SpanAttributes FROM `otel`.`otel_traces` WHERE Timestamp >= now() - INTERVAL {window} MINUTE AND ' +
+      'Timestamp <= now() ORDER BY Timestamp DESC LIMIT {cap}';
+    expect(otelAggregateShape(catalog)).toEqual({ table: '`otel`.`otel_traces`', spanKind: false, statusCode: false, links: false });
+    expect(otelAggregateShape('SELECT trace_id AS TraceId FROM spans LIMIT {cap}')).toBeUndefined();
+    expect(otelAggregateShape(catalog.replace('LIMIT {cap}', 'LIMIT {cap}; DROP TABLE x'))).toBeUndefined();
+  });
+
+  it('queries node groups, parent/child pairs and links over the exact window and maps weighted rows', async () => {
+    answer([group()], [pair()], [pair({ ClientService: 'worker', ClientResource: { 'service.name': 'worker' } })]);
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END);
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(3);
+    for (const [{ args }] of invokeMcpLambdaTool.mock.calls) {
+      expect(args.sql).toContain(`fromUnixTimestamp64Milli(${END}) - INTERVAL 60 MINUTE`);
+      expect(args.sql).toContain('FROM otel_traces');
+      expect(args.sql).toMatch(/LIMIT 1000$/);
+      expect(args.max_rows).toBe(1000);
+    }
+    expect(out).toMatchObject({ status: 'ok', sourceId: 'clickhouse:3', reasons: [] });
+    expect(out.items).toEqual([expect.objectContaining({
+      service: 'checkout', kind: 'CLIENT', status: 'error', weight: 42, durationMs: 84,
+      startMs: END - 1_000, firstStartMs: END - 3_000_000, k8sPods: ['checkout-a', 'checkout-b'],
+      dbSystem: 'postgresql', dbHost: 'db.example.internal', k8sCluster: 'c1', sourceId: 'clickhouse:3',
+    })]);
+    expect(out.calls).toEqual([
+      { client: 'frontend', server: 'checkout', count: 17, evidence: 'trace', rel: 'calls',
+        clientIdentity: { sourceId: 'clickhouse:3', environment: 'prod' },
+        serverIdentity: { sourceId: 'clickhouse:3', environment: 'prod', k8sCluster: 'c1', k8sNamespace: 'shop' } },
+      expect.objectContaining({ client: 'worker', rel: 'linked', count: 17, evidence: 'trace' }),
+    ]);
+  });
+
+  it('skips the link query when the table has no Links columns', async () => {
+    answer([group()], []);
+    const shape = { table: 't', spanKind: true, statusCode: true, links: false };
+    await new ClickHouseOtelAggregateSource(undefined, shape).recentSpans(60, 1000, END);
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(2);
+    expect(invokeMcpLambdaTool.mock.calls.some(([{ args }]) => args.sql.includes('ARRAY JOIN'))).toBe(false);
+  });
+
+  it('publishes nothing when any aggregate fails, so nodes never appear without their edges', async () => {
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) =>
+      args.sql.includes('INNER JOIN') ? { error: 'boom', collectionStatus: 'error' } : { rows: [group()], collectionStatus: 'ok' });
+    expect(await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).toMatchObject({
+      status: 'error', items: [], reasons: ['query_failed'],
+    });
+    invokeMcpLambdaTool.mockRejectedValue(new Error('timeout'));
+    expect(await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).toMatchObject({
+      status: 'error', items: [], reasons: ['query_failed'],
+    });
+  });
+
+  it('marks a saturated row limit and malformed rows as partial evidence', async () => {
+    answer([group(), group({ Weight: '0', SampleSpanId: 's2' }), group({ FirstTimestamp: END, SampleSpanId: 's3' })],
+      [pair(), pair({ ServerResource: 'oops' })]);
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 2, END);
+    expect(out.status).toBe('partial');
+    expect(out.reasons).toEqual(expect.arrayContaining(['cap_reached', 'malformed_rows']));
+    expect(out.items).toHaveLength(1);
+    expect(out.calls).toHaveLength(1);
+  });
+
+  it('requires proof before treating an empty window as empty', async () => {
+    invokeMcpLambdaTool.mockResolvedValue({ rows: [] });
+    expect((await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END)).reasons).toContain('empty_not_confirmed');
   });
 });
 
@@ -279,6 +376,19 @@ describe('extractServiceGraphCalls (Prometheus/Mimir instant-query vector result
     expect(extractServiceGraphCalls(result)).toEqual([
       { client: 'checkout', server: 'orders', count: 5 },
       { client: 'orders', server: 'postgres', count: 2 },
+    ]);
+  });
+
+  it('keeps Tempo connection_type so database and virtual-node rows are not drawn as services', () => {
+    const result = { resultType: 'vector', result: [
+      { metric: { client: 'review', server: 'reviews', connection_type: 'database' }, value: [0, '4'] },
+      { metric: { client: 'user', server: 'payment', connection_type: 'virtual_node' }, value: [0, '2'] },
+      { metric: { client: 'a', server: 'b', connection_type: '' }, value: [0, '1'] },
+    ] };
+    expect(extractServiceGraphCalls(result)).toEqual([
+      { client: 'review', server: 'reviews', count: 4, connectionType: 'database' },
+      { client: 'user', server: 'payment', count: 2, connectionType: 'virtual_node' },
+      { client: 'a', server: 'b', count: 1 },
     ]);
   });
 

@@ -544,6 +544,19 @@ runtime payloads for compatibility with older or malformed responses.
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
+### Trace graph sources
+
+A ClickHouse datasource whose registry query is the catalog's exporter-schema `otel_v1` template
+(or the unregistered default) is read as whole-window aggregates of the same table, not as the
+newest spans. Three bounded read-only queries return service/kind/status attribute groups with
+span counts, parent→child service pairs and span-link pairs, each limited to 1,000 rows; a
+saturated limit adds `cap_reached`, and any failed query fails the whole source read. Node and
+edge `spanCount` then count spans in the window, and source-counted pairs produce no
+`orphanSpans`. Generated or custom templates, Tempo and other sources keep span sampling.
+Service-graph metric rows keep Tempo's `connection_type`: `database` and `messaging_system`
+servers become `db`/`queue` nodes only when no trace spans are present (spans carry the
+host-qualified identity), and `virtual_node` rows draw the uninstrumented side as an `external` node.
+
 ### Trace edge instance observations
 
 Trace `queries` edges (service → `db`) may carry three additive, optional `meta` fields built by
@@ -555,6 +568,8 @@ no bound observation was recorded, not that no instance queried the database.
 | `instance_observations[]` | Distinct (`instance_ref`, `database_ref`) pairs from outbound `CLIENT` spans only. Each entry carries `instance_id`, `instance_ref`, `database_ref`, `account`, `region`, `db_host`, `observed_at_ms` (latest span start), `first_observed_at_ms`, `observation_count`, an opaque `correlation_id` naming the latest span, optional `source_id`, and `provenance: "trace_span"`. At most 200 pairs per edge. |
 | `instance_observations_omitted` | Count of further distinct pairs dropped by the 200-pair cap. |
 | `instance_observations_unbound` | Count of spans whose EC2 claim could not be bound: missing or invalid account/region/clock, or no unique inventory EC2 instance and RDS instance endpoint in the same account and region. |
+
+For aggregate sources, `observation_count` and `instance_observations_unbound` count the spans behind each aggregate row, and `correlation_id` names one sample span of the row.
 
 These are sampled telemetry claims bound to inventory, not authority: a pair shows that the
 sampled spans named that instance and endpoint within the trace window. It does not prove

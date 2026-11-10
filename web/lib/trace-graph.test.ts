@@ -226,3 +226,74 @@ describe('same-span EC2 and DB observations', () => {
       expect(queries[0].meta).not.toHaveProperty('instance_observations_unbound');
     });
 });
+
+describe('source-aggregated rows and service-graph connection types', () => {
+  const svc = (graph: ReturnType<typeof buildTraceGraph>, name: string) =>
+    graph.nodes.find(node => node.kind === 'service' && node.label === name);
+
+  it('counts an aggregate row as its weight on nodes, DB edges, pods and instance pairs', () => {
+    const graph = buildTraceGraph([dbSpan({
+      weight: 40, firstStartMs: 1_793_999_000_000, status: 'error', durationMs: 120,
+      k8sNamespace: 'shop', k8sDeployment: 'checkout', k8sPods: ['checkout-a', 'checkout-b'],
+    })], [], inventory());
+    expect(svc(graph, 'checkout')?.meta).toMatchObject({ spanCount: 40, errorSpanCount: 40, sampledDurationMs: 120 });
+    const query = graph.edges.find(edge => edge.rel === 'queries')!;
+    expect(query.meta.spanCount).toBe(40);
+    expect(query.meta.instance_observations?.[0]).toMatchObject({
+      observation_count: 40, first_observed_at_ms: 1_793_999_000_000, observed_at_ms: 1_794_000_000_000,
+    });
+    expect(graph.edges.find(edge => edge.rel === 'runs_on')?.meta.spanCount).toBe(40);
+    expect(graph.nodes.find(node => node.kind === 'workload')?.meta.pods).toEqual(['checkout-a', 'checkout-b']);
+  });
+
+  it('draws source-counted span pairs as span evidence on the same service nodes, never as self-loops', () => {
+    const identity = { sourceId: 'clickhouse:3', environment: 'prod' };
+    const graph = buildTraceGraph(
+      [dbSpan({ sourceId: 'clickhouse:3', environment: 'prod', accountId: undefined, region: undefined, weight: 5 })],
+      [
+        { client: 'frontend', server: 'checkout', count: 17, evidence: 'trace', rel: 'calls',
+          clientIdentity: identity, serverIdentity: identity },
+        { client: 'worker', server: 'checkout', count: 3, evidence: 'trace', rel: 'linked',
+          clientIdentity: identity, serverIdentity: identity },
+        { client: 'checkout', server: 'checkout', count: 9, evidence: 'trace', rel: 'calls',
+          clientIdentity: identity, serverIdentity: identity },
+      ], []);
+    const checkout = svc(graph, 'checkout')!;
+    expect(graph.nodes.filter(node => node.label === 'checkout')).toHaveLength(1);
+    const calls = graph.edges.find(edge => edge.rel === 'calls')!;
+    expect(calls).toMatchObject({ source: svc(graph, 'frontend')!.id, target: checkout.id,
+      meta: { spanCount: 17, metricCount: 0 } });
+    expect(graph.edges.find(edge => edge.rel === 'linked')?.meta.spanCount).toBe(3);
+    expect(graph.edges.some(edge => edge.source === edge.target)).toBe(false);
+    expect(graph.orphanSpans).toBe(0);
+  });
+
+  it('keeps metric database/messaging servers off service nodes and defers to span evidence', () => {
+    const calls = [
+      { client: 'review', server: 'reviews', count: 10, connectionType: 'database' },
+      { client: 'order', server: 'orders-topic', count: 4, connectionType: 'messaging_system' },
+      { client: 'user', server: 'payment', count: 6, connectionType: 'virtual_node' },
+      { client: 'payment', server: 'stripe', count: 2, connectionType: 'virtual_node' },
+    ];
+    const metricsOnly = buildTraceGraph([], calls, []);
+    expect(metricsOnly.nodes.filter(node => node.kind === 'service').map(node => node.label).sort())
+      .toEqual(['order', 'payment', 'review']);
+    expect(metricsOnly.nodes.find(node => node.label === 'reviews')).toMatchObject({ kind: 'db',
+      meta: { provenance: 'service_graph_metric', host: null } });
+    expect(metricsOnly.nodes.find(node => node.label === 'orders-topic')?.kind).toBe('queue');
+    expect(metricsOnly.nodes.filter(node => node.kind === 'external').map(node => node.label).sort())
+      .toEqual(['stripe', 'user']);
+    const rel = (source: string, target: string) => metricsOnly.edges.find(edge =>
+      metricsOnly.nodes.find(n => n.id === edge.source)?.label === source
+      && metricsOnly.nodes.find(n => n.id === edge.target)?.label === target);
+    expect(rel('review', 'reviews')).toMatchObject({ rel: 'queries', meta: { metricCount: 10, spanCount: 0 } });
+    expect(rel('order', 'orders-topic')?.rel).toBe('publishes');
+    expect(rel('user', 'payment')?.rel).toBe('calls');
+    expect(rel('payment', 'stripe')?.rel).toBe('calls');
+
+    const withSpans = buildTraceGraph([dbSpan({ service: 'review', dbName: 'reviews' })], calls, inventory());
+    expect(withSpans.nodes.filter(node => node.meta.provenance === 'service_graph_metric' && node.kind !== 'external'))
+      .toEqual([]);
+    expect(withSpans.nodes.filter(node => node.kind === 'db')).toHaveLength(1);
+  });
+});
