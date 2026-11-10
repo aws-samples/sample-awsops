@@ -90,7 +90,7 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
   const group = (over: Record<string, unknown> = {}) => ({
     ServiceName: 'checkout', SpanKind: 'Client', StatusCode: 'Error', ResourceAttributes: resource,
     SpanAttributes: { 'db.system': 'postgresql', 'server.address': 'db.example.internal', 'db.name': 'orders' },
-    Weight: '42', DurationSum: '84000000', LastTimestamp: END - 1_000, FirstTimestamp: END - 3_000_000,
+    Weight: '42', DurationMsSum: '84', LastTimestamp: END - 1_000, FirstTimestamp: END - 3_000_000,
     SampleTraceId: 't1', SampleSpanId: 's1', Pods: ['checkout-a', 'checkout-b', ''], ...over,
   });
   const pair = (over: Record<string, unknown> = {}) => ({
@@ -116,6 +116,10 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
     expect(otelAggregateShape(catalog)).toEqual({ table: '`otel`.`otel_traces`', spanKind: false, statusCode: false, links: false });
     expect(otelAggregateShape('SELECT trace_id AS TraceId FROM spans LIMIT {cap}')).toBeUndefined();
     expect(otelAggregateShape(catalog.replace('LIMIT {cap}', 'LIMIT {cap}; DROP TABLE x'))).toBeUndefined();
+    // Generated templates share the otel_v1 mapper but alias columns; aliases are not exporter Maps.
+    expect(otelAggregateShape(catalog.replace('ResourceAttributes,', 'attrs AS ResourceAttributes,'))).toBeUndefined();
+    expect(otelAggregateShape(catalog.replace(', SpanAttributes FROM', ', SpanAttributes, extra FROM'))).toBeUndefined();
+    expect(otelAggregateShape(catalog.replace('Duration, ', ''))).toBeUndefined();
   });
 
   it('queries node groups, parent/child pairs and links over the exact window and maps weighted rows', async () => {
@@ -142,6 +146,28 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
     ]);
   });
 
+  it('keeps the join build to sorted identity maps and guards link arrays before ARRAY JOIN', async () => {
+    answer([group()], []);
+    await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END);
+    const sqls = invokeMcpLambdaTool.mock.calls.map(([{ args }]) => args.sql as string);
+    for (const sql of sqls.filter(q => q.includes('INNER JOIN'))) {
+      expect(sql).not.toMatch(/SELECT TraceId, SpanId, ServiceName, ResourceAttributes FROM/);
+      expect(sql.match(/mapSort\(mapFilter/g)).toHaveLength(2);
+    }
+    const groups = sqls.find(q => !q.includes('JOIN'))!;
+    expect(groups).toContain("startsWith(v, 'arn:')");
+    expect(groups).toContain('intDiv(sum(Duration), 1000000) AS DurationMsSum');
+    expect(sqls.find(q => q.includes('ARRAY JOIN'))).toContain('length(`Links.TraceId`) = length(`Links.SpanId`)');
+  });
+
+  it('requires empty proof from each aggregate, not only the node query', async () => {
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) =>
+      args.sql.includes('INNER JOIN') ? { rows: [] } : { rows: [group()], collectionStatus: 'ok' });
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END);
+    expect(out.reasons).toContain('empty_not_confirmed');
+    expect(out.status).toBe('partial');
+  });
+
   it('skips the link query when the table has no Links columns', async () => {
     answer([group()], []);
     const shape = { table: 't', spanKind: true, statusCode: true, links: false };
@@ -163,7 +189,8 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
   });
 
   it('marks a saturated row limit and malformed rows as partial evidence', async () => {
-    answer([group(), group({ Weight: '0', SampleSpanId: 's2' }), group({ FirstTimestamp: END, SampleSpanId: 's3' })],
+    answer([group(), group({ Weight: '0', SampleSpanId: 's2' }), group({ FirstTimestamp: END, SampleSpanId: 's3' }),
+      group({ DurationMsSum: '9007199254740993', SampleSpanId: 's4' })],
       [pair(), pair({ ServerResource: 'oops' })]);
     const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 2, END);
     expect(out.status).toBe('partial');

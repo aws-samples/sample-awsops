@@ -547,15 +547,23 @@ runtime payloads for compatibility with older or malformed responses.
 ### Trace graph sources
 
 A ClickHouse datasource whose registry query is the catalog's exporter-schema `otel_v1` template
-(or the unregistered default) is read as whole-window aggregates of the same table, not as the
-newest spans. Three bounded read-only queries return service/kind/status attribute groups with
-span counts, parent→child service pairs and span-link pairs, each limited to 1,000 rows; a
-saturated limit adds `cap_reached`, and any failed query fails the whole source read. Node and
-edge `spanCount` then count spans in the window, and source-counted pairs produce no
-`orphanSpans`. Generated or custom templates, Tempo and other sources keep span sampling.
-Service-graph metric rows keep Tempo's `connection_type`: `database` and `messaging_system`
-servers become `db`/`queue` nodes only when no trace spans are present (spans carry the
-host-qualified identity), and `virtual_node` rows draw the uninstrumented side as an `external` node.
+(exactly the bare exporter columns; generated or aliased templates are excluded), or the
+unregistered default, is read as whole-window aggregates of the same table, not as the newest
+spans. Two bounded read-only queries return service/kind/status attribute groups with span counts
+and parent→child service pairs; a third returns span-link pairs when the table has `Links`
+columns. Each is limited to 1,000 rows: a saturated limit adds `cap_reached`, an unproven empty
+result adds `empty_not_confirmed`, and any failed query fails the whole source read. Node and edge
+`spanCount` then count spans in the window, and source-counted pairs produce no `orphanSpans`.
+A child whose parent started before the window is not counted as a pair and is not disclosed.
+Publication still applies the 200-node/500-edge caps reported as `nodeDrops`/`edgeDrops`.
+Generated or custom templates, Tempo and other sources keep span sampling.
+
+Service-graph metric rows keep Tempo's `connection_type`. A `database` or `messaging_system` row
+becomes a `db`/`queue` node with no account/region attribution, unless trace spans already show the
+same client service using a database (or queue); those deferred rows are counted in
+`deferredMetricCalls`. `virtual_node` rows draw the uninstrumented side as an `external` node
+(Tempo names an uninstrumented caller `user`). Metric volume is kept as node `metricCount` and
+ranks with `spanCount` under the node cap.
 
 ### Trace edge instance observations
 

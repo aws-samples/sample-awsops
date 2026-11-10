@@ -302,9 +302,20 @@ export function buildTraceGraph(
     }
   }
   // Trace spans name databases and queues with host-qualified identity. Metric rows only carry
-  // Tempo's server label (a db.name such as "admin"), so they draw those nodes only when no
-  // span evidence exists; otherwise the same database would appear twice under two names.
-  const spanEvidence = byId.size > 0;
+  // Tempo's server label (a db.name such as "admin"), so a metric database/queue row is deferred
+  // when trace spans already show that same client service querying a database (or using a
+  // queue); otherwise the same dependency would appear twice under two names. Other services keep
+  // their metric rows, and every deferral is counted.
+  const spanDbClients = new Set<string>(), spanQueueClients = new Set<string>();
+  for (const span of byId.values()) {
+    if (span.dbSystem) spanDbClients.add(span.service);
+    if (span.messagingSystem && span.messagingDestination) spanQueueClients.add(span.service);
+  }
+  let deferredMetricCalls = 0;
+  const metricWeight = (id: string, count: number) => {
+    const meta = nodes.get(id)!.meta;
+    meta.metricCount = Number(meta.metricCount ?? 0) + count;
+  };
   for (const call of metricCalls) {
     if (!Number.isFinite(call.count) || call.count <= 0) continue;
     if (call.evidence === 'trace') {
@@ -315,26 +326,33 @@ export function buildTraceGraph(
     }
     const clientIdentity = call.clientIdentity ?? {}, serverIdentity = call.serverIdentity ?? {};
     if (call.connectionType === 'database' || call.connectionType === 'messaging_system') {
-      if (spanEvidence) continue;
       const database = call.connectionType === 'database';
+      if ((database ? spanDbClients : spanQueueClients).has(call.client)) { deferredMetricCalls++; continue; }
+      // Caller labels scope the node ID (no cross-scope merge) but are not attribution: like
+      // queue claims, the database carries no account/region and never bridges to inventory.
       const scoped = resourceScope({ ...clientIdentity, ...serverIdentity });
       const id = nodeId(database ? 'db' : 'queue', scoped, `metric:${call.server}`);
       if (!nodes.has(id)) nodes.set(id, database ? {
         id, kind: 'db', label: call.server.slice(0, 240),
         meta: { system: null, host: null, dbName: null, metricServer: call.server,
           sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
-          accountId: scoped.accountId ?? null, region: scoped.region ?? null, provenance: 'service_graph_metric' },
+          accountId: null, region: null, identityProvenance: 'telemetry_claim',
+          provenance: 'service_graph_metric' },
       } : {
         id, kind: 'queue', label: call.server.slice(0, 240),
         meta: queueClaimMeta({ system: null, destination: call.server, broker: null, cluster: null,
           sourceId: scoped.sourceId ?? null, environment: scoped.environment ?? null,
           provenance: 'service_graph_metric' }),
       });
-      edge(serviceNode(call.client, clientIdentity), id, database ? 'queries' : 'publishes', 0, call.count);
+      const client = serviceNode(call.client, clientIdentity);
+      edge(client, id, database ? 'queries' : 'publishes', 0, call.count);
+      metricWeight(client, call.count); metricWeight(id, call.count);
       continue;
     }
     if (call.connectionType === 'virtual_node') {
-      // Tempo names an uninstrumented caller "user"; otherwise the uninstrumented side is the server.
+      // Tempo's service-graph processor names an uninstrumented caller "user" (its fixed default);
+      // otherwise the uninstrumented side is the server. A real service named "user" that calls an
+      // uninstrumented peer is indistinguishable in these labels and is drawn as the caller node.
       const clientVirtual = call.client === 'user';
       const external = (name: string, identity: TraceIdentity) => {
         const id = nodeId('ext', resourceScope(identity), name);
@@ -343,14 +361,16 @@ export function buildTraceGraph(
             provenance: 'service_graph_metric' } });
         return id;
       };
-      edge(clientVirtual ? external(call.client, clientIdentity) : serviceNode(call.client, clientIdentity),
-        clientVirtual ? serviceNode(call.server, serverIdentity) : external(call.server, serverIdentity),
-        'calls', 0, call.count);
+      const source = clientVirtual ? external(call.client, clientIdentity) : serviceNode(call.client, clientIdentity);
+      const target = clientVirtual ? serviceNode(call.server, serverIdentity) : external(call.server, serverIdentity);
+      edge(source, target, 'calls', 0, call.count);
+      metricWeight(source, call.count); metricWeight(target, call.count);
       continue;
     }
-    edge(serviceNode(call.client, clientIdentity),
-      serviceNode(call.server, serverIdentity), 'calls', 0, call.count);
+    const client = serviceNode(call.client, clientIdentity), server = serviceNode(call.server, serverIdentity);
+    edge(client, server, 'calls', 0, call.count);
+    metricWeight(client, call.count); metricWeight(server, call.count);
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
-    unresolvedMessaging };
+    unresolvedMessaging, deferredMetricCalls };
 }

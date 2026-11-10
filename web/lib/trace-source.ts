@@ -395,12 +395,24 @@ const CATALOG_OTEL_TEMPLATE = new RegExp(
   'WHERE Timestamp >= now\\(\\) - INTERVAL \\{window\\} MINUTE AND Timestamp <= now\\(\\) ' +
   'ORDER BY Timestamp DESC LIMIT \\{cap\\}$');
 
+// Exactly the bare exporter columns graph_catalog.py can select. Generated templates share the
+// otel_v1 mapper but alias other columns (`attrs AS ResourceAttributes`); those are not proof of
+// exporter Map columns, so any alias, expression or unknown column keeps the span reader.
+const EXPORTER_COLUMNS = new Set([
+  'TraceId', 'SpanId', 'ParentSpanId', 'ServiceName', 'SpanKind', 'SpanName', 'StatusCode',
+  '`Links.TraceId`', '`Links.SpanId`', 'Timestamp', 'Duration', 'ResourceAttributes', 'SpanAttributes',
+]);
+const REQUIRED_EXPORTER_COLUMNS = ['TraceId', 'SpanId', 'ParentSpanId', 'ServiceName', 'Timestamp',
+  'Duration', 'ResourceAttributes', 'SpanAttributes'];
+
 /** The aggregate shape for a registry template, or undefined when it is not the catalog's. */
 export function otelAggregateShape(sqlTemplate?: string): OtelAggregateShape | undefined {
   if (sqlTemplate === undefined) return DEFAULT_OTEL_SHAPE;
   const match = CATALOG_OTEL_TEMPLATE.exec(sqlTemplate);
   if (!match) return undefined;
   const columns = match[1].split(',').map((c) => c.trim());
+  if (new Set(columns).size !== columns.length || columns.some((c) => !EXPORTER_COLUMNS.has(c))
+      || REQUIRED_EXPORTER_COLUMNS.some((c) => !columns.includes(c))) return undefined;
   return {
     table: match[2], spanKind: columns.includes('SpanKind'), statusCode: columns.includes('StatusCode'),
     links: columns.includes('`Links.TraceId`') && columns.includes('`Links.SpanId`'),
@@ -409,8 +421,9 @@ export function otelAggregateShape(sqlTemplate?: string): OtelAggregateShape | u
 
 const list = (keys: readonly string[]) => `[${keys.map((k) => `'${k}'`).join(', ')}]`;
 // Only the attributes spanMetadata reads are grouped. Pod names and per-process instance IDs would
-// multiply rows, so pods are collected as a bounded array and service.instance.id is kept only
-// when it is an EC2 instance claim.
+// multiply rows, so pods are collected as a bounded array. service.instance.id keeps every value
+// claimedInstance can act on: bare EC2 IDs bind, and ARNs bind or veto. Other values (process
+// UUIDs) are ignored by that check, so dropping them changes no binding.
 const AGG_RESOURCE_KEYS = [
   'service.name', 'cloud.account.id', 'cloud.region', 'deployment.environment.name',
   'deployment.environment', 'service.namespace', 'service.version', 'cloud.resource_id', 'host.id',
@@ -434,35 +447,37 @@ function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: numb
   const status = shape.statusCode ? 'StatusCode' : "'' AS StatusCode";
   // Non-db/messaging spans drop their peer attributes so HTTP peers do not multiply groups.
   const groups = 'SELECT ServiceName, SpanKind, StatusCode, RA AS ResourceAttributes, SA AS SpanAttributes, ' +
-    'count() AS Weight, sum(Duration) AS DurationSum, toUnixTimestamp64Milli(max(Timestamp)) AS LastTimestamp, ' +
+    'count() AS Weight, intDiv(sum(Duration), 1000000) AS DurationMsSum, toUnixTimestamp64Milli(max(Timestamp)) AS LastTimestamp, ' +
     'toUnixTimestamp64Milli(min(Timestamp)) AS FirstTimestamp, any(TraceId) AS SampleTraceId, ' +
     `any(SpanId) AS SampleSpanId, groupUniqArray(${AGG_POD_CAP})(Pod) AS Pods FROM (` +
     `SELECT ServiceName, ${kind}, ${status}, Duration, Timestamp, TraceId, SpanId, ` +
     "ResourceAttributes['k8s.pod.name'] AS Pod, " +
-    `mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k != 'service.instance.id' ` +
-    "OR match(v, '^i-[0-9a-f]{8}([0-9a-f]{9})?$')), ResourceAttributes) AS RA, " +
+    `mapSort(mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k != 'service.instance.id' ` +
+    "OR match(v, '^i-[0-9a-f]{8}([0-9a-f]{9})?$') OR startsWith(v, 'arn:')), ResourceAttributes)) AS RA, " +
     "if(SpanAttributes['db.system'] != '' OR SpanAttributes['messaging.system'] != '', " +
-    `mapFilter((k, v) -> has(${list(AGG_SPAN_KEYS)}, k), SpanAttributes), ` +
+    `mapSort(mapFilter((k, v) -> has(${list(AGG_SPAN_KEYS)}, k), SpanAttributes)), ` +
     'mapFilter((k, v) -> false, SpanAttributes)) AS SA ' +
     `FROM ${shape.table} WHERE ${window}) ` +
     `GROUP BY ServiceName, SpanKind, StatusCode, RA, SA ORDER BY Weight DESC LIMIT ${limit}`;
+  // Both join sides carry only the sorted identity map, so the hash build holds one small row per
+  // span rather than every span's raw attribute map, and equal identities compare equal.
+  const identity = `mapSort(mapFilter((k, v) -> has(${list(AGG_IDENTITY_KEYS)}, k), ResourceAttributes)) AS R`;
   const pairs = (child: string, on: string) =>
-    `SELECT p.ServiceName AS ClientService, mapFilter((k, v) -> has(${list(AGG_IDENTITY_KEYS)}, k), ` +
-    'p.ResourceAttributes) AS ClientResource, c.ServiceName AS ServerService, ' +
-    `mapFilter((k, v) -> has(${list(AGG_IDENTITY_KEYS)}, k), c.ResourceAttributes) AS ServerResource, ` +
-    `count() AS Weight FROM (${child}) AS c INNER JOIN (SELECT TraceId, SpanId, ServiceName, ` +
-    `ResourceAttributes FROM ${shape.table} WHERE ${window}) AS p ON ${on} ` +
+    'SELECT p.ServiceName AS ClientService, p.R AS ClientResource, c.ServiceName AS ServerService, ' +
+    `c.R AS ServerResource, count() AS Weight FROM (${child}) AS c INNER JOIN (SELECT TraceId, SpanId, ` +
+    `ServiceName, ${identity} FROM ${shape.table} WHERE ${window}) AS p ON ${on} ` +
     'GROUP BY ClientService, ClientResource, ServerService, ServerResource ' +
     'HAVING NOT (ClientService = ServerService AND ClientResource = ServerResource) ' +
     `ORDER BY Weight DESC LIMIT ${limit}`;
   const calls = pairs(
-    `SELECT TraceId, ParentSpanId, ServiceName, ResourceAttributes FROM ${shape.table} ` +
+    `SELECT TraceId, ParentSpanId, ServiceName, ${identity} FROM ${shape.table} ` +
     `WHERE ${window} AND ParentSpanId != ''`,
     'c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId');
+  // ARRAY JOIN raises on unequal nested-array lengths; such rows are filtered before it.
   const links = shape.links ? pairs(
-    'SELECT LinkTraceId, LinkSpanId, ServiceName, ResourceAttributes FROM ' +
-    `${shape.table} ARRAY JOIN \`Links.TraceId\` AS LinkTraceId, \`Links.SpanId\` AS LinkSpanId ` +
-    `WHERE ${window}`,
+    `SELECT LinkTraceId, LinkSpanId, ServiceName, R FROM (SELECT \`Links.TraceId\` AS LT, ` +
+    `\`Links.SpanId\` AS LS, ServiceName, ${identity} FROM ${shape.table} WHERE ${window} ` +
+    'AND length(`Links.TraceId`) = length(`Links.SpanId`)) ARRAY JOIN LT AS LinkTraceId, LS AS LinkSpanId',
     'c.LinkTraceId = p.TraceId AND c.LinkSpanId = p.SpanId') : undefined;
   return { groups, calls, links };
 }
@@ -520,10 +535,10 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
       const row = object(value);
       const weight = positiveCount(row?.Weight);
       const last = numeric(row?.LastTimestamp), first = numeric(row?.FirstTimestamp);
-      const duration = numeric(row?.DurationSum);
+      const duration = numeric(row?.DurationMsSum);
       if (!row || !text(row.ServiceName) || !text(row.SampleTraceId) || !text(row.SampleSpanId)
           || weight === undefined || last === undefined || first === undefined || first > last
-          || duration === undefined || duration < 0
+          || duration === undefined || !Number.isSafeInteger(duration) || duration < 0
           || (row.ResourceAttributes !== undefined && !object(row.ResourceAttributes))
           || (row.SpanAttributes !== undefined && !object(row.SpanAttributes))) {
         reasons.push('malformed_rows');
@@ -531,14 +546,15 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
       }
       const item = mapOtelRow({
         TraceId: row.SampleTraceId, SpanId: row.SampleSpanId, ServiceName: row.ServiceName,
-        SpanKind: row.SpanKind, StatusCode: row.StatusCode, Timestamp: last, Duration: duration,
+        SpanKind: row.SpanKind, StatusCode: row.StatusCode, Timestamp: last, Duration: 0,
         ResourceAttributes: row.ResourceAttributes, SpanAttributes: row.SpanAttributes,
       });
       if (this.shape.statusCode && text(row.StatusCode) && !item.status) reasons.push('malformed_rows');
       const pods = Array.isArray(row.Pods)
         ? [...new Set(row.Pods.filter((p): p is string => !!text(p)))].slice(0, AGG_POD_CAP) : [];
       if (!inWindow(item, window)) continue;
-      items.push({ ...item, sourceId, weight, firstStartMs: first, ...(pods.length ? { k8sPods: pods } : {}) });
+      items.push({ ...item, sourceId, weight, durationMs: duration, firstStartMs: first,
+        ...(pods.length ? { k8sPods: pods } : {}) });
     }
     const calls: ServiceGraphCall[] = [];
     for (const [rows, rel] of [[callRows, 'calls'], [linkRows, 'linked']] as const) {
@@ -555,7 +571,13 @@ export class ClickHouseOtelAggregateSource implements TraceSource {
         calls.push({ client, server, count, clientIdentity, serverIdentity, evidence: 'trace', rel });
       }
     }
-    requireEmptyProof(payloads[0], items, reasons);
+    // Each aggregate needs its own empty proof: confirmed nodes with an unproven-empty pair query
+    // would otherwise publish as a complete graph without its edges.
+    for (const [i, payload] of payloads.entries()) {
+      if (results[i].rows!.length) continue;
+      const outer = object(payload), status = outer?.collectionStatus ?? object(outer?.result)?.collectionStatus;
+      if (status !== 'ok' && status !== 'empty' && !reasons.includes('empty_not_confirmed')) reasons.push('empty_not_confirmed');
+    }
     return { ...readResult(sourceId, window, items, reasons), calls };
   }
 }

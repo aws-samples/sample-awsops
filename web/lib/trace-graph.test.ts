@@ -291,9 +291,15 @@ describe('source-aggregated rows and service-graph connection types', () => {
     expect(rel('user', 'payment')?.rel).toBe('calls');
     expect(rel('payment', 'stripe')?.rel).toBe('calls');
 
+    expect(metricsOnly.nodes.find(node => node.label === 'reviews')?.meta).toMatchObject({
+      accountId: null, region: null, identityProvenance: 'telemetry_claim' });
+    expect(svc(metricsOnly, 'payment')?.meta.metricCount).toBe(8);
+
+    // Span evidence for review's database defers only review's metric DB row; order's queue row
+    // (no span evidence for that client) is still drawn, and the deferral is counted.
     const withSpans = buildTraceGraph([dbSpan({ service: 'review', dbName: 'reviews' })], calls, inventory());
-    expect(withSpans.nodes.filter(node => node.meta.provenance === 'service_graph_metric' && node.kind !== 'external'))
-      .toEqual([]);
     expect(withSpans.nodes.filter(node => node.kind === 'db')).toHaveLength(1);
+    expect(withSpans.nodes.find(node => node.label === 'orders-topic')?.kind).toBe('queue');
+    expect(withSpans.deferredMetricCalls).toBe(1);
   });
 });

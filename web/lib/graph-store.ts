@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
-import type { TraceSource, TraceRead, ServiceGraphCall, SourceRead } from './trace-source';
+import type { TraceSource, TraceRead, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
@@ -301,9 +301,9 @@ export async function rebuildTraceGraph(
     windowStartMs: startMs, windowEndMs: endMs,
   });
   // Adapter status, not a separate readiness probe, distinguishes absent config from a failed read.
-  const spanReads = await Promise.all(sources.map(async (source, i) => {
+  const spanReads = await Promise.all(sources.map(async (source, i): Promise<TraceRead> => {
     try { return await source.recentSpans(TRACE_WINDOW_MINS, TRACE_SPAN_CAP, endMs); }
-    catch { return failed(`trace:${i}`) as TraceRead; }
+    catch { return failed<TraceSpan>(`trace:${i}`); }
   }));
   const metricReads = await Promise.all(metricsSources.map(async (source, i) => {
     try { return await source.calls(TRACE_WINDOW_MINS, endMs); }
@@ -321,10 +321,10 @@ export async function rebuildTraceGraph(
   // Aggregate trace sources return span-pair edges beside their node rows; same sourceId stamping.
   const calls = [...spanReads.map((read) => ({ ...read, items: read.calls ?? [] })), ...metricReads]
     .flatMap((read) => read.items.map((call) => ({
-    ...call,
-    clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
-    serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
-  })));
+      ...call,
+      clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
+      serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
+    })));
   // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
   // bounded reads continue through the existing atomic partial-snapshot publisher.
   if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
@@ -355,9 +355,11 @@ export async function rebuildTraceGraph(
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
   // Preserve structurally important DB/queue/workload nodes before ranking service volume.
-  const rank = (kind: string) => kind === 'service' ? 0 : 1;
+  // Metric-only external peers rank with services by volume, so many virtual nodes cannot evict them.
+  const rank = (kind: string) => kind === 'service' || kind === 'external' ? 0 : 1;
+  const volume = (meta: Record<string, unknown>) => Number(meta.spanCount ?? 0) + Number(meta.metricCount ?? 0);
   const nodes = graph.nodes.sort((a, b) => rank(b.kind) - rank(a.kind)
-    || Number(b.meta.spanCount ?? 0) - Number(a.meta.spanCount ?? 0)).slice(0, TRACE_NODE_CAP);
+    || volume(b.meta) - volume(a.meta)).slice(0, TRACE_NODE_CAP);
   const kept = new Set(nodes.map((node) => node.id));
   const edges = graph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
     .sort((a, b) => (b.meta.spanCount + b.meta.metricCount) - (a.meta.spanCount + a.meta.metricCount))
@@ -373,6 +375,7 @@ export async function rebuildTraceGraph(
       sources: sourceDetails, retainedPrevious: false, windowStartMs: startMs, windowEndMs: endMs,
       nodeDrops, edgeDrops, orphanSpans: graph.orphanSpans, invalidSpans: graph.invalidSpans,
       unresolvedMessaging: graph.unresolvedMessaging,
+      ...(graph.deferredMetricCalls ? { deferredMetricCalls: graph.deferredMetricCalls } : {}),
       infraUnavailable,
     },
   });

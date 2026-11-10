@@ -220,6 +220,17 @@ Oversized valid Tempo children keep a bounded structured OTLP projection and can
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
+### Whole-window ClickHouse aggregates
+
+The ClickHouse adapter for the catalog's exporter-schema template reads node groups,
+parent→child pairs and (when present) span links as whole-window aggregates; see
+[trace graph sources](../api-reference.md#trace-graph-sources). The aggregates form one source
+read: a failed or malformed query result fails it, and every aggregate needs its own empty proof,
+so nodes never publish without their edges and an unproven pair query keeps the read partial.
+Row limits disclose `cap_reached` like other bounded sources. The join sides project only the
+sorted identity attributes. Metric-derived `external` nodes and deferred metric rows
+(`deferredMetricCalls`) are additive trace metadata.
+
 ## Rebuild capacity
 
 Flow and infra input allow 8192 rows within the same bounded read envelope. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
@@ -409,7 +420,8 @@ docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
 npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts lib/graph-inventory-read-postgres.test.ts \
-  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
+  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts \
+  lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts
 docker rm -f "$graph_test_container"
 ```
 

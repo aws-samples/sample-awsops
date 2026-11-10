@@ -26,6 +26,7 @@ const COLORS: Record<string, [string, string]> = {
   db: ['#FBEFE0', '#C8902F'],        // amber
   workload: ['#F1E9FF', '#8A5BD0'],  // purple
   queue: ['#E9F5EE', '#4D906C'],
+  external: ['#F4F4F1', '#7A7A6E'], // uninstrumented service-graph peer
 };
 const RESOURCE = ['#EEF0F2', '#9AA6B2'] as const;
 const QUEUE_HEIGHT = 144;
