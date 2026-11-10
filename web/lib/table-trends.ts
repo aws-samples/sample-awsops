@@ -4,9 +4,15 @@ export interface TableTrend {
   omittedSeries: number;
 }
 const TIME_HEADER = /^(time(?:stamp)?|date|时[间刻]|時間|時刻|日時|시각|시간|날짜)(?:\s|[([]|$)/i;
-const METRIC_HEADER = /request|error|count|rate|latency|duration|p(?:50|90|95|99)|cpu|memory|bytes|throughput|요청|에러|오류|건수|비율|사용률|지연|메모리|请求|错误|延迟|リクエスト|エラー|レイテンシ/i;
-const NON_METRIC = /(?:^|[\s_(])id(?:$|[\s_)])|id$|code|코드|代码|コード|graph|sparkline|그래프|图|グラフ/i;
+// Latin metric words use normalized token boundaries; CJK terms retain substring matching.
+const METRIC_HEADER = /\b(?:requests?|errors?|counts?|rates?|latenc(?:y|ies)|durations?|p(?:50|90|95|99)|cpu|memory|bytes|throughputs?)\b|요청|에러|오류|건수|비율|사용률|지연|메모리|请求|错误|延迟|リクエスト|エラー|レイテンシ/i;
+const NON_METRIC = /(?:^|[\s_(])ids?(?:$|[\s_)])|ids?$|code|코드|代码|コード|graph|sparkline|그래프|图|グラフ/i;
 const MISSING = /^(?:—|–|-|n\/a|null|none)?$/i;
+
+function metricWords(label: string): string {
+  return label.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' ');
+}
 
 function timeLabel(value: string): boolean {
   const clean = value.replace(/\*$/, '');
@@ -32,7 +38,7 @@ export function tableTrends(headers: string[], rows: string[][]): TableTrend | n
   const labels = rows.map(row => row[0].trim());
   if (new Set(labels.map(label => label.replace(/\*$/, ''))).size !== labels.length) return null;
   const eligible = headers.flatMap((label, i) => {
-    if (!i || !METRIC_HEADER.test(label) || NON_METRIC.test(label)) return [];
+    if (!i || !METRIC_HEADER.test(metricWords(label)) || NON_METRIC.test(label)) return [];
     const values = rows.map(row => numeric(row[i], label));
     if (values.filter(value => value !== null).length < 2
       || rows.some((row, j) => values[j] === null && !MISSING.test(row[i].trim()))) return [];
