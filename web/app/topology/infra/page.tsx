@@ -17,6 +17,8 @@ import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
 import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySection';
 import { splitUnionNodeId } from '@/lib/graph-identity';
+import { infraGraphPage } from '@/lib/infra-graph-display';
+import useGraphViewport from '@/components/topology/useGraphViewport';
 
 // ReactFlow touches the DOM on mount — client-only.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -43,7 +45,7 @@ const LEGEND: { kind: string; label: string }[] = [
   { kind: 'sg', label: 'Security Group' }, { kind: '_res', label: '리소스' },
 ];
 
-/** 기존 배치 그래프 뷰 (materialized infra 그래프 전체 렌더) — 검색어는 페이지 헤더에서 내려받는다. */
+/** Readable pages of saved placement relations; filtering does not establish reachability. */
 function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
   const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
@@ -51,6 +53,11 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
   const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [vpc, setVpc] = useState<string | null>(null);
+  const [subnet, setSubnet] = useState('');
+  const [kind, setKind] = useState('');
+  const [page, setPage] = useState(0);
+  const [showSecurityGroups, setShowSecurityGroups] = useState(false);
 
   const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
 
@@ -60,12 +67,37 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
     setBusy(true);
     setErr(null);
     setGraph(null);
+    setVpc(null); setSubnet(''); setKind(''); setPage(0);
     fetchGraph(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
       .then((d) => { if (live) { setGraph(d); setErr(null); } })
       .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; controller.abort(); };
   }, [activeAccount, revision]);
+  useEffect(() => { setPage(0); }, [q]);
+
+  const vpcs = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of graph?.edges ?? []) if (e.rel === 'infra:in_vpc') counts.set(e.target, (counts.get(e.target) ?? 0) + 1);
+    return (graph?.nodes.filter(n => n.kind === 'vpc') ?? [])
+      .sort((a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0));
+  }, [graph]);
+  const effectiveVpc = vpc ?? (q.trim() ? '' : vpcs[0]?.id ?? '');
+  const choices = useMemo(() => {
+    if (!graph) return { subnets: [] as GNode[], kinds: [] as string[] };
+    const members = new Set(graph.edges.filter(e => e.rel === 'infra:in_vpc' && (!effectiveVpc || e.target === effectiveVpc)).map(e => e.source));
+    const subnetIds = new Set(graph.edges.filter(e => e.rel === 'infra:in_subnet' && members.has(e.source)).map(e => e.target));
+    return {
+      subnets: graph.nodes.filter(n => n.kind === 'subnet' && subnetIds.has(n.id)),
+      kinds: [...new Set(graph.nodes.filter(n => !['vpc', 'subnet', 'sg'].includes(n.kind) && (!effectiveVpc || members.has(n.id))).map(n => n.kind))].sort(),
+    };
+  }, [graph, effectiveVpc]);
+  const viewport = useGraphViewport(graph?.nodes ?? [], graph?.edges ?? [], 1, 0.85);
+  const display = useMemo(() => infraGraphPage(graph ?? { nodes: [], edges: [] }, {
+    vpc: effectiveVpc, subnet, kind, query: q, page, pageSize: viewport.vertical ? 1 : 4, showSecurityGroups,
+  }), [graph, effectiveVpc, subnet, kind, q, page, viewport.vertical, showSecurityGroups]);
+  useEffect(() => { viewport.fit(); }, [display, viewport.fit]);
+  useEffect(() => { setPage(0); }, [viewport.vertical]);
 
   // Multi-match search highlight (v1 parity): id/label/kind/meta substring, case-insensitive.
   const matches = useMemo(() => {
@@ -84,16 +116,15 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
 
   const { nodes, edges } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
-    const scopedNodes = new Set(graph.nodes.filter(n => typeof n.meta?.region === 'string').map(n => n.id));
-    const pos = Object.fromEntries(
-      layoutFlow(
-        { nodes: graph.nodes as never, edges: graph.edges.map((e) => ({ id: `${e.source}->${e.target}`, source: e.source, target: e.target, confidence: 'observed' })) as never },
-        { rankdir: 'TB', nodeSize: id => ({ width: 200,
-          height: scopedNodes.has(id) ? 54 : 44 }) },
-      ).map((p) => [p.id, p]),
-    );
-    const dim = matches.size > 0;
-    const nodes: Node[] = graph.nodes.map((n) => {
+    const resourceIds = new Set(display.resources.map(n => n.id));
+    // A single column keeps all saved context readable on narrow canvases.
+    // Positions do not add edges between a VPC and subnet without saved evidence.
+    const positions = viewport.vertical
+      ? [...display.resources, ...display.nodes.filter(n => !resourceIds.has(n.id))]
+        .map((n, i) => ({ id: n.id, x: 16, y: 16 + i * 140 }))
+      : layoutFlow(display, { rankdir: 'LR', nodeSize: () => ({ width: 260, height: 80 }) });
+    const pos = Object.fromEntries(positions.map(p => [p.id, p]));
+    const nodes: Node[] = display.nodes.map((n) => {
       const [bg, border] = COLORS[n.kind] ?? RESOURCE;
       const p = pos[n.id] ?? { x: 0, y: 0 };
       const hit = matches.has(n.id);
@@ -101,38 +132,73 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         id: n.id,
         position: { x: p.x, y: p.y },
         data: { label: <div>
-          <div className="truncate" title={n.label}>{`${n.kind in COLORS ? `${n.kind}: ` : ''}${n.label}`}</div>
-          {typeof n.meta?.region === 'string' && <div className="truncate text-[10px] opacity-70">
+          <div className="mb-1 text-[11px] font-medium uppercase opacity-70">{n.kind}</div>
+          <div className="truncate font-semibold" title={n.label}>{n.label}</div>
+          {typeof n.meta?.region === 'string' && <div className="mt-1 truncate text-[11px] opacity-70">
             {[n.meta.inventoryAccount, n.meta.region].filter(Boolean).join(' · ')}
           </div>}
         </div>, kind: n.kind, meta: n.meta },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
+        sourcePosition: viewport.vertical ? Position.Bottom : Position.Right,
+        targetPosition: viewport.vertical ? Position.Top : Position.Left,
         style: {
           background: bg,
           border: `${hit ? `2px solid ${HILITE}` : `1px solid ${border}`}`,
-          borderRadius: 8, fontSize: 11, padding: 6, width: 200,
-          height: typeof n.meta?.region === 'string' ? 54 : 44, color: '#16202A',
-          opacity: dim && !hit ? 0.25 : 1,
+          borderRadius: 10, fontSize: 15, padding: 10, width: 260,
+          height: 80, color: '#16202A',
         },
       };
     });
-    const edges: Edge[] = graph.edges.map((e) => ({
+    const edges: Edge[] = display.edges.map((e) => ({
       id: `${e.source}->${e.target}:${e.rel}`, source: e.source, target: e.target,
-      label: relLabel[e.rel] ?? e.rel, animated: false,
-      style: { stroke: '#9AA6B2', opacity: dim ? 0.3 : 1 }, labelStyle: { fontSize: 9, fill: '#586773' },
+      animated: false, ariaLabel: relLabel[e.rel] ?? e.rel,
+      style: { stroke: '#9AA6B2', strokeWidth: 1.5 },
     }));
     return { nodes, edges };
-  }, [graph, matches]);
+  }, [graph, display, matches, viewport.vertical]);
 
   return (
     <>
+      {graph && !unavailable && (
+        <div className="mx-4 my-3 flex shrink-0 flex-wrap items-center gap-3 rounded-lg border border-ink-200 bg-card px-3 py-3 text-[13px] text-ink-700">
+          <label className="flex min-w-0 items-center gap-2">VPC
+            <select aria-label={tt('배치 그래프 VPC')} value={effectiveVpc}
+              onChange={e => { setVpc(e.target.value); setSubnet(''); setKind(''); setPage(0); }}
+              className="max-w-[240px] rounded border border-ink-200 bg-card px-2 py-1.5">
+              <option value="">{tt('전체 VPC')}</option>
+              {vpcs.map(n => <option key={n.id} value={n.id}>{n.label} · {String(n.meta?.region ?? '')}</option>)}
+            </select>
+          </label>
+          <label className="flex min-w-0 items-center gap-2">Subnet
+            <select aria-label={tt('배치 그래프 서브넷')} value={subnet} onChange={e => { setSubnet(e.target.value); setPage(0); }}
+              className="max-w-[220px] rounded border border-ink-200 bg-card px-2 py-1.5">
+              <option value="">{tt('전체 서브넷')}</option>
+              {choices.subnets.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
+            </select>
+          </label>
+          <select aria-label={tt('배치 그래프 리소스 종류')} value={kind} onChange={e => { setKind(e.target.value); setPage(0); }}
+            className="rounded border border-ink-200 bg-card px-2 py-1.5">
+            <option value="">{tt('전체 리소스 종류')}</option>
+            {choices.kinds.map(k => <option key={k} value={k}>{k}</option>)}
+          </select>
+          <label className="flex items-center gap-1.5">
+            <input type="checkbox" checked={showSecurityGroups} onChange={e => setShowSecurityGroups(e.target.checked)} />
+            {tt('보안 그룹 연결 표시')}
+          </label>
+          <span className="ml-auto text-ink-500">{tt('표시 리소스')} {display.resources.length} / {display.totalResources}</span>
+          <button aria-label={tt('이전 리소스')} disabled={display.page === 0} onClick={() => setPage(display.page - 1)}
+            className="rounded border border-ink-200 px-2 py-1 disabled:opacity-40">←</button>
+          <span>{display.page + 1} / {display.pages}</span>
+          <button aria-label={tt('다음 리소스')} disabled={display.page + 1 >= display.pages} onClick={() => setPage(display.page + 1)}
+            className="rounded border border-ink-200 px-2 py-1 disabled:opacity-40">→</button>
+          <p className="w-full text-[12px] text-ink-500">{tt('한 화면에 리소스 최대 4개와 해당 배치 관계를 표시합니다. 좁은 화면은 1개씩, 나머지는 다음 페이지에서 확인하세요.')}</p>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
         <span>{tt('VPC 노드를 클릭하면 TGW·피어링 연결을 조회할 수 있습니다.')}</span>
         <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <GraphReadError reason={err} />}
-        {graph && !unavailable && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
+        {graph && !unavailable && <span>{tt('저장된 그래프:')} {tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
@@ -153,8 +219,9 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
           {tt('VPC 연결 그래프 열기')}
         </button>
       </div>}
-      <div className="min-h-[240px] flex-1">
-        <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.05}
+      {graph && !unavailable && !busy && display.totalResources === 0 && <p className="px-4 py-2 text-sm text-ink-500">{tt('선택 조건에 맞는 리소스가 없습니다.')}</p>}
+      <div ref={viewport.container} className="min-h-[520px] min-w-0 flex-1 overflow-hidden">
+        <ReactFlow nodes={nodes} edges={edges} onInit={viewport.onInit} fitView fitViewOptions={{ padding: 0.15, minZoom: 0.85, maxZoom: 1 }} minZoom={0.25}
           onNodeClick={(_, node) => {
             if (node.data.kind !== 'vpc') return;
             const meta = node.data.meta as GNode['meta'];
@@ -179,7 +246,7 @@ type View = (typeof VIEWS)[number][0];
 
 const SUBTITLES: Record<View, string> = {
   vpc: 'VPC를 선택하여 TGW·피어링 연결을 조회합니다. 선은 활성 구성 관계이며 통신 가능성을 보장하지 않습니다.',
-  graph: '계정 전체 리소스-관계 토폴로지 (VPC · Subnet · SG · 리소스). 노드 검색으로 하이라이트.',
+  graph: 'VPC·서브넷별로 리소스를 크게 표시합니다. 배치 관계이며 실제 통신 경로를 증명하지 않습니다.',
   map: 'External | VPC | Subnet | Compute | NAT 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
   k8s: 'Ingress → Service → Pod → Node 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
 };

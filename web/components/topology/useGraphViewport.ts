@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactFlowInstance } from '@xyflow/react';
 
 /** Refit async/resized canvases, retaining the mounted Flow instance. */
-export default function useGraphViewport(nodes: readonly unknown[], edges: readonly unknown[], maxZoom = 1) {
+export default function useGraphViewport(nodes: readonly unknown[], edges: readonly unknown[], maxZoom = 1, minFitZoom = 0.05) {
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<ReactFlowInstance | null>(null);
   const frame = useRef(0);
@@ -12,9 +12,9 @@ export default function useGraphViewport(nodes: readonly unknown[], edges: reado
   const fit = useCallback(() => {
     cancelAnimationFrame(frame.current);
     frame.current = requestAnimationFrame(() => {
-      void instance.current?.fitView({ padding: 0.16, minZoom: 0.05, maxZoom });
+      void instance.current?.fitView({ padding: 0.16, minZoom: minFitZoom, maxZoom });
     });
-  }, [maxZoom]);
+  }, [maxZoom, minFitZoom]);
   const onInit = useCallback((flow: ReactFlowInstance) => { instance.current = flow; fit(); }, [fit]);
   useEffect(() => {
     fit();
@@ -30,5 +30,5 @@ export default function useGraphViewport(nodes: readonly unknown[], edges: reado
     if (container.current) observer.observe(container.current);
     return () => { observer.disconnect(); cancelAnimationFrame(frame.current); };
   }, [fit, nodes, edges]);
-  return { container, onInit, vertical };
+  return { container, onInit, vertical, fit };
 }
