@@ -7,6 +7,8 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '진단 티어': { en: 'Diagnosis tier', zh: '诊断级别', ja: '診断ティア' },
+  '최근 완료 섹션:': { en: 'Last completed section:', zh: '最近完成的部分：', ja: '直近に完了したセクション：' },
   '수집된 그래프': { en: 'Collected graph', zh: '已收集的图', ja: '収集済みグラフ' },
   '보조 워크로드 문맥은 숨김': { en: 'Auxiliary workload context hidden', zh: '已隐藏辅助工作负载上下文', ja: '補助ワークロードのコンテキストは非表示' },
   '표시 한도에 따라 생략': { en: 'Omitted by display limits', zh: '因显示上限而省略', ja: '表示上限により省略' },

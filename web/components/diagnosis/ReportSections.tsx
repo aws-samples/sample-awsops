@@ -140,7 +140,7 @@ export default function ReportSections({ markdown }: { markdown: string }) {
           })}
         </div>
       </div>
-      <nav className="sticky top-4 hidden w-52 shrink-0 lg:block" aria-label={tt('리포트 목차')}>
+      <nav className="sticky top-4 hidden w-52 shrink-0 xl:block" aria-label={tt('리포트 목차')}>
         <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.04em] text-ink-400">{tt('목차')}</p>
         <ul className="space-y-0.5">
           {sections.map((s, i) => (

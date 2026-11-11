@@ -10,7 +10,7 @@ export default function AiDiagnosisPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <PageHeader className="shrink-0" title={tt('AI 진단')} subtitle={tt('AWS 네이티브 데이터 기반 종합 운영 진단 리포트.')} />
-      <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-6 lg:py-4">
+      <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-6 lg:px-8 lg:py-4">
         <DiagnosisView />
       </div>
     </div>

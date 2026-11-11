@@ -25,6 +25,13 @@ beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('assistant conversation list', () => {
+  it('preserves the thread search when the desktop list is collapsed', () => {
+    render(<AssistantClient />);
+    fireEvent.change(screen.getByRole('textbox', { name: '대화 내용 검색' }), { target: { value: 'database' } });
+    fireEvent.click(screen.getByRole('button', { name: '대화 목록 닫기' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '대화 목록 열기' })[0]);
+    expect((screen.getByRole('textbox', { name: '대화 내용 검색' }) as HTMLInputElement).value).toBe('database');
+  });
   it('collapses and restores the list without losing the composer draft', () => {
     render(<AssistantClient />);
     const composer = screen.getByRole('combobox');

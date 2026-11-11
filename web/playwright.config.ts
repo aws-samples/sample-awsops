@@ -1,8 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 // Mirrors docs-site/playwright.config.ts's minimal style. Ad-hoc verification only (not wired into
-// CI) — see web/e2e/network-security-graph.spec.ts for what it checks and why. No webServer block
-// here: the spec starts/stops `next dev` itself so it can also skip cleanly when a browser can't launch.
+// CI). The webServer block starts/stops the local app; individual specs mock their API reads.
 const PORT = 3177; // fixed, unusual port to avoid colliding with other sessions' dev servers on this shared box
 
 export default defineConfig({

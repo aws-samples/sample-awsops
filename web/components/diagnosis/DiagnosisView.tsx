@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
 import SchedulePanel from './SchedulePanel';
 import SubscribersPanel from './SubscribersPanel';
 import ReportSections from './ReportSections';
@@ -10,6 +10,7 @@ import { sectionsForTier, titleMatches, localizedTitle } from '@/lib/diagnosis-s
 import { CheckCircle, PanelLeft, PanelLeftClose, X } from 'lucide-react';
 import { useSidebarPanel } from '@/components/ui/useSidebarPanel';
 import SidebarResizeHandle from '@/components/ui/SidebarResizeHandle';
+import { useModalFocus } from '@/components/ui/useModalFocus';
 
 interface DiagnosisProgress {
   current?: number;
@@ -107,14 +108,8 @@ export default function DiagnosisView() {
   const locale = localeOf(lang);
   const sidebar = useSidebarPanel('awsops_diagnosis_sidebar');
   const [mobileSidebar, setMobileSidebar] = useState(false);
-  useEffect(() => {
-    if (!mobileSidebar) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileSidebar(false);
-    };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [mobileSidebar]);
+  const mobilePanel = useModalFocus<HTMLElement>(mobileSidebar, () => setMobileSidebar(false));
+  const reportScroll = useRef<HTMLDivElement>(null);
   const [tier, setTier] = useState<'light' | 'mid' | 'deep'>('mid');
   const [model, setModel] = useState<'sonnet' | 'opus'>('sonnet'); // deep-tier model choice
   // Report output language (gap L50) — defaults to the current UI language (all 4 are supported).
@@ -257,6 +252,9 @@ export default function DiagnosisView() {
         title: top.title ?? null, tags: top.tags ?? [], can_edit: top.can_edit ?? false }
     : null);
   const running = submitting || topRunning;
+  useEffect(() => {
+    if (reportScroll.current) reportScroll.current.scrollTop = 0;
+  }, [view?.id]);
 
   // Generation date of the opened report (the view object omits created_at → look it up on the row).
   const createdAt = reports.find((r) => r.id === view?.id)?.created_at;
@@ -294,7 +292,12 @@ export default function DiagnosisView() {
           />
         )}
         <aside
+          ref={mobilePanel}
           id="diagnosis-sidebar"
+          role={mobileSidebar ? 'dialog' : undefined}
+          aria-modal={mobileSidebar ? true : undefined}
+          aria-label={mobileSidebar ? tt('진단 설정 및 리포트') : undefined}
+          tabIndex={mobileSidebar ? -1 : undefined}
           style={{ '--sidebar-width': `${sidebar.width}px` } as CSSProperties}
           className={`fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] min-h-0 shrink-0 flex-col border-r border-ink-200 bg-paper p-3 ${mobileSidebar ? 'flex' : 'hidden'} ${sidebar.collapsed ? 'lg:hidden' : 'lg:relative lg:inset-auto lg:z-auto lg:flex lg:w-[var(--sidebar-width)]'} lg:max-w-none lg:py-0 lg:pl-0 lg:pr-3`}
         >
@@ -422,7 +425,7 @@ export default function DiagnosisView() {
             hint={tt('드래그하거나 방향키로 너비 조절')}
           />
         </aside>
-        <div role="region" aria-label={tt('진단 리포트')} data-report-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+        <div ref={reportScroll} role="region" aria-label={tt('진단 리포트')} data-report-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
           {notice && (
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
               {notice}

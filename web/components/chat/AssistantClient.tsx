@@ -12,6 +12,7 @@ import { useChat } from './useChat';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useSidebarPanel } from '@/components/ui/useSidebarPanel';
 import SidebarResizeHandle from '@/components/ui/SidebarResizeHandle';
+import { useModalFocus } from '@/components/ui/useModalFocus';
 
 /**
  * Full-page assistant (/assistant). Same useChat engine + the same Aurora-backed
@@ -34,6 +35,7 @@ export default function AssistantClient() {
   const inited = useRef(false);
   // Mobile uses an overlay; desktop sizing/collapse preferences apply only at lg+.
   const [mobileThreads, setMobileThreads] = useState(false);
+  const mobilePanel = useModalFocus<HTMLDivElement>(mobileThreads, () => setMobileThreads(false));
   const sidebar = useSidebarPanel('awsops_assistant_threads');
 
   useEffect(() => {
@@ -47,7 +49,7 @@ export default function AssistantClient() {
       chat.newChat();
     } else {
       let tid = wantedThread;
-      if (!tid) {
+      if (tid === null) {
         try { tid = localStorage.getItem('awsops_chat_thread'); } catch {}
       }
       if (tid) void chat.selectThread(tid);
@@ -63,19 +65,19 @@ export default function AssistantClient() {
   return (
     <div className="flex h-full min-w-0">
       {/* The conversation stays mounted when the desktop thread panel is collapsed. */}
-      {!sidebar.collapsed && (
-        <div id="assistant-desktop-threads" className="relative hidden shrink-0 border-r border-ink-100 lg:block" style={{ width: sidebar.width }}>
+        <div id="assistant-desktop-threads" hidden={sidebar.collapsed}
+          className={`relative hidden shrink-0 border-r border-ink-100 ${sidebar.collapsed ? '' : 'lg:block'}`} style={{ width: sidebar.width }}>
           <ThreadList threads={chat.threads} activeId={chat.threadId} onSelect={chat.selectThread} onDelete={chat.removeThread} onDeleteAll={chat.removeAllThreads} onNew={chat.newChat} onSearch={(q) => void chat.refreshThreads(q)} />
           <SidebarResizeHandle panel={sidebar} controls="assistant-desktop-threads"
             label={tt('대화 목록 너비 조절')} hint={tt('드래그하거나 방향키로 너비 조절')} />
         </div>
-      )}
 
       {/* thread rail — mobile slide-in overlay (<lg), toggled from the header. */}
       {mobileThreads && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-ink-900/30" onClick={() => setMobileThreads(false)} aria-hidden />
-          <div className="absolute inset-y-0 left-0 flex w-72 max-w-[80vw] flex-col border-r border-ink-100 bg-paper shadow-pop">
+          <div ref={mobilePanel} role="dialog" aria-modal="true" aria-label={tt('대화 목록')} tabIndex={-1}
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[80vw] flex-col border-r border-ink-100 bg-paper shadow-pop">
             <div className="flex items-center justify-between border-b border-ink-100 px-3 py-2.5">
               <span className="text-[13px] font-semibold text-ink-800">{tt('대화 목록')}</span>
               <button

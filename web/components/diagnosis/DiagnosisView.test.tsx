@@ -54,6 +54,7 @@ describe('DiagnosisView sidebar layout', () => {
   it('resizes the sidebar and preserves diagnosis settings while collapsed', async () => {
     mockList([]);
     render(<DiagnosisView />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/diagnosis'));
     const tier = screen.getByRole('combobox', { name: '진단 티어' }) as HTMLSelectElement;
     fireEvent.change(tier, { target: { value: 'deep' } });
     const handle = screen.getByRole('separator', { name: '진단 사이드바 너비 조절' });
