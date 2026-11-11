@@ -2,9 +2,9 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-// Read-only browser fixtures: exercise real layout without AWS, models or writes.
+// Local browser fixtures: intercept API calls without AWS, models or external writes.
 const reports = Array.from({ length: 60 }, (_, i) => ({
-  id: i + 1, tier: 'deep', status: 'succeeded', title: `운영 진단 ${i + 1}`,
+  id: i + 1, tier: 'deep', model: 'sonnet', lang: 'ko', status: 'succeeded', title: `운영 진단 ${i + 1}`,
   created_at: '2026-11-11T00:00:00Z', can_edit: false,
 }));
 const markdown = '# AWS 운영 진단\n\n' + Array.from({ length: 6 }, (_, i) =>
@@ -58,6 +58,41 @@ async function noOuterScroll(page: Page) {
   await expect.poll(() => page.locator('main').evaluate(el => el.scrollTop)).toBe(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
+}
+
+for (const width of [1440, 390]) {
+  test(`same-report dedup feedback stays visible after scrolling at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const errors = await fixtures(page);
+    let posts = 0;
+    // This test alone allows a mocked submit; no request reaches the app server.
+    await page.route('**/api/diagnosis', route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      const body = route.request().postDataJSON();
+      if (body?.tier !== 'deep' || body?.model !== 'sonnet' || body?.lang !== 'ko') {
+        errors.push('Unexpected dedup tier/model/language');
+        return route.fulfill({ status: 400, json: { error: 'unexpected_dedup_scope' } });
+      }
+      posts++;
+      return route.fulfill({ json: { deduped: true, report_id: 1 } });
+    });
+    await page.goto('/ai-diagnosis');
+    const report = page.getByRole('region', { name: '진단 리포트', exact: true });
+    await expect(report.getByRole('button', { name: 'Pillar 1' }).first()).toBeVisible();
+    for (const attempt of [1, 2]) {
+      await report.evaluate(el => { el.scrollTop = 800; });
+      await expect.poll(() => report.evaluate(el => el.scrollTop)).toBeGreaterThan(500);
+      if (width === 390) await page.getByRole('button', { name: '진단 사이드바 열기' }).click();
+      await page.getByRole('combobox', { name: '진단 티어' }).selectOption('deep');
+      await page.getByRole('button', { name: '진단 실행', exact: true }).click();
+      await expect.poll(() => posts).toBe(attempt);
+      await expect(page.getByText(/최근 1시간 내 동일 조건 리포트를 표시합니다/)).toBeInViewport();
+      if (width === 390) await expect(page.getByRole('dialog', { name: '진단 설정 및 리포트' })).toHaveCount(0);
+      await expect.poll(() => report.evaluate(el => el.scrollTop)).toBeGreaterThan(500);
+    }
+    await screenshot(page, `diagnosis-dedup-${width}`);
+    expect(errors).toEqual([]);
+  });
 }
 
 test('assistant sidebar drag, collapse and reload preserve the conversation draft and preferences', async ({ page }) => {

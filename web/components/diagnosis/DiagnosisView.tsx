@@ -230,6 +230,7 @@ export default function DiagnosisView() {
       });
       if (!r.ok) return;
       const posted = await r.json();
+      setMobileSidebar(false);
       // [PR#37 review MAJOR] a same-hour re-run is deduped server-side → open the existing report
       // and tell the user (it can be up to ~60min old) instead of silently showing a stale view.
       if (posted?.deduped && posted?.report_id) {
@@ -252,9 +253,10 @@ export default function DiagnosisView() {
         title: top.title ?? null, tags: top.tags ?? [], can_edit: top.can_edit ?? false }
     : null);
   const running = submitting || topRunning;
+  const hasReportMarkdown = Boolean(view?.markdown);
   useEffect(() => {
     if (reportScroll.current) reportScroll.current.scrollTop = 0;
-  }, [view?.id]);
+  }, [view?.id, hasReportMarkdown]);
 
   // Generation date of the opened report (the view object omits created_at → look it up on the row).
   const createdAt = reports.find((r) => r.id === view?.id)?.created_at;
@@ -283,6 +285,11 @@ export default function DiagnosisView() {
         </button>
         <span className="text-[13px] text-ink-500">{tt('진단 설정 및 리포트')}</span>
       </div>
+      {notice && (
+        <div role="status" className="mb-3 shrink-0 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+          {notice}
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 gap-4">
         {mobileSidebar && (
           <div
@@ -426,11 +433,6 @@ export default function DiagnosisView() {
           />
         </aside>
         <div ref={reportScroll} role="region" aria-label={tt('진단 리포트')} data-report-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-          {notice && (
-            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-              {notice}
-            </div>
-          )}
           <div className="mb-4">
             <IntentPanel />
           </div>
