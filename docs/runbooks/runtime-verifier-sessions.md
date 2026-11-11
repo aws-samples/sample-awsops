@@ -182,7 +182,7 @@ symlink/public/non-regular input files, or an existing output policy file.
 Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
 The [owner acceptance condition dated 2026-09-14](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
-requires complete post-marker collection of all 46 current catalog types. The
+requires complete post-marker collection of all 49 current catalog types. The
 strict controller therefore sends exactly `{"type":"catalog"}`, followed by
 `{"type":"<catalog member>"}` for every validated returned type. This supersedes
 the earlier catalog/CloudFront-only consumer proposal; IAM scope is unchanged.
@@ -212,7 +212,7 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 
 | Payload | Required result |
 | --- | --- |
-| `catalog` | Exactly `status: "catalog"` and a unique catalog containing every pinned baseline member (currently 46), with valid growth allowed up to 128 total. The source-AST test binds baseline membership to the checked-in collector. No result `type` or counts are expected. |
+| `catalog` | Exactly `status: "catalog"` and a unique catalog containing every pinned baseline member (currently 49), with valid growth allowed up to 128 total. The source-AST test binds baseline membership to the checked-in collector. No result `type` or counts are expected. |
 | Each catalog member | `status: "succeeded"`, exact requested `type`, nonnegative safe-integer `row_count`, and `unknown_attribute_count: 0` |
 
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
@@ -236,7 +236,7 @@ unreachable accounts and fresh account-bound known-member EC2/CloudFront evidenc
 `account_reachability_scope` distinguishes
 `enabled_scan_accounts` measurement from host-only and unmeasured results, whose counts stay
 null. CI permits host-only/null only for the five source-AST-pinned SDK types; aggregate
-catalog proof does not establish 46-type coverage for every member. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
+catalog proof does not establish 49-type coverage for every member. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
 Each member uses one exact `/api/deployment/member-inventory` lookup, whose bounded
 identity projection also rejects disabled, absent or ambiguous scan scope/evidence.
 Only Terraform onboarding preflight permits approved subsets, deriving apply scope

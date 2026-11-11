@@ -125,7 +125,7 @@ After registration, release prepare and collect require **exactly** the enabled 
 and every configured target, each unique. The controller never requests onboarding
 leniency. Missing, disabled or unexpected enabled members stop before type collection.
 
-Collect retains every aggregate catalog proof (currently 46), known row/unknown-attribute
+Collect retains every aggregate catalog proof (currently 49), known row/unknown-attribute
 counts and zero unknown attributes. In target mode, SQL types must report
 `account_reachability_scope="enabled_scan_accounts"` and numeric
 `unreachable_account_count=0`. This measures the enabled, renderable DB scan scope
@@ -295,7 +295,7 @@ Group import uses a slash; membership uses comma-separated pool/group/username. 
 
 Before invocation, the controller compares live `CodeSha256` with `runtime_deployment.inventory.sync_code_sha256`, derived from configured `source_code_hash`. Apply reviewed configuration to persist this expected fingerprint; provider observations cannot authorize unreviewed code. The controller also captures the Lambda revision and rechecks the hash and revision after all owned collection calls settle, before authenticated acceptance. A concurrent code/configuration change rejects that evidence, including a change restored to the same hash with a different revision.
 
-Every current catalog type (46 in this version) must have succeeded after the release marker, with known counts and zero unknown attributes. Partial, failed, stale, missing or unknown evidence blocks the release. A recent success from before the marker cannot substitute. The controller obtains the complete catalog from the verified Lambda and synchronously invokes each type through at most four concurrent collectors. It never submits `type=all` or asynchronous Event batches; existing scheduled work can still contend with its calls.
+Every current catalog type (49 in this version) must have succeeded after the release marker, with known counts and zero unknown attributes. Partial, failed, stale, missing or unknown evidence blocks the release. A recent success from before the marker cannot substitute. The controller obtains the complete catalog from the verified Lambda and synchronously invokes each type through at most four concurrent collectors. It never submits `type=all` or asynchronous Event batches; existing scheduled work can still contend with its calls.
 
 After catalog discovery, authenticated preparation verifies login, DB and host registration and samples Aurora's UTC clock. That `server_time` becomes the marker before all collection calls and remains fixed across retries. The controller calibrates later clock reads from the DB sample and local request-start timestamp, conservatively, and shifts the existing overall deadline by the same offset. It never anchors at response end or allows pre-marker data. DB-request and host-check elapsed time consume the marker window; malformed or missing clock evidence stops collection. Catalog admission allows up to 450 seconds. All type attempts and their retries share the remaining collection admission window; there is no separate fifteen-minute allowance per type. An invocation needs 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport. Only confirmed throttling, busy and exact superseded outcomes retry, after ten seconds. Denied, uncertain-delivery, partial, failed, unknown and malformed outcomes cannot prove collection. All admitted workers settle before private files are cleaned.
 
@@ -453,9 +453,9 @@ milliseconds and request/response times inside the observed prepare interval, wi
 DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
 `collectionStartedAt`; subsequent time is `rawNow + (DB time - request start)`.
 The existing controller deadline shifts by that same offset, preserving time remaining.
-Every current catalog type (46 at this revision) must succeed after that marker with
+Every current catalog type (49 at this revision) must succeed after that marker with
 known counts and zero unknown attributes. The returned catalog must contain every
-member of the controller's pinned baseline of 46 type names, not merely 46 arbitrary
+member of the controller's pinned baseline of 49 type names, not merely 49 arbitrary
 names. A source-AST regression ties that baseline to the checked-in `QUERIES` and
 `SDK_SYNCS` catalogs. Valid additional returned types are allowed up to 128 total;
 every returned type remains required, permitting growth without replacing a baseline member.
@@ -517,7 +517,7 @@ are added. Fixed diagnostics and private cleanup remain required on success and 
 The [owner's 2026-09-14 acceptance condition](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
 requires all current catalog types, superseding the earlier CloudFront-only verifier
 proposal. At this revision that means at least one catalog request plus at least one request
-for each of the 46 types; catalog and per-type retries add calls. Four is the concurrency ceiling, not the total call count or
+for each of the 49 types; catalog and per-type retries add calls. Four is the concurrency ceiling, not the total call count or
 a claim of fourfold throughput. The [session contract](runtime-verifier-sessions.md#collection-effects-and-proof)
 authorizes exactly catalog or a verified catalog member, never empty/all/unregistered
 payloads or asynchronous `Event` invocation. No IAM scope is widened.

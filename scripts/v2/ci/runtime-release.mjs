@@ -26,7 +26,8 @@ export const REQUIRED_CATALOG_TYPES = Object.freeze([
   'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint',
   'elasticache_replication_group', 'iam_policy', 'neptune_cluster', 'msk', 'waf',
   'waf_rule_group', 'waf_ip_set', 'cloudwatch_alarm', 'cloudtrail', 'apigatewayv2_api',
-  'apigatewayv2_integration', 'apigatewayv2_route', 'ebs_snapshot', 's3',
+  'apigatewayv2_integration', 'apigatewayv2_route', 'ebs_snapshot', 'eni', 'rds_cluster',
+  'rds_proxy', 's3',
   'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
 ]);
 export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
