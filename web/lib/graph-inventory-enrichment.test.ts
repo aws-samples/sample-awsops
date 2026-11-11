@@ -43,3 +43,18 @@ describe('inventoryAttempt enrichment sources', () => {
     expect(attempt.details).not.toHaveProperty('withheldEnrichment');
   });
 });
+
+describe('inventoryAttempt row-cap truncation', () => {
+  const types = ['target_group', 'eni'];
+  const cut = (truncatedTypes: string[]) => ({ ...snapshot([run('target_group'), run('eni')], types), truncated: true, truncatedTypes });
+
+  it('keeps publishing when the cap only cut enrichment rows, withholding that type whole', () => {
+    expect(inventoryAttempt(cut(['eni']) as never, types, 'flow', 'self', finished, new Set(['eni'])))
+      .toMatchObject({ publish: true, status: 'partial', withheldTypes: ['eni'] });
+  });
+
+  it('blocks publication when the cap cut a core source', () => {
+    expect(inventoryAttempt(cut(['target_group', 'eni']) as never, types, 'flow', 'self', finished, new Set(['eni'])).publish)
+      .toBe(false);
+  });
+});

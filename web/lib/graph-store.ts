@@ -212,7 +212,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       try {
         const accountTypes = inventoryTypesForAccount(types, account);
         const snapshot = await inventorySnapshot(pool, cls, account, accountTypes,
-          counts ??= await inventoryCounts(pool, types));
+          counts ??= await inventoryCounts(pool, types), [...enrichment]);
         const { withheldTypes, ...evaluated } = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt, enrichment);
         attempt = evaluated;
         if (snapshot.truncated) reason('snapshot_limit');

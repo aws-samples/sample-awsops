@@ -77,7 +77,7 @@ export async function inventoryCounts(pool: Pool, types: string[]) {
 }
 
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
-  proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
+  proof?: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = []) {
   types = [...new Set(types)];
   const counts = proof ?? await inventoryCounts(pool, types);
   // Both classes use the already-supported flow envelope; bytes/time still bound the read.
@@ -97,6 +97,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
     // Both classes project their consumed fields before SQL byte guards prevent oversized
     // provider payloads from reaching Node. Identity columns remain authoritative.
+    // Enrichment types ($7) sort after core types so the shared row/byte caps cut them first.
     const result = await client.query(`WITH bounded AS MATERIALIZED (
       SELECT account_id, resource_type, resource_id, region, captured_at,
         (SELECT coalesce(jsonb_object_agg(key,
@@ -117,19 +118,20 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
           ELSE value END), '{}'::jsonb)
          FROM jsonb_each(data) WHERE key=ANY($3)) AS data
       FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2)
-      ORDER BY resource_type, region, resource_id LIMIT $4
+      ORDER BY resource_type = ANY($7), resource_type, region, resource_id LIMIT $4
     ), sized AS MATERIALIZED (
       SELECT *, octet_length(data::text)+octet_length(resource_id)+octet_length(region) AS bytes FROM bounded
     ), budgeted AS (
       SELECT *, sum(CASE WHEN bytes <= $5 THEN bytes ELSE 0 END)
-        OVER (ORDER BY resource_type, region, resource_id) AS total_bytes FROM sized
+        OVER (ORDER BY resource_type = ANY($7), resource_type, region, resource_id) AS total_bytes FROM sized
     ) SELECT account_id, resource_type,
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN resource_id ELSE '' END AS resource_id,
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN region ELSE '' END AS region, captured_at,
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN data ELSE NULL END AS data,
       bytes > $5 OR total_bytes > $6 AS oversized
-      FROM budgeted ORDER BY resource_type, region, resource_id`,
-    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES]);
+      FROM budgeted ORDER BY resource_type = ANY($7), resource_type, region, resource_id`,
+    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES,
+      [...enrichment]]);
     const rows = result.rows.map(row => ({ ...row, data: redactInventorySecrets(row.data) })) as InventoryRow[];
     const truncated = rows.length > rowCap || rows.some(row => row.oversized);
     let truncatedTypes: string[] = [];
@@ -172,7 +174,10 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
   // Every source this class can collect in this account contributes a coverage result.
   const required = [...new Set([...snapshot.types, ...types])];
   const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
-  let safe = required.length > 0 && !truncated;
+  // A cap that only cut enrichment rows keeps the core graph publishable; those types are withheld
+  // whole, because a partial owner list (e.g. one of two DBs in an AZ) could mislead inference.
+  const enrichmentOnlyCut = truncated && limitedTypes.size > 0 && [...limitedTypes].every(type => enrichment.has(type));
+  let safe = required.length > 0 && (!truncated || enrichmentOnlyCut);
   const sources = required.map(type => {
     const items = rows.filter(row => row.resource_type === type);
     const run = runs.find(row => row.resource_type === type && row.account_id === 'self');
@@ -200,10 +205,11 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     const optional = enrichment.has(type);
+    if (optional && limitedTypes.has(type) && !blockers.length) blockers.push('payload_truncated');
     if (blockers.length && optional) withheldTypes.push(type);
     else if (blockers.length) safe = false;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
-      ...(limitedTypes.has(type) ? ['payload_truncated'] : []),
+      ...(limitedTypes.has(type) && !blockers.includes('payload_truncated') ? ['payload_truncated'] : []),
       ...(blockers.length && optional ? ['enrichment_withheld'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'running' || producerStatus === 'partial' ? 'partial'
