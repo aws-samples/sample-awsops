@@ -1,8 +1,11 @@
+import { INFRA_CONTEXT_KINDS, INFRA_PLACEMENT_RELATIONS } from './infra-topology';
+
 interface PlacementNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface PlacementEdge { source: string; target: string; rel: string }
-const CONTEXT = new Set(['vpc', 'subnet', 'sg']);
-const PLACEMENT = new Set(['infra:in_vpc', 'infra:in_subnet', 'infra:uses_sg']);
+const CONTEXT = new Set<string>(INFRA_CONTEXT_KINDS);
+const PLACEMENT = new Set<string>(Object.values(INFRA_PLACEMENT_RELATIONS));
 export const INFRA_PAGE_SIZE = 4;
+const PAGE_NODE_BUDGET = 8;
 
 /** Display-only pages of resources plus their exact saved placement targets.
  * Never walk backwards through a shared subnet/SG into sibling resources. */
@@ -31,15 +34,36 @@ export function infraGraphPage<N extends PlacementNode, E extends PlacementEdge>
   });
   const pageSize = Number.isFinite(options.pageSize)
     ? Math.max(1, Math.min(INFRA_PAGE_SIZE, Math.floor(options.pageSize!))) : INFRA_PAGE_SIZE;
-  const pages = Math.max(1, Math.ceil(candidates.length / pageSize));
+  const pinned = [options.vpc, options.subnet].filter((id): id is string => !!id && byId.has(id));
+  const includeResource = (ids: Set<string>, n: N) => {
+    ids.add(n.id);
+    for (const e of outgoing.get(n.id) ?? []) {
+      if (e.rel !== INFRA_PLACEMENT_RELATIONS.sg || options.showSecurityGroups) ids.add(e.target);
+    }
+  };
+  // Pack by both resources and context. A single high-fanout resource retains
+  // every saved target; its canvas grows instead of silently dropping links.
+  const groups: N[][] = [];
+  let group: N[] = [];
+  let groupIds = new Set(pinned);
+  for (const n of candidates) {
+    const nextIds = new Set(groupIds);
+    includeResource(nextIds, n);
+    if (group.length && (group.length >= pageSize || nextIds.size > PAGE_NODE_BUDGET)) {
+      groups.push(group);
+      group = [];
+      groupIds = new Set(pinned);
+    }
+    group.push(n);
+    includeResource(groupIds, n);
+  }
+  if (group.length) groups.push(group);
+  const pages = Math.max(1, groups.length);
   const requested = Number.isFinite(options.page) ? Math.floor(options.page!) : 0;
   const page = Math.max(0, Math.min(pages - 1, requested));
-  const resources = candidates.slice(page * pageSize, (page + 1) * pageSize);
-  const keep = new Set(resources.map(n => n.id));
-  for (const id of [options.vpc, options.subnet]) if (id && byId.has(id)) keep.add(id);
-  for (const n of resources) for (const e of outgoing.get(n.id) ?? []) {
-    if (e.rel !== 'infra:uses_sg' || options.showSecurityGroups) keep.add(e.target);
-  }
+  const resources = groups[page] ?? [];
+  const keep = new Set(pinned);
+  for (const n of resources) includeResource(keep, n);
   return {
     nodes: graph.nodes.filter(n => keep.has(n.id)),
     edges: graph.edges.filter(e => PLACEMENT.has(e.rel) && keep.has(e.source) && keep.has(e.target)),

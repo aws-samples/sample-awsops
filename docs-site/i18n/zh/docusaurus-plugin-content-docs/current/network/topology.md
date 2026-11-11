@@ -16,27 +16,30 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 视图切换
 
-通过顶部开关在两种视图之间切换：
+在顶部选择四个标签页之一：
 
 | 视图 | 对象 | 用途 |
 |----|------|------|
-| **Infrastructure** | AWS 资源 | 可视化 VPC、EC2、RDS、ELB 等的关系 |
-| **Kubernetes** | EKS 工作负载 | Pod、Service、Ingress、Node 的关系 |
+| **VPC 连接** | VPC 连接配置 | 查看 TGW 和对等连接 |
+| **资源布局图（默认）** | 已保存的 AWS 资源 | 按 VPC 和子网筛选、翻页 |
+| **基础设施地图** | 已保存的 AWS 资源 | 查看资源层级 |
+| **K8s 地图** | EKS 工作负载 | Pod、Service、Ingress 和 Node 关系 |
 
 ### Infrastructure 视图
 
 提供两种显示模式：
 
-**Map View（默认）**
+**Map View**
 - 以 5 列布局展示资源层级
 - External (IGW/TGW) → VPCs → Subnets → Compute → NAT
 - 通过点击/搜索高亮相关资源
 
 **Graph View**
-- 基于 React Flow 的节点-边图
-- 拖拽移动节点
-- 通过缩放/平移进行探索
-- 使用 MiniMap 查看整体结构
+- **资源布局图**是默认标签页，首先显示已保存资源最多的 VPC。
+- 按 VPC、子网和资源类型筛选。自动选择 VPC 时，搜索会覆盖所有 VPC；手动选择的范围会保留。范围改变时，无效的子网和类型筛选会清除。
+- 每页最多显示四个资源，窄屏每页显示一个。连接目标较多时会减少每页资源数并增加画布高度。使用上一页/下一页查看其余资源。
+- 安全组连接默认隐藏，可通过复选框显示。每页保留所选资源的原始布局连接。
+- 资源计数的分母是符合当前筛选条件的资源数。已保存的节点/边总数与收集警告单独显示。布局连接不能证明实际通信路径。
 
 ### 收集依据与读取状态
 
@@ -77,7 +80,6 @@ import Screenshot from '@site/src/components/Screenshot';
 - 拖拽：移动画布
 - 拖拽节点：调整节点位置
 - Controls：重置缩放、适配屏幕
-- MiniMap：预览整体结构
 
 ## 使用方法
 
@@ -104,10 +106,10 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 使用 Graph View
 
-1. 在 Infrastructure 视图中选择 **Graph View**
-2. 渲染 React Flow 图
-3. 拖拽节点调整布局
-4. 使用 MiniMap 查看整体结构
+1. 选择**资源布局图**并指定 VPC、子网和资源类型。选择**所有 VPC**可包含没有已确认 VPC 的资源。
+2. 输入搜索内容，使用**上一页资源**/**下一页资源**翻页。
+3. 按需启用**显示安全组连接**。连接目标较多时会自动调整每页资源数和画布高度。
+4. 使用缩放、平移和页面滚动检查连接，同时查看所选范围与收集状态。
 
 ## 使用技巧
 

@@ -34,6 +34,30 @@ describe('readable infra graph pages', () => {
     expect(pages.map(p => p.resources.length)).toEqual([4, 4, 4, 4, 1]);
     expect(infraGraphPage(graph, { vpc: 'v1', page: 999 }).page).toBe(4);
   });
+  it('packs pages by saved context without omitting resources or any of their SG links', () => {
+    const resources = Array.from({ length: 4 }, (_, i) => ({ id: `res-${i}`, kind: 'ec2', label: 'fleet' }));
+    const contexts = resources.flatMap((_, i) => ['vpc', 'subnet', 'sg'].map(kind => ({ id: `${kind}-${i}`, kind, label: kind })));
+    const edges = resources.flatMap((r, i) => [
+      { source: r.id, target: `vpc-${i}`, rel: 'infra:in_vpc' },
+      { source: r.id, target: `subnet-${i}`, rel: 'infra:in_subnet' },
+      { source: r.id, target: `sg-${i}`, rel: 'infra:uses_sg' },
+    ]);
+    const graph = { nodes: [...resources, ...contexts], edges };
+    const first = infraGraphPage(graph, { showSecurityGroups: true });
+    expect(first.resources).toHaveLength(2);
+    expect(first.pages).toBe(2);
+    const pages = Array.from({ length: first.pages }, (_, page) => infraGraphPage(graph, { page, showSecurityGroups: true }));
+    expect(pages.every(p => p.nodes.length <= 8)).toBe(true);
+    expect(pages.flatMap(p => p.resources.map(n => n.id))).toEqual(resources.map(n => n.id));
+    expect(pages.flatMap(p => p.edges)).toEqual(edges);
+  });
+  it('keeps every target when a single resource exceeds the usual context budget', () => {
+    const targets = Array.from({ length: 12 }, (_, i) => ({ id: `subnet-${i}`, kind: 'subnet', label: 'subnet' }));
+    const edges = targets.map(n => ({ source: 'db', target: n.id, rel: 'infra:in_subnet' }));
+    const page = infraGraphPage({ nodes: [{ id: 'db', kind: 'rds', label: 'database' }, ...targets], edges });
+    expect(page.nodes).toHaveLength(13);
+    expect(page.edges).toEqual(edges);
+  });
   it('keeps narrow-screen pages complete and bounds an invalid requested size', () => {
     const pages = Array.from({ length: 17 }, (_, page) => infraGraphPage(graph, { vpc: 'v1', page, pageSize: 1 }));
     expect(new Set(pages.flatMap(p => p.resources.map(n => n.id))).size).toBe(17);

@@ -17,7 +17,8 @@ import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
 import VpcConnectivitySection from '@/components/inventory/VpcConnectivitySection';
 import { splitUnionNodeId } from '@/lib/graph-identity';
-import { infraGraphPage } from '@/lib/infra-graph-display';
+import { infraGraphPage, INFRA_PAGE_SIZE } from '@/lib/infra-graph-display';
+import { INFRA_CONTEXT_KINDS } from '@/lib/infra-topology';
 import useGraphViewport from '@/components/topology/useGraphViewport';
 
 // ReactFlow touches the DOM on mount — client-only.
@@ -26,6 +27,11 @@ const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow)
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string }
 interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean; collection?: unknown }
+const EMPTY_GRAPH: Graph = { nodes: [], edges: [], captured_at: null };
+const MIN_FIT_ZOOM = 0.85;
+const FIT_PADDING = 0.16;
+const CARD_WIDTH = 260;
+const CARD_HEIGHT = 100;
 
 // kind → [bg, border] — same palette as the ego-graph page, plus new network kinds.
 const COLORS: Record<string, [string, string]> = {
@@ -89,13 +95,21 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
     const subnetIds = new Set(graph.edges.filter(e => e.rel === 'infra:in_subnet' && members.has(e.source)).map(e => e.target));
     return {
       subnets: graph.nodes.filter(n => n.kind === 'subnet' && subnetIds.has(n.id)),
-      kinds: [...new Set(graph.nodes.filter(n => !['vpc', 'subnet', 'sg'].includes(n.kind) && (!effectiveVpc || members.has(n.id))).map(n => n.kind))].sort(),
+      kinds: [...new Set(graph.nodes.filter(n => !(INFRA_CONTEXT_KINDS as readonly string[]).includes(n.kind) && (!effectiveVpc || members.has(n.id))).map(n => n.kind))].sort(),
     };
   }, [graph, effectiveVpc]);
-  const viewport = useGraphViewport(graph?.nodes ?? [], graph?.edges ?? [], 1, 0.85);
-  const display = useMemo(() => infraGraphPage(graph ?? { nodes: [], edges: [] }, {
-    vpc: effectiveVpc, subnet, kind, query: q, page, pageSize: viewport.vertical ? 1 : 4, showSecurityGroups,
-  }), [graph, effectiveVpc, subnet, kind, q, page, viewport.vertical, showSecurityGroups]);
+  const effectiveSubnet = choices.subnets.some(n => n.id === subnet) ? subnet : '';
+  const effectiveKind = choices.kinds.includes(kind) ? kind : '';
+  useEffect(() => {
+    if (subnet !== effectiveSubnet || kind !== effectiveKind) {
+      setSubnet(effectiveSubnet); setKind(effectiveKind); setPage(0);
+    }
+  }, [subnet, kind, effectiveSubnet, effectiveKind]);
+  const viewport = useGraphViewport((graph ?? EMPTY_GRAPH).nodes, (graph ?? EMPTY_GRAPH).edges, 1, MIN_FIT_ZOOM);
+  const display = useMemo(() => infraGraphPage(graph ?? EMPTY_GRAPH, {
+    vpc: effectiveVpc, subnet: effectiveSubnet, kind: effectiveKind, query: q, page,
+    pageSize: viewport.vertical ? 1 : INFRA_PAGE_SIZE, showSecurityGroups,
+  }), [graph, effectiveVpc, effectiveSubnet, effectiveKind, q, page, viewport.vertical, showSecurityGroups]);
   useEffect(() => { viewport.fit(); }, [display, viewport.fit]);
   useEffect(() => { setPage(0); }, [viewport.vertical]);
 
@@ -122,7 +136,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
     const positions = viewport.vertical
       ? [...display.resources, ...display.nodes.filter(n => !resourceIds.has(n.id))]
         .map((n, i) => ({ id: n.id, x: 16, y: 16 + i * 140 }))
-      : layoutFlow(display, { rankdir: 'LR', nodeSize: () => ({ width: 260, height: 80 }) });
+      : layoutFlow(display, { rankdir: 'LR', nodeSize: () => ({ width: CARD_WIDTH, height: CARD_HEIGHT }) });
     const pos = Object.fromEntries(positions.map(p => [p.id, p]));
     const nodes: Node[] = display.nodes.map((n) => {
       const [bg, border] = COLORS[n.kind] ?? RESOURCE;
@@ -132,9 +146,9 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         id: n.id,
         position: { x: p.x, y: p.y },
         data: { label: <div>
-          <div className="mb-1 text-[11px] font-medium uppercase opacity-70">{n.kind}</div>
+          <div className="mb-1 text-[15px] font-medium uppercase opacity-70">{n.kind}</div>
           <div className="truncate font-semibold" title={n.label}>{n.label}</div>
-          {typeof n.meta?.region === 'string' && <div className="mt-1 truncate text-[11px] opacity-70">
+          {typeof n.meta?.region === 'string' && <div className="mt-1 truncate text-[15px] opacity-70">
             {[n.meta.inventoryAccount, n.meta.region].filter(Boolean).join(' · ')}
           </div>}
         </div>, kind: n.kind, meta: n.meta },
@@ -144,8 +158,8 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         style: {
           background: bg,
           border: `${hit ? `2px solid ${HILITE}` : `1px solid ${border}`}`,
-          borderRadius: 10, fontSize: 15, padding: 10, width: 260,
-          height: 80, color: '#16202A',
+          borderRadius: 10, fontSize: 18, padding: 10, width: CARD_WIDTH,
+          height: CARD_HEIGHT, color: '#16202A',
         },
       };
     });
@@ -157,6 +171,13 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
     }));
     return { nodes, edges };
   }, [graph, display, matches, viewport.vertical]);
+  const canvasHeight = useMemo(() => {
+    if (!nodes.length) return 520;
+    const top = Math.min(...nodes.map(n => n.position.y));
+    const bottom = Math.max(...nodes.map(n => n.position.y + CARD_HEIGHT));
+    // Fractional fitView padding applies to both sides of the canvas.
+    return Math.max(520, Math.ceil((bottom - top) * MIN_FIT_ZOOM / (1 - 2 * FIT_PADDING)) + 32);
+  }, [nodes]);
 
   return (
     <>
@@ -167,17 +188,17 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
               onChange={e => { setVpc(e.target.value); setSubnet(''); setKind(''); setPage(0); }}
               className="max-w-[240px] rounded border border-ink-200 bg-card px-2 py-1.5">
               <option value="">{tt('전체 VPC')}</option>
-              {vpcs.map(n => <option key={n.id} value={n.id}>{n.label} · {String(n.meta?.region ?? '')}</option>)}
+              {vpcs.map(n => <option key={n.id} value={n.id}>{[n.label, n.meta?.inventoryAccount, n.meta?.region].filter(Boolean).join(' · ')}</option>)}
             </select>
           </label>
           <label className="flex min-w-0 items-center gap-2">Subnet
-            <select aria-label={tt('배치 그래프 서브넷')} value={subnet} onChange={e => { setSubnet(e.target.value); setPage(0); }}
+            <select aria-label={tt('배치 그래프 서브넷')} value={effectiveSubnet} onChange={e => { setSubnet(e.target.value); setPage(0); }}
               className="max-w-[220px] rounded border border-ink-200 bg-card px-2 py-1.5">
               <option value="">{tt('전체 서브넷')}</option>
               {choices.subnets.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
             </select>
           </label>
-          <select aria-label={tt('배치 그래프 리소스 종류')} value={kind} onChange={e => { setKind(e.target.value); setPage(0); }}
+          <select aria-label={tt('배치 그래프 리소스 종류')} value={effectiveKind} onChange={e => { setKind(e.target.value); setPage(0); }}
             className="rounded border border-ink-200 bg-card px-2 py-1.5">
             <option value="">{tt('전체 리소스 종류')}</option>
             {choices.kinds.map(k => <option key={k} value={k}>{k}</option>)}
@@ -193,6 +214,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
           <button aria-label={tt('다음 리소스')} disabled={display.page + 1 >= display.pages} onClick={() => setPage(display.page + 1)}
             className="rounded border border-ink-200 px-2 py-1 disabled:opacity-40">→</button>
           <p className="w-full text-[12px] text-ink-500">{tt('한 화면에 리소스 최대 4개와 해당 배치 관계를 표시합니다. 좁은 화면은 1개씩, 나머지는 다음 페이지에서 확인하세요.')}</p>
+          <p className="w-full text-[12px] text-ink-500">{tt('연결 대상 수에 맞춰 페이지와 캔버스 높이를 조절합니다.')}</p>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
@@ -201,7 +223,6 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <GraphReadError reason={err} />}
         {graph && !unavailable && <span>{tt('저장된 그래프:')} {tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
-        {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
           return (
@@ -222,8 +243,8 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         </button>
       </div>}
       {graph && !unavailable && !busy && display.totalResources === 0 && <p className="px-4 py-2 text-sm text-ink-500">{tt('선택 조건에 맞는 리소스가 없습니다.')}</p>}
-      <div ref={viewport.container} className="min-h-[520px] min-w-0 flex-1 overflow-hidden">
-        <ReactFlow nodes={nodes} edges={edges} onInit={viewport.onInit} fitView fitViewOptions={{ padding: 0.15, minZoom: 0.85, maxZoom: 1 }} minZoom={0.25}
+      <div ref={viewport.container} style={{ height: canvasHeight }} className="min-h-[520px] min-w-0 shrink-0 overflow-hidden">
+        <ReactFlow nodes={nodes} edges={edges} onInit={viewport.onInit} fitView fitViewOptions={{ padding: FIT_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }} minZoom={0.25}
           onNodeClick={(_, node) => {
             if (node.data.kind !== 'vpc') return;
             const meta = node.data.meta as GNode['meta'];

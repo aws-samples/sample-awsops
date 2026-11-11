@@ -25,7 +25,7 @@ const graph = {
   ] },
 };
 
-async function fixtures(page: Page) {
+async function fixtures(page: Page, savedGraph = graph) {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem('awsops-lang', 'ko'));
@@ -35,7 +35,7 @@ async function fixtures(page: Page) {
       return route.abort();
     }
     const path = new URL(route.request().url()).pathname;
-    return route.fulfill({ json: path === '/api/graph' ? graph : {
+    return route.fulfill({ json: path === '/api/graph' ? savedGraph : {
       accounts: [], rows: [], clusters: [], regions: [], threads: [], signals: [], cards: [],
     } });
   });
@@ -53,6 +53,11 @@ async function readableCards(page: Page) {
   await expect.poll(() => page.locator('.react-flow__node').first().evaluate(el =>
     parseFloat(getComputedStyle(el).fontSize) * el.getBoundingClientRect().width / (el as HTMLElement).offsetWidth,
   )).toBeGreaterThanOrEqual(12);
+  await expect.poll(() => page.locator('.react-flow__node').evaluateAll(elements => elements.every(el => {
+    const scale = el.getBoundingClientRect().width / (el as HTMLElement).offsetWidth;
+    return [...el.querySelectorAll('div')].filter(label => !label.childElementCount && label.textContent?.trim())
+      .every(label => parseFloat(getComputedStyle(label).fontSize) * scale >= 12);
+  }))).toBe(true);
   await expect.poll(async () => {
     const canvas = await page.locator('.react-flow').boundingBox();
     return page.locator('.react-flow__node').evaluateAll((elements, box) => elements.every(el => {
@@ -79,6 +84,7 @@ test('placement graph shows readable pages and keeps exact saved context and col
   await page.getByRole('checkbox', { name: '보안 그룹 연결 표시' }).check();
   await expect(page.locator('[data-id="sg-shared"]')).toHaveCount(1);
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
+  await readableCards(page);
   // A shared SG must not pull the other VPCs or their sibling resources into this page.
   await expect(page.locator('[data-id="resource-40"]')).toHaveCount(0);
   await page.getByRole('combobox', { name: '배치 그래프 VPC' }).selectOption('vpc-2');
@@ -88,6 +94,59 @@ test('placement graph shows readable pages and keeps exact saved context and col
   await expect(page.locator('[data-id="resource-64"]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('implicit search scope changes clear foreign subnet filters', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const errors = await fixtures(page);
+  await page.goto('/topology/infra');
+  const search = page.getByPlaceholder('검색 (id · 이름 · IP · 타입)…');
+  await search.fill('application-resource');
+  await page.getByRole('combobox', { name: '배치 그래프 서브넷' }).selectOption('subnet-10');
+  await expect(page.locator('[data-id="resource-80"]')).toHaveCount(1);
+  await search.clear();
+  await expect(page.getByRole('combobox', { name: '배치 그래프 VPC' })).toHaveValue('vpc-0');
+  await expect(page.getByRole('combobox', { name: '배치 그래프 서브넷' })).toHaveValue('');
+  await expect(page.locator('[data-id="resource-0"]')).toHaveCount(1);
+  await readableCards(page);
+  expect(errors).toEqual([]);
+});
+
+for (const width of [1440, 390]) {
+  test(`all-VPC and SG-heavy pages at ${width}px retain every original target without clipping readable cards`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const resources = Array.from({ length: 4 }, (_, i) => ({ id: `fan-${i}`, kind: 'rds', label: `fan-${i}`, meta }));
+    const contexts = resources.flatMap((_, i) => ['vpc', 'subnet', 'sg'].map(kind => ({ id: `${kind}-fan-${i}`, kind, label: `${kind}-${i}`, meta })));
+    const extraTargets = Array.from({ length: 9 }, (_, i) => ({ id: `extra-${i}`, kind: 'subnet', label: `extra-subnet-${i}`, meta }));
+    const savedGraph = { ...graph, nodes: [...resources, ...contexts, ...extraTargets], edges: [
+      ...resources.flatMap((r, i) => [
+        { source: r.id, target: `vpc-fan-${i}`, rel: 'infra:in_vpc' },
+        { source: r.id, target: `subnet-fan-${i}`, rel: 'infra:in_subnet' },
+        { source: r.id, target: `sg-fan-${i}`, rel: 'infra:uses_sg' },
+      ]),
+      ...extraTargets.map(n => ({ source: 'fan-0', target: n.id, rel: 'infra:in_subnet' })),
+    ] };
+    const errors = await fixtures(page, savedGraph);
+    await page.goto('/topology/infra');
+    await page.getByPlaceholder('검색 (id · 이름 · IP · 타입)…').fill('fan');
+    await expect(page.getByRole('combobox', { name: '배치 그래프 VPC' })).toHaveValue('');
+    await expect(page.locator('.react-flow__node')).toHaveCount(12);
+    await expect(page.locator('.react-flow__edge-path')).toHaveCount(11);
+    await readableCards(page);
+    await page.getByRole('checkbox', { name: '보안 그룹 연결 표시' }).check();
+    await expect(page.locator('.react-flow__node')).toHaveCount(13);
+    await expect(page.locator('.react-flow__edge-path')).toHaveCount(12);
+    await readableCards(page);
+    await screenshot(page, `infra-placement-many-targets-${width}`);
+    await page.locator('main').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await screenshot(page, `infra-placement-many-targets-bottom-${width}`);
+    await page.getByRole('button', { name: '다음 리소스' }).click();
+    await expect(page.locator('.react-flow__node')).toHaveCount(width === 390 ? 4 : 8);
+    await expect(page.locator('.react-flow__edge-path')).toHaveCount(width === 390 ? 3 : 6);
+    await readableCards(page);
+    await screenshot(page, `infra-placement-all-vpcs-${width}`);
+    expect(errors).toEqual([]);
+  });
+}
 
 for (const width of [390, 768]) {
   test(`placement search at ${width}px refits at a readable size without horizontal page overflow`, async ({ page }) => {

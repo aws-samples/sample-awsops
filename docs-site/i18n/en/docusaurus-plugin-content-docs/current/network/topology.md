@@ -16,27 +16,30 @@ A page to visually explore relationships between AWS infrastructure and Kubernet
 
 ### View Toggle
 
-Switch between two views using the top toggle:
+Choose among four tabs:
 
 | View | Target | Purpose |
 |------|--------|---------|
-| **Infrastructure** | AWS Resources | Visualize VPC, EC2, RDS, ELB relationships |
-| **Kubernetes** | EKS Workloads | Pod, Service, Ingress, Node relationships |
+| **VPC connections** | VPC connection configuration | Inspect TGW and peering connections |
+| **Placement graph (default)** | Saved AWS resources | Filter and page by VPC/subnet |
+| **Infrastructure map** | Saved AWS resources | Inspect the resource hierarchy |
+| **K8s map** | EKS workloads | Pod, Service, Ingress and Node relationships |
 
 ### Infrastructure View
 
 Two display modes are available:
 
-**Map View (Default)**
+**Map View**
 - 5-column layout showing resource hierarchy
 - External (IGW/TGW) → VPCs → Subnets → Compute → NAT
 - Click/search to highlight related resources
 
 **Graph View**
-- React Flow-based node-edge graph
-- Drag nodes to reposition
-- Zoom/pan for navigation
-- MiniMap for overall structure overview
+- **Placement graph** is the default tab and starts with the VPC containing the most saved resources.
+- Filter by VPC, subnet and resource type. Search spans all VPCs while the VPC is selected automatically; an explicitly selected scope stays selected. Invalid subnet/type filters clear when the scope changes.
+- Each page shows up to four resources, or one on narrow screens. Pages use fewer resources and a taller canvas when there are many connected targets. Use previous/next to inspect the remaining resources.
+- Security-group connections are hidden by default and can be enabled with the checkbox. Each page retains its resources' original placement edges.
+- The resource-count denominator is the number matching the current filters. Saved node/edge totals and collection warnings appear separately. Placement edges do not prove traffic paths.
 
 ### Collection Evidence and Read Status
 
@@ -77,7 +80,6 @@ Displays EKS workloads in a 4-column resource map:
 - Drag: Pan canvas
 - Node drag: Adjust node position
 - Controls: Zoom reset, fit to screen
-- MiniMap: Overview preview
 
 ## How to Use
 
@@ -104,10 +106,10 @@ Displays EKS workloads in a 4-column resource map:
 
 ### Use Graph View
 
-1. Select **Graph View** in Infrastructure view
-2. React Flow graph renders
-3. Drag nodes to adjust layout
-4. Use MiniMap to view overall structure
+1. Select **Placement graph** and choose the VPC, subnet and resource type. Choose **All VPCs** to include resources with no confirmed VPC.
+2. Enter a search query and use **Previous resources**/**Next resources** to navigate pages.
+3. Enable **Show security group connections** when needed. Page size and canvas height adjust for many connected targets.
+4. Use zoom/pan and page scrolling to inspect the edges alongside the selected scope and collection status.
 
 ## Tips
 

@@ -84,6 +84,7 @@ export const TERMS: Record<string, Pair> = {
   '이전 리소스': { en: 'Previous resources', zh: '上一页资源', ja: '前のリソース' },
   '다음 리소스': { en: 'Next resources', zh: '下一页资源', ja: '次のリソース' },
   '한 화면에 리소스 최대 4개와 해당 배치 관계를 표시합니다. 좁은 화면은 1개씩, 나머지는 다음 페이지에서 확인하세요.': { en: 'Each page shows up to four resources and their placement, or one on narrow screens. Use the next page to see more.', zh: '每页最多显示四个资源及其布局关系，窄屏每页显示一个。其他资源请查看下一页。', ja: '1ページに最大4個のリソースと配置関係を表示し、狭い画面では1個ずつ表示します。続きは次のページで確認できます。' },
+  '연결 대상 수에 맞춰 페이지와 캔버스 높이를 조절합니다.': { en: 'Pages and canvas height adjust to the number of connected targets.', zh: '页面和画布高度会根据连接目标的数量调整。', ja: '接続先の数に合わせてページとキャンバスの高さを調整します。' },
   '선택 조건에 맞는 리소스가 없습니다.': { en: 'No resources match the selected filters.', zh: '没有符合筛选条件的资源。', ja: '選択条件に一致するリソースはありません。' },
   'VPC·서브넷별로 리소스를 크게 표시합니다. 배치 관계이며 실제 통신 경로를 증명하지 않습니다.': { en: 'Explore larger resource cards by VPC and subnet. Placement relationships do not prove traffic paths.', zh: '按 VPC 和子网查看较大的资源卡片。布局关系不能证明实际通信路径。', ja: 'VPC・サブネット別に大きなリソースカードを表示します。配置関係は実際の通信経路を証明しません。' },
   '인프라 맵': { en: 'Infrastructure map', zh: '基础设施地图', ja: 'インフラマップ' },
