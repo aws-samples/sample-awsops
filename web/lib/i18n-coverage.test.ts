@@ -29,6 +29,8 @@ const SURFACES = [
   'app/topology/network/page.tsx',
   'components/topology/MapCanvas.tsx',
   'components/chat/TimeSeriesTable.tsx',
+  'components/chat/AssistantClient.tsx',
+  'components/diagnosis/DiagnosisView.tsx',
   'app/topology/resource/[id]/page.tsx',
   ...tsxUnder('app/integrations/datasources'),
   ...tsxUnder('components/datasources'),

@@ -7,6 +7,8 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '진단 티어': { en: 'Diagnosis tier', zh: '诊断级别', ja: '診断ティア' },
+  '최근 완료 섹션:': { en: 'Last completed section:', zh: '最近完成的部分：', ja: '直近に完了したセクション：' },
   '수집된 그래프': { en: 'Collected graph', zh: '已收集的图', ja: '収集済みグラフ' },
   '보조 워크로드 문맥은 숨김': { en: 'Auxiliary workload context hidden', zh: '已隐藏辅助工作负载上下文', ja: '補助ワークロードのコンテキストは非表示' },
   '표시 한도에 따라 생략': { en: 'Omitted by display limits', zh: '因显示上限而省略', ja: '表示上限により省略' },
@@ -718,6 +720,13 @@ export const TERMS: Record<string, Pair> = {
   '섹션별 분포': { en: 'Distribution by Section', zh: '按分区分布', ja: 'セクション別分布' },
   '대화 목록 닫기': { en: 'Close chat list', zh: '关闭对话列表', ja: 'チャット一覧を閉じる' },
   '대화 목록 열기': { en: 'Open chat list', zh: '打开对话列表', ja: 'チャット一覧を開く' },
+  '대화 목록 너비 조절': { en: 'Resize chat list', zh: '调整对话列表宽度', ja: 'チャット一覧の幅を調整' },
+  '드래그하거나 방향키로 너비 조절': { en: 'Drag or use arrow keys to resize', zh: '拖动或使用方向键调整宽度', ja: 'ドラッグまたは矢印キーで幅を調整' },
+  '진단 사이드바 너비 조절': { en: 'Resize diagnosis sidebar', zh: '调整诊断侧边栏宽度', ja: '診断サイドバーの幅を調整' },
+  '진단 사이드바 열기': { en: 'Open diagnosis sidebar', zh: '打开诊断侧边栏', ja: '診断サイドバーを開く' },
+  '진단 사이드바 닫기': { en: 'Close diagnosis sidebar', zh: '关闭诊断侧边栏', ja: '診断サイドバーを閉じる' },
+  '진단 설정 및 리포트': { en: 'Diagnosis settings and reports', zh: '诊断设置与报告', ja: '診断設定とレポート' },
+  '진단 리포트': { en: 'Diagnosis report', zh: '诊断报告', ja: '診断レポート' },
   '자주 쓰는 쿼리:': { en: 'Frequently used queries:', zh: '常用查询：', ja: 'よく使うクエリ:' },
   'AI 생성 실패': { en: 'AI generation failed', zh: 'AI 生成失败', ja: 'AI 生成失敗' },
   '데이터소스': { en: 'Datasource', zh: '数据源', ja: 'データソース' },

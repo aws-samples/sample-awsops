@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
 import DiagnosisView from './DiagnosisView';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
 
 afterEach(cleanup);
 afterEach(() => localStorage.removeItem('awsops-lang'));
+afterEach(() => {
+  localStorage.removeItem('awsops_diagnosis_sidebar_width');
+  localStorage.removeItem('awsops_diagnosis_sidebar_collapsed');
+});
 
 function mockCapture(reports: Array<Record<string, unknown>> = []) {
   const posts: any[] = [];
@@ -45,6 +49,71 @@ function mockList(reports: Array<Record<string, unknown>>) {
     return resp({}, 404);
   }));
 }
+
+describe('DiagnosisView sidebar layout', () => {
+  it('starts a newly completed report at the top while polling a running report preserves its position', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let finished = false;
+      const row = () => ({ id: 7, tier: 'mid', status: finished ? 'succeeded' : 'running',
+        created_at: '2026-11-11T00:00:00Z', progress: { current: 1, total: 3, section: 'Compute' } });
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        if (url === '/api/diagnosis') return resp({ reports: [row()] });
+        if (url === '/api/diagnosis/7') return resp({ report: row(), markdown: finished ? '# newly completed' : null });
+        return resp({}, 404);
+      }));
+      render(<DiagnosisView />);
+      await screen.findByRole('progressbar');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const report = screen.getByRole('region', { name: '진단 리포트' });
+      report.scrollTop = 420;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(report.scrollTop).toBe(420);
+      finished = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      await screen.findByRole('heading', { name: 'newly completed' });
+      expect(report.scrollTop).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps same-report dedup feedback outside the scrolled report without losing the reading position', async () => {
+    const row = { id: 7, tier: 'mid', status: 'succeeded', created_at: '2026-11-11T00:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/diagnosis' && init?.method === 'POST') return resp({ deduped: true, report_id: 7 });
+      if (url === '/api/diagnosis') return resp({ reports: [row] });
+      if (url === '/api/diagnosis/7') return resp({ report: row, markdown: '# existing report' });
+      return resp({}, 404);
+    }));
+    render(<DiagnosisView />);
+    await screen.findByRole('heading', { name: 'existing report' });
+    const report = screen.getByRole('region', { name: '진단 리포트' });
+    report.scrollTop = 420;
+    fireEvent.click(screen.getByRole('button', { name: '진단 실행' }));
+    const notice = await screen.findByText(/최근 1시간 내 동일 조건 리포트를 표시합니다/);
+    expect(notice.closest('[data-report-scroll]')).toBeNull();
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(report.scrollTop).toBe(420);
+    expect(screen.getByRole('heading', { name: 'existing report' })).toBeTruthy();
+  });
+
+  it('resizes the sidebar and preserves diagnosis settings while collapsed', async () => {
+    mockList([]);
+    render(<DiagnosisView />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/diagnosis'));
+    const tier = screen.getByRole('combobox', { name: '진단 티어' }) as HTMLSelectElement;
+    fireEvent.change(tier, { target: { value: 'deep' } });
+    const handle = screen.getByRole('separator', { name: '진단 사이드바 너비 조절' });
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(handle.getAttribute('aria-valuenow')).toBe('192');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 닫기' })[0]);
+    expect(localStorage.getItem('awsops_diagnosis_sidebar_collapsed')).toBe('1');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 열기' })[0]);
+    expect(tier.value).toBe('deep');
+    expect(screen.getByRole('separator').getAttribute('aria-valuenow')).toBe('192');
+  });
+});
 
 describe('DiagnosisView — live progress & never-stuck UI (A6)', () => {
   it('shows live per-section progress for a running report (not a bare spinner)', async () => {
