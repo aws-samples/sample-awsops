@@ -207,13 +207,14 @@ const EVIDENCE_COPY = {
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean; runSucceeded?: boolean }> {
   const scopeQuery = new URLSearchParams(inventoryScope), account = scopeQuery.get('accounts') ?? 'self';
   const critical = CRITICAL_TYPES.has(t);
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
   let firstRun: Row | null = null;
-  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete, ...inventoryEvidence(rows, firstRun, account === 'self') });
+  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete,
+    runSucceeded: firstRun?.status === 'succeeded', ...inventoryEvidence(rows, firstRun, account === 'self') });
   try {
     for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
       if (signal.aborted) throw new Error();
@@ -416,12 +417,17 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
         const result = res[TYPES.indexOf(type)];
         return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
       };
+      // Owner reads are usable only from a succeeded sweep. The page cannot prove freshness
+      // without comparing clocks, so RDS placement inference (which needs complete, current DB
+      // and proxy lists) is left to the materialized graph: rds_proxy always counts as incomplete.
+      const ownerIssue = (type: InvType) => type === 'rds_proxy' || readIssue(type) !== undefined
+        || !res[TYPES.indexOf(type)].runSucceeded;
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
         // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
-        ownerIncomplete: OWNER_TYPES.filter(type => readIssue(type) !== undefined),
+        ownerIncomplete: OWNER_TYPES.filter(ownerIssue),
       } };
       TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;

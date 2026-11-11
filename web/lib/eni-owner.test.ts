@@ -116,3 +116,14 @@ describe('eniOwnerResolver', () => {
         .toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-r' });
   });
 });
+
+describe('incomplete ENI reads', () => {
+  it('reports incomplete instead of a single observed owner when the ENI list itself is cut', () => {
+    const input = { eni: [eni('eni-1', '10.0.0.5', { description: 'ELB app/web/50dc6c495c0c9188' })],
+      alb: [{ resource_id: 'web', region: R, arn: 'arn:aws:elasticloadbalancing:ap-northeast-2:1:loadbalancer/app/web/50dc6c495c0c9188' }] };
+    expect(eniOwnerResolver(input, new Set(['eni'])).resolve(R, VPC, '10.0.0.5'))
+      .toEqual({ reason: 'owner_inventory_incomplete', eniId: null });
+    expect(eniOwnerResolver(input, new Set(['eni'])).resolve(R, VPC, '10.9.9.9'))
+      .toEqual({ reason: 'owner_inventory_incomplete', eniId: null });
+  });
+});

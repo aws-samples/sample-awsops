@@ -37,7 +37,7 @@ export interface EniOwner {
   /** Owner ARN when the inventory row carries one (LB node identity in the flow graph). */
   arn?: string;
 }
-export type EniResolution = { owner: EniOwner } | { reason: EniUnresolved; eniId: string };
+export type EniResolution = { owner: EniOwner } | { reason: EniUnresolved; eniId: string | null };
 
 export interface EniOwnerInput {
   eni?: Row[]; ec2?: Row[]; alb?: Row[]; nlb?: Row[]; lambda?: Row[];
@@ -167,6 +167,8 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
     /** null = no synced ENI holds this IP in that region/VPC (or the snapshot is contradictory). */
     resolve(region: string, vpc: string, ip: string): EniResolution | null {
       if (!region || !vpc || !ip) return null;
+      // A cut or withheld ENI list cannot prove a single holder (duplicate claims may be missing).
+      if (gap('eni')) return { reason: 'owner_inventory_incomplete', eniId: null };
       const hit = byIp.get(scoped(region, vpc, ip));
       return hit ? resolveEni(hit.eni, hit.primary) : null;
     },
