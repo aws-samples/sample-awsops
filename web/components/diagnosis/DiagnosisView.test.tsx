@@ -65,7 +65,7 @@ describe('DiagnosisView sidebar layout', () => {
       render(<DiagnosisView />);
       await screen.findByRole('progressbar');
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      const report = screen.getByRole('region', { name: '진단 리포트', exact: true });
+      const report = screen.getByRole('region', { name: '진단 리포트' });
       report.scrollTop = 420;
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
       expect(report.scrollTop).toBe(420);
@@ -88,9 +88,9 @@ describe('DiagnosisView sidebar layout', () => {
     }));
     render(<DiagnosisView />);
     await screen.findByRole('heading', { name: 'existing report' });
-    const report = screen.getByRole('region', { name: '진단 리포트', exact: true });
+    const report = screen.getByRole('region', { name: '진단 리포트' });
     report.scrollTop = 420;
-    fireEvent.click(screen.getByRole('button', { name: '진단 실행', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '진단 실행' }));
     const notice = await screen.findByText(/최근 1시간 내 동일 조건 리포트를 표시합니다/);
     expect(notice.closest('[data-report-scroll]')).toBeNull();
     expect(notice.getAttribute('role')).toBe('status');
