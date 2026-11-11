@@ -7,9 +7,21 @@ export interface HistoryMsg {
   // Which account the turn was answered for ('host' or a 12-digit id), from the server's own meta
   // frame. The agent labels earlier turns with it only when a thread spans accounts.
   account?: string;
+  // Tools an assistant turn called, from the server's footer meta frame. The agent tells the model
+  // which earlier answers were tool-grounded; tool results themselves are never replayed.
+  tools?: string[];
 }
 
 const ACCOUNT_LABEL_RE = /^(?:host|\d{12})$/;
+const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+export const HISTORY_TOOLS_MAX = 32;
+
+function historyTools(m: { role: string; tools?: unknown }): string[] | undefined {
+  if (m.role !== 'assistant' || !Array.isArray(m.tools)) return undefined;
+  const tools = m.tools.filter((t): t is string => typeof t === 'string' && TOOL_NAME_RE.test(t))
+    .slice(0, HISTORY_TOOLS_MAX);
+  return tools.length ? tools : undefined;
+}
 
 /** The account label the chat route reports for an answer (and the agent compares turns by). */
 export function accountLabel(accountId: string, hostAccountId: string): string {
@@ -55,9 +67,14 @@ export function sanitizeHistory(input: unknown): HistoryMsg[] {
       !!m && typeof m === 'object'
       && (m.role === 'user' || m.role === 'assistant')
       && typeof m.content === 'string')
-    .map((m) => (typeof m.account === 'string' && ACCOUNT_LABEL_RE.test(m.account)
-      ? { role: m.role, content: m.content, account: m.account }
-      : { role: m.role, content: m.content }));
+    .map((m) => {
+      const tools = historyTools(m);
+      return {
+        role: m.role, content: m.content,
+        ...(typeof m.account === 'string' && ACCOUNT_LABEL_RE.test(m.account) ? { account: m.account } : {}),
+        ...(tools ? { tools } : {}),
+      };
+    });
 }
 
 // Bug fix (PR #138 review, MINOR): history content is untrusted (prior user turns, and prior

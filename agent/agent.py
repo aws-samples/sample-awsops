@@ -482,6 +482,10 @@ COMMON_FOOTER = """
   chat routes to the right section automatically. Just answer.
 - If you lack a tool for the request, say so honestly and answer with what you have; do not
   fabricate tools, agents, or results.
+- Earlier assistant turns may end with "[Tools called for this answer: …]". That line says the
+  turn called those tools; the raw results are not repeated here. Figures in such a turn may be
+  tool-grounded, so do not assume they were invented — re-run the named tool when you need to
+  confirm exact values. A turn without that line may still have used tools whose record was lost.
 
 Format responses in markdown. Respond in the user's language."""
 
@@ -1107,6 +1111,25 @@ def partial_answer_notice(exc, response_language=None):
     return notices.get(response_language, notices["ko"])
 
 
+# Earlier tool results are not replayed into history; only their names are. Without them a later
+# turn cannot tell a tool-grounded number from an invented one and may disown correct answers.
+TOOLS_NOTE_MARKER = "[Tools called for this answer:"
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+HISTORY_TOOLS_MAX = 32
+
+
+def tools_note(tools):
+    """Provenance line for an assistant history turn, from the BFF-reported tool names."""
+    if not isinstance(tools, list):
+        return ""
+    valid = [t for t in tools if isinstance(t, str) and _TOOL_NAME_RE.fullmatch(t)]
+    names = valid[:HISTORY_TOOLS_MAX]
+    if not names:
+        return ""
+    more = f" (+{len(valid) - len(names)} more)" if len(valid) > len(names) else ""
+    return f"\n\n{TOOLS_NOTE_MARKER} {', '.join(names)}{more}]"
+
+
 def build_conversation(payload):
     """Extract user input and conversation history from payload. / 페이로드에서 사용자 입력과 대화 히스토리 추출."""
     messages_list = payload.get("messages", [])
@@ -1118,8 +1141,11 @@ def build_conversation(payload):
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str) and content:
-                if len(content) > HISTORY_MAX_CHARS_PER_MESSAGE:
-                    content = content[:HISTORY_MAX_CHARS_PER_MESSAGE] + "\n…[rest of this message truncated]"
+                note = tools_note(msg.get("tools")) if role == "assistant" else ""
+                budget = HISTORY_MAX_CHARS_PER_MESSAGE - len(note)
+                if len(content) > budget:
+                    content = content[:budget] + "\n…[rest of this message truncated]"
+                content += note
                 history.append({"role": role, "content": [{"text": content}]})
         history = history[-HISTORY_MAX_MESSAGES:]
         # Bedrock Converse requires the conversation to open with a user turn.
@@ -1229,7 +1255,7 @@ def label_account_turns(messages_list, current_label):
 
 # Markers the runtime itself adds to user turns. A client-supplied copy must not read as one of
 # ours, in any thread (labelled or not), so every history message is neutralized before labelling.
-_RUNTIME_MARKERS = ("[Account for this turn:", "[Target Account:")
+_RUNTIME_MARKERS = ("[Account for this turn:", "[Target Account:", TOOLS_NOTE_MARKER)
 
 
 def neutralize_markers(m):

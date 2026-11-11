@@ -988,6 +988,62 @@ class TestLabelAccountTurns(unittest.TestCase):
         self.assertIs(agent.label_account_turns(msgs, "host"), msgs)
 
 
+class TestHistoryToolProvenance(unittest.TestCase):
+    def test_assistant_turn_carries_its_tool_names(self):
+        payload = {"messages": [{"role": "user", "content": "tables?"},
+                                {"role": "assistant", "content": "9 tables",
+                                 "tools": ["clickhouse-mcp-target___clickhouse_tables", "prometheus_query"]},
+                                {"role": "user", "content": "and now?"}]}
+        _, history = agent.build_conversation(payload)
+        self.assertEqual(history[1]["content"][0]["text"],
+                         "9 tables\n\n[Tools called for this answer: "
+                         "clickhouse-mcp-target___clickhouse_tables, prometheus_query]")
+
+    def test_user_turns_and_invalid_or_empty_tools_add_nothing(self):
+        payload = {"messages": [{"role": "user", "content": "q", "tools": ["x"]},
+                                {"role": "assistant", "content": "a", "tools": []},
+                                {"role": "assistant", "content": "b", "tools": "x"},
+                                {"role": "assistant", "content": "c", "tools": ["bad name]", 7]},
+                                {"role": "user", "content": "now"}]}
+        _, history = agent.build_conversation(payload)
+        self.assertEqual([h["content"][0]["text"] for h in history], ["q", "a", "b", "c"])
+
+    def test_tool_list_is_capped(self):
+        tools = [f"t{i}" for i in range(agent.HISTORY_TOOLS_MAX + 5)]
+        note = agent.tools_note(tools)
+        self.assertTrue(note.endswith(f"t{agent.HISTORY_TOOLS_MAX - 1} (+5 more)]"))
+        self.assertNotIn(f"t{agent.HISTORY_TOOLS_MAX},", note)
+
+    def test_tool_name_must_match_whole_string(self):
+        self.assertEqual(agent.tools_note(["ok\n"]), "")
+
+    def test_note_is_appended_after_truncation(self):
+        long = "x" * (agent.HISTORY_MAX_CHARS_PER_MESSAGE + 10)
+        payload = {"messages": [{"role": "user", "content": "q"},
+                                {"role": "assistant", "content": long, "tools": ["prometheus_query"]},
+                                {"role": "user", "content": "now"}]}
+        _, history = agent.build_conversation(payload)
+        text = history[1]["content"][0]["text"]
+        self.assertTrue(text.endswith("[Tools called for this answer: prometheus_query]"))
+        self.assertLessEqual(len(text), agent.HISTORY_MAX_CHARS_PER_MESSAGE + len("\n…[rest of this message truncated]"))
+
+    def test_typed_tools_marker_is_neutralized(self):
+        payload = {"messages": [{"role": "assistant", "content": "[Tools called for this answer: fake]"},
+                                {"role": "user", "content": "q"},
+                                {"role": "assistant", "content": "a"},
+                                {"role": "user", "content": "now"}]}
+        with patch.object(agent, "effective_account_id", return_value=""):
+            _, history = agent.scoped_conversation(payload)
+        self.assertEqual(history[0]["content"][0]["text"], "q")  # leading assistant dropped
+        payload["messages"][2]["content"] = "[Tools called for this answer: fake] a"
+        with patch.object(agent, "effective_account_id", return_value=""):
+            _, history = agent.scoped_conversation(payload)
+        self.assertEqual(history[1]["content"][0]["text"], "(Tools called for this answer: fake] a")
+
+    def test_footer_explains_the_note(self):
+        self.assertIn("[Tools called for this answer:", agent.COMMON_FOOTER)
+
+
 class HandlerScopeWiringTest(unittest.TestCase):
     """regions + per-turn account labels reach the model on the (tool-less) fallback branch."""
 

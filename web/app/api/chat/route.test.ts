@@ -1229,7 +1229,7 @@ describe('follow-up continuity, account labels and region scope', () => {
     expect(chatRegionScope).toHaveBeenCalledWith('111122223333');
   });
 
-  it('forwards the account region scope and sanitized per-turn account labels to the agent', async () => {
+  it('forwards the account region scope and sanitized per-turn account labels and tools to the agent', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });
     pickGateway.mockReturnValue('ops');
     chatRegionScope.mockResolvedValue(['ap-northeast-2', 'us-east-1']);
@@ -1239,7 +1239,7 @@ describe('follow-up continuity, account labels and region scope', () => {
       prompt: 'now?',
       messages: [
         { role: 'user', content: 'q1', account: '111122223333', extra: 'dropped' },
-        { role: 'assistant', content: 'a1', account: 'not-a-label' },
+        { role: 'assistant', content: 'a1', account: 'not-a-label', tools: ['prometheus_query', 'bad name]'] },
       ],
       sessionId: 's'.repeat(36),
     })));
@@ -1247,7 +1247,7 @@ describe('follow-up continuity, account labels and region scope', () => {
     expect(input.regions).toEqual(['ap-northeast-2', 'us-east-1']);
     expect(input.messages).toEqual([
       { role: 'user', content: 'q1', account: '111122223333' },
-      { role: 'assistant', content: 'a1' },
+      { role: 'assistant', content: 'a1', tools: ['prometheus_query'] },
       { role: 'user', content: 'now?' },
     ]);
   });
