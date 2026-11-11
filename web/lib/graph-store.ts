@@ -59,6 +59,8 @@ function relFor(sk: FlowKind | undefined, tk: FlowKind | undefined): string {
   if (sk === 'cloudfront') return tk === 'waf' ? 'PROTECTED_BY' : 'ORIGIN';
   if (sk === 'alb' || sk === 'nlb') return 'TARGETS';
   if (sk === 'tg') return 'TARGETS';
+  // An ENI-owned load-balancer target continues into that load balancer.
+  if (sk === 'target' && (tk === 'alb' || tk === 'nlb')) return 'TARGETS';
   return 'EDGE';
 }
 
@@ -173,7 +175,7 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 }
 
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
-  types: string[], build: (rows: InventoryRow[], account: string) => { nodes: GNode[]; edges: GEdge[] },
+  types: string[], build: (rows: InventoryRow[], account: string, withheld: string[]) => { nodes: GNode[]; edges: GEdge[] },
   enrichment: ReadonlySet<string> = new Set()): Promise<GraphRebuildResult> {
   const totals = emptyResult();
   if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
@@ -225,7 +227,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         // Withheld enrichment rows (stale/failed/partial ledgers) never feed ownership claims.
         const inputRows = withheldTypes.length
           ? snapshot.rows.filter(row => !withheldTypes.includes(row.resource_type)) : snapshot.rows;
-        const graph = attempt.publish ? build(inputRows, account) : { nodes: [], edges: [] };
+        const graph = attempt.publish ? build(inputRows, account, withheldTypes) : { nodes: [], edges: [] };
         if (graph.nodes.length > 4000 || graph.edges.length > 8000
           || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
           attempt.publish = false; attempt.status = 'partial';
@@ -266,8 +268,10 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
 }
 
 export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
-  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, rows => {
-    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
+  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, (rows, _account, withheld) => {
+    // Withheld enrichment rows are absent, and the resolver also refuses inferences they guard.
+    const input: FlowInput = { ownershipRead: { configurationOnly: true,
+      ...(withheld.length ? { ownerIncomplete: withheld } : {}) } };
     for (const row of rows) {
       const key = TYPE_TO_KEY[row.resource_type];
       if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id,

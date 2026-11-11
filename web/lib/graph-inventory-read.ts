@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 import { graphTransaction } from './graph-transaction';
-import type { GraphAttempt, GraphClass } from './graph-state';
+import { inventoryStaleAfterMs, type GraphAttempt, type GraphClass } from './graph-state';
 import type { Row } from './infra-topology';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { redactInventorySecrets } from './inventory-redaction';
@@ -163,9 +163,12 @@ const stamp = (value: unknown): number | null => {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
-/** Enrichment sources may only add ownership/endpoint detail to a graph built from its core
- *  sources. A blocked enrichment source withholds its own rows (`withheldTypes`) and degrades the
- *  publication to partial; it never blocks or stales the core graph. */
+/** Enrichment sources only add ownership/endpoint detail to a graph built from its core sources.
+ *  They never enter `details.sources`, so they cannot change the publication status, its
+ *  freshness or any reader's reason vocabulary. A usable enrichment source must have a fully
+ *  confirmed, fresh, untruncated ledger; anything else is withheld whole (`withheldTypes`) so a
+ *  partial owner list never feeds an inference. Their evaluation is kept in the unprojected
+ *  `details.enrichmentSources` for operators. */
 export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySnapshot>>, types: string[],
   cls: GraphClass, account: string, attemptedAt: string,
   enrichment: ReadonlySet<string> = new Set()): GraphAttempt & { withheldTypes: string[] } {
@@ -174,11 +177,11 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
   // Every source this class can collect in this account contributes a coverage result.
   const required = [...new Set([...snapshot.types, ...types])];
   const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
-  // A cap that only cut enrichment rows keeps the core graph publishable; those types are withheld
-  // whole, because a partial owner list (e.g. one of two DBs in an AZ) could mislead inference.
-  const enrichmentOnlyCut = truncated && limitedTypes.size > 0 && [...limitedTypes].every(type => enrichment.has(type));
-  let safe = required.length > 0 && (!truncated || enrichmentOnlyCut);
-  const sources = required.map(type => {
+  // Enrichment rows sort last, so a cap that cut only enrichment rows leaves core input whole.
+  const coreTruncated = truncated && (limitedTypes.size === 0 || [...limitedTypes].some(type => !enrichment.has(type)));
+  let safe = required.length > 0 && !coreTruncated;
+  const staleAfterMs = inventoryStaleAfterMs();
+  const evaluated = required.map(type => {
     const items = rows.filter(row => row.resource_type === type);
     const run = runs.find(row => row.resource_type === type && row.account_id === 'self');
     const point = participation.find(row => row.resource_type === type);
@@ -204,29 +207,30 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
-    const optional = enrichment.has(type);
-    if (optional && limitedTypes.has(type) && !blockers.length) blockers.push('payload_truncated');
-    if (blockers.length && optional) withheldTypes.push(type);
-    else if (blockers.length) safe = false;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
-      ...(limitedTypes.has(type) && !blockers.includes('payload_truncated') ? ['payload_truncated'] : []),
-      ...(blockers.length && optional ? ['enrichment_withheld'] : [])];
+      ...(limitedTypes.has(type) ? ['payload_truncated'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'running' || producerStatus === 'partial' ? 'partial'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
-    return { sourceId: `inventory:${type}`, scope: 'account',
+    const source = { sourceId: `inventory:${type}`, scope: 'account',
       status, producerStatus, reasons, itemCount: limitedTypes.has(type) ? null : items.length, capturedAtMs, lastSuccessAtMs,
-      attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at),
-      ...(optional ? { enrichment: true } : {}) };
+      attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
+    if (enrichment.has(type)) {
+      const fresh = lastSuccessAtMs !== null && Date.now() - lastSuccessAtMs <= staleAfterMs;
+      if (reasons.length || !fresh) withheldTypes.push(type);
+      return { enrichment: true as const, type, source: { ...source, ...(fresh ? {} : { stale: true }) } };
+    }
+    if (blockers.length) safe = false;
+    return { enrichment: false as const, type, source, items: items.length };
   });
-  // A withheld enrichment source is disclosed as partial coverage, not as a core-source failure.
-  const effective = (s: typeof sources[number]) =>
-    s.enrichment && withheldTypes.includes(s.sourceId.slice('inventory:'.length)) ? 'partial' : s.status;
-  const status = sources.some(s => effective(s) === 'error') ? 'error'
-    : !sources.length || sources.some(s => effective(s) === 'unavailable') ? 'unavailable'
-    : truncated || sources.some(s => effective(s) === 'partial') ? 'partial' : rows.length ? 'ok' : 'empty';
+  const sources = evaluated.filter(e => !e.enrichment).map(e => e.source);
+  const enrichmentSources = evaluated.filter(e => e.enrichment).map(e => e.source);
+  const coreRows = evaluated.reduce((n, e) => n + (e.enrichment ? 0 : e.items), 0);
+  const status = sources.some(s => s.status === 'error') ? 'error'
+    : !sources.length || sources.some(s => s.status === 'unavailable') ? 'unavailable'
+    : coreTruncated || sources.some(s => s.status === 'partial') ? 'partial' : coreRows ? 'ok' : 'empty';
   return { status, attemptedAt, publish: safe, withheldTypes,
-    details: { sources, ...(truncated ? { inputTruncated: true } : {}),
-      ...(withheldTypes.length ? { withheldEnrichment: withheldTypes } : {}) } };
+    details: { sources, ...(coreTruncated ? { inputTruncated: true } : {}),
+      ...(enrichmentSources.length ? { enrichmentSources } : {}) } };
 }

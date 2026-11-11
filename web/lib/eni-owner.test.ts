@@ -32,7 +32,9 @@ describe('eniOwnerResolver', () => {
     const fn = { resource_id: 'orders-api-handler', region: R, arn: 'arn:aws:lambda:ap-northeast-2:1:function:orders-api-handler' };
     const input = { lambda: [fn, { resource_id: 'orders-api', region: R }], eni: [eni('eni-l', '10.0.1.9', {
       interface_type: 'lambda', description: 'AWS Lambda VPC ENI-orders-api-handler-0b5a7a0c-1f9b-4c3e-9a51-6c0a1d2e3f40' })] };
-    expect(resolve(input, '10.0.1.9')).toEqual({ owner: expect.objectContaining({ kind: 'lambda', resourceId: 'orders-api-handler' }) });
+    // Hyperplane ENIs can serve every function with the same subnet/SG set: the creator name is inferred.
+    expect(resolve(input, '10.0.1.9')).toEqual({ owner: expect.objectContaining({
+      kind: 'lambda', resourceId: 'orders-api-handler', confidence: 'inferred' }) });
   });
 
   it('resolves VPC endpoint and NAT ENIs by the id in their description', () => {
@@ -97,5 +99,20 @@ describe('eniOwnerResolver', () => {
       private_ip_addresses: JSON.stringify([{ PrivateIpAddress: '10.0.6.2', Primary: false }]) };
     expect(resolve({ eni: [row], ec2: [{ resource_id: 'i-1', region: R }] }, '10.0.6.2'))
       .toEqual({ reason: 'secondary_ip', eniId: 'eni-s' });
+  });
+
+  it('reports an incomplete owner read instead of claiming the owner is not synced', () => {
+    const input = { eni: [eni('eni-n', '10.0.7.1', { interface_type: 'nat_gateway', description: 'Interface for NAT Gateway nat-0123456789abcdef0' })] };
+    expect(eniOwnerResolver(input, new Set(['nat_gateway'])).resolve(R, VPC, '10.0.7.1'))
+      .toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-n' });
+    expect(eniOwnerResolver(input).resolve(R, VPC, '10.0.7.1')).toEqual({ reason: 'owner_not_synced', eniId: 'eni-n' });
+  });
+
+  it('refuses RDS placement inference when the DB or proxy inventory is incomplete', () => {
+    const rdsEni = eni('eni-r', '10.0.3.4', { requester_id: 'amazon-rds', availability_zone: 'ap-northeast-2a' });
+    const input = { eni: [rdsEni], rds: [{ resource_id: 'orders', region: R, vpc_id: VPC, availability_zone: 'ap-northeast-2a' }] };
+    for (const type of ['rds', 'rds_proxy'])
+      expect(eniOwnerResolver(input, new Set([type])).resolve(R, VPC, '10.0.3.4'))
+        .toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-r' });
   });
 });

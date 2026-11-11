@@ -68,6 +68,8 @@ export interface FlowInput {
   ownershipRead?: {
     targetGroup?: 'failed' | 'capped'; ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
     eksScopes?: string[]; eksUnknown?: boolean; eksRegions?: string[]; configurationOnly?: boolean;
+    /** ENI-ownership inputs (eni and owner types) whose read was withheld, capped or failed. */
+    ownerIncomplete?: string[];
   };
 }
 
@@ -243,7 +245,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   for (const e of input.ec2 ?? []) ec2ById.set(str(e.resource_id), str(e.name) || str(e.resource_id));
   for (const l of input.lambda ?? []) if (l.arn) lambdaByArn.set(str(l.arn), str(l.resource_id) || str(l.arn));
   const ecsByIp = ecsIpMap(input.ecsTask ?? [], input.subnet ?? []);
-  const eniOwners = eniOwnerResolver(input);
+  const eniOwners = eniOwnerResolver(input, new Set(input.ownershipRead?.ownerIncomplete ?? []));
   // S3 buckets by NAME (resource_id) — join key for resolving CloudFront S3 origins to the real
   // bucket row. Bucket names are globally unique, so this is region-agnostic (a us-east-1 bucket
   // fronted by an ap-northeast-2 app still matches). Depends on the s3 inventory pk being 'name'.
@@ -565,8 +567,11 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           if (hit && 'owner' in hit) {
             const o = hit.owner;
             resolved = o.kind; key = `eni:${o.kind}:${o.resourceId}`; mlabel = groupLabel = o.label;
-            meta = { owner: { kind: o.kind, resourceId: o.resourceId, ...(o.arn ? { arn: o.arn } : {}) },
-              ownership_source: 'eni', ownership_confidence: o.confidence, ownership_evidence: 'cached_configuration' };
+            // Existing markers (e.g. ownership_reason) are kept, so E2E ownership vetoes still apply;
+            // an inferred owner is never identity evidence for E2E correlation.
+            meta = { ...meta, owner: { kind: o.kind, resourceId: o.resourceId, ...(o.arn ? { arn: o.arn } : {}) },
+              ownership_source: 'eni', ownership_confidence: o.confidence, ownership_evidence: 'cached_configuration',
+              ...(o.confidence === 'inferred' ? { e2e_correlation_blocked: true } : {}) };
           } else if (hit) meta = { ...meta, eni_owner_reason: hit.reason };
         }
       }

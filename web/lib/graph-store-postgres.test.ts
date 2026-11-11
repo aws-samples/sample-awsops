@@ -970,7 +970,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE account_id='self' AND class='infra' ORDER BY id")).rows;
     expect(nodes.map(node => node.id)).toEqual(['subnet:subnet-lost', 'vpc:vpc-kept']);
     expect(previous).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.length);
+    // Enrichment sources (rds_cluster, rds_proxy) are evaluated separately, never published sources.
+    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.filter(type => !['rds_cluster', 'rds_proxy'].includes(type)).length);
 
     await pool.query(`DELETE FROM inventory_resources WHERE resource_type='subnet';
       DELETE FROM inventory_sync_runs WHERE resource_type='subnet';`);

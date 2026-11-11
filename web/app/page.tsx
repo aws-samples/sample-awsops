@@ -21,7 +21,7 @@ import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
 import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
-import { nearestSnapshot, netChange, covCompleteForScope, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
+import { nearestSnapshot, netChange, covCompleteForScope, countsTowardFleetTotal, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
 import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
@@ -373,7 +373,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
         if (k === 'date' || k === 'total' || typeof v !== 'number') continue;
         if (!covCompleteForScope(cov, p.date, k, resolved)) { gapped = true; continue; }
         q[k] = v;
-        if (!isDerivedTrendType(k)) total += v;
+        if (countsTowardFleetTotal(k)) total += v;
       }
       q.total = total;
       return q;

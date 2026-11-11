@@ -3,6 +3,7 @@ import { getPool } from '@/lib/db';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { PUBLIC_S3_WHERE } from '@/lib/security-findings';
 import { readCollectionStatus } from '@/lib/inventory-collection';
+import { FLEET_TOTAL_EXCLUDED_TYPES } from '@/lib/trend-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -106,13 +107,15 @@ export async function GET(request: Request) {
       .sort((a, b) => b.count - a.count);
     const groups = new Map<string, number>();
     for (const row of r.rows) {
+      if (FLEET_TOTAL_EXCLUDED_TYPES.has(row.resource_type)) continue;
       const group = INVENTORY_TYPES[row.resource_type]?.group ?? 'Other';
       groups.set(group, (groups.get(group) ?? 0) + Number(row.n));
     }
     const byCategory: ByCategory[] = [...groups.entries()]
       .map(([group, count]) => ({ group, count }))
       .sort((a, b) => b.count - a.count);
-    const total = byType.reduce((s, x) => s + x.count, 0);
+    // Attachment-only types (ENIs) keep their own row but do not inflate the fleet total.
+    const total = byType.reduce((s, x) => s + (FLEET_TOTAL_EXCLUDED_TYPES.has(x.type) ? 0 : x.count), 0);
 
     // Derived KPI sublines — a splits-query failure must NOT 500 the fleet view
     // (house rule: degrade to zeros, keep byType). Map UNION-ALL k→n rows.

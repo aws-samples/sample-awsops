@@ -28,6 +28,9 @@ const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec
   'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule',
   'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'] as const;
 type InvType = (typeof TYPES)[number];
+// Every inventory read the ENI owner resolver consults (eni-owner.ts).
+const OWNER_TYPES: InvType[] = ['eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway',
+  'alb', 'nlb', 'lambda', 'ec2'];
 type Row = Record<string, unknown>;
 
 // InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
@@ -417,6 +420,8 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
         targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
+        // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
+        ownerIncomplete: OWNER_TYPES.filter(type => readIssue(type) !== undefined),
       } };
       TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;

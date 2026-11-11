@@ -186,3 +186,13 @@ describe('sameAccountSet (round 5 — cross-fetch scope consistency)', () => {
     expect(sameAccountSet([], [])).toBe(true);
   });
 });
+
+describe('fleet totals exclude attachment-only types', () => {
+  it('does not count ENIs or derived series toward the fleet total', async () => {
+    const { countsTowardFleetTotal } = await import('./trend-utils');
+    expect(countsTowardFleetTotal('ec2')).toBe(true);
+    expect(countsTowardFleetTotal('rds_cluster')).toBe(true);
+    expect(countsTowardFleetTotal('eni')).toBe(false);
+    expect(countsTowardFleetTotal('public_s3_buckets')).toBe(false);
+  });
+});

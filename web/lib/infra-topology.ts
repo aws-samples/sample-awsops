@@ -16,6 +16,14 @@ export const INFRA_PLACEMENT_RELATIONS = {
 } as const;
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
+/** jsonb arrays can arrive decoded or as a JSON string. */
+const jsonList = (v: unknown): unknown[] => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim().startsWith('[')) {
+    try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+};
 /** Inventory kinds whose endpoints a trace span's db host can name (trace-graph.ts). */
 export const DB_ENDPOINT_KINDS: ReadonlySet<string> = new Set(['rds', 'rds_cluster', 'rds_proxy']);
 
@@ -92,7 +100,7 @@ export function buildInfraGraph(input: InfraInput, account = 'self'): InfraGraph
     // (trace-graph.ts resolveInfraRef): rds instances carry endpoint_address; rds clusters carry
     // writer/reader/custom endpoints and rds proxies their endpoint. Other types carry none.
     const dbHosts = DB_ENDPOINT_KINDS.has(kind) ? [...new Set([d.endpoint_address, d.endpoint, d.reader_endpoint,
-      ...(Array.isArray(d.custom_endpoints) ? d.custom_endpoints : [])].map(str).filter(Boolean))] : [];
+      ...jsonList(d.custom_endpoints)].map(str).filter(Boolean))] : [];
     const host = dbHosts[0];
     addNode(rid, kind, nameOf(r), {
       ...metadata(kind, rawId, r),

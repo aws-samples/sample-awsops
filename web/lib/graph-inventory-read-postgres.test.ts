@@ -194,7 +194,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     expect(snapshot.rows.filter(row => row.resource_type === 'vpc')).toHaveLength(10);
     expect(snapshot.truncatedTypes).toEqual(['eni']);
     expect(inventoryAttempt(snapshot, ['eni', 'vpc'], 'flow', 'self', at(), new Set(['eni'])))
-      .toMatchObject({ publish: true, status: 'partial', withheldTypes: ['eni'] });
+      .toMatchObject({ publish: true, status: 'ok', withheldTypes: ['eni'] });
     // Without the enrichment designation the same cut still blocks publication.
     const strict = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc']);
     expect(inventoryAttempt(strict, ['eni', 'vpc'], 'flow', 'self', at()).publish).toBe(false);

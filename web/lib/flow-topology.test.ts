@@ -805,7 +805,9 @@ describe('ENI ownership for IP targets', () => {
     expect(targets[0].label).toBe('inner ×2');
     expect(targets[0].meta).toMatchObject({ resolved: 'alb', ownership_source: 'eni', ownership_confidence: 'observed',
       ownership_evidence: 'cached_configuration', owner: { kind: 'alb', resourceId: 'inner', arn: INNER_ARN } });
-    expect(targets[0].meta).not.toHaveProperty('ownership_reason');
+    // Existing veto markers survive, so configuration-only targets stay non-identity evidence.
+    expect(targets[0].meta).toMatchObject({ ownership_reason: 'eks_not_enumerated' });
+    expect(targets[0].meta).not.toHaveProperty('e2e_correlation_blocked');
     expect(graph.edges.some(e => e.source === targets[0].id && e.target === `alb:${INNER_ARN}`)).toBe(true);
     expect(filterFromEntry(graph, `nlb:${NLB_ARN}`).nodes.some(n => n.id === `alb:${INNER_ARN}`)).toBe(true);
   });
@@ -821,6 +823,22 @@ describe('ENI ownership for IP targets', () => {
     const gap = buildFlowGraph({ ...base, ownershipRead: { ecsTask: 'failed' } }).nodes.find(n => n.kind === 'target')!;
     expect(gap.meta).toMatchObject({ ambiguity: 'ecs_task_inventory_incomplete' });
     expect(gap.meta).not.toHaveProperty('owner');
+  });
+
+  it('blocks E2E identity use of inferred owners and refuses owners guarded by incomplete reads', () => {
+    const ip = '10.0.3.4';
+    const rdsTg = { ...tg([ip]), resource_id: 'tg-db' };
+    const rdsEni = { resource_id: 'eni-r', region, vpc_id: vpc, private_ip_address: ip, requester_id: 'amazon-rds',
+      description: 'RDSNetworkInterface', availability_zone: 'ap-northeast-2a', subnet_id: 'subnet-a',
+      private_ip_addresses: [{ PrivateIpAddress: ip, Primary: true }] };
+    const db = { resource_id: 'orders', region, vpc_id: vpc, availability_zone: 'ap-northeast-2a' };
+    const inferred = buildFlowGraph({ nlb: [nlb], tg: [rdsTg], eni: [rdsEni], rds: [db] }).nodes.find(n => n.kind === 'target')!;
+    expect(inferred.meta).toMatchObject({ resolved: 'rds', ownership_confidence: 'inferred', e2e_correlation_blocked: true });
+    // A withheld or capped RDS Proxy read removes the proxy-subnet guard, so no RDS claim is made.
+    const guarded = buildFlowGraph({ nlb: [nlb], tg: [rdsTg], eni: [rdsEni], rds: [db],
+      ownershipRead: { ownerIncomplete: ['rds_proxy'] } }).nodes.find(n => n.kind === 'target')!;
+    expect(guarded.meta).toMatchObject({ eni_owner_reason: 'owner_inventory_incomplete' });
+    expect(guarded.meta).not.toHaveProperty('owner');
   });
 
   it('discloses why an ENI could not name a synced owner', () => {

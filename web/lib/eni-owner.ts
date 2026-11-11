@@ -21,6 +21,7 @@ export type EniUnresolved =
   | 'secondary_ip'       // secondary IP on an instance ENI (e.g. VPC CNI pod IP) — not the instance
   | 'owner_not_synced'   // the ENI names an owner that is absent from inventory
   | 'owner_ambiguous'    // several inventory resources could own the ENI
+  | 'owner_inventory_incomplete' // the owner lookup (or an inference guard) relies on an incomplete read
   | 'owner_unknown';     // no rule identifies the owner
 
 export interface EniOwner {
@@ -28,7 +29,9 @@ export interface EniOwner {
   /** Inventory resource_id of the owner (LB name, function name, instance id, …). */
   resourceId: string;
   label: string;
-  /** observed = the ENI names the owner; inferred = derived from placement (RDS by VPC/AZ). */
+  /** observed = the ENI names the owner; inferred = derived from placement (RDS by VPC/AZ) or
+   *  from a creator name that the ENI may share (Lambda Hyperplane ENIs serve every function
+   *  with the same subnet and security-group set). */
   confidence: 'observed' | 'inferred';
   eniId: string;
   /** Owner ARN when the inventory row carries one (LB node identity in the flow graph). */
@@ -40,6 +43,9 @@ export interface EniOwnerInput {
   eni?: Row[]; ec2?: Row[]; alb?: Row[]; nlb?: Row[]; lambda?: Row[];
   rds?: Row[]; rds_cluster?: Row[]; rds_proxy?: Row[]; vpc_endpoint?: Row[]; nat_gateway?: Row[];
 }
+/** Inventory types whose read is withheld, capped or failed: a miss there is not "not synced",
+ *  and an inference guarded by them (RDS placement, RDS Proxy subnet sharing) is not made. */
+export type IncompleteTypes = ReadonlySet<string>;
 
 const scoped = (region: string, vpc: string, value: string) => JSON.stringify([region, vpc, value]);
 const LAMBDA_PREFIX = 'AWS Lambda VPC ENI-';
@@ -61,7 +67,8 @@ function privateIps(eni: Row): { ip: string; primary: boolean }[] {
 }
 
 /** Build a resolver once per graph; `resolve` is called per IP target. */
-export function eniOwnerResolver(input: EniOwnerInput) {
+export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTypes = new Set()) {
+  const gap = (...types: string[]) => types.some(type => incomplete.has(type));
   // IP → ENI, scoped by region and VPC (a private IP is unique inside one VPC). A duplicate key
   // means overlapping snapshots; it resolves to null (ambiguous) instead of the first match.
   const byIp = new Map<string, { eni: Row; primary: boolean } | null>();
@@ -88,6 +95,9 @@ export function eniOwnerResolver(input: EniOwnerInput) {
     ({ owner: { kind, resourceId: str(row.resource_id), label: label(row), confidence, eniId,
       ...(str(row.arn) ? { arn: str(row.arn) } : {}) } });
   const miss = (reason: EniUnresolved, eniId: string): EniResolution => ({ reason, eniId });
+  /** An absent owner is only "not synced" when the owner's own read was complete. */
+  const absent = (eniId: string, ...types: string[]): EniResolution =>
+    miss(gap(...types) ? 'owner_inventory_incomplete' : 'owner_not_synced', eniId);
 
   function resolveEni(eni: Row, primary: boolean): EniResolution {
     const eniId = str(eni.resource_id);
@@ -102,12 +112,12 @@ export function eniOwnerResolver(input: EniOwnerInput) {
     if (type === 'vpc_endpoint' || type === 'gateway_load_balancer_endpoint' || desc.startsWith('VPC Endpoint Interface')) {
       const id = /\b(vpce-[0-9a-f]{8,})\b/.exec(desc)?.[1];
       const row = id ? vpce.get(key(id)) : undefined;
-      return row ? owner('vpc_endpoint', row, eniId) : miss(id ? 'owner_not_synced' : 'owner_unknown', eniId);
+      return row ? owner('vpc_endpoint', row, eniId) : id ? absent(eniId, 'vpc_endpoint') : miss('owner_unknown', eniId);
     }
     if (type === 'nat_gateway' || desc.startsWith('Interface for NAT Gateway')) {
       const id = /\b(nat-[0-9a-f]{8,})\b/.exec(desc)?.[1];
       const row = id ? nat.get(key(id)) : undefined;
-      return row ? owner('nat_gateway', row, eniId) : miss(id ? 'owner_not_synced' : 'owner_unknown', eniId);
+      return row ? owner('nat_gateway', row, eniId) : id ? absent(eniId, 'nat_gateway') : miss('owner_unknown', eniId);
     }
     // ELB: `ELB app/<name>/<hash>` matches the LB ARN suffix exactly, never by name alone.
     const elb = ELB_DESC.exec(desc);
@@ -115,17 +125,19 @@ export function eniOwnerResolver(input: EniOwnerInput) {
       const suffix = `:loadbalancer/${elb[1]}/${elb[2]}/${elb[3]}`;
       const hits = lbs.filter(([, r]) => str(r.region) === region && str(r.arn).endsWith(suffix));
       return hits.length === 1 ? owner(hits[0][0], hits[0][1], eniId)
-        : miss(hits.length ? 'owner_ambiguous' : 'owner_not_synced', eniId);
+        : hits.length ? miss('owner_ambiguous', eniId) : absent(eniId, 'alb', 'nlb');
     }
     if (type === 'lambda' || desc.startsWith(LAMBDA_PREFIX)) {
       const rest = desc.startsWith(LAMBDA_PREFIX) ? desc.slice(LAMBDA_PREFIX.length) : '';
       const name = UUID_SUFFIX.test(rest) ? rest.replace(UUID_SUFFIX, '') : '';
       const row = name ? lambda.get(key(name)) : undefined;
-      return row ? owner('lambda', row, eniId) : miss(name ? 'owner_not_synced' : 'owner_unknown', eniId);
+      return row ? owner('lambda', row, eniId, 'inferred') : name ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
     }
     // RDS ENIs carry no DB name: attribute only when one DB (or one cluster's members) sits in
     // this VPC/AZ, and never when an RDS Proxy shares the ENI's subnet (same ENI signature).
     if (requester === 'amazon-rds' || desc.startsWith('RDSNetworkInterface')) {
+      // Placement inference is only sound over complete DB and proxy inventories.
+      if (gap('rds', 'rds_proxy')) return miss('owner_inventory_incomplete', eniId);
       const zone = str(eni.availability_zone), subnet = str(eni.subnet_id);
       const proxyShare = (input.rds_proxy ?? []).some(p => str(p.region) === region && str(p.vpc_id) === vpc
         && list(p.vpc_subnet_ids).map(str).includes(subnet));
@@ -136,6 +148,7 @@ export function eniOwnerResolver(input: EniOwnerInput) {
       const ids = new Set(dbs.map(r => str(r.db_cluster_identifier)));
       const only = ids.size === 1 ? [...ids][0] : '';
       const cluster = only ? clusters.get(key(only)) : undefined;
+      if (dbs.length > 1 && only && gap('rds_cluster')) return miss('owner_inventory_incomplete', eniId);
       if (dbs.length > 1 && cluster) return owner('rds_cluster', cluster, eniId, 'inferred');
       return miss(dbs.length ? 'owner_ambiguous' : 'owner_not_synced', eniId);
     }
@@ -145,7 +158,7 @@ export function eniOwnerResolver(input: EniOwnerInput) {
     if (instance && eni.requester_managed !== true) {
       if (!primary) return miss('secondary_ip', eniId);
       const row = ec2.get(key(instance));
-      return row ? owner('ec2', row, eniId) : miss('owner_not_synced', eniId);
+      return row ? owner('ec2', row, eniId) : absent(eniId, 'ec2');
     }
     return miss('owner_unknown', eniId);
   }
