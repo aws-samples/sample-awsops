@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { PanelLeft, X } from 'lucide-react';
+import { PanelLeft, PanelLeftClose, X } from 'lucide-react';
 import PresetChips from './PresetChips';
 import Composer from './Composer';
 import MessageList from './MessageList';
@@ -10,6 +10,8 @@ import SessionStatsBar from './SessionStatsBar';
 import { sectionByKey } from '@/lib/sections';
 import { useChat } from './useChat';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { useSidebarPanel } from '@/components/ui/useSidebarPanel';
+import SidebarResizeHandle from '@/components/ui/SidebarResizeHandle';
 
 /**
  * Full-page assistant (/assistant). Same useChat engine + the same Aurora-backed
@@ -30,22 +32,24 @@ export default function AssistantClient() {
   const rawQ = (params.get('q') ?? '').slice(0, 500);
   const prefill = /^\/[a-z][a-z-]* [^\r\n]+$/.test(rawQ) ? rawQ : null;
   const inited = useRef(false);
-  // Below lg the thread rail is a slide-in overlay (toggled from the header),
-  // so the chat area is full-width on a phone. At lg+ the rail is always visible
-  // and this state is irrelevant (the rail uses `lg:flex`).
+  // Mobile uses an overlay; desktop sizing/collapse preferences apply only at lg+.
   const [mobileThreads, setMobileThreads] = useState(false);
+  const sidebar = useSidebarPanel('awsops_assistant_threads');
 
   useEffect(() => {
     if (inited.current) return;
     inited.current = true;
-    chat.toggleThreads(); // page always shows the thread column → load list + keep it fresh post-send
+    chat.toggleThreads(); // Load the list and keep it fresh even when its desktop panel is collapsed.
     if (prefill) {
       // A ?q= deep link is a genuinely FRESH conversation: newChat() rotates the persisted
       // AgentCore session id (server-side memory) and clears the thread — and it wins over a
       // crafted ?thread= in the same URL, which would otherwise seed an existing conversation.
       chat.newChat();
     } else {
-      const tid = wantedThread ?? localStorage.getItem('awsops_chat_thread');
+      let tid = wantedThread;
+      if (!tid) {
+        try { tid = localStorage.getItem('awsops_chat_thread'); } catch {}
+      }
       if (tid) void chat.selectThread(tid);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -57,11 +61,15 @@ export default function AssistantClient() {
   const title = chat.threads.find((t) => t.id === chat.threadId)?.title ?? tt('새 대화');
 
   return (
-    <div className="flex h-full">
-      {/* thread rail — desktop only (always visible at lg+). */}
-      <div className="hidden w-72 shrink-0 border-r border-ink-100 lg:block">
-        <ThreadList threads={chat.threads} activeId={chat.threadId} onSelect={chat.selectThread} onDelete={chat.removeThread} onDeleteAll={chat.removeAllThreads} onNew={chat.newChat} onSearch={(q) => void chat.refreshThreads(q)} />
-      </div>
+    <div className="flex h-full min-w-0">
+      {/* The conversation stays mounted when the desktop thread panel is collapsed. */}
+      {!sidebar.collapsed && (
+        <div id="assistant-desktop-threads" className="relative hidden shrink-0 border-r border-ink-100 lg:block" style={{ width: sidebar.width }}>
+          <ThreadList threads={chat.threads} activeId={chat.threadId} onSelect={chat.selectThread} onDelete={chat.removeThread} onDeleteAll={chat.removeAllThreads} onNew={chat.newChat} onSearch={(q) => void chat.refreshThreads(q)} />
+          <SidebarResizeHandle panel={sidebar} controls="assistant-desktop-threads"
+            label={tt('대화 목록 너비 조절')} hint={tt('드래그하거나 방향키로 너비 조절')} />
+        </div>
+      )}
 
       {/* thread rail — mobile slide-in overlay (<lg), toggled from the header. */}
       {mobileThreads && (
@@ -97,8 +105,19 @@ export default function AssistantClient() {
         <header className="flex items-center justify-between gap-2 border-b border-ink-100 px-4 py-3.5 lg:px-6">
           <div className="flex min-w-0 items-center gap-2 text-[15px] font-semibold text-ink-800">
             <button
+              onClick={sidebar.toggle}
+              aria-label={tt(sidebar.collapsed ? '대화 목록 열기' : '대화 목록 닫기')}
+              aria-expanded={!sidebar.collapsed}
+              aria-controls="assistant-desktop-threads"
+              title={tt(sidebar.collapsed ? '대화 목록 열기' : '대화 목록 닫기')}
+              className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 lg:flex"
+            >
+              {sidebar.collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
+            </button>
+            <button
               onClick={() => setMobileThreads(true)}
               aria-label={tt('대화 목록 열기')}
+              aria-expanded={mobileThreads}
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-800 lg:hidden"
             >
               <PanelLeft size={17} />

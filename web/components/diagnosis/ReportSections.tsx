@@ -84,7 +84,16 @@ export default function ReportSections({ markdown }: { markdown: string }) {
   });
   const jump = (i: number) => {
     setCollapsed((prev) => { const next = new Set(prev); next.delete(i); return next; });
-    refs.current[i]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const section = refs.current[i];
+    const container = section?.closest<HTMLElement>('[data-report-scroll]');
+    if (section && container) {
+      container.scrollTo({
+        top: section.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop - 16,
+        behavior: 'smooth',
+      });
+    } else {
+      section?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   };
   const severityTitle = tt('본문 키워드 기반 표시 (점수 아님)');
 

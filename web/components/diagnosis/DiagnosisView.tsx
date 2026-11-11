@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import SchedulePanel from './SchedulePanel';
 import SubscribersPanel from './SubscribersPanel';
 import ReportSections from './ReportSections';
@@ -7,7 +7,9 @@ import IntentPanel from './IntentPanel';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
 import { sectionsForTier, titleMatches, localizedTitle } from '@/lib/diagnosis-sections';
-import { CheckCircle } from 'lucide-react';
+import { CheckCircle, PanelLeft, PanelLeftClose, X } from 'lucide-react';
+import { useSidebarPanel } from '@/components/ui/useSidebarPanel';
+import SidebarResizeHandle from '@/components/ui/SidebarResizeHandle';
 
 interface DiagnosisProgress {
   current?: number;
@@ -103,6 +105,16 @@ function fmtDay(ds: string | undefined, locale: string) {
 export default function DiagnosisView() {
   const { tt, lang } = useI18n();
   const locale = localeOf(lang);
+  const sidebar = useSidebarPanel('awsops_diagnosis_sidebar');
+  const [mobileSidebar, setMobileSidebar] = useState(false);
+  useEffect(() => {
+    if (!mobileSidebar) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileSidebar(false);
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [mobileSidebar]);
   const [tier, setTier] = useState<'light' | 'mid' | 'deep'>('mid');
   const [model, setModel] = useState<'sonnet' | 'opus'>('sonnet'); // deep-tier model choice
   // Report output language (gap L50) — defaults to the current UI language (all 4 are supported).
@@ -250,247 +262,300 @@ export default function DiagnosisView() {
   const createdAt = reports.find((r) => r.id === view?.id)?.created_at;
 
   return (
-    <div className="flex flex-col gap-6 lg:flex-row">
-      <aside className="w-full shrink-0 space-y-3 lg:w-64">
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            aria-label={tt('진단 티어')}
-            value={tier}
-            onChange={(e) => setTier(e.target.value as 'light' | 'mid' | 'deep')}
-            className="rounded-md border border-ink-200 bg-card px-2 py-1 text-sm text-ink-700"
-          >
-            <option value="light">Light</option>
-            <option value="mid">Mid</option>
-            <option value="deep">{tt('Deep (15+1섹션)')}</option>
-          </select>
-          <select
-            aria-label={tt('리포트 언어')}
-            value={reportLang}
-            onChange={(e) => { setReportLangTouched(true); setReportLang(e.target.value as typeof reportLang); }}
-            className="rounded-md border border-ink-200 bg-card px-2 py-1 text-sm text-ink-700"
-          >
-            <option value="ko">한국어</option>
-            <option value="en">EN</option>
-            <option value="zh">中文</option>
-            <option value="ja">日本語</option>
-          </select>
-          <button
-            onClick={run}
-            disabled={running}
-            className="rounded-md bg-brand-500 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {running ? tt('진단 중…') : tt('진단 실행')}
-          </button>
-        </div>
-        {tier === 'deep' && (
-          <fieldset className="rounded-md border border-ink-200 px-2 py-1.5 text-[13px]">
-            <legend className="px-1 text-ink-400">{tt('모델')}</legend>
-            <div className="flex items-center gap-3">
-              {(['sonnet', 'opus'] as const).map((m) => (
-                <label key={m} className="flex items-center gap-1">
-                  <input
-                    type="radio"
-                    name="diag-model"
-                    value={m}
-                    checked={model === m}
-                    onChange={() => setModel(m)}
-                  />
-                  <span className="capitalize">{m}</span>
-                </label>
-              ))}
-            </div>
-            <p className="mt-1 text-[11px] text-ink-400">{tt('Opus: 더 깊은 분석, 비용↑')}</p>
-          </fieldset>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-3 flex shrink-0 items-center gap-2">
+        <button
+          onClick={sidebar.toggle}
+          aria-label={tt(sidebar.collapsed ? '진단 사이드바 열기' : '진단 사이드바 닫기')}
+          aria-expanded={!sidebar.collapsed}
+          aria-controls="diagnosis-sidebar"
+          title={tt(sidebar.collapsed ? '진단 사이드바 열기' : '진단 사이드바 닫기')}
+          className="hidden rounded-md p-2 text-ink-500 hover:bg-ink-100 lg:flex"
+        >
+          {sidebar.collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+        <button
+          onClick={() => setMobileSidebar(true)}
+          aria-label={tt('진단 사이드바 열기')}
+          aria-expanded={mobileSidebar}
+          aria-controls="diagnosis-sidebar"
+          className="rounded-md p-2 text-ink-500 hover:bg-ink-100 lg:hidden"
+        >
+          <PanelLeft size={18} />
+        </button>
+        <span className="text-[13px] text-ink-500">{tt('진단 설정 및 리포트')}</span>
+      </div>
+      <div className="flex min-h-0 flex-1 gap-4">
+        {mobileSidebar && (
+          <div
+            className="fixed inset-0 z-40 bg-black/30 lg:hidden"
+            onClick={() => setMobileSidebar(false)}
+            aria-hidden="true"
+          />
         )}
-        <SchedulePanel />
-        <SubscribersPanel />
-        <ul className="space-y-1">
-          {reports.map((r) => (
-            <li key={r.id} className="flex items-center gap-1">
-              <button
-                onClick={() => open(r.id)}
-                className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-left hover:bg-ink-100"
-              >
-                {/* title leads (auto key-insight); falls back to id·tier when absent */}
-                <div className="truncate text-[13px] font-medium text-ink-800">
-                  {r.title || `#${r.id} · ${r.tier}`}
-                </div>
-                <div className="text-[11px] text-ink-400">
-                  #{r.id} · {r.tier}
-                  {r.tier === 'deep' && r.model ? ` · ${r.model}` : ''}
-                  {r.account ? ` · ${r.account}` : ''} ·{' '}
-                  <span className={r.status === 'failed' ? 'text-negative' : ''}>
-                    {r.status === 'running' && r.progress?.total
-                      ? `running ${r.progress.current ?? 0}/${r.progress.total}`
-                      : r.status}
-                  </span>
-                  {r.created_at ? ` · ${fmtDay(r.created_at, locale)}` : ''}
-                </div>
-              </button>
-              {/* L181 (v1 parity): inline MD/DOCX without opening the report — completed rows only. */}
-              {(r.status === 'succeeded' || r.status === 'partial') && (
-                <span className="flex shrink-0 gap-1">
-                  {(['md', 'docx'] as const).map((f) => (
-                    <a
-                      key={f}
-                      href={`/api/diagnosis/${r.id}/download?format=${f}`}
-                      download={`awsops-diagnosis-${r.id}.${f}`}
-                      onClick={(e) => e.stopPropagation()}
-                      title={f.toUpperCase()}
-                      className="rounded border border-ink-200 px-1 text-[10px] uppercase text-ink-400 hover:bg-ink-100"
-                    >
-                      {f}
-                    </a>
-                  ))}
-                </span>
-              )}
-              {r.can_edit ? (
-                <button
-                  onClick={() => del(r.id)}
-                  aria-label={tt('리포트 삭제')}
-                  title={tt('삭제')}
-                  className="shrink-0 rounded-md px-2 py-1 text-ink-300 hover:bg-red-50 hover:text-red-600"
-                >
-                  🗑
-                </button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </aside>
-      <main className="min-w-0 flex-1">
-        {notice && (
-          <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-            {notice}
+        <aside
+          id="diagnosis-sidebar"
+          style={{ '--sidebar-width': `${sidebar.width}px` } as CSSProperties}
+          className={`fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] min-h-0 shrink-0 flex-col border-r border-ink-200 bg-paper p-3 ${mobileSidebar ? 'flex' : 'hidden'} ${sidebar.collapsed ? 'lg:hidden' : 'lg:relative lg:inset-auto lg:z-auto lg:flex lg:w-[var(--sidebar-width)]'} lg:max-w-none lg:py-0 lg:pl-0 lg:pr-3`}
+        >
+          <div className="mb-3 flex shrink-0 items-center justify-between lg:hidden">
+            <span className="text-sm font-medium text-ink-700">{tt('진단 설정 및 리포트')}</span>
+            <button
+              onClick={() => setMobileSidebar(false)}
+              aria-label={tt('진단 사이드바 닫기')}
+              className="rounded-md p-2 text-ink-500 hover:bg-ink-100"
+            >
+              <X size={18} />
+            </button>
           </div>
-        )}
-        <div className="mb-4">
-          <IntentPanel />
-        </div>
-        {view?.markdown ? (
-          <>
-            {/* Title — editable inline by owner/admin; read-only otherwise. Plain text (React-escaped). */}
-            {view.can_edit ? (
-              titleDraft !== null ? (
-                <div className="mb-2 flex items-center gap-2">
-                  <input
-                    value={titleDraft}
-                    onChange={(e) => setTitleDraft(e.target.value)}
-                    maxLength={200}
-                    aria-label={tt('제목')}
-                    className="min-w-0 flex-1 rounded-md border border-ink-200 bg-card px-2 py-1 text-base text-ink-800"
-                  />
+          <div role="region" aria-label={tt('진단 설정 및 리포트')} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label={tt('진단 티어')}
+                value={tier}
+                onChange={(e) => setTier(e.target.value as 'light' | 'mid' | 'deep')}
+                className="rounded-md border border-ink-200 bg-card px-2 py-1 text-sm text-ink-700"
+              >
+                <option value="light">Light</option>
+                <option value="mid">Mid</option>
+                <option value="deep">{tt('Deep (15+1섹션)')}</option>
+              </select>
+              <select
+                aria-label={tt('리포트 언어')}
+                value={reportLang}
+                onChange={(e) => { setReportLangTouched(true); setReportLang(e.target.value as typeof reportLang); }}
+                className="rounded-md border border-ink-200 bg-card px-2 py-1 text-sm text-ink-700"
+              >
+                <option value="ko">한국어</option>
+                <option value="en">EN</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+              </select>
+              <button
+                onClick={run}
+                disabled={running}
+                className="rounded-md bg-brand-500 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {running ? tt('진단 중…') : tt('진단 실행')}
+              </button>
+            </div>
+            {tier === 'deep' && (
+              <fieldset className="rounded-md border border-ink-200 px-2 py-1.5 text-[13px]">
+                <legend className="px-1 text-ink-400">{tt('모델')}</legend>
+                <div className="flex items-center gap-3">
+                  {(['sonnet', 'opus'] as const).map((m) => (
+                    <label key={m} className="flex items-center gap-1">
+                      <input
+                        type="radio"
+                        name="diag-model"
+                        value={m}
+                        checked={model === m}
+                        onChange={() => setModel(m)}
+                      />
+                      <span className="capitalize">{m}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] text-ink-400">{tt('Opus: 더 깊은 분석, 비용↑')}</p>
+              </fieldset>
+            )}
+            <SchedulePanel />
+            <SubscribersPanel />
+            <ul className="space-y-1">
+              {reports.map((r) => (
+                <li key={r.id} className="flex items-center gap-1">
                   <button
-                    onClick={async () => { await patchMeta(view!.id, { title: titleDraft!.trim() || null }); setTitleDraft(null); }}
-                    className="rounded-md bg-brand-500 px-3 py-1 text-sm font-medium text-white"
-                  >{tt('저장')}</button>
-                  <button onClick={() => setTitleDraft(null)} className="rounded-md border border-ink-200 px-3 py-1 text-sm">{tt('취소')}</button>
-                </div>
-              ) : (
-                <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold text-ink-800">
-                  <span className="min-w-0 break-words">{view.title || tt('(제목 없음)')}</span>
-                  <button onClick={() => setTitleDraft(view!.title ?? '')} aria-label={tt('제목 수정')} title={tt('제목 수정')} className="shrink-0 text-ink-300 hover:text-brand-600">✏️</button>
-                </h2>
-              )
-            ) : view.title ? (
-              <h2 className="mb-2 text-lg font-semibold text-ink-800">{view.title}</h2>
-            ) : null}
-            {/* Tags — chips; owner/admin can add (Enter) / remove (×). */}
-            <div className="mb-3 flex flex-wrap items-center gap-1">
-              {(view.tags ?? []).map((t) => (
-                <span key={t} className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-[12px] text-ink-700">
-                  {t}
-                  {view.can_edit ? (
-                    <button onClick={() => patchMeta(view!.id, { tags: (view!.tags ?? []).filter((x) => x !== t) })} aria-label={`${tt('태그')} ${t} ${tt('삭제')}`} className="text-ink-400 hover:text-red-600">×</button>
-                  ) : null}
-                </span>
-              ))}
-              {view.can_edit ? (
-                <input
-                  value={tagDraft}
-                  onChange={(e) => setTagDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && tagDraft.trim()) {
-                      const next = Array.from(new Set([...(view!.tags ?? []), tagDraft.trim()]));
-                      patchMeta(view!.id, { tags: next });
-                      setTagDraft('');
-                    }
-                  }}
-                  placeholder={tt('태그 추가')}
-                  aria-label={tt('태그 추가')}
-                  className="w-24 rounded-md border border-ink-200 bg-card px-2 py-0.5 text-[12px] text-ink-800"
-                />
-              ) : null}
-            </div>
-            <div className="mb-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-              {createdAt ? (
-                <span className="text-[12px] text-ink-400">{tt('생성 일시:')} {fmtDate(createdAt, locale)}</span>
-              ) : <span />}
-              <div className="flex flex-wrap gap-2">
-                {/* Gap L179: browser print-preview view (new tab) — the PDF stays the primary export. */}
-                <a
-                  href={`/ai-diagnosis/report?id=${view!.id}`}
-                  target="_blank"
-                  rel="noopener"
-                  className="whitespace-nowrap rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
-                >
-                  {tt('인쇄용 보기')}
-                </a>
-                {(['md', 'docx', 'pdf'] as const).map((f) => (
-                  <a
-                    key={f}
-                    href={`/api/diagnosis/${view!.id}/download?format=${f}`}
-                    download={`awsops-diagnosis-${view!.id}.${f}`}
-                    className="rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
+                    onClick={() => { open(r.id); setMobileSidebar(false); }}
+                    className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-left hover:bg-ink-100"
                   >
-                    {f.toUpperCase()}
-                  </a>
-                ))}
-              </div>
-            </div>
-            {/* L176 (v1 parity): 섹션 수 · 소요 · 리포트 ID stats bar. 소요 is omitted when
-                finished_at is unavailable (legacy rows) — never a fabricated duration. */}
-            {(() => {
-              const row = reports.find((r) => r.id === view!.id);
-              const startAt = active?.created_at ?? row?.created_at;
-              const endAt = active?.finished_at ?? row?.finished_at;
-              const secs = typeof view.summary?.sections === 'number' ? (view.summary.sections as number) : null;
-              const endMs = endAt ? new Date(endAt).getTime() : NaN;
-              const dur = startAt && !isNaN(endMs) ? elapsedLabel(startAt, endMs) : null;
-              const parts = [
-                secs !== null ? tt(`섹션 ${secs}개`) : null,
-                dur ? tt(`소요 ${dur}`) : null,
-                `${tt('리포트')} #${view!.id}`,
-              ].filter(Boolean);
-              return (
-                <div className="mb-3 rounded-md border border-ink-100 bg-paper px-3 py-1.5 text-[12px] text-ink-500">
-                  {parts.join(' · ')}
-                </div>
-              );
-            })()}
-            <ReportInsights summary={view.summary ?? {}} />
-            <ReportSections markdown={view.markdown} />
-          </>
-        ) : view?.status === 'running' ? (
-          <ProgressPanel progress={view.progress} stalled={pollTicks >= LONG_AFTER} createdAt={createdAt} tier={active?.tier ?? reports.find((r) => r.id === view?.id)?.tier} />
-        ) : view?.status === 'failed' ? (
-          <FailedPanel error={view.error} onRetry={run} disabled={running} />
-        ) : (
-          <div>
-            <p className="text-sm text-ink-400">{tt('리포트를 선택하거나 “진단 실행”을 누르세요.')}</p>
-            {/* L180 (v1 parity): what a diagnosis covers, before running one. */}
-            <p className="mt-4 text-[13px] text-ink-600">{tt('진단은 계정 전반을 아래 섹션으로 분석합니다 (Deep 표시는 Deep 티어 전용):')}</p>
-            <ul className="mt-2 flex flex-wrap gap-1.5">
-              {sectionsForTier('deep').map((sec) => (
-                <li key={sec.key} className="flex items-center gap-1 rounded-full border border-ink-200 bg-paper px-2.5 py-1 text-[12px] text-ink-600">
-                  <span>{localizedTitle(sec, lang)}</span>
-                  {sec.deep && <span className="rounded-sm bg-brand-50 px-1 text-[10px] text-brand-700">Deep</span>}
+                    {/* title leads (auto key-insight); falls back to id·tier when absent */}
+                    <div className="truncate text-[13px] font-medium text-ink-800">
+                      {r.title || `#${r.id} · ${r.tier}`}
+                    </div>
+                    <div className="text-[11px] text-ink-400">
+                      #{r.id} · {r.tier}
+                      {r.tier === 'deep' && r.model ? ` · ${r.model}` : ''}
+                      {r.account ? ` · ${r.account}` : ''} ·{' '}
+                      <span className={r.status === 'failed' ? 'text-negative' : ''}>
+                        {r.status === 'running' && r.progress?.total
+                          ? `running ${r.progress.current ?? 0}/${r.progress.total}`
+                          : r.status}
+                      </span>
+                      {r.created_at ? ` · ${fmtDay(r.created_at, locale)}` : ''}
+                    </div>
+                  </button>
+                  {/* L181 (v1 parity): inline MD/DOCX without opening the report — completed rows only. */}
+                  {(r.status === 'succeeded' || r.status === 'partial') && (
+                    <span className="flex shrink-0 gap-1">
+                      {(['md', 'docx'] as const).map((f) => (
+                        <a
+                          key={f}
+                          href={`/api/diagnosis/${r.id}/download?format=${f}`}
+                          download={`awsops-diagnosis-${r.id}.${f}`}
+                          onClick={(e) => e.stopPropagation()}
+                          title={f.toUpperCase()}
+                          className="rounded border border-ink-200 px-1 text-[10px] uppercase text-ink-400 hover:bg-ink-100"
+                        >
+                          {f}
+                        </a>
+                      ))}
+                    </span>
+                  )}
+                  {r.can_edit ? (
+                    <button
+                      onClick={() => del(r.id)}
+                      aria-label={tt('리포트 삭제')}
+                      title={tt('삭제')}
+                      className="shrink-0 rounded-md px-2 py-1 text-ink-300 hover:bg-red-50 hover:text-red-600"
+                    >
+                      🗑
+                    </button>
+                  ) : null}
                 </li>
               ))}
             </ul>
           </div>
-        )}
-      </main>
+          <SidebarResizeHandle
+            panel={sidebar}
+            controls="diagnosis-sidebar"
+            label={tt('진단 사이드바 너비 조절')}
+            hint={tt('드래그하거나 방향키로 너비 조절')}
+          />
+        </aside>
+        <div role="region" aria-label={tt('진단 리포트')} data-report-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+          {notice && (
+            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+              {notice}
+            </div>
+          )}
+          <div className="mb-4">
+            <IntentPanel />
+          </div>
+          {view?.markdown ? (
+            <>
+              {/* Title — editable inline by owner/admin; read-only otherwise. Plain text (React-escaped). */}
+              {view.can_edit ? (
+                titleDraft !== null ? (
+                  <div className="mb-2 flex items-center gap-2">
+                    <input
+                      value={titleDraft}
+                      onChange={(e) => setTitleDraft(e.target.value)}
+                      maxLength={200}
+                      aria-label={tt('제목')}
+                      className="min-w-0 flex-1 rounded-md border border-ink-200 bg-card px-2 py-1 text-base text-ink-800"
+                    />
+                    <button
+                      onClick={async () => { await patchMeta(view!.id, { title: titleDraft!.trim() || null }); setTitleDraft(null); }}
+                      className="rounded-md bg-brand-500 px-3 py-1 text-sm font-medium text-white"
+                    >{tt('저장')}</button>
+                    <button onClick={() => setTitleDraft(null)} className="rounded-md border border-ink-200 px-3 py-1 text-sm">{tt('취소')}</button>
+                  </div>
+                ) : (
+                  <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold text-ink-800">
+                    <span className="min-w-0 break-words">{view.title || tt('(제목 없음)')}</span>
+                    <button onClick={() => setTitleDraft(view!.title ?? '')} aria-label={tt('제목 수정')} title={tt('제목 수정')} className="shrink-0 text-ink-300 hover:text-brand-600">✏️</button>
+                  </h2>
+                )
+              ) : view.title ? (
+                <h2 className="mb-2 text-lg font-semibold text-ink-800">{view.title}</h2>
+              ) : null}
+              {/* Tags — chips; owner/admin can add (Enter) / remove (×). */}
+              <div className="mb-3 flex flex-wrap items-center gap-1">
+                {(view.tags ?? []).map((t) => (
+                  <span key={t} className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-[12px] text-ink-700">
+                    {t}
+                    {view.can_edit ? (
+                      <button onClick={() => patchMeta(view!.id, { tags: (view!.tags ?? []).filter((x) => x !== t) })} aria-label={`${tt('태그')} ${t} ${tt('삭제')}`} className="text-ink-400 hover:text-red-600">×</button>
+                    ) : null}
+                  </span>
+                ))}
+                {view.can_edit ? (
+                  <input
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && tagDraft.trim()) {
+                        const next = Array.from(new Set([...(view!.tags ?? []), tagDraft.trim()]));
+                        patchMeta(view!.id, { tags: next });
+                        setTagDraft('');
+                      }
+                    }}
+                    placeholder={tt('태그 추가')}
+                    aria-label={tt('태그 추가')}
+                    className="w-24 rounded-md border border-ink-200 bg-card px-2 py-0.5 text-[12px] text-ink-800"
+                  />
+                ) : null}
+              </div>
+              <div className="mb-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+                {createdAt ? (
+                  <span className="text-[12px] text-ink-400">{tt('생성 일시:')} {fmtDate(createdAt, locale)}</span>
+                ) : <span />}
+                <div className="flex flex-wrap gap-2">
+                  {/* Gap L179: browser print-preview view (new tab) — the PDF stays the primary export. */}
+                  <a
+                    href={`/ai-diagnosis/report?id=${view!.id}`}
+                    target="_blank"
+                    rel="noopener"
+                    className="whitespace-nowrap rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
+                  >
+                    {tt('인쇄용 보기')}
+                  </a>
+                  {(['md', 'docx', 'pdf'] as const).map((f) => (
+                    <a
+                      key={f}
+                      href={`/api/diagnosis/${view!.id}/download?format=${f}`}
+                      download={`awsops-diagnosis-${view!.id}.${f}`}
+                      className="rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
+                    >
+                      {f.toUpperCase()}
+                    </a>
+                  ))}
+                </div>
+              </div>
+              {/* L176 (v1 parity): 섹션 수 · 소요 · 리포트 ID stats bar. 소요 is omitted when
+                  finished_at is unavailable (legacy rows) — never a fabricated duration. */}
+              {(() => {
+                const row = reports.find((r) => r.id === view!.id);
+                const startAt = active?.created_at ?? row?.created_at;
+                const endAt = active?.finished_at ?? row?.finished_at;
+                const secs = typeof view.summary?.sections === 'number' ? (view.summary.sections as number) : null;
+                const endMs = endAt ? new Date(endAt).getTime() : NaN;
+                const dur = startAt && !isNaN(endMs) ? elapsedLabel(startAt, endMs) : null;
+                const parts = [
+                  secs !== null ? tt(`섹션 ${secs}개`) : null,
+                  dur ? tt(`소요 ${dur}`) : null,
+                  `${tt('리포트')} #${view!.id}`,
+                ].filter(Boolean);
+                return (
+                  <div className="mb-3 rounded-md border border-ink-100 bg-paper px-3 py-1.5 text-[12px] text-ink-500">
+                    {parts.join(' · ')}
+                  </div>
+                );
+              })()}
+              <ReportInsights summary={view.summary ?? {}} />
+              <ReportSections markdown={view.markdown} />
+            </>
+          ) : view?.status === 'running' ? (
+            <ProgressPanel progress={view.progress} stalled={pollTicks >= LONG_AFTER} createdAt={createdAt} tier={active?.tier ?? reports.find((r) => r.id === view?.id)?.tier} />
+          ) : view?.status === 'failed' ? (
+            <FailedPanel error={view.error} onRetry={run} disabled={running} />
+          ) : (
+            <div>
+              <p className="text-sm text-ink-400">{tt('리포트를 선택하거나 “진단 실행”을 누르세요.')}</p>
+              {/* L180 (v1 parity): what a diagnosis covers, before running one. */}
+              <p className="mt-4 text-[13px] text-ink-600">{tt('진단은 계정 전반을 아래 섹션으로 분석합니다 (Deep 표시는 Deep 티어 전용):')}</p>
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {sectionsForTier('deep').map((sec) => (
+                  <li key={sec.key} className="flex items-center gap-1 rounded-full border border-ink-200 bg-paper px-2.5 py-1 text-[12px] text-ink-600">
+                    <span>{localizedTitle(sec, lang)}</span>
+                    {sec.deep && <span className="rounded-sm bg-brand-50 px-1 text-[10px] text-brand-700">Deep</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

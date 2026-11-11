@@ -6,6 +6,10 @@ import { LanguageProvider } from '@/components/shell/LanguageProvider';
 
 afterEach(cleanup);
 afterEach(() => localStorage.removeItem('awsops-lang'));
+afterEach(() => {
+  localStorage.removeItem('awsops_diagnosis_sidebar_width');
+  localStorage.removeItem('awsops_diagnosis_sidebar_collapsed');
+});
 
 function mockCapture(reports: Array<Record<string, unknown>> = []) {
   const posts: any[] = [];
@@ -45,6 +49,23 @@ function mockList(reports: Array<Record<string, unknown>>) {
     return resp({}, 404);
   }));
 }
+
+describe('DiagnosisView sidebar layout', () => {
+  it('resizes the sidebar and preserves diagnosis settings while collapsed', async () => {
+    mockList([]);
+    render(<DiagnosisView />);
+    const tier = screen.getByRole('combobox', { name: '진단 티어' }) as HTMLSelectElement;
+    fireEvent.change(tier, { target: { value: 'deep' } });
+    const handle = screen.getByRole('separator', { name: '진단 사이드바 너비 조절' });
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(handle.getAttribute('aria-valuenow')).toBe('192');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 닫기' })[0]);
+    expect(localStorage.getItem('awsops_diagnosis_sidebar_collapsed')).toBe('1');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 열기' })[0]);
+    expect(tier.value).toBe('deep');
+    expect(screen.getByRole('separator').getAttribute('aria-valuenow')).toBe('192');
+  });
+});
 
 describe('DiagnosisView — live progress & never-stuck UI (A6)', () => {
   it('shows live per-section progress for a running report (not a bare spinner)', async () => {
