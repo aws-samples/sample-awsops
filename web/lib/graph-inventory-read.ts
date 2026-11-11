@@ -12,10 +12,13 @@ export const inventoryTypesForAccount = (types: string[], account: string) =>
 // These fields/types are the placement inputs consumed by buildInfraGraph and produced by
 // sync_lambda. Nested opensearch.vpc_options / msk.provisioned are not placement inputs.
 export const INFRA_TYPES = ['vpc', 'subnet', 'security_group', 'ec2', 'lambda', 'rds',
-  'alb', 'nlb', 'target_group', 'elasticache', 'route_table', 'nat_gateway', 'neptune_cluster'];
+  'alb', 'nlb', 'target_group', 'elasticache', 'route_table', 'nat_gateway', 'neptune_cluster',
+  'rds_cluster', 'rds_proxy'];
+// endpoint/reader_endpoint/custom_endpoints are the dialable DB hosts trace spans bind to.
 const INFRA_FIELDS = ['vpc_id', 'subnet_id', 'subnet_ids', 'vpc_subnet_ids', 'subnets',
   'availability_zones', 'security_groups', 'security_group_ids', 'vpc_security_group_ids',
-  'vpc_security_groups', 'endpoint_address', 'group_name', 'title', 'name', 'tags'];
+  'vpc_security_groups', 'endpoint_address', 'endpoint', 'reader_endpoint', 'custom_endpoints',
+  'group_name', 'title', 'name', 'tags'];
 // Flow joins and safe display fields consumed by buildFlowGraph; unused provider blobs
 // must not exhaust the transfer budget or override authoritative identity columns.
 const FLOW_FIELDS = [...INFRA_FIELDS, 'name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origins', 'web_acl_id',
@@ -23,7 +26,10 @@ const FLOW_FIELDS = [...INFRA_FIELDS, 'name', 'arn', 'dns_name', 'domain_name', 
   'vpc_id', 'scheme', 'private_zone', 'alias_target', 'records', 'type', 'last_status',
   'task_group', 'cluster_arn', 'attachments', 'origin_refs', 'api_id', 'integration_uri',
   'connection_type', 'tags', 'status', 'enabled', 'protocol', 'port', 'subnet_ids', 'security_groups',
-  'load_balancer_arn', 'conditions', 'actions', 'is_default', 'target', 'route_key'];
+  'load_balancer_arn', 'conditions', 'actions', 'is_default', 'target', 'route_key',
+  // ENI ownership inputs (eni-owner.ts) and the RDS placement it disambiguates by.
+  'interface_type', 'description', 'requester_id', 'requester_managed', 'attached_instance_id',
+  'private_ip_address', 'private_ip_addresses', 'availability_zone', 'db_cluster_identifier'];
 export type InventoryRow = Row & { resource_type: string; captured_at?: unknown; account_id: string };
 type Run = Record<string, any>;
 export const INVENTORY_ROW_CAP = 8192;
@@ -155,9 +161,14 @@ const stamp = (value: unknown): number | null => {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
+/** Enrichment sources may only add ownership/endpoint detail to a graph built from its core
+ *  sources. A blocked enrichment source withholds its own rows (`withheldTypes`) and degrades the
+ *  publication to partial; it never blocks or stales the core graph. */
 export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySnapshot>>, types: string[],
-  cls: GraphClass, account: string, attemptedAt: string): GraphAttempt {
+  cls: GraphClass, account: string, attemptedAt: string,
+  enrichment: ReadonlySet<string> = new Set()): GraphAttempt & { withheldTypes: string[] } {
   const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
+  const withheldTypes: string[] = [];
   // Every source this class can collect in this account contributes a coverage result.
   const required = [...new Set([...snapshot.types, ...types])];
   const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
@@ -188,20 +199,28 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
-    if (blockers.length) safe = false;
+    const optional = enrichment.has(type);
+    if (blockers.length && optional) withheldTypes.push(type);
+    else if (blockers.length) safe = false;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
-      ...(limitedTypes.has(type) ? ['payload_truncated'] : [])];
+      ...(limitedTypes.has(type) ? ['payload_truncated'] : []),
+      ...(blockers.length && optional ? ['enrichment_withheld'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'running' || producerStatus === 'partial' ? 'partial'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
     return { sourceId: `inventory:${type}`, scope: 'account',
       status, producerStatus, reasons, itemCount: limitedTypes.has(type) ? null : items.length, capturedAtMs, lastSuccessAtMs,
-      attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
+      attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at),
+      ...(optional ? { enrichment: true } : {}) };
   });
-  const status = sources.some(s => s.status === 'error') ? 'error'
-    : !sources.length || sources.some(s => s.status === 'unavailable') ? 'unavailable'
-    : truncated || sources.some(s => s.status === 'partial') ? 'partial' : rows.length ? 'ok' : 'empty';
-  return { status, attemptedAt, publish: safe,
-    details: { sources, ...(truncated ? { inputTruncated: true } : {}) } };
+  // A withheld enrichment source is disclosed as partial coverage, not as a core-source failure.
+  const effective = (s: typeof sources[number]) =>
+    s.enrichment && withheldTypes.includes(s.sourceId.slice('inventory:'.length)) ? 'partial' : s.status;
+  const status = sources.some(s => effective(s) === 'error') ? 'error'
+    : !sources.length || sources.some(s => effective(s) === 'unavailable') ? 'unavailable'
+    : truncated || sources.some(s => effective(s) === 'partial') ? 'partial' : rows.length ? 'ok' : 'empty';
+  return { status, attemptedAt, publish: safe, withheldTypes,
+    details: { sources, ...(truncated ? { inputTruncated: true } : {}),
+      ...(withheldTypes.length ? { withheldEnrichment: withheldTypes } : {}) } };
 }

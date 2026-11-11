@@ -155,7 +155,7 @@ describe('sample topology evidence', () => {
     render(<TopologyPage />);
     await screen.findByLabelText('Inventory collection evidence');
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: unknown (15)');
+    expect(text).toContain('Aggregate sync runs: unknown (21)');
     expect(text).toContain('Run health unknown');
     expect(text).toContain('Inventory read failures: target_group: failed, ecs_task: failed, subnet: failed');
     expect(screen.queryByTestId('target')).toBeNull();
@@ -211,7 +211,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'running' });
     await ready();
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: running (18)');
+    expect(text).toContain('Aggregate sync runs: running (24)');
     expect(text).not.toContain('Aggregate sync issues:');
     expect(text).not.toContain('Run health unknown');
   });
@@ -228,7 +228,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus, rowCapture: null });
     await ready();
     const evidence = screen.getByLabelText('Inventory collection evidence');
-    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (18)`);
+    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (24)`);
     expect(evidence.textContent).toContain(`Aggregate sync issues: route53: ${runStatus}`);
     expect(evidence.textContent).toContain('Run health unknown for this account scope');
     expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
@@ -238,7 +238,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'succeeded' });
     await ready();
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: succeeded (18)');
+    expect(text).toContain('Aggregate sync runs: succeeded (24)');
     expect(text).toContain('Run health unknown for this account scope');
     expect(text).not.toContain('Aggregate sync issues:');
   });
@@ -249,7 +249,7 @@ describe('sample topology evidence', () => {
     await act(async () => setActiveScope({ ...DEFAULT_SCOPE, regions: ['ap-northeast-2'] }));
     const requests = vi.mocked(fetch).mock.calls.slice(count).map(([url]) => new URL(String(url), 'http://localhost'))
       .filter(url => url.pathname.startsWith('/api/inventory/'));
-    expect(requests).toHaveLength(18);
+    expect(requests).toHaveLength(24);
     expect(requests.every(url => url.searchParams.get('regions') === 'ap-northeast-2'
       && url.searchParams.get('accounts') === 'self' && url.searchParams.get('includeGlobal') === '1')).toBe(true);
   });

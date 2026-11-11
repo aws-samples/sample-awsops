@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { TraceIdentity, TraceSpan, ServiceGraphCall } from './trace-source';
 import { queueClaimMeta, queueDestinationArn } from './trace-evidence';
+import { DB_ENDPOINT_KINDS } from './infra-topology';
 
 export interface TraceNode { id: string; kind: string; label: string; meta: Record<string, unknown> }
 export interface InstanceObservation {
@@ -58,12 +59,20 @@ function spanKey(sourceId: string | undefined, traceId: string, spanId: string):
   return JSON.stringify([sourceId ?? '', traceId, spanId]);
 }
 
+/** Every dialable host an infra node answers on: its primary host plus cluster reader/custom
+ *  endpoints (infra-topology.ts `meta.hosts`). */
+function nodeHosts(node: InfraNodeLike): string[] {
+  const extra = Array.isArray(node.meta?.hosts) ? node.meta.hosts : [];
+  return [...new Set([node.meta?.host, ...extra].filter((h): h is string => typeof h === 'string' && h.length > 0)
+    .map(h => h.toLowerCase()))];
+}
+
 export function resolveInfraRef(dbHost: string | undefined, infraNodes: InfraNodeLike[]): string | undefined {
   if (!dbHost) return undefined;
   const host = dbHost.toLowerCase();
-  const exact = infraNodes.filter(node => String(node.meta?.host ?? '').toLowerCase() === host);
+  const exact = infraNodes.filter(node => nodeHosts(node).includes(host));
   if (exact.length) return exact.length === 1 ? exact[0].id : undefined;
-  const prefixes = infraNodes.filter(node => String(node.meta?.host ?? '').toLowerCase().startsWith(`${host}.`));
+  const prefixes = infraNodes.filter(node => nodeHosts(node).some(h => h.startsWith(`${host}.`)));
   return prefixes.length === 1 ? prefixes[0].id : undefined;
 }
 
@@ -110,9 +119,9 @@ function observedInstanceDatabasePair(
     return actualAccount === account && node.meta?.region === region;
   });
   const instances = scoped.filter(node => node.kind === 'ec2' && node.meta?.resourceId === instanceId);
-  const databases = scoped.filter(node => node.kind === 'rds'
+  const databases = scoped.filter(node => DB_ENDPOINT_KINDS.has(node.kind ?? '')
     && typeof node.meta?.resourceId === 'string' && node.meta.resourceId.length > 0
-    && exactEndpoint(node.meta.host) === host);
+    && nodeHosts(node).some(candidate => exactEndpoint(candidate) === host));
   if (instances.length !== 1 || databases.length !== 1) return null;
   // A pair is attached to its own DB edge, rather than reconstructed from aggregate service bindings.
   const correlationId = createHash('sha256').update(JSON.stringify([

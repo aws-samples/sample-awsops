@@ -25,21 +25,26 @@ import useGraphViewport from '@/components/topology/useGraphViewport';
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 
 const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
-  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule'] as const;
+  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule',
+  'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'] as const;
 type InvType = (typeof TYPES)[number];
 type Row = Record<string, unknown>;
 
 // InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
 // s3 resolves CloudFront S3 origins; apigatewayv2_* resolve execute-api origins → API GW → Lambda/LB;
-// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB.
+// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB; eni + its owner types
+// resolve IP targets that are neither EKS pods nor ECS tasks (eni-owner.ts).
 type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
-  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule';
+  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule'
+  | 'eni' | 'rds' | 'rds_cluster' | 'rds_proxy' | 'vpc_endpoint' | 'nat_gateway';
 const FLOW_KEY: Record<InvType, RowKey> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
   ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
   cloudfront_vpc_origin: 'cloudfront_vpc_origin',
   apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
+  eni: 'eni', rds: 'rds', rds_cluster: 'rds_cluster', rds_proxy: 'rds_proxy',
+  vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
 };
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default

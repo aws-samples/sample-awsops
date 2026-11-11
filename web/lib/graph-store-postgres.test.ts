@@ -28,7 +28,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   let pool: Pool;
   const migrations = resolve('../terraform/foundation/migrations');
   const flowTypes = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2',
-    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin'];
+    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
+    // IP-target ownership enrichment (eni-owner.ts); absent ledgers only degrade publication.
+    'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'];
   const requiredTypes = [...new Set([...flowTypes, ...INFRA_TYPES])];
   const now = Date.now();
   const recent = new Date(now - 60_000).toISOString();

@@ -7,7 +7,7 @@ import {
 } from './inventory-types';
 
 describe('INVENTORY_TYPES registry', () => {
-  it('has the 46 registered types (41 + waf_rule_group + waf_ip_set + 3 network connections)', () => {
+  it('has the 49 registered types (41 + waf_rule_group + waf_ip_set + 3 network connections + eni/rds_cluster/rds_proxy)', () => {
     const keys = Object.keys(INVENTORY_TYPES);
     expect(keys).toContain('ec2'); expect(keys).toContain('s3'); expect(keys).toContain('iam_role');
     expect(keys).toContain('cloudfront'); expect(keys).toContain('cloudwatch_alarm'); expect(keys).toContain('msk');
@@ -19,7 +19,9 @@ describe('INVENTORY_TYPES registry', () => {
     // security findings source (denial-safe S3 public-access sync)
     expect(keys).toContain('s3_public_access');
     expect(keys).toContain('transit_gateway_attachment'); expect(keys).toContain('vpc_peering_connection'); expect(keys).toContain('vpc_endpoint');
-    expect(keys.length).toBe(46);
+    // topology discovery: IP-target ownership + DB endpoint binding
+    expect(keys).toContain('eni'); expect(keys).toContain('rds_cluster'); expect(keys).toContain('rds_proxy');
+    expect(keys.length).toBe(49);
   });
   it('every type has a label, group, and >=1 column', () => {
     for (const [k, v] of Object.entries(INVENTORY_TYPES)) {
@@ -96,11 +98,11 @@ describe('navTree (sidebar IA hierarchy)', () => {
     expect(tree.map((g) => g.slug)).toEqual(['compute', 'storage', 'network', 'security', 'monitoring']);
   });
 
-  it('places every inventory type exactly once (no drop, no dup) — 46 total', () => {
+  it('places every inventory type exactly once (no drop, no dup) — 49 total', () => {
     const placed = tree.flatMap((g) => invTypesOf(g.slug));
     expect(new Set(placed).size).toBe(placed.length); // no duplicates
     expect(new Set(placed)).toEqual(new Set(Object.keys(INVENTORY_TYPES)));
-    expect(placed.length).toBe(46);
+    expect(placed.length).toBe(49);
   });
 
   it('Compute nests the EKS family as a feature-link subgroup + the ECS subgroup', () => {
@@ -127,7 +129,7 @@ describe('navTree (sidebar IA hierarchy)', () => {
       .toEqual(['apigatewayv2_api', 'apigatewayv2_integration', 'apigatewayv2_route']);
     const direct = n.items.filter((l) => l.kind === 'inventory').map((l) => l.type);
     // security_group moved into the securityGroup subgroup (see below) — no longer a direct item.
-    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
+    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint', 'eni', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
   });
 
   it('Network nests a Security Group subgroup (existing inventory route + the new Rules/Usage links, in that order)', () => {

@@ -785,3 +785,46 @@ describe('filterFromEntry', () => {
     expect(filterFromEntry(full, 'nope:x').nodes.length).toBe(full.nodes.length);
   });
 });
+
+describe('ENI ownership for IP targets', () => {
+  const region = 'ap-northeast-2', vpc = 'vpc-1';
+  const NLB_ARN = 'arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:loadbalancer/net/edge/aaaa000011112222';
+  const INNER_ARN = 'arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:loadbalancer/app/inner/50dc6c495c0c9188';
+  const nlb = { resource_id: 'edge', region, arn: NLB_ARN, dns_name: 'edge.elb.amazonaws.com', vpc_id: vpc };
+  const inner = { resource_id: 'inner', region, arn: INNER_ARN, dns_name: 'internal-inner.elb.amazonaws.com', vpc_id: vpc };
+  const tg = (ips: string[]) => ({ resource_id: 'tg-edge', region, vpc_id: vpc, target_type: 'ip', load_balancer_arns: [NLB_ARN],
+    target_health_descriptions: ips.map(Id => ({ Target: { Id, Port: 443 }, TargetHealth: { State: 'healthy' } })) });
+  const elbEni = (ip: string) => ({ resource_id: `eni-${ip}`, region, vpc_id: vpc, private_ip_address: ip,
+    private_ip_addresses: [{ PrivateIpAddress: ip, Primary: true }], description: 'ELB app/inner/50dc6c495c0c9188' });
+
+  it('groups ALB-owned IPs into one target and continues the chain into that ALB', () => {
+    const graph = buildFlowGraph({ nlb: [nlb], alb: [inner], tg: [tg(['10.0.1.5', '10.0.2.5'])],
+      eni: [elbEni('10.0.1.5'), elbEni('10.0.2.5')], ownershipRead: { configurationOnly: true } });
+    const targets = graph.nodes.filter(n => n.kind === 'target');
+    expect(targets).toHaveLength(1);
+    expect(targets[0].label).toBe('inner ×2');
+    expect(targets[0].meta).toMatchObject({ resolved: 'alb', ownership_source: 'eni', ownership_confidence: 'observed',
+      ownership_evidence: 'cached_configuration', owner: { kind: 'alb', resourceId: 'inner', arn: INNER_ARN } });
+    expect(targets[0].meta).not.toHaveProperty('ownership_reason');
+    expect(graph.edges.some(e => e.source === targets[0].id && e.target === `alb:${INNER_ARN}`)).toBe(true);
+    expect(filterFromEntry(graph, `nlb:${NLB_ARN}`).nodes.some(n => n.id === `alb:${INNER_ARN}`)).toBe(true);
+  });
+
+  it('keeps an ECS task attribution ahead of the ENI and never overrides read-gap ambiguity', () => {
+    const ip = '10.0.1.5';
+    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/c/t', region, cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/c',
+      task_group: 'service:api', last_status: 'RUNNING', attachments: [{ Type: 'ElasticNetworkInterface', Details: [
+        { Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }] };
+    const base = { nlb: [nlb], alb: [inner], tg: [tg([ip])], eni: [elbEni(ip)], subnet: [{ resource_id: 'subnet-a', region, vpc_id: vpc }] };
+    const ecs = buildFlowGraph({ ...base, ecsTask: [task] }).nodes.find(n => n.kind === 'target')!;
+    expect(ecs.meta?.resolved).toBe('ecs');
+    const gap = buildFlowGraph({ ...base, ownershipRead: { ecsTask: 'failed' } }).nodes.find(n => n.kind === 'target')!;
+    expect(gap.meta).toMatchObject({ ambiguity: 'ecs_task_inventory_incomplete' });
+    expect(gap.meta).not.toHaveProperty('owner');
+  });
+
+  it('discloses why an ENI could not name a synced owner', () => {
+    const graph = buildFlowGraph({ nlb: [nlb], tg: [tg(['10.0.1.5'])], eni: [elbEni('10.0.1.5')] });
+    expect(graph.nodes.find(n => n.kind === 'target')!.meta).toMatchObject({ eni_owner_reason: 'owner_not_synced' });
+  });
+});

@@ -10,6 +10,7 @@
 // Edges carry `confidence`: directly-observed links are 'observed' (solid). 'inferred' (dashed) is
 // used for DERIVED links — Spec 2's env→RDS edges AND Route53-alias-chain-resolved CF→LB edges —
 // the renderer keys stroke style off this field.
+import { eniOwnerResolver } from './eni-owner';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? '' : String(v));
@@ -58,6 +59,9 @@ export interface FlowInput {
   // 'integrations/<id>') label the apigw→backend edge.
   alb_listener_rule?: Row[];
   apigatewayv2_route?: Row[];
+  // ENI ownership (eni-owner.ts): an IP target that is neither an EKS pod nor an ECS task resolves
+  // to the synced resource owning that IP's ENI (ELB, Lambda, RDS, VPC endpoint, NAT, EC2).
+  eni?: Row[]; rds?: Row[]; rds_cluster?: Row[]; rds_proxy?: Row[]; vpc_endpoint?: Row[]; nat_gateway?: Row[];
   // EKS: canonical region|VPC|IP keys, or legacy IP keys with matching region/VPC metadata.
   // ECS also requires attachment/subnet scope. Missing TG scope never proves ownership.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> } | null>;
@@ -239,6 +243,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   for (const e of input.ec2 ?? []) ec2ById.set(str(e.resource_id), str(e.name) || str(e.resource_id));
   for (const l of input.lambda ?? []) if (l.arn) lambdaByArn.set(str(l.arn), str(l.resource_id) || str(l.arn));
   const ecsByIp = ecsIpMap(input.ecsTask ?? [], input.subnet ?? []);
+  const eniOwners = eniOwnerResolver(input);
   // S3 buckets by NAME (resource_id) — join key for resolving CloudFront S3 origins to the real
   // bucket row. Bucket names are globally unique, so this is region-agnostic (a us-east-1 bucket
   // fronted by an ap-northeast-2 app still matches). Depends on the s3 inventory pk being 'name'.
@@ -553,6 +558,17 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta }; }
         if (reads?.configurationOnly) meta.ownership_reason = 'eks_not_enumerated';
+        // Neither a pod nor a task: the ENI holding this IP names its owner. Read gaps and
+        // contradictions above keep precedence, so this never overrides an ambiguity verdict.
+        if (!issue && !contradiction && !candidate) {
+          const hit = eniOwners.resolve(str(t.region), str(t.vpc_id), targetId);
+          if (hit && 'owner' in hit) {
+            const o = hit.owner;
+            resolved = o.kind; key = `eni:${o.kind}:${o.resourceId}`; mlabel = groupLabel = o.label;
+            meta = { owner: { kind: o.kind, resourceId: o.resourceId, ...(o.arn ? { arn: o.arn } : {}) },
+              ownership_source: 'eni', ownership_confidence: o.confidence, ownership_evidence: 'cached_configuration' };
+          } else if (hit) meta = { ...meta, eni_owner_reason: hit.reason };
+        }
       }
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }
@@ -589,6 +605,12 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         ...(input.ownershipRead?.configurationOnly || g.resolved === 'ecs' ? { ownership_evidence: 'cached_configuration' } : {}),
       });
       addEdge(tgId, nodeId);
+      // An ENI-owned ELB target continues the chain into that LB (e.g. NLB → TG → ALB → TG → …).
+      const owner = g.meta.owner as { kind?: string; arn?: string } | undefined;
+      if ((owner?.kind === 'alb' || owner?.kind === 'nlb') && owner.arn) {
+        const lbNode = lbByArn.get(owner.arn);
+        if (lbNode && lbNode !== nodeId) addEdge(nodeId, lbNode);
+      }
     }
   }
 
