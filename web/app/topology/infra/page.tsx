@@ -138,8 +138,9 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
             {[n.meta.inventoryAccount, n.meta.region].filter(Boolean).join(' · ')}
           </div>}
         </div>, kind: n.kind, meta: n.meta },
-        sourcePosition: viewport.vertical ? Position.Bottom : Position.Right,
-        targetPosition: viewport.vertical ? Position.Top : Position.Left,
+        sourcePosition: Position.Right,
+        // Side lanes bypass intervening cards instead of implying a chained hop.
+        targetPosition: viewport.vertical ? Position.Right : Position.Left,
         style: {
           background: bg,
           border: `${hit ? `2px solid ${HILITE}` : `1px solid ${border}`}`,
@@ -148,9 +149,10 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         },
       };
     });
-    const edges: Edge[] = display.edges.map((e) => ({
+    const edges: Edge[] = display.edges.map((e, i) => ({
       id: `${e.source}->${e.target}:${e.rel}`, source: e.source, target: e.target,
       animated: false, ariaLabel: relLabel[e.rel] ?? e.rel,
+      ...(viewport.vertical ? { type: 'smoothstep', pathOptions: { offset: 12 + (i % 4) * 8 } } : {}),
       style: { stroke: '#9AA6B2', strokeWidth: 1.5 },
     }));
     return { nodes, edges };

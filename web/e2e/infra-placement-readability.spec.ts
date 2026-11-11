@@ -96,6 +96,16 @@ for (const width of [390, 768]) {
     await page.goto('/topology/infra');
     await expect(page.locator('.react-flow__node')).toHaveCount(width === 390 ? 3 : 6);
     await readableCards(page);
+    if (width === 390) {
+      const canvas = (await page.locator('.react-flow').boundingBox())!;
+      const resource = (await page.locator('[data-id="resource-0"]').boundingBox())!;
+      for (const edge of await page.locator('.react-flow__edge-path').all()) {
+        const bounds = (await edge.boundingBox())!;
+        expect(bounds.width).toBeGreaterThan(8);
+        expect(bounds.x).toBeGreaterThanOrEqual(resource.x + resource.width - 1);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(canvas.x + canvas.width);
+      }
+    }
     await screenshot(page, `infra-placement-initial-${width}`);
     if (width === 390) {
       await page.locator('main').evaluate(el => { el.scrollTop = el.scrollHeight; });
