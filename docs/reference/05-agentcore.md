@@ -117,9 +117,10 @@ hard-`false`); the 9 gateway-routed keys answer via their own agents.
 - *Per-turn tool provenance.* History carries text only; earlier tool results are not replayed.
   The client therefore echoes each assistant turn's footer `tools` list, `sanitizeHistory()` keeps
   at most 32 well-formed names on assistant turns, and `build_conversation()` appends
-  `[Tools called for this answer: …]` to that turn. The common footer tells the model not to retract
-  figures from such turns as unverified. Like account labels, the list is client-echoed narrative
-  context, and typed copies of the marker are neutralized.
+  `[Tools called for this answer: …]` (with `(+N more)` past 32) inside the per-message cap. The
+  common footer says such figures may be tool-grounded and should be re-checked with the named tool
+  rather than assumed invented. Like account labels, the list is client-echoed narrative context,
+  not proof; `scoped_conversation()` neutralizes typed copies of the marker first.
 
 **2026-08-31 rollout note (ADR-021):** Phase 1's quota guard, structured terminal state,
 and freshness threshold are implemented in the repository. The agent making this change did not

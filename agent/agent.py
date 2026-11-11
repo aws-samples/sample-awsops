@@ -482,10 +482,10 @@ COMMON_FOOTER = """
   chat routes to the right section automatically. Just answer.
 - If you lack a tool for the request, say so honestly and answer with what you have; do not
   fabricate tools, agents, or results.
-- Earlier assistant turns may end with "[Tools called for this answer: …]". Their figures came
-  from those tool calls; the raw results are not repeated here. Do not call such figures
-  unverified or retract them; re-run a tool if you need the exact values again. An earlier turn
-  WITHOUT that line has no recorded tool evidence.
+- Earlier assistant turns may end with "[Tools called for this answer: …]". That line says the
+  turn called those tools; the raw results are not repeated here. Figures in such a turn may be
+  tool-grounded, so do not assume they were invented — re-run the named tool when you need to
+  confirm exact values. A turn without that line may still have used tools whose record was lost.
 
 Format responses in markdown. Respond in the user's language."""
 
@@ -1122,8 +1122,12 @@ def tools_note(tools):
     """Provenance line for an assistant history turn, from the BFF-reported tool names."""
     if not isinstance(tools, list):
         return ""
-    names = [t for t in tools if isinstance(t, str) and _TOOL_NAME_RE.match(t)][:HISTORY_TOOLS_MAX]
-    return f"\n\n{TOOLS_NOTE_MARKER} {', '.join(names)}]" if names else ""
+    valid = [t for t in tools if isinstance(t, str) and _TOOL_NAME_RE.fullmatch(t)]
+    names = valid[:HISTORY_TOOLS_MAX]
+    if not names:
+        return ""
+    more = f" (+{len(valid) - len(names)} more)" if len(valid) > len(names) else ""
+    return f"\n\n{TOOLS_NOTE_MARKER} {', '.join(names)}{more}]"
 
 
 def build_conversation(payload):
@@ -1137,10 +1141,11 @@ def build_conversation(payload):
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str) and content:
-                if len(content) > HISTORY_MAX_CHARS_PER_MESSAGE:
-                    content = content[:HISTORY_MAX_CHARS_PER_MESSAGE] + "\n…[rest of this message truncated]"
-                if role == "assistant":
-                    content += tools_note(msg.get("tools"))
+                note = tools_note(msg.get("tools")) if role == "assistant" else ""
+                budget = HISTORY_MAX_CHARS_PER_MESSAGE - len(note)
+                if len(content) > budget:
+                    content = content[:budget] + "\n…[rest of this message truncated]"
+                content += note
                 history.append({"role": role, "content": [{"text": content}]})
         history = history[-HISTORY_MAX_MESSAGES:]
         # Bedrock Converse requires the conversation to open with a user turn.

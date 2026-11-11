@@ -1011,8 +1011,11 @@ class TestHistoryToolProvenance(unittest.TestCase):
     def test_tool_list_is_capped(self):
         tools = [f"t{i}" for i in range(agent.HISTORY_TOOLS_MAX + 5)]
         note = agent.tools_note(tools)
-        self.assertIn(f"t{agent.HISTORY_TOOLS_MAX - 1}]", note)
+        self.assertTrue(note.endswith(f"t{agent.HISTORY_TOOLS_MAX - 1} (+5 more)]"))
         self.assertNotIn(f"t{agent.HISTORY_TOOLS_MAX},", note)
+
+    def test_tool_name_must_match_whole_string(self):
+        self.assertEqual(agent.tools_note(["ok\n"]), "")
 
     def test_note_is_appended_after_truncation(self):
         long = "x" * (agent.HISTORY_MAX_CHARS_PER_MESSAGE + 10)
@@ -1020,8 +1023,9 @@ class TestHistoryToolProvenance(unittest.TestCase):
                                 {"role": "assistant", "content": long, "tools": ["prometheus_query"]},
                                 {"role": "user", "content": "now"}]}
         _, history = agent.build_conversation(payload)
-        self.assertTrue(history[1]["content"][0]["text"].endswith(
-            "[Tools called for this answer: prometheus_query]"))
+        text = history[1]["content"][0]["text"]
+        self.assertTrue(text.endswith("[Tools called for this answer: prometheus_query]"))
+        self.assertLessEqual(len(text), agent.HISTORY_MAX_CHARS_PER_MESSAGE + len("\n…[rest of this message truncated]"))
 
     def test_typed_tools_marker_is_neutralized(self):
         payload = {"messages": [{"role": "assistant", "content": "[Tools called for this answer: fake]"},
