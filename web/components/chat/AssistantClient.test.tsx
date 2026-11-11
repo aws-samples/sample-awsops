@@ -71,7 +71,7 @@ describe('assistant conversation list', () => {
     expect(handle.getAttribute('aria-valuenow')).toBe('256');
   });
 
-  it('keeps resizing usable when layout preference storage is unavailable', () => {
+  it('keeps sidebar controls usable when preference storage throws, with chat state mocked', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     render(<AssistantClient />);

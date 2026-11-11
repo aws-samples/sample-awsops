@@ -29,7 +29,7 @@ async function fixtures(page: Page) {
     }
     if (path === '/api/diagnosis/intent') return route.fulfill({ json: { intents: [] } });
     if (path === '/api/chat/threads') return route.fulfill({ json: { threads: [
-      { id: 'fixture', title: '연결 관계 점검', updated_at: '2026-11-11T00:00:00Z' },
+      { id: 'fixture', title: '연결 관계 점검', updatedAt: '2026-11-11T00:00:00Z' },
     ] } });
     return route.fulfill({ json: {
       schedules: [], subscribers: [], enabled: false, rows: [], accounts: [],
@@ -71,6 +71,7 @@ test('assistant sidebar drag, collapse and reload preserve the conversation draf
   const composer = page.getByRole('combobox');
   await composer.fill('인스턴스와 DB 연결을 확인');
   const search = page.getByRole('textbox', { name: '대화 내용 검색' });
+  await expect(page.locator('#assistant-desktop-threads')).not.toContainText('Invalid Date');
   await search.fill('database');
   await page.getByRole('button', { name: '대화 목록 닫기' }).click();
   await expect(page.locator('#assistant-desktop-threads')).toBeHidden();
