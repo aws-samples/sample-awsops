@@ -16,6 +16,41 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('paginates the populated default VPC and clears invalid filters after implicit search scope changes', async () => {
+  const resources = Array.from({ length: 7 }, (_, i) => ({ id: `app-${i}`, kind: 'ec2', label: `app-${i}` }));
+  const graph = {
+    nodes: [
+      ...resources, { id: 'db', kind: 'rds', label: 'app-db' },
+      { id: 'v0', kind: 'vpc', label: 'primary' }, { id: 'v1', kind: 'vpc', label: 'other' },
+      { id: 's0', kind: 'subnet', label: 'primary-subnet' }, { id: 's1', kind: 'subnet', label: 'other-subnet' },
+    ],
+    edges: [
+      ...resources.flatMap(n => [
+        { source: n.id, target: 'v0', rel: 'infra:in_vpc' },
+        { source: n.id, target: 's0', rel: 'infra:in_subnet' },
+      ]),
+      { source: 'db', target: 'v1', rel: 'infra:in_vpc' },
+      { source: 'db', target: 's1', rel: 'infra:in_subnet' },
+    ],
+    captured_at: null,
+  };
+  vi.stubGlobal('fetch', async () => Response.json(graph));
+  await act(async () => { render(<InfraPage />); });
+  expect((screen.getByRole('combobox', { name: '배치 그래프 VPC' }) as HTMLSelectElement).value).toBe('v0');
+  expect(screen.getByText('표시 리소스 4 / 7')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '다음 리소스' }));
+  expect(screen.getByText('표시 리소스 3 / 7')).toBeTruthy();
+  const search = screen.getByPlaceholderText('검색 (id · 이름 · IP · 타입)…');
+  fireEvent.change(search, { target: { value: 'app' } });
+  fireEvent.change(screen.getByRole('combobox', { name: '배치 그래프 서브넷' }), { target: { value: 's1' } });
+  fireEvent.change(screen.getByRole('combobox', { name: '배치 그래프 리소스 종류' }), { target: { value: 'rds' } });
+  expect(screen.getByText('표시 리소스 1 / 1')).toBeTruthy();
+  fireEvent.change(search, { target: { value: '' } });
+  await waitFor(() => expect(screen.getByText('표시 리소스 4 / 7')).toBeTruthy());
+  expect((screen.getByRole('combobox', { name: '배치 그래프 서브넷' }) as HTMLSelectElement).value).toBe('');
+  expect((screen.getByRole('combobox', { name: '배치 그래프 리소스 종류' }) as HTMLSelectElement).value).toBe('');
+});
+
 it('offers canonical regional choices for an ambiguous legacy resource link', async () => {
   const candidates = ['rds:@self:us-east-1:app-db', 'rds:@self:ap-northeast-2:app-db'];
   vi.stubGlobal('fetch', async () => Response.json({

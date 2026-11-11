@@ -10,6 +10,10 @@ export interface InfraEdge { id: string; source: string; target: string; rel: st
 export interface InfraGraph { nodes: InfraNode[]; edges: InfraEdge[] }
 // inventory rows: { resource_type, resource_id, region, data:{...} } (data carries vpc_id / subnet / sg ids)
 export interface InfraInput { resources: Row[]; vpcs: Row[]; subnets: Row[]; securityGroups: Row[] }
+export const INFRA_CONTEXT_KINDS = ['vpc', 'subnet', 'sg'] as const;
+export const INFRA_PLACEMENT_RELATIONS = {
+  vpc: 'infra:in_vpc', subnet: 'infra:in_subnet', sg: 'infra:uses_sg',
+} as const;
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
 
@@ -94,9 +98,9 @@ export function buildInfraGraph(input: InfraInput, account = 'self'): InfraGraph
       addNode(target, kind, id, metadata(kind, id, r));
       addEdge(rid, target, rel);
     };
-    if (vpcId) placement('vpc', vpcId, 'infra:in_vpc');
-    for (const sid of subnetIds) placement('subnet', sid, 'infra:in_subnet');
-    for (const gid of sgIds) placement('sg', gid, 'infra:uses_sg');
+    if (vpcId) placement('vpc', vpcId, INFRA_PLACEMENT_RELATIONS.vpc);
+    for (const sid of subnetIds) placement('subnet', sid, INFRA_PLACEMENT_RELATIONS.subnet);
+    for (const gid of sgIds) placement('sg', gid, INFRA_PLACEMENT_RELATIONS.sg);
   }
 
   return { nodes: [...nodes.values()], edges: [...edges.values()] };
