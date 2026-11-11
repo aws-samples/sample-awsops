@@ -504,6 +504,8 @@ concurrency change needs a whole-plan check showing no DNS changes.
 
 The values are safeguards, not assertions of universal AWS quotas; service, operation, account, and Region quotas differ.
 
+**ENI inventory sizing.** The `eni` type has no pushdown predicate. Every ENI is written in one Aurora round trip, and stale ENIs are deleted one per row, all inside the fixed `AURORA_RESERVE_S` (120 s). Fargate task churn enlarges the stale set on every run. At the 2026-11-11 measurement (about 470–520 ENIs per account in ap-northeast-2, 41 in us-east-1) this is far below the reserve. Watch the `eni` sync duration in the sync Lambda logs as accounts or regions grow. If one account approaches several thousand ENIs per region, batch the upserts and deletes before adding more targets. An `eni` overrun fails that type, and the runtime release gate requires every catalog type, so it blocks web releases until the type succeeds.
+
 ## 7. 롤백 / Rollback
 
 롤백은 파괴적 데이터베이스 변경 없이 이전 limiter defaults 또는 AgentCore catalog를 복원하는 방식이다.
