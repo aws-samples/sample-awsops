@@ -17,6 +17,17 @@ describe('pickGateway', () => {
     expect(pickGateway('두 인스턴스 통신이 안 돼요')).toBe('network');
     expect(pickGateway('check the security group ports')).toBe('network');
   });
+  it('routes the Korean "보안 그룹" (security group) to network, not the IAM-only security gateway', () => {
+    const eni = 'ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회하고 추가 확인이 필요한 항목을 정리해 주세요.';
+    expect(matchedSections(eni)).toEqual(['network']);
+    expect(pickGateway(eni)).toBe('network');
+    expect(pickGateway('보안 그룹 규칙 보여줘')).toBe('network');
+    expect(pickGateway('보안그룹 인바운드 확인')).toBe('network');
+    expect(pickGateway('eni-0abc 상태 알려줘')).toBe('network');
+    expect(pickGateway('라우팅 테이블 확인해줘')).toBe('network');
+    // a genuine security ask keeps its route
+    expect(pickGateway('보안 취약점 점검해줘')).toBe('security');
+  });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
   });

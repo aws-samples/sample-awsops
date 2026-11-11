@@ -32,8 +32,11 @@ const RULES: { key: string; re: RegExp }[] = [
   // move `tempo|트레이스|\btrace\b` from the monitoring rule below to this rule (see ADR-017 §Trade-offs).
   { key: 'observability', re: /promql|prometheus|프로메테우스|clickhouse|클릭하우스|datadog|데이터독|dynatrace|다이나트레이스|newrelic|new relic|뉴렐릭/i },
   { key: 'cost', re: /비용|요금|예산|절감|billing|cost|budget|forecast|spend/i },
-  { key: 'security', re: /보안|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
-  { key: 'network', re: /통신|연결|네트워크|포트|라우트|reachab|network|connectivity|security ?group|\bsg\b|nacl|tgw|vpn|peering|flow ?log/i },
+  // `보안(?! ?그룹)`: the Korean "보안 그룹"/"보안그룹" is a security GROUP — a network object whose
+  // tools live on the network gateway (the security gateway is IAM-only). A bare `보안` used to
+  // claim it first, so "ENI의 보안 그룹·NACL·라우팅 조회" landed on security with no SG/NACL tools.
+  { key: 'security', re: /보안(?! ?그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
+  { key: 'network', re: /통신|연결|네트워크|포트|라우트|라우팅 ?테이블|route ?table|reachab|network|connectivity|security ?group|보안 ?그룹|\bsg\b|nacl|\beni\b|tgw|vpn|peering|flow ?log/i },
   { key: 'container', re: /파드|컨테이너|eks|ecs|kubernetes|k8s|pod|istio|namespace|sidecar/i },
   { key: 'data', re: /쿼리|데이터베이스|rds|aurora|dynamo|elasticache|redis|msk|kafka|database|slow query|throttl/i },
   { key: 'cost', re: /\$\d/i },
