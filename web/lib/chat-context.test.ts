@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { accountLabel, boundOutgoingHistory, renderRecentHistory, sanitizeHistory } from './chat-context';
+import { accountLabel, boundOutgoingHistory, HISTORY_TOOLS_MAX, renderRecentHistory, sanitizeHistory } from './chat-context';
 
 describe('renderRecentHistory', () => {
   it('returns "" for no/empty history', () => {
@@ -107,6 +107,27 @@ describe('sanitizeHistory account labels', () => {
       { role: 'assistant', content: 'b', account: '111122223333' },
       { role: 'user', content: 'c' },
     ]);
+  });
+});
+
+describe('sanitizeHistory tool provenance', () => {
+  it('keeps valid tool names on assistant turns only', () => {
+    expect(sanitizeHistory([
+      { role: 'user', content: 'q', tools: ['prometheus_query'] },
+      { role: 'assistant', content: 'a', tools: ['clickhouse-mcp-target___clickhouse_tables', 'bad name]', 7] },
+      { role: 'assistant', content: 'b', tools: [] },
+      { role: 'assistant', content: 'c', tools: 'prometheus_query' },
+    ])).toEqual([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a', tools: ['clickhouse-mcp-target___clickhouse_tables'] },
+      { role: 'assistant', content: 'b' },
+      { role: 'assistant', content: 'c' },
+    ]);
+  });
+
+  it('caps the tool list', () => {
+    const tools = Array.from({ length: HISTORY_TOOLS_MAX + 4 }, (_, i) => `t${i}`);
+    expect(sanitizeHistory([{ role: 'assistant', content: 'a', tools }])[0].tools).toHaveLength(HISTORY_TOOLS_MAX);
   });
 });
 

@@ -242,7 +242,11 @@ export function useChat() {
 
   async function send(prompt: string, overrideSection?: string | null, switchedFrom?: string) {
     if (busy) return;
-    const history = msgs.map((m) => ({ role: m.role, content: m.content, ...(m.account ? { account: m.account } : {}) }));
+    const history = msgs.map((m) => ({
+      role: m.role, content: m.content,
+      ...(m.account ? { account: m.account } : {}),
+      ...(m.role === 'assistant' && m.tools?.length ? { tools: m.tools } : {}),
+    }));
     // Follow-up continuity: the section that answered last (server re-validates; a keyword wins).
     const previousSection = [...msgs].reverse().find((m) => m.role === 'assistant' && m.gateway)?.gateway;
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);

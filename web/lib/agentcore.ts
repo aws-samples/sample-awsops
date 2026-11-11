@@ -28,6 +28,7 @@ export interface ChatMsg {
   role: 'user' | 'assistant';
   content: string;
   account?: string; // 'host' | 12-digit id — which account the turn was answered for (chat-context.ts)
+  tools?: string[]; // assistant turns: tools that answer called (chat-context.ts sanitizeHistory)
 }
 
 export interface InvokeInput {
