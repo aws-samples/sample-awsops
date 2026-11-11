@@ -476,16 +476,22 @@ QUERIES = {
     ),
     # Topology discovery: every private IPv4 address belongs to one ENI, so a load-balancer IP
     # target resolves to its owning resource (ELB, Lambda, RDS, VPC endpoint, NAT, EC2) from
-    # configuration alone. IPv6 and public (association_*) addresses are not collected, so IPv6
-    # and public-IP targets stay unresolved. Columns verified present in the pinned plugin
+    # configuration alone. IPv6 and public addresses (association_* columns and the nested
+    # Association in private_ip_addresses) are not collected, so IPv6 and public-IP targets stay
+    # unresolved. Columns verified present in the pinned plugin
     # aws@0.142.0 (table_aws_ec2_network_interface.go). Sizing: measured 2026-11-11 at about
     # 470-520 ENIs per account in ap-northeast-2 and 41 in us-east-1 for the dev host and the
     # largest member; rows are written one round trip each inside the 120 s Aurora reserve.
     "eni": (
         "SELECT network_interface_id, region, account_id, interface_type, description, status, "
         "requester_id, requester_managed, attached_instance_id, vpc_id, subnet_id, "
-        "availability_zone, private_ip_address, private_ip_addresses, groups, tags, "
-        "(tags ->> 'Name') AS name "
+        "availability_zone, private_ip_address, groups, tags, (tags ->> 'Name') AS name, "
+        # Each private_ip_addresses element nests an Association (public IP, public DNS, IP owner):
+        # project only the private address and its primary flag so no public data is stored.
+        "(SELECT jsonb_agg(jsonb_build_object('PrivateIpAddress', a ->> 'PrivateIpAddress', "
+        "'Primary', a -> 'Primary') ORDER BY ord) "
+        "FROM jsonb_array_elements(private_ip_addresses) WITH ORDINALITY AS p(a, ord)) "
+        "AS private_ip_addresses "
         "FROM aws_ec2_network_interface ORDER BY network_interface_id",
         "network_interface_id",
         "region",

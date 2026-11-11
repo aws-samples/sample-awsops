@@ -16,8 +16,13 @@ def test_eni_query_carries_ownership_fields():
                 "attached_instance_id", "vpc_id", "subnet_id", "availability_zone",
                 "private_ip_address", "private_ip_addresses"):
         assert col in sql, col
-    # Association/attachment history and public association owner data are not ownership inputs.
+    # Public association data is not an ownership input: no association_* columns, and the
+    # private_ip_addresses elements are rebuilt from two private keys so their nested
+    # Association (public IP, DNS, owner) never reaches the stored row.
     assert "association_" not in sql
+    assert "Association" not in sql
+    assert "jsonb_build_object('PrivateIpAddress', a ->> 'PrivateIpAddress', 'Primary', a -> 'Primary')" in sql
+    assert "AS private_ip_addresses" in sql
     assert (id_col, region_col) == ("network_interface_id", "region")
 
 
