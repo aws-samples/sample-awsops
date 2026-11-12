@@ -1,6 +1,6 @@
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
-import { countsTowardFleetTotal, isDerivedTrendType } from '@/lib/trend-utils';
+import { countsTowardFleetTotal } from '@/lib/trend-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -135,10 +135,12 @@ export async function GET(request: Request) {
     const recentPts = trend.filter((pt) => lastMs - new Date(pt.date).getTime() < 2 * 86_400_000);
     const recent = (t: string) => recentPts.some((pt) => typeof (pt as Record<string, unknown>)[t] === 'number');
     const types = [...latestByType.keys()].sort((a, b) => {
-      // Derived security series rank BELOW every real resource type: they must never claim a
-      // Core top-5 chip slot from an actual resource (their counts overlap the base series).
-      const da = isDerivedTrendType(a) ? 1 : 0;
-      const db = isDerivedTrendType(b) ? 1 : 0;
+      // Types outside the fleet total rank BELOW every fleet-counted type: derived security
+      // series (their counts overlap the base series) and attachment-only ENIs must never
+      // outrank the resources whose total they are left out of. Within that lower group they
+      // order by the same recency/count rules.
+      const da = countsTowardFleetTotal(a) ? 0 : 1;
+      const db = countsTowardFleetTotal(b) ? 0 : 1;
       if (da !== db) return da - db;
       const ra = recent(a) ? 1 : 0;
       const rb = recent(b) ? 1 : 0;

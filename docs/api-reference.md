@@ -60,7 +60,7 @@ without a manually held transaction. PostgreSQL supplies one MVCC snapshot for t
 statement; `statement-snapshot` describes this guarantee, not a requested transaction
 isolation level. Parameters and scope filters are unchanged. `view=agg` remains separate.
 
-Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
+Topology reads target groups/ECS tasks/subnets/network interfaces in at most 20 pages of 500 under one
 30-second browser load budget shared with EKS. All inventory and VPC/security-group
 enrichment requests share two lanes per load; critical pages run sequentially within a
 lane. This bounds this loader’s fan-out against the shared pool. Each critical page must carry the marker;

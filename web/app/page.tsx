@@ -21,7 +21,7 @@ import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
 import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
-import { nearestSnapshot, netChange, covCompleteForScope, countsTowardFleetTotal, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
+import { nearestSnapshot, netChange, covCompleteForScope, countsTowardFleetTotal, sameAccountSet, trendLegendGroups, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
 import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
@@ -350,11 +350,9 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   // the chart entirely. The palette has 8 hues; indices past 8 wrap (colorFor is modulo), a
   // conscious trade — derived series are default-hidden, so duplicated hues only co-occur
   // when a user opts a security series in. Colors stay pinned to each series' index.
-  const realTrendTypes = (resTrend?.types ?? []).filter((t) => !isDerivedTrendType(t));
-  const derivedTrendTypes = (resTrend?.types ?? []).filter((t) => isDerivedTrendType(t));
-  const trendTypes = [...realTrendTypes.slice(0, 8), ...derivedTrendTypes];
+  // Attachment-only types (ENIs) are appended like the derived series, into Other.
+  const { trendTypes, coreTypes, otherTypes, derivedTrendTypes } = trendLegendGroups(resTrend?.types ?? []);
   const trendSeries = trendTypes.map((t) => ({ key: t, label: INV_LABEL(t) }));
-  const coreTypes = realTrendTypes.slice(0, 5); // never a derived series, even on a tiny fleet
   // Chart honesty (gap L124): a (day, type) whose account coverage is less than the RESOLVED
   // scope is DROPPED from that day's point — the summed line would otherwise dip on an
   // account's silent day, presenting a sync artifact as a fleet change (the same rule the
@@ -391,7 +389,6 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const trendScopeNarrowed = Boolean(resTrend?.degraded) || Boolean(
     resTrend?.accounts && selectedValidAccts && resTrend.accounts.length < selectedValidAccts.length,
   );
-  const otherTypes = trendTypes.slice(5).filter((t) => !isDerivedTrendType(t));
   // L127: 7d net change (lib/trend-utils netChange — coverage-parity diff with honest-degrade
   // branches; see its doc). The trend data IS account-scoped now (gap L124 — the fetch above
   // passes the accounts scope), but snapshots still have no REGION dimension — so a narrowed
