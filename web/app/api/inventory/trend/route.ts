@@ -137,8 +137,10 @@ export async function GET(request: Request) {
     const types = [...latestByType.keys()].sort((a, b) => {
       // Derived security series rank BELOW every real resource type: they must never claim a
       // Core top-5 chip slot from an actual resource (their counts overlap the base series).
-      const da = isDerivedTrendType(a) ? 1 : 0;
-      const db = isDerivedTrendType(b) ? 1 : 0;
+      // Types excluded from the fleet total (ENIs) rank there too: they must not outrank the
+      // resources whose total they are left out of.
+      const da = isDerivedTrendType(a) || !countsTowardFleetTotal(a) ? 1 : 0;
+      const db = isDerivedTrendType(b) || !countsTowardFleetTotal(b) ? 1 : 0;
       if (da !== db) return da - db;
       const ra = recent(a) ? 1 : 0;
       const rb = recent(b) ? 1 : 0;

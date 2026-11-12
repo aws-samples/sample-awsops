@@ -67,6 +67,20 @@ describe('GET /api/inventory/trend', () => {
     expect(body.types).toEqual(['lambda', 'ec2']);
   });
 
+  it('ranks ENIs (left out of the fleet total) below the resources they outnumber', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockResolvedValueOnce({ rows: [
+      { d: '2026-07-01', resource_type: 'eni', n: 970 },
+      { d: '2026-07-01', resource_type: 'ec2', n: 40 },
+      { d: '2026-07-01', resource_type: 'lambda', n: 12 },
+    ] });
+    query.mockResolvedValue({ rows: [] }); // coverage query
+    const { GET } = await import('./route');
+    const body = await (await GET(req())).json();
+    expect(body.trend[0].total).toBe(52);
+    expect(body.types).toEqual(['ec2', 'lambda', 'eni']);
+  });
+
   // every request issues 2 data queries (trend GROUP BY + per-day account coverage);
   // '__all__' prepends the accounts-table resolution query
   it('clamps days into [1, 90] and defaults to 14 (accounts default: self)', async () => {

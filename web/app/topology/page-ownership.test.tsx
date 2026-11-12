@@ -229,15 +229,15 @@ describe('bounded ownership inventory paging', () => {
     try {
       await waitFor(() => expect(pending.length).toBeGreaterThan(0));
       expect(peak).toBeLessThanOrEqual(2);
-      while (completed < 27) {
+      while (completed < 24) {
         await waitFor(() => expect(pending.length).toBeGreaterThan(0));
         await act(async () => { pending.splice(0).forEach(resolve => resolve()); });
         expect(peak).toBeLessThanOrEqual(2);
       }
       await screen.findByRole('option', { name: 'ECS · ecs-app' });
       const inventoryReads = requests.filter(url => url.pathname.startsWith('/api/inventory/'));
-      expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(24);
-      expect(inventoryReads).toHaveLength(27);
+      expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(21);
+      expect(inventoryReads).toHaveLength(24);
       expect(inventoryReads.every(url => url.searchParams.get('accounts') === 'self')).toBe(true);
       for (const type of ['target_group', 'ecs_task', 'subnet']) {
         expect(inventoryReads.filter(url => url.pathname.endsWith(`/${type}`))

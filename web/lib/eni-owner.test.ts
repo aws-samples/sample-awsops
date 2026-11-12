@@ -14,8 +14,23 @@ describe('eniOwnerResolver', () => {
     expect(resolve({ eni: [eni('eni-1', '10.0.0.1')] }, '10.0.0.1', 'vpc-other')).toBeNull();
   });
 
-  it('treats an IP claimed by two ENIs as contradictory, never the first match', () => {
-    expect(resolve({ eni: [eni('eni-1', '10.0.0.1'), eni('eni-2', '10.0.0.1')] }, '10.0.0.1')).toBeNull();
+  it('treats an IP claimed by two ENIs as ambiguous, never the first match', () => {
+    expect(resolve({ eni: [eni('eni-1', '10.0.0.1'), eni('eni-2', '10.0.0.1')] }, '10.0.0.1'))
+      .toEqual({ reason: 'owner_ambiguous', eniId: null });
+  });
+
+  it('merges one ENI seen under several accounts (a RAM-shared VPC) instead of vetoing it', () => {
+    const shared = (account: string) => eni('eni-s', '10.0.0.9', { account_id: account,
+      attached_instance_id: 'i-0abc', requester_managed: false });
+    const input = { eni: [shared('111122223333'), shared('444455556666')],
+      ec2: [{ resource_id: 'i-0abc', region: R, name: 'node-a' }] };
+    expect(resolve(input, '10.0.0.9')).toEqual({ owner: expect.objectContaining({ kind: 'ec2', eniId: 'eni-s' }) });
+  });
+
+  it('recognizes a NAT ENI by its InterfaceType even without the description prefix', () => {
+    const input = { nat_gateway: [{ resource_id: 'nat-0123456789abcdef0', region: R }],
+      eni: [eni('eni-n', '10.0.2.9', { interface_type: 'natGateway', description: 'nat-0123456789abcdef0' })] };
+    expect(resolve(input, '10.0.2.9')).toEqual({ owner: expect.objectContaining({ kind: 'nat_gateway' }) });
   });
 
   it('resolves an ELB ENI by the exact ARN suffix, not by name alone', () => {
@@ -43,7 +58,7 @@ describe('eniOwnerResolver', () => {
       nat_gateway: [{ resource_id: 'nat-0123456789abcdef0', region: R, name: 'egress' }],
       eni: [
         eni('eni-e', '10.0.2.1', { interface_type: 'vpc_endpoint', description: 'VPC Endpoint Interface vpce-0123456789abcdef0' }),
-        eni('eni-n', '10.0.2.2', { interface_type: 'nat_gateway', description: 'Interface for NAT Gateway nat-0123456789abcdef0' }),
+        eni('eni-n', '10.0.2.2', { interface_type: 'natGateway', description: 'Interface for NAT Gateway nat-0123456789abcdef0' }),
         eni('eni-x', '10.0.2.3', { interface_type: 'vpc_endpoint', description: 'VPC Endpoint Interface vpce-0fedcba987654321f' }),
       ],
     };
@@ -69,6 +84,8 @@ describe('eniOwnerResolver', () => {
       expect(resolve(input, '10.0.3.4')).toEqual({ owner: expect.objectContaining({ kind: 'rds_cluster', resourceId: 'aurora' }) });
       expect(resolve({ ...input, rds: [db('aurora-1', 'aurora'), db('b', 'other')] }, '10.0.3.4'))
         .toEqual({ reason: 'owner_ambiguous', eniId: 'eni-r' });
+      // Every DB names one cluster that the complete cluster read lacks: not synced, not ambiguous.
+      expect(resolve({ ...input, rds_cluster: [] }, '10.0.3.4')).toEqual({ reason: 'owner_not_synced', eniId: 'eni-r' });
     });
 
     it('refuses to guess when an RDS Proxy shares the ENI subnet', () => {
@@ -102,7 +119,7 @@ describe('eniOwnerResolver', () => {
   });
 
   it('reports an incomplete owner read instead of claiming the owner is not synced', () => {
-    const input = { eni: [eni('eni-n', '10.0.7.1', { interface_type: 'nat_gateway', description: 'Interface for NAT Gateway nat-0123456789abcdef0' })] };
+    const input = { eni: [eni('eni-n', '10.0.7.1', { interface_type: 'natGateway', description: 'Interface for NAT Gateway nat-0123456789abcdef0' })] };
     expect(eniOwnerResolver(input, new Set(['nat_gateway'])).resolve(R, VPC, '10.0.7.1'))
       .toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-n' });
     expect(eniOwnerResolver(input).resolve(R, VPC, '10.0.7.1')).toEqual({ reason: 'owner_not_synced', eniId: 'eni-n' });

@@ -26,11 +26,14 @@ const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow)
 
 const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
   'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule',
-  'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'] as const;
+  'eni', 'vpc_endpoint', 'nat_gateway'] as const;
 type InvType = (typeof TYPES)[number];
-// Every inventory read the ENI owner resolver consults (eni-owner.ts).
-const OWNER_TYPES: InvType[] = ['eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway',
-  'alb', 'nlb', 'lambda', 'ec2'];
+// Every inventory read the ENI owner resolver consults (eni-owner.ts) that this page fetches.
+const OWNER_TYPES: InvType[] = ['eni', 'vpc_endpoint', 'nat_gateway', 'alb', 'nlb', 'lambda', 'ec2'];
+// The page cannot prove freshness without comparing clocks, so RDS placement inference (which
+// needs complete, current DB and proxy lists) is left to the materialized graph: these reads are
+// not fetched and always count as incomplete.
+const SAVED_GRAPH_ONLY_OWNER_TYPES = ['rds', 'rds_cluster', 'rds_proxy'];
 type Row = Record<string, unknown>;
 
 // InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
@@ -39,15 +42,14 @@ type Row = Record<string, unknown>;
 // resolve IP targets that are neither EKS pods nor ECS tasks (eni-owner.ts).
 type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
   | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule'
-  | 'eni' | 'rds' | 'rds_cluster' | 'rds_proxy' | 'vpc_endpoint' | 'nat_gateway';
+  | 'eni' | 'vpc_endpoint' | 'nat_gateway';
 const FLOW_KEY: Record<InvType, RowKey> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
   ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
   cloudfront_vpc_origin: 'cloudfront_vpc_origin',
   apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
-  eni: 'eni', rds: 'rds', rds_cluster: 'rds_cluster', rds_proxy: 'rds_proxy',
-  vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
+  eni: 'eni', vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
 };
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default
@@ -145,7 +147,9 @@ function nodeLabel(n: FlowNode): ReactNode {
 const ROW_CAP = 500; // /api/inventory caps limit at 500
 const INVENTORY_LANES = 2; // Shared max:3 PG pool also serves authentication and other reads.
 const CRITICAL_PAGES = 20;
-const CRITICAL_TYPES = new Set<string>(['target_group', 'ecs_task', 'subnet']);
+// Paged to completion: ownership reads that a cut list would turn into "unknown". ENIs run
+// about 500 per account, so a single 500-row page would leave IP-target owners unresolved.
+const CRITICAL_TYPES = new Set<string>(['target_group', 'ecs_task', 'subnet', 'eni']);
 const rowLimit = (type: string) => ROW_CAP * (CRITICAL_TYPES.has(type) ? CRITICAL_PAGES : 1);
 const ISSUE_STATUSES = ['failed', 'partial'] as const;
 type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
@@ -417,17 +421,15 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
         const result = res[TYPES.indexOf(type)];
         return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
       };
-      // Owner reads are usable only from a succeeded sweep. The page cannot prove freshness
-      // without comparing clocks, so RDS placement inference (which needs complete, current DB
-      // and proxy lists) is left to the materialized graph: rds_proxy always counts as incomplete.
-      const ownerIssue = (type: InvType) => type === 'rds_proxy' || readIssue(type) !== undefined
+      // Owner reads are usable only from a succeeded sweep.
+      const ownerIssue = (type: InvType) => readIssue(type) !== undefined
         || !res[TYPES.indexOf(type)].runSucceeded;
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
         // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
-        ownerIncomplete: OWNER_TYPES.filter(ownerIssue),
+        ownerIncomplete: [...OWNER_TYPES.filter(ownerIssue), ...SAVED_GRAPH_ONLY_OWNER_TYPES],
       } };
       TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
