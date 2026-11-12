@@ -177,6 +177,28 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     expect(bounded.truncated).toBe(true);
     expect(inventoryAttempt(bounded, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
   });
+  it('cuts enrichment rows before core rows at the row cap and withholds only the enrichment type', async () => {
+    const point = at();
+    for (const [type, count] of [['vpc', 10], ['eni', 8190]] as const) {
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ($1,'succeeded',$2,$2,$2,$3,0)`, [type, point, count]);
+      await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self',$1,$2,$3)", [type, count, point]);
+    }
+    // 'eni' sorts before 'vpc' alphabetically; enrichment ordering must still keep every vpc row.
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'eni','eni-'||n,'fixture','{}',$1 FROM generate_series(1,8190)n`, [point]);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'vpc','vpc-'||n,'fixture','{}',$1 FROM generate_series(1,10)n`, [point]);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc'], undefined, ['eni']);
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.rows.filter(row => row.resource_type === 'vpc')).toHaveLength(10);
+    expect(snapshot.truncatedTypes).toEqual(['eni']);
+    expect(inventoryAttempt(snapshot, ['eni', 'vpc'], 'flow', 'self', at(), new Set(['eni'])))
+      .toMatchObject({ publish: true, status: 'ok', withheldTypes: ['eni'] });
+    // Without the enrichment designation the same cut still blocks publication.
+    const strict = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc']);
+    expect(inventoryAttempt(strict, ['eni', 'vpc'], 'flow', 'self', at()).publish).toBe(false);
+  });
   it('keeps flow detail fields consumed from meta.row', async () => {
     const detail = { subnet_id: 'subnet-fixture', subnets: ['subnet-fixture'], availability_zones: ['zone-fixture'],
       security_group_ids: ['sg-fixture'], vpc_security_group_ids: ['sg-fixture'], group_name: 'group-fixture', title: 'fixture-title' };

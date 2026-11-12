@@ -31,8 +31,15 @@ const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'owner
   // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
   apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
   cloudfront_vpc_origin: 'cloudfront_vpc_origin',
+  // ENI ownership for IP targets (eni-owner.ts) and the owner types it may name.
+  eni: 'eni', rds: 'rds', rds_cluster: 'rds_cluster', rds_proxy: 'rds_proxy',
+  vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
 };
 const TYPES = Object.keys(TYPE_TO_KEY);
+// Flow sources that only resolve IP-target ownership; a blocked one never withholds the flow graph.
+const FLOW_ENRICHMENT: ReadonlySet<string> = new Set(['eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway']);
+// Infra sources that only add DB endpoint nodes for trace binding.
+const INFRA_ENRICHMENT: ReadonlySet<string> = new Set(['rds_cluster', 'rds_proxy']);
 const FLOW_LOCK = 0x746f706f;   // 'topo' — flow rebuilds serialize on this key
 const INFRA_LOCK = 0x696e6672;  // 'infr' — infra rebuilds use a DISTINCT key so the two can run concurrently
 const TRACE_LOCK = 0x74726163;  // 'trac' — trace rebuilds use a DISTINCT key (class='trace' layer)
@@ -52,6 +59,8 @@ function relFor(sk: FlowKind | undefined, tk: FlowKind | undefined): string {
   if (sk === 'cloudfront') return tk === 'waf' ? 'PROTECTED_BY' : 'ORIGIN';
   if (sk === 'alb' || sk === 'nlb') return 'TARGETS';
   if (sk === 'tg') return 'TARGETS';
+  // An ENI-owned load-balancer target continues into that load balancer.
+  if (sk === 'target' && (tk === 'alb' || tk === 'nlb')) return 'TARGETS';
   return 'EDGE';
 }
 
@@ -166,7 +175,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 }
 
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
-  types: string[], build: (rows: InventoryRow[], account: string) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
+  types: string[], build: (rows: InventoryRow[], account: string, withheld: string[]) => { nodes: GNode[]; edges: GEdge[] },
+  enrichment: ReadonlySet<string> = new Set()): Promise<GraphRebuildResult> {
   const totals = emptyResult();
   if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
@@ -204,8 +214,9 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       try {
         const accountTypes = inventoryTypesForAccount(types, account);
         const snapshot = await inventorySnapshot(pool, cls, account, accountTypes,
-          counts ??= await inventoryCounts(pool, types));
-        attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
+          counts ??= await inventoryCounts(pool, types), [...enrichment]);
+        const { withheldTypes, ...evaluated } = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt, enrichment);
+        attempt = evaluated;
         if (snapshot.truncated) reason('snapshot_limit');
         // A producer that is still writing withholds publication only until it finalizes; the
         // timer uses this reason to retry once after the run instead of waiting a full interval.
@@ -213,7 +224,10 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         if (!attempt.publish && sources.some(source => source?.producerStatus === 'running')) {
           reason('inventory_running');
         }
-        const graph = attempt.publish ? build(snapshot.rows, account) : { nodes: [], edges: [] };
+        // Withheld enrichment rows (stale/failed/partial ledgers) never feed ownership claims.
+        const inputRows = withheldTypes.length
+          ? snapshot.rows.filter(row => !withheldTypes.includes(row.resource_type)) : snapshot.rows;
+        const graph = attempt.publish ? build(inputRows, account, withheldTypes) : { nodes: [], edges: [] };
         if (graph.nodes.length > 4000 || graph.edges.length > 8000
           || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
           attempt.publish = false; attempt.status = 'partial';
@@ -254,8 +268,10 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
 }
 
 export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
-  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, rows => {
-    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
+  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, (rows, _account, withheld) => {
+    // Withheld enrichment rows are absent, and the resolver also refuses inferences they guard.
+    const input: FlowInput = { ownershipRead: { configurationOnly: true,
+      ...(withheld.length ? { ownerIncomplete: withheld } : {}) } };
     for (const row of rows) {
       const key = TYPE_TO_KEY[row.resource_type];
       if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id,
@@ -266,7 +282,7 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
     // L7 display labels remain live-only; persisted edges keep the existing traversal contract.
     return { nodes: graph.nodes, edges: graph.edges.map(edge => ({ source: edge.source, target: edge.target,
       rel: relFor(kinds.get(edge.source), kinds.get(edge.target)), confidence: edge.confidence })) };
-  });
+  }, FLOW_ENRICHMENT);
 }
 
 export async function rebuildInfraGraph(pool: Pool, runId: string = randomUUID()) {
@@ -279,7 +295,7 @@ export async function rebuildInfraGraph(pool: Pool, runId: string = randomUUID()
     }, account);
     return { nodes: graph.nodes, edges: graph.edges.map(edge => ({ source: edge.source, target: edge.target,
       rel: edge.rel, confidence: 'observed' })) };
-  });
+  }, INFRA_ENRICHMENT);
 }
 
 // Trace collection and materialization share one explicit evidence window.

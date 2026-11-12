@@ -28,7 +28,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   let pool: Pool;
   const migrations = resolve('../terraform/foundation/migrations');
   const flowTypes = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2',
-    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin'];
+    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
+    // IP-target ownership enrichment (eni-owner.ts); absent ledgers only degrade publication.
+    'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'];
   const requiredTypes = [...new Set([...flowTypes, ...INFRA_TYPES])];
   const now = Date.now();
   const recent = new Date(now - 60_000).toISOString();
@@ -968,7 +970,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE account_id='self' AND class='infra' ORDER BY id")).rows;
     expect(nodes.map(node => node.id)).toEqual(['subnet:subnet-lost', 'vpc:vpc-kept']);
     expect(previous).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.length);
+    // Enrichment sources (rds_cluster, rds_proxy) are evaluated separately, never published sources.
+    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.filter(type => !['rds_cluster', 'rds_proxy'].includes(type)).length);
 
     await pool.query(`DELETE FROM inventory_resources WHERE resource_type='subnet';
       DELETE FROM inventory_sync_runs WHERE resource_type='subnet';`);

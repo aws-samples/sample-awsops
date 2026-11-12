@@ -155,7 +155,9 @@ budgets (excluding the result envelope). Flow projection preserves listener/API-
 consumed from `meta.row`. Target-health arrays retain every Id, Port and State in order while dropping
 unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
 later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
-only those source item counts become unknown. Any truncation still withholds publication.
+only those source item counts become unknown. Any truncation of a core source still withholds
+publication. Enrichment types (below) sort after core types, so the caps cut them first; a cut
+that reaches only enrichment types withholds those types whole and leaves the core input intact.
 A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
 an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
 helpers share two admissions per pool, reserving the third ordinary slot for authentication;
@@ -243,6 +245,8 @@ Flow and infra input allow 8192 rows within the same bounded read envelope. The 
 All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
 and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
 
+**Enrichment sources.** The one exception is an explicit enrichment tier that only adds detail to nodes built from core sources. Flow enrichment is `eni`, `rds`, `rds_cluster`, `rds_proxy`, `vpc_endpoint` and `nat_gateway`; it resolves load-balancer IP-target ownership. Infra enrichment is `rds_cluster` and `rds_proxy`; it adds DB endpoint nodes for trace binding. These types are evaluated outside `details.sources` and kept in the unprojected `details.enrichmentSources`. A missing, failed, running, unconfirmed, stale or capped enrichment source is dropped whole. The resolver receives it as incomplete, so lookups report `owner_inventory_incomplete` and RDS placement inference (which needs `rds` and `rds_proxy`) is not made. Dropping enrichment never changes the publication status, freshness or reason vocabulary. A core source keeps the rule above.
+
 ## Browser recovery and source evidence
 
 The graph consumer retries only a typed HTTP503 admission failure:
@@ -292,7 +296,7 @@ healthy evidence. Qualified empty/unproven telemetry retains the previous graph.
 Failed, retained, skipped or unattempted host infra still withholds trace collection.
 A clean confirmed-empty host publication is valid; zero nodes alone are not proof.
 Member-only gaps remain in fleet-wide counts/reasons and CLI exit 1/2. None of these
-presentation rules relaxes the strict 46-type, zero-unknown runtime release gate.
+presentation rules relaxes the strict 49-type, zero-unknown runtime release gate.
 
 | Exact diagnostic | Meaning and next check |
 |---|---|

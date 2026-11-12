@@ -90,7 +90,7 @@ QUERIES = {
         "backup_retention_period, preferred_backup_window, latest_restorable_time, vpc_security_groups, "
         "auto_minor_version_upgrade, copy_tags_to_snapshot, deletion_protection, "
         "iam_database_authentication_enabled, performance_insights_enabled, create_time, tags, "
-        "read_replica_source_db_instance_identifier "
+        "read_replica_source_db_instance_identifier, db_cluster_identifier "
         "FROM aws_rds_db_instance ORDER BY db_instance_identifier",
         "db_instance_identifier",
         "region",
@@ -472,6 +472,50 @@ QUERIES = {
         "FROM aws_ebs_snapshot WHERE owner_id IN ({owner_ids}) "
         "ORDER BY start_time DESC",
         "snapshot_id",
+        "region",
+    ),
+    # Topology discovery: every private IPv4 address belongs to one ENI, so a load-balancer IP
+    # target resolves to its owning resource (ELB, Lambda, RDS, VPC endpoint, NAT, EC2) from
+    # configuration alone. IPv6 and public addresses (association_* columns and the nested
+    # Association in private_ip_addresses) are not collected, so IPv6 and public-IP targets stay
+    # unresolved. Columns verified present in the pinned plugin
+    # aws@0.142.0 (table_aws_ec2_network_interface.go). Sizing: measured 2026-11-11 at about
+    # 470-520 ENIs per account in ap-northeast-2 and 41 in us-east-1 for the dev host and the
+    # largest member; rows are written one round trip each inside the 120 s Aurora reserve.
+    "eni": (
+        "SELECT network_interface_id, region, account_id, interface_type, description, status, "
+        "requester_id, requester_managed, attached_instance_id, vpc_id, subnet_id, "
+        "availability_zone, private_ip_address, groups, tags, (tags ->> 'Name') AS name, "
+        # Each private_ip_addresses element nests an Association (public IP, public DNS, IP owner):
+        # project only the private address and its primary flag so no public data is stored.
+        "(SELECT jsonb_agg(jsonb_build_object('PrivateIpAddress', a ->> 'PrivateIpAddress', "
+        "'Primary', a -> 'Primary') ORDER BY ord) "
+        "FROM jsonb_array_elements(private_ip_addresses) WITH ORDINALITY AS p(a, ord)) "
+        "AS private_ip_addresses "
+        "FROM aws_ec2_network_interface ORDER BY network_interface_id",
+        "network_interface_id",
+        "region",
+    ),
+    # Aurora/RDS clusters: writer/reader/custom endpoints let trace DB hosts bind to the cluster.
+    # Columns verified present in the pinned plugin aws@0.142.0 (table_aws_rds_db_cluster.go).
+    "rds_cluster": (
+        "SELECT db_cluster_identifier, region, account_id, arn, status, engine, engine_version, "
+        "engine_mode, endpoint, reader_endpoint, custom_endpoints, port, members, multi_az, "
+        "storage_encrypted, kms_key_id, deletion_protection, iam_database_authentication_enabled, "
+        "backup_retention_period, db_subnet_group, vpc_security_groups, availability_zones, "
+        "create_time, tags, (tags ->> 'Name') AS name "
+        "FROM aws_rds_db_cluster ORDER BY db_cluster_identifier",
+        "db_cluster_identifier",
+        "region",
+    ),
+    # RDS Proxy endpoint is the host applications dial. `auth` (secret ARNs) is not collected.
+    # Columns verified present in the pinned plugin aws@0.142.0 (table_aws_rds_db_proxy.go).
+    "rds_proxy": (
+        "SELECT db_proxy_name, region, account_id, db_proxy_arn AS arn, status, engine_family, "
+        "endpoint, require_tls, idle_client_timeout, debug_logging, vpc_id, vpc_subnet_ids, "
+        "vpc_security_group_ids, created_date, updated_date, tags, (tags ->> 'Name') AS name "
+        "FROM aws_rds_db_proxy ORDER BY db_proxy_name",
+        "db_proxy_name",
         "region",
     ),
 }

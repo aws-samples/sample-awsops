@@ -296,3 +296,32 @@ describe('source-aggregated rows and service-graph connection types', () => {
     expect(graph.nodes.find(node => node.kind === 'workload')?.meta.pods).toHaveLength(50);
   });
 });
+
+describe('Aurora cluster and RDS Proxy endpoint binding', () => {
+  const writer = 'shop.cluster-abc.ap-northeast-2.rds.amazonaws.com';
+  const reader = 'shop.cluster-ro-abc.ap-northeast-2.rds.amazonaws.com';
+  const proxyHost = 'shop-proxy.proxy-abc.ap-northeast-2.rds.amazonaws.com';
+  const nodes = buildInfraGraph({
+    resources: [
+      { resource_type: 'ec2', resource_id: instanceA, account_id: account, region, data: { vpc_id: 'vpc-a' } },
+      { resource_type: 'rds_cluster', resource_id: 'shop', account_id: account, region,
+        data: { vpc_security_groups: [{ VpcSecurityGroupId: 'sg-1' }], endpoint: writer, reader_endpoint: reader,
+          custom_endpoints: ['shop-analytics.cluster-custom-abc.ap-northeast-2.rds.amazonaws.com'] } },
+      { resource_type: 'rds_proxy', resource_id: 'shop-proxy', account_id: account, region,
+        data: { vpc_id: 'vpc-a', endpoint: proxyHost } },
+    ],
+    vpcs: [], subnets: [], securityGroups: [],
+  }).nodes;
+  const clusterRef = 'rds_cluster:@123456789012:ap-northeast-2:shop';
+  const proxyRef = 'rds_proxy:@123456789012:ap-northeast-2:shop-proxy';
+
+  it.each([[writer, clusterRef], [reader, clusterRef],
+    ['shop-analytics.cluster-custom-abc.ap-northeast-2.rds.amazonaws.com', clusterRef], [proxyHost, proxyRef]])(
+    'binds db host %s to its cluster or proxy node', (host, ref) => {
+      const graph = buildTraceGraph([dbSpan({ dbHost: host })], [], nodes, account);
+      const db = graph.nodes.find(node => node.kind === 'db')!;
+      expect(db.meta.infra_ref).toBe(ref);
+      const pairs = graph.edges.flatMap(edge => edge.meta.instance_observations ?? []);
+      expect(pairs.map(pair => pair.database_ref)).toEqual([ref]);
+    });
+});

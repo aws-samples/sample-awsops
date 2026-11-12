@@ -16,6 +16,16 @@ export const INFRA_PLACEMENT_RELATIONS = {
 } as const;
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
+/** jsonb arrays can arrive decoded or as a JSON string. */
+const jsonList = (v: unknown): unknown[] => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim().startsWith('[')) {
+    try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+};
+/** Inventory kinds whose endpoints a trace span's db host can name (trace-graph.ts). */
+export const DB_ENDPOINT_KINDS: ReadonlySet<string> = new Set(['rds', 'rds_cluster', 'rds_proxy']);
 
 // Producer shapes include EC2 GroupId, RDS VpcSecurityGroupId, ElastiCache SecurityGroupId and LB SubnetId.
 export function idsFrom(v: unknown): string[] {
@@ -86,12 +96,16 @@ export function buildInfraGraph(input: InfraInput, account = 'self'): InfraGraph
     if (!vpcId && subnetIds.length === 0 && sgIds.length === 0) continue;
     const kind = str(r.resource_type), rawId = str(r.resource_id);
     const rid = identity(kind, rawId, r);
-    // meta.host bridges this node to the trace-topology layer's db-node infra_ref (graph-store.ts
-    // resolveInfraRef): only rds rows carry endpoint_address today, so this is a no-op for other types.
-    const host = str(d.endpoint_address);
+    // meta.host/hosts bridge this node to the trace-topology layer's db-node infra_ref
+    // (trace-graph.ts resolveInfraRef): rds instances carry endpoint_address; rds clusters carry
+    // writer/reader/custom endpoints and rds proxies their endpoint. Other types carry none.
+    const dbHosts = DB_ENDPOINT_KINDS.has(kind) ? [...new Set([d.endpoint_address, d.endpoint, d.reader_endpoint,
+      ...jsonList(d.custom_endpoints)].map(str).filter(Boolean))] : [];
+    const host = dbHosts[0];
     addNode(rid, kind, nameOf(r), {
       ...metadata(kind, rawId, r),
       ...(host ? { host } : {}),
+      ...(dbHosts.length > 1 ? { hosts: dbHosts } : {}),
     });
     const placement = (kind: string, id: string, rel: string) => {
       const target = identity(kind, id, r);

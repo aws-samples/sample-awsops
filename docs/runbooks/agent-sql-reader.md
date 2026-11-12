@@ -340,6 +340,12 @@ snapshot target labels are cached configuration as well. `candidate` is page-onl
 out-of-region context, not materializer output. The view excludes these fields along
 with `vpcId`, `subnetId`, `ambiguity` and `ownership_reason`. A `capturedAt` key,
 if supplied by another writer, is also unlisted.
+ENI-derived target ownership (`owner`, `ownership_source`, `ownership_confidence`,
+`eni_owner_reason`, and `e2e_correlation_blocked` on inferred owners) is writer-only
+metadata and is unlisted as well; the target label still names the owning resource.
+ENI and RDS cluster/proxy inventory are enrichment inputs: the flow/infra attempt keeps
+their evaluation in `details.enrichmentSources`, outside `sources`, so they never change
+the published status, freshness or the shared reason vocabulary.
 It can expose bare `region`, `cluster`, `ecsService` and `task` fields: these do not
 establish complete network scope or current ownership when the provenance fields are absent.
 Any other unlisted key remains excluded. Exposing another key requires a reviewed

@@ -1,6 +1,6 @@
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
-import { isDerivedTrendType } from '@/lib/trend-utils';
+import { countsTowardFleetTotal, isDerivedTrendType } from '@/lib/trend-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,7 +113,7 @@ export async function GET(request: Request) {
       const p = byDate.get(row.d) ?? { date: row.d, total: 0 };
       // Derived security series don't add to the day's total — their resources are already
       // counted by the base series they were derived from (double-count guard).
-      if (!isDerivedTrendType(row.resource_type)) p.total += Number(row.n);
+      if (countsTowardFleetTotal(row.resource_type)) p.total += Number(row.n);
       // v1 parity: every type is a column on the point (multi-line chart + delta table).
       p[row.resource_type] = Number(row.n);
       byDate.set(row.d, p);

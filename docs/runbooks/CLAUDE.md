@@ -280,13 +280,13 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-The catalog must include the pinned baseline (currently 46 names, source-AST checked);
+The catalog must include the pinned baseline (currently 49 names, source-AST checked);
 valid growth is allowed up to 128 types and every returned type needs strict proof.
 Both modes default to the enabled host only. Explicit applied targets require exact
 enabled host/member registration. Collect additionally requires measured SQL reachability
 with zero unreachable accounts and fresh account-bound EC2/CloudFront known-member evidence.
 Host-only/unmeasured counts remain null under explicit `account_reachability_scope`;
-CI permits host-only/null only for five source-AST-pinned SDK types, not 46-type
+CI permits host-only/null only for five source-AST-pinned SDK types, not 49-type
 coverage for every member. Terraform plan/apply onboarding
 alone allows approved subsets; apply derives scope from the restored saved plan.
 Runtime release never requests subset leniency. See `runtime-foundation.md#explicit-runtime-targets`.

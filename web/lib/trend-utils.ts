@@ -76,6 +76,16 @@ export function isDerivedTrendType(k: string): boolean {
   return Object.prototype.hasOwnProperty.call(DERIVED_TREND_TYPES, k);
 }
 
+/** Inventory types collected only as attachment evidence for topology (ENIs belong to already-
+ *  counted EC2/ELB/Lambda/endpoint/RDS resources, and Fargate tasks churn them): they keep their
+ *  own series and type page but never add to fleet totals or the net-change parity set. */
+export const FLEET_TOTAL_EXCLUDED_TYPES: ReadonlySet<string> = new Set(['eni']);
+
+/** Whether a type's count belongs in the fleet total (not derived, not attachment-only). */
+export function countsTowardFleetTotal(k: string): boolean {
+  return !isDerivedTrendType(k) && !FLEET_TOTAL_EXCLUDED_TYPES.has(k);
+}
+
 /** Derived security-count trend series (gap L129), written by the sync lambda's
  *  DERIVED_SNAPSHOTS (scripts/v2/steampipe/sync_lambda.py — LOCKSTEP: keys must match) from
  *  the /security predicates in security-findings.ts. Excluded from the trend `total` (the
@@ -156,7 +166,7 @@ export function netChange(
   // and including them in the sum double-counts (ebs_volume + unencrypted_ebs move together).
   const typeKeys = (p: TrendPointLike) =>
     Object.keys(p)
-      .filter((k) => k !== 'date' && k !== 'total' && !isDerivedTrendType(k) && typeof p[k] === 'number')
+      .filter((k) => k !== 'date' && k !== 'total' && countsTowardFleetTotal(k) && typeof p[k] === 'number')
       .sort();
   const lastKeys = typeKeys(last);
   const baseKeys = typeKeys(base);

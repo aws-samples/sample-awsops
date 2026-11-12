@@ -25,21 +25,29 @@ import useGraphViewport from '@/components/topology/useGraphViewport';
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 
 const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
-  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule'] as const;
+  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule',
+  'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'] as const;
 type InvType = (typeof TYPES)[number];
+// Every inventory read the ENI owner resolver consults (eni-owner.ts).
+const OWNER_TYPES: InvType[] = ['eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway',
+  'alb', 'nlb', 'lambda', 'ec2'];
 type Row = Record<string, unknown>;
 
 // InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
 // s3 resolves CloudFront S3 origins; apigatewayv2_* resolve execute-api origins → API GW → Lambda/LB;
-// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB.
+// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB; eni + its owner types
+// resolve IP targets that are neither EKS pods nor ECS tasks (eni-owner.ts).
 type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
-  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule';
+  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule'
+  | 'eni' | 'rds' | 'rds_cluster' | 'rds_proxy' | 'vpc_endpoint' | 'nat_gateway';
 const FLOW_KEY: Record<InvType, RowKey> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
   ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
   cloudfront_vpc_origin: 'cloudfront_vpc_origin',
   apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
+  eni: 'eni', rds: 'rds', rds_cluster: 'rds_cluster', rds_proxy: 'rds_proxy',
+  vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
 };
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default
@@ -199,13 +207,14 @@ const EVIDENCE_COPY = {
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean; runSucceeded?: boolean }> {
   const scopeQuery = new URLSearchParams(inventoryScope), account = scopeQuery.get('accounts') ?? 'self';
   const critical = CRITICAL_TYPES.has(t);
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
   let firstRun: Row | null = null;
-  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete, ...inventoryEvidence(rows, firstRun, account === 'self') });
+  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete,
+    runSucceeded: firstRun?.status === 'succeeded', ...inventoryEvidence(rows, firstRun, account === 'self') });
   try {
     for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
       if (signal.aborted) throw new Error();
@@ -408,10 +417,17 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
         const result = res[TYPES.indexOf(type)];
         return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
       };
+      // Owner reads are usable only from a succeeded sweep. The page cannot prove freshness
+      // without comparing clocks, so RDS placement inference (which needs complete, current DB
+      // and proxy lists) is left to the materialized graph: rds_proxy always counts as incomplete.
+      const ownerIssue = (type: InvType) => type === 'rds_proxy' || readIssue(type) !== undefined
+        || !res[TYPES.indexOf(type)].runSucceeded;
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
+        // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
+        ownerIncomplete: OWNER_TYPES.filter(ownerIssue),
       } };
       TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
