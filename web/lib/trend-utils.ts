@@ -86,6 +86,20 @@ export function countsTowardFleetTotal(k: string): boolean {
   return !isDerivedTrendType(k) && !FLEET_TOTAL_EXCLUDED_TYPES.has(k);
 }
 
+/** Resource-trend chart series and legend groups from the route's ranked type list.
+ *  The top 8 fleet-counted types are charted: Core = top 5 (visible by default), Other = the
+ *  next 3. Attachment-only types (ENIs) and derived security series are appended after them so
+ *  they stay reachable however many types the fleet has: ENIs join Other, derived series keep
+ *  their own group. Every charted series is in exactly one group; Other and derived default hidden. */
+export function trendLegendGroups(ranked: readonly string[]) {
+  const counted = ranked.filter(countsTowardFleetTotal);
+  const attachmentOnly = ranked.filter(t => FLEET_TOTAL_EXCLUDED_TYPES.has(t) && !isDerivedTrendType(t));
+  const derivedTrendTypes = ranked.filter(isDerivedTrendType);
+  const coreTypes = counted.slice(0, 5);
+  const otherTypes = [...counted.slice(5, 8), ...attachmentOnly];
+  return { trendTypes: [...coreTypes, ...otherTypes, ...derivedTrendTypes], coreTypes, otherTypes, derivedTrendTypes };
+}
+
 /** Derived security-count trend series (gap L129), written by the sync lambda's
  *  DERIVED_SNAPSHOTS (scripts/v2/steampipe/sync_lambda.py — LOCKSTEP: keys must match) from
  *  the /security predicates in security-findings.ts. Excluded from the trend `total` (the
