@@ -354,7 +354,8 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const derivedTrendTypes = (resTrend?.types ?? []).filter((t) => isDerivedTrendType(t));
   const trendTypes = [...realTrendTypes.slice(0, 8), ...derivedTrendTypes];
   const trendSeries = trendTypes.map((t) => ({ key: t, label: INV_LABEL(t) }));
-  const coreTypes = realTrendTypes.slice(0, 5); // never a derived series, even on a tiny fleet
+  // Never a derived series or a fleet-total-excluded type (ENIs), even on a tiny fleet.
+  const coreTypes = realTrendTypes.filter(countsTowardFleetTotal).slice(0, 5);
   // Chart honesty (gap L124): a (day, type) whose account coverage is less than the RESOLVED
   // scope is DROPPED from that day's point — the summed line would otherwise dip on an
   // account's silent day, presenting a sync artifact as a fleet change (the same rule the

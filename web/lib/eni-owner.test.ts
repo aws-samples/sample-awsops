@@ -25,12 +25,18 @@ describe('eniOwnerResolver', () => {
     const input = { eni: [shared('111122223333'), shared('444455556666')],
       ec2: [{ resource_id: 'i-0abc', region: R, name: 'node-a' }] };
     expect(resolve(input, '10.0.0.9')).toEqual({ owner: expect.objectContaining({ kind: 'ec2', eniId: 'eni-s' }) });
+    // Copies that disagree on an owner-identifying field (sweep skew) are ambiguous, in either order.
+    const moved = { ...shared('444455556666'), attached_instance_id: 'i-0def' };
+    for (const order of [[shared('111122223333'), moved], [moved, shared('111122223333')]])
+      expect(resolve({ ...input, eni: order }, '10.0.0.9')).toEqual({ reason: 'owner_ambiguous', eniId: null });
   });
 
   it('recognizes a NAT ENI by its InterfaceType even without the description prefix', () => {
     const input = { nat_gateway: [{ resource_id: 'nat-0123456789abcdef0', region: R }],
       eni: [eni('eni-n', '10.0.2.9', { interface_type: 'natGateway', description: 'nat-0123456789abcdef0' })] };
     expect(resolve(input, '10.0.2.9')).toEqual({ owner: expect.objectContaining({ kind: 'nat_gateway' }) });
+    const snake = { ...input, eni: [{ ...input.eni[0], interface_type: 'nat_gateway' }] };
+    expect(resolve(snake, '10.0.2.9')).toEqual({ owner: expect.objectContaining({ kind: 'nat_gateway' }) });
   });
 
   it('resolves an ELB ENI by the exact ARN suffix, not by name alone', () => {

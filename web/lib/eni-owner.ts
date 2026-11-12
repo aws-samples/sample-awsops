@@ -19,7 +19,7 @@ export type EniOwnerKind = 'ec2' | 'alb' | 'nlb' | 'lambda' | 'rds' | 'rds_clust
 export type EniUnresolved =
   | 'ecs_managed'        // ECS task ENI — the ECS task map owns this attribution
   | 'secondary_ip'       // secondary IP on an instance ENI (e.g. VPC CNI pod IP) — not the instance
-  | 'owner_not_synced'   // the ENI names an owner that is absent from inventory
+  | 'owner_not_synced'   // the owner the ENI names (or the one cluster its DBs name) is absent from inventory
   | 'owner_ambiguous'    // several inventory resources could own the ENI
   | 'owner_inventory_incomplete' // the owner lookup (or an inference guard) relies on an incomplete read
   | 'owner_unknown';     // no rule identifies the owner
@@ -51,6 +51,13 @@ const scoped = (region: string, vpc: string, value: string) => JSON.stringify([r
 const LAMBDA_PREFIX = 'AWS Lambda VPC ENI-';
 const UUID_SUFFIX = /-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ELB_DESC = /^ELB (app|net)\/([^/\s]+)\/([0-9a-f]+)$/;
+/** EC2 reports `natGateway`; accept the snake_case spelling a normalizing source could emit. */
+const NAT_INTERFACE_TYPES = new Set(['natGateway', 'nat_gateway']);
+/** Every field the owner rules read: two copies of one ENI merge only when all of them agree. */
+const OWNER_FIELDS = ['resource_id', 'interface_type', 'description', 'requester_id', 'requester_managed',
+  'attached_instance_id', 'availability_zone', 'subnet_id'] as const;
+const sameEni = (a: Row, b: Row) => str(a.resource_id) !== ''
+  && OWNER_FIELDS.every(field => str(a[field]) === str(b[field]));
 
 function privateIps(eni: Row): { ip: string; primary: boolean }[] {
   const primary = str(eni.private_ip_address);
@@ -71,7 +78,8 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
   const gap = (...types: string[]) => types.some(type => incomplete.has(type));
   // IP → ENI, scoped by region and VPC (a private IP is unique inside one VPC). The same ENI can
   // appear once per account in a multi-account scope (a RAM-shared VPC), so a repeat of the same
-  // ENI id merges; two different ENIs claiming one IP are contradictory and resolve as ambiguous.
+  // ENI id merges when every owner-identifying field agrees; copies that disagree (sweep skew) and
+  // two different ENIs claiming one IP are contradictory and resolve as ambiguous.
   const byIp = new Map<string, { eni: Row; primary: boolean } | 'conflict'>();
   for (const eni of input.eni ?? []) {
     const region = str(eni.region), vpc = str(eni.vpc_id);
@@ -80,9 +88,8 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
       const k = scoped(region, vpc, ip);
       const seen = byIp.get(k);
       if (seen === undefined) byIp.set(k, { eni, primary });
-      else if (seen !== 'conflict' && str(seen.eni.resource_id) === str(eni.resource_id) && str(eni.resource_id)) {
-        byIp.set(k, { eni: seen.eni, primary: seen.primary || primary });
-      } else byIp.set(k, 'conflict');
+      else if (seen !== 'conflict' && sameEni(seen.eni, eni) && seen.primary === primary) continue;
+      else byIp.set(k, 'conflict');
     }
   }
   const byRegionId = (rows: Row[] | undefined) => {
@@ -119,8 +126,8 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
       const row = id ? vpce.get(key(id)) : undefined;
       return row ? owner('vpc_endpoint', row, eniId) : id ? absent(eniId, 'vpc_endpoint') : miss('owner_unknown', eniId);
     }
-    // EC2 reports `natGateway` (camelCase) in InterfaceType; the description is the fallback.
-    if (type === 'natGateway' || desc.startsWith('Interface for NAT Gateway')) {
+    // InterfaceType first; the description is the fallback.
+    if (NAT_INTERFACE_TYPES.has(type) || desc.startsWith('Interface for NAT Gateway')) {
       const id = /\b(nat-[0-9a-f]{8,})\b/.exec(desc)?.[1];
       const row = id ? nat.get(key(id)) : undefined;
       return row ? owner('nat_gateway', row, eniId) : id ? absent(eniId, 'nat_gateway') : miss('owner_unknown', eniId);

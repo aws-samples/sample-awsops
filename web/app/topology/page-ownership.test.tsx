@@ -214,7 +214,7 @@ describe('bounded ownership inventory paging', () => {
     const pending: (() => void)[] = [];
     let active = 0, peak = 0, completed = 0;
     const requests = serve({
-      inventory: Object.fromEntries(['target_group', 'ecs_task', 'subnet'].map(type => [type, largeInventory(type)])),
+      inventory: Object.fromEntries(['target_group', 'ecs_task', 'subnet', 'eni'].map(type => [type, largeInventory(type)])),
       inventoryReply: async (_url, body, signal) => {
         active++; peak = Math.max(peak, active);
         await new Promise<void>(resolve => {
@@ -229,7 +229,7 @@ describe('bounded ownership inventory paging', () => {
     try {
       await waitFor(() => expect(pending.length).toBeGreaterThan(0));
       expect(peak).toBeLessThanOrEqual(2);
-      while (completed < 24) {
+      while (completed < 25) {
         await waitFor(() => expect(pending.length).toBeGreaterThan(0));
         await act(async () => { pending.splice(0).forEach(resolve => resolve()); });
         expect(peak).toBeLessThanOrEqual(2);
@@ -237,9 +237,11 @@ describe('bounded ownership inventory paging', () => {
       await screen.findByRole('option', { name: 'ECS · ecs-app' });
       const inventoryReads = requests.filter(url => url.pathname.startsWith('/api/inventory/'));
       expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(21);
-      expect(inventoryReads).toHaveLength(24);
+      expect(inventoryReads).toHaveLength(25);
+      // RDS placement inference is saved-graph-only: the live page never reads RDS sources.
+      expect(inventoryReads.some(url => /\/rds/.test(url.pathname))).toBe(false);
       expect(inventoryReads.every(url => url.searchParams.get('accounts') === 'self')).toBe(true);
-      for (const type of ['target_group', 'ecs_task', 'subnet']) {
+      for (const type of ['target_group', 'ecs_task', 'subnet', 'eni']) {
         expect(inventoryReads.filter(url => url.pathname.endsWith(`/${type}`))
           .map(url => url.searchParams.get('offset'))).toEqual(['0', '500']);
       }
