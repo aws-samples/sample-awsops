@@ -96,6 +96,8 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
   to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
+- `v2/agentcore/provision.py` maps the applied `agentcore.chat_section_handoff_enabled` boolean
+  to `CHAT_SECTION_HANDOFF_ENABLED`; missing/false is off and shell overrides are ignored.
 
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
   Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known

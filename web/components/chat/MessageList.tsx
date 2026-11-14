@@ -47,6 +47,8 @@ export interface Msg {
   // Answer-provenance footer (design handoff 개선안 ③): known only after the invoke resolves,
   // so these arrive on a second `meta` frame — absent against a legacy agent image.
   tools?: string[]; model?: string; elapsedMs?: number;
+  // Cross-gateway handoff provenance: canonical section keys the answer used, in use order.
+  gateways?: string[];
   // v1-parity footer extras (2026-07-19): per-answer token usage + estimated USD (agent must
   // report usage AND a priced model), and the generated queries surfaced during the run.
   usage?: { inputTokens: number; outputTokens: number }; costUsd?: number;
@@ -165,6 +167,19 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                     {tt('⧉ 복사')}
                   </button>
                 </div>
+                {m.gateways && m.gateways.length >= 2 && (
+                  <div data-testid="gateways-used" className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-ink-400">{tt('사용한 게이트웨이')}</span>
+                    {m.gateways.map((k, gi) => (
+                      <span key={k} className="text-[10.5px] text-ink-500">
+                        {gi > 0 && <span className="mr-1.5 text-ink-300">·</span>}
+                        <span className="rounded border border-ink-100 bg-paper-muted px-1.5 py-0.5 font-mono">
+                          {sectionByKey(k === 'external-obs' ? 'observability' : k)?.label ?? k}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {m.tools && m.tools.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <span className="text-[10px] text-ink-400">Tools</span>

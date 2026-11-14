@@ -715,6 +715,7 @@ export const TERMS: Record<string, Pair> = {
   '· 통합 분석': { en: '· Combined Analysis', zh: '· 综合分析', ja: '· 統合分析' },
   '답변 복사': { en: 'Copy answer', zh: '复制回答', ja: '回答をコピー' },
   '⧉ 복사': { en: '⧉ Copy', zh: '⧉ 复制', ja: '⧉ コピー' },
+  '사용한 게이트웨이': { en: 'Gateways used', zh: '使用的网关', ja: '使用したゲートウェイ' },
   '이어서 물어보기': { en: 'Ask a follow-up', zh: '继续追问', ja: '続けて質問する' },
   '다른 도메인으로 더 보기': { en: 'See more from another domain', zh: '查看其他领域的更多信息', ja: '他のドメインでさらに見る' },
   '새 대화': { en: 'New chat', zh: '新建对话', ja: '新しいチャット' },
