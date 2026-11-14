@@ -4,8 +4,14 @@ import { resourceSection, stripResources } from './route-resources';
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
 const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
 
+// An IAM principal named in the question (IAM, role, 역할, principal) makes it an IAM
+// question even next to a network object or resource ID. Bare 정책/권한/policy/permission do not:
+// "보안 그룹 정책", "ENI 권한", "sg-… 정책" stay with the network object.
+const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
+// who/누가 are deliberately NOT principals: "보안 그룹 누가 변경했어" is a change-history question.
+
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
-const RULES: { key: string; re: RegExp }[] = [
+const RULES: { key: string; re: RegExp; unless?: RegExp }[] = [
   // observability = external-obs. FIRST rule on purpose (round-4 review MAJOR, 2026-07-31): an
   // explicit VENDOR NAME is the strongest routing signal there is, so it must be checked before
   // EVERY generic domain rule — not just before 'monitoring' (the round-2/3 fix, which left
@@ -38,8 +44,9 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'cost', re: /비용|요금|예산|절감|billing|cost|budget|forecast|spend/i },
   // Network objects whose names contain security words: a security GROUP, NACL or route table is a
   // network object (the security gateway is IAM-only), so these must beat the security rule's
-  // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy").
-  { key: 'network', re: NETWORK_OBJECTS },
+  // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy"). It does not apply when
+  // an IAM principal is named, so "which IAM role may modify the security group" reaches the security rule.
+  { key: 'network', re: NETWORK_OBJECTS, unless: PRINCIPAL_INTENT },
   // The network rule above claims SG/NACL/route-table phrasings first; the `보안(?!\s*그룹)`
   // lookahead keeps a bare `보안` from claiming "보안  그룹" (any whitespace) on prompts it does not reach.
   { key: 'security', re: /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
@@ -80,13 +87,14 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
-// Explicit IAM intent: words that make a question an IAM/permissions question even next to a resource ID.
-const IAM_INTENT = /권한|역할|정책|iam|policy|role|denied|permission/i;
+function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean {
+  return r.re.test(text) && !(r.unless && r.unless.test(text));
+}
 
 /** Section of the named resource when it should decide the route, else `undefined`.
  *  Keywords are matched with resource IDs/ARNs blanked (`stripResources`). The resource decides only
- *  when (a) the question has no IAM intent (권한/역할/정책/IAM/policy/role/denied/permission), unless
- *  the resource is an IAM ARN, (b) at most one area's keywords match, and (c) that one match is
+ *  when (a) the question names no IAM principal (IAM/role/역할/principal), unless the resource is an
+ *  IAM ARN, (b) at most one area's keywords match, and (c) that one match is
  *  absent, the resource's own section, or `security` through the generic words (보안, public, 노출)
  *  — the documented collision next to a network or instance ID. Otherwise ("which IAM role can
  *  modify sg-…" → security, "i-… 의 CPU 지표" → monitoring, "sg-… 비용" → cost, "eni-… 와 RDS
@@ -96,7 +104,7 @@ function resourceRoute(prompt: string): string | undefined {
   const resource = resourceSection(prompt);
   if (!resource || !sectionByKey(resource)) return undefined;
   const text = stripResources(prompt);
-  if (resource !== 'security' && IAM_INTENT.test(text)) return undefined; // IAM question about a resource
+  if (resource !== 'security' && PRINCIPAL_INTENT.test(text)) return undefined; // IAM question about a resource
   const matched = matchedSections(prompt);
   if (matched.length > 1) return undefined; // several areas: keywords / classifier / fan-out decide
   const first = matched[0];
@@ -113,14 +121,14 @@ function resourceRoute(prompt: string): string | undefined {
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
-  // Precedence: pin > named resource (see resourceRoute: only with no IAM intent and at most one
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
   // area's keywords) > observability vendor > keywords > previous > 'ops'.
   if (pinned && sectionByKey(pinned)) return pinned;
   const resource = resourceRoute(prompt);
   if (resource) return resource;
   const text = stripResources(prompt);
   for (const r of RULES) {
-    if (r.re.test(text)) return r.key;
+    if (ruleMatches(r, text)) return r.key;
   }
   if (previous && sectionByKey(previous)) return previous;
   return 'ops';
@@ -167,7 +175,7 @@ export function matchedSections(prompt: string): string[] {
   const keys: string[] = [];
   const text = stripResources(prompt);
   for (const r of RULES) {
-    if (r.re.test(text) && !keys.includes(r.key)) keys.push(r.key);
+    if (ruleMatches(r, text) && !keys.includes(r.key)) keys.push(r.key);
   }
   return keys;
 }
@@ -188,7 +196,7 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
-  // Precedence: pin > named resource (see resourceRoute: only with no IAM intent and at most one
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
   // area's keywords) > observability vendor > keywords/classifier > previous > fallback. Otherwise
   // the regex/classifier path below runs unchanged (continuity, multi-domain).
   const resource = resourceRoute(prompt);
@@ -196,10 +204,12 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     return single(resource, [entry(resource, 1)], 'resource');
   }
   const matched = matchedSections(prompt);
-  // A network object named next to security words ("보안 그룹 정책", "ENI 권한") is a network question:
-  // the security gateway has no SG/ENI/NACL/route tools, so `security` never competes for it — on the
-  // regex path or in front of the classifier.
-  const keys = NETWORK_OBJECTS.test(stripResources(prompt)) ? matched.filter((k) => k !== 'security') : matched;
+  // A network object named next to security words ("보안 그룹 정책", "ENI 권한") with no IAM principal
+  // is a network question: the security gateway has no SG/ENI/NACL/route tools, so `security` never
+  // competes for it — on the regex path or in front of the classifier. Naming an IAM principal
+  // ("which IAM role may modify the security group") keeps `security`.
+  const text = stripResources(prompt);
+  const keys = NETWORK_OBJECTS.test(text) && !PRINCIPAL_INTENT.test(text) ? matched.filter((k) => k !== 'security') : matched;
   // v1 lesson (11-route priority ladder: specialized routes above the general catch-all):
   // a lone 'ops' keyword hit is weak evidence — generic nouns (load balancer, certificate,
   // S3 bucket) live in the ops rules while the USER INTENT is often network/cost/monitoring.

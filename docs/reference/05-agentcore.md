@@ -166,17 +166,22 @@ in one answer instead of reporting that no tool is available.
   "gateways used" card when it lists two or more.
 - **Resource-first routing:** a prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
   and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
-  section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`). The IDs and
-  ARNs are blanked before keyword matching (`stripResources`), so an ID is never read as a keyword.
-  The resource decides (method `resource`) only when the question has no IAM intent (unless it names
-  an IAM ARN), at most one area's keywords match, and that match is absent, the resource's own
-  section or `security` through generic words (`보안`, public, 노출). An IAM-intent question ("which
-  IAM role can modify sg-…") stays on security; a question that matches several areas ("eni-… 와 RDS
-  연결") goes through the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out as
-  before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost. Network objects (security
-  group, ENI, NACL/network ACL, route table) match a network rule placed before the security rule,
-  and on the hybrid path `security` is dropped from the candidates when one is named, so "보안 그룹
-  정책" or "ENI 권한" goes to network without the classifier.
+  section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`). IDs are
+  blanked and an ARN is reduced to its service name before keyword matching (`stripResources`), so
+  an ID or ARN resource text is never a keyword while an ARN of a service without its own resource
+  rule (for example DynamoDB) still routes by its service name.
+  The resource decides (method `resource`) only when the question names no IAM principal (IAM, role,
+  역할, principal; unless it is an IAM ARN), at most one area's keywords match, and that match is
+  absent, the resource's own section or `security` through generic words (`보안`, public, 노출).
+  An IAM-principal question ("which IAM role can modify sg-…") stays on security, while a bare
+  policy word ("sg-… 정책") keeps the network route; a question that matches several areas ("eni-…
+  와 RDS 연결") goes through the keyword rules, the hybrid classifier and ADR-003 multi-domain
+  fan-out as before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost. Network objects
+  (security group, ENI, NACL/network ACL, route table) match a network rule placed before the
+  security rule, which does not apply when an IAM principal is named; on the hybrid path `security`
+  is dropped from the candidates only when a network object and no principal is named, so "보안
+  그룹 정책" or "ENI 권한" goes to network without the classifier, while "which IAM role may modify
+  the security group" stays on security.
 
 ### Tool result completeness contract
 

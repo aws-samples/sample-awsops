@@ -6,7 +6,8 @@ const ID_TAIL = '-(?:[0-9a-f]{17}|[0-9a-f]{8})\\b';
 const NETWORK_PREFIXES = 'eni|sg|acl|rtb|subnet|vpc|vpce|tgw-attach|tgw-rtb|tgw|nat|igw|pcx|vpn|vgw|cgw';
 const NETWORK_ID = new RegExp(`\\b(?:${NETWORK_PREFIXES})${ID_TAIL}`, 'i');
 const INSTANCE_ID = new RegExp(`\\bi${ID_TAIL}`, 'i');
-const ARN = /arn:aws[a-z-]*:\S+/gi;
+// An ARN's resource part uses ASCII ARN characters only, so the match stops at CJK text or a comma.
+const ARN = /arn:aws[a-z-]*:([a-z0-9-]+):[\w:/.+=@*-]*/gi;
 
 // Ordered list; the match with the lowest index in the prompt wins (first-named resource).
 const RESOURCE_RULES: { re: RegExp; key: string }[] = [
@@ -29,10 +30,12 @@ export function resourceSection(prompt: string): string | undefined {
   return best?.key;
 }
 
-/** The prompt with resource IDs and ARNs blanked, so an ID such as `sg-…` or `eni-…` is never read as a keyword. */
+/** The prompt prepared for keyword matching: IDs are blanked and an ARN is reduced to its service
+ *  name, so `sg-…`/`eni-…` or ARN resource text is never read as a keyword while
+ *  `arn:aws:dynamodb:…` still matches the data rule. */
 export function stripResources(prompt: string): string {
   return prompt
-    .replace(ARN, ' ')
+    .replace(ARN, (_m, service: string) => ` ${service} `)
     .replace(new RegExp(NETWORK_ID.source, 'gi'), ' ')
     .replace(new RegExp(INSTANCE_ID.source, 'gi'), ' ');
 }

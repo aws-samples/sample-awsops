@@ -40,12 +40,25 @@ describe('pickGateway', () => {
       'ENI 권한 확인',
       'network ACL policy review',
       '라우트 테이블 정책',
+      'sg 정책 확인',
+      'who changed the security group',
+      '보안 그룹 누가 변경했어',
     ];
     for (const p of prompts) {
       expect(pickGateway(p)).toBe('network');
       expect((await classifyRoute(p)).primary).toBe('network');
     }
     expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
+  });
+  it('an IAM principal next to a network object keeps the security route', async () => {
+    for (const p of ['어떤 IAM 역할이 보안 그룹을 수정할 수 있나요?', 'which IAM role may modify the security group?']) {
+      expect(pickGateway(p)).toBe('security');
+      expect((await classifyRoute(p)).primary).toBe('security');
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('security');
+    }
+    expect(pickGateway('access control on the security group')).toBe('network');
   });
   it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
     for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
@@ -433,7 +446,7 @@ describe('resource-first routing', () => {
   });
 
   // A named resource must not override an explicit subject from another area: with IDs/ARNs blanked,
-  // the resource's section wins only when there is no IAM intent (unless it is an IAM ARN), at most
+  // the resource's section wins only when no IAM principal is named (unless it is an IAM ARN), at most
   // one area's keywords match, and that match is absent, its own section, or `security` through
   // generic words (보안/public/노출).
   const otherAreaIntent: [string, string][] = [
@@ -446,7 +459,6 @@ describe('resource-first routing', () => {
     ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
     ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
     ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
-    ['eni-0a1b2c3d 에 대한 권한 확인', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);
@@ -455,6 +467,19 @@ describe('resource-first routing', () => {
     const r = await classifyRoute(prompt);
     expect(r.primary).toBe(want);
     expect(r.method).not.toBe('resource');
+  });
+  it('a bare policy word next to a network ID keeps the resource route', async () => {
+    for (const p of ['eni-0a1b2c3d 에 대한 권한 확인', 'sg-0123456789abcdef0 의 정책 확인']) {
+      expect(pickGateway(p)).toBe('network');
+      expect(await classifyRoute(p)).toMatchObject({ primary: 'network', method: 'resource' });
+    }
+  });
+  it('an unrecognised ARN keeps its service keyword', () => {
+    expect(pickGateway('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검')).toBe('data');
+    expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,비용분석해줘')).toBe('cost');
+    const stripped = stripResources('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검');
+    expect(stripped).toContain('dynamodb');
+    expect(stripped).not.toContain('123456789012');
   });
   it('a resource question naming several areas runs the classifier path unchanged', async () => {
     const classify = vi.fn(async () => [{ key: 'cost', score: 0.9 }]);
@@ -481,6 +506,7 @@ describe('resource-first routing', () => {
     const stripped = stripResources('sg-0123456789abcdef0 와 arn:aws:rds:ap-northeast-2:123456789012:db:mydb 확인');
     expect(stripped).not.toContain('sg-');
     expect(stripped).not.toContain('arn:');
+    expect(stripped).not.toContain('mydb');
     expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost']);
   });
 });
