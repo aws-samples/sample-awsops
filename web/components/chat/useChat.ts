@@ -20,6 +20,11 @@ export function newSessionId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Accept only a string array (persisted meta / SSE payloads are untrusted shapes). */
+function asGateways(v: unknown): string[] | undefined {
+  return Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined;
+}
+
 export function parseFrame(frame: string): {
   kind: 'meta' | 'status' | 'delta' | 'error' | 'done' | 'ignore';
   threadId?: string;
@@ -28,6 +33,7 @@ export function parseFrame(frame: string): {
   method?: string;
   via?: string;
   tools?: string[];
+  gateways?: string[];
   model?: string;
   phase?: string;
   elapsedMs?: number;
@@ -139,12 +145,12 @@ export function useChat() {
         return typeof a === 'string' ? a : undefined;
       };
       setMsgs(data.messages.map((m, i) => {
-        const meta = (m.meta ?? {}) as { ranked?: Msg['ranked']; method?: string; via?: string; tools?: string[]; model?: string; elapsedMs?: number; usage?: Msg['usage']; costUsd?: number };
+        const meta = (m.meta ?? {}) as { ranked?: Msg['ranked']; method?: string; via?: string; tools?: string[]; gateways?: unknown; model?: string; elapsedMs?: number; usage?: Msg['usage']; costUsd?: number };
         const next = data.messages[i + 1];
         return {
           role: m.role, content: m.content, gateway: m.gateway ?? undefined,
           ranked: meta.ranked, method: meta.method, via: meta.via,
-          tools: meta.tools, model: meta.model, elapsedMs: meta.elapsedMs,
+          tools: meta.tools, gateways: asGateways(meta.gateways), model: meta.model, elapsedMs: meta.elapsedMs,
           usage: meta.usage, costUsd: meta.costUsd,
           account: m.role === 'assistant' ? accountOf(m) : (next?.role === 'assistant' ? accountOf(next) : undefined),
         };
@@ -213,10 +219,11 @@ export function useChat() {
       }
       // Answer-provenance footer: a second, later `meta` frame (no `gateway`) carries the
       // server-measured elapsed total + tools/model + token usage/cost, known only after resolve.
-      if (parsed.tools || parsed.model || parsed.elapsedMs !== undefined || parsed.usage) {
+      if (parsed.tools || asGateways(parsed.gateways) || parsed.model || parsed.elapsedMs !== undefined || parsed.usage) {
         patchLast((m) => ({
           ...m,
           tools: parsed.tools ?? m.tools,
+          gateways: asGateways(parsed.gateways) ?? m.gateways,
           model: parsed.model ?? m.model,
           elapsedMs: parsed.elapsedMs ?? m.elapsedMs,
           usage: parsed.usage ?? m.usage,

@@ -1,7 +1,33 @@
 import { sectionByKey, activeSections } from './sections';
 
+// Network objects whose names or questions carry security words; the security gateway is IAM-only.
+const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
+
+// An IAM principal named in the question (IAM, role, 역할, principal) makes a question about a
+// network object an IAM question ("which IAM role may modify the security group"); the network rule
+// steps aside and the security rule (which holds the same words) answers. Bare
+// 정책/권한/policy/permission do not: "보안 그룹 정책", "ENI 권한" stay with the network object.
+// user/사용자 are deliberately NOT principals: "the route table for the user subnet" is a network question.
+const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
+// who/누가 are deliberately NOT principals: "보안 그룹 누가 변경했어" is a change-history question.
+
+// A network object together with its own policy words directly after it ("보안 그룹 정책", "ENI 권한",
+// "보안 그룹의 정책", "security group policy"): only whitespace or 의/에 대한 may sit between them. A
+// policy word anywhere else ("보안 그룹과 버킷 정책", "security group and S3 policy") is another
+// security subject and keeps `security` in the candidates.
+const NETWORK_OBJECT_WITH_POLICY = new RegExp(
+  `(?:${NETWORK_OBJECTS.source})(?:\\s*(?:의|에\\s*대한)?\\s*(?:정책|권한|policy|permissions?))?`, 'gi');
+
+/** True when every security-rule match in `text` comes from a network object and its own policy
+ *  words: with those blanked out, nothing in `text` matches the security rule any more. */
+function securityOnlyFromNetworkObjects(text: string): boolean {
+  return !SECURITY_WORDS.test(text.replace(NETWORK_OBJECT_WITH_POLICY, ' '));
+}
+
+const SECURITY_WORDS = /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|principals?|denied|permission|public|노출/i;
+
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
-const RULES: { key: string; re: RegExp }[] = [
+const RULES: { key: string; re: RegExp; unless?: RegExp }[] = [
   // observability = external-obs. FIRST rule on purpose (round-4 review MAJOR, 2026-07-31): an
   // explicit VENDOR NAME is the strongest routing signal there is, so it must be checked before
   // EVERY generic domain rule — not just before 'monitoring' (the round-2/3 fix, which left
@@ -32,8 +58,15 @@ const RULES: { key: string; re: RegExp }[] = [
   // move `tempo|트레이스|\btrace\b` from the monitoring rule below to this rule (see ADR-017 §Trade-offs).
   { key: 'observability', re: /promql|prometheus|프로메테우스|clickhouse|클릭하우스|datadog|데이터독|dynatrace|다이나트레이스|newrelic|new relic|뉴렐릭/i },
   { key: 'cost', re: /비용|요금|예산|절감|billing|cost|budget|forecast|spend/i },
-  { key: 'security', re: /보안|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
-  { key: 'network', re: /통신|연결|네트워크|포트|라우트|reachab|network|connectivity|security ?group|\bsg\b|nacl|tgw|vpn|peering|flow ?log/i },
+  // Network objects whose names contain security words: a security GROUP, NACL or route table is a
+  // network object (the security gateway is IAM-only), so these must beat the security rule's
+  // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy"). It does not apply when
+  // an IAM principal is named, so "which IAM role may modify the security group" reaches the security rule.
+  { key: 'network', re: NETWORK_OBJECTS, unless: PRINCIPAL_INTENT },
+  // The network rule above claims SG/NACL/route-table phrasings first; the `보안(?!\s*그룹)`
+  // lookahead keeps a bare `보안` from claiming "보안  그룹" (any whitespace) on prompts it does not reach.
+  { key: 'security', re: SECURITY_WORDS },
+  { key: 'network', re: /통신|연결|네트워크|포트|라우트|reachab|network|connectivity|tgw|vpn|peering|flow ?log/i },
   { key: 'container', re: /파드|컨테이너|eks|ecs|kubernetes|k8s|pod|istio|namespace|sidecar/i },
   { key: 'data', re: /쿼리|데이터베이스|rds|aurora|dynamo|elasticache|redis|msk|kafka|database|slow query|throttl/i },
   { key: 'cost', re: /\$\d/i },
@@ -70,6 +103,10 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
+function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean {
+  return r.re.test(text) && !(r.unless && r.unless.test(text));
+}
+
 /** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
  *  conversation's previous section (when the caller vouches for it); else 'ops'.
  *
@@ -81,7 +118,7 @@ const RULES: { key: string; re: RegExp }[] = [
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
   if (pinned && sectionByKey(pinned)) return pinned;
   for (const r of RULES) {
-    if (r.re.test(prompt)) return r.key;
+    if (ruleMatches(r, prompt)) return r.key;
   }
   if (previous && sectionByKey(previous)) return previous;
   return 'ops';
@@ -126,7 +163,7 @@ export const ACTIVE_FALLBACK = activeSections()[0]?.key ?? 'ops';
 export function matchedSections(prompt: string): string[] {
   const keys: string[] = [];
   for (const r of RULES) {
-    if (r.re.test(prompt) && !keys.includes(r.key)) keys.push(r.key);
+    if (ruleMatches(r, prompt) && !keys.includes(r.key)) keys.push(r.key);
   }
   return keys;
 }
@@ -148,15 +185,23 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
   const matched = matchedSections(prompt);
+  const text = prompt;
+  // Drop `security` only when its match comes from the network object itself — the object's name plus
+  // its own policy/permission words ("보안 그룹 정책", "ENI 권한") — and no IAM principal is named. Any
+  // other security subject in the question ("보안 그룹과 퍼블릭 노출된 S3") keeps `security` in the
+  // candidates, so the classifier and ADR-003 fan-out still decide.
+  const networkOwnsSecurity = NETWORK_OBJECTS.test(text) && !PRINCIPAL_INTENT.test(text)
+    && securityOnlyFromNetworkObjects(text);
+  const keys = networkOwnsSecurity ? matched.filter((k) => k !== 'security') : matched;
   // v1 lesson (11-route priority ladder: specialized routes above the general catch-all):
   // a lone 'ops' keyword hit is weak evidence — generic nouns (load balancer, certificate,
   // S3 bucket) live in the ops rules while the USER INTENT is often network/cost/monitoring.
   // Let the classifier confirm or override a lone catch-all match; specific single matches
   // keep short-circuiting (fast, no Bedrock call). LLM failure falls through to the same
   // regex result below, so behavior is unchanged when the classifier is off or errors.
-  const loneCatchAll = matched.length === 1 && matched[0] === 'ops' && !!(opts.llmEnabled && opts.classify);
-  if (matched.length === 1 && !loneCatchAll) {
-    return single(matched[0], [entry(matched[0], 1)], 'regex');
+  const loneCatchAll = keys.length === 1 && keys[0] === 'ops' && !!(opts.llmEnabled && opts.classify);
+  if (keys.length === 1 && !loneCatchAll) {
+    return single(keys[0], [entry(keys[0], 1)], 'regex');
   }
   // PR #194 review MAJOR (L2 + L4): an explicit VENDOR NAME is the strongest routing signal there
   // is — that is why the observability rule sits first in RULES — but the fast-path above only fires
@@ -168,8 +213,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // like "grafana 대시보드에서 본 trace 이상해" to observability ALONE drops `monitoring`, which is
   // where the tempo tools actually live in the default (official_mcp_enabled=false) deployment — a
   // dead end. Vendor first, then the rest, so the fan-out still reaches the section holding tools.
-  if (matched[0] === 'observability') {
-    const ranked = matched.map((k, i) => entry(k, i === 0 ? 1 : 0.5));
+  if (keys[0] === 'observability') {
+    const ranked = keys.map((k, i) => entry(k, i === 0 ? 1 : 0.5));
     const selected = selectMultiRoute(ranked, opts.minScore);
     const multiDomain = selected.length >= 2;
     return { primary: 'observability', ranked, method: 'regex', multiDomain,
@@ -187,8 +232,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     } catch { /* classifier must never block chat — fall through */ }
   }
   // LLM off/empty/failed: legacy first-match if any rule hit, else fallback.
-  if (matched.length > 0) {
-    return single(matched[0], [entry(matched[0], 1)], 'regex');
+  if (keys.length > 0) {
+    return single(keys[0], [entry(keys[0], 1)], 'regex');
   }
   if (opts.previous && sectionByKey(opts.previous)) {
     // distinct method so ADR-003[legacy 038] routing/misroute telemetry keeps continuity separate from the catch-all

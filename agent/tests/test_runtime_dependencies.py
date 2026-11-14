@@ -154,3 +154,65 @@ class RuntimeDependencyContracts(unittest.TestCase):
                 await client.close()
             asyncio.run(run())
         """)
+
+    def test_strands_offers_and_runs_a_tool_registered_mid_answer(self):
+        # Section handoff (agent.py _build_handoff) registers a consulted gateway's tools on the
+        # running Agent from inside the consult_section tool. That only works if the event loop
+        # re-reads tool specs every cycle and resolves tools at call time, so pin it against the
+        # real SDK with a scripted model.
+        self.run_contract("""
+            import asyncio
+            from strands import Agent, tool
+            from strands.models.model import Model
+
+            seen_specs, calls, holder = [], [], []
+
+            class ScriptedModel(Model):
+                def __init__(self):
+                    self.turn = 0
+                def update_config(self, **kw):
+                    pass
+                def get_config(self):
+                    return {}
+                async def structured_output(self, *a, **kw):
+                    raise NotImplementedError
+                    yield
+                async def stream(self, messages, tool_specs=None, system_prompt=None, **kw):
+                    seen_specs.append(sorted(s["name"] for s in (tool_specs or [])))
+                    self.turn += 1
+                    yield {"messageStart": {"role": "assistant"}}
+                    if self.turn in (1, 2):
+                        name = "consult" if self.turn == 1 else "attached_tool"
+                        yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": f"t{self.turn}", "name": name}}}}
+                        yield {"contentBlockDelta": {"delta": {"toolUse": {"input": "{}"}}}}
+                        yield {"contentBlockStop": {}}
+                        yield {"messageStop": {"stopReason": "tool_use"}}
+                    else:
+                        yield {"contentBlockDelta": {"delta": {"text": "done"}}}
+                        yield {"contentBlockStop": {}}
+                        yield {"messageStop": {"stopReason": "end_turn"}}
+
+            @tool
+            def attached_tool() -> str:
+                \"\"\"Registered mid-answer.\"\"\"
+                calls.append("attached_tool")
+                return "ok"
+
+            @tool
+            def consult() -> str:
+                \"\"\"Attach attached_tool to the running agent.\"\"\"
+                holder[0].tool_registry.register_tool(attached_tool)
+                return "attached"
+
+            agent = Agent(model=ScriptedModel(), tools=[consult], callback_handler=None)
+            holder.append(agent)
+
+            async def run():
+                async for _ in agent.stream_async("q"):
+                    pass
+
+            asyncio.run(run())
+            assert seen_specs[0] == ["consult"], seen_specs
+            assert "attached_tool" in seen_specs[1], seen_specs
+            assert calls == ["attached_tool"], calls
+        """)

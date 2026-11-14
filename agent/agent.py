@@ -8,11 +8,12 @@ import os
 import datetime as mcp_datetime
 import functools
 import socket
+import threading
 import ipaddress
 import urllib.parse
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
-from strands import Agent
+from strands import Agent, tool
 from strands.hooks import AfterToolCallEvent, HookProvider, HookRegistry
 try:
     from strands.models import BedrockModel, CacheConfig
@@ -26,6 +27,7 @@ import pinned_http
 import model_runtime
 from streamable_http_sigv4 import streamablehttp_client_with_sigv4, streamablehttp_client_with_headers
 from account_utils import effective_account_id
+from section_handoff import SECTION_CAPABILITIES, HandoffState, handoff_prompt
 import boto3
 
 # Configure logging / 로깅 설정
@@ -68,6 +70,126 @@ def _resolve_gateway_key(role, gateways):
         if candidate in gateways:
             return candidate
     return DEFAULT_GATEWAY
+
+def handoff_eligible(payload):
+    """Cross-section handoff runs only for built-in, unrestricted section agents: the runtime
+    flag is on, the BFF opted this request in (boolean True), no custom-agent prompt override,
+    and no tool allowlist (consulted tools bypass `_filter_tools`, so a cap must disable it)."""
+    return (
+        os.environ.get("CHAT_SECTION_HANDOFF_ENABLED") == "true"
+        and payload.get("handoff") is True
+        and not payload.get("systemPromptOverride")
+        and payload.get("toolAllowlist") is None
+    )
+
+
+def _strict_gateway_key(section, gateways):
+    """Canonical then `v2-` key present in `gateways` with a URL — no DEFAULT_GATEWAY fallback,
+    so a missing section gateway is never silently offered as `ops`."""
+    for candidate in (section, f"v2-{section}"):
+        if gateways.get(candidate):
+            return candidate
+    return None
+
+
+def _handoff_primary(gateway_role, gateway_key):
+    """Canonical SECTION_CAPABILITIES key of the answering section, or None (handoff off).
+
+    The resolved gateway key wins so a fallback gateway (e.g. role network resolved to ops) is
+    labelled by the tools that actually answer."""
+    derived = (gateway_key or "").removeprefix("v2-")
+    if derived in SECTION_CAPABILITIES:
+        return derived
+    canon = _GATEWAY_ALIAS.get(gateway_role, gateway_role)
+    return canon if canon in SECTION_CAPABILITIES else None
+
+
+def _build_handoff(primary, primary_gateway_key, stack):
+    """Per-request HandoffState + its `consult_section` Strands tool.
+
+    Returns ``(state, consult_tool, agent_holder)``; the caller appends the Agent to
+    ``agent_holder`` right after constructing it so consulted tools register on that Agent.
+    Consulted gateway sessions join the request's ExitStack, so they live for the whole stream."""
+    available = {}
+    for section in SECTION_CAPABILITIES:
+        if section == primary:
+            continue
+        key = _strict_gateway_key(section, GATEWAYS)
+        if key is None or key == primary_gateway_key:
+            continue
+        available[section] = key
+    agent_holder = []
+    last_connected = {"n": 0}
+    # Strands' default ConcurrentToolExecutor runs sync tools via asyncio.to_thread, so parallel
+    # consult calls must serialize: HandoffState's limit/dedup checks and the ExitStack are unlocked.
+    consult_lock = threading.Lock()
+    # The handler generator can close (client disconnect / cancellation) while a consult thread is
+    # still inside connect. Registering on an ExitStack that already exited would leave that MCP
+    # client's background thread and session running, so the request stack flips `closed` when it
+    # unwinds and connect hands its sessions over only while the stack is still open.
+    life_lock = threading.Lock()
+    closed = {"v": False}
+
+    def _mark_closed():
+        with life_lock:
+            closed["v"] = True
+
+    stack.callback(_mark_closed)
+
+    def connect(section):
+        with life_lock:
+            if closed["v"]:
+                raise RuntimeError("request already closed")
+        key = available[section]
+        url = GATEWAYS[key]
+        # Start the consulted sessions on a consult-local stack (MCPClient.__enter__ = start(),
+        # __exit__ = stop()), then move them onto the request stack under life_lock. If the request
+        # closed meanwhile, stop them right here instead of registering on a dead stack.
+        local = ExitStack()
+        try:
+            client = MCPClient(lambda url=url: create_gateway_transport(url), startup_timeout=10)
+            local.enter_context(client)
+            gw, stdio, _ = apply_official_mcp_gates(get_all_tools(client), key, local)
+        except BaseException:
+            local.close()
+            raise
+        with life_lock:
+            owned = not closed["v"]
+            if owned:
+                stack.push(local.pop_all())
+        if not owned:
+            local.close()
+            raise RuntimeError("request closed during consult")
+        last_connected["n"] = len(gw) + len(stdio)
+        return gw + stdio
+
+    state = HandoffState(
+        primary,
+        available,
+        connect,
+        lambda t: agent_holder[0].tool_registry.register_tool(t),
+        lambda: set(agent_holder[0].tool_registry.registry),
+    )
+
+    def consult_section(section: str) -> str:
+        with consult_lock:
+            last_connected["n"] = 0
+            before = len(agent_holder[0].tool_registry.registry) if agent_holder else 0
+            result = state.consult(section)
+            after = len(agent_holder[0].tool_registry.registry) if agent_holder else 0
+            registered = after - before
+            logging.info(f"[handoff] consult section={str(section)[:40]!r} registered={registered} "
+                         f"skipped={max(last_connected['n'] - registered, 0)}")
+            return result
+
+    consult_section.__doc__ = (
+        "Attach another AWSops section's read-only tools for the rest of this answer.\n\n"
+        "Args:\n"
+        f"    section: one of {', '.join(available) or 'none'}.\n"
+    )
+    return state, tool(consult_section), agent_holder
+
+
 GATEWAY_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 SERVICE = "bedrock-agentcore"
 
@@ -1615,6 +1737,16 @@ async def handler(payload):
             # Filter before dedup: ambiguous identities must not silently pick the first source.
             tools = _dedup_by_tool_name(_filter_tools(
                 gateway_tools + clickhouse_stdio_tools + integration_tools, tool_allowlist))
+            handoff = None
+            handoff_primary = _handoff_primary(gateway_role, gateway_key) if handoff_eligible(payload) else None
+            if handoff_primary:
+                handoff = _build_handoff(handoff_primary, gateway_key, stack)
+                if not handoff[0].available:
+                    handoff = None  # nothing to consult: no tool, no prompt, no frame
+            if handoff:
+                # Consulted tools join AFTER _filter_tools; acceptable only because
+                # handoff_eligible requires toolAllowlist is None (unrestricted request).
+                tools = tools + [handoff[1]]
             tool_names = [t.tool_name for t in tools]
             logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist is not None else 'off'}): {tool_names}")
 
@@ -1629,6 +1761,8 @@ async def handler(payload):
                 system_prompt = system_prompt_override + tool_section + COMMON_FOOTER + account_directive
             else:
                 system_prompt = build_skill_prompt(skill_role, tools) + account_directive
+                if handoff:
+                    system_prompt = system_prompt + "\n\n" + handoff_prompt(handoff[0])
 
             # Cached datasource schemas (and any other BFF-supplied context) reach BOTH branches here.
             if extra_context:
@@ -1648,10 +1782,16 @@ async def handler(payload):
                 callback_handler=None,
                 hooks=lang_hooks,  # tool-result language reminder (no-op when responseLanguage unset)
             )
+            if handoff:
+                handoff[2].append(agent)  # consult_section registers on THIS agent
 
             async for chunk in _stream_text(agent, user_input):
                 started = True
                 yield chunk
+            if handoff and len(handoff[0].used) >= 2:
+                # Sections whose tools were attached to this answer (canonical keys, use order); only
+                # emitted when another section was consulted, so single-gateway answers store nothing.
+                yield {"gateways": list(handoff[0].used)}
         return
 
     except Exception as e:

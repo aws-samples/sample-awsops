@@ -144,6 +144,49 @@ the old Lambda ignore the ID and return an unmarked bulk list. Consumers must re
 never an exact result or absence proof. Existing sql_reader views/grants suffice; no mutation or migration is added.
 A miss includes a fixed note directing readers to freshness/direct reads, not an AWS-absence verdict.
 
+### Section handoff
+
+With handoff on, a built-in section agent gets a `consult_section` tool. Calling it attaches another
+section gateway's read-only tools to the same Strands agent for the rest of the answer, so a question
+that crosses domains (for example a security-group question that also needs monitoring data) finishes
+in one answer instead of reporting that no tool is available.
+
+- **Gating (both required):** Terraform `chat_section_handoff_enabled` (default false) flows through
+  `provision.py` to the runtime env `CHAT_SECTION_HANDOFF_ENABLED`, and the BFF sends `handoff: true`
+  only for the built-in tier's main streaming invoke (`web/app/api/chat/route.ts`). The runtime checks
+  both in `handoff_eligible` (`agent/agent.py`).
+- **Limits:** at most 2 extra sections, never the primary section, depth 1 (consulted tools cannot
+  consult again), no retry of a section whose connect failed, MCP connect `startup_timeout=10`, and
+  tools whose names duplicate an attached tool are skipped (`agent/section_handoff.py`).
+- **Exclusions:** custom agents, any request with a `toolAllowlist` or `systemPromptOverride`, ADR-003
+  multi-domain fan-out, the Bedrock-direct fallback, `anthropic_loop` and RCA mode never hand off.
+- **Provenance:** the runtime emits a `{"gateways": [...]}` frame only when at least one other section
+  was consulted (two or more canonical section keys in use order, primary first); the BFF forwards it
+  as `gateways` in the final SSE `meta` and stores it in the message's `meta`. The chat UI shows a
+  "gateways used" card when it lists two or more.
+- **Consult targets:** the model picks a section from `SECTION_CAPABILITIES`
+  (`agent/section_handoff.py`); `agent/test_section_handoff.py` fails when a gateway target in
+  `scripts/v2/agentcore/catalog.py` is not named there. The SDK behaviour handoff relies on (tool
+  specs re-read each event-loop cycle, tools resolved at call time) is pinned against the installed
+  Strands release in `agent/tests/test_runtime_dependencies.py`.
+- **Prompt cache cost:** attaching tools changes the request's tool list, so the Bedrock prompt-cache
+  prefix that starts with the tools no longer matches. Every model call after a consult in that
+  answer pays full input tokens for the larger tool list, and `cacheReadInputTokens` drops for those
+  calls. Answers without a consult are unaffected.
+
+### Chat routing of network objects
+
+This applies to every chat request, independent of `chat_section_handoff_enabled`. In
+`web/lib/route.ts`, a network-object rule (security group / 보안 그룹, ENI, NACL / network ACL, route
+table) sits before the security rule, so "보안 그룹 정책" or "ENI 권한" goes to the network gateway,
+which has the security-group, NACL and route tools; the security gateway is IAM-only. When the
+question names an IAM principal (IAM, role, 역할, principal), the rule steps aside and the security
+rule answers ("which IAM role may modify the security group"); user/사용자 alone is not a principal. On the
+hybrid path `security` is dropped from the classifier candidates only when it matched through the
+network object and a policy word directly after it (only whitespace or 의/에 대한 between) and no
+principal is named; any other security subject ("보안 그룹과 퍼블릭 노출된 S3", "보안 그룹과 버킷 정책",
+"… and the account password policy") keeps both candidates for the classifier.
+
 ### Tool result completeness contract
 
 Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never

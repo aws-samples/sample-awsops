@@ -17,6 +17,83 @@ describe('pickGateway', () => {
     expect(pickGateway('두 인스턴스 통신이 안 돼요')).toBe('network');
     expect(pickGateway('check the security group ports')).toBe('network');
   });
+  it('routes the Korean "보안 그룹" (security group) to network, not the IAM-only security gateway', () => {
+    const eni = 'ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회하고 추가 확인이 필요한 항목을 정리해 주세요.';
+    expect(matchedSections(eni)).toEqual(['network']);
+    expect(pickGateway(eni)).toBe('network');
+    expect(pickGateway('보안 그룹 규칙 보여줘')).toBe('network');
+    expect(pickGateway('보안그룹 인바운드 확인')).toBe('network');
+    expect(pickGateway('eni-0abc 상태 알려줘')).toBe('network');
+    expect(pickGateway('라우팅 테이블 확인해줘')).toBe('network');
+    // a genuine security ask keeps its route
+    expect(pickGateway('보안 취약점 점검해줘')).toBe('security');
+  });
+  it('routes security-group / NACL / route-table phrasings with policy words to network', async () => {
+    const prompts = [
+      '보안 그룹 정책 검토해줘',
+      'check the security group policy',
+      '보안그룹 권한 설정 확인',
+      '네트워크 ACL 정책 확인',
+      'route table policy review',
+      '보안  그룹 규칙',
+      'ENI 권한 확인',
+      'network ACL policy review',
+      '라우트 테이블 정책',
+      'sg 정책 확인',
+      'who changed the security group',
+      '보안 그룹 누가 변경했어',
+    ];
+    for (const p of prompts) {
+      expect(pickGateway(p)).toBe('network');
+      expect((await classifyRoute(p)).primary).toBe('network');
+    }
+    expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
+  });
+  it('an IAM principal next to a network object keeps the security route', async () => {
+    for (const p of ['어떤 IAM 역할이 보안 그룹을 수정할 수 있나요?', 'which IAM role may modify the security group?',
+      '어떤 principal이 보안 그룹을 수정할 수 있나요?']) {
+      expect(pickGateway(p)).toBe('security');
+      expect((await classifyRoute(p)).primary).toBe('security');
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('security');
+    }
+    expect(pickGateway('access control on the security group')).toBe('network');
+    expect(pickGateway('Which IAM role may modify sg-0123456789abcdef0?')).toBe('security');
+    // user/사용자 is not an IAM principal: an ordinary network question that mentions users stays network
+    expect(pickGateway('Show the route table for the user subnet')).toBe('network');
+  });
+  it('keeps security as a candidate for a policy that is not the network object’s own', async () => {
+    for (const p of ['Check the security group and the account password policy', 'Check the security group and S3 policy',
+      '보안 그룹과 노출 정책 점검', '보안 그룹과 버킷 정책 검토해줘']) {
+      const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(classify).toHaveBeenCalledTimes(1);
+      expect(r.method).toBe('llm');
+    }
+    // the object's own policy, with or without a particle, still skips the classifier
+    for (const p of ['보안 그룹의 정책 확인', 'ENI에 대한 권한 확인']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      expect(await classifyRoute(p, undefined, { llmEnabled: true, classify })).toMatchObject({ primary: 'network', method: 'regex' });
+      expect(classify).not.toHaveBeenCalled();
+    }
+  });
+  it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
+    for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('network');
+      expect(r.method).toBe('regex');
+      expect(classify).not.toHaveBeenCalled();
+    }
+  });
+  it('keeps security as a candidate when the question has a security subject besides the network object', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('보안 그룹과 퍼블릭 노출된 S3 점검', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(r.selected.map((s) => s.key)).toEqual(['network', 'security']);
+  });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
   });

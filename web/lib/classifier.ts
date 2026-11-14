@@ -84,8 +84,8 @@ const CTX_OPTS = { turns: 4, perMsgChars: 300, totalChars: 1200 };
  * doesn't misread a context-dependent follow-up in isolation — e.g. "저걸 클러스터 안에서 어디서
  * 쓰나" reads as container/EKS alone, but is really "continue investigating the CloudTrail lead
  * from the last turn" (monitoring). No-op when there's no history (identical to the legacy call).
- * Regex keyword matching (route.ts matchedSections) intentionally still sees only the raw current
- * prompt — history text spuriously matching an unrelated keyword must not turn a clean single
+ * Regex keyword matching (route.ts matchedSections) intentionally still sees only the current
+ * prompt, never history — history text spuriously matching an unrelated keyword must not turn a clean single
  * regex match into a false ambiguous one; only the LLM classifier path gets this context.
  */
 export function buildClassifierContext(messages: HistoryMsg[] | undefined, prompt: string): string {

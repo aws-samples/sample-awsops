@@ -9,7 +9,7 @@ isolation. This keeps the change within Task 2's file scope (agent.py + test_age
 """
 import asyncio
 import io
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 import os
 import sys
 import types
@@ -30,7 +30,11 @@ def _install_stubs():
         sys.modules[name] = m
         return m
 
-    strands = stub('strands', Agent=lambda *a, **k: None)
+    def _tool_stub(fn):
+        fn.tool_name = fn.__name__
+        return fn
+
+    strands = stub('strands', Agent=lambda *a, **k: None, tool=_tool_stub)
     models = stub('strands.models', BedrockModel=lambda *a, **k: object(), CacheConfig=lambda *a, **k: object())
     strands.models = models
     stub('strands.tools')
@@ -1288,6 +1292,217 @@ class PartialAnswerNoticeTest(unittest.TestCase):
             sys.modules["anthropic_loop"] = saved
         self.assertEqual(out[0], {"delta": "partial answer"})
         self.assertIn("output length limit", out[-1]["delta"])
+
+
+class HandoffEligibleTest(unittest.TestCase):
+    def test_truth_table(self):
+        base = {"handoff": True}
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CHAT_SECTION_HANDOFF_ENABLED", None)
+            self.assertFalse(agent.handoff_eligible(base))
+        with patch.dict(os.environ, {"CHAT_SECTION_HANDOFF_ENABLED": "true"}):
+            self.assertTrue(agent.handoff_eligible(base))
+            self.assertFalse(agent.handoff_eligible({**base, "systemPromptOverride": "custom"}))
+            self.assertFalse(agent.handoff_eligible({**base, "toolAllowlist": []}))
+            self.assertFalse(agent.handoff_eligible({**base, "toolAllowlist": ["x"]}))
+            self.assertFalse(agent.handoff_eligible({"handoff": "true"}))
+            self.assertFalse(agent.handoff_eligible({}))
+        with patch.dict(os.environ, {"CHAT_SECTION_HANDOFF_ENABLED": "TRUE"}):
+            self.assertFalse(agent.handoff_eligible(base))
+
+
+class HandoffPrimaryTest(unittest.TestCase):
+    def test_resolved_gateway_key_wins_then_role(self):
+        self.assertEqual(agent._handoff_primary("network", "ops"), "ops")
+        self.assertEqual(agent._handoff_primary("network", "v2-network"), "network")
+        self.assertEqual(agent._handoff_primary("observability", "v2-external-obs"), "external-obs")
+        self.assertEqual(agent._handoff_primary("observability", ""), "external-obs")
+        self.assertIsNone(agent._handoff_primary("nope", ""))
+
+
+class HandoffHandlerWiringTest(unittest.TestCase):
+    """The handler attaches consult_section + the handoff prompt; a gateways frame follows only a consult."""
+
+    GATEWAYS = {"v2-network": "https://gw/network", "v2-security": "https://gw/security",
+                "ops": "https://gw/ops"}
+    TOOLS = {"https://gw/network": ["ec2_describe_security_groups"],
+             "https://gw/security": ["iam_list_users", "ec2_describe_security_groups"],
+             "https://gw/ops": ["list_ec2"]}
+
+    class FakeTool:
+        def __init__(self, name):
+            self.tool_name = name
+            self.description = name
+
+    def _run(self, payload, env, consult=None):
+        captured = {"agents": [], "clients": []}
+        test = self
+
+        class FakeMCP:
+            def __init__(self, factory, **kwargs):
+                self.url = factory()
+                self.kwargs = kwargs
+                captured["clients"].append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class FakeRegistry:
+            def __init__(self, tools):
+                self.registry = {t.tool_name: t for t in tools}
+
+            def register_tool(self, tool):
+                if tool.tool_name in self.registry:
+                    raise ValueError("duplicate")
+                self.registry[tool.tool_name] = tool
+
+        def fake_agent(**kw):
+            a = types.SimpleNamespace(kwargs=kw, tool_registry=FakeRegistry(kw.get("tools") or []))
+            captured["agents"].append(a)
+            return a
+
+        async def fake_stream(agent_obj, _user_input):
+            if consult is not None:
+                fn = next(t for t in agent_obj.kwargs["tools"] if t.tool_name == "consult_section")
+                captured["consult_out"] = fn(consult)
+            yield {"delta": "answer"}
+
+        dark = types.ModuleType("anthropic_loop")
+        dark.should_use_anthropic_loop = lambda payload: False
+
+        async def drain():
+            return [x async for x in agent.handler(payload)]
+
+        with patch.dict(sys.modules, {"anthropic_loop": dark}), \
+                patch.dict(os.environ, env), \
+                patch.object(agent, "GATEWAYS", dict(self.GATEWAYS)), \
+                patch.object(agent, "create_gateway_transport", side_effect=lambda url: url), \
+                patch.object(agent, "MCPClient", FakeMCP), \
+                patch.object(agent, "get_all_tools",
+                             side_effect=lambda c: [test.FakeTool(n) for n in test.TOOLS[c.url]]), \
+                patch.object(agent, "apply_official_mcp_gates", side_effect=lambda t, k, s: (t, [], None)), \
+                patch.object(agent, "gather_integration_tools", return_value=[]), \
+                patch.object(agent, "Agent", side_effect=fake_agent), \
+                patch.object(agent, "_stream_text", fake_stream):
+            out = asyncio.run(drain())
+        return out, captured
+
+    PAYLOAD = {"gateway": "network", "handoff": True, "messages": [{"role": "user", "content": "q"}]}
+    ON = {"CHAT_SECTION_HANDOFF_ENABLED": "true"}
+
+    def test_eligible_attaches_tool_and_prompt_without_frame(self):
+        out, cap = self._run(self.PAYLOAD, self.ON)
+        self.assertEqual(len(cap["agents"]), 1)
+        kw = cap["agents"][0].kwargs
+        self.assertIn("consult_section", [t.tool_name for t in kw["tools"]])
+        self.assertIn("## Consultable sections", kw["system_prompt"])
+        self.assertIn("- security:", kw["system_prompt"])
+        self.assertNotIn("- network:", kw["system_prompt"])  # primary is not consultable
+        self.assertNotIn("- data:", kw["system_prompt"])  # no gateway → not offered (no ops fallback)
+        self.assertFalse(any("gateways" in e for e in out))  # no consult → no frame
+        self.assertEqual(out[0], {"delta": "answer"})
+
+    def test_ineligible_has_no_tool_prompt_or_frame(self):
+        for payload, env in (
+            ({**self.PAYLOAD, "handoff": False}, self.ON),
+            (self.PAYLOAD, {"CHAT_SECTION_HANDOFF_ENABLED": "false"}),
+            ({**self.PAYLOAD, "toolAllowlist": ["ec2_describe_security_groups"]}, self.ON),
+        ):
+            out, cap = self._run(payload, env)
+            kw = cap["agents"][0].kwargs
+            self.assertNotIn("consult_section", [t.tool_name for t in kw["tools"]])
+            self.assertNotIn("Consultable sections", kw["system_prompt"])
+            self.assertFalse(any("gateways" in e for e in out))
+
+    def test_consult_registers_second_gateway_tools(self):
+        out, cap = self._run(self.PAYLOAD, self.ON, consult="security")
+        reg = cap["agents"][0].tool_registry.registry
+        self.assertIn("iam_list_users", reg)
+        self.assertIn("consult_section", reg)
+        self.assertIn("Attached 1 tools from 'security'", cap["consult_out"])
+        self.assertIn("ec2_describe_security_groups", cap["consult_out"])  # skipped duplicate
+        consulted = [c for c in cap["clients"] if c.url == "https://gw/security"]
+        self.assertEqual(len(consulted), 1)
+        self.assertEqual(consulted[0].kwargs, {"startup_timeout": 10})
+        self.assertEqual(out[-1], {"gateways": ["network", "security"]})
+
+    def test_unmappable_primary_disables_handoff(self):
+        # 'ops' falls back fine, but a role whose canonical key is unknown and whose resolved
+        # gateway is missing must not enable handoff.
+        with patch.object(self, "GATEWAYS", {"weird": "https://gw/ops"}):
+            out, cap = self._run({**self.PAYLOAD, "gateway": "weird"}, self.ON)
+        kw = cap["agents"][0].kwargs
+        self.assertNotIn("consult_section", [t.tool_name for t in kw["tools"]])
+        self.assertFalse(any("gateways" in e for e in out))
+
+
+class HandoffCancellationTest(unittest.TestCase):
+    """A consult racing request cancellation must not leave an MCP session running."""
+
+    GATEWAYS = {"v2-network": "https://gw/network", "v2-security": "https://gw/security"}
+
+    def _fake_mcp(self, events, on_enter=None):
+        class FakeMCP:
+            def __init__(self, factory, **kwargs):
+                self.url = factory()
+                events.append(("init", self.url))
+
+            def __enter__(self):
+                events.append(("enter", self.url))
+                if on_enter:
+                    on_enter()
+                return self
+
+            def __exit__(self, *a):
+                events.append(("exit", self.url))
+                return False
+        return FakeMCP
+
+    def _consult(self, stack, events, close_before=False, on_enter=None):
+        tool_obj = types.SimpleNamespace(tool_name="iam_list_users")
+        holder_agent = types.SimpleNamespace(tool_registry=types.SimpleNamespace(
+            registry={}, register_tool=lambda t: events.append(("register", t.tool_name))))
+        with patch.object(agent, "GATEWAYS", dict(self.GATEWAYS)), \
+                patch.object(agent, "create_gateway_transport", side_effect=lambda url: url), \
+                patch.object(agent, "MCPClient", self._fake_mcp(events, on_enter)), \
+                patch.object(agent, "get_all_tools", return_value=[tool_obj]), \
+                patch.object(agent, "apply_official_mcp_gates", side_effect=lambda t, k, s: (t, [], None)):
+            state, consult_tool, holder = agent._build_handoff("network", "v2-network", stack)
+            holder.append(holder_agent)
+            if close_before:
+                stack.close()
+            out = consult_tool("security")
+        return state, out
+
+    def test_consult_after_close_is_refused_without_entering_client(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events, close_before=True)
+        self.assertIn("unavailable", out)
+        self.assertNotIn(("enter", "https://gw/security"), events)
+        self.assertFalse(any(e[0] == "register" for e in events))
+        self.assertEqual(state.used, ["network"])
+
+    def test_close_during_connect_exits_client_immediately(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events, on_enter=stack.close)
+        self.assertIn("unavailable", out)
+        self.assertIn(("exit", "https://gw/security"), events)  # stopped, not left running
+        self.assertFalse(any(e[0] == "register" for e in events))
+        self.assertEqual(state.used, ["network"])
+
+    def test_open_stack_owns_consulted_client_until_close(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events)
+        self.assertNotIn("unavailable", out)
+        self.assertNotIn(("exit", "https://gw/security"), events)
+        stack.close()
+        self.assertIn(("exit", "https://gw/security"), events)
 
 
 if __name__ == '__main__':

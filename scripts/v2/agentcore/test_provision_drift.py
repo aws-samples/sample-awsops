@@ -293,6 +293,21 @@ class TestReadinessFlag(unittest.TestCase):
             self.assertEqual(env["DEPLOYMENT_READINESS_ENABLED"], "true" if value is True else "false")
 
 
+class TestHandoffFlag(unittest.TestCase):
+    def test_runtime_flag_comes_only_from_applied_boolean(self):
+        ac = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
+              "ecr_uri": "fixture.example.test/agent"}
+        for value in (None, False, "true", 1, True):
+            ctrl = mock.Mock()
+            ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+            ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
+            with mock.patch.dict(os.environ, {"CHAT_SECTION_HANDOFF_ENABLED": "true"}), \
+                 mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
+                provision.ensure_runtime(ctrl, {**ac, "chat_section_handoff_enabled": value}, {})
+            env = ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
+            self.assertEqual(env["CHAT_SECTION_HANDOFF_ENABLED"], "true" if value is True else "false")
+
+
 class TestAgentModelLever(unittest.TestCase):
     AC = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
           "ecr_uri": "fixture.example.test/agent"}
