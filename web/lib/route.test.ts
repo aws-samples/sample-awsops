@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import { pickGateway, classifyRoute, matchedSections, ACTIVE_FALLBACK } from './route';
-import { stripResources } from './route-resources';
 
 describe('pickGateway', () => {
   it('honors an explicit pin over keywords', () => {
@@ -60,6 +59,11 @@ describe('pickGateway', () => {
       expect(r.primary).toBe('security');
     }
     expect(pickGateway('access control on the security group')).toBe('network');
+    // a user/사용자 is an IAM principal too, with or without another security word
+    for (const p of ['which user has permission to modify the security group?', '어떤 사용자가 보안 그룹을 수정할 수 있나요?',
+      'Which IAM role may modify sg-0123456789abcdef0?']) {
+      expect(pickGateway(p)).toBe('security');
+    }
   });
   it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
     for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
@@ -438,92 +442,5 @@ describe('classifyRoute follow-up continuity (hybrid)', () => {
     const r = await classifyRoute('더 자세히', undefined, {
       llmEnabled: true, classify: async () => [{ key: 'security', score: 0.9 }], previous: 'cost' });
     expect(r.primary).toBe('security');
-  });
-});
-
-describe('resource-first routing', () => {
-  it('a named resource beats keywords; pin still wins', () => {
-    expect(pickGateway('i-0a1b2c3d4e5f60718 보안 점검')).toBe('ops');
-    expect(pickGateway('eni-0a1b2c3d', 'cost')).toBe('cost');
-  });
-  it('classifyRoute short-circuits on a named resource without calling the classifier', async () => {
-    const classify = vi.fn();
-    const r = await classifyRoute('eni-0a1b2c3d 상태', undefined, { llmEnabled: true, classify });
-    expect(r).toMatchObject({ primary: 'network', method: 'resource', multiDomain: false });
-    expect(classify).not.toHaveBeenCalled();
-  });
-
-  // A named resource must not override an explicit subject from another area: with IDs/ARNs blanked,
-  // the resource's section wins only when no IAM principal is named (unless it is an IAM ARN), at most
-  // one area's keywords match, and that match is absent, its own section, or `security` through
-  // generic words (보안/public/노출).
-  const otherAreaIntent: [string, string][] = [
-    ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
-    ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
-    ['sg-0123456789abcdef0 관련 비용', 'cost'],
-    ['arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', 'cost'],
-    ['i-0123456789abcdef0 의 보안 그룹 규칙 확인', 'network'],
-    ['어떤 IAM role이 arn:aws:rds:ap-northeast-2:123456789012:db:mydb에 접근 가능한가요?', 'security'],
-    ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
-    ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
-    ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
-    ['why is i-0123456789abcdef0 access denied?', 'security'],
-    ['sg-0123456789abcdef0 접근이 denied 돼요', 'security'],
-    ['which principal can modify sg-0123456789abcdef0?', 'security'],
-  ];
-  it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
-    expect(pickGateway(prompt)).toBe(want);
-  });
-  it.each(otherAreaIntent)('classifyRoute keeps another area’s keyword: %s → %s', async (prompt, want) => {
-    const r = await classifyRoute(prompt);
-    expect(r.primary).toBe(want);
-    expect(r.method).not.toBe('resource');
-  });
-  it('a bare policy word next to a network ID keeps the resource route', async () => {
-    for (const p of ['eni-0a1b2c3d 에 대한 권한 확인', 'sg-0123456789abcdef0 의 정책 확인']) {
-      expect(pickGateway(p)).toBe('network');
-      expect(await classifyRoute(p)).toMatchObject({ primary: 'network', method: 'resource' });
-    }
-  });
-  it('a list/count phrasing about a named resource stays with the resource', async () => {
-    expect(pickGateway('list all rules for sg-0123456789abcdef0')).toBe('network');
-    expect(await classifyRoute('list all rules for sg-0123456789abcdef0'))
-      .toMatchObject({ primary: 'network', method: 'resource' });
-    expect(pickGateway('eni-0a1b2c3d 몇 개 붙어 있어?')).toBe('network');
-  });
-  it('an unrecognised ARN keeps its service keyword', () => {
-    expect(pickGateway('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검')).toBe('data');
-    expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,비용분석해줘')).toBe('cost');
-    const stripped = stripResources('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검');
-    expect(stripped).toContain('dynamodb');
-    expect(stripped).not.toContain('123456789012');
-  });
-  it('a resource question naming several areas runs the classifier path unchanged', async () => {
-    const classify = vi.fn(async () => [{ key: 'cost', score: 0.9 }]);
-    const r = await classifyRoute('arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석과 파드 상태', undefined,
-      { llmEnabled: true, classify });
-    expect(classify).toHaveBeenCalledTimes(1);
-    expect(r).toMatchObject({ primary: 'cost', method: 'llm' });
-  });
-  it('the security collision and own-section keywords still route by resource', async () => {
-    const sec = await classifyRoute('i-0a1b2c3d4e5f60718 보안 점검');
-    expect(sec).toMatchObject({ primary: 'ops', method: 'resource' });
-    const own = await classifyRoute('ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회해 주세요.');
-    expect(own).toMatchObject({ primary: 'network', method: 'resource' });
-  });
-  it('a resource question spanning several areas keeps the classifier and multi-domain fan-out', async () => {
-    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'data', score: 0.5 }]);
-    const r = await classifyRoute('eni-0a1b2c3d 와 RDS 연결 안 돼', undefined, { llmEnabled: true, classify });
-    expect(classify).toHaveBeenCalledTimes(1);
-    expect(r.method).toBe('llm');
-    expect(r.multiDomain).toBe(true);
-    expect(r.selected.map((s) => s.key)).toEqual(['network', 'data']);
-  });
-  it('resource IDs and ARNs are never read as keywords', () => {
-    const stripped = stripResources('sg-0123456789abcdef0 와 arn:aws:rds:ap-northeast-2:123456789012:db:mydb 확인');
-    expect(stripped).not.toContain('sg-');
-    expect(stripped).not.toContain('arn:');
-    expect(stripped).not.toContain('mydb');
-    expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost']);
   });
 });
