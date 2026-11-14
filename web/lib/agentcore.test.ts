@@ -278,6 +278,36 @@ print(json.dumps({'current': [t.tool_name for t in scope['_filter_tools'](tools,
     expect(out).toEqual(['legacy answer']);
   });
 
+  it('handoff: sends body.handoff only when true', async () => {
+    vi.resetModules();
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
+    acSend.mockResolvedValue({ response: streamOf('"ok"') });
+    const { invokeAgent } = await import('./agentcore');
+    const base = { gateway: 'security', messages: [{ role: 'user' as const, content: 'hi' }], sessionId: 's'.repeat(36) };
+    const read = () => JSON.parse(new TextDecoder().decode((acSend.mock.calls.at(-1)![0] as { input: { payload: Uint8Array } }).input.payload));
+    await invokeAgent({ ...base, handoff: true });
+    expect(read().handoff).toBe(true);
+    await invokeAgent({ ...base, handoff: false });
+    expect('handoff' in read()).toBe(false);
+    await invokeAgent(base);
+    expect('handoff' in read()).toBe(false);
+  });
+
+  it('parses a {"gateways": [...]} frame and ignores a non-array value', async () => {
+    vi.resetModules();
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
+    acSend.mockResolvedValue(eventStreamOf([
+      JSON.stringify({ delta: 'a' }),
+      JSON.stringify({ gateways: ['network', 'security'] }),
+      JSON.stringify({ gateways: 'network' }),
+      JSON.stringify({ gateways: ['network', 3] }),
+    ]));
+    const { invokeAgentStreamDetailed } = await import('./agentcore');
+    const events: unknown[] = [];
+    for await (const ev of invokeAgentStreamDetailed({ gateway: 'network', messages: [{ role: 'user', content: 'hi' }], sessionId: 's'.repeat(36) })) events.push(ev);
+    expect(events).toEqual([{ delta: 'a' }, { gateways: ['network', 'security'] }]);
+  });
+
   // --- real streaming + provenance (invokeAgentStreamDetailed) ---
   it('invokeAgentStreamDetailed yields delta/tool/model events live, in arrival order', async () => {
     vi.resetModules();

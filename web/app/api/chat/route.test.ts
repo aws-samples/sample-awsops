@@ -36,7 +36,7 @@ async function* invokeAgentStreamImpl(...a: unknown[]): AsyncGenerator<string> {
 async function invokeAgentDetailedImpl(...a: unknown[]): Promise<{ text: string; tools: string[]; model?: string }> {
   return { text: (await invokeAgent(...a)) as string, tools: [] };
 }
-type AgentEvent = { delta?: string; tool?: string; model?: string };
+type AgentEvent = { delta?: string; tool?: string; model?: string; gateways?: string[] };
 // invokeAgentStreamDetailed backs the route's main path (real streaming + provenance). Defaults
 // to wrapping the invokeAgent mock as ONE delta event, so every existing invokeAgent.mockResolvedValue
 // test keeps working unchanged. A test that needs to assert genuine incremental delivery (multiple
@@ -275,6 +275,40 @@ describe('POST /api/chat', () => {
     const body = await readStream(res);
     expect(body).toContain('"tools":["get_cost"]');
     expect(body).toContain('"model":"sonnet-4-6"');
+  });
+  it('built-in tier sends handoff:true and surfaces the runtime gateways frame in meta + record', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('network');
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'network', skill: 'network', agentName: 'network', skillHashes: [] });
+    streamDetailedEvents = [{ delta: '답변' }, { gateways: ['network', 'security'] }];
+    invokeAgent.mockResolvedValue('x');
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'x', section: 'network', sessionId: 's'.repeat(36) })));
+    expect(body).toContain('"gateways":["network","security"]');
+    expect(recordExchange.mock.calls[0][0]).toMatchObject({ meta: { gateways: ['network', 'security'] } });
+  });
+  it('omits gateways from meta when the runtime sent none or an empty list', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('network');
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'network', skill: 'network', agentName: 'network', skillHashes: [] });
+    streamDetailedEvents = [{ delta: '답변' }, { gateways: [] }];
+    const { POST } = await import('./route');
+    const body = await readStream(await POST(req({ prompt: 'x', section: 'network', sessionId: 's'.repeat(36) })));
+    expect(body).not.toContain('"gateways"');
+  });
+  it('handoff opt-in: builtin main invoke true; custom tier and fan-out never carry it', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('network');
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'network', skill: 'network', agentName: 'network', skillHashes: [] });
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'x', section: 'network', sessionId: 's'.repeat(36) })));
+    expect(invokeAgent.mock.calls[0][0]).toMatchObject({ handoff: true });
+
+    invokeAgent.mockClear();
+    resolveAgent.mockReturnValue({ tier: 'custom', gateway: 'security', systemPromptOverride: 'OVR', agentName: 'c', agentVersion: 1, skillHashes: [] });
+    await readStream(await POST(req({ prompt: 'x', section: 'security', sessionId: 's'.repeat(36) })));
+    expect((invokeAgent.mock.calls[0][0] as { handoff?: boolean }).handoff).not.toBe(true);
   });
   it('does not persist a half-streamed answer when the client aborts mid-stream', async () => {
     // Regression: with live streaming, `text` is the incremental accumulation of deltas seen SO
@@ -741,6 +775,7 @@ describe('cross-domain auto-synthesis (ADR-003[legacy 044])', () => {
     expect(invokeAgent).toHaveBeenCalledTimes(2);
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'network' }));
     expect(invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'data' }));
+    for (const c of invokeAgent.mock.calls) expect(c[0]).not.toHaveProperty('handoff');
     // synthesize gets BOTH survivors (3rd arg is the {abortSignal} opts)
     expect(synthesizeStream.mock.calls[0][0]).toBe('EKS 파드가 RDS 연결 안돼');
     expect(synthesizeStream.mock.calls[0][1]).toEqual([

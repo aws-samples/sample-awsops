@@ -49,6 +49,7 @@ export interface InvokeInput {
   extraContext?: string; // bounded BFF context appended to the agent system prompt (e.g. cached datasource schemas)
   responseLanguage?: string; // v1-parity: UI-language directive ('ko'|'en'|'zh'|'ja') — agent.py forces the answer language
   regions?: string[]; // the target account's enabled inventory regions (['*'] = all regions) — agent.py region scope
+  handoff?: boolean; // opt in to cross-gateway handoff (built-in section agents only); sent only when true
 }
 
 async function readResponse(resp: unknown): Promise<string> {
@@ -78,7 +79,7 @@ export interface ToolQuery { tool: string; query: string }
 /** One agent stream event: incremental answer text, a tool invocation, the model id, the
  *  answer's token usage, or a tool's generated query (answer provenance — agent.py emits
  *  `{"tool"}` / `{"model"}` / `{"usage"}` / `{"toolInput"}` frames alongside deltas). */
-export interface AgentEvent { delta?: string; tool?: string; model?: string; usage?: TokenUsage; toolInput?: ToolQuery }
+export interface AgentEvent { delta?: string; tool?: string; model?: string; usage?: TokenUsage; toolInput?: ToolQuery; gateways?: string[] }
 
 /** Extract an event from one SSE `data:` payload. The streaming agent.py yields
  *  `{"delta": str}` dicts (AgentCore JSON-encodes them) plus `{"tool": str}` / `{"model": str}`
@@ -100,6 +101,8 @@ function extractEvent(data: string): AgentEvent | null {
       if (ti && typeof ti.tool === 'string' && typeof ti.query === 'string') {
         return { toolInput: { tool: ti.tool, query: ti.query } };
       }
+      const gw = (o as { gateways?: unknown }).gateways;
+      if (Array.isArray(gw) && gw.every((g) => typeof g === 'string')) return { gateways: gw as string[] };
       return null;
     }
     return typeof o === 'string' && o ? { delta: o } : null;
@@ -174,6 +177,7 @@ function buildCommand(input: InvokeInput, arn: string): InvokeAgentRuntimeComman
   if (input.extraContext) body.extraContext = input.extraContext;
   if (input.responseLanguage) body.responseLanguage = input.responseLanguage;
   if (input.regions?.length) body.regions = input.regions;
+  if (input.handoff === true) body.handoff = true;
   return new InvokeAgentRuntimeCommand({
     agentRuntimeArn: arn,
     qualifier: 'DEFAULT',

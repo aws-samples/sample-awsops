@@ -775,6 +775,7 @@ export async function POST(request: Request) {
       const seenTools = new Set<string>();
       let model: string | undefined;
       let usage: TokenUsage | undefined;
+      let gateways: string[] = []; // cross-gateway handoff provenance (last non-empty list wins)
       try {
         for await (const ev of invokeAgentStreamDetailed({
           gateway: spec.gateway, messages, sessionId,
@@ -785,6 +786,7 @@ export async function POST(request: Request) {
           integrations: spec.integrations, // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
           extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing
+          handoff: spec.tier === 'builtin', // cross-gateway handoff opt-in: built-in section agents only
         })) {
           if (request.signal.aborted) break;
           // Independent ifs, not else-if: AgentEvent's fields aren't guaranteed mutually
@@ -795,6 +797,7 @@ export async function POST(request: Request) {
           }
           if (ev.tool && !seenTools.has(ev.tool)) { seenTools.add(ev.tool); tools.push(ev.tool); }
           if (ev.model) model = ev.model;
+          if (ev.gateways?.length) gateways = ev.gateways;
           if (ev.usage) usage = ev.usage; // v1-parity per-answer token usage (cost footer)
           if (ev.toolInput) {
             // v1-parity: surface the generated query (SQL/PromQL/...) in the status line
@@ -856,6 +859,7 @@ export async function POST(request: Request) {
         elapsedMs: Date.now() - t0,
         ...(provenance.tools.length ? { tools: provenance.tools } : {}),
         ...(provenance.model ? { model: getModelLabel(provenance.model) } : {}),
+        ...(gateways.length ? { gateways } : {}),
         ...(usage ? { usage } : {}),
         ...(costUsd !== undefined ? { costUsd: Number(costUsd.toFixed(6)) } : {}),
       };
