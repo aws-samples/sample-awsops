@@ -190,16 +190,20 @@ principal is named; any other security subject ("보안 그룹과 퍼블릭 노�
 **Resource-first routing.** A prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
 and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
 section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`, method
-`resource`). Before keyword matching IDs are blanked and an ARN is reduced to its service name
-(`stripResources`), so ID or ARN resource text is never a keyword while an ARN of a service without
-its own resource rule (for example DynamoDB) still routes by its service name. The resource decides
-only when the question names no IAM principal (unless it is an IAM ARN), at most one area's keywords
-match, and that match is absent, the resource's own section, a lone list/count phrasing
-("list all … sg-…"), or `security` only through generic words (`보안`, public, 노출) — plus the
-object's own policy words for a network resource. Otherwise the keyword rules, the hybrid classifier
-and ADR-003 fan-out decide: "which IAM role can modify sg-…" and "why is `i-…` access denied?" go to
-security, "`i-…` CPU 지표" to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the
-classifier. When several resources are named, the first-named one decides.
+`resource`). Before keyword matching (`stripResources`) a network ID is replaced by its object word
+(sg, eni, nacl, route table, or network for the other prefixes), an instance ID by a neutral token
+and an ARN by its service name. Resource-name text is never a keyword, an ARN of a service without
+its own resource rule (for example DynamoDB) still routes by its service name, and a network ID
+follows the same network-object rule as its name: "`sg-…` 정책" goes to network, while
+"`sg-…` 과 버킷 정책" keeps both network and security as classifier candidates. The resource decides
+alone only when no IAM principal is named (unless it is an IAM ARN), at most one area's keywords
+match (a list/count phrasing such as "list all … sg-…" does not count), and that area is absent,
+the resource's own, or `security` through `보안` directly after an instance ID ("`i-…` 보안 점검").
+Otherwise the keyword rules, the hybrid classifier and ADR-003 fan-out decide: "which IAM role can
+modify sg-…", "why is `i-…` access denied?" and "`i-…` 퍼블릭 노출" go to security, "`i-…` CPU 지표"
+to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the classifier. When several
+resources are named, the first-named one decides. An enabled custom agent whose keywords match still
+outranks resource routing (`web/app/api/chat/route.ts` precedence).
 
 ### Tool result completeness contract
 

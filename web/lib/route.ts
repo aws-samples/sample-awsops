@@ -1,5 +1,5 @@
 import { sectionByKey, activeSections } from './sections';
-import { resourceSection, stripResources } from './route-resources';
+import { resourceSection, stripResources, INSTANCE_TOKEN } from './route-resources';
 
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
 const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
@@ -19,18 +19,8 @@ const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
 const NETWORK_OBJECT_WITH_POLICY = new RegExp(
   `(?:${NETWORK_OBJECTS.source})(?:\\s*(?:의|에\\s*대한)?\\s*(?:정책|권한|policy|permissions?))?`, 'gi');
 
-// Words that describe a network object's own rules ("sg-… 정책"); used by resourceRoute.
-const OBJECT_POLICY_WORDS = /정책|권한|policy|permissions?/gi;
-// Generic security words that sit next to an ID without asking an IAM question ("i-… 보안 점검").
-const GENERIC_SECURITY_WORDS = /보안|public|노출/gi;
-
-/** True when the security rule matched `text` only through the given word sets: with them blanked
- *  out, nothing in `text` matches the security rule any more. */
-function securityOnlyThrough(text: string, ...words: RegExp[]): boolean {
-  let rest = text;
-  for (const w of words) rest = rest.replace(w, ' ');
-  return !SECURITY_WORDS.test(rest);
-}
+// "i-… 보안 점검": the generic word 보안 directly after an instance ID asks about that instance.
+const INSTANCE_WITH_GENERIC_SECURITY = new RegExp(`${INSTANCE_TOKEN}\\s*(?:의|에\\s*대한)?\\s*보안`, 'gi');
 
 /** True when every security-rule match in `text` comes from a network object and its own policy
  *  words: with those blanked out, nothing in `text` matches the security rule any more. */
@@ -122,32 +112,29 @@ function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean 
 }
 
 /** Section of the named resource when it should decide the route, else `undefined`.
- *  Keywords are matched with resource IDs/ARNs blanked (`stripResources`). The resource decides only
- *  when (a) the question names no IAM principal (IAM/role/역할/principal), unless the resource is an
- *  IAM ARN, (b) at most one area's keywords match, and (c) that one match is absent, the resource's
- *  own section, or `security` only through generic words (보안, public, 노출) — plus the object's own
- *  policy words (정책/권한/policy/permission) for a network resource; a lone list/count phrasing
- *  (`aws-data`) also yields to the resource. A strong security word
- *  (denied, …) keeps the keyword route. Otherwise ("which IAM role can
- *  modify sg-…" → security, "i-… 의 CPU 지표" → monitoring, "sg-… 비용" → cost, "eni-… 와 RDS
- *  연결" → several areas) the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out
- *  decide exactly as they did before resource routing existed. */
+ *  Keywords are matched on `stripResources` text, where a network ID becomes its object word (sg,
+ *  eni, nacl, route table, network), an instance ID a neutral token and an ARN its service name. A
+ *  network ID with policy words therefore follows the same network-object rule as the object's name:
+ *  policy words directly after it stay with network on the keyword/classifier path, and any other
+ *  security subject ("sg-… 과 버킷 정책") keeps `security` as a candidate. The resource decides alone
+ *  only when (a) the question names no IAM principal (IAM/role/역할/principal), unless the resource
+ *  is an IAM ARN, (b) at most one area's keywords match, a list/count phrasing (`aws-data`) not
+ *  counted, and (c) that area is absent, the resource's own, or `security` only through `보안`
+ *  directly after an instance ID ("i-… 보안 점검"). Otherwise ("which IAM role can modify sg-…" →
+ *  security, "i-… 의 CPU 지표" → monitoring, "i-… 퍼블릭 노출" → security, "eni-… 와 RDS 연결" →
+ *  several areas) the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out decide. */
 function resourceRoute(prompt: string): string | undefined {
   const resource = resourceSection(prompt);
   if (!resource || !sectionByKey(resource)) return undefined;
   const text = stripResources(prompt);
   if (resource !== 'security' && PRINCIPAL_INTENT.test(text)) return undefined; // IAM question about a resource
-  const matched = matchedSections(prompt);
+  // `aws-data` is a list/count phrasing ("list all", "몇 개"), not another area's subject.
+  const matched = matchedSections(prompt).filter((k) => k !== 'aws-data');
   if (matched.length > 1) return undefined; // several areas: keywords / classifier / fan-out decide
   const first = matched[0];
-  // `aws-data` is a list/count phrasing ("list all", "몇 개"), not another area's subject, so the
-  // named resource's section answers it.
-  if (first === undefined || first === resource || first === 'aws-data') return resource;
-  // The documented collision: security matched only through generic words next to the ID ("i-… 보안
-  // 점검"), or — for a network resource — through that object's own policy words ("sg-… 정책").
-  // Strong words (denied, iam, role, …) keep the keyword route to security.
-  const yieldWords = resource === 'network' ? [GENERIC_SECURITY_WORDS, OBJECT_POLICY_WORDS] : [GENERIC_SECURITY_WORDS];
-  if (first === 'security' && securityOnlyThrough(text, ...yieldWords)) return resource;
+  if (first === undefined || first === resource) return resource;
+  // The one documented collision: 보안 directly after an instance ID ("i-… 보안 점검").
+  if (first === 'security' && !SECURITY_WORDS.test(text.replace(INSTANCE_WITH_GENERIC_SECURITY, ' '))) return resource;
   return undefined;
 }
 
@@ -160,8 +147,8 @@ function resourceRoute(prompt: string): string | undefined {
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
-  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
-  // area's keywords) > observability vendor > keywords > previous > 'ops'.
+  // Precedence: pin > named resource (only when no other area's keyword — including an
+  // observability vendor — is named; see resourceRoute) > keywords > previous > 'ops'.
   if (pinned && sectionByKey(pinned)) return pinned;
   const resource = resourceRoute(prompt);
   if (resource) return resource;
@@ -235,8 +222,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
-  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
-  // area's keywords) > observability vendor > keywords/classifier > previous > fallback. Otherwise
+  // Precedence: pin > named resource (only when no other area's keyword — including an
+  // observability vendor — is named; see resourceRoute) > keywords/classifier > previous > fallback. Otherwise
   // the regex/classifier path below runs unchanged (continuity, multi-domain).
   const resource = resourceRoute(prompt);
   if (resource) {

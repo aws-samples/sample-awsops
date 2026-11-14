@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resourceSection } from './route-resources';
+import { resourceSection, stripResources } from './route-resources';
+import { sectionByKey } from './sections';
 
 describe('resourceSection', () => {
   it('routes a named ENI to network', () => {
@@ -30,5 +31,18 @@ describe('resourceSection', () => {
     expect(resourceSection('sg-name-prod 규칙')).toBeUndefined();
     expect(resourceSection('vpc-endpoint 설명')).toBeUndefined();
     expect(resourceSection('안녕하세요')).toBeUndefined();
+  });
+  it('every resource rule targets a known section', () => {
+    for (const x of ['eni-0a1b2c3d', 'i-0123456789abcdef0', 'arn:aws:iam::1:role/x', 'arn:aws:eks:r:1:cluster/c',
+      'arn:aws:rds:r:1:db:d', 'arn:aws:cloudfront::1:distribution/E1', 'arn:aws:cloudformation:r:1:stack/s/1']) {
+      const key = resourceSection(x);
+      expect(key).toBeDefined();
+      expect(sectionByKey(key as string)).toBeTruthy();
+    }
+  });
+  it('an ARN with a comma in its name is reduced to its service name', () => {
+    const stripped = stripResources('arn:aws:iam::123456789012:role/platform,cost 권한');
+    expect(stripped).toContain(' iam ');
+    expect(stripped).not.toMatch(/\bcost\b/);
   });
 });

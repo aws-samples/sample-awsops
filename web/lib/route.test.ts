@@ -471,10 +471,10 @@ describe('resource-first routing', () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
-  // A named resource must not override an explicit subject from another area: with IDs/ARNs blanked,
-  // the resource's section wins only when no IAM principal is named (unless it is an IAM ARN), at most
-  // one area's keywords match, and that match is absent, its own section, or `security` through
-  // generic words (보안/public/노출).
+  // A named resource must not override an explicit subject from another area: IDs become object words
+  // and ARNs their service name, and the resource's section wins alone only when no IAM principal is
+  // named (unless it is an IAM ARN), at most one area's keywords match (a list/count phrasing is
+  // ignored), and that area is absent, the resource's own, or `보안` directly after an instance ID.
   const otherAreaIntent: [string, string][] = [
     ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
     ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
@@ -486,7 +486,8 @@ describe('resource-first routing', () => {
     ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
     ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
     ['why is i-0123456789abcdef0 access denied?', 'security'],
-    ['sg-0123456789abcdef0 접근이 denied 돼요', 'security'],
+    // like "보안 그룹 접근이 denied" (network first; the hybrid classifier still sees security)
+    ['sg-0123456789abcdef0 접근이 denied 돼요', 'network'],
     ['which principal can modify sg-0123456789abcdef0?', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
@@ -497,11 +498,20 @@ describe('resource-first routing', () => {
     expect(r.primary).toBe(want);
     expect(r.method).not.toBe('resource');
   });
-  it('a bare policy word next to a network ID keeps the resource route', async () => {
+  it('a bare policy word next to a network ID keeps the network route', async () => {
     for (const p of ['eni-0a1b2c3d 에 대한 권한 확인', 'sg-0123456789abcdef0 의 정책 확인']) {
       expect(pickGateway(p)).toBe('network');
-      expect(await classifyRoute(p)).toMatchObject({ primary: 'network', method: 'resource' });
+      expect(await classifyRoute(p)).toMatchObject({ primary: 'network' });
     }
+  });
+  it('a resource ID follows the network-object rule for policy words', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('sg-0123456789abcdef0 과 버킷 정책 검토해줘', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(pickGateway('i-0123456789abcdef0 이 퍼블릭에 노출됐나?')).toBe('security');
+    expect(pickGateway('sg-0123456789abcdef0 의 정책 확인')).toBe('network');
+    expect(await classifyRoute('sg-0123456789abcdef0 의 정책 확인')).toMatchObject({ primary: 'network' });
   });
   it('a list/count phrasing about a named resource stays with the resource', async () => {
     expect(pickGateway('list all rules for sg-0123456789abcdef0')).toBe('network');
@@ -537,11 +547,14 @@ describe('resource-first routing', () => {
     expect(r.multiDomain).toBe(true);
     expect(r.selected.map((s) => s.key)).toEqual(['network', 'data']);
   });
-  it('resource IDs and ARNs are never read as keywords', () => {
+  it('resource IDs become object words and ARNs their service name', () => {
     const stripped = stripResources('sg-0123456789abcdef0 와 arn:aws:rds:ap-northeast-2:123456789012:db:mydb 확인');
-    expect(stripped).not.toContain('sg-');
+    expect(stripped).toContain(' sg ');
+    expect(stripped).toContain(' rds ');
+    expect(stripped).not.toContain('sg-0123');
     expect(stripped).not.toContain('arn:');
     expect(stripped).not.toContain('mydb');
-    expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost']);
+    expect(stripped).not.toContain('123456789012');
+    expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost', 'network']);
   });
 });
