@@ -187,6 +187,30 @@ network object and a policy word directly after it (only whitespace or 의/에 �
 principal is named; any other security subject ("보안 그룹과 퍼블릭 노출된 S3", "보안 그룹과 버킷 정책",
 "… and the account password policy") keeps both candidates for the classifier.
 
+**Resource-first routing.** A prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
+and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
+section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`, method
+`resource`). Before keyword matching (`stripResources`) every network ID is replaced by a
+network-object word (sg, eni, nacl, route table, or `network-resource` for
+vpc/subnet/vpce/tgw/nat/igw/pcx/vpn/vgw/cgw), an instance ID by a neutral token and an ARN by its
+service name; a role/user ARN (IAM, or an STS assumed-role) also keeps a `role` word, so it counts
+as a named IAM principal ("Can `arn:aws:sts::…:assumed-role/…` modify sg-…?" goes to security).
+ARN text stops at whitespace, a comma or CJK text, so comma-joined words or ARNs stay separate.
+Resource-name text is never a keyword, an ARN of a service without its own resource rule (for
+example DynamoDB) still routes by its service name, and every network ID follows the network-object
+rule exactly like the object's name: "`sg-…` 정책" and "`subnet-…` 권한" go to network, while
+"`sg-…` 과 버킷 정책" keeps both network and security as classifier candidates. The resource decides
+alone only when no IAM principal is named (unless it is an IAM ARN), at most one area's keywords
+match (a list/count phrasing such as "list all … sg-…" does not count), and that area is absent,
+the resource's own, or `security` through `보안` directly after an instance ID ("`i-…` 보안 점검").
+Otherwise the keyword rules, the hybrid classifier and ADR-003 fan-out decide: "which IAM role can
+modify sg-…", "why is `i-…` access denied?" and "`i-…` 퍼블릭 노출" go to security, "`i-…` CPU 지표"
+to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the classifier. An ops-owned
+resource (EC2 instance, load balancer, CloudFront ARN) is weak evidence like a lone ops keyword: on
+the hybrid path the classifier arbitrates and the resource's section is the fallback. When several
+resources are named, the first-named one decides. An enabled custom agent whose keywords match still
+outranks resource routing (`web/app/api/chat/route.ts` precedence).
+
 ### Tool result completeness contract
 
 Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never
