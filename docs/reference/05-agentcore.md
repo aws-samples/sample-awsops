@@ -180,11 +180,12 @@ This applies to every chat request, independent of `chat_section_handoff_enabled
 `web/lib/route.ts`, a network-object rule (security group / 보안 그룹, ENI, NACL / network ACL, route
 table) sits before the security rule, so "보안 그룹 정책" or "ENI 권한" goes to the network gateway,
 which has the security-group, NACL and route tools; the security gateway is IAM-only. When the
-question names an IAM principal (IAM, role, user, 역할, 사용자, principal), the rule steps aside and a
-network object goes to security instead ("which IAM role may modify the security group"). On the
+question names an IAM principal (IAM, role, 역할, principal), the rule steps aside and the security
+rule answers ("which IAM role may modify the security group"); user/사용자 alone is not a principal. On the
 hybrid path `security` is dropped from the classifier candidates only when it matched through the
-network object and its own policy words and no principal is named; any other security subject
-("보안 그룹과 퍼블릭 노출된 S3") keeps both candidates for the classifier.
+network object and the policy words right after it and no principal is named; any other security
+subject ("보안 그룹과 퍼블릭 노출된 S3", "… and the account password policy") keeps both candidates
+for the classifier.
 
 ### Tool result completeness contract
 

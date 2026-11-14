@@ -3,28 +3,30 @@ import { sectionByKey, activeSections } from './sections';
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
 const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
 
-// An IAM principal named in the question (IAM, role, user, 역할, 사용자, principal) makes a question
-// about a network object an IAM question ("which IAM role may modify the security group"). Bare
+// An IAM principal named in the question (IAM, role, 역할, principal) makes a question about a
+// network object an IAM question ("which IAM role may modify the security group"); the network rule
+// steps aside and the security rule (which holds the same words) answers. Bare
 // 정책/권한/policy/permission do not: "보안 그룹 정책", "ENI 권한" stay with the network object.
-const PRINCIPAL_INTENT = /\biam\b|\broles?\b|\busers?\b|역할|사용자|\bprincipals?\b/i;
+// user/사용자 are deliberately NOT principals: "the route table for the user subnet" is a network question.
+const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
 // who/누가 are deliberately NOT principals: "보안 그룹 누가 변경했어" is a change-history question.
 
-// Words that describe a network object's own rules ("보안 그룹 정책", "ENI 권한").
-const OBJECT_POLICY_WORDS = /정책|권한|policy|permissions?/gi;
-const NETWORK_OBJECTS_G = new RegExp(NETWORK_OBJECTS.source, 'gi');
+// A network object together with its own policy words right after it ("보안 그룹 정책", "ENI 권한",
+// "security group policy"). Only these adjacent words belong to the object; a policy word elsewhere
+// ("… and the account password policy") is another security subject.
+const NETWORK_OBJECT_WITH_POLICY = new RegExp(
+  `(?:${NETWORK_OBJECTS.source})(?:[^.,;?!\\n]{0,8}?(?:정책|권한|policy|permissions?))?`, 'gi');
 
-/** True when the security rule matched `text` only through the given word sets: with them blanked
- *  out, nothing in `text` matches the security rule any more. */
-function securityOnlyThrough(text: string, ...words: RegExp[]): boolean {
-  let rest = text;
-  for (const w of words) rest = rest.replace(w, ' ');
-  return !SECURITY_WORDS.test(rest);
+/** True when every security-rule match in `text` comes from a network object and its own policy
+ *  words: with those blanked out, nothing in `text` matches the security rule any more. */
+function securityOnlyFromNetworkObjects(text: string): boolean {
+  return !SECURITY_WORDS.test(text.replace(NETWORK_OBJECT_WITH_POLICY, ' '));
 }
 
 const SECURITY_WORDS = /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|principals?|denied|permission|public|노출/i;
 
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
-const RULES: { key: string; re: RegExp; unless?: RegExp; when?: RegExp }[] = [
+const RULES: { key: string; re: RegExp; unless?: RegExp }[] = [
   // observability = external-obs. FIRST rule on purpose (round-4 review MAJOR, 2026-07-31): an
   // explicit VENDOR NAME is the strongest routing signal there is, so it must be checked before
   // EVERY generic domain rule — not just before 'monitoring' (the round-2/3 fix, which left
@@ -60,9 +62,6 @@ const RULES: { key: string; re: RegExp; unless?: RegExp; when?: RegExp }[] = [
   // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy"). It does not apply when
   // an IAM principal is named, so "which IAM role may modify the security group" reaches the security rule.
   { key: 'network', re: NETWORK_OBJECTS, unless: PRINCIPAL_INTENT },
-  // ...and a network object named WITH an IAM principal is an IAM question, even when no other
-  // security word is present ("어떤 사용자가 보안 그룹을 수정할 수 있나요?").
-  { key: 'security', re: NETWORK_OBJECTS, when: PRINCIPAL_INTENT },
   // The network rule above claims SG/NACL/route-table phrasings first; the `보안(?!\s*그룹)`
   // lookahead keeps a bare `보안` from claiming "보안  그룹" (any whitespace) on prompts it does not reach.
   { key: 'security', re: SECURITY_WORDS },
@@ -103,8 +102,8 @@ const RULES: { key: string; re: RegExp; unless?: RegExp; when?: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
-function ruleMatches(r: { re: RegExp; unless?: RegExp; when?: RegExp }, text: string): boolean {
-  return r.re.test(text) && !(r.unless && r.unless.test(text)) && (!r.when || r.when.test(text));
+function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean {
+  return r.re.test(text) && !(r.unless && r.unless.test(text));
 }
 
 /** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
@@ -191,7 +190,7 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // other security subject in the question ("보안 그룹과 퍼블릭 노출된 S3") keeps `security` in the
   // candidates, so the classifier and ADR-003 fan-out still decide.
   const networkOwnsSecurity = NETWORK_OBJECTS.test(text) && !PRINCIPAL_INTENT.test(text)
-    && securityOnlyThrough(text.replace(NETWORK_OBJECTS_G, ' '), OBJECT_POLICY_WORDS);
+    && securityOnlyFromNetworkObjects(text);
   const keys = networkOwnsSecurity ? matched.filter((k) => k !== 'security') : matched;
   // v1 lesson (11-route priority ladder: specialized routes above the general catch-all):
   // a lone 'ops' keyword hit is weak evidence — generic nouns (load balancer, certificate,

@@ -59,11 +59,16 @@ describe('pickGateway', () => {
       expect(r.primary).toBe('security');
     }
     expect(pickGateway('access control on the security group')).toBe('network');
-    // a user/사용자 is an IAM principal too, with or without another security word
-    for (const p of ['which user has permission to modify the security group?', '어떤 사용자가 보안 그룹을 수정할 수 있나요?',
-      'Which IAM role may modify sg-0123456789abcdef0?']) {
-      expect(pickGateway(p)).toBe('security');
-    }
+    expect(pickGateway('Which IAM role may modify sg-0123456789abcdef0?')).toBe('security');
+    // user/사용자 is not an IAM principal: an ordinary network question that mentions users stays network
+    expect(pickGateway('Show the route table for the user subnet')).toBe('network');
+  });
+  it('keeps security as a candidate for a policy that is not the network object’s own', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('Check the security group and the account password policy', undefined,
+      { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
   });
   it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
     for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
