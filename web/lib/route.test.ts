@@ -403,4 +403,36 @@ describe('resource-first routing', () => {
     expect(r).toMatchObject({ primary: 'network', method: 'resource', multiDomain: false });
     expect(classify).not.toHaveBeenCalled();
   });
+
+  // A named resource must not override an explicit subject from another area: the resource's
+  // section wins only when no keyword matches, the first keyword is its own section, or the first
+  // keyword is the generic `security` collision (보안/policy/public next to an ID).
+  const otherAreaIntent: [string, string][] = [
+    ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
+    ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
+    ['sg-0123456789abcdef0 관련 비용', 'cost'],
+    ['arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', 'cost'],
+    ['i-0123456789abcdef0 의 보안 그룹 규칙 확인', 'network'],
+  ];
+  it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
+    expect(pickGateway(prompt)).toBe(want);
+  });
+  it.each(otherAreaIntent)('classifyRoute keeps another area’s keyword: %s → %s', async (prompt, want) => {
+    const r = await classifyRoute(prompt);
+    expect(r.primary).toBe(want);
+    expect(r.method).not.toBe('resource');
+  });
+  it('another area’s keyword runs the classifier path unchanged', async () => {
+    const classify = vi.fn(async () => [{ key: 'cost', score: 0.9 }]);
+    const r = await classifyRoute('arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', undefined,
+      { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ primary: 'cost', method: 'llm' });
+  });
+  it('the security collision and own-section keywords still route by resource', async () => {
+    const sec = await classifyRoute('i-0a1b2c3d4e5f60718 보안 점검');
+    expect(sec).toMatchObject({ primary: 'ops', method: 'resource' });
+    const own = await classifyRoute('ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회해 주세요.');
+    expect(own).toMatchObject({ primary: 'network', method: 'resource' });
+  });
 });

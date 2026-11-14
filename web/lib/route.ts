@@ -82,11 +82,26 @@ const RULES: { key: string; re: RegExp }[] = [
  *  catch-all, which dropped the domain prompt and tools the previous answer was built with. A
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
-export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
-  // Precedence: pin > named resource > observability vendor > keywords.
-  if (pinned && sectionByKey(pinned)) return pinned;
+/** Section of the named resource when it should decide the route, else `undefined`.
+ *  A named resource wins only when (a) no keyword rule matches, (b) the first keyword match is the
+ *  resource's own section, or (c) the first keyword match is `security` — the documented collision
+ *  where generic words (보안/policy/public) sit next to a network or instance ID. Any other first
+ *  keyword is an explicit subject from another area ("i-… 의 CPU 지표" → monitoring, "sg-… 비용" →
+ *  cost), so the keyword path decides exactly as it did before resource routing existed. */
+function resourceRoute(prompt: string): string | undefined {
   const resource = resourceSection(prompt);
-  if (resource && sectionByKey(resource)) return resource;
+  if (!resource || !sectionByKey(resource)) return undefined;
+  const first = RULES.find((r) => r.re.test(prompt))?.key;
+  if (first === undefined || first === resource || first === 'security') return resource;
+  return undefined;
+}
+
+export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
+  // Precedence: pin > named resource (see resourceRoute: only when no other area's keyword comes
+  // first) > observability vendor > keywords > previous > 'ops'.
+  if (pinned && sectionByKey(pinned)) return pinned;
+  const resource = resourceRoute(prompt);
+  if (resource) return resource;
   for (const r of RULES) {
     if (r.re.test(prompt)) return r.key;
   }
@@ -154,9 +169,11 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
-  // Precedence: pin > named resource > observability vendor > keywords.
-  const resource = resourceSection(prompt);
-  if (resource && sectionByKey(resource)) {
+  // Precedence: pin > named resource (see resourceRoute: only when no other area's keyword comes
+  // first) > observability vendor > keywords/classifier > previous > fallback. When another area's
+  // keyword comes first, the regex/classifier path below runs unchanged (continuity, multi-domain).
+  const resource = resourceRoute(prompt);
+  if (resource) {
     return single(resource, [entry(resource, 1)], 'resource');
   }
   const matched = matchedSections(prompt);
