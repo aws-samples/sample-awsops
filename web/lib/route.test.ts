@@ -470,6 +470,17 @@ describe('resource-first routing', () => {
     expect(r).toMatchObject({ primary: 'network', method: 'resource', multiDomain: false });
     expect(classify).not.toHaveBeenCalled();
   });
+  it('an ops-owned resource lets the hybrid classifier arbitrate', async () => {
+    const prompt = 'i-0123456789abcdef0 가 자꾸 죽어';
+    const classify = vi.fn(async () => [{ key: 'monitoring', score: 0.8 }]);
+    const r = await classifyRoute(prompt, undefined, { llmEnabled: true, classify });
+    expect(r).toMatchObject({ primary: 'monitoring', method: 'llm' });
+    expect(classify).toHaveBeenCalledTimes(1);
+    const failing = vi.fn(async () => { throw new Error('x'); });
+    expect(await classifyRoute(prompt, undefined, { llmEnabled: true, classify: failing }))
+      .toMatchObject({ primary: 'ops', method: 'resource' });
+    expect(await classifyRoute(prompt)).toMatchObject({ primary: 'ops', method: 'resource' });
+  });
 
   // A named resource must not override an explicit subject from another area: IDs become object words
   // and ARNs their service name, and the resource's section wins alone only when no IAM principal is
@@ -522,6 +533,7 @@ describe('resource-first routing', () => {
   it('an unrecognised ARN keeps its service keyword', () => {
     expect(pickGateway('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검')).toBe('data');
     expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,비용분석해줘')).toBe('cost');
+    expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,cost analysis')).toBe('cost');
     const stripped = stripResources('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검');
     expect(stripped).toContain('dynamodb');
     expect(stripped).not.toContain('123456789012');

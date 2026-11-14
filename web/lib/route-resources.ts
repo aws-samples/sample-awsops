@@ -6,9 +6,10 @@ const ID_TAIL = '-(?:[0-9a-f]{17}|[0-9a-f]{8})\\b';
 const NETWORK_PREFIXES = 'eni|sg|acl|rtb|subnet|vpc|vpce|tgw-attach|tgw-rtb|tgw|nat|igw|pcx|vpn|vgw|cgw';
 const NETWORK_ID = new RegExp(`\\b(?:${NETWORK_PREFIXES})${ID_TAIL}`, 'i');
 const INSTANCE_ID = new RegExp(`\\bi${ID_TAIL}`, 'i');
-// An ARN's resource part uses ASCII ARN characters only (commas included, as in IAM names), so the
-// match stops at whitespace or CJK text.
-const ARN = /arn:aws[a-z-]*:([a-z0-9-]+):[\w:/.+=@*,-]*/gi;
+// An ARN's resource part uses ASCII ARN characters only; the match stops at whitespace, a comma or
+// CJK text, so comma-joined words or ARNs stay separate (an IAM name that itself contains a comma
+// is cut at the comma).
+const ARN = /arn:aws[a-z-]*:([a-z0-9-]+):[\w:/.+=@*-]*/gi;
 // Object word that replaces a network ID before keyword matching, so "sg-… 정책" reads like "sg 정책".
 const NETWORK_ID_WORD: Record<string, string> = { eni: 'eni', sg: 'sg', acl: 'nacl', rtb: 'route table' };
 const NETWORK_ID_G = new RegExp(`\\b(${NETWORK_PREFIXES})${ID_TAIL}`, 'gi');

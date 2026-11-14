@@ -227,6 +227,19 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // the regex/classifier path below runs unchanged (continuity, multi-domain).
   const resource = resourceRoute(prompt);
   if (resource) {
+    // ops owns EC2/LB/CloudFront only as inventory listings, so — like a lone ops keyword (see
+    // loneCatchAll below) — an ops-owned resource is weak evidence: let the classifier arbitrate
+    // and fall back to the resource's section if it is off, empty or fails.
+    if (resource === 'ops' && opts.llmEnabled && opts.classify) {
+      try {
+        const ranked = (await opts.classify(prompt)).map((r) => entry(r.key, r.score));
+        if (ranked.length > 0) {
+          const selected = selectMultiRoute(ranked, opts.minScore);
+          const multiDomain = selected.length >= 2;
+          return { primary: ranked[0].key, ranked, method: 'llm', multiDomain, selected: multiDomain ? selected : [ranked[0]] };
+        }
+      } catch { /* classifier must never block chat — fall back to the resource */ }
+    }
     return single(resource, [entry(resource, 1)], 'resource');
   }
   const matched = matchedSections(prompt);

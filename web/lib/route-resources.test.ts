@@ -40,9 +40,9 @@ describe('resourceSection', () => {
       expect(sectionByKey(key as string)).toBeTruthy();
     }
   });
-  it('an ARN with a comma in its name is reduced to its service name', () => {
-    const stripped = stripResources('arn:aws:iam::123456789012:role/platform,cost 권한');
+  it('comma-joined ARNs are reduced to their own service names', () => {
+    const stripped = stripResources('arn:aws:rds:ap-northeast-2:123456789012:db:mydb,arn:aws:iam::123456789012:role/x');
+    expect(stripped).toContain(' rds ');
     expect(stripped).toContain(' iam ');
-    expect(stripped).not.toMatch(/\bcost\b/);
   });
 });

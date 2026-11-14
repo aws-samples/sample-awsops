@@ -192,7 +192,8 @@ and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) r
 section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`, method
 `resource`). Before keyword matching (`stripResources`) a network ID is replaced by its object word
 (sg, eni, nacl, route table, or network for the other prefixes), an instance ID by a neutral token
-and an ARN by its service name. Resource-name text is never a keyword, an ARN of a service without
+and an ARN by its service name; ARN text stops at whitespace, a comma or CJK text, so comma-joined
+words or ARNs stay separate. Resource-name text is never a keyword, an ARN of a service without
 its own resource rule (for example DynamoDB) still routes by its service name, and a network ID
 follows the same network-object rule as its name: "`sg-…` 정책" goes to network, while
 "`sg-…` 과 버킷 정책" keeps both network and security as classifier candidates. The resource decides
@@ -201,7 +202,9 @@ match (a list/count phrasing such as "list all … sg-…" does not count), and 
 the resource's own, or `security` through `보안` directly after an instance ID ("`i-…` 보안 점검").
 Otherwise the keyword rules, the hybrid classifier and ADR-003 fan-out decide: "which IAM role can
 modify sg-…", "why is `i-…` access denied?" and "`i-…` 퍼블릭 노출" go to security, "`i-…` CPU 지표"
-to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the classifier. When several
+to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the classifier. An ops-owned
+resource (EC2 instance, load balancer, CloudFront ARN) is weak evidence like a lone ops keyword: on
+the hybrid path the classifier arbitrates and the resource's section is the fallback. When several
 resources are named, the first-named one decides. An enabled custom agent whose keywords match still
 outranks resource routing (`web/app/api/chat/route.ts` precedence).
 
