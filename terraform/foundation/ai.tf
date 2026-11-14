@@ -1021,6 +1021,7 @@ output "agentcore" {
   description = "AgentCore provisioning inputs for scripts/v2/agentcore/provision.py (null when disabled)."
   value = var.agentcore_enabled ? merge({
     deployment_readiness_enabled = var.ci_readiness_enabled
+    chat_section_handoff_enabled = var.chat_section_handoff_enabled
     region                       = var.region
     project                      = var.project
     role_arn                     = aws_iam_role.agentcore[0].arn

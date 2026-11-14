@@ -562,3 +562,9 @@ variable "agentcore_chat_model_id" {
     error_message = "agentcore_chat_model_id applies only to model_provider = mixed; other providers set the chat model themselves."
   }
 }
+
+variable "chat_section_handoff_enabled" {
+  type        = bool
+  description = "Cross-gateway chat handoff (docs/superpowers/specs/2026-11-12-chat-cross-gateway-handoff-design.md). false (default) = built-in section agents never consult other gateways. Applies to built-in section agents only; mapped to the runtime env CHAT_SECTION_HANDOFF_ENABLED by scripts/v2/agentcore/provision.py."
+  default     = false
+}
