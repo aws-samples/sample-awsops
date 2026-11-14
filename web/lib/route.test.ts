@@ -69,6 +69,13 @@ describe('pickGateway', () => {
       expect(classify).not.toHaveBeenCalled();
     }
   });
+  it('keeps security as a candidate when the question has a security subject besides the network object', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('보안 그룹과 퍼블릭 노출된 S3 점검', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(r.selected.map((s) => s.key)).toEqual(['network', 'security']);
+  });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
   });
@@ -459,6 +466,8 @@ describe('resource-first routing', () => {
     ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
     ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
     ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
+    ['why is i-0123456789abcdef0 access denied?', 'security'],
+    ['sg-0123456789abcdef0 접근이 denied 돼요', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);

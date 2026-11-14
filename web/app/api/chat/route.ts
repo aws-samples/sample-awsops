@@ -452,7 +452,7 @@ export async function POST(request: Request) {
     // Bug fix: a context-dependent follow-up (e.g. "저걸 클러스터 안에서 어디서 쓰나" after a
     // CloudTrail/model-invocation question) read in isolation misroutes to the wrong/inactive
     // section — the classifier never saw the prior turn. Feed it a bounded excerpt of the
-    // client-supplied history; matchedSections(prompt) below is unaffected (raw prompt only).
+    // client-supplied history; matchedSections(prompt) below is unaffected (current prompt only, never history).
     route = await classifyRoute(prompt, body.section, {
       llmEnabled: true,
       classify: (p) => classifyPrompt(buildClassifierContext(history, p)),

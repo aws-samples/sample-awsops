@@ -172,16 +172,19 @@ in one answer instead of reporting that no tool is available.
   rule (for example DynamoDB) still routes by its service name.
   The resource decides (method `resource`) only when the question names no IAM principal (IAM, role,
   역할, principal; unless it is an IAM ARN), at most one area's keywords match, and that match is
-  absent, the resource's own section or `security` through generic words (`보안`, public, 노출).
+  absent, the resource's own section, or `security` only through generic words (`보안`, public,
+  노출), plus the object's own policy words for a network resource; a strong word such as `denied`
+  keeps security. When several resources are named, the first-named one decides.
   An IAM-principal question ("which IAM role can modify sg-…") stays on security, while a bare
-  policy word ("sg-… 정책") keeps the network route; a question that matches several areas ("eni-…
-  와 RDS 연결") goes through the keyword rules, the hybrid classifier and ADR-003 multi-domain
-  fan-out as before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost. Network objects
-  (security group, ENI, NACL/network ACL, route table) match a network rule placed before the
-  security rule, which does not apply when an IAM principal is named; on the hybrid path `security`
-  is dropped from the candidates only when a network object and no principal is named, so "보안
-  그룹 정책" or "ENI 권한" goes to network without the classifier, while "which IAM role may modify
-  the security group" stays on security.
+  policy word ("sg-… 정책") keeps the network route; a question whose keywords span several areas
+  ("eni-… 와 RDS 연결") goes through the keyword rules, the hybrid classifier and ADR-003
+  multi-domain fan-out as before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost.
+  Network objects (security group, ENI, NACL/network ACL, route table) match a network rule placed
+  before the security rule, which does not apply when an IAM principal is named. On the hybrid
+  path `security` is dropped from the candidates only when it matched through the network object
+  and its own policy words and no principal is named, so "보안 그룹 정책" or "ENI 권한" goes to
+  network without the classifier, "보안 그룹과 퍼블릭 노출된 S3" keeps both candidates, and "which
+  IAM role may modify the security group" stays on security.
 
 ### Tool result completeness contract
 
