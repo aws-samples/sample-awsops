@@ -7,15 +7,16 @@ state and policy; the caller supplies ``connect``/``register``/``existing_names`
 from typing import Callable
 
 SECTION_CAPABILITIES: dict[str, str] = {
-    "network": "VPC, subnet, ENI, security group, NACL, route table, TGW, VPN, flow logs, reachability",
-    "container": "EKS, ECS, Istio",
-    "data": "RDS, Aurora, DynamoDB, ElastiCache, MSK",
+    "network": "VPC, subnet, ENI, security group, NACL, route table, TGW, VPN, flow logs, reachability, firewall",
+    "container": "EKS, ECS, Istio, Kubernetes",
+    "data": "RDS, Aurora, DynamoDB, ElastiCache/Valkey, MSK",
     "security": "IAM users, roles, groups, policies, access keys, policy simulation",
-    "cost": "Cost Explorer, budgets, reserved instances",
-    "monitoring": "CloudWatch metrics, alarms, logs, CloudTrail, Loki, Tempo, Mimir",
-    "iac": "CloudFormation, Terraform drift",
-    "ops": "inventory, topology, EC2 listing, unused resources, load balancers, target groups, CloudFront",
-    "external-obs": "Prometheus, ClickHouse, vendor observability",
+    "cost": "Cost Explorer, forecast, budgets, reserved instances, FinOps findings",
+    "monitoring": "CloudWatch metrics, alarms, logs, CloudTrail, OpenSearch, Loki, Tempo, Mimir",
+    "iac": "CloudFormation, CDK, Terraform drift",
+    "ops": "AWS docs/knowledge, CLI suggestions, inventory, topology, EC2 listing, unused resources, "
+           "load balancers, target groups, CloudFront",
+    "external-obs": "Prometheus, ClickHouse, Notion, Datadog, Dynatrace, New Relic",
 }
 
 _TOOL_NAME = "consult_section"

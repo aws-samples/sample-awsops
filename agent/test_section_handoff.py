@@ -1,4 +1,6 @@
 """Unit tests for section_handoff (pure state/policy; no strands/boto)."""
+import importlib.util
+from pathlib import Path
 import unittest
 
 from section_handoff import SECTION_CAPABILITIES, HandoffState, handoff_prompt
@@ -34,6 +36,59 @@ def make_state(tools_by_section=None, existing=None, register_error_names=(), co
     available = {k: f"https://gw/{k}" for k in ("security", "cost", "data")}
     state = HandoffState(primary, available, connect, register, lambda: set(existing_set), max_sections)
     return state, calls
+
+
+_CATALOG = Path(__file__).resolve().parents[1] / "scripts" / "v2" / "agentcore" / "catalog.py"
+
+# Word in SECTION_CAPABILITIES[gateway] that names each catalog target; a target without an entry
+# fails the parity test, so a new gateway target cannot silently stay invisible to consult_section.
+_TARGET_WORDS = {
+    "iam-mcp-target": "IAM",
+    "flow-monitor-target": "flow logs",
+    "reachability-read-target": "reachability",
+    "network-mcp-target": "VPC",
+    "core-helpers-target": "CLI",
+    "inventory-read-target": "inventory",
+    "aws-knowledge-target": "AWS docs",
+    "istio-read-target": "Istio",
+    "eks-mcp-target": "EKS",
+    "ecs-mcp-target": "ECS",
+    "rds-mcp-target": "RDS",
+    "dynamodb-mcp-target": "DynamoDB",
+    "msk-mcp-target": "MSK",
+    "valkey-mcp-target": "Valkey",
+    "cost-mcp-target": "Cost Explorer",
+    "finops-mcp-target": "FinOps",
+    "cloudwatch-mcp-target": "CloudWatch",
+    "cloudtrail-mcp-target": "CloudTrail",
+    "opensearch-mcp-target": "OpenSearch",
+    "loki-mcp-target": "Loki",
+    "tempo-mcp-target": "Tempo",
+    "mimir-mcp-target": "Mimir",
+    "iac-mcp-target": "CloudFormation",
+    "terraform-mcp-target": "Terraform",
+    "notion-mcp-target": "Notion",
+    "clickhouse-mcp-target": "ClickHouse",
+    "prometheus-mcp-target": "Prometheus",
+    "datadog-mcp-server-target": "Datadog",
+    "dynatrace-mcp-server-target": "Dynatrace",
+    "newrelic-mcp-server-target": "New Relic",
+}
+
+
+class CapabilityCatalogParityTests(unittest.TestCase):
+    """SECTION_CAPABILITIES is the only signal the model has when choosing what to consult."""
+
+    def test_every_catalog_target_is_named_in_its_gateway_capabilities(self):
+        spec = importlib.util.spec_from_file_location("agentcore_catalog", _CATALOG)
+        catalog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(catalog)
+        self.assertEqual(set(catalog.GATEWAYS), set(SECTION_CAPABILITIES))
+        targets = {**catalog.TARGETS, **catalog.MCP_SERVER_TARGETS}
+        for name, target in targets.items():
+            with self.subTest(target=name):
+                self.assertIn(name, _TARGET_WORDS, "add a capability word for this new target")
+                self.assertIn(_TARGET_WORDS[name].lower(), SECTION_CAPABILITIES[target["gateway"]].lower())
 
 
 class SectionHandoffTests(unittest.TestCase):

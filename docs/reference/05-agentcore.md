@@ -164,30 +164,27 @@ in one answer instead of reporting that no tool is available.
   was consulted (two or more canonical section keys in use order, primary first); the BFF forwards it
   as `gateways` in the final SSE `meta` and stores it in the message's `meta`. The chat UI shows a
   "gateways used" card when it lists two or more.
-- **Resource-first routing:** a prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
-  and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
-  section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`). IDs are
-  blanked and an ARN is reduced to its service name before keyword matching (`stripResources`), so
-  an ID or ARN resource text is never a keyword while an ARN of a service without its own resource
-  rule (for example DynamoDB) still routes by its service name.
-  The resource decides (method `resource`) only when the question names no IAM principal (IAM, role,
-  역할, principal; unless it is an IAM ARN), at most one area's keywords match, and that match is
-  absent, the resource's own section, or `security` only through generic words (`보안`, public,
-  노출), plus the object's own policy words for a network resource; a strong word such as `denied`
-  keeps security; a lone list/count phrasing ("list all … sg-…") also yields to the resource.
-  When several resources are named, the first-named one decides.
-  An IAM-principal question ("which IAM role can modify sg-…") stays on security, while a bare
-  policy word ("sg-… 정책") keeps the network route; a question whose keywords span several areas
-  ("eni-… 와 RDS 연결") goes through the keyword rules, the hybrid classifier and ADR-003
-  multi-domain fan-out as before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost.
-  Network objects (security group, ENI, NACL/network ACL, route table) match a network rule placed
-  before the security rule, which does not apply when an IAM principal is named. On the hybrid
-  path `security` is dropped from the candidates only when it matched through the network object
-  and its own policy words and no principal is named, so "보안 그룹 정책" or "ENI 권한" goes to
-  network without the classifier, "보안 그룹과 퍼블릭 노출된 S3" keeps both candidates, and "which
-  IAM role may modify the security group" stays on security (any network object named with an IAM
-  principal goes to security, or to the hybrid classifier when the question also has a general
-  network keyword).
+- **Consult targets:** the model picks a section from `SECTION_CAPABILITIES`
+  (`agent/section_handoff.py`); `agent/test_section_handoff.py` fails when a gateway target in
+  `scripts/v2/agentcore/catalog.py` is not named there. The SDK behaviour handoff relies on (tool
+  specs re-read each event-loop cycle, tools resolved at call time) is pinned against the installed
+  Strands release in `agent/tests/test_runtime_dependencies.py`.
+- **Prompt cache cost:** attaching tools changes the request's tool list, so the Bedrock prompt-cache
+  prefix that starts with the tools no longer matches. Every model call after a consult in that
+  answer pays full input tokens for the larger tool list, and `cacheReadInputTokens` drops for those
+  calls. Answers without a consult are unaffected.
+
+### Chat routing of network objects
+
+This applies to every chat request, independent of `chat_section_handoff_enabled`. In
+`web/lib/route.ts`, a network-object rule (security group / 보안 그룹, ENI, NACL / network ACL, route
+table) sits before the security rule, so "보안 그룹 정책" or "ENI 권한" goes to the network gateway,
+which has the security-group, NACL and route tools; the security gateway is IAM-only. When the
+question names an IAM principal (IAM, role, user, 역할, 사용자, principal), the rule steps aside and a
+network object goes to security instead ("which IAM role may modify the security group"). On the
+hybrid path `security` is dropped from the classifier candidates only when it matched through the
+network object and its own policy words and no principal is named; any other security subject
+("보안 그룹과 퍼블릭 노출된 S3") keeps both candidates for the classifier.
 
 ### Tool result completeness contract
 
