@@ -174,7 +174,8 @@ in one answer instead of reporting that no tool is available.
   역할, principal; unless it is an IAM ARN), at most one area's keywords match, and that match is
   absent, the resource's own section, or `security` only through generic words (`보안`, public,
   노출), plus the object's own policy words for a network resource; a strong word such as `denied`
-  keeps security. When several resources are named, the first-named one decides.
+  keeps security; a lone list/count phrasing ("list all … sg-…") also yields to the resource.
+  When several resources are named, the first-named one decides.
   An IAM-principal question ("which IAM role can modify sg-…") stays on security, while a bare
   policy word ("sg-… 정책") keeps the network route; a question whose keywords span several areas
   ("eni-… 와 RDS 연결") goes through the keyword rules, the hybrid classifier and ADR-003
@@ -184,7 +185,9 @@ in one answer instead of reporting that no tool is available.
   path `security` is dropped from the candidates only when it matched through the network object
   and its own policy words and no principal is named, so "보안 그룹 정책" or "ENI 권한" goes to
   network without the classifier, "보안 그룹과 퍼블릭 노출된 S3" keeps both candidates, and "which
-  IAM role may modify the security group" stays on security.
+  IAM role may modify the security group" stays on security (any network object named with an IAM
+  principal goes to security, or to the hybrid classifier when the question also has a general
+  network keyword).
 
 ### Tool result completeness contract
 

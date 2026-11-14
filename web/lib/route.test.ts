@@ -51,7 +51,8 @@ describe('pickGateway', () => {
     expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
   });
   it('an IAM principal next to a network object keeps the security route', async () => {
-    for (const p of ['어떤 IAM 역할이 보안 그룹을 수정할 수 있나요?', 'which IAM role may modify the security group?']) {
+    for (const p of ['어떤 IAM 역할이 보안 그룹을 수정할 수 있나요?', 'which IAM role may modify the security group?',
+      '어떤 principal이 보안 그룹을 수정할 수 있나요?']) {
       expect(pickGateway(p)).toBe('security');
       expect((await classifyRoute(p)).primary).toBe('security');
       const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
@@ -468,6 +469,7 @@ describe('resource-first routing', () => {
     ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
     ['why is i-0123456789abcdef0 access denied?', 'security'],
     ['sg-0123456789abcdef0 접근이 denied 돼요', 'security'],
+    ['which principal can modify sg-0123456789abcdef0?', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);
@@ -482,6 +484,12 @@ describe('resource-first routing', () => {
       expect(pickGateway(p)).toBe('network');
       expect(await classifyRoute(p)).toMatchObject({ primary: 'network', method: 'resource' });
     }
+  });
+  it('a list/count phrasing about a named resource stays with the resource', async () => {
+    expect(pickGateway('list all rules for sg-0123456789abcdef0')).toBe('network');
+    expect(await classifyRoute('list all rules for sg-0123456789abcdef0'))
+      .toMatchObject({ primary: 'network', method: 'resource' });
+    expect(pickGateway('eni-0a1b2c3d 몇 개 붙어 있어?')).toBe('network');
   });
   it('an unrecognised ARN keeps its service keyword', () => {
     expect(pickGateway('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검')).toBe('data');

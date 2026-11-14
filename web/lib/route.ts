@@ -24,7 +24,7 @@ function securityOnlyThrough(text: string, ...words: RegExp[]): boolean {
   return !SECURITY_WORDS.test(rest);
 }
 
-const SECURITY_WORDS = /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i;
+const SECURITY_WORDS = /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|principals?|denied|permission|public|노출/i;
 
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
 const RULES: { key: string; re: RegExp; unless?: RegExp }[] = [
@@ -112,7 +112,8 @@ function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean 
  *  when (a) the question names no IAM principal (IAM/role/역할/principal), unless the resource is an
  *  IAM ARN, (b) at most one area's keywords match, and (c) that one match is absent, the resource's
  *  own section, or `security` only through generic words (보안, public, 노출) — plus the object's own
- *  policy words (정책/권한/policy/permission) for a network resource. A strong security word
+ *  policy words (정책/권한/policy/permission) for a network resource; a lone list/count phrasing
+ *  (`aws-data`) also yields to the resource. A strong security word
  *  (denied, …) keeps the keyword route. Otherwise ("which IAM role can
  *  modify sg-…" → security, "i-… 의 CPU 지표" → monitoring, "sg-… 비용" → cost, "eni-… 와 RDS
  *  연결" → several areas) the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out
@@ -125,7 +126,9 @@ function resourceRoute(prompt: string): string | undefined {
   const matched = matchedSections(prompt);
   if (matched.length > 1) return undefined; // several areas: keywords / classifier / fan-out decide
   const first = matched[0];
-  if (first === undefined || first === resource) return resource;
+  // `aws-data` is a list/count phrasing ("list all", "몇 개"), not another area's subject, so the
+  // named resource's section answers it.
+  if (first === undefined || first === resource || first === 'aws-data') return resource;
   // The documented collision: security matched only through generic words next to the ID ("i-… 보안
   // 점검"), or — for a network resource — through that object's own policy words ("sg-… 정책").
   // Strong words (denied, iam, role, …) keep the keyword route to security.
