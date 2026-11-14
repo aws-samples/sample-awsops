@@ -9,7 +9,7 @@ isolation. This keeps the change within Task 2's file scope (agent.py + test_age
 """
 import asyncio
 import io
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 import os
 import sys
 import types
@@ -1428,6 +1428,72 @@ class HandoffHandlerWiringTest(unittest.TestCase):
         kw = cap["agents"][0].kwargs
         self.assertNotIn("consult_section", [t.tool_name for t in kw["tools"]])
         self.assertFalse(any("gateways" in e for e in out))
+
+
+class HandoffCancellationTest(unittest.TestCase):
+    """A consult racing request cancellation must not leave an MCP session running."""
+
+    GATEWAYS = {"v2-network": "https://gw/network", "v2-security": "https://gw/security"}
+
+    def _fake_mcp(self, events, on_enter=None):
+        class FakeMCP:
+            def __init__(self, factory, **kwargs):
+                self.url = factory()
+                events.append(("init", self.url))
+
+            def __enter__(self):
+                events.append(("enter", self.url))
+                if on_enter:
+                    on_enter()
+                return self
+
+            def __exit__(self, *a):
+                events.append(("exit", self.url))
+                return False
+        return FakeMCP
+
+    def _consult(self, stack, events, close_before=False, on_enter=None):
+        tool_obj = types.SimpleNamespace(tool_name="iam_list_users")
+        holder_agent = types.SimpleNamespace(tool_registry=types.SimpleNamespace(
+            registry={}, register_tool=lambda t: events.append(("register", t.tool_name))))
+        with patch.object(agent, "GATEWAYS", dict(self.GATEWAYS)), \
+                patch.object(agent, "create_gateway_transport", side_effect=lambda url: url), \
+                patch.object(agent, "MCPClient", self._fake_mcp(events, on_enter)), \
+                patch.object(agent, "get_all_tools", return_value=[tool_obj]), \
+                patch.object(agent, "apply_official_mcp_gates", side_effect=lambda t, k, s: (t, [], None)):
+            state, consult_tool, holder = agent._build_handoff("network", "v2-network", stack)
+            holder.append(holder_agent)
+            if close_before:
+                stack.close()
+            out = consult_tool("security")
+        return state, out
+
+    def test_consult_after_close_is_refused_without_entering_client(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events, close_before=True)
+        self.assertIn("unavailable", out)
+        self.assertNotIn(("enter", "https://gw/security"), events)
+        self.assertFalse(any(e[0] == "register" for e in events))
+        self.assertEqual(state.used, ["network"])
+
+    def test_close_during_connect_exits_client_immediately(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events, on_enter=stack.close)
+        self.assertIn("unavailable", out)
+        self.assertIn(("exit", "https://gw/security"), events)  # stopped, not left running
+        self.assertFalse(any(e[0] == "register" for e in events))
+        self.assertEqual(state.used, ["network"])
+
+    def test_open_stack_owns_consulted_client_until_close(self):
+        events = []
+        stack = ExitStack()
+        state, out = self._consult(stack, events)
+        self.assertNotIn("unavailable", out)
+        self.assertNotIn(("exit", "https://gw/security"), events)
+        stack.close()
+        self.assertIn(("exit", "https://gw/security"), events)
 
 
 if __name__ == '__main__':

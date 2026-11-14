@@ -120,13 +120,43 @@ def _build_handoff(primary, primary_gateway_key, stack):
     # Strands' default ConcurrentToolExecutor runs sync tools via asyncio.to_thread, so parallel
     # consult calls must serialize: HandoffState's limit/dedup checks and the ExitStack are unlocked.
     consult_lock = threading.Lock()
+    # The handler generator can close (client disconnect / cancellation) while a consult thread is
+    # still inside connect. Registering on an ExitStack that already exited would leave that MCP
+    # client's background thread and session running, so the request stack flips `closed` when it
+    # unwinds and connect hands its sessions over only while the stack is still open.
+    life_lock = threading.Lock()
+    closed = {"v": False}
+
+    def _mark_closed():
+        with life_lock:
+            closed["v"] = True
+
+    stack.callback(_mark_closed)
 
     def connect(section):
+        with life_lock:
+            if closed["v"]:
+                raise RuntimeError("request already closed")
         key = available[section]
         url = GATEWAYS[key]
-        client = MCPClient(lambda url=url: create_gateway_transport(url), startup_timeout=10)
-        stack.enter_context(client)
-        gw, stdio, _ = apply_official_mcp_gates(get_all_tools(client), key, stack)
+        # Start the consulted sessions on a consult-local stack (MCPClient.__enter__ = start(),
+        # __exit__ = stop()), then move them onto the request stack under life_lock. If the request
+        # closed meanwhile, stop them right here instead of registering on a dead stack.
+        local = ExitStack()
+        try:
+            client = MCPClient(lambda url=url: create_gateway_transport(url), startup_timeout=10)
+            local.enter_context(client)
+            gw, stdio, _ = apply_official_mcp_gates(get_all_tools(client), key, local)
+        except BaseException:
+            local.close()
+            raise
+        with life_lock:
+            owned = not closed["v"]
+            if owned:
+                stack.push(local.pop_all())
+        if not owned:
+            local.close()
+            raise RuntimeError("request closed during consult")
         last_connected["n"] = len(gw) + len(stdio)
         return gw + stdio
 
