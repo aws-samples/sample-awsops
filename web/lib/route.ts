@@ -33,10 +33,13 @@ const RULES: { key: string; re: RegExp }[] = [
   // move `tempo|트레이스|\btrace\b` from the monitoring rule below to this rule (see ADR-017 §Trade-offs).
   { key: 'observability', re: /promql|prometheus|프로메테우스|clickhouse|클릭하우스|datadog|데이터독|dynatrace|다이나트레이스|newrelic|new relic|뉴렐릭/i },
   { key: 'cost', re: /비용|요금|예산|절감|billing|cost|budget|forecast|spend/i },
-  // `보안(?! ?그룹)`: the Korean "보안 그룹"/"보안그룹" is a security GROUP — a network object whose
-  // tools live on the network gateway (the security gateway is IAM-only). A bare `보안` used to
-  // claim it first, so "ENI의 보안 그룹·NACL·라우팅 조회" landed on security with no SG/NACL tools.
-  { key: 'security', re: /보안(?! ?그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
+  // Network objects whose names contain security words: a security GROUP, NACL or route table is a
+  // network object (the security gateway is IAM-only), so these must beat the security rule's
+  // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy").
+  { key: 'network', re: /security ?group|보안\s*그룹|\bsg\b|nacl|네트워크 ?acl|라우팅 ?테이블|route ?table/i },
+  // The network rule above claims SG/NACL/route-table phrasings first; the `보안(?!\s*그룹)`
+  // lookahead keeps a bare `보안` from claiming "보안  그룹" (any whitespace) on prompts it does not reach.
+  { key: 'security', re: /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
   { key: 'network', re: /통신|연결|네트워크|포트|라우트|라우팅 ?테이블|route ?table|reachab|network|connectivity|security ?group|보안 ?그룹|\bsg\b|nacl|\beni\b|tgw|vpn|peering|flow ?log/i },
   { key: 'container', re: /파드|컨테이너|eks|ecs|kubernetes|k8s|pod|istio|namespace|sidecar/i },
   { key: 'data', re: /쿼리|데이터베이스|rds|aurora|dynamo|elasticache|redis|msk|kafka|database|slow query|throttl/i },
@@ -74,6 +77,25 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'aws-data', re: /몇 ?개|개수|총 ?\d|전체 ?(목록|리스트)|목록 ?보여|how many|count of|list all/i },
 ];
 
+// Explicit IAM intent: words that make a question an IAM/permissions question even next to a resource ID.
+const IAM_INTENT = /권한|역할|정책|iam|policy|role|denied|permission/i;
+
+/** Section of the named resource when it should decide the route, else `undefined`.
+ *  A named resource wins only when (a) no keyword rule matches, (b) the first keyword match is the
+ *  resource's own section, or (c) the first keyword match is `security` only through generic words
+ *  (보안, public, 노출) with no IAM intent (권한/역할/정책/IAM/policy/role/denied/permission) — the
+ *  documented collision next to a network or instance ID. An IAM-intent question keeps the keyword
+ *  route to security ("which IAM role can reach arn:aws:rds:…" → security). Any other first
+ *  keyword is an explicit subject from another area ("i-… 의 CPU 지표" → monitoring, "sg-… 비용" →
+ *  cost), so the keyword path decides exactly as it did before resource routing existed. */
+function resourceRoute(prompt: string): string | undefined {
+  const resource = resourceSection(prompt);
+  if (!resource || !sectionByKey(resource)) return undefined;
+  const first = RULES.find((r) => r.re.test(prompt))?.key;
+  if (first === undefined || first === resource || (first === 'security' && !IAM_INTENT.test(prompt))) return resource;
+  return undefined;
+}
+
 /** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
  *  conversation's previous section (when the caller vouches for it); else 'ops'.
  *
@@ -82,20 +104,6 @@ const RULES: { key: string; re: RegExp }[] = [
  *  catch-all, which dropped the domain prompt and tools the previous answer was built with. A
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
-/** Section of the named resource when it should decide the route, else `undefined`.
- *  A named resource wins only when (a) no keyword rule matches, (b) the first keyword match is the
- *  resource's own section, or (c) the first keyword match is `security` — the documented collision
- *  where generic words (보안/policy/public) sit next to a network or instance ID. Any other first
- *  keyword is an explicit subject from another area ("i-… 의 CPU 지표" → monitoring, "sg-… 비용" →
- *  cost), so the keyword path decides exactly as it did before resource routing existed. */
-function resourceRoute(prompt: string): string | undefined {
-  const resource = resourceSection(prompt);
-  if (!resource || !sectionByKey(resource)) return undefined;
-  const first = RULES.find((r) => r.re.test(prompt))?.key;
-  if (first === undefined || first === resource || first === 'security') return resource;
-  return undefined;
-}
-
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
   // Precedence: pin > named resource (see resourceRoute: only when no other area's keyword comes
   // first) > observability vendor > keywords > previous > 'ops'.

@@ -1785,8 +1785,9 @@ async def handler(payload):
             async for chunk in _stream_text(agent, user_input):
                 started = True
                 yield chunk
-            if handoff:
-                # Sections whose tools served this answer (canonical keys, use order).
+            if handoff and len(handoff[0].used) >= 2:
+                # Sections whose tools were attached to this answer (canonical keys, use order); only
+                # emitted when another section was consulted, so single-gateway answers store nothing.
                 yield {"gateways": list(handoff[0].used)}
         return
 

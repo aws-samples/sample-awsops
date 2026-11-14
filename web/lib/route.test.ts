@@ -28,6 +28,21 @@ describe('pickGateway', () => {
     // a genuine security ask keeps its route
     expect(pickGateway('보안 취약점 점검해줘')).toBe('security');
   });
+  it('routes security-group / NACL / route-table phrasings with policy words to network', async () => {
+    const prompts = [
+      '보안 그룹 정책 검토해줘',
+      'check the security group policy',
+      '보안그룹 권한 설정 확인',
+      '네트워크 ACL 정책 확인',
+      'route table policy review',
+      '보안  그룹 규칙',
+    ];
+    for (const p of prompts) {
+      expect(pickGateway(p)).toBe('network');
+      expect((await classifyRoute(p)).primary).toBe('network');
+    }
+    expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
+  });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
   });
@@ -406,13 +421,16 @@ describe('resource-first routing', () => {
 
   // A named resource must not override an explicit subject from another area: the resource's
   // section wins only when no keyword matches, the first keyword is its own section, or the first
-  // keyword is the generic `security` collision (보안/policy/public next to an ID).
+  // keyword is `security` only through generic words (보안/public/노출) with no IAM intent.
   const otherAreaIntent: [string, string][] = [
     ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
     ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
     ['sg-0123456789abcdef0 관련 비용', 'cost'],
     ['arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', 'cost'],
     ['i-0123456789abcdef0 의 보안 그룹 규칙 확인', 'network'],
+    ['어떤 IAM role이 arn:aws:rds:ap-northeast-2:123456789012:db:mydb에 접근 가능한가요?', 'security'],
+    ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
+    ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);

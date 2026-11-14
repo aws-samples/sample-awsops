@@ -160,17 +160,20 @@ in one answer instead of reporting that no tool is available.
   tools whose names duplicate an attached tool are skipped (`agent/section_handoff.py`).
 - **Exclusions:** custom agents, any request with a `toolAllowlist` or `systemPromptOverride`, ADR-003
   multi-domain fan-out, the Bedrock-direct fallback, `anthropic_loop` and RCA mode never hand off.
-- **Provenance:** the runtime emits a `{"gateways": [...]}` frame (canonical section keys in use
-  order, primary first); the BFF forwards it as `gateways` in the final SSE `meta` and stores it in the
-  message's `meta`. The chat UI shows a "gateways used" card when it lists two or more.
+- **Provenance:** the runtime emits a `{"gateways": [...]}` frame only when at least one other section
+  was consulted (two or more canonical section keys in use order, primary first); the BFF forwards it
+  as `gateways` in the final SSE `meta` and stores it in the message's `meta`. The chat UI shows a
+  "gateways used" card when it lists two or more.
 - **Resource-first routing:** a prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
   and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
   section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`), unless the
   question also names another area's subject. The resource decides (method `resource`) only when no
   keyword rule matches, the first keyword match is the resource's own section, or the first keyword
-  match is `security` (generic 보안/policy/public next to an ID). Otherwise the keyword rules and, on the
-  hybrid path, the classifier decide as before, so "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용"
-  to cost.
+  match is `security` only through generic words (`보안`, public, 노출) with no IAM intent. An IAM-intent
+  question ("which IAM role can access arn:aws:rds:…") stays on security. Otherwise the keyword rules
+  and, on the hybrid path, the classifier decide as before, so "`i-…` CPU 지표" goes to monitoring and
+  "`sg-…` 비용" to cost. Security-group, NACL and route-table phrasings match a network rule placed
+  before the security rule, so "보안 그룹 정책" goes to network.
 
 ### Tool result completeness contract
 

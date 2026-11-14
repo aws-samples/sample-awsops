@@ -119,6 +119,26 @@ class SectionHandoffTests(unittest.TestCase):
         state.consult("security")
         self.assertEqual(calls["register"], ["iam_list_users"])
 
+    def test_alias_and_normalization(self):
+        registered = []
+
+        def connect(section):
+            return [FakeTool(n) for n in {"external-obs": ["prom_query"]}.get(section, [])]
+
+        def register(tool):
+            registered.append(tool.tool_name)
+
+        available = {k: f"https://gw/{k}" for k in ("security", "external-obs")}
+        state = HandoffState("network", available, connect, register, lambda: set(registered))
+        out = state.consult(" Observability ")
+        self.assertEqual(registered, ["prom_query"])
+        self.assertIn("prom_query", out)
+        self.assertEqual(state.used[-1], "external-obs")
+
+        out = state.consult(None)
+        self.assertIn("not consultable", out)
+        self.assertEqual(state.used, ["network", "external-obs"])
+
     def test_prompt(self):
         state, _ = make_state()
         p = handoff_prompt(state)

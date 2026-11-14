@@ -1312,7 +1312,7 @@ class HandoffEligibleTest(unittest.TestCase):
 
 
 class HandoffHandlerWiringTest(unittest.TestCase):
-    """The handler attaches consult_section + the handoff prompt + a final gateways frame."""
+    """The handler attaches consult_section + the handoff prompt; a gateways frame follows only a consult."""
 
     GATEWAYS = {"v2-network": "https://gw/network", "v2-security": "https://gw/security",
                 "ops": "https://gw/ops"}
@@ -1384,7 +1384,7 @@ class HandoffHandlerWiringTest(unittest.TestCase):
     PAYLOAD = {"gateway": "network", "handoff": True, "messages": [{"role": "user", "content": "q"}]}
     ON = {"CHAT_SECTION_HANDOFF_ENABLED": "true"}
 
-    def test_eligible_attaches_tool_prompt_and_frame(self):
+    def test_eligible_attaches_tool_and_prompt_without_frame(self):
         out, cap = self._run(self.PAYLOAD, self.ON)
         self.assertEqual(len(cap["agents"]), 1)
         kw = cap["agents"][0].kwargs
@@ -1393,7 +1393,7 @@ class HandoffHandlerWiringTest(unittest.TestCase):
         self.assertIn("- security:", kw["system_prompt"])
         self.assertNotIn("- network:", kw["system_prompt"])  # primary is not consultable
         self.assertNotIn("- data:", kw["system_prompt"])  # no gateway → not offered (no ops fallback)
-        self.assertEqual(out[-1], {"gateways": ["network"]})
+        self.assertFalse(any("gateways" in e for e in out))  # no consult → no frame
         self.assertEqual(out[0], {"delta": "answer"})
 
     def test_ineligible_has_no_tool_prompt_or_frame(self):

@@ -20,6 +20,9 @@ SECTION_CAPABILITIES: dict[str, str] = {
 
 _TOOL_NAME = "consult_section"
 
+# ADR-004 chat alias; mirrors _GATEWAY_ALIAS in agent.py (this module stays import-free).
+_SECTION_ALIAS = {"observability": "external-obs"}
+
 
 class HandoffState:
     def __init__(
@@ -41,6 +44,10 @@ class HandoffState:
         self._failed: set[str] = set()
 
     def consult(self, section: str) -> str:
+        if not isinstance(section, str):
+            section = ""
+        section = section.strip().lower()
+        section = _SECTION_ALIAS.get(section, section)
         if section == self.primary or section not in self.available:
             return f"Section '{section}' is not consultable. Consultable: {', '.join(self.available) or 'none'}."
         if section in self.used:
