@@ -500,6 +500,7 @@ describe('resource-first routing', () => {
     // like "보안 그룹 접근이 denied" (network first; the hybrid classifier still sees security)
     ['sg-0123456789abcdef0 접근이 denied 돼요', 'network'],
     ['which principal can modify sg-0123456789abcdef0?', 'security'],
+    ['Can arn:aws:sts::123456789012:assumed-role/Admin/session modify sg-0123456789abcdef0?', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);
@@ -514,6 +515,15 @@ describe('resource-first routing', () => {
       expect(pickGateway(p)).toBe('network');
       expect(await classifyRoute(p)).toMatchObject({ primary: 'network' });
     }
+  });
+  it('every network ID prefix follows the network-object rule', async () => {
+    for (const p of ['vpc-0a1b2c3d 보안 점검', 'subnet-0a1b2c3d 권한 확인', 'vpce-0a1b2c3d4e5f60718 정책 확인']) {
+      expect(pickGateway(p)).toBe('network');
+    }
+    const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+    const r = await classifyRoute('subnet-0a1b2c3d 권한 확인', undefined, { llmEnabled: true, classify });
+    expect(r.primary).toBe('network');
+    expect(classify).not.toHaveBeenCalled();
   });
   it('a resource ID follows the network-object rule for policy words', async () => {
     const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);

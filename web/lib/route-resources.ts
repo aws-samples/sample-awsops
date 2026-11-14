@@ -16,6 +16,11 @@ const NETWORK_ID_G = new RegExp(`\\b(${NETWORK_PREFIXES})${ID_TAIL}`, 'gi');
 const INSTANCE_ID_G = new RegExp(INSTANCE_ID.source, 'gi');
 /** Token that replaces an EC2 instance ID; no keyword rule matches it. */
 export const INSTANCE_TOKEN = 'ec2-instance';
+/** Object word for network IDs without a dedicated word (vpc, subnet, vpce, tgw, nat, igw, pcx, vpn, vgw, cgw). */
+export const NETWORK_RESOURCE_TOKEN = 'network-resource';
+// A role/user ARN is itself an IAM principal: keep that word so a question about what it may do stays
+// an IAM question ("Can arn:aws:sts::…:assumed-role/Admin/x modify sg-…?").
+const ARN_PRINCIPAL = /:(?:assumed-role|role|user)\//i;
 
 // Ordered list; the match with the lowest index in the prompt wins (first-named resource).
 const RESOURCE_RULES: { re: RegExp; key: string }[] = [
@@ -39,12 +44,13 @@ export function resourceSection(prompt: string): string | undefined {
 }
 
 /** The prompt prepared for keyword matching: a network ID becomes its object word (sg, eni, nacl,
- *  route table, or network for the other prefixes), an instance ID a neutral token and an ARN its
- *  service name, so the network-object rule applies to `sg-…` exactly as to "sg" and
- *  `arn:aws:dynamodb:…` still matches the data rule, while resource-name text is never a keyword. */
+ *  route table, or `network-resource` for the other prefixes), an instance ID a neutral token and an
+ *  ARN its service name (plus `role` for a role/user ARN, an IAM principal), so the network-object
+ *  rule applies to every network ID exactly as to "sg" and `arn:aws:dynamodb:…` still matches the
+ *  data rule, while resource-name text is never a keyword. */
 export function stripResources(prompt: string): string {
   return prompt
-    .replace(ARN, (_m, service: string) => ` ${service} `)
-    .replace(NETWORK_ID_G, (_m, prefix: string) => ` ${NETWORK_ID_WORD[prefix.toLowerCase()] ?? 'network'} `)
+    .replace(ARN, (m, service: string) => ` ${service}${ARN_PRINCIPAL.test(m) ? ' role' : ''} `)
+    .replace(NETWORK_ID_G, (_m, prefix: string) => ` ${NETWORK_ID_WORD[prefix.toLowerCase()] ?? NETWORK_RESOURCE_TOKEN} `)
     .replace(INSTANCE_ID_G, ` ${INSTANCE_TOKEN} `);
 }

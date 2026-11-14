@@ -2,7 +2,8 @@ import { sectionByKey, activeSections } from './sections';
 import { resourceSection, stripResources, INSTANCE_TOKEN } from './route-resources';
 
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
-const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
+// network-resource: the stripResources word for vpc/subnet/… IDs.
+const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table|network-resource/i;
 
 // An IAM principal named in the question (IAM, role, 역할, principal) makes a question about a
 // network object an IAM question ("which IAM role may modify the security group"); the network rule
@@ -113,7 +114,8 @@ function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean 
 
 /** Section of the named resource when it should decide the route, else `undefined`.
  *  Keywords are matched on `stripResources` text, where a network ID becomes its object word (sg,
- *  eni, nacl, route table, network), an instance ID a neutral token and an ARN its service name. A
+ *  eni, nacl, route table, network-resource), an instance ID a neutral token and an ARN its service
+ *  name (plus `role` for a role/user ARN). A
  *  network ID with policy words therefore follows the same network-object rule as the object's name:
  *  policy words directly after it stay with network on the keyword/classifier path, and any other
  *  security subject ("sg-… 과 버킷 정책") keeps `security` as a candidate. The resource decides alone

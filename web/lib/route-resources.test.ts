@@ -45,4 +45,9 @@ describe('resourceSection', () => {
     expect(stripped).toContain(' rds ');
     expect(stripped).toContain(' iam ');
   });
+  it('a role/user ARN keeps a principal word', () => {
+    expect(stripResources('arn:aws:sts::123456789012:assumed-role/Admin/session')).toContain(' sts role ');
+    expect(stripResources('arn:aws:iam::123456789012:user/alice')).toContain(' iam role ');
+    expect(stripResources('arn:aws:rds:ap-northeast-2:123456789012:db:mydb')).not.toContain('role');
+  });
 });
