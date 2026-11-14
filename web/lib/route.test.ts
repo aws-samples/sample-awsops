@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { pickGateway, classifyRoute, matchedSections, ACTIVE_FALLBACK } from './route';
+import { stripResources } from './route-resources';
 
 describe('pickGateway', () => {
   it('honors an explicit pin over keywords', () => {
@@ -36,12 +37,24 @@ describe('pickGateway', () => {
       '네트워크 ACL 정책 확인',
       'route table policy review',
       '보안  그룹 규칙',
+      'ENI 권한 확인',
+      'network ACL policy review',
+      '라우트 테이블 정책',
     ];
     for (const p of prompts) {
       expect(pickGateway(p)).toBe('network');
       expect((await classifyRoute(p)).primary).toBe('network');
     }
     expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
+  });
+  it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
+    for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('network');
+      expect(r.method).toBe('regex');
+      expect(classify).not.toHaveBeenCalled();
+    }
   });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
@@ -419,9 +432,10 @@ describe('resource-first routing', () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
-  // A named resource must not override an explicit subject from another area: the resource's
-  // section wins only when no keyword matches, the first keyword is its own section, or the first
-  // keyword is `security` only through generic words (보안/public/노출) with no IAM intent.
+  // A named resource must not override an explicit subject from another area: with IDs/ARNs blanked,
+  // the resource's section wins only when there is no IAM intent (unless it is an IAM ARN), at most
+  // one area's keywords match, and that match is absent, its own section, or `security` through
+  // generic words (보안/public/노출).
   const otherAreaIntent: [string, string][] = [
     ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
     ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
@@ -431,6 +445,8 @@ describe('resource-first routing', () => {
     ['어떤 IAM role이 arn:aws:rds:ap-northeast-2:123456789012:db:mydb에 접근 가능한가요?', 'security'],
     ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
     ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
+    ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
+    ['eni-0a1b2c3d 에 대한 권한 확인', 'security'],
   ];
   it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
     expect(pickGateway(prompt)).toBe(want);
@@ -440,9 +456,9 @@ describe('resource-first routing', () => {
     expect(r.primary).toBe(want);
     expect(r.method).not.toBe('resource');
   });
-  it('another area’s keyword runs the classifier path unchanged', async () => {
+  it('a resource question naming several areas runs the classifier path unchanged', async () => {
     const classify = vi.fn(async () => [{ key: 'cost', score: 0.9 }]);
-    const r = await classifyRoute('arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', undefined,
+    const r = await classifyRoute('arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석과 파드 상태', undefined,
       { llmEnabled: true, classify });
     expect(classify).toHaveBeenCalledTimes(1);
     expect(r).toMatchObject({ primary: 'cost', method: 'llm' });
@@ -452,5 +468,19 @@ describe('resource-first routing', () => {
     expect(sec).toMatchObject({ primary: 'ops', method: 'resource' });
     const own = await classifyRoute('ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회해 주세요.');
     expect(own).toMatchObject({ primary: 'network', method: 'resource' });
+  });
+  it('a resource question spanning several areas keeps the classifier and multi-domain fan-out', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'data', score: 0.5 }]);
+    const r = await classifyRoute('eni-0a1b2c3d 와 RDS 연결 안 돼', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(r.multiDomain).toBe(true);
+    expect(r.selected.map((s) => s.key)).toEqual(['network', 'data']);
+  });
+  it('resource IDs and ARNs are never read as keywords', () => {
+    const stripped = stripResources('sg-0123456789abcdef0 와 arn:aws:rds:ap-northeast-2:123456789012:db:mydb 확인');
+    expect(stripped).not.toContain('sg-');
+    expect(stripped).not.toContain('arn:');
+    expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost']);
   });
 });

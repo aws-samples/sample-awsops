@@ -166,14 +166,17 @@ in one answer instead of reporting that no tool is available.
   "gateways used" card when it lists two or more.
 - **Resource-first routing:** a prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
   and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
-  section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`), unless the
-  question also names another area's subject. The resource decides (method `resource`) only when no
-  keyword rule matches, the first keyword match is the resource's own section, or the first keyword
-  match is `security` only through generic words (`보안`, public, 노출) with no IAM intent. An IAM-intent
-  question ("which IAM role can access arn:aws:rds:…") stays on security. Otherwise the keyword rules
-  and, on the hybrid path, the classifier decide as before, so "`i-…` CPU 지표" goes to monitoring and
-  "`sg-…` 비용" to cost. Security-group, NACL and route-table phrasings match a network rule placed
-  before the security rule, so "보안 그룹 정책" goes to network.
+  section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`). The IDs and
+  ARNs are blanked before keyword matching (`stripResources`), so an ID is never read as a keyword.
+  The resource decides (method `resource`) only when the question has no IAM intent (unless it names
+  an IAM ARN), at most one area's keywords match, and that match is absent, the resource's own
+  section or `security` through generic words (`보안`, public, 노출). An IAM-intent question ("which
+  IAM role can modify sg-…") stays on security; a question that matches several areas ("eni-… 와 RDS
+  연결") goes through the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out as
+  before; "`i-…` CPU 지표" goes to monitoring and "`sg-…` 비용" to cost. Network objects (security
+  group, ENI, NACL/network ACL, route table) match a network rule placed before the security rule,
+  and on the hybrid path `security` is dropped from the candidates when one is named, so "보안 그룹
+  정책" or "ENI 권한" goes to network without the classifier.
 
 ### Tool result completeness contract
 

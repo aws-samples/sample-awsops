@@ -1,5 +1,8 @@
 import { sectionByKey, activeSections } from './sections';
-import { resourceSection } from './route-resources';
+import { resourceSection, stripResources } from './route-resources';
+
+// Network objects whose names or questions carry security words; the security gateway is IAM-only.
+const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
 
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
 const RULES: { key: string; re: RegExp }[] = [
@@ -36,11 +39,11 @@ const RULES: { key: string; re: RegExp }[] = [
   // Network objects whose names contain security words: a security GROUP, NACL or route table is a
   // network object (the security gateway is IAM-only), so these must beat the security rule's
   // 정책/policy/권한 ("보안 그룹 정책 검토", "check the security group policy").
-  { key: 'network', re: /security ?group|보안\s*그룹|\bsg\b|nacl|네트워크 ?acl|라우팅 ?테이블|route ?table/i },
+  { key: 'network', re: NETWORK_OBJECTS },
   // The network rule above claims SG/NACL/route-table phrasings first; the `보안(?!\s*그룹)`
   // lookahead keeps a bare `보안` from claiming "보안  그룹" (any whitespace) on prompts it does not reach.
   { key: 'security', re: /보안(?!\s*그룹)|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
-  { key: 'network', re: /통신|연결|네트워크|포트|라우트|라우팅 ?테이블|route ?table|reachab|network|connectivity|security ?group|보안 ?그룹|\bsg\b|nacl|\beni\b|tgw|vpn|peering|flow ?log/i },
+  { key: 'network', re: /통신|연결|네트워크|포트|라우트|reachab|network|connectivity|tgw|vpn|peering|flow ?log/i },
   { key: 'container', re: /파드|컨테이너|eks|ecs|kubernetes|k8s|pod|istio|namespace|sidecar/i },
   { key: 'data', re: /쿼리|데이터베이스|rds|aurora|dynamo|elasticache|redis|msk|kafka|database|slow query|throttl/i },
   { key: 'cost', re: /\$\d/i },
@@ -81,18 +84,23 @@ const RULES: { key: string; re: RegExp }[] = [
 const IAM_INTENT = /권한|역할|정책|iam|policy|role|denied|permission/i;
 
 /** Section of the named resource when it should decide the route, else `undefined`.
- *  A named resource wins only when (a) no keyword rule matches, (b) the first keyword match is the
- *  resource's own section, or (c) the first keyword match is `security` only through generic words
- *  (보안, public, 노출) with no IAM intent (권한/역할/정책/IAM/policy/role/denied/permission) — the
- *  documented collision next to a network or instance ID. An IAM-intent question keeps the keyword
- *  route to security ("which IAM role can reach arn:aws:rds:…" → security). Any other first
- *  keyword is an explicit subject from another area ("i-… 의 CPU 지표" → monitoring, "sg-… 비용" →
- *  cost), so the keyword path decides exactly as it did before resource routing existed. */
+ *  Keywords are matched with resource IDs/ARNs blanked (`stripResources`). The resource decides only
+ *  when (a) the question has no IAM intent (권한/역할/정책/IAM/policy/role/denied/permission), unless
+ *  the resource is an IAM ARN, (b) at most one area's keywords match, and (c) that one match is
+ *  absent, the resource's own section, or `security` through the generic words (보안, public, 노출)
+ *  — the documented collision next to a network or instance ID. Otherwise ("which IAM role can
+ *  modify sg-…" → security, "i-… 의 CPU 지표" → monitoring, "sg-… 비용" → cost, "eni-… 와 RDS
+ *  연결" → several areas) the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out
+ *  decide exactly as they did before resource routing existed. */
 function resourceRoute(prompt: string): string | undefined {
   const resource = resourceSection(prompt);
   if (!resource || !sectionByKey(resource)) return undefined;
-  const first = RULES.find((r) => r.re.test(prompt))?.key;
-  if (first === undefined || first === resource || (first === 'security' && !IAM_INTENT.test(prompt))) return resource;
+  const text = stripResources(prompt);
+  if (resource !== 'security' && IAM_INTENT.test(text)) return undefined; // IAM question about a resource
+  const matched = matchedSections(prompt);
+  if (matched.length > 1) return undefined; // several areas: keywords / classifier / fan-out decide
+  const first = matched[0];
+  if (first === undefined || first === resource || first === 'security') return resource;
   return undefined;
 }
 
@@ -105,13 +113,14 @@ function resourceRoute(prompt: string): string | undefined {
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
-  // Precedence: pin > named resource (see resourceRoute: only when no other area's keyword comes
-  // first) > observability vendor > keywords > previous > 'ops'.
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM intent and at most one
+  // area's keywords) > observability vendor > keywords > previous > 'ops'.
   if (pinned && sectionByKey(pinned)) return pinned;
   const resource = resourceRoute(prompt);
   if (resource) return resource;
+  const text = stripResources(prompt);
   for (const r of RULES) {
-    if (r.re.test(prompt)) return r.key;
+    if (r.re.test(text)) return r.key;
   }
   if (previous && sectionByKey(previous)) return previous;
   return 'ops';
@@ -152,11 +161,13 @@ export function selectMultiRoute(ranked: RankedEntry[], minScore = MULTI_ROUTE_M
 /** Catch-all fallback MUST be an active section — inactive 'ops' would block chat (spec §2.3). */
 export const ACTIVE_FALLBACK = activeSections()[0]?.key ?? 'ops';
 
-/** Distinct section keys matched by the keyword RULES (duplicate-rule keys counted once). */
+/** Distinct section keys matched by the keyword RULES (duplicate-rule keys counted once);
+ *  resource IDs/ARNs are blanked first. */
 export function matchedSections(prompt: string): string[] {
   const keys: string[] = [];
+  const text = stripResources(prompt);
   for (const r of RULES) {
-    if (r.re.test(prompt) && !keys.includes(r.key)) keys.push(r.key);
+    if (r.re.test(text) && !keys.includes(r.key)) keys.push(r.key);
   }
   return keys;
 }
@@ -177,23 +188,27 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
-  // Precedence: pin > named resource (see resourceRoute: only when no other area's keyword comes
-  // first) > observability vendor > keywords/classifier > previous > fallback. When another area's
-  // keyword comes first, the regex/classifier path below runs unchanged (continuity, multi-domain).
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM intent and at most one
+  // area's keywords) > observability vendor > keywords/classifier > previous > fallback. Otherwise
+  // the regex/classifier path below runs unchanged (continuity, multi-domain).
   const resource = resourceRoute(prompt);
   if (resource) {
     return single(resource, [entry(resource, 1)], 'resource');
   }
   const matched = matchedSections(prompt);
+  // A network object named next to security words ("보안 그룹 정책", "ENI 권한") is a network question:
+  // the security gateway has no SG/ENI/NACL/route tools, so `security` never competes for it — on the
+  // regex path or in front of the classifier.
+  const keys = NETWORK_OBJECTS.test(stripResources(prompt)) ? matched.filter((k) => k !== 'security') : matched;
   // v1 lesson (11-route priority ladder: specialized routes above the general catch-all):
   // a lone 'ops' keyword hit is weak evidence — generic nouns (load balancer, certificate,
   // S3 bucket) live in the ops rules while the USER INTENT is often network/cost/monitoring.
   // Let the classifier confirm or override a lone catch-all match; specific single matches
   // keep short-circuiting (fast, no Bedrock call). LLM failure falls through to the same
   // regex result below, so behavior is unchanged when the classifier is off or errors.
-  const loneCatchAll = matched.length === 1 && matched[0] === 'ops' && !!(opts.llmEnabled && opts.classify);
-  if (matched.length === 1 && !loneCatchAll) {
-    return single(matched[0], [entry(matched[0], 1)], 'regex');
+  const loneCatchAll = keys.length === 1 && keys[0] === 'ops' && !!(opts.llmEnabled && opts.classify);
+  if (keys.length === 1 && !loneCatchAll) {
+    return single(keys[0], [entry(keys[0], 1)], 'regex');
   }
   // PR #194 review MAJOR (L2 + L4): an explicit VENDOR NAME is the strongest routing signal there
   // is — that is why the observability rule sits first in RULES — but the fast-path above only fires
@@ -205,8 +220,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   // like "grafana 대시보드에서 본 trace 이상해" to observability ALONE drops `monitoring`, which is
   // where the tempo tools actually live in the default (official_mcp_enabled=false) deployment — a
   // dead end. Vendor first, then the rest, so the fan-out still reaches the section holding tools.
-  if (matched[0] === 'observability') {
-    const ranked = matched.map((k, i) => entry(k, i === 0 ? 1 : 0.5));
+  if (keys[0] === 'observability') {
+    const ranked = keys.map((k, i) => entry(k, i === 0 ? 1 : 0.5));
     const selected = selectMultiRoute(ranked, opts.minScore);
     const multiDomain = selected.length >= 2;
     return { primary: 'observability', ranked, method: 'regex', multiDomain,
@@ -224,8 +239,8 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
     } catch { /* classifier must never block chat — fall through */ }
   }
   // LLM off/empty/failed: legacy first-match if any rule hit, else fallback.
-  if (matched.length > 0) {
-    return single(matched[0], [entry(matched[0], 1)], 'regex');
+  if (keys.length > 0) {
+    return single(keys[0], [entry(keys[0], 1)], 'regex');
   }
   if (opts.previous && sectionByKey(opts.previous)) {
     // distinct method so ADR-003[legacy 038] routing/misroute telemetry keeps continuity separate from the catch-all

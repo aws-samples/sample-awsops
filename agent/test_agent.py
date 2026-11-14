@@ -1311,6 +1311,15 @@ class HandoffEligibleTest(unittest.TestCase):
             self.assertFalse(agent.handoff_eligible(base))
 
 
+class HandoffPrimaryTest(unittest.TestCase):
+    def test_resolved_gateway_key_wins_then_role(self):
+        self.assertEqual(agent._handoff_primary("network", "ops"), "ops")
+        self.assertEqual(agent._handoff_primary("network", "v2-network"), "network")
+        self.assertEqual(agent._handoff_primary("observability", "v2-external-obs"), "external-obs")
+        self.assertEqual(agent._handoff_primary("observability", ""), "external-obs")
+        self.assertIsNone(agent._handoff_primary("nope", ""))
+
+
 class HandoffHandlerWiringTest(unittest.TestCase):
     """The handler attaches consult_section + the handoff prompt; a gateways frame follows only a consult."""
 

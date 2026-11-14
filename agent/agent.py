@@ -93,12 +93,15 @@ def _strict_gateway_key(section, gateways):
 
 
 def _handoff_primary(gateway_role, gateway_key):
-    """Canonical SECTION_CAPABILITIES key of the answering section, or None (handoff off)."""
-    canon = _GATEWAY_ALIAS.get(gateway_role, gateway_role)
-    if canon in SECTION_CAPABILITIES:
-        return canon
+    """Canonical SECTION_CAPABILITIES key of the answering section, or None (handoff off).
+
+    The resolved gateway key wins so a fallback gateway (e.g. role network resolved to ops) is
+    labelled by the tools that actually answer."""
     derived = (gateway_key or "").removeprefix("v2-")
-    return derived if derived in SECTION_CAPABILITIES else None
+    if derived in SECTION_CAPABILITIES:
+        return derived
+    canon = _GATEWAY_ALIAS.get(gateway_role, gateway_role)
+    return canon if canon in SECTION_CAPABILITIES else None
 
 
 def _build_handoff(primary, primary_gateway_key, stack):
