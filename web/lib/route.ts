@@ -1,4 +1,5 @@
 import { sectionByKey, activeSections } from './sections';
+import { resourceSection, stripResources } from './route-resources';
 
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
 const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|network ?acl|네트워크 ?acl|라우팅 ?테이블|라우트 ?테이블|route ?table/i;
@@ -17,6 +18,19 @@ const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
 // security subject and keeps `security` in the candidates.
 const NETWORK_OBJECT_WITH_POLICY = new RegExp(
   `(?:${NETWORK_OBJECTS.source})(?:\\s*(?:의|에\\s*대한)?\\s*(?:정책|권한|policy|permissions?))?`, 'gi');
+
+// Words that describe a network object's own rules ("sg-… 정책"); used by resourceRoute.
+const OBJECT_POLICY_WORDS = /정책|권한|policy|permissions?/gi;
+// Generic security words that sit next to an ID without asking an IAM question ("i-… 보안 점검").
+const GENERIC_SECURITY_WORDS = /보안|public|노출/gi;
+
+/** True when the security rule matched `text` only through the given word sets: with them blanked
+ *  out, nothing in `text` matches the security rule any more. */
+function securityOnlyThrough(text: string, ...words: RegExp[]): boolean {
+  let rest = text;
+  for (const w of words) rest = rest.replace(w, ' ');
+  return !SECURITY_WORDS.test(rest);
+}
 
 /** True when every security-rule match in `text` comes from a network object and its own policy
  *  words: with those blanked out, nothing in `text` matches the security rule any more. */
@@ -107,6 +121,36 @@ function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean 
   return r.re.test(text) && !(r.unless && r.unless.test(text));
 }
 
+/** Section of the named resource when it should decide the route, else `undefined`.
+ *  Keywords are matched with resource IDs/ARNs blanked (`stripResources`). The resource decides only
+ *  when (a) the question names no IAM principal (IAM/role/역할/principal), unless the resource is an
+ *  IAM ARN, (b) at most one area's keywords match, and (c) that one match is absent, the resource's
+ *  own section, or `security` only through generic words (보안, public, 노출) — plus the object's own
+ *  policy words (정책/권한/policy/permission) for a network resource; a lone list/count phrasing
+ *  (`aws-data`) also yields to the resource. A strong security word
+ *  (denied, …) keeps the keyword route. Otherwise ("which IAM role can
+ *  modify sg-…" → security, "i-… 의 CPU 지표" → monitoring, "sg-… 비용" → cost, "eni-… 와 RDS
+ *  연결" → several areas) the keyword rules, the hybrid classifier and ADR-003 multi-domain fan-out
+ *  decide exactly as they did before resource routing existed. */
+function resourceRoute(prompt: string): string | undefined {
+  const resource = resourceSection(prompt);
+  if (!resource || !sectionByKey(resource)) return undefined;
+  const text = stripResources(prompt);
+  if (resource !== 'security' && PRINCIPAL_INTENT.test(text)) return undefined; // IAM question about a resource
+  const matched = matchedSections(prompt);
+  if (matched.length > 1) return undefined; // several areas: keywords / classifier / fan-out decide
+  const first = matched[0];
+  // `aws-data` is a list/count phrasing ("list all", "몇 개"), not another area's subject, so the
+  // named resource's section answers it.
+  if (first === undefined || first === resource || first === 'aws-data') return resource;
+  // The documented collision: security matched only through generic words next to the ID ("i-… 보안
+  // 점검"), or — for a network resource — through that object's own policy words ("sg-… 정책").
+  // Strong words (denied, iam, role, …) keep the keyword route to security.
+  const yieldWords = resource === 'network' ? [GENERIC_SECURITY_WORDS, OBJECT_POLICY_WORDS] : [GENERIC_SECURITY_WORDS];
+  if (first === 'security' && securityOnlyThrough(text, ...yieldWords)) return resource;
+  return undefined;
+}
+
 /** Choose the agent gateway. A valid pin always wins; otherwise keyword-match; then the
  *  conversation's previous section (when the caller vouches for it); else 'ops'.
  *
@@ -116,9 +160,14 @@ function ruleMatches(r: { re: RegExp; unless?: RegExp }, text: string): boolean 
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
+  // area's keywords) > observability vendor > keywords > previous > 'ops'.
   if (pinned && sectionByKey(pinned)) return pinned;
+  const resource = resourceRoute(prompt);
+  if (resource) return resource;
+  const text = stripResources(prompt);
   for (const r of RULES) {
-    if (ruleMatches(r, prompt)) return r.key;
+    if (ruleMatches(r, text)) return r.key;
   }
   if (previous && sectionByKey(previous)) return previous;
   return 'ops';
@@ -130,7 +179,7 @@ export interface RankedEntry { key: string; score: number; active: boolean }
 export interface RouteResult {
   primary: string;
   ranked: RankedEntry[];
-  method: 'pin' | 'regex' | 'llm' | 'fallback' | 'previous';
+  method: 'pin' | 'resource' | 'regex' | 'llm' | 'fallback' | 'previous';
   // ADR-003[legacy 044]: cross-domain auto-synthesis signal. `selected` = the active routes the chat
   // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-003[legacy 025] fan-out+synthesis.
   // pin/regex/fallback are always single. NOTE: the Agent-Space/active filter later in
@@ -159,11 +208,13 @@ export function selectMultiRoute(ranked: RankedEntry[], minScore = MULTI_ROUTE_M
 /** Catch-all fallback MUST be an active section — inactive 'ops' would block chat (spec §2.3). */
 export const ACTIVE_FALLBACK = activeSections()[0]?.key ?? 'ops';
 
-/** Distinct section keys matched by the keyword RULES (duplicate-rule keys counted once). */
+/** Distinct section keys matched by the keyword RULES (duplicate-rule keys counted once);
+ *  resource IDs/ARNs are blanked first. */
 export function matchedSections(prompt: string): string[] {
   const keys: string[] = [];
+  const text = stripResources(prompt);
   for (const r of RULES) {
-    if (ruleMatches(r, prompt) && !keys.includes(r.key)) keys.push(r.key);
+    if (ruleMatches(r, text) && !keys.includes(r.key)) keys.push(r.key);
   }
   return keys;
 }
@@ -173,7 +224,7 @@ function entry(key: string, score: number): RankedEntry {
 }
 
 /**
- * Hybrid route decision: pin → regex (exactly 1 distinct match) → LLM (ambiguous/no-match)
+ * Hybrid route decision: pin → named resource → regex (exactly 1 distinct match) → LLM (ambiguous/no-match)
  * → graceful fallback. Never throws; never blocks chat (spec §2, §6).
  */
 export async function classifyRoute(prompt: string, pinned?: string, opts: ClassifyOpts = {}): Promise<RouteResult> {
@@ -184,8 +235,15 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
   }
+  // Precedence: pin > named resource (see resourceRoute: only with no IAM principal and at most one
+  // area's keywords) > observability vendor > keywords/classifier > previous > fallback. Otherwise
+  // the regex/classifier path below runs unchanged (continuity, multi-domain).
+  const resource = resourceRoute(prompt);
+  if (resource) {
+    return single(resource, [entry(resource, 1)], 'resource');
+  }
   const matched = matchedSections(prompt);
-  const text = prompt;
+  const text = stripResources(prompt);
   // Drop `security` only when its match comes from the network object itself — the object's name plus
   // its own policy/permission words ("보안 그룹 정책", "ENI 권한") — and no IAM principal is named. Any
   // other security subject in the question ("보안 그룹과 퍼블릭 노출된 S3") keeps `security` in the

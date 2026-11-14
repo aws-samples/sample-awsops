@@ -187,6 +187,20 @@ network object and a policy word directly after it (only whitespace or 의/에 �
 principal is named; any other security subject ("보안 그룹과 퍼블릭 노출된 S3", "보안 그룹과 버킷 정책",
 "… and the account password policy") keeps both candidates for the classifier.
 
+**Resource-first routing.** A prompt naming an AWS resource ID or ARN (ENI/SG/subnet/VPC-family IDs
+and EC2 instance IDs, plus IAM/EKS/ECS/RDS/ELB/CloudFront/CloudFormation ARNs) routes to the owning
+section after a pin (`web/lib/route-resources.ts`, `web/lib/route.ts` `resourceRoute`, method
+`resource`). Before keyword matching IDs are blanked and an ARN is reduced to its service name
+(`stripResources`), so ID or ARN resource text is never a keyword while an ARN of a service without
+its own resource rule (for example DynamoDB) still routes by its service name. The resource decides
+only when the question names no IAM principal (unless it is an IAM ARN), at most one area's keywords
+match, and that match is absent, the resource's own section, a lone list/count phrasing
+("list all … sg-…"), or `security` only through generic words (`보안`, public, 노출) — plus the
+object's own policy words for a network resource. Otherwise the keyword rules, the hybrid classifier
+and ADR-003 fan-out decide: "which IAM role can modify sg-…" and "why is `i-…` access denied?" go to
+security, "`i-…` CPU 지표" to monitoring, "`sg-…` 비용" to cost, and "eni-… 와 RDS 연결" to the
+classifier. When several resources are named, the first-named one decides.
+
 ### Tool result completeness contract
 
 Capped list results from the domain MCP Lambdas carry completeness metadata so the chat model never
