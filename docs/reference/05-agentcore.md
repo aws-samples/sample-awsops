@@ -183,9 +183,9 @@ which has the security-group, NACL and route tools; the security gateway is IAM-
 question names an IAM principal (IAM, role, 역할, principal), the rule steps aside and the security
 rule answers ("which IAM role may modify the security group"); user/사용자 alone is not a principal. On the
 hybrid path `security` is dropped from the classifier candidates only when it matched through the
-network object and the policy words right after it and no principal is named; any other security
-subject ("보안 그룹과 퍼블릭 노출된 S3", "… and the account password policy") keeps both candidates
-for the classifier.
+network object and a policy word directly after it (only whitespace or 의/에 대한 between) and no
+principal is named; any other security subject ("보안 그룹과 퍼블릭 노출된 S3", "보안 그룹과 버킷 정책",
+"… and the account password policy") keeps both candidates for the classifier.
 
 ### Tool result completeness contract
 

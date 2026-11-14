@@ -64,11 +64,19 @@ describe('pickGateway', () => {
     expect(pickGateway('Show the route table for the user subnet')).toBe('network');
   });
   it('keeps security as a candidate for a policy that is not the network object’s own', async () => {
-    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
-    const r = await classifyRoute('Check the security group and the account password policy', undefined,
-      { llmEnabled: true, classify });
-    expect(classify).toHaveBeenCalledTimes(1);
-    expect(r.method).toBe('llm');
+    for (const p of ['Check the security group and the account password policy', 'Check the security group and S3 policy',
+      '보안 그룹과 노출 정책 점검', '보안 그룹과 버킷 정책 검토해줘']) {
+      const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(classify).toHaveBeenCalledTimes(1);
+      expect(r.method).toBe('llm');
+    }
+    // the object's own policy, with or without a particle, still skips the classifier
+    for (const p of ['보안 그룹의 정책 확인', 'ENI에 대한 권한 확인']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      expect(await classifyRoute(p, undefined, { llmEnabled: true, classify })).toMatchObject({ primary: 'network', method: 'regex' });
+      expect(classify).not.toHaveBeenCalled();
+    }
   });
   it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
     for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {

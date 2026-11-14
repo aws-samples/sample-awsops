@@ -11,11 +11,12 @@ const NETWORK_OBJECTS = /security ?group|보안\s*그룹|\bsg\b|\beni\b|nacl|net
 const PRINCIPAL_INTENT = /\biam\b|\broles?\b|역할|\bprincipals?\b/i;
 // who/누가 are deliberately NOT principals: "보안 그룹 누가 변경했어" is a change-history question.
 
-// A network object together with its own policy words right after it ("보안 그룹 정책", "ENI 권한",
-// "security group policy"). Only these adjacent words belong to the object; a policy word elsewhere
-// ("… and the account password policy") is another security subject.
+// A network object together with its own policy words directly after it ("보안 그룹 정책", "ENI 권한",
+// "보안 그룹의 정책", "security group policy"): only whitespace or 의/에 대한 may sit between them. A
+// policy word anywhere else ("보안 그룹과 버킷 정책", "security group and S3 policy") is another
+// security subject and keeps `security` in the candidates.
 const NETWORK_OBJECT_WITH_POLICY = new RegExp(
-  `(?:${NETWORK_OBJECTS.source})(?:[^.,;?!\\n]{0,8}?(?:정책|권한|policy|permissions?))?`, 'gi');
+  `(?:${NETWORK_OBJECTS.source})(?:\\s*(?:의|에\\s*대한)?\\s*(?:정책|권한|policy|permissions?))?`, 'gi');
 
 /** True when every security-rule match in `text` comes from a network object and its own policy
  *  words: with those blanked out, nothing in `text` matches the security rule any more. */
