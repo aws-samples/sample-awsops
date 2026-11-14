@@ -391,3 +391,16 @@ describe('classifyRoute follow-up continuity (hybrid)', () => {
     expect(r.primary).toBe('security');
   });
 });
+
+describe('resource-first routing', () => {
+  it('a named resource beats keywords; pin still wins', () => {
+    expect(pickGateway('i-0a1b2c3d4e5f60718 보안 점검')).toBe('ops');
+    expect(pickGateway('eni-0a1b2c3d', 'cost')).toBe('cost');
+  });
+  it('classifyRoute short-circuits on a named resource without calling the classifier', async () => {
+    const classify = vi.fn();
+    const r = await classifyRoute('eni-0a1b2c3d 상태', undefined, { llmEnabled: true, classify });
+    expect(r).toMatchObject({ primary: 'network', method: 'resource', multiDomain: false });
+    expect(classify).not.toHaveBeenCalled();
+  });
+});

@@ -1,4 +1,5 @@
 import { sectionByKey, activeSections } from './sections';
+import { resourceSection } from './route-resources';
 
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
 const RULES: { key: string; re: RegExp }[] = [
@@ -82,7 +83,10 @@ const RULES: { key: string; re: RegExp }[] = [
  *  keyword still wins, so an explicit topic change re-routes as before. The caller filters
  *  `previous` (active, gateway-backed section) — this function only requires it to be a section. */
 export function pickGateway(prompt: string, pinned?: string, previous?: string): string {
+  // Precedence: pin > named resource > observability vendor > keywords.
   if (pinned && sectionByKey(pinned)) return pinned;
+  const resource = resourceSection(prompt);
+  if (resource && sectionByKey(resource)) return resource;
   for (const r of RULES) {
     if (r.re.test(prompt)) return r.key;
   }
@@ -96,7 +100,7 @@ export interface RankedEntry { key: string; score: number; active: boolean }
 export interface RouteResult {
   primary: string;
   ranked: RankedEntry[];
-  method: 'pin' | 'regex' | 'llm' | 'fallback' | 'previous';
+  method: 'pin' | 'resource' | 'regex' | 'llm' | 'fallback' | 'previous';
   // ADR-003[legacy 044]: cross-domain auto-synthesis signal. `selected` = the active routes the chat
   // handler may fan out over (≤3); `multiDomain` true ⇒ ≥2 selected ⇒ ADR-003[legacy 025] fan-out+synthesis.
   // pin/regex/fallback are always single. NOTE: the Agent-Space/active filter later in
@@ -149,6 +153,11 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
 
   if (pinned && sectionByKey(pinned)) {
     return single(pinned, [entry(pinned, 1)], 'pin');
+  }
+  // Precedence: pin > named resource > observability vendor > keywords.
+  const resource = resourceSection(prompt);
+  if (resource && sectionByKey(resource)) {
+    return single(resource, [entry(resource, 1)], 'resource');
   }
   const matched = matchedSections(prompt);
   // v1 lesson (11-route priority ladder: specialized routes above the general catch-all):
