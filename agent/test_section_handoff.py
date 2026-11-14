@@ -106,6 +106,14 @@ class SectionHandoffTests(unittest.TestCase):
         self.assertIn("RuntimeError", out)
         self.assertEqual(state.used, ["network"])
 
+    def test_failed_connect_not_retried(self):
+        state, calls = make_state(connect_error=RuntimeError("boom"))
+        state.consult("security")
+        out = state.consult("security")
+        self.assertIn("unavailable", out)
+        self.assertEqual(calls["connect"], ["security"])
+        self.assertEqual(state.used, ["network"])
+
     def test_consult_section_never_registered(self):
         state, calls = make_state(tools_by_section={"security": ["consult_section", "iam_list_users"]})
         state.consult("security")

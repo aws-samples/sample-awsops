@@ -38,12 +38,15 @@ class HandoffState:
         self._existing_names = existing_names
         self.max_sections = max_sections
         self.used: list[str] = [primary]
+        self._failed: set[str] = set()
 
     def consult(self, section: str) -> str:
         if section == self.primary or section not in self.available:
             return f"Section '{section}' is not consultable. Consultable: {', '.join(self.available) or 'none'}."
         if section in self.used:
             return f"The tools of '{section}' are already attached; use them directly."
+        if section in self._failed:
+            return f"Section '{section}' was unavailable earlier in this answer; do not retry."
         if len(self.used) >= self.max_sections + 1:
             return (
                 f"Consult limit reached ({self.max_sections} extra sections). "
@@ -52,6 +55,7 @@ class HandoffState:
         try:
             tools = self._connect(section)
         except Exception as exc:  # noqa: BLE001 - never leak details (may contain URLs)
+            self._failed.add(section)
             return f"Section '{section}' is unavailable right now ({type(exc).__name__}). Answer with your current tools."
 
         registered: list[str] = []
