@@ -12,7 +12,7 @@ class FakeS3:
         self._no_policy = set(no_policy)
         self._loc_denied = set(loc_denied)
 
-    def list_buckets(self):
+    def list_buckets(self, **kwargs):
         return {"Buckets": [{"Name": b} for b in self._buckets]}
 
     def get_bucket_location(self, Bucket):

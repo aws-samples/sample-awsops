@@ -757,6 +757,42 @@ def _fetch_alb_listener_rules():
     return _sdk_collection(rows, "resource_id", "region", failures)
 
 
+def _list_s3_buckets(s3):
+    """Finish bounded enumeration before publishing any bucket evidence."""
+    buckets, names, tokens, token = [], set(), set(), None
+    for _ in range(100):
+        args = {"MaxBuckets": 1000}
+        if token is not None:
+            args["ContinuationToken"] = token
+        response = s3.list_buckets(**args)
+        page = response.get("Buckets")
+        if not isinstance(page, list):
+            raise RuntimeError("Incomplete S3 bucket listing")
+        for bucket in page:
+            name = bucket.get("Name") if isinstance(bucket, dict) else None
+            if not isinstance(name, str) or not name or name in names:
+                raise RuntimeError("Invalid S3 bucket listing identity")
+            names.add(name)
+            buckets.append(bucket)
+        token = response.get("ContinuationToken")
+        if token is None:
+            return buckets
+        if not isinstance(token, str) or not token or token in tokens:
+            raise RuntimeError("Incomplete S3 bucket listing pagination")
+        tokens.add(token)
+    raise RuntimeError("S3 bucket listing exceeded page limit")
+
+
+def _s3_bucket_region(s3, bucket):
+    # Paginated ListBuckets supplies BucketRegion under ListAllMyBuckets. A
+    # bucket-policy deny on GetBucketLocation must not discard that evidence.
+    region = bucket.get("BucketRegion")
+    if isinstance(region, str) and re.fullmatch(r"[a-z]{2,8}(?:-[a-z0-9]+)+-\d+", region):
+        return region
+    location = s3.get_bucket_location(Bucket=bucket["Name"]).get("LocationConstraint")
+    return "eu-west-1" if location == "EU" else location or "us-east-1"
+
+
 def _fetch_s3_public_access(s3=None):
     """Per-bucket S3 public-access flags (denial-safe), for the /security Public-S3 finding.
     Steampipe's aws_s3_bucket public-access columns trigger per-bucket GetBucketPolicyStatus/
@@ -771,13 +807,12 @@ def _fetch_s3_public_access(s3=None):
     rows = []
     failures = []
     unknown_attrs = 0
-    for b in s3.list_buckets().get("Buckets", []) or []:
+    for b in _list_s3_buckets(s3):
         name = b["Name"]
         transient_failed = False
         denied_attrs = []
         try:
-            loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
-            region = loc or "us-east-1"  # null LocationConstraint => us-east-1
+            region = _s3_bucket_region(s3, b)
         except ClientError as e:
             # Never upsert under region "" — that lands a NEW row under a different
             # conflict key while the partial run skips both prune phases, leaving the
@@ -862,13 +897,12 @@ def _fetch_s3_security(s3=None):
     rows = []
     failures = []
     unknown_attrs = 0
-    for b in s3.list_buckets().get("Buckets", []) or []:
+    for b in _list_s3_buckets(s3):
         name = b["Name"]
         transient_failed = False
         denied_attrs = []
         try:
-            loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
-            region = loc or "us-east-1"
+            region = _s3_bucket_region(s3, b)
         except ClientError as e:
             # Never upsert under region "" — that lands a NEW row under a different
             # conflict key while the partial run skips both prune phases, leaving the

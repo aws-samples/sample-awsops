@@ -38,6 +38,14 @@ export interface TraceSpan extends TraceIdentity {
   cloudResourceId?: string;
   hostId?: string;
   serviceInstanceId?: string;
+  /** Explicit inference metadata only; prompts, completions and HTTP bodies are never retained. */
+  runtimeArn?: string;
+  runtimeResourceArn?: string;
+  genAiProvider?: string;
+  genAiModel?: string;
+  inferenceEndpoint?: string;
+  inferencePort?: number;
+  rpcService?: string;
   messagingSystem?: string;
   messagingDestination?: string;
   messagingBroker?: string;
@@ -209,6 +217,12 @@ function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
     cloudResourceId: identityClaim(resource['cloud.resource_id']),
     hostId: identityClaim(resource['host.id']),
     serviceInstanceId: identityClaim(resource['service.instance.id']),
+    runtimeResourceArn: identityClaim(resource['agentcore.runtime.arn']),
+    runtimeArn: identityClaim(span['agentcore.runtime.arn']),
+    genAiProvider: identityClaim(span['gen_ai.provider.name']) ?? identityClaim(span['gen_ai.system']),
+    genAiModel: identityClaim(span['gen_ai.request.model']) ?? identityClaim(span['aws.bedrock.model_id']),
+    inferenceEndpoint: identityClaim(span['server.address']) ?? identityClaim(span['net.peer.name']),
+    rpcService: identityClaim(span['rpc.service']),
     k8sNamespace: text(resource['k8s.namespace.name']), k8sCluster: text(resource['k8s.cluster.name']),
     k8sPod: text(resource['k8s.pod.name']), k8sDeployment: text(resource['k8s.deployment.name']),
     dbSystem: text(span['db.system']), dbName: text(span['db.name']),
@@ -221,6 +235,7 @@ function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) Object.assign(out, { [key]: value });
   const address = text(span['server.address']) ?? text(span['net.peer.name']);
   const port = numeric(span['server.port']) ?? numeric(span['net.peer.port']);
+  if (port !== undefined && Number.isInteger(port) && port > 0 && port <= 65535) out.inferencePort = port;
   if (out.messagingSystem && address && port !== undefined
     && Number.isInteger(port) && port > 0 && port <= 65535) {
     out.messagingBroker = `${address.trim().toLowerCase()}:${port}`;
@@ -430,10 +445,13 @@ const AGG_RESOURCE_KEYS = [
   'service.name', 'cloud.account.id', 'cloud.region', 'deployment.environment.name',
   'deployment.environment', 'service.namespace', 'service.version', 'cloud.resource_id', 'host.id',
   'service.instance.id', 'k8s.namespace.name', 'k8s.cluster.name', 'k8s.deployment.name',
+  'agentcore.runtime.arn',
 ] as const;
 const AGG_SPAN_KEYS = [
   'db.system', 'db.name', 'server.address', 'net.peer.name', 'server.port', 'net.peer.port',
   'peer.service', 'messaging.system', 'messaging.destination.name', 'messaging.destination',
+  'agentcore.runtime.arn', 'gen_ai.provider.name', 'gen_ai.system', 'gen_ai.request.model',
+  'aws.bedrock.model_id', 'rpc.service',
 ] as const;
 // Node scope only (trace-graph.ts scope()); edge endpoints must land on the same service nodes.
 const AGG_IDENTITY_KEYS = [
@@ -448,7 +466,8 @@ function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: numb
     `AND Timestamp <= fromUnixTimestamp64Milli(${endMs})`;
   const kind = shape.spanKind ? 'SpanKind' : "'' AS SpanKind";
   const status = shape.statusCode ? 'StatusCode' : "'' AS StatusCode";
-  // Non-db/messaging spans drop their peer attributes so HTTP peers do not multiply groups.
+  // Ordinary HTTP peers still collapse. Explicit inference destinations must survive
+  // grouping even when the managed service exports no matching server span.
   const groups = 'SELECT ServiceName, SpanKind, StatusCode, RA AS ResourceAttributes, SA AS SpanAttributes, ' +
     'count() AS Weight, intDiv(sum(Duration), 1000000) AS DurationMsSum, toUnixTimestamp64Milli(max(Timestamp)) AS LastTimestamp, ' +
     'toUnixTimestamp64Milli(min(Timestamp)) AS FirstTimestamp, any(TraceId) AS SampleTraceId, ' +
@@ -458,7 +477,9 @@ function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: numb
     `mapSort(mapApply((k, v) -> (k, if(k = 'cloud.resource_id' AND NOT (${EC2_CLAIM}), 'unbindable', v)), ` +
     `mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k NOT IN ('host.id', 'service.instance.id') ` +
     `OR ${EC2_CLAIM}), ResourceAttributes))) AS RA, ` +
-    "if(SpanAttributes['db.system'] != '' OR SpanAttributes['messaging.system'] != '', " +
+    "if(SpanAttributes['db.system'] != '' OR SpanAttributes['messaging.system'] != '' " +
+    "OR SpanAttributes['agentcore.runtime.arn'] != '' OR SpanAttributes['gen_ai.request.model'] != '' " +
+    "OR SpanAttributes['aws.bedrock.model_id'] != '', " +
     `mapSort(mapFilter((k, v) -> has(${list(AGG_SPAN_KEYS)}, k), SpanAttributes)), ` +
     'mapFilter((k, v) -> false, SpanAttributes)) AS SA ' +
     `FROM ${shape.table} WHERE ${window}) ` +

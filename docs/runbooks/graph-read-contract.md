@@ -4,6 +4,38 @@
 
 Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
 
+### Missing inference dependencies
+
+Check that the application's telemetry store is registered and has a ready graph
+query before interpreting an absent service. The standard ClickHouse adapter
+aggregates the whole bounded window; a deployment still using the older raw-span
+adapter can lose low-volume calls behind health traffic.
+
+Client spans with a valid `agentcore.runtime.arn` create a reported runtime
+destination even without a server span. A reporting service with the same valid
+runtime resource ARN can connect through a `hosts` relationship when its account
+and region do not conflict. These joins remain isolated by source and environment.
+Explicit `gen_ai.provider.name`/`gen_ai.system`, requested model and endpoint
+attributes describe a requested model dependency. They do not prove successful
+inference, the final provider behind a Gateway, or an executing model's region.
+Unknown endpoints remain caller-local. Runtime/model cards label the identity as
+an unverified telemetry claim; no inventory ownership follows from it.
+
+Producers must supply Kubernetes resource identity for Pod correlation and
+runtime resource identity for AgentCore. Do not assign Kubernetes identity to
+every span received by a shared collector. No prompts, completions or request
+bodies are required by the inference graph mapper.
+
+Verify from `web/`:
+
+```bash
+npx vitest run lib/inference-topology.test.ts lib/trace-source.test.ts app/topology/services/page.test.tsx
+```
+
+After the reviewed deployment, inspect the registered source, fresh collection
+state and one approved synthetic request. A keep-alive HTTP 200 is not model
+execution proof.
+
 ### Placement and live VPC connections
 
 `/topology/infra` defaults to the persisted placement view from

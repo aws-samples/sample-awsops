@@ -387,6 +387,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   <dd className="text-[10px] text-ink-400">{tt('스냅샷 표시 시각은 개별 노드·관계의 수집 시각이나 관측 구간이 아닙니다.')}</dd>
                 </div>}
                 {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type',
+                  'arn', 'provider', 'model', 'endpoint', 'port', 'claimedAccountId', 'claimedRegion', 'identityProvenance',
                   'count', 'members', 'membersTruncated', 'memberIdentities', 'ownership_evidence', 'ownership_reason', 'ambiguity', 'e2e_correlation_blocked', 'workloadReadStatus'].map((key) => {
                   if (groupedTarget && (key === 'pod' || key === 'namespace')) return null;
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
