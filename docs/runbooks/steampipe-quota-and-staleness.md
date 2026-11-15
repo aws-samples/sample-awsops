@@ -10,6 +10,10 @@ failed fallback remains incomplete. The collectors finish enumeration before
 returning rows, reject repeated tokens/duplicate identities, and fail closed after
 100 pages of at most 1,000 buckets.
 
+Legacy `EU` location constraints normalize to `eu-west-1`. Old rows keyed by
+`EU` or an unknown region can coexist with the corrected row while a collection
+is incomplete; only a complete sweep authorizes the existing prune phases.
+
 Denied security-property reads remain explicit unknown attributes. A completed
 listing is not proof that bucket security was inspected, and release readiness
 still rejects unknown attributes. Failed pagination cannot authorize pruning or

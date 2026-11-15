@@ -11,6 +11,10 @@ query before interpreting an absent service. The standard ClickHouse adapter
 aggregates the whole bounded window; a deployment still using the older raw-span
 adapter can lose low-volume calls behind health traffic.
 
+Outbound runtime/model calls also require a `CLIENT` span kind. A table without
+`SpanKind` leaves that classification unknown and cannot establish those outgoing
+calls; resource-side `hosts` observations may still be present.
+
 Client spans with a valid `agentcore.runtime.arn` create a reported runtime
 destination even without a server span. A reporting service with the same valid
 runtime resource ARN can connect through a `hosts` relationship when its account

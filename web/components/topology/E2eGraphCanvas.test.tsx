@@ -59,6 +59,20 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it.each([
+    ['runtime', 'aws_verified'], ['model', undefined], ['queue', 'telemetry_claim'], ['service', 'telemetry_claim'],
+  ])('discloses unverified %s claims on both the card and selected-node details', async (kind, provenance) => {
+    const claim: E2eNode = { id: 'claim', kind: kind!, label: 'reported target', layer: 'service',
+      meta: { identityProvenance: provenance, claimedAccountId: '123456789012', claimedRegion: 'ap-northeast-2' } };
+    const { container } = render(<E2eGraphCanvas graph={{ ...graph, nodes: [claim], edges: [] }} />);
+    const notice = 'Telemetry claim · AWS identity unverified';
+    await waitFor(() => expect(container.querySelector(`[data-e2e-kind="${kind}"]`)?.textContent).toContain(notice));
+    const node = vi.mocked(ReactFlow).mock.lastCall?.[0].nodes?.find(n => n.id === 'claim');
+    expect(Number(node?.style?.height)).toBeGreaterThan(76);
+    const detail = await select('reported target');
+    expect(detail.getByText(notice)).toBeTruthy();
+  });
+
   it('keeps nested network endpoint fields without an object-valued inference endpoint row', async () => {
     const nodes = graph.nodes.map(node => node.id === 'p1'
       ? { ...node, meta: { endpoint: { ip: '10.0.1.1', podName: 'pod-a' } } } : node);

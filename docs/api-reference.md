@@ -565,8 +565,9 @@ vetoes binding). Generated or custom templates, Tempo and other sources keep spa
 graph mixing them sums both kinds of count.
 
 Publication keeps at most 200 nodes and 500 edges (`nodeDrops`/`edgeDrops`). Nodes are selected
-from the heaviest edges first, both endpoints together, including runtime/model relationships;
-remaining capacity goes to other nodes by span and metric volume.
+from the heaviest edges first, both endpoints together. A kept database, queue, workload,
+runtime or model relationship keeps its caller; a `hosts` relationship keeps both its runtime
+and reporting service. Remaining capacity goes to other nodes by span and metric volume.
 
 Service-graph metrics contribute service→service `calls` only. Rows whose Tempo
 `connection_type` is `database`, `messaging_system` or `virtual_node` name a database, queue or

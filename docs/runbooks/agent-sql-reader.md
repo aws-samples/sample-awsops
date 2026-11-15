@@ -382,13 +382,14 @@ raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitte
 `agent/lambda/test_inventory_view_contract.py` still reads the original
 `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.
 Those baseline text assertions do **not** enforce the current topology projection.
-Inspect the current migration and the queue/view cases in
-`scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+Inspect the current migration and shared inference fixtures in
+`agent/lambda/test_inventory_read_mcp.py::TestTopologySelectionSQL`.
+`scripts/v2/workers/test_graph_collection.py` covers the historical queue/collection
+projections, not the latest inference view owner. The current collection-view projection and
 API repeatable-read/timeout/cap behavior are independently covered by
 `web/lib/graph-read-postgres.test.ts`; the Python reader's actual canonical/raw-ID,
 neighbourhood and truncation SQL is covered by `TestTopologySelectionSQL` under the
-current collection, queue-provenance and read-index migrations. See
+current collection, queue-provenance, inference-provenance and read-index migrations. See
 [local test prerequisites](graph-read-contract.md#reader-postgresql-verification).
 Its `selection`, `truncation`, `readOutcome` and `snapshotConsistent` envelope is
 reader-specific and does not assert HTTP transaction parity. `readOutcome` describes
@@ -410,7 +411,7 @@ After `make migrate`, spot-check `sql_reader.topology_nodes` where `class='trace
 retained rows; non-ARN/malformed destinations have null claims and no reporter fallback.
 `identityProvenance` is always `telemetry_claim`; `accountId`, `region`, `infra_ref` and whole-row
 copies stay absent for trace queues. SELECT is granted only on the view, never the base table.
-`scripts/v2/workers/test_graph_collection.py` exercises this contract on disposable PostgreSQL,
+`scripts/v2/workers/test_graph_collection.py` exercises the historical queue projection on disposable PostgreSQL,
 including grant restoration, reapplication, denied base-table reads and denied view writes.
 
 ### Trace inference projection
