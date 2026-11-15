@@ -13,10 +13,11 @@ variable "privatelink_endpoints" {
     kind         = string
     service_name = string
     ports        = list(number)
+    publish_dns  = optional(bool, true)
   }))
   default     = {}
   nullable    = false
-  description = "Interface endpoints to datasource endpoint services exposed by another account. Map key = a short label (lowercase letters, digits, hyphen). kind = clickhouse|prometheus|loki|tempo|mimir. service_name = the provider's endpoint service (com.amazonaws.vpce.<region>.vpce-svc-<id>). ports = the TCP ports the connector may use through the endpoint. Each kind needs its <kind>_vpc_enabled flag and integrations_enabled. Default {} → no-op."
+  description = "Interface endpoints to datasource endpoint services exposed by another account. Map key = a short label (lowercase letters, digits, hyphen). kind = clickhouse|prometheus|loki|tempo|mimir. service_name = the provider's endpoint service (com.amazonaws.vpce.<region>.vpce-svc-<id>). ports = allowed TCP ports. publish_dns defaults true; set false for a new endpoint awaiting acceptance while preserving existing private DNS records. Each kind needs its <kind>_vpc_enabled flag and integrations_enabled. Default {} → no-op."
 
   validation {
     condition     = alltrue([for k, _ in var.privatelink_endpoints : can(regex("^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$", k))])
@@ -182,7 +183,7 @@ resource "aws_route53_zone" "privatelink" {
 }
 
 resource "aws_route53_record" "privatelink" {
-  for_each = { for key, e in var.privatelink_endpoints : key => e if local.privatelink_zone_enabled && var.privatelink_zone_records_enabled }
+  for_each = { for key, e in var.privatelink_endpoints : key => e if local.privatelink_zone_enabled && var.privatelink_zone_records_enabled && e.publish_dns }
 
   zone_id = aws_route53_zone.privatelink[0].zone_id
   name    = "${each.key}.${var.privatelink_zone_name}"
@@ -208,6 +209,6 @@ output "privatelink_endpoint_dns" {
 }
 
 output "privatelink_datasource_hosts" {
-  description = "Friendly datasource host per endpoint (<key>.<privatelink_zone_name>); empty when no zone is configured."
-  value       = { for key, _ in var.privatelink_endpoints : key => "${key}.${var.privatelink_zone_name}" if local.privatelink_zone_enabled }
+  description = "Friendly datasource host for entries with publish_dns=true (<key>.<privatelink_zone_name>); empty when no zone is configured. Records still require privatelink_zone_records_enabled and provider acceptance."
+  value       = { for key, e in var.privatelink_endpoints : key => "${key}.${var.privatelink_zone_name}" if local.privatelink_zone_enabled && e.publish_dns }
 }

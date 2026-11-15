@@ -32,12 +32,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_privatelink_additions.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_privatelink_additions.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -170,6 +170,14 @@ jobs:
           aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
             python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
+      - name: Remove stale additive PrivateLink configuration
+        if: steps.restore.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::PrivateLink CI override must not be tracked"; exit 1; }
+          rm -f ci-privatelink.auto.tfvars.json
+
       - name: Configure dev domain overrides
         id: domain
         if: steps.restore.outputs.skip != '1'
@@ -210,6 +218,18 @@ jobs:
           tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
           [ -z "$tracked" ] || { echo "::error::Runtime CI override must not be tracked"; exit 1; }
           python3 ../../scripts/v2/ci_runtime_policy.py overrides
+
+      - name: Configure additive development PrivateLink endpoints
+        if: steps.restore.outputs.skip != '1'
+        env:
+          CI_PRIVATELINK_ADDITIONS_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && secrets.CI_PRIVATELINK_ADDITIONS_DEV || '' }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CI_PRIVATELINK_ADDITIONS_DEV" ]; then
+            terraform console -no-color <<<'jsonencode(var.privatelink_endpoints)' |
+              python3 ../../scripts/v2/ci_privatelink_additions.py
+          fi
 
       - name: Ensure Node runtime libraries
         if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
@@ -490,6 +510,8 @@ jobs:
           if [ -z "$tracked" ]; then rm -f ci-domain.auto.tfvars.json; fi
           tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
           if [ -z "$tracked" ]; then rm -f ci-runtime.auto.tfvars.json; fi
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-privatelink.auto.tfvars.json; fi
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
 
   publish:
@@ -748,6 +770,13 @@ jobs:
             exit 1
           fi
 
+      - name: Remove stale additive PrivateLink configuration
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::PrivateLink CI override must not be tracked"; exit 1; }
+          rm -f ci-privatelink.auto.tfvars.json
+
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
 
@@ -876,5 +905,7 @@ jobs:
         if: always()
         run: |
           rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-privatelink.auto.tfvars.json; fi
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
           rm -rf -- ../.private-plan-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT"-*

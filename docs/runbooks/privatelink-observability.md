@@ -155,6 +155,57 @@ Terraform outputs `privatelink_endpoint_dns` (raw regional DNS names) and, with 
    endpoint security group; on the provider, `describe-vpc-endpoint-connections` lists only
    the consumer account.
 
+## Adding another datasource to a running dev stack
+
+For dev/full plans, the optional repository secret `CI_PRIVATELINK_ADDITIONS_DEV`
+adds new labels to the effective `privatelink_endpoints` map without rewriting
+`TF_TFVARS_DEV`. Leave it unset for the existing behavior. The helper reads the
+base map from Terraform, rejects collisions with existing labels, and writes only
+the ignored private `ci-privatelink.auto.tfvars.json`. It accepts up to eight
+additions and 32 total endpoints, the existing curated datasource kinds, same-region
+service names and bounded TCP port lists. Main, preview and repository-only plans
+do not receive these additions.
+
+The repository secret keeps deployment identifiers out of public workflow logs;
+it contains connection configuration, not a datasource login credential. Example
+value, after the provider creates its endpoint service:
+
+```json
+{
+  "extra-clickhouse": {
+    "kind": "clickhouse",
+    "service_name": "com.amazonaws.vpce.ap-northeast-2.vpce-svc-0123456789abcdef0",
+    "ports": [8123],
+    "publish_dns": false
+  }
+}
+```
+
+Replace the example service name with the reviewed provider service. Every added
+entry must explicitly choose `publish_dns`. Existing direct Terraform entries
+default this field to `true`, preserving their current behavior.
+
+Use `publish_dns=false` for a new endpoint awaiting acceptance. This retains the
+existing endpoints and their CNAMEs while creating the new endpoint without a DNS
+record. Do not turn off the shared `privatelink_zone_records_enabled` switch merely
+to add another endpoint. After accepting and verifying the exact new connection,
+either use its regional endpoint DNS name or change only its `publish_dns` to
+`true` and obtain a new reviewed plan with the usual DNS permission.
+
+Keep the repository secret configured while these added connections are in use:
+clearing it proposes their removal in the next plan. Moving an entry into protected
+tfvars requires removing the same label from the additions in the same operator
+change; duplicate labels fail closed, including identical duplicates. Inspect the
+full saved plan before any apply. This helper creates no datasource registration,
+administrator privilege, provider-side service or automatic acceptance.
+
+Offline verification:
+
+```bash
+python3 -m pytest -q scripts/v2/test_ci_privatelink_additions.py
+terraform -chdir=terraform/foundation test -filter=tests/privatelink_additions.tftest.hcl
+```
+
 ## Troubleshooting
 
 | Symptom | Check |
