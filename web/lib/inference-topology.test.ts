@@ -5,7 +5,7 @@ import { mapOtelRow } from './trace-source';
 import { buildTraceGraph } from './trace-graph';
 
 const runtimeArn = 'arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/insurance_analysis-AbCd012345';
-function span(attributes: Record<string, string> = {}, resource: Record<string, string> = {}, kind = 'Client') {
+function span(attributes: Record<string, string | undefined> = {}, resource: Record<string, string> = {}, kind = 'Client') {
   return mapOtelRow({
     TraceId: 'trace-a', SpanId: 'span-a', ServiceName: 'orchestrator', SpanKind: kind,
     Timestamp: '2026-11-15T00:00:00Z', Duration: 5_000_000,
@@ -16,6 +16,15 @@ function span(attributes: Record<string, string> = {}, resource: Record<string, 
 }
 
 describe('inference dependency observations', () => {
+  it('normalizes provider case and does not let an invalid runtime annotation suppress a model', () => {
+    const graph = buildTraceGraph([span({
+      'gen_ai.system': 'AWS.Bedrock', 'gen_ai.request.model': 'vendor.model',
+      'agentcore.runtime.arn': 'invalid-annotation',
+    })], [], []);
+    expect(graph.nodes.find(node => node.kind === 'model')?.meta.provider).toBe('aws.bedrock');
+    expect(graph.nodes.filter(node => node.kind === 'runtime')).toEqual([]);
+  });
+
   it('keeps an exact runtime destination from an isolated client span without claiming inventory ownership', () => {
     const graph = buildTraceGraph([span({
       'agentcore.runtime.arn': runtimeArn, 'agentcore.runtime.name': 'untrusted-display-name',

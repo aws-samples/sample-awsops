@@ -36,6 +36,13 @@ After the reviewed deployment, inspect the registered source, fresh collection
 state and one approved synthetic request. A keep-alive HTTP 200 is not model
 execution proof.
 
+The matching SQL-reader projection is delivered by
+`01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql`. Run it through
+the reviewed standalone migration path before web/Lambda release; views and
+grants are not admitted by automatic web migrations. The MCP and HTTP readers
+also project retained runtime/model claims at read time, preserving forced
+provenance and excluding stored ownership or raw provider content.
+
 ### Placement and live VPC connections
 
 `/topology/infra` defaults to the persisted placement view from

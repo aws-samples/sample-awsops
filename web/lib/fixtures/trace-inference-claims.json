@@ -1,0 +1,47 @@
+[
+  {
+    "name": "runtime ignores stored ownership",
+    "kind": "runtime",
+    "meta": {
+      "sourceId": "tempo:1", "environment": "demo",
+      "arn": "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/example-AbCd012345",
+      "accountId": "999999999999", "region": "us-west-2", "infra_ref": "private-inventory",
+      "claimedAccountId": "999999999999", "claimedRegion": "us-west-2",
+      "identityProvenance": "aws_verified", "row": {"secret": "hidden"}
+    },
+    "expected": {
+      "sourceId": "tempo:1", "environment": "demo",
+      "arn": "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/example-AbCd012345",
+      "claimedAccountId": "123456789012", "claimedRegion": "ap-northeast-2",
+      "identityProvenance": "telemetry_claim"
+    }
+  },
+  {
+    "name": "invalid runtime retains no account claim",
+    "kind": "runtime",
+    "meta": {"arn": "not-a-runtime-arn", "claimedAccountId": "999999999999", "region": "us-west-2"},
+    "expected": {"arn": "not-a-runtime-arn", "claimedAccountId": null, "claimedRegion": null, "identityProvenance": "telemetry_claim"}
+  },
+  {
+    "name": "requested model has no ownership qualifiers",
+    "kind": "model",
+    "meta": {
+      "sourceId": "clickhouse:2", "environment": "demo",
+      "provider": "aws.bedrock", "model": "vendor.model", "endpoint": "bedrock-runtime.ap-northeast-2.amazonaws.com", "port": 443,
+      "accountId": "999999999999", "region": "us-west-2", "infra_ref": "private-inventory",
+      "claimedAccountId": "999999999999", "claimedRegion": "us-west-2",
+      "identityProvenance": "aws_verified", "prompt": "hidden", "row": {"secret": "hidden"}
+    },
+    "expected": {
+      "sourceId": "clickhouse:2", "environment": "demo",
+      "provider": "aws.bedrock", "model": "vendor.model", "endpoint": "bedrock-runtime.ap-northeast-2.amazonaws.com", "port": 443,
+      "claimedAccountId": null, "claimedRegion": null, "identityProvenance": "telemetry_claim"
+    }
+  },
+  {
+    "name": "wrong JSON types are not exposed as model identities",
+    "kind": "model",
+    "meta": {"sourceId": 5, "provider": {}, "model": [], "endpoint": {"secret": "hidden"}, "port": "hidden", "row": {}},
+    "expected": {"claimedAccountId": null, "claimedRegion": null, "identityProvenance": "telemetry_claim"}
+  }
+]

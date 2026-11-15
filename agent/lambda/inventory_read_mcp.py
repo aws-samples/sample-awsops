@@ -75,6 +75,10 @@ TRACE_TOPOLOGY_NOTE = (
     "account/region fallbacks. identityProvenance is always telemetry_claim, even when an ARN "
     "names the host; queues never bridge into inventory. Shared destination ARNs join across "
     "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
+    " Runtime and requested-model identities are also telemetry claims, never inventory ownership "
+    "or proof of successful inference. Runtime qualifiers come only from a valid runtime ARN; "
+    "requested models have null account/region claims. A hosts edge is reported runtime context, "
+    "not a traced request. The requested model/endpoint does not prove the provider behind a Gateway."
 )
 
 MATERIALIZED_TOPOLOGY_NOTE = (
@@ -188,6 +192,23 @@ def build_topology_chain(by_type, root=None):
                                      for t in (tgs_by_lb.get(lb.get("arn"), []) if lb else [])]}
             chains.append(node)
     return chains
+
+
+def _inference_claim_meta(kind, meta):
+    """Typed, bounded read projection; never trust stored ownership or provenance."""
+    fields = {"sourceId": 512, "environment": 512}
+    fields.update({"arn": 512} if kind == "runtime" else {"provider": 64, "model": 256, "endpoint": 253})
+    safe = {key: meta[key] for key, limit in fields.items()
+            if isinstance(meta.get(key), str) and len(meta[key]) <= limit}
+    port = meta.get("port")
+    if kind == "model" and type(port) in (int, float) and 1 <= port <= 65535 and port == int(port):
+        safe["port"] = port
+    arn = re.fullmatch(
+        r"arn:aws(?:-[a-z0-9-]+)?:bedrock-agentcore:([a-z]{2,8}(?:-[a-z0-9]+)+-\d+):(\d{12}):runtime/[A-Za-z0-9_][A-Za-z0-9_-]{0,255}",
+        safe.get("arn", ""),
+    ) if kind == "runtime" else None
+    return {**safe, "claimedAccountId": arn[2] if arn else None,
+            "claimedRegion": arn[1] if arn else None, "identityProvenance": "telemetry_claim"}
 
 
 def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
@@ -312,6 +333,9 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
               "meta": _parse_meta(r.get("meta"))} for r in node_rows if r.get("id")]
     if cls == "trace":
         for node in nodes:
+            if node["kind"] in ("runtime", "model"):
+                node["meta"] = _inference_claim_meta(node["kind"], node["meta"])
+                continue
             if node["kind"] != "queue":
                 continue
             meta = node["meta"].copy()

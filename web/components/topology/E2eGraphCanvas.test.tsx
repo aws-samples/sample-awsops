@@ -59,6 +59,15 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it('keeps nested network endpoint fields without an object-valued inference endpoint row', async () => {
+    const nodes = graph.nodes.map(node => node.id === 'p1'
+      ? { ...node, meta: { endpoint: { ip: '10.0.1.1', podName: 'pod-a' } } } : node);
+    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    const detail = await select('shop/pod-a');
+    expect(detail.getByText('10.0.1.1')).toBeTruthy();
+    expect(detail.queryByText('[object Object]')).toBeNull();
+  });
+
   it.each(['ko', 'en', 'zh', 'ja'] as const)('names the actual context control in the %s guide', lang => {
     const label = applyTerms(lang, '참고 정보 (캐시된 구성·경유 구성요소)');
     const path = lang === 'ko' ? '../../../docs-site/docs/resources/topology.md'

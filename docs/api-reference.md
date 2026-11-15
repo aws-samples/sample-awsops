@@ -565,13 +565,42 @@ vetoes binding). Generated or custom templates, Tempo and other sources keep spa
 graph mixing them sums both kinds of count.
 
 Publication keeps at most 200 nodes and 500 edges (`nodeDrops`/`edgeDrops`). Nodes are selected
-from the heaviest edges first, both endpoints together, so a kept database, queue or workload
-always keeps its caller; remaining capacity goes to other nodes by span and metric volume.
+from the heaviest edges first, both endpoints together, including runtime/model relationships;
+remaining capacity goes to other nodes by span and metric volume.
 
 Service-graph metrics contribute service→service `calls` only. Rows whose Tempo
 `connection_type` is `database`, `messaging_system` or `virtual_node` name a database, queue or
 uninstrumented peer rather than a service and are not drawn; databases and queues come from trace
 spans with their host-qualified identity.
+
+### Trace inference claims
+
+The trace graph can also return `runtime` and `model` nodes from explicit span
+attributes. A client span with a valid AgentCore runtime ARN produces a `calls`
+relationship to that runtime. A reporting service with a matching runtime resource
+ARN and non-conflicting account/region produces `runtime → service` with `rel=hosts`.
+That relationship is reported execution context, not a traced request. An explicit
+provider and requested model on a client span produces a requested-model `calls`
+relationship; a valid runtime invocation does not also invent a direct model call.
+
+Runtime claims join only by exact ARN within source/environment. Model claims
+retain source/account/region/environment/cluster/namespace/port isolation; an
+unknown endpoint is also caller-local. Provider names are normalized to lowercase.
+Neither relationship proves successful inference or the final provider behind a
+Gateway, and capped publications still disclose partial coverage.
+
+HTTP, MCP and the current SQL-reader view force
+`identityProvenance=telemetry_claim` for these kinds, including retained rows.
+Only bounded typed `sourceId`, `environment`, runtime `arn`, or model
+`provider`/`model`/`endpoint` and a valid numeric `port` survive. Runtime
+`claimedAccountId`/`claimedRegion` are derived from a valid ARN; models and invalid
+runtime ARNs have null qualifiers. Stored ownership/provenance, `infra_ref`, raw
+provider blobs and prompt/response content are excluded.
+
+The SQL-reader projection requires the standalone migration described in the
+[inference projection runbook](runbooks/agent-sql-reader.md#trace-inference-projection).
+Until that migration is applied, the agent may have the node kind/label but lack
+its identity fields. A source merge is not deployment proof.
 
 ### Trace edge instance observations
 

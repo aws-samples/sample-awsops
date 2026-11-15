@@ -14,6 +14,7 @@ vi.mock('@/lib/db', () => ({ getPool: () => sharedPool }));
 import { GET } from './route';
 import { graphReadTransaction, graphTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
+import inferenceClaims from '../../../lib/fixtures/trace-inference-claims.json';
 afterEach(() => vi.restoreAllMocks());
 
 describe('graph collection evidence API', () => {
@@ -27,6 +28,13 @@ describe('graph collection evidence API', () => {
       };
       return { rows: [] };
     });
+  });
+
+  it.each(inferenceClaims)('projects retained inference evidence: $name', async fixture => {
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes')
+      ? [{ id: 'claim:one', kind: fixture.kind, label: 'reported target', meta: fixture.meta }] : [] }));
+    const body = await (await GET(new Request('http://localhost/api/graph?class=trace'))).json();
+    expect(body.nodes[0].meta).toEqual(fixture.expected);
   });
 
   it('returns failed collection evidence even when no graph nodes exist', async () => {

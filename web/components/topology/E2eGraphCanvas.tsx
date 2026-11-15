@@ -389,6 +389,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type',
                   'arn', 'provider', 'model', 'endpoint', 'port', 'claimedAccountId', 'claimedRegion', 'identityProvenance',
                   'count', 'members', 'membersTruncated', 'memberIdentities', 'ownership_evidence', 'ownership_reason', 'ambiguity', 'e2e_correlation_blocked', 'workloadReadStatus'].map((key) => {
+                  if (key === 'endpoint' && object(selected.meta.endpoint)) return null;
                   if (groupedTarget && (key === 'pod' || key === 'namespace')) return null;
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
