@@ -163,8 +163,12 @@ adds new labels to the effective `privatelink_endpoints` map without rewriting
 base map from Terraform, rejects collisions with existing labels, and writes only
 the ignored private `ci-privatelink.auto.tfvars.json`. It accepts up to eight
 additions and 32 total endpoints, the existing curated datasource kinds, same-region
-service names and bounded TCP port lists. Main, preview and repository-only plans
-do not receive these additions.
+service names and bounded TCP port lists. Only full-scope plans targeting `dev`
+receive them, including automatic PR/push plans, which stay advisory and cannot be
+applied. Main, preview and repository-only plans never receive them. The helper does
+not set `<kind>_vpc_enabled`, `integrations_enabled` or `agentcore_enabled`: each
+added kind still needs those flags in the protected tfvars, or the plan fails
+Terraform validation.
 
 The repository secret keeps deployment identifiers out of public workflow logs;
 it contains connection configuration, not a datasource login credential. Example
@@ -203,7 +207,7 @@ Offline verification:
 
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_privatelink_additions.py
-terraform -chdir=terraform/foundation test -filter=tests/privatelink_additions.tftest.hcl
+bash scripts/v2/terraform-test.sh
 ```
 
 ## Troubleshooting
