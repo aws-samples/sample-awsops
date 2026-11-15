@@ -24,11 +24,14 @@ const COLORS: Record<string, [string, string, string]> = {
   db: ['#C8902F', '#FBEFE0', '#33260C'],
   workload: ['#8A5BD0', '#F1E9FF', '#241A3E'],
   queue: ['#4D906C', '#E9F5EE', '#0E2E1C'],
+  runtime: ['#7053B5', '#EFE9FF', '#26183E'],
+  model: ['#B76A32', '#FFF0E2', '#3B2414'],
 };
 const HEIGHT = 76, QUEUE_HEIGHT = 144;
+const isClaim = (kind: string | undefined) => ['queue', 'runtime', 'model'].includes(kind ?? '');
 const relLabel: Record<string, string> = {
   calls: 'calls', queries: 'queries', runs_on: 'runs on',
-  linked: 'async link', publishes: 'publishes', consumes: 'consumes',
+  linked: 'async link', publishes: 'publishes', consumes: 'consumes', hosts: 'hosts',
 };
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 
@@ -82,7 +85,7 @@ export default function ServiceMapPage() {
   const { nodes, edges } = useMemo(() => {
     const kinds = new Map(visible.nodes.map(n => [n.id, n.kind]));
     const pos = new Map(layoutFlow(visible, { rankdir: viewport.vertical ? 'TB' : 'LR', nodeSize: id => ({
-      width: 240, height: kinds.get(id) === 'queue' ? QUEUE_HEIGHT : HEIGHT,
+      width: 240, height: isClaim(kinds.get(id)) ? QUEUE_HEIGHT : HEIGHT,
     }) }).map(p => [p.id, p]));
     const nodes: Node[] = visible.nodes.map(n => {
       const [border, light, deep] = COLORS[n.kind] ?? ['#9AA6B2', '#EEF0F2', '#1F262D'];
@@ -91,11 +94,11 @@ export default function ServiceMapPage() {
       return {
         id: n.id, position: pos.get(n.id) ?? { x: 0, y: 0 },
         data: { label: <div className="nodrag nowheel text-left" title={`${n.kind}: ${n.label}\n${context}\n${source}`}
-          style={{ maxHeight: (n.kind === 'queue' ? QUEUE_HEIGHT : HEIGHT) - 18, overflowY: 'auto' }}>
+          style={{ maxHeight: (isClaim(n.kind) ? QUEUE_HEIGHT : HEIGHT) - 18, overflowY: 'auto' }}>
           <div className="truncate text-[13px] font-semibold">{n.kind}: {n.label}</div>
           <div className="mt-1 truncate text-[10px] opacity-75">{context}</div>
           {source && <div className="truncate text-[10px] opacity-75" title={source}>sourceId: {source}</div>}
-          {n.kind === 'queue' && <div className="mt-1 text-[10px]" style={{ overflowWrap: 'anywhere' }}>
+          {isClaim(n.kind) && <div className="mt-1 text-[10px]" style={{ overflowWrap: 'anywhere' }}>
             {tt('Telemetry claim · AWS identity unverified')}<br />
             claimedAccountId: {text(n.meta?.claimedAccountId) || '—'}<br />
             claimedRegion: {text(n.meta?.claimedRegion) || '—'}
@@ -104,7 +107,7 @@ export default function ServiceMapPage() {
         sourcePosition: viewport.vertical ? Position.Bottom : Position.Right,
         targetPosition: viewport.vertical ? Position.Top : Position.Left,
         style: { background: dark ? deep : light, border: `${n.id === focusId ? 2 : 1}px solid ${border}`,
-          borderRadius: 10, padding: 8, width: 240, height: n.kind === 'queue' ? QUEUE_HEIGHT : HEIGHT,
+          borderRadius: 10, padding: 8, width: 240, height: isClaim(n.kind) ? QUEUE_HEIGHT : HEIGHT,
           color: dark ? '#E3E9EE' : '#16202A', cursor: 'pointer' },
       };
     });
@@ -183,9 +186,9 @@ export default function ServiceMapPage() {
       </div>
       {selected && <details className="shrink-0 border-t border-ink-100 bg-card px-4 py-2 text-xs">
         <summary className="cursor-pointer font-medium">{tt('선택한 리소스 상세')} · {selected.kind}: {selected.label}</summary>
-        {selected.kind === 'queue' && <p className="pt-2">{tt('Telemetry claim · AWS identity unverified')}</p>}
+        {isClaim(selected.kind) && <p className="pt-2">{tt('Telemetry claim · AWS identity unverified')}</p>}
         <dl className="grid max-h-40 grid-cols-[auto_1fr] gap-x-4 gap-y-1 overflow-y-auto pt-2">
-          {['environment','cluster','namespace','sourceId','host','system','broker','destination','identityProvenance','deployment','pods','spanCount','errorSpanCount','unknownStatusSpanCount','claimedAccountId','claimedRegion'].map(key =>
+          {['environment','cluster','namespace','sourceId','host','system','broker','destination','arn','provider','model','endpoint','port','identityProvenance','deployment','pods','spanCount','errorSpanCount','unknownStatusSpanCount','claimedAccountId','claimedRegion'].map(key =>
             selected.meta?.[key] != null ? <div key={key} className="contents"><dt className="text-ink-500">{key}</dt><dd className="break-all">{String(selected.meta[key])}</dd></div> : null)}
         </dl>
         {/* A claimed queue ARN is never an inventory bridge. */}

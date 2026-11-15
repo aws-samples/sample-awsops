@@ -4,6 +4,7 @@ import { downstream, upstream, FANOUT_CAP } from '@/lib/graph-query';
 import { readGraphState, graphDiagnostic, type GraphClass } from '@/lib/graph-state';
 import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import { queueClaimMeta } from '@/lib/trace-evidence';
+import { inferenceClaimMeta } from '@/lib/inference-evidence';
 import { redactInventorySecrets } from '@/lib/inventory-redaction';
 import { splitUnionNodeId, unionNodeId, type GraphSelection } from '@/lib/graph-identity';
 
@@ -14,7 +15,8 @@ function evidenceNodes(rows: Record<string, any>[], cls: string, union: boolean)
     const meta = redactInventorySecrets(node.meta);
     const { account_id, ...fields } = node;
     return { ...fields, id: union && account_id ? unionNodeId(account_id, node.id) : node.id,
-      meta: cls === 'trace' && node.kind === 'queue' ? queueClaimMeta(meta ?? {}) : meta };
+      meta: cls === 'trace' && node.kind === 'queue' ? queueClaimMeta(meta ?? {})
+        : cls === 'trace' && ['runtime', 'model'].includes(node.kind) ? inferenceClaimMeta(node.kind, meta ?? {}) : meta };
   });
 }
 

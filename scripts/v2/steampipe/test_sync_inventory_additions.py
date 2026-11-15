@@ -269,7 +269,7 @@ class _FakeS3PolicyStatus:
     def __init__(self, policy_status_by_bucket):
         self._ps = policy_status_by_bucket
 
-    def list_buckets(self):
+    def list_buckets(self, **kwargs):
         return {"Buckets": [{"Name": n} for n in self._ps]}
 
     def get_bucket_location(self, Bucket):

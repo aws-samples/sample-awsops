@@ -330,9 +330,9 @@ baseline and this owner; audit the allowlist from this file, not the baseline.
 ### Current topology evidence contract
 
 The current owner of `sql_reader.topology_nodes.meta` is
-[`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql).
-It selects named JSON keys with type checks for telemetry fields and a trace-queue
-exception. The current materialized flow writer persists `ownership_evidence` and
+[`01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql`](../../terraform/foundation/migrations/01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql).
+It preserves the prior queue/non-claim projection and adds bounded typed runtime/model
+claim projections. The current materialized flow writer persists `ownership_evidence` and
 `targetCapturedAt` on **target nodes**, with VPC/subnet or ambiguity metadata where
 applicable. `targetCapturedAt` dates only the target-group inventory row; it does not
 date the independent task/subnet/pod evidence or establish current ownership. Host ECS
@@ -365,6 +365,10 @@ The projection is not an ownership validator:
   destination-ARN-derived `claimedAccountId`/`claimedRegion`. Queue `accountId`,
   `region` and `infra_ref` are removed. Neither parsed ARN syntax nor a storage
   partition's `account_id` proves telemetry ownership.
+- Trace runtime/model nodes always expose `identityProvenance='telemetry_claim'`.
+  Runtime account/region qualifiers derive only from a valid runtime ARN; model
+  qualifiers remain null. Both kinds exclude stored ownership, inventory references
+  and raw provider content.
 
 The node's exposed `captured_at` is graph materialization time, not its underlying
 inventory capture or observation time. For collection quality, consult
@@ -378,13 +382,14 @@ raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitte
 `agent/lambda/test_inventory_view_contract.py` still reads the original
 `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.
 Those baseline text assertions do **not** enforce the current topology projection.
-Inspect the current migration and the queue/view cases in
-`scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+Inspect the current migration and shared inference fixtures in
+`agent/lambda/test_inventory_read_mcp.py::TestTopologySelectionSQL`.
+`scripts/v2/workers/test_graph_collection.py` covers the historical queue/collection
+projections, not the latest inference view owner. The current collection-view projection and
 API repeatable-read/timeout/cap behavior are independently covered by
 `web/lib/graph-read-postgres.test.ts`; the Python reader's actual canonical/raw-ID,
 neighbourhood and truncation SQL is covered by `TestTopologySelectionSQL` under the
-current collection, queue-provenance and read-index migrations. See
+current collection, queue-provenance, inference-provenance and read-index migrations. See
 [local test prerequisites](graph-read-contract.md#reader-postgresql-verification).
 Its `selection`, `truncation`, `readOutcome` and `snapshotConsistent` envelope is
 reader-specific and does not assert HTTP transaction parity. `readOutcome` describes
@@ -393,20 +398,37 @@ state-read failure or detected publication change without extending the stored
 multi-query snapshot. The internal writer scheduling clock `lastSourceAttemptedAtMs`
 stays outside the projection and is covered by `web/lib/graph-reader-privacy.test.ts`.
 Apply the new collection projection with the existing `make migrate` operator flow;
-the queue projection remains separately owned by the migration above.
+the node projection is owned by the inference migration above, preserving queue semantics.
 
 ### Trace queue projection / 트레이스 큐 투영
 
 `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql` introduces graph evidence;
 `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` is the current collection-state projection owner, adding bounded inventory source clocks/provenance;
-`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql` supersedes its node projection.
+`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql` introduced the queue projection;
+the current inference migration preserves that branch.
 After `make migrate`, spot-check `sql_reader.topology_nodes` where `class='trace' AND kind='queue'`:
 `claimedAccountId/claimedRegion` must match only parsed destination ARN qualifiers, including
 retained rows; non-ARN/malformed destinations have null claims and no reporter fallback.
 `identityProvenance` is always `telemetry_claim`; `accountId`, `region`, `infra_ref` and whole-row
 copies stay absent for trace queues. SELECT is granted only on the view, never the base table.
-`scripts/v2/workers/test_graph_collection.py` exercises this contract on disposable PostgreSQL,
+`scripts/v2/workers/test_graph_collection.py` exercises the historical queue projection on disposable PostgreSQL,
 including grant restoration, reapplication, denied base-table reads and denied view writes.
+
+### Trace inference projection
+
+Apply `01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql` through
+the reviewed standalone migration procedure before releasing the matching web
+and inventory-reader Lambda. `CREATE OR REPLACE VIEW` and `GRANT` are outside the
+automatic web migration subset; do not add a bypass or change historical headers.
+This preserves the existing view columns and SELECT grant and adds no base-table access.
+
+For `class='trace' AND kind IN ('runtime','model')`, spot-check the named-field
+projection, forced provenance and null model qualifiers. Malformed runtime ARNs
+must not inherit stored or caller account/region. The shared
+`web/lib/fixtures/trace-inference-claims.json` cases cover HTTP, MCP and the actual
+PostgreSQL view under `awsops_sql_reader` in `TestTopologySelectionSQL`, including
+continued denial of `public.topology_nodes` reads. Inference identity is still
+unavailable through an older view even when the Lambda adds a provenance note.
 
 Trace edge instance observations (`instance_observations[]`, `instance_observations_omitted`,
 `instance_observations_unbound`; see [API reference](../api-reference.md#trace-edge-instance-observations))

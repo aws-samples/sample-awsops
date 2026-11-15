@@ -949,7 +949,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
             cls._psql((migrations / name).read_text())
         for suffix in ("_topology_inventory_evidence.sql", "_graph_attempt_disclosure.sql",
                        "_graph_projection_parity.sql", "_trace_queue_claim_provenance.sql",
-                       "_graph_read_indexes.sql"):
+                       "_graph_read_indexes.sql", "_trace_inference_claim_provenance.sql"):
             for path in sorted(migrations.glob("*" + suffix)):
                 cls._psql(path.read_text())
 
@@ -1002,6 +1002,22 @@ class TestTopologySelectionSQL(unittest.TestCase):
 
     def tearDown(self):
         inv._execute_override = None
+
+    def test_inference_view_projection_preserves_only_typed_claim_evidence(self):
+        cases = json.loads((Path(__file__).resolve().parents[2]
+                            / "web/lib/fixtures/trace-inference-claims.json").read_text())
+        for index, case in enumerate(cases):
+            meta = json.dumps(case["meta"]).replace("'", "''")
+            self._psql(
+                "INSERT INTO public.topology_nodes(account_id,id,kind,label,meta,run_id,class) VALUES "
+                f"('self','claim-{index}','{case['kind']}','reported','{meta}'::jsonb,'test','trace');"
+            )
+        rows = self._execute("SELECT id,meta FROM topology_nodes ORDER BY id")
+        self.assertEqual([row["meta"] for row in rows], [case["expected"] for case in cases])
+        permissions = self._execute(
+            "SELECT has_table_privilege(current_user,'public.topology_nodes','SELECT') AS base_read"
+        )
+        self.assertFalse(permissions[0]["base_read"])
 
     def _execute(self, sql, params=None):
         # Translate the Data API's named scalar binds into PostgreSQL PREPARE binds.
@@ -1339,6 +1355,17 @@ class TestTraceTopologyCollection(unittest.TestCase):
     def _state(self, status="ok", details=None, captured_at=CAPTURED):
         return {"status": status, "attempted_at": self.ATTEMPTED, "captured_at": captured_at,
                 "details": {"sources": [], "retainedPrevious": False} if details is None else details}
+
+    def test_inference_claim_projection_matches_web_contract(self):
+        cases = json.loads((Path(__file__).resolve().parents[2]
+                            / "web/lib/fixtures/trace-inference-claims.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                body, _ = self._read(self._state(), nodes=[{
+                    "id": "claim:one", "kind": case["kind"], "label": "reported target", "meta": case["meta"],
+                }])
+                self.assertEqual(body["nodes"][0]["meta"], case["expected"])
+                self.assertIn("Runtime and requested-model identities", body["note"])
 
     def test_queue_arn_claims_remain_unverified_including_before_projection_migration(self):
         cases = json.loads((Path(__file__).resolve().parents[2]

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { TraceIdentity, TraceSpan, ServiceGraphCall } from './trace-source';
 import { queueClaimMeta, queueDestinationArn } from './trace-evidence';
 import { DB_ENDPOINT_KINDS } from './infra-topology';
+import { modelClaim, reportingRuntime, runtimeClaim } from './inference-evidence';
 
 export interface TraceNode { id: string; kind: string; label: string; meta: Record<string, unknown> }
 export interface InstanceObservation {
@@ -188,6 +189,13 @@ export function buildTraceGraph(
       return added;
     }
   };
+  const runtimeNode = (claim: NonNullable<ReturnType<typeof runtimeClaim>>, span: TraceSpan) => {
+    // Exact ARN claims can connect caller and runtime telemetry only within one source/environment.
+    const id = nodeId('runtime', { sourceId: span.sourceId, environment: span.environment }, claim.arn);
+    if (!nodes.has(id)) nodes.set(id, { id, kind: 'runtime', label: claim.name,
+      meta: { ...claim, sourceId: span.sourceId ?? null, environment: span.environment ?? null } });
+    return id;
+  };
 
   for (const span of byId.values()) {
     // An aggregate row stands for `weight` spans; a raw span for one.
@@ -201,6 +209,20 @@ export function buildTraceGraph(
     const traceIds = meta.traceIds as string[];
     if (traceIds.length < 20 && !traceIds.includes(span.traceId)) traceIds.push(span.traceId);
 
+    const hostRuntime = reportingRuntime(span);
+    if (hostRuntime) edge(runtimeNode(hostRuntime, span), sid, 'hosts', w);
+    const targetRuntime = span.kind === 'CLIENT' ? runtimeClaim(span.runtimeArn) : null;
+    if (targetRuntime) edge(sid, runtimeNode(targetRuntime, span), 'calls', w);
+    const model = modelClaim(span);
+    if (model) {
+      // Preserve cluster/namespace even with a host: private DNS may be reused by another cluster.
+      // An unknown endpoint is additionally caller-local.
+      const id = nodeId('model', span,
+        JSON.stringify([model.provider, model.model, model.endpoint, model.port, model.endpoint ? null : span.service]));
+      if (!nodes.has(id)) nodes.set(id, { id, kind: 'model', label: model.model,
+        meta: { ...model, sourceId: span.sourceId ?? null, environment: span.environment ?? null } });
+      edge(sid, id, 'calls', w);
+    }
     if (span.parentSpanId) {
       const parent = byId.get(spanKey(span.sourceId, span.traceId, span.parentSpanId));
       if (parent) {

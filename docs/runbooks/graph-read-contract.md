@@ -4,6 +4,49 @@
 
 Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
 
+### Missing inference dependencies
+
+Check that the application's telemetry store is registered and has a ready graph
+query before interpreting an absent service. The standard ClickHouse adapter
+aggregates the whole bounded window; a deployment still using the older raw-span
+adapter can lose low-volume calls behind health traffic.
+
+Outbound runtime/model calls also require a `CLIENT` span kind. A table without
+`SpanKind` leaves that classification unknown and cannot establish those outgoing
+calls; resource-side `hosts` observations may still be present.
+
+Client spans with a valid `agentcore.runtime.arn` create a reported runtime
+destination even without a server span. A reporting service with the same valid
+runtime resource ARN can connect through a `hosts` relationship when its account
+and region do not conflict. These joins remain isolated by source and environment.
+Explicit `gen_ai.provider.name`/`gen_ai.system`, requested model and endpoint
+attributes describe a requested model dependency. They do not prove successful
+inference, the final provider behind a Gateway, or an executing model's region.
+Unknown endpoints remain caller-local. Runtime/model cards label the identity as
+an unverified telemetry claim; no inventory ownership follows from it.
+
+Producers must supply Kubernetes resource identity for Pod correlation and
+runtime resource identity for AgentCore. Do not assign Kubernetes identity to
+every span received by a shared collector. No prompts, completions or request
+bodies are required by the inference graph mapper.
+
+Verify from `web/`:
+
+```bash
+npx vitest run lib/inference-topology.test.ts lib/trace-source.test.ts app/topology/services/page.test.tsx
+```
+
+After the reviewed deployment, inspect the registered source, fresh collection
+state and one approved synthetic request. A keep-alive HTTP 200 is not model
+execution proof.
+
+The matching SQL-reader projection is delivered by
+`01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql`. Run it through
+the reviewed standalone migration path before web/Lambda release; views and
+grants are not admitted by automatic web migrations. The MCP and HTTP readers
+also project retained runtime/model claims at read time, preserving forced
+provenance and excluding stored ownership or raw provider content.
+
 ### Placement and live VPC connections
 
 `/topology/infra` defaults to the persisted placement view from

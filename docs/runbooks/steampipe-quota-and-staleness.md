@@ -1,5 +1,26 @@
 # Runbook — Steampipe 쿼터 및 인벤토리 신선도 / Steampipe Quota and Inventory Staleness
 
+## S3 location-read denials
+
+The S3 inventory and public-access collectors use paginated `ListBuckets`
+`BucketRegion` metadata when present. A denied `GetBucketLocation` therefore does
+not erase region evidence that the authorized bucket listing already supplied.
+Responses without valid list-region metadata still use the location read; a
+failed fallback remains incomplete. The collectors finish enumeration before
+returning rows, reject repeated tokens/duplicate identities, and fail closed after
+100 pages of at most 1,000 buckets.
+
+Legacy `EU` location constraints normalize to `eu-west-1`. Old rows keyed by
+`EU` or an unknown region can coexist with the corrected row while a collection
+is incomplete; only a complete sweep authorizes the existing prune phases.
+
+Denied security-property reads remain explicit unknown attributes. A completed
+listing is not proof that bucket security was inspected, and release readiness
+still rejects unknown attributes. Failed pagination cannot authorize pruning or
+successful publication. This fix adds no IAM grant and does not modify bucket
+policies. Ship the collector through the reviewed Terraform saved-plan procedure,
+then inspect its terminal ledger and graph source qualification.
+
 ## Optional host scope / 선택적 호스트 범위
 
 `INVENTORY_HOST_ONLY=true` requires `EXPECTED_HOST_ACCOUNT_ID` and exactly one enabled

@@ -29,6 +29,7 @@ import {
   extractServiceGraphCalls,
   type TraceSpan,
 } from './trace-source';
+import { buildTraceGraph } from './trace-graph';
 
 const span = (over: Partial<TraceSpan> = {}): TraceSpan => ({
   traceId: 't1', spanId: 's1', service: 'svc', kind: 'SERVER', startMs: 0, durationMs: 1, ...over,
@@ -107,6 +108,30 @@ describe('ClickHouseOtelAggregateSource (whole-window aggregates)', () => {
       const rows = args.sql.includes('ARRAY JOIN') ? links : args.sql.includes('INNER JOIN') ? calls : groups;
       return { rows, collectionStatus: rows.length ? 'ok' : 'empty' };
     });
+
+  it('retains low-volume inference groups alongside frequent health traffic across the whole window', async () => {
+    const arn = 'arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/analysis-AbCd012345';
+    answer([
+      group({ SpanKind: 'Server', SpanAttributes: {}, Weight: '50000', SampleSpanId: 'health' }),
+      group({ SpanAttributes: { 'agentcore.runtime.arn': arn }, Weight: '2', SampleSpanId: 'runtime' }),
+      group({ SpanAttributes: { 'gen_ai.provider.name': 'aws.bedrock', 'gen_ai.request.model': 'vendor.model',
+        'server.address': 'bedrock-runtime.ap-northeast-2.amazonaws.com' },
+        Weight: '1', SampleSpanId: 'model' }),
+    ], []);
+    const out = await new ClickHouseOtelAggregateSource().recentSpans(60, 1000, END);
+    expect(out.status).toBe('ok');
+    const sql = invokeMcpLambdaTool.mock.calls[0][0].args.sql;
+    expect(sql).toContain("SpanAttributes['agentcore.runtime.arn'] != ''");
+    expect(sql).toContain("SpanAttributes['gen_ai.request.model'] != ''");
+    expect(sql).toContain("'gen_ai.provider.name'");
+    expect(sql).not.toContain("'gen_ai.prompt'");
+    expect(sql).toContain('GROUP BY ServiceName');
+    const graph = buildTraceGraph(out.items, out.calls ?? [], []);
+    expect(graph.nodes.filter(node => node.kind === 'runtime')).toHaveLength(1);
+    expect(graph.nodes.filter(node => node.kind === 'model')).toHaveLength(1);
+    expect(graph.edges.filter(edge => edge.rel === 'calls').map(edge => edge.meta.spanCount).sort())
+      .toEqual([1, 2]);
+  });
 
   it('accepts only the catalog exporter template and reads its optional columns', () => {
     expect(otelAggregateShape(undefined)).toEqual({ table: 'otel_traces', spanKind: true, statusCode: true, links: true });

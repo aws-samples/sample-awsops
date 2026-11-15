@@ -18,6 +18,24 @@ import ServiceMapPage from './page';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); push.mockReset(); });
 
+it.each(['runtime', 'model'])('labels %s dependencies as claims and exposes their exact endpoint details', async kind => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+    nodes: [{ id: 'inference:1', kind, label: 'inference-target', meta: {
+      sourceId: 'clickhouse:1', claimedAccountId: '111122223333', claimedRegion: 'us-east-1',
+      provider: 'aws.bedrock', model: 'example.model', endpoint: 'example.internal',
+      arn: 'arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/example',
+      identityProvenance: 'telemetry_claim', infra_ref: 'untrusted-inventory-ref',
+    } }], edges: [], captured_at: null,
+  }) })));
+  render(<ServiceMapPage />);
+  const node = await screen.findByRole('button', { name: new RegExp(`${kind}: inference-target`) });
+  expect(node.textContent).toContain('Telemetry claim');
+  fireEvent.click(node);
+  expect(screen.getByText('example.internal')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: '인프라 리소스 보기 →' })).toBeNull();
+});
+
 it('labels queue attribution as unverified telemetry and never navigates it into AWS inventory', async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({

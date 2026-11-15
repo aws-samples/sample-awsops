@@ -108,7 +108,7 @@ def test_s3_security_collector_skips_transiently_degraded_row_and_discloses_unkn
     # would overwrite the bucket's last-known-good row content with None fields while the
     # partial run skips both prune phases.
     class FakeS3:
-        def list_buckets(self):
+        def list_buckets(self, **kwargs):
             return {"Buckets": [{"Name": "secret-bucket"}]}
 
         def get_bucket_location(self, Bucket):
