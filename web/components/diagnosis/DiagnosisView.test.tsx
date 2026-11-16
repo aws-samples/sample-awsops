@@ -74,21 +74,22 @@ describe('DiagnosisView six-pillar coverage', () => {
     for (const name of names) expect(within(panel).getByText(name)).toBeTruthy();
     expect(within(panel).getAllByText('분석 실패')).toHaveLength(6);
     expect(within(panel).getByRole('alert').textContent).toContain('모든 pillar 분석이 실패했습니다');
-    expect(within(panel).queryByText('분석 완료')).toBeNull();
+    expect(within(panel).queryByText('후보 생성 완료')).toBeNull();
   });
 
   it('keeps missing and malformed pillar coverage unknown and separates withheld findings', async () => {
     show({ evidence_loop: { enabled: true }, pillar_coverage: {
       security: { status: 'completed', findings: 2, rejected: 0 },
-      reliability: { status: 'partial', findings: 1, rejected: 2 },
+      reliability: { status: 'partial', findings: 1, rejected: 2, downgraded: 3 },
       sustainability: { status: 'completed', findings: -1, rejected: 0 },
     } });
     const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
     expect(within(panel).getAllByText('기록 없음')).toHaveLength(4);
-    expect(within(panel).getAllByText('분석 완료')).toHaveLength(1);
-    expect(within(panel).getAllByText('일부 분석')).toHaveLength(1);
-    expect(within(panel).getByText('발견 항목 2')).toBeTruthy();
-    expect(within(panel).getByText('보류 항목 2')).toBeTruthy();
+    expect(within(panel).getAllByText('후보 생성 완료')).toHaveLength(1);
+    expect(within(panel).getAllByText('일부 후보 생성')).toHaveLength(1);
+    expect(within(panel).getByText('검토 전 후보 2')).toBeTruthy();
+    expect(within(panel).getByText('근거 검증 제외 2')).toBeTruthy();
+    expect(within(panel).getByText('가설로 조정 3')).toBeTruthy();
     expect(within(panel).queryByRole('alert')).toBeNull();
   });
 
@@ -96,7 +97,23 @@ describe('DiagnosisView six-pillar coverage', () => {
     show({});
     const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
     expect(within(panel).getAllByText('기록 없음')).toHaveLength(6);
+    expect(within(panel).queryByText('후보 생성 완료')).toBeNull();
+  });
+
+  it('labels specialist admissions as pre-review candidates when the reviewer withholds them all', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: {
+      security: { status: 'completed', findings: 2, rejected: 0 },
+    }, rejected_findings: [
+      { id: 'sec:first', reason: 'review_withheld' },
+      { id: 'sec:second', reason: 'review_withheld' },
+    ] });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getByText('검토 전 후보 2')).toBeTruthy();
+    expect(within(panel).getByText('후보 생성 완료')).toBeTruthy();
+    expect(within(panel).getByText('후보는 종합 검토에서 제외될 수 있습니다. 최종 반영 여부는 아래 보고서에서 확인하세요.')).toBeTruthy();
+    expect(within(panel).queryByText('발견 항목 2')).toBeNull();
     expect(within(panel).queryByText('분석 완료')).toBeNull();
+    expect(screen.getByText('검증된 진단 없음; 커버리지는 미확인입니다.')).toBeTruthy();
   });
 });
 
