@@ -128,9 +128,14 @@ and collector principals rejects them with `AccessDenied` at AssumeRole. Two set
    `AgentLambdaRoleArn`, and confirms the change set modifies only the role's trust policy
    before executing it.
 
-The reader role `<project>-agent-lambda-reader` (`rds-mcp`, `inventory-read`) reads only the
-host's Aurora and needs no target trust. Apply the host change first: until the Lambda sends
-the ExternalId, the new target statement still rejects it.
+`rds-mcp` and `inventory-read` run as the separate reader role `<project>-agent-lambda-reader`.
+`inventory-read` reads only the host's Aurora, but `rds-mcp`'s describe/list tools assume the
+target role as that reader role (its `execute_sql` refuses foreign accounts). The template's
+`AgentLambdaRoleArn` statement does not trust the reader role, so those `rds-mcp` reads keep
+failing with `AccessDenied` in target accounts until the reader role is trusted separately.
+Expect chat answers that combine network and RDS tools to be complete for the network part
+only. Apply the host change first: until the Lambda sends the ExternalId, the new target
+statement still rejects it.
 
 Host-only deployments display the restriction before registration and disable the register
 button. A separate connection check performs no registry writes. The onboarding form offers
