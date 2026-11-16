@@ -101,6 +101,31 @@ Agent Lambda readers currently use a single `AWSOPS_EXTERNAL_ID` setting instead
 registry's per-account value. An automatically generated per-account ID is not automatically
 propagated there. Operators must coordinate the shared reader value and its trusted
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
+See [AgentCore cross-account reads](#agentcore-cross-account-reads).
+
+### AgentCore cross-account reads
+
+AgentCore MCP tools (ENI, security group, route and other live reads) run as the host
+`<project>-agent-lambda` role, not the web task role, so a target trust that names only the web
+and collector principals rejects them with `AccessDenied` at AssumeRole. Two settings must match:
+
+1. **Host:** set the Terraform input `agent_external_id` to the ExternalId that the target trust
+   requires. Terraform passes it to every agent Lambda as `AWSOPS_EXTERNAL_ID`. It is one value
+   for all targets, so it works only for targets whose trust uses that same ExternalId. The
+   variable is marked sensitive, so plans show it as `(sensitive value)`. Empty (default) sends
+   no ExternalId and changes nothing.
+2. **Target:** trust `arn:aws:iam::<host-account>:role/<project>-agent-lambda` with the same
+   ExternalId condition. The create-only template has an optional `AgentLambdaRoleArn`
+   parameter that adds a separate statement under the shared `ExternalId` condition. The
+   browser script never fills it. For an existing `awsops-readonly-role` stack, the target
+   administrator reviews a change set built from the current template, keeps every
+   existing parameter (`UsePreviousValue=true`, which preserves the ExternalId) and sets
+   only `AgentLambdaRoleArn`. Confirm the change set modifies only the role's trust policy
+   before executing it.
+
+The reader role `<project>-agent-lambda-reader` (`rds-mcp`, `inventory-read`) reads only the
+host's Aurora and needs no target trust. Apply the host change first: until the Lambda sends
+the ExternalId, the new target statement still rejects it.
 
 Host-only deployments display the restriction before registration and disable the register
 button. A separate connection check performs no registry writes. The onboarding form offers
@@ -321,7 +346,7 @@ Terraform-managed entry remains separate.
   not a rotation procedure: preserve the current value unless an operator-reviewed change
   deliberately changes it. Coordinate any rotation/removal across both target trust statements,
   the stored account value used by web/Steampipe, worker settings where used, and the separately
-  configured Agent Lambda `AWSOPS_EXTERNAL_ID`. The browser create-only script does not
+  configured Agent Lambda `AWSOPS_EXTERNAL_ID` (Terraform `agent_external_id`). The browser create-only script does not
   rotate or remove an existing condition, and checking first-party does not update the target role.
 - Host account: no role needed (AWSops uses its own task-role credentials for the host).
 - To remove an account, use the **제거** button on `/accounts` (the host row is protected).

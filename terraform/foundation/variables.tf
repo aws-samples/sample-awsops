@@ -470,6 +470,21 @@ variable "inventory_stale_after_minutes" {
   }
 }
 
+variable "agent_external_id" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Shared sts:ExternalId the AgentCore MCP Lambdas send when assuming a target account's AWSopsReadOnlyRole (AWSOPS_EXTERNAL_ID). It must match the ExternalId condition on the target's agent-Lambda trust statement. Empty (default) sets no variable and sends no ExternalId. Not a credential; marked sensitive to keep the value out of plan output."
+  validation {
+    # RE2 caps repetition counts at 1000, so the length bound is checked separately.
+    condition = var.agent_external_id == "" || (
+      length(var.agent_external_id) >= 8 && length(var.agent_external_id) <= 1224 &&
+      can(regex("^[A-Za-z0-9_+=,.@:/-]+$", var.agent_external_id))
+    )
+    error_message = "agent_external_id must be empty or 8-1224 characters of A-Z, a-z, 0-9 and _+=,.@:/-."
+  }
+}
+
 variable "eks_auto_register_enabled" {
   type        = bool
   description = "EKS auto-register gate: EventBridge(CloudTrail AssociateAccessPolicy/DeleteAccessEntry for the task role) -> Lambda -> eks_registrations. Observe-only toward AWS (no resource mutation). Requires workers_enabled (pg8000 layer reuse). false (default) = 0 resources."

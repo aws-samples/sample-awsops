@@ -57,6 +57,7 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
       HostTaskRoleArn: { Type: 'String', AllowedPattern: '^arn:aws:iam::\\d{12}:role/.+$' },
       WorkerTaskRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
       InventoryTaskRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
+      AgentLambdaRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
       ExternalId: { Type: 'String', Default: '', AllowedPattern: '^$|^.{8,}$', NoEcho: true },
       RoleName: { Type: 'String', Default: 'AWSopsReadOnlyRole' },
     },
@@ -64,6 +65,7 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
       HasExternalId: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'ExternalId' }, ''] }] },
       HasWorkerTaskRoleArn: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'WorkerTaskRoleArn' }, ''] }] },
       HasInventoryTaskRoleArn: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'InventoryTaskRoleArn' }, ''] }] },
+      HasAgentLambdaRoleArn: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'AgentLambdaRoleArn' }, ''] }] },
     },
     Resources: {
       AWSopsReadOnlyRole: {
@@ -84,6 +86,13 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
             }, { 'Fn::If': ['HasInventoryTaskRoleArn', {
               Effect: 'Allow',
               Principal: { AWS: { Ref: 'InventoryTaskRoleArn' } },
+              Action: 'sts:AssumeRole',
+              Condition: { 'Fn::If': ['HasExternalId',
+                { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },
+            }, { Ref: 'AWS::NoValue' }] }, { 'Fn::If': ['HasAgentLambdaRoleArn', {
+              // AgentCore MCP Lambdas send one shared ExternalId (Terraform agent_external_id).
+              Effect: 'Allow',
+              Principal: { AWS: { Ref: 'AgentLambdaRoleArn' } },
               Action: 'sts:AssumeRole',
               Condition: { 'Fn::If': ['HasExternalId',
                 { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },

@@ -959,6 +959,9 @@ resource "aws_lambda_function" "agent" {
       # never the host) — otherwise host-account tool calls fail with AccessDenied.
       AWSOPS_HOST_ACCOUNT_ID = data.aws_caller_identity.current.account_id
       },
+      # Shared ExternalId that cross_account.py sends when assuming a target account's
+      # AWSopsReadOnlyRole. Empty (default) adds no variable, so stacks without it plan no change.
+      nonsensitive(var.agent_external_id != "") ? { AWSOPS_EXTERNAL_ID = var.agent_external_id } : {},
       # Connectors that read the single integrations secret get its exact TF-created name (no drift
       # from the Python default). notion-mcp also pins INTEGRATION_SLUG; clickhouse-mcp uses a fixed
       # SLUG in code. Both exist only when integ_count>0 so integrations[0] is safe.
