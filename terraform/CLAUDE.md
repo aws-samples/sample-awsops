@@ -59,6 +59,9 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   Saved profile metadata enforces read-only
   flags even without a discovery rollout. Default-false
   `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
+- Optional secret `CI_PRIVATELINK_ADDITIONS_DEV` adds new `privatelink_endpoints` labels only in full dev
+  plans through the ignored `ci-privatelink.auto.tfvars.json` (tracked copies refused); empty preserves
+  tfvars. Apply replays the saved plan and the DNS guard still applies.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
   provisioner's `DEPLOYMENT_READINESS_ENABLED`. Dedicated `CI_READINESS_ENABLED_DEV=true/false`
   overrides it on dev; empty/unset preserves explicit tfvars and the default false. Public CI

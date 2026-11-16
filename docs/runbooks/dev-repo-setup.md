@@ -519,6 +519,15 @@ integration proves activation. The timer writes application graph records, not
 AWS-resource changes, and its cadence does not relax source freshness limits.
 See the [graph timer contract](graph-read-contract.md#optional-dev-ci-timer-override)
 for scope checks, verification and explicit `0` disablement.
+`CI_PRIVATELINK_ADDITIONS_DEV` is an optional repository **secret** that adds new labels
+to the effective `privatelink_endpoints` map on full-scope dev plans without rewriting
+`TF_TFVARS_DEV`. The plan job writes them to the ignored private
+`ci-privatelink.auto.tfvars.json` (a tracked copy is refused) and removes that file in
+both plan and apply cleanup; empty/unset preserves the protected tfvars. It holds
+connection configuration only, never a datasource credential. Apply replays the reviewed
+saved plan, not the current secret. See
+[adding another datasource](privatelink-observability.md#adding-another-datasource-to-a-running-dev-stack)
+for the accepted format and limits.
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
