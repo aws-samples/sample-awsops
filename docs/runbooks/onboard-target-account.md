@@ -110,7 +110,9 @@ AgentCore MCP tools (ENI, security group, route and other live reads) run as the
 and collector principals rejects them with `AccessDenied` at AssumeRole. Two settings must match:
 
 1. **Host:** set the Terraform input `agent_external_id` to the ExternalId that the target trust
-   requires. Terraform passes it to every agent Lambda as `AWSOPS_EXTERNAL_ID`. It is one value
+   requires. On the public dev stack, set the repository secret `CI_AGENT_EXTERNAL_ID_DEV`
+   instead of editing `TF_TFVARS_DEV` ([dev setup](dev-repo-setup.md)), then review and apply
+   a full dev plan. Terraform passes it to every agent Lambda as `AWSOPS_EXTERNAL_ID`. It is one value
    for all targets, so it works only for targets whose trust uses that same ExternalId. The
    variable is marked sensitive to keep the value out of public plan logs; once it is set, plans
    render each agent Lambda's whole environment map as `(sensitive value)`, so review other agent

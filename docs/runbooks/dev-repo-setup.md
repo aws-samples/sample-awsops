@@ -528,6 +528,14 @@ connection configuration only, never a datasource credential. Apply replays the 
 saved plan, not the current secret. See
 [adding another datasource](privatelink-observability.md#adding-another-datasource-to-a-running-dev-stack)
 for the accepted format and limits.
+`CI_AGENT_EXTERNAL_ID_DEV` is an optional repository **secret** that sets the existing
+`agent_external_id` input on full-scope dev plans without editing `TF_TFVARS_DEV`. The plan
+job writes it to the ignored `ci-runtime.auto.tfvars.json`, which cleanup removes; any other
+target or scope that receives a value is refused, and empty/unset preserves tfvars. The value
+must be 8-1224 characters of `A-Za-z0-9_+=,.@:/-` and must equal the target trust's
+ExternalId. Refusals name only the secret, never its value. Apply replays the reviewed
+saved plan, not the current secret. See
+[AgentCore cross-account reads](onboard-target-account.md#agentcore-cross-account-reads).
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 

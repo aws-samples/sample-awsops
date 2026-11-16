@@ -192,6 +192,78 @@ class RuntimePolicyTests(unittest.TestCase):
                 self.assertNotIn(targets[0]["account_id"], result.stdout + result.stderr)
                 self.assertNotIn(targets[0]["resource_id"], result.stdout + result.stderr)
 
+    EXTERNAL_ID = "fixture-agent-external-id"
+
+    def external_id_overrides(self, value, **changes):
+        args = dict(target="dev", enabled="true", expected_account=ACCOUNT, scope="full",
+                    steampipe_digest=DIGEST, worker_digest=DIGEST, rollout=False)
+        return self.module.runtime_overrides(**{**args, **changes}, agent_external_id=value)
+
+    def test_agent_external_id_is_optional_and_only_sets_the_existing_variable(self):
+        baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, False)
+        self.assertEqual(self.external_id_overrides(""), baseline)
+        self.assertEqual(self.external_id_overrides(self.EXTERNAL_ID),
+                         {**baseline, "agent_external_id": self.EXTERNAL_ID})
+        # Without the runtime profile dev still accepts it; only the override key is added.
+        quiet = self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False)
+        self.assertEqual(self.external_id_overrides(self.EXTERNAL_ID, enabled=""),
+                         {**quiet, "agent_external_id": self.EXTERNAL_ID})
+        for raw in ("short", "x" * 1225, "has space-in-it", "quote'value-1", "$(touch injected)",
+                    "line\nbreak-value", "１２３４５６７８９", True, 12345678, None, []):
+            with self.subTest(raw=str(raw)[:40]), self.assertRaisesRegex(ValueError, "CI_AGENT_EXTERNAL_ID_DEV") as caught:
+                self.external_id_overrides(raw)
+            if isinstance(raw, str) and len(raw) > 2:
+                self.assertNotIn(raw, str(caught.exception))
+
+    def test_agent_external_id_is_dev_full_only(self):
+        for changes in ([{"target": target} for target in ("main", "atomoh", "ssminji", "whchoi")]
+                        + [{"scope": scope} for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap")]):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ValueError, "CI_AGENT_EXTERNAL_ID_DEV requires full dev scope"):
+                    self.external_id_overrides(self.EXTERNAL_ID, **changes)
+                self.assertNotIn("agent_external_id", self.external_id_overrides("", **changes))
+
+    def test_agent_external_id_cli_writes_value_privately_and_removes_stale_override_on_rejection(self):
+        for raw, allowed in ((None, True), ("", True), (self.EXTERNAL_ID, True), ("short", False),
+                             ("$(touch injected)", False)):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "ci-runtime.auto.tfvars.json"
+                output.write_text('{"agent_external_id":"stale-external-id"}')
+                env = dict(CI_READONLY_RUNTIME_DEV="true", AWS_ACCOUNT_ID_DEV=ACCOUNT,
+                           STEAMPIPE_IMAGE_DIGEST_DEV=DIGEST, WORKER_IMAGE_DIGEST_DEV=DIGEST)
+                if raw is not None:
+                    env["CI_AGENT_EXTERNAL_ID_DEV"] = raw
+                result = subprocess.run([sys.executable, str(Path(self.module.__file__)), "overrides",
+                    "--target", "dev", "--scope", "full"], cwd=root, env=env,
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                if raw:
+                    self.assertNotIn(raw, result.stdout + result.stderr)
+                if allowed:
+                    values = json.loads(output.read_text())
+                    self.assertEqual(values.get("agent_external_id"), raw or None)
+                else:
+                    self.assertIn("CI_AGENT_EXTERNAL_ID_DEV", result.stderr)
+                    self.assertFalse(output.exists())
+                self.assertFalse((root / "injected").exists())
+
+    def test_agent_external_id_workflow_binding_is_dev_full_plan_secret_only(self):
+        from test_ci_deployment_workflows import workflow_step, expression
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        binding = step["env"].get("CI_AGENT_EXTERNAL_ID_DEV", "")
+        self.assertIn("secrets.CI_AGENT_EXTERNAL_ID_DEV", binding)
+        self.assertNotIn("vars.", binding)
+        for target, scope in (("dev", "full"), ("main", "full"), ("atomoh", "full"), ("ssminji", "full"),
+                              ("whchoi", "full"), ("dev", "ecr-bootstrap"), ("dev", "runtime-ecr-bootstrap")):
+            with self.subTest(target=target, scope=scope):
+                context = {"env": {"TARGET": target}, "inputs": {"plan_scope": scope},
+                           "secrets": {"CI_AGENT_EXTERNAL_ID_DEV": self.EXTERNAL_ID}}
+                self.assertEqual(expression(binding, context),
+                                 self.EXTERNAL_ID if target == "dev" and scope == "full" else "")
+        apply_text = json.dumps(workflow_step("terraform.yml", "apply", "Recheck actual host registry before apply"))
+        self.assertNotIn("CI_AGENT_EXTERNAL_ID_DEV", apply_text)
+
     def test_fill_rate_is_optional_and_changes_only_the_existing_rate_variable(self):
         baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
                                                  DIGEST, DIGEST, False)

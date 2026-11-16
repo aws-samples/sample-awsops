@@ -62,6 +62,9 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
 - Optional secret `CI_PRIVATELINK_ADDITIONS_DEV` adds new `privatelink_endpoints` labels only in full dev
   plans through the ignored `ci-privatelink.auto.tfvars.json` (tracked copies refused); empty preserves
   tfvars. Apply replays the saved plan and the DNS guard still applies.
+- Optional secret `CI_AGENT_EXTERNAL_ID_DEV` sets existing sensitive `agent_external_id` only in full dev
+  plans through the ignored `ci-runtime.auto.tfvars.json`; other targets/scopes with a value are refused,
+  empty preserves tfvars. Apply replays the saved plan.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
   provisioner's `DEPLOYMENT_READINESS_ENABLED`. Dedicated `CI_READINESS_ENABLED_DEV=true/false`
   overrides it on dev; empty/unset preserves explicit tfvars and the default false. Public CI

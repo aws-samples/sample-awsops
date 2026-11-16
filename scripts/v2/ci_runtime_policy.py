@@ -63,7 +63,7 @@ def verification_targets(value, host):
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
                       rollout, *, advisory=False, readiness="", steampipe_fill_rate="", runtime_targets="",
-                      graph_rebuild_interval_mins=""):
+                      graph_rebuild_interval_mins="", agent_external_id=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
@@ -102,6 +102,16 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
                 or int(graph_rebuild_interval_mins) > 1440):
             raise ValueError("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV must be an integer string from 0 to 1440")
         graph_override["graph_rebuild_interval_mins"] = int(graph_rebuild_interval_mins)
+    external_id_override = {}
+    if agent_external_id != "":
+        # The value is a confused-deputy guard shared with target trust policies; never echo it.
+        if target != "dev" or scope != "full":
+            raise ValueError("CI_AGENT_EXTERNAL_ID_DEV requires full dev scope")
+        if (not isinstance(agent_external_id, str)
+                or not 8 <= len(agent_external_id) <= 1224
+                or not re.fullmatch(r"[A-Za-z0-9_+=,.@:/-]+", agent_external_id)):
+            raise ValueError("CI_AGENT_EXTERNAL_ID_DEV must be 8-1224 characters of A-Z, a-z, 0-9 and _+=,.@:/-")
+        external_id_override["agent_external_id"] = agent_external_id
     if target not in DEV_TARGETS:
         if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
@@ -111,7 +121,7 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
     result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout,
-              **readiness_override, **rate_override, **graph_override}
+              **readiness_override, **rate_override, **graph_override, **external_id_override}
     if profile or rollout:
         account_id(expected_account)
     if not profile:
@@ -652,6 +662,7 @@ def main():
                 steampipe_fill_rate=os.environ.get("CI_STEAMPIPE_AWS_FILL_RATE_DEV", ""),
                 graph_rebuild_interval_mins=os.environ.get("CI_GRAPH_REBUILD_INTERVAL_MINS_DEV", ""),
                 runtime_targets=os.environ.get("CI_RUNTIME_TARGETS_DEV", ""),
+                agent_external_id=os.environ.get("CI_AGENT_EXTERNAL_ID_DEV", ""),
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)
