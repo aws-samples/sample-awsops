@@ -3,6 +3,7 @@ Description: >
   AWSops cross-account read-only role. Deploy this in each TARGET account you want AWSops to read
   (cost, Bedrock metrics, inventory, etc.). The host AWSops web task role assumes this role via
   STS. The optional InventoryTaskRoleArn adds its distinct Steampipe collector principal.
+  The optional AgentLambdaRoleArn adds the host AgentCore tool Lambda role under the same ExternalId condition.
   Optionally, the host worker task role can be trusted too (WorkerTaskRoleArn, ADR-011
   amended 2026-08-25) for the Network Path Check / SG Rules & Usage workers' own reads.
   ExternalId is OPTIONAL (ADR-011 amended 2026-06-26): omit it for 1st-party accounts — trust is
@@ -43,6 +44,15 @@ Parameters:
     Description: >
       OPTIONAL. Exact ARN of the host inventory collector task role. Required for
       multi-account inventory collection. Uses the same ExternalId condition as the web role.
+  AgentLambdaRoleArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws:iam::\d{12}:role/.+$'
+    Description: >
+      OPTIONAL. Exact ARN of the host AgentCore tool Lambda role (Terraform output
+      agent_lambda_role_arn). Needed only for AgentCore chat tools that read this account.
+      Uses the same ExternalId condition as the web role; the host sends one shared
+      ExternalId (Terraform agent_external_id), so it must equal this stack's ExternalId.
   ExternalId:
     Type: String
     Default: ''
@@ -62,6 +72,7 @@ Conditions:
   HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
   HasWorkerTaskRoleArn: !Not [!Equals [!Ref WorkerTaskRoleArn, '']]
   HasInventoryTaskRoleArn: !Not [!Equals [!Ref InventoryTaskRoleArn, '']]
+  HasAgentLambdaRoleArn: !Not [!Equals [!Ref AgentLambdaRoleArn, '']]
 
 Resources:
   AWSopsReadOnlyRole:
@@ -97,6 +108,18 @@ Resources:
             - Effect: Allow
               Principal:
                 AWS: !Ref InventoryTaskRoleArn
+              Action: 'sts:AssumeRole'
+              Condition: !If
+                - HasExternalId
+                - StringEquals:
+                    'sts:ExternalId': !Ref ExternalId
+                - !Ref 'AWS::NoValue'
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasAgentLambdaRoleArn
+            - Effect: Allow
+              Principal:
+                AWS: !Ref AgentLambdaRoleArn
               Action: 'sts:AssumeRole'
               Condition: !If
                 - HasExternalId
