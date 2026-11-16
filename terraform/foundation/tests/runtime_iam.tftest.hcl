@@ -1117,3 +1117,35 @@ run "diagnosis_member_roles_require_the_evidence_loop" {
   }
   expect_failures = [var.diagnosis_member_role_arns]
 }
+
+run "agent_external_id_default_adds_no_variable" {
+  command = plan
+  variables { agentcore_enabled = true }
+  assert {
+    condition = alltrue([for fn in aws_lambda_function.agent :
+    !contains(keys(fn.environment[0].variables), "AWSOPS_EXTERNAL_ID")])
+    error_message = "An unset agent_external_id must not add AWSOPS_EXTERNAL_ID to any agent Lambda."
+  }
+}
+
+run "agent_external_id_reaches_every_agent_lambda" {
+  command = plan
+  variables {
+    agentcore_enabled = true
+    agent_external_id = "fixture-external-id-0001"
+  }
+  assert {
+    condition = length(aws_lambda_function.agent) > 0 && alltrue([for fn in aws_lambda_function.agent :
+    nonsensitive(fn.environment[0].variables["AWSOPS_EXTERNAL_ID"] == "fixture-external-id-0001")])
+    error_message = "A configured agent_external_id must reach every agent Lambda as AWSOPS_EXTERNAL_ID."
+  }
+}
+
+run "agent_external_id_rejects_short_values" {
+  command = plan
+  variables {
+    agentcore_enabled = true
+    agent_external_id = "short"
+  }
+  expect_failures = [var.agent_external_id]
+}

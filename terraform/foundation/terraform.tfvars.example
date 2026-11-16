@@ -9,3 +9,6 @@ hosted_zone_name = "example.com"
 # steampipe_sync_reserved_concurrency = 4
 # Shared web and inventory-reader source freshness threshold (separate from graph cadence).
 # inventory_stale_after_minutes       = 30
+# ExternalId the AgentCore tool Lambdas send when assuming a target AWSopsReadOnlyRole; it must
+# match the target's agent-Lambda trust statement (docs/runbooks/onboard-target-account.md).
+# agent_external_id                   = ""

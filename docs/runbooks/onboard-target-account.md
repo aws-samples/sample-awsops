@@ -101,6 +101,41 @@ Agent Lambda readers currently use a single `AWSOPS_EXTERNAL_ID` setting instead
 registry's per-account value. An automatically generated per-account ID is not automatically
 propagated there. Operators must coordinate the shared reader value and its trusted
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
+See [AgentCore cross-account reads](#agentcore-cross-account-reads).
+
+### AgentCore cross-account reads
+
+AgentCore MCP tools (ENI, security group, route and other live reads) run as the host
+`<project>-agent-lambda` role, not the web task role, so a target trust that names only the web
+and collector principals rejects them with `AccessDenied` at AssumeRole. Two settings must match:
+
+1. **Host:** set the Terraform input `agent_external_id` to the ExternalId that the target trust
+   requires. Terraform passes it to every agent Lambda as `AWSOPS_EXTERNAL_ID`. It is one value
+   for all targets, so it works only for targets whose trust uses that same ExternalId. The
+   variable is marked sensitive to keep the value out of public plan logs; once it is set, plans
+   render each agent Lambda's whole environment map as `(sensitive value)`, so review other agent
+   environment changes in a separate plan. Empty (default) sends
+   no ExternalId and changes nothing.
+2. **Target:** trust the exact role ARN from the host's
+   `terraform -chdir=terraform/foundation output -raw agent_lambda_role_arn` (do not hand-build
+   it) with the same ExternalId condition. The create-only template has an optional
+   `AgentLambdaRoleArn` parameter that adds a separate statement under the shared `ExternalId`
+   condition. The browser script never fills it. For an existing `awsops-readonly-role` stack,
+   the stored template has no such parameter, so the target administrator creates a change set
+   with the updated template body
+   (`--template-body file://infra/cfn/awsops-target-account-role.yaml`), passes every existing
+   parameter with `UsePreviousValue=true` (which preserves the ExternalId), sets only
+   `AgentLambdaRoleArn`, and confirms the change set modifies only the role's trust policy
+   before executing it.
+
+`rds-mcp` and `inventory-read` run as the separate reader role `<project>-agent-lambda-reader`.
+`inventory-read` reads only the host's Aurora, but `rds-mcp`'s describe/list tools assume the
+target role as that reader role (its `execute_sql` refuses foreign accounts). The template's
+`AgentLambdaRoleArn` statement does not trust the reader role, so those `rds-mcp` reads keep
+failing with `AccessDenied` in target accounts until the reader role is trusted separately.
+Expect chat answers that combine network and RDS tools to be complete for the network part
+only. Apply the host change first: until the Lambda sends the ExternalId, the new target
+statement still rejects it.
 
 Host-only deployments display the restriction before registration and disable the register
 button. A separate connection check performs no registry writes. The onboarding form offers
@@ -268,7 +303,11 @@ an allowlist edit revokes every previously configured read path.
    ```
    Include `InventoryTaskRoleArn` for inventory collection. Omit it only when collector
    trust is intentionally not being configured; that omission is not collection readiness.
-   Omit `WorkerTaskRoleArn` unless a worker job needs the account. Omit `ExternalId` for
+   Omit `WorkerTaskRoleArn` unless a worker job needs the account.
+   Add `'AgentLambdaRoleArn=<host-agent-lambda-role-arn>'` (Terraform output
+   `agent_lambda_role_arn`) only when AgentCore chat tools must read this account and the host
+   `agent_external_id` equals this stack's ExternalId; see
+   [AgentCore cross-account reads](#agentcore-cross-account-reads). Omit `ExternalId` for
    explicitly selected first-party **new-stack** onboarding. Keep line continuations only
    between actual arguments, and keep actual ExternalId values out of shared logs and AI prompts.
    The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`). Re-running
@@ -315,13 +354,14 @@ Terraform-managed entry remains separate.
 ## Notes
 - **ExternalId is not a secret** — it is a confused-deputy guard, stored in plaintext so AWSops can pass
   it to `sts:AssumeRole`. Treat it like a coordination value, not a credential.
-- The existing web/worker trust statement and the separate collector statement share one
-  ExternalId condition. For a first-party new stack, omission removes that condition from
-  **both** statements while keeping exact principal ARNs. For an existing stack, omission is
-  not a rotation procedure: preserve the current value unless an operator-reviewed change
-  deliberately changes it. Coordinate any rotation/removal across both target trust statements,
+- The web/worker trust statement, the separate collector statement and the optional agent
+  Lambda statement share one ExternalId condition. For a first-party new stack, omission removes
+  that condition from **every** statement while keeping exact principal ARNs. For an existing
+  stack, omission is not a rotation procedure: preserve the current value unless an
+  operator-reviewed change deliberately changes it. Coordinate any rotation/removal across all
+  target trust statements,
   the stored account value used by web/Steampipe, worker settings where used, and the separately
-  configured Agent Lambda `AWSOPS_EXTERNAL_ID`. The browser create-only script does not
+  configured Agent Lambda `AWSOPS_EXTERNAL_ID` (Terraform `agent_external_id`). The browser create-only script does not
   rotate or remove an existing condition, and checking first-party does not update the target role.
 - Host account: no role needed (AWSops uses its own task-role credentials for the host).
 - To remove an account, use the **제거** button on `/accounts` (the host row is protected).
