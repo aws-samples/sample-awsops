@@ -50,6 +50,56 @@ function mockList(reports: Array<Record<string, unknown>>) {
   }));
 }
 
+describe('DiagnosisView six-pillar coverage', () => {
+  const keys = ['operational_excellence', 'security', 'reliability',
+    'performance_efficiency', 'cost_optimization', 'sustainability'];
+  const names = ['운영 우수성', '보안', '안정성', '성능 효율성', '비용 최적화', '지속 가능성'];
+
+  function show(summary: Record<string, unknown>) {
+    const report = { id: 11, tier: 'deep', status: 'partial',
+      created_at: '2026-11-16T07:21:00Z', summary };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/diagnosis') return resp({ reports: [report] });
+      if (url === '/api/diagnosis/11') return resp({ report,
+        markdown: '## Executive Summary\n\n검증된 진단 없음; 커버리지는 미확인입니다.' });
+      return resp({}, 404);
+    }));
+    render(<DiagnosisView />);
+  }
+
+  it('shows all six failed pillars instead of presenting a blank partial report as analysis', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: Object.fromEntries(
+      keys.map((key) => [key, { status: 'failed', findings: 0, rejected: 0 }])) });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    for (const name of names) expect(within(panel).getByText(name)).toBeTruthy();
+    expect(within(panel).getAllByText('분석 실패')).toHaveLength(6);
+    expect(within(panel).getByRole('alert').textContent).toContain('모든 pillar 분석이 실패했습니다');
+    expect(within(panel).queryByText('분석 완료')).toBeNull();
+  });
+
+  it('keeps missing and malformed pillar coverage unknown and separates withheld findings', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: {
+      security: { status: 'completed', findings: 2, rejected: 0 },
+      reliability: { status: 'partial', findings: 1, rejected: 2 },
+      sustainability: { status: 'completed', findings: -1, rejected: 0 },
+    } });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getAllByText('기록 없음')).toHaveLength(4);
+    expect(within(panel).getAllByText('분석 완료')).toHaveLength(1);
+    expect(within(panel).getAllByText('일부 분석')).toHaveLength(1);
+    expect(within(panel).getByText('발견 항목 2')).toBeTruthy();
+    expect(within(panel).getByText('보류 항목 2')).toBeTruthy();
+    expect(within(panel).queryByRole('alert')).toBeNull();
+  });
+
+  it('does not infer six completed pillars from a legacy successful artifact', async () => {
+    show({});
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getAllByText('기록 없음')).toHaveLength(6);
+    expect(within(panel).queryByText('분석 완료')).toBeNull();
+  });
+});
+
 describe('DiagnosisView sidebar layout', () => {
   it('starts a newly completed report at the top while polling a running report preserves its position', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

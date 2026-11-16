@@ -1,9 +1,13 @@
 import io
 import json
 import re
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from botocore.exceptions import ClientError
+from botocore.response import StreamingBody
+import urllib3
 
 from diagnosis import pillar_agents as agents
 from diagnosis.budget import ReportBudget
@@ -48,6 +52,85 @@ def response(value, *, usage=True, stop="end_turn"):
     if usage:
         result["usage"] = {"input_tokens": 100, "output_tokens": 200}
     return result
+
+
+@pytest.fixture
+def http_body():
+    """Use the SDK's actual response lifecycle; BytesIO never releases a socket."""
+    opened = []
+
+    def serve(payload, *, chunked=False, declared_length=None):
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Connection", "close")
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                else:
+                    self.send_header("Content-Length", str(
+                        len(payload) if declared_length is None else declared_length))
+                self.end_headers()
+                if chunked:
+                    for start in range(0, len(payload), 700):
+                        part = payload[start:start + 700]
+                        self.wfile.write(f"{len(part):x}\r\n".encode() + part + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    self.wfile.write(payload)
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        pool = urllib3.PoolManager()
+        raw = pool.request("GET", f"http://127.0.0.1:{server.server_port}/",
+                           preload_content=False)
+        length = None if chunked else (len(payload) if declared_length is None else declared_length)
+        stream = StreamingBody(raw, length)
+        opened.append((server, thread, pool, stream))
+        return stream
+
+    yield serve
+    for server, thread, pool, stream in opened:
+        stream.close()
+        pool.clear()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("size", [128, 4096, 8193])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_valid_http_response_survives_socket_release_at_eof(http_body, size, chunked):
+    payload = b'{"padding":"' + b"x" * (size - len(b'{"padding":""}')) + b'"}'
+    stream = http_body(payload, chunked=chunked)
+    actual = agents._read_response({"body": stream}, budget=ReportBudget("mid"), read_timeout=60)
+    assert actual == {"padding": "x" * (size - len(b'{"padding":""}'))}
+
+
+def test_structured_http_response_records_success_and_usage(monkeypatch, http_body):
+    stream = http_body(json.dumps(response({"findings": []})).encode())
+    monkeypatch.setattr(agents, "_client", lambda *_: type("Client", (), {
+        "invoke_model": lambda self, **kwargs: {"body": stream},
+    })())
+    budget = ReportBudget("mid")
+    result = agents.analyze("security", EvidenceIndex(bundle(), ACCOUNT),
+                            model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
+    assert result["findings"] == []
+    assert result["_stage"]["status"] == "succeeded"
+    assert budget.snapshot()["actual_usage"] == {"input_tokens": 100, "output_tokens": 200}
+
+
+def test_truncated_http_response_is_not_accepted_as_complete_json(http_body):
+    payload = b'{"findings":[]}'
+    stream = http_body(payload, declared_length=len(payload) + 1)
+    from botocore.exceptions import IncompleteReadError, ResponseStreamingError
+    with pytest.raises((IncompleteReadError, ResponseStreamingError)):
+        agents._read_response({"body": stream}, budget=ReportBudget("mid"), read_timeout=60)
 
 
 @pytest.mark.parametrize("prefix", ["", "global.", "us.", "eu.", "au."])

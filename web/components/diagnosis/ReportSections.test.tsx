@@ -66,6 +66,14 @@ describe('sectionSeverity', () => {
   it('a degraded/failed section body never reads green', () => {
     expect(sectionSeverity('_이 섹션 생성에 실패했습니다 (degraded): boom_')).toBe('warning');
   });
+  it.each([
+    '검증된 진단 없음; 커버리지는 미확인입니다.',
+    'No admitted findings; coverage remains unknown.',
+    '没有已验证的诊断；覆盖情况仍未知。',
+    '検証済み診断なし。カバレッジは未確認です。',
+  ])('does not mark an unassessed evidence section green: %s', (body) => {
+    expect(sectionSeverity(body, 'Security Posture')).toBe('info');
+  });
   it('keeps explicit information neutral rather than displaying an assessed pass', () => {
     expect(sectionSeverity('[Info]\nNo active invariants. No assessment was performed.', 'Intended vs Actual')).toBe('info');
     expect(sectionSeverity('[Info] note\n[Warning] failed invariant')).toBe('warning');

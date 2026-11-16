@@ -328,7 +328,12 @@ def _read_response(response, *, budget, read_timeout):
             remaining = budget.remaining()
             if remaining <= 0:
                 raise BudgetExceeded("model response deadline exhausted")
-            if hasattr(stream, "set_socket_timeout"):
+            # urllib3 releases the HTTP socket when the last body bytes are read.
+            # Still read EOF through StreamingBody to verify Content-Length, but
+            # do not ask botocore to reach into that already-closed socket.
+            raw_stream = getattr(stream, "_raw_stream", None)
+            socket_closed = getattr(raw_stream, "closed", False) is True
+            if hasattr(stream, "set_socket_timeout") and not socket_closed:
                 stream.set_socket_timeout(min(read_timeout, remaining))
             chunk = stream.read(min(4096, MAX_RESPONSE_BYTES + 1 - total))
             if budget.remaining() <= 0:

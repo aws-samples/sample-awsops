@@ -7,6 +7,21 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '6-pillar 분석': { en: 'Six-pillar analysis', zh: '六大支柱分析', ja: '6つの柱の分析' },
+  '운영 우수성': { en: 'Operational excellence', zh: '卓越运营', ja: '運用上の優秀性' },
+  '보안': { en: 'Security', zh: '安全性', ja: 'セキュリティ' },
+  '안정성': { en: 'Reliability', zh: '可靠性', ja: '信頼性' },
+  '비용 최적화': { en: 'Cost optimization', zh: '成本优化', ja: 'コスト最適化' },
+  '성능 효율성': { en: 'Performance efficiency', zh: '性能效率', ja: 'パフォーマンス効率' },
+  '지속 가능성': { en: 'Sustainability', zh: '可持续性', ja: '持続可能性' },
+  '분석 완료': { en: 'Analysis completed', zh: '分析完成', ja: '分析完了' },
+  '일부 분석': { en: 'Partial analysis', zh: '部分分析', ja: '一部分析' },
+  '분석 실패': { en: 'Analysis failed', zh: '分析失败', ja: '分析失敗' },
+  '기록 없음': { en: 'Not recorded', zh: '无记录', ja: '記録なし' },
+  '발견 항목': { en: 'Findings', zh: '发现项', ja: '検出項目' },
+  '보류 항목': { en: 'Withheld findings', zh: '保留项', ja: '保留項目' },
+  '분석 완료는 리소스가 정상임을 뜻하지 않습니다.': { en: 'Completed analysis does not mean the resources are healthy.', zh: '分析完成并不代表资源正常。', ja: '分析の完了はリソースの正常性を意味しません。' },
+  '모든 pillar 분석이 실패했습니다. 이 보고서는 정상 여부를 평가한 결과가 아닙니다.': { en: 'All pillar analyses failed. This report does not establish resource health.', zh: '所有支柱分析均失败。此报告无法确定资源健康状况。', ja: 'すべての柱の分析が失敗しました。このレポートでは正常性を評価できません。' },
   '진단 티어': { en: 'Diagnosis tier', zh: '诊断级别', ja: '診断ティア' },
   '최근 완료 섹션:': { en: 'Last completed section:', zh: '最近完成的部分：', ja: '直近に完了したセクション：' },
   '수집된 그래프': { en: 'Collected graph', zh: '已收集的图', ja: '収集済みグラフ' },

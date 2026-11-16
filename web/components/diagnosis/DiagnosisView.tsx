@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useCallback, type CSSProperties } from 're
 import SchedulePanel from './SchedulePanel';
 import SubscribersPanel from './SubscribersPanel';
 import ReportSections from './ReportSections';
+import PillarCoverage from './PillarCoverage';
 import IntentPanel from './IntentPanel';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
@@ -537,6 +538,7 @@ export default function DiagnosisView() {
                   </div>
                 );
               })()}
+              <PillarCoverage value={view.summary?.pillar_coverage} />
               <ReportInsights summary={view.summary ?? {}} />
               <ReportSections markdown={view.markdown} />
             </>
