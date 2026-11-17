@@ -141,10 +141,16 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
         : hits.length ? miss('owner_ambiguous', eniId) : absent(eniId, 'alb', 'nlb');
     }
     if (type === 'lambda' || desc.startsWith(LAMBDA_PREFIX)) {
+      // Current Hyperplane ENIs read `AWS Lambda VPC ENI-<function>`; older ones append a UUID.
+      // A UUID tail is read both ways (UUID-stripped and whole), matching only exact function
+      // names; when both readings name a synced function the description cannot tell them apart.
       const rest = desc.startsWith(LAMBDA_PREFIX) ? desc.slice(LAMBDA_PREFIX.length) : '';
-      const name = UUID_SUFFIX.test(rest) ? rest.replace(UUID_SUFFIX, '') : '';
-      const row = name ? lambda.get(key(name)) : undefined;
-      return row ? owner('lambda', row, eniId, 'inferred') : name ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
+      const names = UUID_SUFFIX.test(rest) ? [rest.replace(UUID_SUFFIX, ''), rest] : [rest];
+      const hits = names.flatMap(n => { const r = n ? lambda.get(key(n)) : undefined; return r ? [r] : []; });
+      if (hits.length > 1) return miss('owner_ambiguous', eniId);
+      // With two readings, one hit is unambiguous only if the read proves the other is absent.
+      if (names.length > 1 && hits.length === 1 && gap('lambda')) return miss('owner_inventory_incomplete', eniId);
+      return hits.length ? owner('lambda', hits[0], eniId, 'inferred') : rest ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
     }
     // RDS ENIs carry no DB name: attribute only when one DB (or one cluster's members) sits in
     // this VPC/AZ, and never when an RDS Proxy shares the ENI's subnet (same ENI signature).

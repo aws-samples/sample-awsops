@@ -58,6 +58,32 @@ describe('eniOwnerResolver', () => {
       kind: 'lambda', resourceId: 'orders-api-handler', confidence: 'inferred' }) });
   });
 
+  it('matches the current bare Lambda ENI description (function name, no UUID suffix)', () => {
+    const fn = { resource_id: 'awsops-dev-inv-sync', region: R };
+    const bare = (name: string) => ({ lambda: [fn], eni: [eni('eni-b', '10.0.1.7', {
+      interface_type: 'lambda', description: `AWS Lambda VPC ENI-${name}` })] });
+    expect(resolve(bare('awsops-dev-inv-sync'), '10.0.1.7')).toEqual({ owner: expect.objectContaining({
+      kind: 'lambda', resourceId: 'awsops-dev-inv-sync', confidence: 'inferred', eniId: 'eni-b' }) });
+    // A named function missing from a complete Lambda read is "not synced", not "unknown".
+    expect(resolve(bare('deleted-fn'), '10.0.1.7')).toEqual({ reason: 'owner_not_synced', eniId: 'eni-b' });
+    expect(eniOwnerResolver(bare('deleted-fn'), new Set(['lambda'])).resolve(R, VPC, '10.0.1.7'))
+      .toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-b' });
+  });
+
+  it('keeps a UUID-looking tail when the full description names a synced function', () => {
+    const name = 'job-0b5a7a0c-1f9b-4c3e-9a51-6c0a1d2e3f40';
+    const input = { lambda: [{ resource_id: name, region: R }], eni: [eni('eni-u', '10.0.1.8', {
+      interface_type: 'lambda', description: `AWS Lambda VPC ENI-${name}` })] };
+    expect(resolve(input, '10.0.1.8')).toEqual({ owner: expect.objectContaining({ kind: 'lambda', resourceId: name }) });
+    // Both readings synced (legacy ENI of `job` vs current ENI of `job-<uuid>`): ambiguous.
+    const both = { ...input, lambda: [...input.lambda, { resource_id: 'job', region: R }] };
+    expect(resolve(both, '10.0.1.8')).toEqual({ reason: 'owner_ambiguous', eniId: 'eni-u' });
+    // An incomplete Lambda read cannot rule out the other reading, whichever one it holds.
+    const partial = (resource_id: string) => eniOwnerResolver({ ...input, lambda: [{ resource_id, region: R }] },
+      new Set(['lambda'])).resolve(R, VPC, '10.0.1.8');
+    for (const id of ['job', name]) expect(partial(id)).toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-u' });
+  });
+
   it('resolves VPC endpoint and NAT ENIs by the id in their description', () => {
     const input = {
       vpc_endpoint: [{ resource_id: 'vpce-0123456789abcdef0', region: R }],
