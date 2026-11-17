@@ -141,10 +141,12 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
         : hits.length ? miss('owner_ambiguous', eniId) : absent(eniId, 'alb', 'nlb');
     }
     if (type === 'lambda' || desc.startsWith(LAMBDA_PREFIX)) {
+      // Current Hyperplane ENIs read `AWS Lambda VPC ENI-<function>`; older ones append a UUID.
+      // Try the UUID-stripped name first, then the whole tail, matching only exact function names.
       const rest = desc.startsWith(LAMBDA_PREFIX) ? desc.slice(LAMBDA_PREFIX.length) : '';
-      const name = UUID_SUFFIX.test(rest) ? rest.replace(UUID_SUFFIX, '') : '';
-      const row = name ? lambda.get(key(name)) : undefined;
-      return row ? owner('lambda', row, eniId, 'inferred') : name ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
+      const names = UUID_SUFFIX.test(rest) ? [rest.replace(UUID_SUFFIX, ''), rest] : [rest];
+      const row = names.map(n => n ? lambda.get(key(n)) : undefined).find(Boolean);
+      return row ? owner('lambda', row, eniId, 'inferred') : rest ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
     }
     // RDS ENIs carry no DB name: attribute only when one DB (or one cluster's members) sits in
     // this VPC/AZ, and never when an RDS Proxy shares the ENI's subnet (same ENI signature).
