@@ -355,6 +355,17 @@ terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that pl
 Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
 anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
+
+For dev Agent Lambda cross-account reads, the optional repository secret
+`AGENT_EXTERNAL_ID_DEV` supplies `TF_VAR_agent_external_id` only to the Terraform
+plan step. Explicit `agent_external_id` in the stack's tfvars takes precedence,
+including an explicit empty value. Saved-plan apply uses the already reviewed
+value; this input is not exposed to build or publisher steps. When the existing
+Lambdas already carry `AWSOPS_EXTERNAL_ID`, configure that same established value
+before an unrelated release and verify that the plan preserves it. The input
+creates no role, trust policy or additional permission; an unset value retains
+the variable's empty default and can otherwise plan removal of unmanaged values.
+
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` in Terraform's
@@ -428,7 +439,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `AWS_ACCOUNT_ID_DEV` (12-digit development/preview account; also required by the web helper on main for account exclusion) / `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` / repository secret `AWS_ACCOUNT_ID_DEV` (12-digit dev-account exclusion check; required even on main) |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / optional `AGENT_EXTERNAL_ID_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash

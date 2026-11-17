@@ -328,6 +328,7 @@ jobs:
           # is deliberately one shared credential across stacks; admin users are per-stack
           # and NOT created by CI (create_admin_user defaults to false).
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+          TF_VAR_agent_external_id: ${{ env.TARGET == 'dev' && secrets.AGENT_EXTERNAL_ID_DEV || '' }}
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
           CI_ASSETS_READY: "true"

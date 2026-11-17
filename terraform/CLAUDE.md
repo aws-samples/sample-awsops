@@ -62,6 +62,10 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
 - Optional secret `CI_PRIVATELINK_ADDITIONS_DEV` adds new `privatelink_endpoints` labels only in full dev
   plans through the ignored `ci-privatelink.auto.tfvars.json` (tracked copies refused); empty preserves
   tfvars. Apply replays the saved plan and the DNS guard still applies.
+- Optional secret `AGENT_EXTERNAL_ID_DEV` supplies `TF_VAR_agent_external_id` only to the dev Terraform
+  plan step. Explicit tfvars retain precedence; apply replays the saved value. Before adopting existing
+  Agent Lambda ExternalIds, configure the same value and verify that an unrelated release does not remove
+  or rotate it. This input creates no role, trust policy or additional permission.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
   provisioner's `DEPLOYMENT_READINESS_ENABLED`. Dedicated `CI_READINESS_ENABLED_DEV=true/false`
   overrides it on dev; empty/unset preserves explicit tfvars and the default false. Public CI
