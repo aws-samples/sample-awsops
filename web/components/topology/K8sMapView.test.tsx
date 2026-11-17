@@ -71,3 +71,12 @@ describe('K8sMapView partial empty listing', () => {
     expect(screen.queryByText(/연결된 EKS 클러스터가 없습니다/)).toBeNull();
   });
 });
+
+describe('K8sMapView unparseable listing', () => {
+  it('reports an OK but non-JSON listing as a failure, not as no clusters', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>login</html>', { status: 200 })));
+    render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
+    expect(await screen.findByText(/조회 실패/)).toBeTruthy();
+    expect(screen.queryByText(/연결된 EKS 클러스터가 없습니다/)).toBeNull();
+  });
+});

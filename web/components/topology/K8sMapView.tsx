@@ -42,9 +42,11 @@ export default function K8sMapView({ query }: { query: string }) {
     // name, so a name shared by two accounts can never render the other cluster's data.
     fetch(`/api/eks?${scopeQuery}`)
       .then(async (r) => {
+        // An OK response must parse: an unparseable body (e.g. a login page after session expiry)
+        // is a failed listing, never an empty complete one. Error bodies are best-effort only.
+        if (r.ok) return r.json();
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(String(d?.message ?? r.status));
-        return d;
+        throw new Error(String(d?.message ?? r.status));
       })
       .then((d: { clusters?: { id?: string; name: string; access?: string }[]; errors?: unknown[]; truncated?: boolean }) => {
         if (!live) return;
