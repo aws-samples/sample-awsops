@@ -73,6 +73,7 @@ _PILLARS = {
     "cost_optimization": ("Cost Optimization", "コスト最適化", "成本优化", "비용 최적화"),
     "sustainability": ("Sustainability", "持続可能性", "可持续性", "지속 가능성"),
 }
+_PILLARS_BY_INDEX = _PILLARS
 _SECTION_PILLARS = {
     "security_posture": {"security"}, "identity_access": {"security"},
     "data_protection": {"security"}, "network_exposure": {"security"},
@@ -89,6 +90,16 @@ _SECTION_PILLARS = {
 # Deep-only sections dedicated to one pillar outrank the shared sections that precede them.
 _DEDICATED = {"reliability": "reliability_ha", "cost_optimization": "cost_optimization"}
 _SEVERITY = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+_LANG_INDEX = {"en": 0, "ja": 1, "zh": 2, "ko": 3}
+# Code-owned display labels; unknown values fall back to a literal cell.
+_SEVERITY_LABEL = {
+    "critical": ("Critical", "重大", "严重", "심각"), "high": ("High", "高", "高", "높음"),
+    "medium": ("Medium", "中", "中", "중간"), "low": ("Low", "低", "低", "낮음"),
+    "info": ("Info", "情報", "信息", "정보"),
+}
+# Scope labels: (complete, partial, stale, more regions)
+_SCOPE = {"en": ("complete", "partial", "stale", "more"), "ko": ("전체 수집", "부분 수집", "오래된 데이터", "개 더"),
+          "zh": ("完整", "部分", "已过期", "个更多"), "ja": ("完全", "一部", "古いデータ", "件以上")}
 # Templates are instructions for the operator, never executed and never model supplied.
 _VERIFY = {
     "resource_metrics": "aws cloudwatch get-metric-data --region <evidence-region> "
@@ -190,7 +201,18 @@ def _safe_explanation(value):
     # defensively even though EvidenceIndex already rejects these before presentation.
     if not isinstance(value, str) or _NUMBER.search(value) or _commandlike(value):
         return ""
-    return _cell(value, 600)
+    return _prose(value, 600)
+
+
+# Characters that could start Markdown/HTML markup, an entity, an autolink or a code-owned marker.
+_MARKUP = re.compile(r"[\\`*_{}\[\]<>#|~&@=]|www\.|://|^\s*[-+>!]")
+
+
+def _prose(value, limit):
+    """Readable plain text for vetted model sentences; anything markup-capable stays a literal."""
+    text = " ".join(_clip(value, limit).split())
+    text = "".join(char if char.isprintable() else " " for char in text)
+    return _cell(value, limit) if not text or _MARKUP.search(text) or _TRUNCATED in text else text
 
 
 def _facts(value, prefix="", depth=0):
@@ -198,6 +220,49 @@ def _facts(value, prefix="", depth=0):
         return [row for key, item in sorted(value.items())
                 for row in _facts(item, f"{prefix}.{key}" if prefix else str(key), depth + 1)]
     return [(prefix, value)]
+
+
+def _label(table, value, lang):
+    names = table.get(value) if isinstance(value, str) else None
+    return names[_LANG_INDEX.get(lang, 3)] if names else _cell(value)
+
+
+def _scope_text(record, lang):
+    """One readable line (regions · capture time · window · coverage) instead of a JSON dict."""
+    labels = _SCOPE.get(lang, _SCOPE["ko"])
+    kind = record.get("kind")
+    parts = [kind] if isinstance(kind, str) and kind else []
+    region = record.get("region")
+    regions = [r for r in record.get("regions") or [] if isinstance(r, str) and r]
+    if isinstance(region, str) and region and region not in regions:
+        regions.insert(0, region)
+    if regions:
+        parts.append(", ".join(regions[:3]) + (f" +{len(regions) - 3}{labels[3]}" if len(regions) > 3 else ""))
+    captured = record.get("captured_at")
+    if isinstance(captured, str) and captured:
+        parts.append(captured[:16].replace("T", " ") + " UTC")
+    window = record.get("window")
+    if isinstance(window, dict) and window:
+        if isinstance(window.get("start"), str) and isinstance(window.get("end"), str):
+            parts.append(f"{window['start'][:16].replace('T', ' ')} ~ {window['end'][:16].replace('T', ' ')}")
+        else:
+            parts.append(", ".join(f"{k}={v}" for k, v in sorted(window.items())
+                                   if isinstance(v, (str, int, float)) and not isinstance(v, bool)))
+    coverage = record.get("coverage")
+    if isinstance(coverage, dict) and isinstance(coverage.get("complete"), bool):
+        parts.append(labels[0] if coverage["complete"] else labels[1])
+    if record.get("fresh") is False:
+        parts.append(labels[2])
+    return " · ".join(p for p in parts if p)
+
+
+def _flat(value):
+    """Readable `key=value` list for nested diagnostics; leaves keep compact JSON."""
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={v if isinstance(v, str) else _json(v)}" for k, v in _facts(value))
+    if isinstance(value, list):
+        return ", ".join(dict.fromkeys(v if isinstance(v, str) else _json(v) for v in value))
+    return value
 
 
 def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
@@ -208,7 +273,8 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
     target_ids = finding.get("resource_ids", [])
     targets = [resources[rid] for rid in target_ids if rid in resources]
     output = [f"**{copy[0]} {_code(finding.get('id', ''))} — {_cell(label)}**",
-              f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}",
+              f"{_label(_PILLARS_BY_INDEX, finding.get('pillar'), lang)} · "
+              f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}",
               ", ".join(_code(r["resource_id"]) for r in targets), ""]
     explanation = _safe_explanation(finding.get("explanation"))
     withheld_note = _WITHHELD.get(lang, _WITHHELD["ko"])
@@ -222,17 +288,15 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
         output += [f"| {copy[1]} | {copy[2]} | {copy[3]} |",
                    "| --- | --- | --- |"]
     for record in refs:
-        scope = {"account": record.get("account"), "region": record.get("region"),
-                 "regions": record.get("regions"),
-                 "captured_at": record.get("captured_at"), "window": record.get("window"),
-                 "coverage": record.get("coverage"), "fresh": record.get("fresh"),
-                 "kind": record.get("kind"), "resource_ids": record.get("resource_ids")}
+        scope = _scope_text(record, lang)
         rows = _facts(record.get("facts", {})) or [("unknown", None)]
         if len(rows) > 40:
             rows = rows[:40] + [(_TRUNCATED, f"{len(rows) - 40} rows omitted")]
-        for field, value in rows:
-            output.append(f"| {_code(record['id'])} / {_cell(record.get('source', ''))} "
-                          f"| {_cell(scope)} | {_cell(field)} = {_cell(_scrubbed(value, field.rsplit('.', 1)[-1]))} |")
+        for index, (field, value) in enumerate(rows):
+            # Source and scope print once per evidence record, not once per fact.
+            head = (f"{_code(record['id'])} / {_cell(record.get('source', ''))} | "
+                    f"{_cell(_scrubbed(scope)) if scope else ''}") if index == 0 else " | "
+            output.append(f"| {head} | {_cell(field)} = {_cell(_scrubbed(value, field.rsplit('.', 1)[-1]))} |")
     prerequisites = finding.get("prerequisites", [])
     prerequisites = [p if isinstance(p, str) else _json(p) for p in
                      (prerequisites if isinstance(prerequisites, list) else [prerequisites])]
@@ -268,23 +332,33 @@ def withheld(analysis):
     return result
 
 
-def _coverage(bundle, analysis, copy):
+def _coverage(bundle, analysis, copy, lang="ko"):
     diagnostics = {"coverage": bundle.get("coverage", {}), "gaps": bundle.get("gaps", []),
                    "degraded": list(bundle.get("degraded", [])) + list(analysis.get("degraded", [])),
                    "incomplete": list(bundle.get("incomplete", [])) + list(analysis.get("incomplete", [])),
-                   "pillar_coverage": analysis.get("pillar_coverage", {}),
-                   "withheld": withheld(analysis)}
+                   "withheld": [f"{w['id']} ({w['reason']})" for w in withheld(analysis)]}
     rows = [f"**{copy[10]}**", "", "| Field | Value |", "| --- | --- |"]
     # Empty values are omitted: the UI reads a literal "degraded" anywhere as a warning, so the
     # row only appears when something actually degraded.
-    rows.extend(f"| {_cell(k)} | {_cell(_scrubbed(v), 2500)} |" for k, v in diagnostics.items()
+    rows.extend(f"| {_cell(k)} | {_cell(_flat(_scrubbed(v)), 2500)} |" for k, v in diagnostics.items()
                 if v not in ([], {}, None))
+    pillars = analysis.get("pillar_coverage")
+    if isinstance(pillars, dict) and pillars:
+        rows += ["", "| Pillar | Status | Findings | Rejected | Downgraded |",
+                 "| --- | --- | --- | --- | --- |"]
+        for pillar, row in sorted(pillars.items(), key=lambda kv: str(kv[0])):
+            row = row if isinstance(row, dict) else {}
+            rows.append(f"| {_label(_PILLARS_BY_INDEX, pillar, lang)} | {_cell(_scrubbed(row.get('status', '')))} | "
+                        + " | ".join(_cell(row.get(k, '')) for k in ("findings", "rejected", "downgraded")) + " |")
     return "\n".join(rows)
 
 
-def _reference(finding, copy):
-    return (f"- {copy[0]} {_code(finding.get('id', ''))} — "
-            f"{_cell(finding.get('pillar', ''))} / {_cell(finding.get('severity', ''))}")
+def _reference(finding, copy, lang="ko"):
+    explanation = _safe_explanation(finding.get("explanation"))
+    return (f"- **{_label(_PILLARS_BY_INDEX, finding.get('pillar'), lang)} · "
+            f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}** — "
+            + (f"{explanation} " if explanation else "")
+            + f"({copy[0]} {_code(finding.get('id', ''))})")
 
 
 def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
@@ -322,14 +396,14 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
                 parts.append(_finding_body(f, evidence, resources, copy, lang=lang))
             elif (key in {"executive_summary", "recommendations"} and id(f) in top
                     or f.get("pillar") in _SECTION_PILLARS.get(key, ())):
-                parts.append(_reference(f, copy))
+                parts.append(_reference(f, copy, lang))
                 capability = f.get("verification")
                 if key == "recommendations" and capability in _VERIFY:
                     parts.append(f"**{copy[9]}:** `{_VERIFY[capability]}`")
         output[key] = "\n\n".join(parts) or copy[7]
         if key == summary:
             # Missing discovery/sizing prerequisites are stated once, not per section.
-            output[key] += "\n\n" + _coverage(bundle, analysis, copy)
+            output[key] += "\n\n" + _coverage(bundle, analysis, copy, lang)
     bodies = {key: _swept(output[key], lang) for key in keys}
     # Trim the largest sections first; the deterministic intended-vs-actual verdicts go last.
     for key in sorted(keys, key=lambda k: (k == "intended_vs_actual", -len(bodies[k].encode()))):
