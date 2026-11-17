@@ -148,6 +148,8 @@ export function eniOwnerResolver(input: EniOwnerInput, incomplete: IncompleteTyp
       const names = UUID_SUFFIX.test(rest) ? [rest.replace(UUID_SUFFIX, ''), rest] : [rest];
       const hits = names.flatMap(n => { const r = n ? lambda.get(key(n)) : undefined; return r ? [r] : []; });
       if (hits.length > 1) return miss('owner_ambiguous', eniId);
+      // With two readings, one hit is unambiguous only if the read proves the other is absent.
+      if (names.length > 1 && hits.length === 1 && gap('lambda')) return miss('owner_inventory_incomplete', eniId);
       return hits.length ? owner('lambda', hits[0], eniId, 'inferred') : rest ? absent(eniId, 'lambda') : miss('owner_unknown', eniId);
     }
     // RDS ENIs carry no DB name: attribute only when one DB (or one cluster's members) sits in

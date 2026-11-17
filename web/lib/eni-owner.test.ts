@@ -78,6 +78,10 @@ describe('eniOwnerResolver', () => {
     // Both readings synced (legacy ENI of `job` vs current ENI of `job-<uuid>`): ambiguous.
     const both = { ...input, lambda: [...input.lambda, { resource_id: 'job', region: R }] };
     expect(resolve(both, '10.0.1.8')).toEqual({ reason: 'owner_ambiguous', eniId: 'eni-u' });
+    // An incomplete Lambda read cannot rule out the other reading, whichever one it holds.
+    const partial = (resource_id: string) => eniOwnerResolver({ ...input, lambda: [{ resource_id, region: R }] },
+      new Set(['lambda'])).resolve(R, VPC, '10.0.1.8');
+    for (const id of ['job', name]) expect(partial(id)).toEqual({ reason: 'owner_inventory_incomplete', eniId: 'eni-u' });
   });
 
   it('resolves VPC endpoint and NAT ENIs by the id in their description', () => {
