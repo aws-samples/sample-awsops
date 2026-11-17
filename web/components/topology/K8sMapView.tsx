@@ -17,7 +17,7 @@ export default function K8sMapView({ query }: { query: string }) {
   // Only 'dark' is a dark theme (cobalt/teal are light variants) — same mapping as /topology.
   const theme = useTheme() === 'dark' ? 'dark' as const : 'light' as const;
   const { tt } = useI18n();
-  const [clusters, setClusters] = useState<string[] | null>(null);
+  const [clusters, setClusters] = useState<{ id: string; label: string }[] | null>(null);
   const [cluster, setCluster] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -29,17 +29,20 @@ export default function K8sMapView({ query }: { query: string }) {
     setCluster('');
     setData(null);
     setErr('');
-    // The in-cluster data path (clusterConn/access/authModes) is host-only and keyed by cluster
-    // name — listing member-account clusters here would either show them un-connectable or, on a
-    // name collision, render the WRONG cluster's data. Pin host scope like /eks/explorer does.
-    fetch('/api/eks?account=self')
+    // Every registered account. Member clusters are keyed by their full EKS ARN (`id`), which the
+    // in-cluster route resolves to the member read role — never by bare name, so a name shared by
+    // two accounts can never render the other cluster's data.
+    fetch('/api/eks?accounts=__all__&regions=__all__&includeGlobal=1')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d: { clusters?: { name: string; access?: string }[] }) => {
+      .then((d: { clusters?: { id?: string; name: string; accountId?: string; access?: string }[] }) => {
         if (!live) return;
         // Only 'connected' clusters are readable in-cluster — others would 502 on first fetch.
-        const names = (d.clusters ?? []).filter((c) => c.access === 'connected').map((c) => c.name);
-        setClusters(names);
-        if (names.length > 0) setCluster((cur) => cur || names[0]);
+        const rows = (d.clusters ?? []).filter((c) => c.access === 'connected').map((c) => {
+          const id = c.id || c.name;
+          return { id, label: id === c.name ? c.name : `${c.name} · ${c.accountId ?? ''}` };
+        });
+        setClusters(rows);
+        if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
       })
       .catch((e) => { if (live) { setClusters([]); setErr(String(e instanceof Error ? e.message : e)); } });
     return () => { live = false; };
@@ -93,7 +96,7 @@ export default function K8sMapView({ query }: { query: string }) {
           onChange={(e) => setCluster(e.target.value)}
           className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]"
         >
-          {(clusters ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
+          {(clusters ?? []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
         </select>
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
