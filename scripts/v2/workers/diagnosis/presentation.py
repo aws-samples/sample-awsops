@@ -73,7 +73,6 @@ _PILLARS = {
     "cost_optimization": ("Cost Optimization", "コスト最適化", "成本优化", "비용 최적화"),
     "sustainability": ("Sustainability", "持続可能性", "可持续性", "지속 가능성"),
 }
-_PILLARS_BY_INDEX = _PILLARS
 _SECTION_PILLARS = {
     "security_posture": {"security"}, "identity_access": {"security"},
     "data_protection": {"security"}, "network_exposure": {"security"},
@@ -98,8 +97,8 @@ _SEVERITY_LABEL = {
     "info": ("Info", "情報", "信息", "정보"),
 }
 # Scope labels: (complete, partial, stale, more regions)
-_SCOPE = {"en": ("complete", "partial", "stale", "more"), "ko": ("전체 수집", "부분 수집", "오래된 데이터", "개 더"),
-          "zh": ("完整", "部分", "已过期", "个更多"), "ja": ("完全", "一部", "古いデータ", "件以上")}
+_SCOPE = {"en": ("complete", "partial", "stale", " more"), "ko": ("전체 수집", "부분 수집", "오래된 데이터", "개 더"),
+          "zh": ("完整", "部分", "已过期", " 个更多"), "ja": ("完全", "一部", "古いデータ", "件以上")}
 # Templates are instructions for the operator, never executed and never model supplied.
 _VERIFY = {
     "resource_metrics": "aws cloudwatch get-metric-data --region <evidence-region> "
@@ -249,17 +248,33 @@ def _scope_text(record, lang):
             parts.append(", ".join(f"{k}={v}" for k, v in sorted(window.items())
                                    if isinstance(v, (str, int, float)) and not isinstance(v, bool)))
     coverage = record.get("coverage")
-    if isinstance(coverage, dict) and isinstance(coverage.get("complete"), bool):
-        parts.append(labels[0] if coverage["complete"] else labels[1])
+    if isinstance(coverage, dict):
+        complete = coverage.get("complete")
+        ratio = coverage.get("sample_ratio")
+        # A sampled record is never shown as complete, even when the producer marked it so.
+        sampled = isinstance(ratio, (int, float)) and not isinstance(ratio, bool) and ratio < 1
+        if isinstance(complete, bool):
+            parts.append(labels[0] if complete and not sampled else labels[1])
+        # Every other qualifier (sample ratio, lookback, counts, storage scope) stays visible.
+        rest = {k: v for k, v in coverage.items() if k != "complete"}
+        if rest:
+            parts.append(_flat(rest))
     if record.get("fresh") is False:
         parts.append(labels[2])
+    account = record.get("account")
+    if isinstance(account, str) and account:
+        parts.append(f"account={account}")
+    ids = [r for r in record.get("resource_ids") or [] if isinstance(r, str)]
+    if ids:
+        parts.append("resources=" + ", ".join(ids[:3]) + (f" +{len(ids) - 3}{labels[3]}" if len(ids) > 3 else ""))
     return " · ".join(p for p in parts if p)
 
 
 def _flat(value):
     """Readable `key=value` list for nested diagnostics; leaves keep compact JSON."""
     if isinstance(value, dict):
-        return ", ".join(f"{k}={v if isinstance(v, str) else _json(v)}" for k, v in _facts(value))
+        rows = _facts(value)
+        return ", ".join(f"{k}={v if isinstance(v, str) else _json(v)}" for k, v in rows) if rows else _json(value)
     if isinstance(value, list):
         return ", ".join(dict.fromkeys(v if isinstance(v, str) else _json(v) for v in value))
     return value
@@ -273,7 +288,7 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
     target_ids = finding.get("resource_ids", [])
     targets = [resources[rid] for rid in target_ids if rid in resources]
     output = [f"**{copy[0]} {_code(finding.get('id', ''))} — {_cell(label)}**",
-              f"{_label(_PILLARS_BY_INDEX, finding.get('pillar'), lang)} · "
+              f"{_label(_PILLARS, finding.get('pillar'), lang)} · "
               f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}",
               ", ".join(_code(r["resource_id"]) for r in targets), ""]
     explanation = _safe_explanation(finding.get("explanation"))
@@ -344,18 +359,21 @@ def _coverage(bundle, analysis, copy, lang="ko"):
                 if v not in ([], {}, None))
     pillars = analysis.get("pillar_coverage")
     if isinstance(pillars, dict) and pillars:
-        rows += ["", "| Pillar | Status | Findings | Rejected | Downgraded |",
-                 "| --- | --- | --- | --- | --- |"]
+        fixed = ("status", "findings", "rejected", "downgraded")
+        rows += ["", "| Pillar | Status | Findings | Rejected | Downgraded | Other |",
+                 "| --- | --- | --- | --- | --- | --- |"]
         for pillar, row in sorted(pillars.items(), key=lambda kv: str(kv[0])):
             row = row if isinstance(row, dict) else {}
-            rows.append(f"| {_label(_PILLARS_BY_INDEX, pillar, lang)} | {_cell(_scrubbed(row.get('status', '')))} | "
-                        + " | ".join(_cell(row.get(k, '')) for k in ("findings", "rejected", "downgraded")) + " |")
+            other = {k: v for k, v in row.items() if k not in fixed}
+            cells = [_cell(_scrubbed(row[k])) if k in row else "—" for k in fixed]
+            rows.append(f"| {_label(_PILLARS, pillar, lang)} | " + " | ".join(cells)
+                        + f" | {_cell(_flat(_scrubbed(other))) if other else '—'} |")
     return "\n".join(rows)
 
 
 def _reference(finding, copy, lang="ko"):
     explanation = _safe_explanation(finding.get("explanation"))
-    return (f"- **{_label(_PILLARS_BY_INDEX, finding.get('pillar'), lang)} · "
+    return (f"- **{_label(_PILLARS, finding.get('pillar'), lang)} · "
             f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}** — "
             + (f"{explanation} " if explanation else "")
             + f"({copy[0]} {_code(finding.get('id', ''))})")
@@ -444,6 +462,6 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
     if len(findings) > 1:
         title += more.get(lang, more["ko"]).format(n=len(findings) - 1)
     if targets:
-        title += " (" + _scrub_text(str(targets[0]), "")[:100] + ")"
+        title = title[:96] + " (" + _scrub_text(str(targets[0]), "")[:100] + ")"
     return {"title": title[:200],
             "tags": list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))[:6]}

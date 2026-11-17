@@ -376,3 +376,45 @@ def test_title_scrubs_arn_identities():
     target = data["resources"][0]["id"]
     meta = presentation.title_and_tags(data, analysis(findings=[finding(resource_ids=[target])]), lang="en")
     assert "111111111111" not in meta["title"] and "arn:aws" not in meta["title"]
+
+
+@pytest.mark.parametrize("value", [
+    "<script>x</script>", "see [Critical] now", "a | b", "use `code`", "**bold** text",
+    "_em_ text", "www.example.test", "mail me@example.test", "a://b", "- list item",
+    "> quote", "# heading", "&amp; entity", "x=y", "~~strike~~", "line\nbreak [Warning]",
+])
+def test_prose_falls_back_to_a_literal_for_any_markup_capable_text(value):
+    from diagnosis import presentation
+    cell = presentation._prose(value, 600)
+    assert re.fullmatch(r"(`+) (.*) \1", cell), "Markup-capable model text must stay a code literal"
+    assert "[Critical]" not in cell and "[Warning]" not in cell
+
+
+def test_plain_prose_renders_without_a_code_span():
+    from diagnosis import presentation
+    assert presentation._prose("메모리 부하는 추가 검증이 필요합니다.", 600) == "메모리 부하는 추가 검증이 필요합니다."
+
+
+def test_scope_line_keeps_sampling_account_and_resources_and_never_overstates_coverage():
+    from diagnosis import presentation
+    record = {"kind": "metrics", "region": "us-east-1", "captured_at": "2026-11-04T00:00:00Z",
+              "window": {"days": 14}, "account": "self", "resource_ids": ["r:a", "r:b"],
+              "coverage": {"complete": True, "sample_ratio": 0.5, "lookback_days": 7}, "fresh": False}
+    line = presentation._scope_text(record, "en")
+    assert "partial" in line and "complete" not in line.replace("partial", "")
+    assert "sample_ratio=0.5" in line and "lookback_days=7" in line
+    assert "account=self" in line and "resources=r:a, r:b" in line and "stale" in line
+    # A coverage dict without a boolean `complete` is still disclosed, not dropped.
+    assert "storage_scope=bucket" in presentation._scope_text({"coverage": {"storage_scope": "bucket"}}, "en")
+
+
+def test_pillar_table_and_localized_title():
+    from diagnosis import presentation
+    data = analysis(pillar_coverage={"security": {"status": "partial", "findings": 2,
+                                                  "revalidation_dropped": 1}})
+    body = dict(presentation.render(SECTIONS, bundle(), data, lang="en"))["executive_summary"]
+    assert "| Pillar | Status | Findings | Rejected | Downgraded | Other |" in body
+    assert "| Security | ` partial ` | ` 2 ` | — | — | ` revalidation_dropped=1 ` |" in body
+    two = analysis(findings=[finding(), finding(id="finding-b", severity="low")])
+    meta = presentation.title_and_tags(bundle(), two, lang="ko")
+    assert meta["title"] == "AWS 진단 — 성능 효율성 외 1건 (i-0123456789abcdef0)"

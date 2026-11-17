@@ -9,6 +9,8 @@ import type { IngressRow, ServiceRow, EndpointRow } from '@/lib/eks-incluster';
 import type { PodRow, NodeRow } from '@/lib/eks-resources';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useTheme } from '@/lib/use-theme';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { eksClusterLabel } from '@/lib/eks-cluster-id';
 
 const COLUMNS = [{ title: 'Ingress' }, { title: 'Service' }, { title: 'Pod' }, { title: 'Node' }];
 const KINDS = ['ingresses', 'services', 'pods', 'nodes', 'endpoints'] as const;
@@ -20,33 +22,46 @@ export default function K8sMapView({ query }: { query: string }) {
   const [clusters, setClusters] = useState<{ id: string; label: string }[] | null>(null);
   const [cluster, setCluster] = useState('');
   const [err, setErr] = useState('');
+  const [listNote, setListNote] = useState('');
+  const [scope, , scopeReady] = useActiveScope();
+  const scopeQuery = scopeParams(scope);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<{ ingresses: IngressRow[]; services: ServiceRow[]; pods: PodRow[]; nodes: NodeRow[]; endpoints: EndpointRow[] } | null>(null);
 
   useEffect(() => {
+    if (!scopeReady) return;
     let live = true;
     setClusters(null);
     setCluster('');
     setData(null);
     setErr('');
-    // Every registered account. Member clusters are keyed by their full EKS ARN (`id`), which the
-    // in-cluster route resolves to the member read role — never by bare name, so a name shared by
-    // two accounts can never render the other cluster's data.
-    fetch('/api/eks?accounts=__all__&regions=__all__&includeGlobal=1')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d: { clusters?: { id?: string; name: string; accountId?: string; access?: string }[] }) => {
+    setListNote('');
+    // Follows the shared account/region selector like /eks. Member clusters are keyed by their full
+    // EKS ARN (`id`), which the in-cluster route resolves to the member read role — never by bare
+    // name, so a name shared by two accounts can never render the other cluster's data.
+    fetch(`/api/eks?${scopeQuery}`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(String(d?.message ?? r.status));
+        return d;
+      })
+      .then((d: { clusters?: { id?: string; name: string; access?: string }[]; errors?: unknown[]; truncated?: boolean }) => {
         if (!live) return;
         // Only 'connected' clusters are readable in-cluster — others would 502 on first fetch.
         const rows = (d.clusters ?? []).filter((c) => c.access === 'connected').map((c) => {
           const id = c.id || c.name;
-          return { id, label: id === c.name ? c.name : `${c.name} · ${c.accountId ?? ''}` };
+          return { id, label: eksClusterLabel(id) };
         });
         setClusters(rows);
         if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
+        // A partially failed or capped listing is never shown as the complete cluster set.
+        const failed = Array.isArray(d.errors) ? d.errors.length : 0;
+        const notes = [failed ? `일부 계정/리전 조회 실패 ${failed}건` : '', d.truncated ? '클러스터 목록이 상한에서 잘렸습니다' : ''].filter(Boolean);
+        setListNote(notes.join(' · '));
       })
       .catch((e) => { if (live) { setClusters([]); setErr(String(e instanceof Error ? e.message : e)); } });
     return () => { live = false; };
-  }, []);
+  }, [scopeQuery, scopeReady]);
 
   useEffect(() => {
     if (!cluster) return;
@@ -99,6 +114,7 @@ export default function K8sMapView({ query }: { query: string }) {
           {(clusters ?? []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
         </select>
         {busy && <span>{tt('불러오는 중…')}</span>}
+        {listNote && <span className="text-amber-700">{tt(listNote)}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
         {graph && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {graph && <MapLegend graph={graph} theme={theme} />}
