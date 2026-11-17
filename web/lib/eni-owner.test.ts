@@ -75,6 +75,9 @@ describe('eniOwnerResolver', () => {
     const input = { lambda: [{ resource_id: name, region: R }], eni: [eni('eni-u', '10.0.1.8', {
       interface_type: 'lambda', description: `AWS Lambda VPC ENI-${name}` })] };
     expect(resolve(input, '10.0.1.8')).toEqual({ owner: expect.objectContaining({ kind: 'lambda', resourceId: name }) });
+    // Both readings synced (legacy ENI of `job` vs current ENI of `job-<uuid>`): ambiguous.
+    const both = { ...input, lambda: [...input.lambda, { resource_id: 'job', region: R }] };
+    expect(resolve(both, '10.0.1.8')).toEqual({ reason: 'owner_ambiguous', eniId: 'eni-u' });
   });
 
   it('resolves VPC endpoint and NAT ENIs by the id in their description', () => {
