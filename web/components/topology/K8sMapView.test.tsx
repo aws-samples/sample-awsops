@@ -42,10 +42,18 @@ describe('K8sMapView', () => {
 
   it('discloses partial or capped listings instead of presenting them as complete', async () => {
     stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected' }],
-      errors: [{ accountId: '222222222222', reason: 'denied' }], truncated: true });
+      errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }], truncated: true });
     render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
-    expect(await screen.findByText(/일부 계정\/리전 조회 실패 1건/)).toBeTruthy();
-    expect(screen.getByText(/상한에서 잘렸습니다/)).toBeTruthy();
+    expect(await screen.findByText(/222222222222 \/ us-east-1: AccessDenied/)).toBeTruthy();
+    expect(screen.getByText(/일부 결과만 표시됩니다/)).toBeTruthy();
+  });
+
+  it('keeps the empty-state guidance when the only note is the informational wildcard-scope note', async () => {
+    stubFetch({ clusters: [], errors: [{ accountId: 'self', region: '__all__',
+      message: 'All-region discovery covers configured and registered regions only.' }] });
+    render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
+    expect(await screen.findByText(/연결된 EKS 클러스터가 없습니다/)).toBeTruthy();
+    expect(screen.getByText(/All-region discovery covers/)).toBeTruthy();
   });
 
   it('shows the listing failure rather than an empty map when the scope is rejected', async () => {
@@ -57,9 +65,9 @@ describe('K8sMapView', () => {
 
 describe('K8sMapView partial empty listing', () => {
   it('does not claim no clusters when a partially failed listing returned none connected', async () => {
-    stubFetch({ clusters: [], errors: [{ accountId: '222222222222', reason: 'denied' }] });
+    stubFetch({ clusters: [], errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }] });
     render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
-    expect(await screen.findByText(/일부 계정\/리전 조회 실패 1건/)).toBeTruthy();
+    expect(await screen.findByText(/222222222222 \/ us-east-1: AccessDenied/)).toBeTruthy();
     expect(screen.queryByText(/연결된 EKS 클러스터가 없습니다/)).toBeNull();
   });
 });

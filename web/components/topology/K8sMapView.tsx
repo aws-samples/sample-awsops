@@ -11,6 +11,7 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
 
 const COLUMNS = [{ title: 'Ingress' }, { title: 'Service' }, { title: 'Pod' }, { title: 'Node' }];
 const KINDS = ['ingresses', 'services', 'pods', 'nodes', 'endpoints'] as const;
@@ -22,7 +23,7 @@ export default function K8sMapView({ query }: { query: string }) {
   const [clusters, setClusters] = useState<{ id: string; label: string }[] | null>(null);
   const [cluster, setCluster] = useState('');
   const [err, setErr] = useState('');
-  const [listNote, setListNote] = useState('');
+  const [collection, setCollection] = useState<EksCollectionStatus & { errors?: { reason?: string }[] }>({});
   const [scope, , scopeReady] = useActiveScope();
   const scopeQuery = scopeParams(scope);
   const [busy, setBusy] = useState(false);
@@ -35,7 +36,7 @@ export default function K8sMapView({ query }: { query: string }) {
     setCluster('');
     setData(null);
     setErr('');
-    setListNote('');
+    setCollection({});
     // Follows the shared account/region selector like /eks. Member clusters are keyed by their full
     // EKS ARN (`id`), which the in-cluster route resolves to the member read role — never by bare
     // name, so a name shared by two accounts can never render the other cluster's data.
@@ -54,10 +55,8 @@ export default function K8sMapView({ query }: { query: string }) {
         });
         setClusters(rows);
         if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
-        // A partially failed or capped listing is never shown as the complete cluster set.
-        const failed = Array.isArray(d.errors) ? d.errors.length : 0;
-        const notes = [failed ? `일부 계정/리전 조회 실패 ${failed}건` : '', d.truncated ? '클러스터 목록이 상한에서 잘렸습니다' : ''].filter(Boolean);
-        setListNote(notes.join(' · '));
+        // Same disclosure as /eks: scope notes, per-target read failures and truncation stay visible.
+        setCollection({ errors: Array.isArray(d.errors) ? d.errors as EksCollectionStatus['errors'] : undefined, truncated: !!d.truncated });
       })
       .catch((e) => { if (live) { setClusters([]); setErr(String(e instanceof Error ? e.message : e)); } });
     return () => { live = false; };
@@ -95,18 +94,21 @@ export default function K8sMapView({ query }: { query: string }) {
 
   const graph = useMemo(() => data && buildK8sMap(data), [data]);
 
-  // A partial/capped listing with no connected clusters is not proof that none are registered —
-  // fall through so the listing note renders instead of the confident empty state.
-  if (clusters !== null && clusters.length === 0 && !err && !listNote) {
+  // Only a real read failure (route `eksReadFailure` shape carries `reason`) or truncation makes an
+  // empty listing inconclusive; the informational wildcard-scope note does not.
+  const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!(e as { reason?: string }).reason);
+  if (clusters !== null && clusters.length === 0 && !err) {
     return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-ink-500">
-        <span>{tt('연결된 EKS 클러스터가 없습니다 —')} <Link href="/eks" className="text-brand-700 underline">{tt('/eks에서 클러스터를 등록')}</Link>{tt('하세요.')}</span>
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-[13px] text-ink-500">
+        <EksCollectionNotice status={collection} />
+        {!inconclusive && <span>{tt('연결된 EKS 클러스터가 없습니다 —')} <Link href="/eks" className="text-brand-700 underline">{tt('/eks에서 클러스터를 등록')}</Link>{tt('하세요.')}</span>}
       </div>
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-4 pt-1"><EksCollectionNotice status={collection} /></div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
         <select
           value={cluster}
@@ -116,7 +118,6 @@ export default function K8sMapView({ query }: { query: string }) {
           {(clusters ?? []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
         </select>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {listNote && <span className="text-amber-700">{tt(listNote)}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
         {graph && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {graph && <MapLegend graph={graph} theme={theme} />}

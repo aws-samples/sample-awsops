@@ -288,8 +288,8 @@ def _finding_body(finding, evidence, resources, copy, *, lang="ko"):
     target_ids = finding.get("resource_ids", [])
     targets = [resources[rid] for rid in target_ids if rid in resources]
     output = [f"**{copy[0]} {_code(finding.get('id', ''))} — {_cell(label)}**",
-              f"{_label(_PILLARS, finding.get('pillar'), lang)} · "
-              f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}",
+              f"{_label(_PILLARS, finding.get('pillar', ''), lang)} · "
+              f"{_label(_SEVERITY_LABEL, finding.get('severity', ''), lang)}",
               ", ".join(_code(r["resource_id"]) for r in targets), ""]
     explanation = _safe_explanation(finding.get("explanation"))
     withheld_note = _WITHHELD.get(lang, _WITHHELD["ko"])
@@ -373,8 +373,8 @@ def _coverage(bundle, analysis, copy, lang="ko"):
 
 def _reference(finding, copy, lang="ko"):
     explanation = _safe_explanation(finding.get("explanation"))
-    return (f"- **{_label(_PILLARS, finding.get('pillar'), lang)} · "
-            f"{_label(_SEVERITY_LABEL, finding.get('severity'), lang)}** — "
+    return (f"- **{_label(_PILLARS, finding.get('pillar', ''), lang)} · "
+            f"{_label(_SEVERITY_LABEL, finding.get('severity', ''), lang)}** — "
             + (f"{explanation} " if explanation else "")
             + f"({copy[0]} {_code(finding.get('id', ''))})")
 
