@@ -23,7 +23,7 @@ export default function K8sMapView({ query }: { query: string }) {
   const [clusters, setClusters] = useState<{ id: string; label: string }[] | null>(null);
   const [cluster, setCluster] = useState('');
   const [err, setErr] = useState('');
-  const [collection, setCollection] = useState<EksCollectionStatus & { errors?: { reason?: string }[] }>({});
+  const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [scope, , scopeReady] = useActiveScope();
   const scopeQuery = scopeParams(scope);
   const [busy, setBusy] = useState(false);
@@ -48,7 +48,7 @@ export default function K8sMapView({ query }: { query: string }) {
         const d = await r.json().catch(() => ({}));
         throw new Error(String(d?.message ?? r.status));
       })
-      .then((d: { clusters?: { id?: string; name: string; access?: string }[]; errors?: unknown[]; truncated?: boolean }) => {
+      .then((d: { clusters?: { id?: string; name: string; access?: string }[]; errors?: EksCollectionStatus['errors']; truncated?: boolean }) => {
         if (!live) return;
         // Only 'connected' clusters are readable in-cluster — others would 502 on first fetch.
         const rows = (d.clusters ?? []).filter((c) => c.access === 'connected').map((c) => {
@@ -58,7 +58,7 @@ export default function K8sMapView({ query }: { query: string }) {
         setClusters(rows);
         if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
         // Same disclosure as /eks: scope notes, per-target read failures and truncation stay visible.
-        setCollection({ errors: Array.isArray(d.errors) ? d.errors as EksCollectionStatus['errors'] : undefined, truncated: !!d.truncated });
+        setCollection({ errors: Array.isArray(d.errors) ? d.errors : undefined, truncated: !!d.truncated });
       })
       .catch((e) => { if (live) { setClusters([]); setErr(String(e instanceof Error ? e.message : e)); } });
     return () => { live = false; };
@@ -98,7 +98,7 @@ export default function K8sMapView({ query }: { query: string }) {
 
   // Only a real read failure (route `eksReadFailure` shape carries `reason`) or truncation makes an
   // empty listing inconclusive; the informational wildcard-scope note does not.
-  const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!(e as { reason?: string }).reason);
+  const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!e.reason);
   if (clusters !== null && clusters.length === 0 && !err) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-[13px] text-ink-500">

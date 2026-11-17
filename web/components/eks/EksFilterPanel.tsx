@@ -14,7 +14,8 @@ export const NO_VPC = '(no VPC)'; // clusters without a vpcId still get a facet 
 export interface EksFilterState { clusters: string[]; vpcs: string[] }
 
 export interface EksCollectionStatus {
-  errors?: { accountId: string; region: string; message: string }[];
+  // `reason` is present on read failures (route `eksReadFailure`), absent on informational scope notes.
+  errors?: { accountId: string; region: string; message: string; reason?: string }[];
   truncated?: boolean;
 }
 

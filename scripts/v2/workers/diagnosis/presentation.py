@@ -253,6 +253,7 @@ def _scope_text(record, lang):
         ratio = coverage.get("sample_ratio")
         # A sampled record is never shown as complete, even when the producer marked it so.
         sampled = isinstance(ratio, (int, float)) and not isinstance(ratio, bool) and ratio < 1
+        sampled = sampled or coverage.get("sampled") is True
         if isinstance(complete, bool):
             parts.append(labels[0] if complete and not sampled else labels[1])
         # Every other qualifier (sample ratio, lookback, counts, storage scope) stays visible.

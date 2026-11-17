@@ -404,6 +404,9 @@ def test_scope_line_keeps_sampling_account_and_resources_and_never_overstates_co
     assert "partial" in line and "complete" not in line.replace("partial", "")
     assert "sample_ratio=0.5" in line and "lookback_days=7" in line
     assert "account=self" in line and "resources=r:a, r:b" in line and "stale" in line
+    # A producer-flagged sampled record (X-Ray, Application Signals) is never shown as complete.
+    flagged = presentation._scope_text({"coverage": {"complete": True, "sampled": True}}, "en")
+    assert flagged.startswith("partial") and "sampled=true" in flagged
     # A coverage dict without a boolean `complete` is still disclosed, not dropped.
     assert "storage_scope=bucket" in presentation._scope_text({"coverage": {"storage_scope": "bucket"}}, "en")
 
