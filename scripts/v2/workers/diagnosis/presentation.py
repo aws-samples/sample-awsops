@@ -437,6 +437,13 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
     # Titles are plain text; never echo model prose or telemetry labels.
     # The title reaches the SNS digest; scrub identities (ARNs, account ids) like the body.
     from .evidence import _scrub_text
-    title = label + (" — " + _scrub_text(str(targets[0]), "")[:100] if targets else "")
+    head = {"ko": "AWS 진단 — {label}", "en": "AWS diagnosis — {label}",
+            "zh": "AWS 诊断 — {label}", "ja": "AWS 診断 — {label}"}
+    more = {"ko": " 외 {n}건", "en": " and {n} more", "zh": " 等 {n} 项", "ja": " ほか{n}件"}
+    title = head.get(lang, head["ko"]).format(label=label)
+    if len(findings) > 1:
+        title += more.get(lang, more["ko"]).format(n=len(findings) - 1)
+    if targets:
+        title += " (" + _scrub_text(str(targets[0]), "")[:100] + ")"
     return {"title": title[:200],
             "tags": list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))[:6]}

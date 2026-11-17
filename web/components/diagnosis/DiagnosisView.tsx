@@ -434,9 +434,6 @@ export default function DiagnosisView() {
           />
         </aside>
         <div ref={reportScroll} role="region" aria-label={tt('진단 리포트')} data-report-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-          <div className="mb-4">
-            <IntentPanel />
-          </div>
           {view?.markdown ? (
             <>
               {/* Title — editable inline by owner/admin; read-only otherwise. Plain text (React-escaped). */}
@@ -561,6 +558,10 @@ export default function DiagnosisView() {
               </ul>
             </div>
           )}
+          {/* Admin intent tooling follows the report so it never reads as part of the result. */}
+          <div className="mt-6 border-t border-ink-100 pt-4">
+            <IntentPanel />
+          </div>
         </div>
       </div>
     </div>
