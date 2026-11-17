@@ -54,3 +54,12 @@ describe('K8sMapView', () => {
     expect(await screen.findByText(/EKS region is not enabled/)).toBeTruthy();
   });
 });
+
+describe('K8sMapView partial empty listing', () => {
+  it('does not claim no clusters when a partially failed listing returned none connected', async () => {
+    stubFetch({ clusters: [], errors: [{ accountId: '222222222222', reason: 'denied' }] });
+    render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
+    expect(await screen.findByText(/일부 계정\/리전 조회 실패 1건/)).toBeTruthy();
+    expect(screen.queryByText(/연결된 EKS 클러스터가 없습니다/)).toBeNull();
+  });
+});

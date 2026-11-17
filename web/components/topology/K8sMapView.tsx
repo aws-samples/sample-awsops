@@ -95,7 +95,9 @@ export default function K8sMapView({ query }: { query: string }) {
 
   const graph = useMemo(() => data && buildK8sMap(data), [data]);
 
-  if (clusters !== null && clusters.length === 0 && !err) {
+  // A partial/capped listing with no connected clusters is not proof that none are registered —
+  // fall through so the listing note renders instead of the confident empty state.
+  if (clusters !== null && clusters.length === 0 && !err && !listNote) {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-ink-500">
         <span>{tt('연결된 EKS 클러스터가 없습니다 —')} <Link href="/eks" className="text-brand-700 underline">{tt('/eks에서 클러스터를 등록')}</Link>{tt('하세요.')}</span>
