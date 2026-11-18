@@ -279,9 +279,15 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 - Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
   snapshot, which is host-account only. A trace service maps to a workload only
   through its `runs_on` relation to exactly one `namespace/deployment` of the selected
-  cluster, and the cluster name must be unique among the clusters listed in the current
-  scope. A truncated listing or one with a per-target read failure cannot prove that
-  uniqueness, so the join is refused (`incomplete_listing`) without reading the snapshot. The snapshot
+  cluster, and the cluster name must be unique across the fleet-wide cluster listing
+  (all registered accounts and regions), not just the clusters of the selected scope: a
+  narrowed scope, including the default host-account-only scope, hides same-named
+  clusters of other accounts or regions without any truncation or error flag. When the
+  selected scope is already all accounts and all regions, its listing is reused;
+  otherwise the page reads the fleet listing separately (the cluster selector still
+  follows the selected scope). A truncated scope or fleet listing, one with a per-target
+  read failure, or a failed or unparseable fleet listing cannot prove that uniqueness, so
+  the join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of

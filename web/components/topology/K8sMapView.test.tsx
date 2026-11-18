@@ -19,7 +19,7 @@ vi.mock('@/components/topology/ServiceGraphCanvas', () => ({
   },
 }));
 // fetchTraceOverlay is the real module unless a test overrides it.
-const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string; hostAccountId?: string }, s?: AbortSignal) => Promise<TraceOverlay>) }));
+const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string; hostAccountId?: string; registeredNames?: string[]; listingIncomplete?: boolean }, s?: AbortSignal) => Promise<TraceOverlay>) }));
 vi.mock('@/lib/k8s-trace-overlay', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/k8s-trace-overlay')>();
   return {
@@ -523,6 +523,111 @@ describe('K8sMapView trace notices', () => {
         expect(out).toContain(String(n));
       }
     }
+  });
+});
+
+describe('K8sMapView trace join fleet listing', () => {
+  // UI default scope: host account only. It hides other accounts' clusters without any disclosure.
+  const NARROW = { accounts: ['self'], regions: '__all__', includeGlobal: true };
+  const FLEET_URL = '/api/eks?accounts=__all__&regions=__all__&includeGlobal=1';
+  const isFleet = (u: string) => u === FLEET_URL;
+  const fleetHandler = (body: unknown, status = 200): Handler => (u) => (isFleet(u) ? new Response(JSON.stringify(body), { status }) : undefined);
+  const narrow = () => window.localStorage.setItem('awsops:scope', JSON.stringify(NARROW));
+  const seenTrace = () => {
+    const seen: { id: string; registeredNames?: string[]; listingIncomplete?: boolean }[] = [];
+    trace.override = (c) => {
+      seen.push({ id: c.id, registeredNames: c.registeredNames, listingIncomplete: c.listingIncomplete });
+      return Promise.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 0 });
+    };
+    return seen;
+  };
+
+  it('refuses the join for a host-only scope when the fleet has a same-named cluster in another account', async () => {
+    narrow();
+    const calls = stubFetch(HOST_ONLY, 200, fleetHandler(HOST_AND_MEMBER));
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.ambiguous_cluster)).toBeTruthy();
+    expect(calls).toContain(FLEET_URL);
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'ambiguous_cluster' });
+    // The selector still follows the narrowed scope: the member cluster is not offered.
+    expect((await screen.findAllByRole('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['shared']);
+  });
+
+  it('passes the fleet names (both same-named clusters) to the overlay for a host-only scope', async () => {
+    narrow();
+    const seen = seenTrace();
+    stubFetch(HOST_ONLY, 200, fleetHandler(HOST_AND_MEMBER));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    expect(seen.find((s) => s.id === 'shared')).toMatchObject({ registeredNames: ['shared', MEMBER_ARN, 'offline'], listingIncomplete: false });
+  });
+
+  it('passes a complete fleet listing with only the selected cluster as complete evidence', async () => {
+    narrow();
+    const seen = seenTrace();
+    stubFetch(HOST_ONLY, 200, fleetHandler(HOST_ONLY));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ registeredNames: ['shared'], listingIncomplete: false });
+  });
+
+  it.each([
+    ['a truncated fleet listing', { ...HOST_ONLY, truncated: true }],
+    ['a fleet listing with a per-target read failure', { ...HOST_ONLY, errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }] }],
+  ])('refuses the join as an incomplete listing for %s', async (_label, fleetBody) => {
+    narrow();
+    const calls = stubFetch(HOST_ONLY, 200, fleetHandler(fleetBody));
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' });
+  });
+
+  it('still joins when the only fleet note is the informational wildcard-scope note (no reason)', async () => {
+    narrow();
+    const seen = seenTrace();
+    stubFetch(HOST_ONLY, 200, fleetHandler({ ...HOST_ONLY, errors: [{ accountId: 'self', region: '__all__', message: 'All-region discovery covers configured and registered regions only.' }] }));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    expect(seen[0]).toMatchObject({ registeredNames: ['shared'], listingIncomplete: false });
+  });
+
+  it.each<[string, Handler]>([
+    ['a 500 response', fleetHandler({ status: 'error', message: 'boom' }, 500)],
+    ['a rejected request', (u) => (isFleet(u) ? Promise.reject(new Error('net')) : undefined)],
+    ['an OK but non-JSON body', (u) => (isFleet(u) ? new Response('<html>login</html>', { status: 200 }) : undefined)],
+  ])('fails closed when the fleet listing fails (%s) and still renders the graph', async (_label, handler) => {
+    narrow();
+    const calls = stubFetch(HOST_ONLY, 200, handler);
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+    expect(screen.getByTestId('canvas')).toBeTruthy();
+    expect(graphNamespaces()).toEqual(['dev', 'prod']);
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(screen.queryByText(/boom/)).toBeNull();
+  });
+
+  it('waits for the fleet listing before the trace read, without delaying Route53', async () => {
+    narrow();
+    const pending = deferred<Response>();
+    const calls = stubFetch(HOST_ONLY, 200, (u) => (isFleet(u) ? pending.promise : undefined));
+    view();
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=self&'))).toBe(true));
+    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
+    await act(async () => { pending.resolve(new Response(JSON.stringify(HOST_ONLY))); });
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1);
+  });
+
+  it('makes no second listing request when the scope is already all accounts and all regions', async () => {
+    const seen = seenTrace();
+    const calls = stubFetch(HOST_AND_MEMBER);
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    expect(calls.filter((u) => u.startsWith('/api/eks?'))).toHaveLength(1);
+    expect(seen.find((s) => s.id === 'shared')).toMatchObject({ registeredNames: ['shared', MEMBER_ARN, 'offline'], listingIncomplete: false });
   });
 });
 
