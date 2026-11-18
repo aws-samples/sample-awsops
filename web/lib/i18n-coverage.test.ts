@@ -28,6 +28,8 @@ const SURFACES = [
   'app/topology/services/page.tsx',
   'app/topology/network/page.tsx',
   'components/topology/MapCanvas.tsx',
+  'components/topology/ServiceGraphCanvas.tsx',
+  'components/topology/ServiceDetailPanel.tsx',
   'components/chat/TimeSeriesTable.tsx',
   'components/chat/AssistantClient.tsx',
   'components/diagnosis/DiagnosisView.tsx',

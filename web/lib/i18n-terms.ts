@@ -2169,6 +2169,24 @@ export const TERMS: Record<string, Pair> = {
   '리포트': { en: 'Report', zh: '报告', ja: 'レポート' },
   '진단은 계정 전반을 아래 섹션으로 분석합니다 (Deep 표시는 Deep 티어 전용):': { en: 'A diagnosis analyzes the whole account across these sections (Deep-tagged ones run on the Deep tier only):', zh: '诊断会按以下章节分析整个账户（标有 Deep 的仅在 Deep 层级运行）：', ja: '診断はアカウント全体を以下のセクションで分析します（Deep 表示は Deep ティア専用）:' },
   '본문 키워드 기반 표시 (점수 아님)': { en: 'Derived from body keywords (not a score)', zh: '基于正文关键词的标记（并非评分）', ja: '本文キーワードに基づく表示（スコアではありません）' },
+  // K8s service graph (ServiceGraphCanvas / ServiceDetailPanel).
+  '네임스페이스 접기': { en: 'Collapse namespace', zh: '折叠命名空间', ja: '名前空間を折りたたむ' },
+  '네임스페이스 펼치기': { en: 'Expand namespace', zh: '展开命名空间', ja: '名前空間を展開' },
+  '실선: 트레이스로 관측된 호출': { en: 'Solid: calls observed in traces', zh: '实线：在追踪中观测到的调用', ja: '実線: トレースで観測された呼び出し' },
+  '점선: 설정(ConfigMap·Pod env)에서 추론': { en: 'Dashed: inferred from config (ConfigMap · Pod env)', zh: '虚线：根据配置（ConfigMap · Pod env）推断', ja: '点線: 設定（ConfigMap・Pod env）から推定' },
+  '가는 선: Ingress 라우팅': { en: 'Thin: Ingress routing', zh: '细线：Ingress 路由', ja: '細線: Ingress ルーティング' },
+  '일부 연결은 근거가 부족해 표시하지 않았습니다': { en: 'Some connections are not shown because their evidence is insufficient', zh: '部分连接因依据不足未显示', ja: '根拠が不十分なため一部の接続は表示していません' },
+  '표시할 서비스가 없습니다.': { en: 'No services to display.', zh: '没有可显示的服务。', ja: '表示するサービスがありません。' },
+  '그래프를 배치하지 못했습니다.': { en: 'Could not lay out the graph.', zh: '无法布局图表。', ja: 'グラフを配置できませんでした。' },
+  '그래프 배치 중…': { en: 'Laying out the graph…', zh: '正在布局图表…', ja: 'グラフを配置中…' },
+  'Secret 참조': { en: 'Secret reference', zh: 'Secret 引用', ja: 'Secret 参照' },
+  'Pod 목록': { en: 'Pods', zh: 'Pod 列表', ja: 'Pod 一覧' },
+  '이름': { en: 'Name', zh: '名称', ja: '名前' },
+  '재시작': { en: 'Restarts', zh: '重启', ja: '再起動' },
+  '인스턴스 유형': { en: 'Instance type', zh: '实例类型', ja: 'インスタンスタイプ' },
+  '호출 주체': { en: 'Callers', zh: '调用方', ja: '呼び出し元' },
+  '호출 대상': { en: 'Callees', zh: '被调用方', ja: '呼び出し先' },
+  '데이터 저장소': { en: 'Datastores', zh: '数据存储', ja: 'データストア' },
 
 };
 
@@ -2267,6 +2285,7 @@ const RULES: { re: RegExp; en: (m: RegExpMatchArray) => string; zh: (m: RegExpMa
   { re: /^노드 ([\d,]+) · 엣지 ([\d,]+)$/, en: (m) => `Nodes ${m[1]} · Edges ${m[2]}`, zh: (m) => `节点 ${m[1]} · 边 ${m[2]}`, ja: (m) => `ノード ${m[1]} · エッジ ${m[2]}` },
   { re: /^⚠ (.+) (\d+)개 초과 — 일부만 표시$/, en: (m) => `⚠ ${m[1]} exceeded ${m[2]} — showing partial`, zh: (m) => `⚠ ${m[1]} 超过 ${m[2]} 个 — 仅显示部分`, ja: (m) => `⚠ ${m[1]} が ${m[2]} 件を超過 — 一部のみ表示` },
   { re: /^매치 (\d+)개$/, en: (m) => `${m[1]} matches`, zh: (m) => `匹配 ${m[1]} 项`, ja: (m) => `マッチ ${m[1]} 件` },
+  { re: /^서비스 ([\d,]+)개$/, en: (m) => `${m[1]} services`, zh: (m) => `${m[1]} 个服务`, ja: (m) => `サービス ${m[1]} 件` },
   { re: /^관계 그래프 · (.+)$/, en: (m) => `Relationship Graph · ${m[1]}`, zh: (m) => `关系图 · ${m[1]}`, ja: (m) => `関係グラフ · ${m[1]}` },
 ];
 
