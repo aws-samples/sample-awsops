@@ -108,3 +108,11 @@ describe('ReportSections', () => {
     expect(screen.queryByText('모두 접기')).toBeNull();
   });
 });
+
+it('opens the assessment first and exposes the evidence ledger on demand', () => {
+  render(<ReportSections markdown={'## 진단 의견\n\n진단 본문\n\n## 근거 부록\n\n추적용 근거'} />);
+  expect(screen.getByText('진단 본문')).toBeTruthy();
+  expect(screen.queryByText('추적용 근거')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: /근거 부록/, expanded: false }));
+  expect(screen.getByText('추적용 근거')).toBeTruthy();
+});

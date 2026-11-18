@@ -867,7 +867,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     from . import discovery, loop, observations, presentation, supporting
     from .pillar_agents import validate_language
     validate_language(lang)
-    from .budget import ReportBudget
+    from .budget import BudgetExceeded, ReportBudget
     budget = budget if budget is not None else ReportBudget(tier)
     base_catalog, model_id, _ = _resolve_tier(tier, model)
     catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
@@ -934,6 +934,20 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     # This is the exact projected/admitted index used by the specialists, including
     # follow-up facts. Raw discovery fields cannot reappear through presentation.
     bundle = analysis.get("evidence_bundle", bundle)
+    from . import editor, pillar_agents
+    if analysis.get("findings") and "evidence_bundle" in analysis:
+        emit(0, "Report editor", "render", [])
+        try:
+            plan, stages = pillar_agents.edit_report(analysis["findings"], model_id=model_id, budget=budget, lang=lang)
+            analysis["model_stages"].extend(stages)
+            analysis["editor_plan"] = plan
+        except Exception as exc:
+            # Keep a readable fallback and the full trace of the already validated analysis.
+            reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "editor_unavailable"
+            analysis["degraded"].append(f"report_editor:{reason}")
+            if isinstance(exc, BudgetExceeded):
+                analysis["incomplete"].append("report_editor:budget_exhausted")
+            analysis["model_stages"].append({"stage": "report_editor", "status": "failed", "reason": reason})
     bodies = presentation.render(catalog, bundle, analysis, lang=lang,
                                  invariant_md=_render_intended_vs_actual(verdicts, lang))
     by_key = dict(bodies)
@@ -950,7 +964,9 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         emit(index, title, "render", list(completed))
     emit(total, "Assemble", "assemble", list(completed))
     now = datetime.now(timezone.utc)
-    md = build_markdown(rendered, account, tier, lang=lang, generated_at=now)
+    reader_sections = editor.compose(bundle, analysis, rendered, lang)
+    clipped_appendix = presentation.SIZE_MARK in reader_sections[-1]["body"]
+    md = build_markdown(reader_sections, account, tier, lang=lang, generated_at=now)
     sources_used = list(dict.fromkeys(
         record.get("source", "discovery") for record in bundle.get("evidence", [])))
     degraded = list(dict.fromkeys(bundle.get("degraded", []) + analysis.get("degraded", [])
@@ -961,7 +977,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         "incomplete": incomplete,  # by-design caps; never make the report partial
         "budget_incomplete": [k for k in incomplete
                               if k.endswith(("_deadline", "_exhausted", ":uncompleted"))],
-        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + [
+        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + (["evidence_appendix"] if clipped_appendix else []) + [
             key for key, body in bodies if presentation.SIZE_MARK in body])),
         "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),
         "evidence_loop": {"enabled": True, "passes": analysis.get("passes", 0),

@@ -326,8 +326,12 @@ Code renders values, resource identities, scope, windows and provenance; it also
 selects the title/tags locally. Model explanations remain hypotheses. Neither
 valid JSON nor a reviewer citation establishes causality. Final summary and
 recommendations cannot introduce targets or savings absent from admitted facts.
-The existing 9/16 section catalogs, four report languages and deterministic
-Intended vs Actual verdicts remain unchanged. Scoped dependency pairs do not
+After the last review, a budgeted editor writes the assessment, supporting findings
+and follow-up checks in the requested language. A separate model call checks each
+paragraph against its matched finding. The worker inserts scoped measurements and
+identities locally. If drafting or verification fails, the report uses the admitted
+specialist explanations and records a degraded editorial stage. The existing 9/16
+catalog supplies the evidence appendix and deterministic Intended vs Actual section. Scoped dependency pairs do not
 certify the unresolved name-based invariant graph or an encryption aggregate;
 those live invariant inputs remain unassessed.
 
