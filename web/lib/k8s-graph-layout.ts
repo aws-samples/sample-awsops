@@ -24,9 +24,13 @@
 //  1. Inner layout per expanded namespace. Services joined by intra-namespace edges are laid out per
 //     connected component with dagre (plain, NON-compound graphs: dagre's cluster mode breaks the column
 //     order and does not scale); services with no intra-namespace edge go into a near-square grid. dagre's
-//     cost grows quickly with dense meshes, so a component above DAGRE_MAX_EDGES_PER_COMPONENT edges, and any
-//     component once DAGRE_MAX_EDGES_TOTAL edges were laid out (namespaces in name order), joins the grid
-//     instead. The blocks are shelf-packed into a near-square area inside GROUP_PADDING (top = label header).
+//     cost grows quickly with dense meshes, so the components of ALL expanded namespaces share one budget:
+//     they are taken in ascending edge count (ties: namespace name, then smallest service id), a component
+//     above DAGRE_MAX_EDGES_PER_COMPONENT edges or one that no longer fits in the remaining
+//     DAGRE_MAX_EDGES_TOTAL joins its namespace's grid instead. Small call graphs therefore get dagre no
+//     matter which other namespaces are expanded. The blocks are shelf-packed into a near-square area
+//     inside GROUP_PADDING (top = label header).
+// Duplicate ids (in `graph.nodes` or in a namespace's `serviceIds`) are ignored: the first one wins.
 //  2. Column ordering: items start in id order; side columns (gateway, DNS, datastores), then the
 //     services column, then the side columns again are reordered by the barycenter of their neighbours
 //     in the other columns (positions normalised to the column extent, ties broken by id).
@@ -147,12 +151,10 @@ function gridBlock(ids: readonly string[]): Block {
   return { pos, width: Math.min(cols, ids.length) * cellW - INNER_GAP, height: rows * cellH - INNER_GAP };
 }
 
-/**
- * Lays out the services of one expanded namespace; positions are relative to the content origin.
- * `budget.edges` is the remaining dagre edge budget for the whole layout (decremented here).
- */
-function innerLayout(serviceIds: readonly string[], intra: readonly [string, string][], vertical: boolean, budget: { edges: number }): Block {
-  // Connected components over the (undirected) intra-namespace edges.
+interface Component { ns: string; root: string; ids: string[]; edges: [string, string][] }
+
+/** Connected components (size ≥ 2) of one namespace's intra-namespace edges, in service-id order. */
+function components(ns: string, serviceIds: readonly string[], intra: readonly [string, string][]): Component[] {
   const root = new Map(serviceIds.map((id) => [id, id]));
   const find = (id: string): string => {
     let r = id;
@@ -165,24 +167,28 @@ function innerLayout(serviceIds: readonly string[], intra: readonly [string, str
     if (a !== b) root.set(a < b ? b : a, a < b ? a : b); // smallest id is the representative
   }
   const linked = new Set(intra.flat());
-  const comps = new Map<string, string[]>();
+  const byRoot = new Map<string, Component>();
   for (const id of serviceIds) {
     if (!linked.has(id)) continue;
     const r = find(id);
-    const list = comps.get(r);
-    if (list) list.push(id); else comps.set(r, [id]);
+    const c = byRoot.get(r);
+    if (c) c.ids.push(id); else byRoot.set(r, { ns, root: r, ids: [id], edges: [] });
   }
-  const blocks: Block[] = [];
-  const gridded = new Set(serviceIds.filter((id) => !linked.has(id)));
-  for (const [, ids] of [...comps.entries()].sort(([ra, a], [rb, b]) => b.length - a.length || cmp(ra, rb))) {
-    const set = new Set(ids);
-    const own = intra.filter(([s]) => set.has(s));
-    if (own.length > DAGRE_MAX_EDGES_PER_COMPONENT || own.length > budget.edges) { for (const id of ids) gridded.add(id); continue; }
-    budget.edges -= own.length;
-    blocks.push(dagreBlock(ids, own, vertical));
-  }
-  const isolated = serviceIds.filter((id) => gridded.has(id)); // keeps id order
-  if (isolated.length > 0) blocks.push(gridBlock(isolated));
+  for (const e of intra) byRoot.get(find(e[0]))!.edges.push(e);
+  return [...byRoot.values()];
+}
+
+/**
+ * Lays out the services of one expanded namespace; positions are relative to the content origin.
+ * `dagreComps` are the components granted dagre; every other service goes into the grid.
+ */
+function packNamespace(serviceIds: readonly string[], dagreComps: readonly Component[], vertical: boolean): Block {
+  const blocks: Block[] = [...dagreComps]
+    .sort((a, b) => b.ids.length - a.ids.length || cmp(a.root, b.root))
+    .map((c) => dagreBlock(c.ids, c.edges, vertical));
+  const inDagre = new Set(dagreComps.flatMap((c) => c.ids));
+  const gridded = serviceIds.filter((id) => !inDagre.has(id)); // keeps id order
+  if (gridded.length > 0) blocks.push(gridBlock(gridded));
 
   // Shelf packing (left→right rows, wrapping downwards) into a roughly square area.
   const area = blocks.reduce((s, b) => s + (b.width + INNER_GAP) * (b.height + INNER_GAP), 0);
@@ -199,10 +205,28 @@ function innerLayout(serviceIds: readonly string[], intra: readonly [string, str
   return { pos, width, height: y + rowH };
 }
 
+/**
+ * Grants dagre to components across ALL expanded namespaces, cheapest first (ties: namespace name,
+ * then smallest service id), within the per-component and layout-wide edge caps.
+ */
+function dagreGrants(comps: readonly Component[]): Set<Component> {
+  const granted = new Set<Component>();
+  let left = DAGRE_MAX_EDGES_TOTAL;
+  const sorted = [...comps].sort((a, b) => a.edges.length - b.edges.length || cmp(a.ns, b.ns) || cmp(a.root, b.root));
+  for (const c of sorted) {
+    if (c.edges.length > DAGRE_MAX_EDGES_PER_COMPONENT || c.edges.length > left) continue;
+    left -= c.edges.length;
+    granted.add(c);
+  }
+  return granted;
+}
+
 function compute(graph: ServiceGraph, opts: LayoutOptionsInput): LaidOut {
-  const kindById = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+  // Duplicate node ids: the first one wins (the stable sort keeps input order among equal ids).
+  const graphNodes = [...graph.nodes].sort((a, b) => cmp(a.id, b.id)).filter((n, i, all) => i === 0 || all[i - 1].id !== n.id);
+  const kindById = new Map(graphNodes.map((n) => [n.id, n.kind]));
   const namespaces = graph.namespaces
-    .map((ns) => ({ name: ns.name, serviceIds: ns.serviceIds.filter((id) => kindById.get(id) === 'service').sort(cmp) }))
+    .map((ns) => ({ name: ns.name, serviceIds: [...new Set(ns.serviceIds)].filter((id) => kindById.get(id) === 'service').sort(cmp) }))
     .sort((a, b) => cmp(a.name, b.name));
 
   const boxOf = new Map<string, string>(); // hidden service id → collapsed leaf id
@@ -222,7 +246,7 @@ function compute(graph: ServiceGraph, opts: LayoutOptionsInput): LaidOut {
   const items: Item[] = [];
   const leafItem = (id: string, col: number, size: Size): Item =>
     ({ id, col, group: false, ...size, centers: new Map([[id, { x: size.width / 2, y: size.height / 2 }]]), children: [] });
-  for (const n of [...graph.nodes].sort((a, b) => cmp(a.id, b.id))) {
+  for (const n of graphNodes) {
     if (!boxOf.has(n.id) && !parentOf.has(n.id)) items.push(leafItem(n.id, COLUMN[n.kind], SERVICE_GRAPH_NODE_SIZE[n.kind]));
   }
   const intraOf = new Map<string, [string, string][]>();
@@ -234,11 +258,15 @@ function compute(graph: ServiceGraph, opts: LayoutOptionsInput): LaidOut {
   }
   const svc = SERVICE_GRAPH_NODE_SIZE.service;
   const p = GROUP_PADDING;
-  const budget = { edges: DAGRE_MAX_EDGES_TOTAL };
+  const compsOf = new Map<string, Component[]>();
+  for (const [name, ids] of owned) {
+    if (!opts.collapsed.has(name)) compsOf.set(name, components(name, ids, intraOf.get(groupId(name)) ?? []));
+  }
+  const granted = dagreGrants([...compsOf.values()].flat());
   for (const [name, ids] of owned) {
     const id = groupId(name);
     if (opts.collapsed.has(name)) { items.push(leafItem(id, SERVICES_COLUMN, SERVICE_GRAPH_NODE_SIZE.namespace)); continue; }
-    const inner = innerLayout(ids, intraOf.get(id) ?? [], vertical, budget);
+    const inner = packNamespace(ids, compsOf.get(name)!.filter((c) => granted.has(c)), vertical);
     const children = ids.map((sid) => ({ id: sid, x: p.left + inner.pos.get(sid)!.x, y: p.top + inner.pos.get(sid)!.y }));
     items.push({
       id, col: SERVICES_COLUMN, group: true,

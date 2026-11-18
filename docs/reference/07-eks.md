@@ -277,8 +277,13 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   their inventory rows store no endpoint.
 - Layout (`web/lib/k8s-graph-layout.ts`) uses dagre (MIT, the dependency behind
   `web/lib/flow-layout.ts`) only for the call order inside each namespace box, on plain
-  non-compound graphs; Services without calls inside their namespace, and components
-  above the dagre edge budget, wrap into a near-square grid. Columns, barycenter ordering
+  non-compound graphs, one connected component of intra-namespace calls at a time.
+  dagre time grows quickly with dense meshes, so it is budgeted: a component with more
+  than 150 edges never gets dagre, and all expanded namespaces share a 600-edge budget
+  spent on components in ascending edge count (ties: namespace name, then smallest Service
+  id). A small call graph therefore keeps its call direction whichever other namespaces
+  are expanded. Services without calls inside their namespace, and components left out of
+  the budget, are packed into a near-square grid in their box. Columns, barycenter ordering
   and box stacking are computed by the module itself. No edge route is precomputed: the
   canvas draws each edge as a smoothstep path between node handles.
 

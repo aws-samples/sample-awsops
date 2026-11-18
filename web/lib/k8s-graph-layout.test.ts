@@ -311,6 +311,67 @@ describe('layoutServiceGraph', () => {
     expectContainedAndDisjoint(g, out);
   });
 
+  // Namespace `a`: 4 components of 18 services with 150 edges each (i→j for i<j, first 150 pairs);
+  // namespace `z`: the chain p→q→r. 2 + 4×150 edges exceed the 600-edge layout-wide dagre budget.
+  function budgetGraph(): ServiceGraph {
+    const comps = ['c0', 'c1', 'c2', 'c3'];
+    const n = (c: string, i: number) => `${c}n${String(i).padStart(2, '0')}`;
+    const edges: GEdge[] = [gedge('svc:z/p', 'svc:z/q'), gedge('svc:z/q', 'svc:z/r')];
+    for (const c of comps) {
+      const pairs: [number, number][] = [];
+      for (let i = 0; i < 18; i++) for (let j = i + 1; j < 18; j++) pairs.push([i, j]);
+      for (const [i, j] of pairs.slice(0, 150)) edges.push(gedge(`svc:a/${n(c, i)}`, `svc:a/${n(c, j)}`));
+    }
+    return graphOf({ a: comps.flatMap((c) => Array.from({ length: 18 }, (_, i) => n(c, i))), z: ['p', 'q', 'r'] }, [], edges);
+  }
+  const childrenOf = (o: LaidOut, grp: string) => o.nodes.filter((x) => x.parentId === grp);
+
+  it('spends the dagre budget on the cheapest components first, so a small namespace never depends on others', async () => {
+    const g = budgetGraph();
+    const expanded = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const aCollapsed = await layoutServiceGraph(g, { collapsed: new Set(['a']), vertical: false });
+    expect(childrenOf(expanded, 'ns:z')).toEqual(childrenOf(aCollapsed, 'ns:z'));
+    const at = (id: string) => expanded.nodes.find((x) => x.id === id)!;
+    // z keeps its call direction (dagre), left to right on one row.
+    expect(at('svc:z/p').x).toBeLessThan(at('svc:z/q').x);
+    expect(at('svc:z/q').x).toBeLessThan(at('svc:z/r').x);
+    expect(new Set(['p', 'q', 'r'].map((s) => at(`svc:z/${s}`).y)).size).toBe(1);
+    expectContainedAndDisjoint(g, expanded);
+  });
+
+  it('grids the components that exceed the layout-wide dagre budget, deterministically', async () => {
+    const g = budgetGraph();
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const at = (id: string) => out.nodes.find((x) => x.id === id)!;
+    const svc = SERVICE_GRAPH_NODE_SIZE.service;
+    // z (2 edges) then c0, c1, c2 (150 each, by smallest service id) fit in 600; c3 does not.
+    for (const c of ['c0', 'c1', 'c2']) {
+      // dagre: n01 is one rank after n00 (edge n00→n01).
+      expect(at(`svc:a/${c}n01`).x - at(`svc:a/${c}n00`).x, c).toBeCloseTo(svc.width + 60);
+    }
+    // grid: n00 and n01 are neighbours in the first grid row.
+    expect(at('svc:a/c3n01').x - at('svc:a/c3n00').x).toBe(svc.width + 24);
+    expect(at('svc:a/c3n01').y).toBe(at('svc:a/c3n00').y);
+    const shuffled: ServiceGraph = {
+      ...g, namespaces: [...g.namespaces].reverse().map((x) => ({ ...x, serviceIds: [...x.serviceIds].reverse() })),
+      nodes: [...g.nodes].reverse(), edges: [...g.edges].reverse(),
+    };
+    expect(await layoutServiceGraph(shuffled, { collapsed: NONE, vertical: false })).toEqual(out);
+  });
+
+  it('ignores duplicate node ids and duplicate namespace service ids (first one wins)', async () => {
+    const g = fixture();
+    const clean = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const dup: ServiceGraph = {
+      ...g,
+      namespaces: g.namespaces.map((ns) => ({ ...ns, serviceIds: [...ns.serviceIds, ns.serviceIds[0]] })),
+      nodes: [...g.nodes, gnode('svc:shop/api', 'service', 'shop'), gnode('dns:shop.example.com', 'datastore')],
+    };
+    const out = await layoutServiceGraph(dup, { collapsed: NONE, vertical: false });
+    expect(out).toEqual(clean);
+    expect(new Set(out.nodes.map((n) => n.id)).size).toBe(out.nodes.length);
+  });
+
   it('uses the intra-namespace call direction inside a box and grids the unconnected rest', async () => {
     const g = graphOf({ prod: ['a', 'b', 'c', 'x', 'y'] }, [], [gedge('svc:prod/a', 'svc:prod/b'), gedge('svc:prod/b', 'svc:prod/c')]);
     const horiz = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
