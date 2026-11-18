@@ -1,4 +1,5 @@
-// Hierarchical (namespace-boxed) layout for the K8s service graph, computed with elkjs `layered`.
+// Hierarchical (namespace-boxed) layout for the K8s service graph: dagre (MIT) for the call order
+// INSIDE each namespace box, plus hand-written column placement around it.
 // Columns (left→right, or top→bottom when vertical): DNS | Gateway | namespace boxes | datastores.
 // React-free and deterministic: inputs are sorted by id before layout and the input is never mutated.
 //
@@ -6,23 +7,33 @@
 //  - `groups[]`  — one per EXPANDED namespace that has services; x/y are ROOT (canvas) coordinates.
 //  - `nodes[]`   — with `parentId` (a service inside an expanded namespace): x/y are RELATIVE to that
 //                  group's top-left, so they map 1:1 onto React Flow `parentId` + `position`.
-//                  Without `parentId` (DNS, gateway, datastore, collapsed-namespace leaf): ROOT coordinates.
+//                  Without `parentId` (DNS, gateway, datastore, collapsed-namespace leaf, or a service
+//                  whose namespace is not listed): ROOT coordinates.
 //                  A collapsed namespace is ONE leaf node whose id is `ns:<name>` (same as `groupId`);
 //                  a namespace is either a group or a leaf, never both.
-//  - `edges[]`   — `sections` are elk edge sections (startPoint/bendPoints/endPoint) in ROOT coordinates.
-//                  Edges touching a collapsed namespace are re-pointed to its leaf and merged per
-//                  (source box, target box) pair: id `agg:<source>-><target>`, `count` = underlying edges,
-//                  `evidence` = their union (trace > config > routing), `edgeIds` = the underlying edge ids.
-//                  Edges between two services of the same collapsed namespace (and self-loops) are dropped.
-//                  Untouched edges keep their original id with `count: 1`.
+//  - `edges[]`   — `sections` is always undefined: no route is precomputed, the canvas draws each edge
+//                  itself between the node handles. Edges touching a collapsed namespace are re-pointed
+//                  to its leaf and merged per (source box, target box) pair: id `agg:<source>-><target>`,
+//                  `count` = underlying edges, `evidence` = their union (trace > config > routing),
+//                  `edgeIds` = the underlying edge ids. Edges between two services of the same collapsed
+//                  namespace (and self-loops) are dropped. Untouched edges keep their original id with
+//                  `count: 1`. Edges with an endpoint that is not a graph node are skipped.
 //
-// Column order is guaranteed by elk partitioning (dns 0, gateway 1, namespaces 2, datastores 3).
-// `layerConstraint` FIRST/LAST is added for DNS/datastores only where elk accepts it: elk rejects a FIRST node
-// with an incoming edge (so gateways, which DNS points at, cannot also be FIRST) and a LAST node with an outgoing one.
-//
-// elkjs is ~1.6 MB; it is loaded lazily on the first layout call (`import('elkjs/lib/elk.bundled.js')`,
-// the worker-free bundle), so importing this module for types/helpers does not pull it into a chunk eagerly.
-import type { ELK, ElkExtendedEdge, ElkNode, LayoutOptions } from 'elkjs/lib/elk-api';
+// Algorithm (all in a "flow frame": the main axis runs across the columns, the cross axis stacks
+// items within a column; vertical only swaps which physical axis is which):
+//  1. Inner layout per expanded namespace. Services joined by intra-namespace edges are laid out per
+//     connected component with dagre (plain, NON-compound graphs: dagre's cluster mode breaks the column
+//     order and does not scale); services with no intra-namespace edge go into a near-square grid. dagre's
+//     cost grows quickly with dense meshes, so a component above DAGRE_MAX_EDGES_PER_COMPONENT edges, and any
+//     component once DAGRE_MAX_EDGES_TOTAL edges were laid out (namespaces in name order), joins the grid
+//     instead. The blocks are shelf-packed into a near-square area inside GROUP_PADDING (top = label header).
+//  2. Column ordering: items start in id order; side columns (gateway, DNS, datastores), then the
+//     services column, then the side columns again are reordered by the barycenter of their neighbours
+//     in the other columns (positions normalised to the column extent, ties broken by id).
+//  3. Placement: the services column is stacked first; every other column places each item at the
+//     mean cross position of its neighbours in already-placed columns, pushed down to keep order and gaps.
+//     Column main offsets come from the widest item of each preceding column plus COLUMN_GAP.
+import dagre from '@dagrejs/dagre';
 import type { Evidence, GKind, ServiceGraph } from './k8s-service-graph';
 
 export interface LaidOutNode { id: string; x: number; y: number; width: number; height: number; parentId?: string }
@@ -49,29 +60,34 @@ export const groupId = (namespace: string) => `ns:${namespace}`;
 export const collapsedNodeId = groupId;
 
 const EVIDENCE_ORDER: Evidence[] = ['trace', 'config', 'routing'];
-const PARTITION: Record<GKind, number> = { dns: 0, gateway: 1, service: 2, datastore: 3 };
+const COLUMN: Record<GKind, number> = { dns: 0, gateway: 1, service: 2, datastore: 3 };
+const SERVICES_COLUMN = COLUMN.service;
+const COLUMN_COUNT = 4;
+const MARGIN = 16; // around the whole drawing
+const COLUMN_GAP = 80; // between columns (main axis)
+const STACK_GAP = 24; // between items of one column (cross axis)
+const INNER_GAP = 24; // between services / blocks inside a namespace box
+const INNER_RANK_GAP = 60; // between dagre ranks inside a namespace box
+/** dagre budget (main-thread time): ~150 random-mesh edges lay out in ~0.2 s, 900 in ~10 s. */
+const DAGRE_MAX_EDGES_PER_COMPONENT = 150;
+const DAGRE_MAX_EDGES_TOTAL = 600;
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-const LOAD_FAILED = 'Service graph layout engine could not be loaded.';
 const LAYOUT_FAILED = 'Service graph layout failed.';
 
-/**
- * Memoized ELK loader: concurrent callers share one import and a successful one is kept, but a
- * REJECTED import (e.g. a transient chunk-load error) is forgotten so the next call retries it —
- * the canvas's retry button would otherwise never recover without a page reload. The rejection is
- * replaced by a stable generic Error (the raw one can carry URLs or ids).
- */
-export function createElkLoader(load: () => Promise<{ default: new () => ELK }>): () => Promise<ELK> {
-  let pending: Promise<ELK> | null = null;
-  return () => {
-    pending ??= load().then((m) => new m.default()).catch(() => {
-      pending = null;
-      throw new Error(LOAD_FAILED);
-    });
-    return pending;
-  };
+interface Point { x: number; y: number }
+interface Size { width: number; height: number }
+/** A box placed in one column: a leaf node, a collapsed namespace or an expanded namespace group. */
+interface Item extends Size {
+  id: string;
+  col: number;
+  group: boolean;
+  /** Visible node id → its centre relative to the item's top-left (physical axes). */
+  centers: Map<string, Point>;
+  /** Service top-left positions relative to the group (groups only). */
+  children: { id: string; x: number; y: number }[];
 }
-const getElk = createElkLoader(() => import('elkjs/lib/elk.bundled.js'));
+interface Link { other: Item; otherCenter: Point; ownCenter: Point }
 
 /** Remaps edges onto visible boxes, merging the ones that touch collapsed namespaces. */
 function visibleEdges(graph: ServiceGraph, present: ReadonlySet<string>, boxOf: ReadonlyMap<string, string>): LaidOutEdge[] {
@@ -95,97 +111,234 @@ function visibleEdges(graph: ServiceGraph, present: ReadonlySet<string>, boxOf: 
   return [...out.values()].sort((a, b) => cmp(a.id, b.id));
 }
 
-export async function layoutServiceGraph(graph: ServiceGraph, opts: LayoutOptionsInput): Promise<LaidOut> {
+interface Block extends Size { pos: Map<string, Point> }
+
+/** One connected component of intra-namespace calls, laid out by dagre along the flow direction. */
+function dagreBlock(ids: readonly string[], edges: readonly [string, string][], vertical: boolean): Block {
+  const size = SERVICE_GRAPH_NODE_SIZE.service;
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: vertical ? 'TB' : 'LR', ranksep: INNER_RANK_GAP, nodesep: INNER_GAP, marginx: 0, marginy: 0 });
+  g.setDefaultEdgeLabel(() => ({}));
+  for (const id of ids) g.setNode(id, { width: size.width, height: size.height });
+  for (const [s, t] of edges) g.setEdge(s, t);
+  dagre.layout(g);
+  const raw = ids.map((id) => {
+    const p = g.node(id);
+    return { id, x: p.x - size.width / 2, y: p.y - size.height / 2 };
+  });
+  const minX = Math.min(...raw.map((p) => p.x));
+  const minY = Math.min(...raw.map((p) => p.y));
+  const pos = new Map(raw.map((p) => [p.id, { x: p.x - minX, y: p.y - minY }]));
+  return {
+    pos,
+    width: Math.max(...[...pos.values()].map((p) => p.x)) + size.width,
+    height: Math.max(...[...pos.values()].map((p) => p.y)) + size.height,
+  };
+}
+
+/** Services without intra-namespace calls: a grid whose column count keeps it roughly square. */
+function gridBlock(ids: readonly string[]): Block {
+  const { width, height } = SERVICE_GRAPH_NODE_SIZE.service;
+  const cellW = width + INNER_GAP;
+  const cellH = height + INNER_GAP;
+  const cols = Math.max(1, Math.ceil(Math.sqrt((ids.length * cellH) / cellW)));
+  const rows = Math.ceil(ids.length / cols);
+  const pos = new Map(ids.map((id, i) => [id, { x: (i % cols) * cellW, y: Math.floor(i / cols) * cellH }]));
+  return { pos, width: Math.min(cols, ids.length) * cellW - INNER_GAP, height: rows * cellH - INNER_GAP };
+}
+
+/**
+ * Lays out the services of one expanded namespace; positions are relative to the content origin.
+ * `budget.edges` is the remaining dagre edge budget for the whole layout (decremented here).
+ */
+function innerLayout(serviceIds: readonly string[], intra: readonly [string, string][], vertical: boolean, budget: { edges: number }): Block {
+  // Connected components over the (undirected) intra-namespace edges.
+  const root = new Map(serviceIds.map((id) => [id, id]));
+  const find = (id: string): string => {
+    let r = id;
+    while (root.get(r) !== r) r = root.get(r)!;
+    root.set(id, r);
+    return r;
+  };
+  for (const [s, t] of intra) {
+    const a = find(s); const b = find(t);
+    if (a !== b) root.set(a < b ? b : a, a < b ? a : b); // smallest id is the representative
+  }
+  const linked = new Set(intra.flat());
+  const comps = new Map<string, string[]>();
+  for (const id of serviceIds) {
+    if (!linked.has(id)) continue;
+    const r = find(id);
+    const list = comps.get(r);
+    if (list) list.push(id); else comps.set(r, [id]);
+  }
+  const blocks: Block[] = [];
+  const gridded = new Set(serviceIds.filter((id) => !linked.has(id)));
+  for (const [, ids] of [...comps.entries()].sort(([ra, a], [rb, b]) => b.length - a.length || cmp(ra, rb))) {
+    const set = new Set(ids);
+    const own = intra.filter(([s]) => set.has(s));
+    if (own.length > DAGRE_MAX_EDGES_PER_COMPONENT || own.length > budget.edges) { for (const id of ids) gridded.add(id); continue; }
+    budget.edges -= own.length;
+    blocks.push(dagreBlock(ids, own, vertical));
+  }
+  const isolated = serviceIds.filter((id) => gridded.has(id)); // keeps id order
+  if (isolated.length > 0) blocks.push(gridBlock(isolated));
+
+  // Shelf packing (left→right rows, wrapping downwards) into a roughly square area.
+  const area = blocks.reduce((s, b) => s + (b.width + INNER_GAP) * (b.height + INNER_GAP), 0);
+  const targetW = Math.max(...blocks.map((b) => b.width), Math.sqrt(area));
+  const pos = new Map<string, Point>();
+  let x = 0; let y = 0; let rowH = 0; let width = 0;
+  for (const b of blocks) {
+    if (x > 0 && x + b.width > targetW) { x = 0; y += rowH + INNER_GAP; rowH = 0; }
+    for (const [id, p] of b.pos) pos.set(id, { x: x + p.x, y: y + p.y });
+    width = Math.max(width, x + b.width);
+    rowH = Math.max(rowH, b.height);
+    x += b.width + INNER_GAP;
+  }
+  return { pos, width, height: y + rowH };
+}
+
+function compute(graph: ServiceGraph, opts: LayoutOptionsInput): LaidOut {
   const kindById = new Map(graph.nodes.map((n) => [n.id, n.kind]));
   const namespaces = graph.namespaces
     .map((ns) => ({ name: ns.name, serviceIds: ns.serviceIds.filter((id) => kindById.get(id) === 'service').sort(cmp) }))
-    .filter((ns) => ns.serviceIds.length > 0)
     .sort((a, b) => cmp(a.name, b.name));
 
   const boxOf = new Map<string, string>(); // hidden service id → collapsed leaf id
   const parentOf = new Map<string, string>(); // visible service id → group id
+  const owned = new Map<string, string[]>(); // namespace → its services (a service belongs to its first namespace)
   for (const ns of namespaces) {
-    for (const id of ns.serviceIds) (opts.collapsed.has(ns.name) ? boxOf : parentOf).set(id, groupId(ns.name));
+    const ids = ns.serviceIds.filter((id) => !boxOf.has(id) && !parentOf.has(id));
+    if (ids.length === 0) continue;
+    owned.set(ns.name, ids);
+    for (const id of ids) (opts.collapsed.has(ns.name) ? boxOf : parentOf).set(id, groupId(ns.name));
   }
 
   const edges = visibleEdges(graph, new Set(kindById.keys()), boxOf);
-  const hasIncoming = new Set(edges.map((e) => e.target));
-  const hasOutgoing = new Set(edges.map((e) => e.source));
+  const { vertical } = opts;
 
-  const leaf = (id: string, kind: GKind | 'namespace'): ElkNode => {
-    const layoutOptions: LayoutOptions = { 'elk.partitioning.partition': String(kind === 'namespace' ? PARTITION.service : PARTITION[kind]) };
-    if (kind === 'dns' && !hasIncoming.has(id)) layoutOptions['elk.layered.layering.layerConstraint'] = 'FIRST';
-    if (kind === 'datastore' && !hasOutgoing.has(id)) layoutOptions['elk.layered.layering.layerConstraint'] = 'LAST';
-    return { id, ...SERVICE_GRAPH_NODE_SIZE[kind], layoutOptions };
-  };
-
-  const children: ElkNode[] = [];
-  const nodesSorted = [...graph.nodes].sort((a, b) => cmp(a.id, b.id));
-  // Root-level leaves: everything except services owned by a listed namespace.
-  for (const n of nodesSorted) if (!boxOf.has(n.id) && !parentOf.has(n.id)) children.push(leaf(n.id, n.kind));
-  const groupIds = new Set<string>();
-  for (const ns of namespaces) {
-    const id = groupId(ns.name);
-    if (opts.collapsed.has(ns.name)) { children.push(leaf(id, 'namespace')); continue; }
-    groupIds.add(id);
-    const p = GROUP_PADDING;
-    children.push({
-      id,
-      layoutOptions: {
-        'elk.partitioning.partition': String(PARTITION.service),
-        'elk.padding': `[top=${p.top},left=${p.left},bottom=${p.bottom},right=${p.right}]`,
-      },
-      children: ns.serviceIds.map((sid) => leaf(sid, 'service')),
+  // ---- items -------------------------------------------------------------------------------------
+  const items: Item[] = [];
+  const leafItem = (id: string, col: number, size: Size): Item =>
+    ({ id, col, group: false, ...size, centers: new Map([[id, { x: size.width / 2, y: size.height / 2 }]]), children: [] });
+  for (const n of [...graph.nodes].sort((a, b) => cmp(a.id, b.id))) {
+    if (!boxOf.has(n.id) && !parentOf.has(n.id)) items.push(leafItem(n.id, COLUMN[n.kind], SERVICE_GRAPH_NODE_SIZE[n.kind]));
+  }
+  const intraOf = new Map<string, [string, string][]>();
+  for (const e of edges) {
+    const g = parentOf.get(e.source);
+    if (!g || g !== parentOf.get(e.target)) continue;
+    const list = intraOf.get(g);
+    if (list) list.push([e.source, e.target]); else intraOf.set(g, [[e.source, e.target]]);
+  }
+  const svc = SERVICE_GRAPH_NODE_SIZE.service;
+  const p = GROUP_PADDING;
+  const budget = { edges: DAGRE_MAX_EDGES_TOTAL };
+  for (const [name, ids] of owned) {
+    const id = groupId(name);
+    if (opts.collapsed.has(name)) { items.push(leafItem(id, SERVICES_COLUMN, SERVICE_GRAPH_NODE_SIZE.namespace)); continue; }
+    const inner = innerLayout(ids, intraOf.get(id) ?? [], vertical, budget);
+    const children = ids.map((sid) => ({ id: sid, x: p.left + inner.pos.get(sid)!.x, y: p.top + inner.pos.get(sid)!.y }));
+    items.push({
+      id, col: SERVICES_COLUMN, group: true,
+      width: p.left + inner.width + p.right, height: p.top + inner.height + p.bottom,
+      centers: new Map(children.map((c) => [c.id, { x: c.x + svc.width / 2, y: c.y + svc.height / 2 }])),
+      children,
     });
   }
-  if (children.length === 0) return { nodes: [], groups: [], edges: [] };
-  children.sort((a, b) => cmp(a.id, b.id));
+  if (items.length === 0) return { nodes: [], groups: [], edges: [] };
+  items.sort((a, b) => cmp(a.id, b.id));
 
-  const root: ElkNode = {
-    id: '__root__',
-    layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': opts.vertical ? 'DOWN' : 'RIGHT',
-      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-      'elk.partitioning.activate': 'true',
-      'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.spacing.nodeNode': '24',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-      'elk.padding': '[top=16,left=16,bottom=16,right=16]',
-      'elk.json.shapeCoords': 'PARENT',
-      'elk.json.edgeCoords': 'ROOT',
-    },
-    children,
-    edges: edges.map((e): ElkExtendedEdge => ({ id: e.id, sources: [e.source], targets: [e.target] })),
+  // ---- flow frame helpers ------------------------------------------------------------------------
+  const mainExt = (it: Size) => (vertical ? it.height : it.width);
+  const crossExt = (it: Size) => (vertical ? it.width : it.height);
+  const crossOf = (pt: Point) => (vertical ? pt.x : pt.y);
+
+  const itemOf = new Map<string, Item>();
+  for (const it of items) for (const id of it.centers.keys()) itemOf.set(id, it);
+  const links = new Map<Item, Link[]>(items.map((it) => [it, []]));
+  for (const e of edges) {
+    const a = itemOf.get(e.source); const b = itemOf.get(e.target);
+    if (!a || !b || a.col === b.col) continue;
+    const ca = a.centers.get(e.source)!; const cb = b.centers.get(e.target)!;
+    links.get(a)!.push({ other: b, otherCenter: cb, ownCenter: ca });
+    links.get(b)!.push({ other: a, otherCenter: ca, ownCenter: cb });
+  }
+
+  // ---- column ordering (barycenter) --------------------------------------------------------------
+  const order: Item[][] = Array.from({ length: COLUMN_COUNT }, (_, c) => items.filter((it) => it.col === c));
+  const start = new Map<Item, number>(); // cross-axis start of each item
+  const extent: number[] = new Array(COLUMN_COUNT).fill(1);
+  const stack = (c: number) => {
+    let cursor = 0;
+    for (const it of order[c]) { start.set(it, cursor); cursor += crossExt(it) + STACK_GAP; }
+    extent[c] = Math.max(1, cursor - STACK_GAP);
   };
+  for (let c = 0; c < COLUMN_COUNT; c++) stack(c);
+  const reorder = (c: number) => {
+    const key = new Map<Item, number>();
+    for (const it of order[c]) {
+      const ls = links.get(it)!;
+      key.set(it, ls.length
+        ? ls.reduce((s, l) => s + (start.get(l.other)! + crossOf(l.otherCenter)) / extent[l.other.col], 0) / ls.length
+        : (start.get(it)! + crossExt(it) / 2) / extent[c]);
+    }
+    order[c] = [...order[c]].sort((a, b) => key.get(a)! - key.get(b)! || cmp(a.id, b.id));
+    stack(c);
+  };
+  const sides = [COLUMN.gateway, COLUMN.dns, COLUMN.datastore];
+  for (const c of sides) reorder(c);
+  reorder(SERVICES_COLUMN);
+  for (const c of sides) reorder(c);
 
-  const engine = await getElk();
-  let res: ElkNode;
-  try {
-    res = await engine.layout(root);
-  } catch {
-    // ELK messages name nodes/options (graph ids): never pass them on.
-    throw new Error(LAYOUT_FAILED);
+  // ---- placement ---------------------------------------------------------------------------------
+  const placed = new Set<number>();
+  for (const c of [SERVICES_COLUMN, COLUMN.gateway, COLUMN.datastore, COLUMN.dns]) {
+    let prevEnd: number | null = null;
+    for (const it of order[c]) {
+      const ls = links.get(it)!.filter((l) => placed.has(l.other.col));
+      let s = ls.length
+        ? Math.max(0, ls.reduce((sum, l) => sum + start.get(l.other)! + crossOf(l.otherCenter) - crossOf(l.ownCenter), 0) / ls.length)
+        : 0;
+      if (prevEnd !== null) s = Math.max(s, prevEnd + STACK_GAP);
+      start.set(it, s);
+      prevEnd = s + crossExt(it);
+    }
+    placed.add(c);
+  }
+  const colExt = order.map((col) => Math.max(0, ...col.map(mainExt)));
+  const colStart: number[] = [];
+  let cursor = 0;
+  for (let c = 0; c < COLUMN_COUNT; c++) {
+    colStart[c] = cursor;
+    if (order[c].length > 0) cursor += colExt[c] + COLUMN_GAP;
   }
 
   const nodes: LaidOutNode[] = [];
   const groups: LaidOutGroup[] = [];
-  const sections = new Map<string, unknown>();
-  const collectEdges = (n: ElkNode) => {
-    for (const e of n.edges ?? []) sections.set(e.id, e.sections);
-    for (const c of n.children ?? []) collectEdges(c);
-  };
-  collectEdges(res);
-  const box = (n: ElkNode) => ({ x: n.x ?? 0, y: n.y ?? 0, width: n.width ?? 0, height: n.height ?? 0 });
-  for (const c of res.children ?? []) {
-    if (!groupIds.has(c.id)) { nodes.push({ id: c.id, ...box(c) }); continue; }
-    groups.push({ id: c.id, label: c.id.slice('ns:'.length), ...box(c) });
-    for (const s of c.children ?? []) nodes.push({ id: s.id, ...box(s), parentId: c.id });
+  for (const it of items) {
+    const main = MARGIN + colStart[it.col] + (colExt[it.col] - mainExt(it)) / 2;
+    const cross = MARGIN + start.get(it)!;
+    const box = { x: vertical ? cross : main, y: vertical ? main : cross, width: it.width, height: it.height };
+    if (!it.group) { nodes.push({ id: it.id, ...box }); continue; }
+    groups.push({ id: it.id, label: it.id.slice('ns:'.length), ...box });
+    for (const ch of it.children) nodes.push({ id: ch.id, x: ch.x, y: ch.y, width: svc.width, height: svc.height, parentId: it.id });
   }
 
   return {
     nodes: nodes.sort((a, b) => cmp(a.id, b.id)),
     groups: groups.sort((a, b) => cmp(a.id, b.id)),
-    edges: edges.map((e) => ({ ...e, sections: sections.get(e.id) })),
+    edges,
   };
+}
+
+/** Async for the canvas (which awaits it); rejects with a stable generic message on any failure. */
+export async function layoutServiceGraph(graph: ServiceGraph, opts: LayoutOptionsInput): Promise<LaidOut> {
+  try {
+    return compute(graph, opts);
+  } catch {
+    // Errors can name nodes (graph ids): never pass them on.
+    throw new Error(LAYOUT_FAILED);
+  }
 }

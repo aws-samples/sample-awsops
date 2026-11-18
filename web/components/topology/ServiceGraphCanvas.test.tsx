@@ -9,12 +9,14 @@ import { applyTerms } from '@/lib/i18n-terms';
 
 // ---- fakes -------------------------------------------------------------------------------------
 interface FakeNode { id: string; type: string; data: Record<string, unknown>; style?: Record<string, unknown>; parentId?: string; position: { x: number; y: number } }
-interface FakeEdge { id: string; source: string; target: string; label?: string; style?: Record<string, unknown>; data?: Record<string, unknown> }
+interface FakeEdge { id: string; source: string; target: string; type?: string; label?: string; style?: Record<string, unknown>; data?: Record<string, unknown> }
 interface FlowProps {
   nodes?: FakeNode[]; edges?: FakeEdge[]; nodeTypes?: Record<string, ComponentType<{ id: string; data: unknown }>>;
+  edgeTypes?: Record<string, ComponentType<Record<string, unknown>>>;
   onNodeClick?: (e: unknown, n: FakeNode) => void; onPaneClick?: (e: unknown) => void; children?: React.ReactNode;
 }
 const flow = vi.hoisted(() => ({ props: null as FlowProps | null }));
+const smooth = vi.hoisted(() => ({ fn: vi.fn((..._: unknown[]) => ['', 0, 0]) }));
 // Every dynamic() import (ReactFlow, Background, Controls) becomes this fake; only the one that
 // receives `nodes` is the flow. It renders the custom node components so clicks/labels are real.
 vi.mock('next/dynamic', () => ({
@@ -32,7 +34,7 @@ vi.mock('next/dynamic', () => ({
   },
 }));
 vi.mock('@xyflow/react', () => ({
-  Handle: () => null, BaseEdge: () => null, getSmoothStepPath: () => ['', 0, 0],
+  Handle: () => null, BaseEdge: () => null, getSmoothStepPath: (...a: unknown[]) => smooth.fn(...a),
   Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' }, MarkerType: { ArrowClosed: 'arrowclosed' },
 }));
 const layout = vi.hoisted(() => ({ fn: vi.fn() }));
@@ -277,13 +279,25 @@ describe('ServiceGraphCanvas', () => {
     expect(screen.queryByText(note)).toBeNull();
   });
 
+  it('draws every edge as a smoothstep path between the node handles (the layout precomputes no route)', async () => {
+    const inp = input();
+    render(<ServiceGraphCanvas graph={graphOf(inp)} input={inp} query="" theme="light" />);
+    await waitFor(() => expect(flowNodes().length).toBeGreaterThan(0));
+    const edges = flow.props!.edges!;
+    expect(edges.length).toBeGreaterThan(0);
+    const Edge = flow.props!.edgeTypes![edges[0].type!];
+    smooth.fn.mockClear();
+    render(<svg><Edge id={edges[0].id} sourceX={1} sourceY={2} targetX={30} targetY={4} sourcePosition="right" targetPosition="left" data={edges[0].data} /></svg>);
+    expect(smooth.fn).toHaveBeenCalledWith(expect.objectContaining({ sourceX: 1, sourceY: 2, targetX: 30, targetY: 4, sourcePosition: 'right', targetPosition: 'left' }));
+  });
+
   it('shows an error state when the layout fails, and retries', async () => {
-    layout.fn.mockRejectedValueOnce(new Error('elk exploded'));
+    layout.fn.mockRejectedValueOnce(new Error('layout exploded: svc:shop/api'));
     const inp = input();
     render(<ServiceGraphCanvas graph={graphOf(inp)} input={inp} query="" theme="light" />);
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.getByText('그래프를 배치하지 못했습니다.')).toBeTruthy();
-    expect(screen.queryByText(/elk exploded/)).toBeNull();
+    expect(screen.queryByText(/layout exploded|svc:shop/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     await waitFor(() => expect(flowNodes().length).toBeGreaterThan(0));
     expect(screen.queryByRole('alert')).toBeNull();

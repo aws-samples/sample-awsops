@@ -2,8 +2,9 @@
 
 // Namespaced (Kiali-style, layered) renderer for the K8s service graph.
 // Columns: DNS | Gateway | namespace boxes (services) | datastores — positions come from
-// `layoutServiceGraph` (elkjs), which is imported DYNAMICALLY so elk stays in a lazy chunk.
-// Only `import type` from '@/lib/k8s-graph-layout' is allowed in this file for that reason.
+// `layoutServiceGraph` (dagre + column placement), imported DYNAMICALLY so the layout module is
+// loaded only once a graph is drawn; only `import type` from '@/lib/k8s-graph-layout' is used here.
+// The layout precomputes no edge routes: every edge is a smoothstep path between the node handles.
 // Pods and Nodes are never graph nodes: they appear only in ServiceDetailPanel.
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
@@ -164,21 +165,22 @@ const NamespaceNode = memo(function NamespaceNode({ data }: NodeProps) {
 const nodeTypes = { group: GroupNode, namespace: NamespaceNode, card: CardNode, diamond: DiamondNode, square: SquareNode };
 
 // ---- edge component ----------------------------------------------------------------------------
-interface ElkPoint { x: number; y: number }
-interface ElkSection { startPoint: ElkPoint; endPoint: ElkPoint; bendPoints?: ElkPoint[] }
-interface ElkEdgeData extends Record<string, unknown> { sections?: unknown }
+interface RoutePoint { x: number; y: number }
+interface RouteSection { startPoint: RoutePoint; endPoint: RoutePoint; bendPoints?: RoutePoint[] }
+interface RoutedEdgeData extends Record<string, unknown> { sections?: unknown }
 
-function sectionPoints(sections: unknown): ElkPoint[] | null {
+/** A precomputed route (ROOT coords) if the layout supplies one; the current layout never does. */
+function sectionPoints(sections: unknown): RoutePoint[] | null {
   if (!Array.isArray(sections) || sections.length !== 1) return null;
-  const s = sections[0] as Partial<ElkSection>;
+  const s = sections[0] as Partial<RouteSection>;
   if (!s?.startPoint || !s.endPoint) return null;
   return [s.startPoint, ...(s.bendPoints ?? []), s.endPoint];
 }
 
-/** Draws elk's orthogonal route (ROOT coords, same space as the flow); falls back to smoothstep. */
-function ElkEdge(props: EdgeProps) {
+/** Draws a precomputed route when present (ROOT coords, same space as the flow); otherwise smoothstep. */
+function RoutedEdge(props: EdgeProps) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, label, data } = props;
-  const pts = sectionPoints((data as ElkEdgeData | undefined)?.sections);
+  const pts = sectionPoints((data as RoutedEdgeData | undefined)?.sections);
   let path: string; let labelX: number; let labelY: number;
   if (pts) {
     path = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x},${p.y}`).join(' ');
@@ -193,7 +195,7 @@ function ElkEdge(props: EdgeProps) {
       labelX={labelX} labelY={labelY} labelStyle={{ fontSize: 10 }} labelShowBg labelBgPadding={[3, 1]} labelBgBorderRadius={3} />
   );
 }
-const edgeTypes = { elk: ElkEdge };
+const edgeTypes = { routed: RoutedEdge };
 
 function edgeStyle(evidence: GEdge['evidence'], theme: Theme): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
   if (evidence.includes('trace')) return { stroke: EDGE_COLORS.trace[theme], strokeWidth: 1.8 };
@@ -318,9 +320,9 @@ export default function ServiceGraphCanvas({ graph, input, query, theme, onSelec
       const rps = e.count === 1 && !e.id.startsWith('agg:') ? edgeById.get(e.id)?.metric?.rps : undefined;
       const label = e.id.startsWith('agg:') ? `×${e.count}` : typeof rps === 'number' && Number.isFinite(rps) ? formatRps(rps) : undefined;
       return {
-        id: e.id, source: e.source, target: e.target, type: 'elk', style,
+        id: e.id, source: e.source, target: e.target, type: 'routed', style,
         markerEnd: { type: MarkerType.ArrowClosed, color: String(style.stroke), width: 14, height: 14 },
-        data: { sections: e.sections } satisfies ElkEdgeData,
+        data: { sections: e.sections } satisfies RoutedEdgeData,
         ...(label ? { label } : {}),
       };
     });

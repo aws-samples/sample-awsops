@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutServiceGraph, collapsedNodeId, groupId, type LaidOut } from './k8s-graph-layout';
+import { layoutServiceGraph, collapsedNodeId, groupId, GROUP_PADDING, SERVICE_GRAPH_NODE_SIZE, type LaidOut } from './k8s-graph-layout';
 import type { Evidence, GEdge, GKind, GNode, ServiceGraph } from './k8s-service-graph';
 
 const gnode = (id: string, kind: GKind, namespace: string | null = null): GNode => ({ id, kind, label: id, namespace, meta: {} });
@@ -89,8 +89,8 @@ function expectContainedAndDisjoint(g: ServiceGraph, out: LaidOut) {
     for (const id of ns.serviceIds) {
       const n = out.nodes.find((x) => x.id === id)!;
       expect(n.parentId).toBe(groupId(ns.name));
-      expect(n.x).toBeGreaterThanOrEqual(0);
-      expect(n.y).toBeGreaterThanOrEqual(0);
+      expect(n.x).toBeGreaterThanOrEqual(GROUP_PADDING.left);
+      expect(n.y, `${id} below the label header`).toBeGreaterThanOrEqual(GROUP_PADDING.top);
       expect(n.x + n.width).toBeLessThanOrEqual(grp!.width);
       expect(n.y + n.height).toBeLessThanOrEqual(grp!.height);
     }
@@ -135,17 +135,15 @@ describe('layoutServiceGraph', () => {
     expectContainedAndDisjoint(g, out);
   });
 
-  it('keeps every edge, cross-namespace ones included, with root-coordinate sections', async () => {
+  it('keeps every edge, cross-namespace ones included, with no precomputed route sections', async () => {
     const g = fixture();
     const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
     expect(out.edges.map((e) => e.id)).toEqual(g.edges.map((e) => e.id));
     for (const e of out.edges) {
       const src = g.edges.find((x) => x.id === e.id)!;
       expect(e).toMatchObject({ source: src.source, target: src.target, evidence: src.evidence, count: 1, edgeIds: [src.id] });
-      const sec = (e.sections as { startPoint: { x: number; y: number }; endPoint: { x: number; y: number } }[])[0];
-      const inside = (p: { x: number; y: number }, r: Rect) => p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1;
-      expect(inside(sec.startPoint, absRect(out, e.source)), `${e.id} start`).toBe(true);
-      expect(inside(sec.endPoint, absRect(out, e.target)), `${e.id} end`).toBe(true);
+      // The canvas routes every edge itself (smoothstep between handles).
+      expect(e.sections).toBeUndefined();
     }
   });
 
@@ -221,11 +219,133 @@ describe('layoutServiceGraph', () => {
     expect(b).toEqual(a);
   });
 
-  it('gives the same result for overlapping calls on the shared elk instance', async () => {
+  it('gives the same result for overlapping calls', async () => {
     const g = fixture();
     const seq = [await layoutServiceGraph(g, { collapsed: NONE, vertical: false }), await layoutServiceGraph(g, { collapsed: NONE, vertical: true })];
     const par = await Promise.all([layoutServiceGraph(g, { collapsed: NONE, vertical: false }), layoutServiceGraph(g, { collapsed: NONE, vertical: true })]);
     expect(par).toEqual(seq);
+  });
+
+  it('is input-order independent when vertical too', async () => {
+    const g = fixture();
+    const shuffled: ServiceGraph = {
+      ...g,
+      namespaces: [...g.namespaces].reverse().map((n) => ({ ...n, serviceIds: [...n.serviceIds].reverse() })),
+      nodes: [...g.nodes].reverse(), edges: [...g.edges].reverse(),
+    };
+    expect(await layoutServiceGraph(shuffled, { collapsed: NONE, vertical: true })).toEqual(await layoutServiceGraph(g, { collapsed: NONE, vertical: true }));
+  });
+
+  it('skips dangling edges whose endpoints are not graph nodes', async () => {
+    const g = fixture();
+    g.edges.push(gedge('svc:shop/api', 'ds:rds:ghost'), gedge('gw:ghost', 'svc:shop/web'));
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    expect(out.edges.some((e) => e.id.includes('ghost'))).toBe(false);
+    expect(out.nodes.some((n) => n.id.includes('ghost'))).toBe(false);
+    expect(out.edges).toHaveLength(g.edges.length - 2);
+  });
+
+  it('keeps isolated DNS, gateway and datastore nodes in their own columns', async () => {
+    const g = fixture();
+    g.nodes.push(gnode('dns:lonely.example.com', 'dns'), gnode('gw:shop/lonely', 'gateway', 'shop'), gnode('ds:rds:lonely', 'datastore'));
+    for (const vertical of [false, true]) {
+      const out = await layoutServiceGraph(g, { collapsed: NONE, vertical });
+      expect(out.nodes.filter((n) => n.id.includes('lonely')).every((n) => n.parentId === undefined)).toBe(true);
+      expectColumns(g, out, vertical ? 'y' : 'x');
+      expectContainedAndDisjoint(g, out);
+    }
+  });
+
+  it('places a service whose namespace is not listed as a root-level node in the services column', async () => {
+    const g = fixture();
+    g.nodes.push(gnode('svc:orphan/x', 'service', 'orphan'));
+    g.edges.push(gedge('gw:shop/web', 'svc:orphan/x', ['routing']), gedge('svc:orphan/x', 'ds:rds:orders'));
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const orphan = out.nodes.find((n) => n.id === 'svc:orphan/x')!;
+    expect(orphan.parentId).toBeUndefined();
+    expect(orphan).toMatchObject(SERVICE_GRAPH_NODE_SIZE.service);
+    expect(out.groups.some((x) => x.id === 'ns:orphan')).toBe(false);
+    expectColumns(g, out, 'x');
+    expectContainedAndDisjoint(g, out);
+  });
+
+  it('wraps services without intra-namespace edges into a compact grid', async () => {
+    const svcs = Array.from({ length: 9 }, (_, i) => `s${i}`);
+    for (const vertical of [false, true]) {
+      const g = graphOf({ prod: svcs }, [], []);
+      const out = await layoutServiceGraph(g, { collapsed: NONE, vertical });
+      const grp = out.groups[0];
+      const kids = out.nodes.filter((n) => n.parentId === grp.id);
+      expect(kids).toHaveLength(9);
+      expect(new Set(kids.map((n) => n.x)).size, 'more than one grid column').toBeGreaterThan(1);
+      expect(new Set(kids.map((n) => n.y)).size, 'more than one grid row').toBeGreaterThan(1);
+      for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) expect(overlaps(kids[i], kids[j])).toBe(false);
+      expect(Math.max(grp.width / grp.height, grp.height / grp.width)).toBeLessThanOrEqual(2.5);
+      expectContainedAndDisjoint(g, out);
+    }
+  });
+
+  it('keeps a 300-service namespace without internal edges roughly square', async () => {
+    const g = graphOf({ big: Array.from({ length: 300 }, (_, i) => `s${String(i).padStart(3, '0')}`) }, [], []);
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const grp = out.groups[0];
+    expect(Math.max(grp.width / grp.height, grp.height / grp.width)).toBeLessThanOrEqual(2);
+    expectContainedAndDisjoint(g, out);
+  });
+
+  it('bounds the time spent on a dense call mesh inside one namespace (grid fallback)', async () => {
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const names = Array.from({ length: 300 }, (_, i) => `s${String(i).padStart(3, '0')}`);
+    const edges = new Map<string, GEdge>();
+    for (let k = 0; k < 900; k++) {
+      const a = `svc:mesh/${names[Math.floor(rnd() * 300)]}`; const b = `svc:mesh/${names[Math.floor(rnd() * 300)]}`;
+      if (a !== b) edges.set(`${a}->${b}`, gedge(a, b));
+    }
+    const g = graphOf({ mesh: names }, [], [...edges.values()]);
+    const t0 = performance.now();
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    expect(performance.now() - t0).toBeLessThan(5000);
+    const grp = out.groups[0];
+    expect(Math.max(grp.width / grp.height, grp.height / grp.width)).toBeLessThanOrEqual(2);
+    expectContainedAndDisjoint(g, out);
+  });
+
+  it('uses the intra-namespace call direction inside a box and grids the unconnected rest', async () => {
+    const g = graphOf({ prod: ['a', 'b', 'c', 'x', 'y'] }, [], [gedge('svc:prod/a', 'svc:prod/b'), gedge('svc:prod/b', 'svc:prod/c')]);
+    const horiz = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const at = (o: LaidOut, id: string) => o.nodes.find((n) => n.id === id)!;
+    expect(at(horiz, 'svc:prod/a').x).toBeLessThan(at(horiz, 'svc:prod/b').x);
+    expect(at(horiz, 'svc:prod/b').x).toBeLessThan(at(horiz, 'svc:prod/c').x);
+    const vert = await layoutServiceGraph(g, { collapsed: NONE, vertical: true });
+    expect(at(vert, 'svc:prod/a').y).toBeLessThan(at(vert, 'svc:prod/b').y);
+    expect(at(vert, 'svc:prod/b').y).toBeLessThan(at(vert, 'svc:prod/c').y);
+    expectContainedAndDisjoint(g, horiz);
+    expectContainedAndDisjoint(g, vert);
+  });
+
+  it('orders boxes and leaves within each column by the barycenter of their neighbours', async () => {
+    // Id order alone would cross every link: gw:a→ns zeta, gw:b→ns alpha; alpha→ds:z, zeta→ds:a.
+    const g = graphOf({ alpha: ['s'], zeta: ['s'] },
+      [gnode('gw:a', 'gateway'), gnode('gw:b', 'gateway'), gnode('ds:a', 'datastore'), gnode('ds:z', 'datastore'),
+        gnode('dns:a', 'dns'), gnode('dns:b', 'dns')],
+      [gedge('dns:a', 'gw:b'), gedge('dns:b', 'gw:a'), gedge('gw:a', 'svc:zeta/s'), gedge('gw:b', 'svc:alpha/s'),
+        gedge('svc:alpha/s', 'ds:z'), gedge('svc:zeta/s', 'ds:a')]);
+    for (const vertical of [false, true]) {
+      for (const collapsed of [NONE, new Set(['alpha', 'zeta'])]) {
+        const out = await layoutServiceGraph(g, { collapsed, vertical });
+        const cross = (id: string) => {
+          const r = out.groups.find((x) => x.id === id) ?? absRect(out, id);
+          return vertical ? r.x + r.width / 2 : r.y + r.height / 2;
+        };
+        // Every chain dns → gw → ns → ds keeps its rank in each column: no crossings.
+        const before = (a: string, b: string) => cross(a) < cross(b);
+        expect(before('gw:b', 'gw:a')).toBe(before('dns:a', 'dns:b'));
+        expect(before('ns:alpha', 'ns:zeta')).toBe(before('gw:b', 'gw:a'));
+        expect(before('ds:z', 'ds:a')).toBe(before('ns:alpha', 'ns:zeta'));
+        expectColumns(g, out, vertical ? 'y' : 'x');
+      }
+    }
   });
 
   it('lays out a 300-service graph with every namespace collapsed in well under 5 s', async () => {
@@ -243,5 +363,21 @@ describe('layoutServiceGraph', () => {
     });
     expect(out.edges.reduce((s, e) => s + e.count, 0)).toBe(hiddenCross.length);
     expectColumns(g, out, 'x');
+  });
+
+  it('lays out a 300-service graph with every namespace expanded in well under 5 s, without overlaps', async () => {
+    const g = synthetic300();
+    const t0 = performance.now();
+    const out = await layoutServiceGraph(g, { collapsed: NONE, vertical: false });
+    const ms = performance.now() - t0;
+    expect(ms).toBeLessThan(5000);
+    expect(out.groups).toHaveLength(15);
+    expect(out.nodes).toHaveLength(g.nodes.length);
+    expectContainedAndDisjoint(g, out);
+    for (const grp of out.groups) expect(Math.max(grp.width / grp.height, grp.height / grp.width), grp.id).toBeLessThanOrEqual(4);
+    expectColumns(g, out, 'x');
+    const vert = await layoutServiceGraph(g, { collapsed: NONE, vertical: true });
+    expectContainedAndDisjoint(g, vert);
+    expectColumns(g, vert, 'y');
   });
 });
