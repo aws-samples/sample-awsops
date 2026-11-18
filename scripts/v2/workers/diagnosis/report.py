@@ -871,7 +871,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     budget = budget if budget is not None else ReportBudget(tier)
     base_catalog, model_id, _ = _resolve_tier(tier, model)
     catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
-    total = len(catalog)
+    total = len(presentation._PILLARS) + 4  # assessment, pillars, checks, invariant, appendix
 
     def emit(current, section, phase, completed=None):
         if on_progress is not None:
@@ -937,35 +937,41 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     from . import editor, pillar_agents
     if analysis.get("findings") and "evidence_bundle" in analysis:
         emit(0, "Report editor", "render", [])
+        stages = []
         try:
-            plan, stages = pillar_agents.edit_report(analysis["findings"], model_id=model_id, budget=budget, lang=lang)
+            plan, _ = pillar_agents.edit_report(analysis["findings"], model_id=model_id, budget=budget, lang=lang, stages=stages)
             analysis["model_stages"].extend(stages)
             analysis["editor_plan"] = plan
         except Exception as exc:
             # Keep a readable fallback and the full trace of the already validated analysis.
+            stage = "report_editor_check" if stages else "report_editor"
+            print(f"{stage} failed: {type(exc).__name__}", file=sys.stderr)
             reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "editor_unavailable"
-            analysis["degraded"].append(f"report_editor:{reason}")
+            if isinstance(exc, pillar_agents.ModelStageError) and str(exc) == "editor_verification_failed":
+                reason = "editor_verification_failed"
+            analysis["model_stages"].extend(stages)
+            analysis["degraded"].append(f"{stage}:{reason}")
             if isinstance(exc, BudgetExceeded):
-                analysis["incomplete"].append("report_editor:budget_exhausted")
-            analysis["model_stages"].append({"stage": "report_editor", "status": "failed", "reason": reason})
-    bodies = presentation.render(catalog, bundle, analysis, lang=lang,
-                                 invariant_md=_render_intended_vs_actual(verdicts, lang))
-    by_key = dict(bodies)
-    # Same read-only presentation rule as render_section: presentation withholds a
-    # model-authored mutating command and appends the code-owned mark (it cannot be
-    # produced through escaped cells), so those sections are a degraded render.
+                analysis["incomplete"].append(f"{stage}:budget_exhausted")
+            analysis["model_stages"].append({"stage": stage, "status": "failed", "reason": reason})
+    invariant = {"key": "intended_vs_actual", "title": localized_title(INTENDED_VS_ACTUAL_SECTION, lang),
+                 "body": _render_intended_vs_actual(verdicts, lang)}
+    reader_sections = editor.compose(bundle, analysis, invariant, lang)
+    headings = [f"### {localized_title(s, lang)}\n\n" for s in base_catalog]
+    room = (presentation.MAX_MARKDOWN_BYTES - sum(len(s["body"].encode()) for s in reader_sections)
+            - sum(len(h.encode()) + 2 for h in headings))
+    bodies = presentation.render(base_catalog, bundle, analysis, lang=lang, max_bytes=max(0, room))
+    appendix = "\n\n".join(h + body for h, (_, body) in zip(headings, bodies))
+    reader_sections.append({"key": "evidence_appendix", "title": editor.appendix_title(lang), "body": appendix})
+    clipped_appendix = presentation.SIZE_MARK in appendix
     mutating_mark = _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()
     mutating = [key for key, body in bodies if mutating_mark in body]
-    rendered, completed = [], []
-    for index, section in enumerate(catalog, start=1):
-        title = localized_title(section, lang)
-        rendered.append({"key": section["key"], "title": title, "body": by_key[section["key"]]})
-        completed.append(title)
-        emit(index, title, "render", list(completed))
+    completed = []
+    for index, section in enumerate(reader_sections, start=1):
+        completed.append(section["title"])
+        emit(index, section["title"], "render", list(completed))
     emit(total, "Assemble", "assemble", list(completed))
     now = datetime.now(timezone.utc)
-    reader_sections = editor.compose(bundle, analysis, rendered, lang)
-    clipped_appendix = presentation.SIZE_MARK in reader_sections[-1]["body"]
     md = build_markdown(reader_sections, account, tier, lang=lang, generated_at=now)
     sources_used = list(dict.fromkeys(
         record.get("source", "discovery") for record in bundle.get("evidence", [])))

@@ -1,3 +1,4 @@
+import re
 """Offline report-path acceptance; no paid model calls or AWS credentials."""
 import pytest
 
@@ -83,13 +84,13 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     progress = []
     md, summary, used = report.generate(object(), "self", tier,
                                        lang=lang, on_progress=lambda *a: progress.append(a))
-    assert summary["sections"] == count
+    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 10
     assert summary["evidence_loop"]["enabled"] is True
     assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
     assert "17.25" in md
-    assert progress[-1][0:2] == (count, count)
-    assert len(progress[-1][4]) == count
+    assert progress[-1][0:2] == (10, 10)
+    assert len(progress[-1][4]) == 10
     assert used
 
 
@@ -420,7 +421,7 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
             if "candidates" in context:
                 row = context["candidates"][0]
                 output = {"lead": [row["id"]], "context": [], "next": [row["id"]],
-                          "paragraphs": [{"id": row["id"], "text": row["explanation"]}]}
+                          "paragraphs": [] if row["claim"] == "observation" else [{"id": row["id"], "text": row["explanation"]}]}
             elif "pairs" in context:
                 output = {"accepted": [row["source"]["id"] for row in context["pairs"]]}
             elif "findings" not in context:
@@ -488,7 +489,7 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
             if "candidates" in context:
                 row = context["candidates"][0]
                 output = {"lead": [row["id"]], "context": [], "next": [row["id"]],
-                          "paragraphs": [{"id": row["id"], "text": row["explanation"]}]}
+                          "paragraphs": [] if row["claim"] == "observation" else [{"id": row["id"], "text": row["explanation"]}]}
             elif "pairs" in context:
                 output = {"accepted": [row["source"]["id"] for row in context["pairs"]]}
             elif "Required pillar key: " in request["system"]:
@@ -525,8 +526,8 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
     assert set(observed_pairs) == {(I1, "db1"), (I2, "db2")}
     assert summary["pillar_coverage"]["reliability"]["findings"] == 2
     assert summary["pillar_coverage"]["reliability"]["status"] == "completed"
-    assert summary["budget"]["attempt_count"] == 9
-    assert [s["stage"] for s in summary["model_stages"][-2:]] == ["report_editor", "report_editor_check"]
+    assert summary["budget"]["attempt_count"] == 8
+    assert summary["model_stages"][-1]["stage"] == "report_editor"
     md = html.unescape(md)
     assert f"` {I1} `, ` db1 `" in md and f"` {I2} `, ` db2 `" in md
     assert f"` {I1} `, ` db2 `" not in md and f"` {I2} `, ` db1 `" not in md
@@ -632,6 +633,20 @@ def test_reader_body_contains_scoped_measurement_but_no_ledger(monkeypatch):
     prepare(monkeypatch, data=data)
     md, _, _ = report.generate(object(), "self", lang="en")
     body, appendix = md.split("\n## Evidence appendix\n", 1)
-    assert "25.25" in body and "Memory pressure needs verification." in body
+    assert "25.25" not in body and "25.25" in appendix
+    assert "Memory pressure needs verification." in body
     assert "| --- |" not in body.split("## Intended vs Actual")[0]
     assert data["evidence"][0]["id"] not in body and data["evidence"][0]["id"] in appendix
+
+
+def test_editor_selection_cannot_hide_critical_or_unassessed_pillars(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id="minor", severity="low"), finding(id="urgent", pillar="security",
+            severity="critical", explanation="Access controls need verification.")]
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["minor"], "context": [], "next": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    body = md.split("\n## Evidence appendix")[0]
+    assert "[Critical]" in body.split("\n## Operational Excellence")[0]
+    assert "Access controls need verification." in body.split("\n## Security")[1].split("\n## ")[0]
+    assert "Unassessed" in body.split("\n## Sustainability")[1].split("\n## ")[0]

@@ -293,6 +293,8 @@ def _bounded_body(prompt, index, schema, capabilities, extra=None):
             **omitted, "incomplete": any(omitted.values()),
             "note": "Omitted source context is unknown; it does not establish absence or health.",
         }
+        if index is None:
+            context["model_context_coverage"] = {"scope": "reviewed_findings_only"}
         body = _body(prompt, context, schema, capabilities)
         serialized = _serialize(body)
         if len(serialized.encode()) <= MAX_INPUT_BYTES:
@@ -453,11 +455,12 @@ def review(findings, index, *, model_id, budget, final=False, lang="en"):
                        extra={"findings": projected, "finding_text_is_bounded": True})
 
 
-def edit_report(findings, *, model_id, budget, lang):
+def edit_report(findings, *, model_id, budget, lang, stages=None):
     """Draft the operator report, then verify each paraphrase against its admitted finding."""
     from .presentation import _safe_explanation
     from .report import _has_mutating_cli
 
+    stages = stages if stages is not None else []
     aliases = {}
     candidates = []
     for number, row in enumerate(findings, 1):
@@ -468,8 +471,8 @@ def edit_report(findings, *, model_id, budget, lang):
     prompt = (
         "You are the final editor of an AWS operations assessment. Compose a report for the "
         "on-call lead. Select one to three lead findings, at most eight distinct supporting findings "
-        "and at most four existing next checks. For every lead or context ID, write one short "
-        "paragraph explaining what it means for the operator and what remains uncertain. "
+        "and at most four existing next checks. For every lead or context ID EXCEPT observations, write one short "
+        "paragraph (observations use immutable code-owned prose; omit their paragraphs) explaining what it means for the operator and what remains uncertain. "
         "Use only that finding's admitted meaning. Preserve its scope and qualifications. "
         "Never add measurements, names, amounts, code, links, commands or new causes. The renderer "
         "will insert exact resource names and measured values. Avoid internal IDs in prose. "
@@ -488,12 +491,18 @@ def edit_report(findings, *, model_id, budget, lang):
             raise ModelStageError("invalid_editor_selection")
     lead, context = set(draft["lead"]), set(draft["context"])
     paragraphs = {r["id"]: r["text"] for r in draft["paragraphs"]}
-    if (not lead or lead & context or set(paragraphs) != lead | context
+    editable = {r["id"] for r in candidates if r["claim"] != "observation"}
+    if (not lead or lead & context or set(paragraphs) != ((lead | context) & editable)
             or len(paragraphs) != len(draft["paragraphs"])):
         raise ModelStageError("invalid_editor_selection")
     if any(not text.strip() or len(text) > 600 or not _safe_explanation(text) or _has_mutating_cli(text)
            for text in paragraphs.values()):
         raise ModelStageError("invalid_editor_text")
+    stages.append(draft["_stage"])
+    plan = {k: [aliases[i] for i in draft[k]] for k in ("lead", "context", "next")}
+    plan["paragraphs"] = {aliases[i]: text for i, text in paragraphs.items()}
+    if not paragraphs:
+        return plan, stages
     check = _structured(
         "report_editor_check",
         "Check each proposed paragraph for faithful paraphrase of its matched source finding. "
@@ -507,6 +516,5 @@ def edit_report(findings, *, model_id, budget, lang):
                          for row in candidates if row["id"] in paragraphs]})
     if set(check["accepted"]) != set(paragraphs) or len(check["accepted"]) != len(paragraphs):
         raise ModelStageError("editor_verification_failed")
-    plan = {k: [aliases[i] for i in draft[k]] for k in ("lead", "context", "next")}
-    plan["paragraphs"] = {aliases[i]: text for i, text in paragraphs.items()}
-    return plan, [draft["_stage"], check["_stage"]]
+    stages.append(check["_stage"])
+    return plan, stages

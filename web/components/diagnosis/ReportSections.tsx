@@ -71,9 +71,11 @@ function SeverityIcon({ severity, title }: { severity: Severity; title: string }
 export default function ReportSections({ markdown }: { markdown: string }) {
   const { tt } = useI18n();
   const { preamble, sections } = useMemo(() => splitSections(markdown), [markdown]);
-  const initialCollapsed = useMemo(() => new Set(sections.flatMap((section, i) =>
-    ['근거 부록', 'Evidence appendix', '根拠資料', '证据附录'].includes(section.title) ? [i] : []
-  )), [sections]);
+  const initialCollapsed = useMemo(() => {
+    const toc = markdown.split(/^## /m, 1)[0].split('\n');
+    return new Set(sections.flatMap((section, i) =>
+      toc.includes(`- [${section.title}](#evidence_appendix)`) ? [i] : []));
+  }, [markdown, sections]);
   const [collapsed, setCollapsed] = useState<Set<number>>(initialCollapsed);
   const refs = useRef<(HTMLElement | null)[]>([]);
   // Switching to another report must not carry report A's collapsed indexes onto report B.
