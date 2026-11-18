@@ -16,6 +16,7 @@ import type { DbRef, SecretRef } from './eks-db-refs';
 import type { DbResource } from './db-ref-resolve';
 import type { TraceOverlay } from './k8s-trace-overlay';
 import { extractManagedDbHosts } from './db-endpoint';
+import { matchDnsToGateways, type DnsRecord } from './k8s-dns';
 
 export type Evidence = 'trace' | 'config' | 'routing';
 export type GKind = 'dns' | 'gateway' | 'service' | 'datastore';
@@ -28,9 +29,6 @@ export interface ServiceGraph {
   namespaces: { name: string; serviceIds: string[]; system: boolean }[];
   nodes: GNode[]; edges: GEdge[]; notes: string[];
 }
-
-// Placeholder until the DNS module (k8s-dns.ts) owns this type; the builder ignores its content for now.
-export interface DnsRecord { name: string; target: string }
 
 export interface GraphInput {
   services: ServiceRow[]; endpoints: EndpointRow[]; pods: PodRow[]; nodes: NodeRow[]; ingresses: IngressRow[];
@@ -126,6 +124,32 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
     for (const b of ing.backends) {
       const target = svcId(ing.namespace, b.service);
       if (nodes.get(target)?.kind === 'service') addEdge(id, target, 'routing');
+    }
+  }
+
+  // LoadBalancer Services with a provisioned hostname are gateways too. Ids: Ingress gateways are
+  // `gw:<ns>/<name>`, LB Services `gw:lb:<ns>/<svcName>` (the extra `lb:` segment keeps them collision-free).
+  const gatewayHosts: { id: string; host: string }[] = [];
+  for (const ing of input.ingresses) if (ing.lbHostname) gatewayHosts.push({ id: `gw:${ing.namespace}/${ing.name}`, host: ing.lbHostname });
+  for (const s of input.services) {
+    if (s.type !== 'LoadBalancer' || !s.lbHostname) continue;
+    const id = `gw:lb:${s.namespace}/${s.name}`;
+    nodes.set(id, {
+      id, kind: 'gateway', label: s.name, namespace: s.namespace, sub: s.lbHostname, status: 'neutral',
+      meta: { name: s.name, namespace: s.namespace, lbHostname: s.lbHostname, source: 'service' },
+    });
+    addEdge(id, svcId(s.namespace, s.name), 'routing');
+    gatewayHosts.push({ id, host: s.lbHostname });
+  }
+  // DNS → gateway by exact host equality only; records matching nothing create no nodes.
+  for (const { record, gatewayHost } of matchDnsToGateways(input.dns ?? [], gatewayHosts.map((g) => g.host))) {
+    const dnsName = record.name.trim().toLowerCase().replace(/\.+$/, '');
+    const dnsId = `dns:${dnsName}`;
+    if (!nodes.has(dnsId)) {
+      nodes.set(dnsId, { id: dnsId, kind: 'dns', label: dnsName, namespace: null, status: 'neutral', meta: { name: dnsName } });
+    }
+    for (const g of gatewayHosts) {
+      if (g.host.toLowerCase().replace(/\.+$/, '') === gatewayHost.toLowerCase().replace(/\.+$/, '')) addEdge(dnsId, g.id, 'routing');
     }
   }
 

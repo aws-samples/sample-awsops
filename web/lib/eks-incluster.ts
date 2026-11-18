@@ -239,6 +239,8 @@ export interface ServiceRow {
   /** spec.selector (gap L229 — the Service Resources join key). Absent on selectorless
    *  Services (ExternalName / manual-Endpoints) — those join nothing, disclosed in the UI. */
   selector?: Record<string, string>;
+  /** status.loadBalancer.ingress[0].hostname — only for type LoadBalancer with a provisioned hostname. */
+  lbHostname?: string;
 }
 export interface NamespaceRow { name: string; status: string; age: string }
 /** A Service's backing pod IPs. name == the Service name (Endpoints object name). */
@@ -407,6 +409,7 @@ export function normalizeDeployment(it: K8sItem): DeploymentRow {
 }
 
 export function normalizeService(it: K8sItem): ServiceRow {
+  const lbHostname = it.spec?.type === 'LoadBalancer' ? it.status?.loadBalancer?.ingress?.[0]?.hostname : undefined;
   const ports = (it.spec?.ports ?? [])
     .map((p) => `${p.port}${p.protocol ? `/${p.protocol}` : ''}`)
     .join(',');
@@ -419,6 +422,7 @@ export function normalizeService(it: K8sItem): ServiceRow {
     age: age(it.metadata?.creationTimestamp),
     // pass the selector only when it has entries — {} joins nothing meaningfully
     ...(it.spec?.selector && Object.keys(it.spec.selector).length ? { selector: it.spec.selector } : {}),
+    ...(lbHostname ? { lbHostname } : {}),
   };
 }
 

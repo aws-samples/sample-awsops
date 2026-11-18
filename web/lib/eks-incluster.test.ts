@@ -244,6 +244,19 @@ describe('normalizers', () => {
     expect(emptySel.selector).toBeUndefined(); // {} joins nothing meaningfully
   });
 
+  it('service: lbHostname only for LoadBalancer type with a status hostname', () => {
+    const lb = normalizeService({
+      metadata: { name: 'lb', namespace: 'd' },
+      spec: { type: 'LoadBalancer', clusterIP: '10.0.0.1', ports: [] },
+      status: { loadBalancer: { ingress: [{ hostname: 'x.elb.amazonaws.com' }] } },
+    });
+    expect(lb.lbHostname).toBe('x.elb.amazonaws.com');
+    const ip = normalizeService({ metadata: { name: 'lb', namespace: 'd' }, spec: { type: 'LoadBalancer', ports: [] }, status: { loadBalancer: { ingress: [{ ip: '1.2.3.4' }] } } });
+    expect(ip.lbHostname).toBeUndefined();
+    const cip = normalizeService({ metadata: { name: 'c', namespace: 'd' }, spec: { type: 'ClusterIP', ports: [] }, status: { loadBalancer: { ingress: [{ hostname: 'x.elb' }] } } });
+    expect(cip.lbHostname).toBeUndefined();
+  });
+
   it('pod: metadata.labels passes through (gap L229 — the selector join side)', () => {
     const row = normalizePod({
       metadata: { name: 'p', namespace: 'ns', labels: { app: 'web', tier: 'fe' } },

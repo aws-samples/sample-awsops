@@ -164,12 +164,10 @@ describe('buildServiceGraph', () => {
     expect(g.notes[0]).toContain('1');
   });
 
-  it('ignores dns content for now and draws no trace edges for an empty overlay', () => {
+  it('draws no trace edges for an empty overlay (dns handled separately)', () => {
     const input = base();
-    input.dns = [{ name: 'shop.example.com', target: 'k8s-x.elb.amazonaws.com' }];
     input.trace = { available: true, workloadCalls: [], omitted: 0 };
     const g = buildServiceGraph(input);
-    expect(g.nodes.some((n) => n.kind === 'dns')).toBe(false);
     expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
   });
 });
@@ -286,5 +284,45 @@ describe('serviceDetail', () => {
     for (const id of ['svc:nope/x', 'gw:prod/web']) {
       expect(serviceDetail(g, input, id)).toEqual({ pods: [], nodes: [], callers: [], callees: [], datastores: [], secretRefs: [] });
     }
+  });
+});
+
+describe('DNS and LoadBalancer gateways (Task 8)', () => {
+  const ELB = 'k8s-x.elb.amazonaws.com';
+  const lbSvc = { name: 'edge', namespace: 'prod', type: 'LoadBalancer', clusterIP: '172.20.5.5', ports: '443/TCP', age: '1h', lbHostname: 'lb-svc.elb.amazonaws.com' };
+  it('no dns records → no dns nodes', () => {
+    expect(buildServiceGraph(base()).nodes.filter((n) => n.kind === 'dns')).toEqual([]);
+  });
+  it('matching record creates dns node + routing edge to the ingress gateway; non-match creates nothing', () => {
+    const g = buildServiceGraph({ ...base(), dns: [
+      { name: 'App.Example.com.', target: `${ELB}.` }, { name: 'other.example.com', target: 'nope.elb.amazonaws.com' },
+    ] });
+    const dns = g.nodes.filter((n) => n.kind === 'dns');
+    expect(dns.map((n) => n.id)).toEqual(['dns:app.example.com']);
+    expect(g.edges.find((e) => e.id.includes('dns:app.example.com'))).toMatchObject({ source: 'dns:app.example.com', target: 'gw:prod/web', evidence: ['routing'] });
+  });
+  it('several names → one gateway gives one node each', () => {
+    const g = buildServiceGraph({ ...base(), dns: [{ name: 'a.example.com', target: ELB }, { name: 'b.example.com', target: ELB }] });
+    expect(g.nodes.filter((n) => n.kind === 'dns')).toHaveLength(2);
+  });
+  it('LoadBalancer Service with hostname gets gw:lb gateway + edge; without hostname gets none', () => {
+    const b = base();
+    const g = buildServiceGraph({ ...b, services: [...b.services, lbSvc, { ...lbSvc, name: 'pending', lbHostname: undefined }] });
+    expect(g.nodes.find((n) => n.id === 'gw:lb:prod/edge')).toMatchObject({ kind: 'gateway', label: 'edge', sub: 'lb-svc.elb.amazonaws.com' });
+    expect(g.nodes.find((n) => n.id === 'gw:lb:prod/pending')).toBeUndefined();
+    expect(g.edges.find((e) => e.source === 'gw:lb:prod/edge')).toMatchObject({ target: 'svc:prod/edge', evidence: ['routing'] });
+  });
+  it('LB Service gateway id never collides with an Ingress of the same name; dns links to it', () => {
+    const b = base();
+    const g = buildServiceGraph({ ...b, services: [...b.services, { ...lbSvc, name: 'web' }],
+      dns: [{ name: 'lb.example.com', target: 'LB-SVC.elb.amazonaws.com.' }] });
+    expect(g.nodes.find((n) => n.id === 'gw:prod/web')?.sub).toBe(ELB);
+    expect(g.nodes.find((n) => n.id === 'gw:lb:prod/web')).toBeDefined();
+    expect(g.edges.find((e) => e.source === 'dns:lb.example.com')?.target).toBe('gw:lb:prod/web');
+  });
+  it('two gateways sharing a host: dns links to both', () => {
+    const b = base();
+    const g = buildServiceGraph({ ...b, services: [...b.services, { ...lbSvc, lbHostname: ELB }], dns: [{ name: 'a.example.com', target: ELB }] });
+    expect(g.edges.filter((e) => e.source === 'dns:a.example.com').map((e) => e.target).sort()).toEqual(['gw:lb:prod/edge', 'gw:prod/web']);
   });
 });
