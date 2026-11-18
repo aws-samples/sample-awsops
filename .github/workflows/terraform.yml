@@ -332,6 +332,7 @@ jobs:
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
           CI_ASSETS_READY: "true"
+          CI_TOPOLOGY_ENTITIES_ENABLED_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars.CI_TOPOLOGY_ENTITIES_ENABLED_DEV || '' }}
           CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
           # Retain failures only for explicit dispatches. The child Terraform process never receives this key.
           TF_PLAN_ENC_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.TF_PLAN_ENC_KEY || '' }}
@@ -364,6 +365,15 @@ jobs:
               [ "$TARGET" = "dev" ] || { echo "::error::CI_READINESS_ENABLED_DEV requires dev"; exit 1; }
               args+=("-var=ci_readiness_enabled=$CI_READINESS_ENABLED_DEV");;
             *) echo "::error::CI_READINESS_ENABLED_DEV must be true or false"; exit 1;;
+          esac
+          # Only full development plans can override this default-off pilot.
+          # Apply restores the reviewed saved plan and never re-reads the switch.
+          case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in
+            "") ;;
+            true|false)
+              [ "$TARGET" = dev ] && [ "$PLAN_SCOPE" = full ] || { echo "::error::Invalid topology pilot scope"; exit 1; }
+              args+=("-var=topology_entities_enabled=$CI_TOPOLOGY_ENTITIES_ENABLED_DEV");;
+            *) echo "::error::Invalid topology pilot setting (expected true or false)"; exit 1;;
           esac
           # Append last so no restored or generated var-file can override the CI flag.
           case "${TF_VAR_ci_migrations_enabled:-false}" in
