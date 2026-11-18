@@ -4,6 +4,7 @@
 // Secret VALUES are never requested (no /secrets path); only Secret NAMES are kept.
 // Errors are rethrown/absorbed as fixed strings — never include bodies or values.
 import { k8sGetPath, podWorkload } from './eks-incluster';
+import { EksKubernetesHttpError } from './eks-read-error';
 import { extractManagedDbHosts, type DbKind } from './db-endpoint';
 
 export interface WorkloadRef { namespace: string; name: string }
@@ -49,7 +50,17 @@ export async function listDbRefs(
     }
   };
 
-  const podList = parseJson(await k8sGetPath(cluster, `/api/v1/pods?limit=${caps.pods}`)) as
+  let podBody: string;
+  try {
+    podBody = await k8sGetPath(cluster, `/api/v1/pods?limit=${caps.pods}`);
+  } catch (err) {
+    // Read role denied pod list: disclose as partial instead of failing. Other errors are value-free; rethrow.
+    if (err instanceof EksKubernetesHttpError && err.statusCode === 403) {
+      return { refs: [], secretRefs: [], truncated: false, partial: true };
+    }
+    throw err;
+  }
+  const podList = parseJson(podBody) as
     { items?: PodItem[]; metadata?: { continue?: string } } | null;
   const items = Array.isArray(podList?.items) ? podList.items : [];
   if (podList?.metadata?.continue || items.length > caps.pods) truncated = true;

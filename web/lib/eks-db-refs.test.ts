@@ -96,4 +96,11 @@ describe('listDbRefs', () => {
     k8sGetPath.mockResolvedValueOnce(`{"items": [${PASSWORD}`);
     await expect(listDbRefs('c1')).rejects.toThrow('Kubernetes API response could not be parsed.');
   });
+
+  it('returns an empty partial result when pod list is 403, and rethrows other errors', async () => {
+    k8sGetPath.mockRejectedValueOnce(new EksKubernetesHttpError(403));
+    expect(await listDbRefs('c1')).toEqual({ refs: [], secretRefs: [], truncated: false, partial: true });
+    k8sGetPath.mockRejectedValueOnce(new EksKubernetesHttpError(500));
+    await expect(listDbRefs('c1')).rejects.toBeInstanceOf(EksKubernetesHttpError);
+  });
 });
