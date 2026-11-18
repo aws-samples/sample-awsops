@@ -213,6 +213,61 @@ separate worker/target-role principal, and
 Lambda principal. An entry for one actor does not grant access to the others.
 An explicit saved web AssumeRole override also needs authorization for its own role.
 
+## Kubernetes service graph
+
+`/topology/infra?view=k8s` (`K8sMapView`) draws one selected cluster as a
+namespace-grouped graph of Ingress gateways, Services and managed datastores
+(`web/lib/k8s-service-graph.ts`). Pods and Nodes are never graph nodes; they appear only
+in the Service detail panel, and Service-to-Pod membership comes only from ready
+Endpoints addresses. System namespaces (`kube-system`, `kube-public`,
+`kube-node-lease`) are hidden by default, and namespaces start collapsed when the graph
+has more than 40 Services.
+
+Edge evidence, strongest first (an edge with several sources shows the strongest):
+
+| Line | Evidence | Source |
+|---|---|---|
+| Solid | Observed in traces | Published service snapshot (`/api/topology?lens=service`) |
+| Dashed | Inferred from configuration | Managed-database hostnames in Pod env and ConfigMaps (`db-refs`) |
+| Thin | Routing | Ingress rules, Service selection and exact Route 53 host matches |
+
+### `db-refs` extraction and security posture
+
+`GET /api/eks/[cluster]/db-refs` reads the Pod list (cap 2,000) and the ConfigMaps Pods
+reference (cap 200, concurrency 8) with the cluster's read credentials, in
+`web/lib/eks-db-refs.ts`, the only server code that reads env or ConfigMap values.
+Env values and referenced ConfigMap data are scanned by `web/lib/db-endpoint.ts` for
+RDS/Aurora, ElastiCache, OpenSearch and MSK hostnames. Only the bare lower-cased host
+is kept: userinfo, port, path and the raw value are dropped, and all values are
+discarded after scanning. Secrets are never requested; only the names of referenced
+Secrets are returned. Hosts are matched to inventory endpoints (`web/lib/db-ref-resolve.ts`)
+for `rds`, `rds_cluster`, `rds_proxy`, `opensearch` and `elasticache` rows of the
+cluster's account. The response is an explicit allow-list: workload, `via`
+(`env` or `configmap`), host, kind, matched resource (type, id, region, account),
+secret names, and `truncated`/`partial` flags. A denied Pod list or an unreadable
+ConfigMap sets `partial`; hitting a cap sets `truncated`. Only `account` and `region`
+query parameters are accepted, and responses are `Cache-Control: private, no-store`.
+
+### Scope and limits
+
+- Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
+  snapshot, which is host-account only. A trace service maps to a workload only
+  through its `runs_on` relation to exactly one `namespace/deployment` of the selected
+  cluster, and the cluster name must be unique among registered clusters. The snapshot
+  API returns at most 200 entities per page with relations between same-page entities
+  only; the overlay reads up to 5 pages and draws trace edges only when it can account
+  for every entity and relation, otherwise it draws none and discloses the count of
+  records it did not inspect. Calls that cannot be mapped to one workload or managed
+  datastore are counted, not guessed.
+- Member clusters (full EKS ARN ids) read through the member role show Kubernetes
+  structure and `db-refs` links but no trace edges. The listing does not expose the
+  host account id, so a host cluster outside the deployment region (ARN id) is also
+  treated as a member for traces. Route 53 records are read from the synced inventory
+  of the id's account (`self` for a bare name) and matched to gateway hosts exactly.
+- MSK and ElastiCache replication-group hosts stay unresolved host names, because
+  their inventory rows store no endpoint.
+- Layout uses `elkjs` (`EPL-2.0 OR GPL-3.0-or-later`).
+
 ## Key files
 
 | File | Responsibility |
@@ -229,6 +284,9 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
+| `web/lib/eks-db-refs.ts`, `web/lib/db-endpoint.ts`, `web/lib/db-ref-resolve.ts` | Server-side Pod env/ConfigMap host extraction and inventory matching for `db-refs` |
+| `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, ELK layout and Route 53 matching |
+| `web/components/topology/K8sMapView.tsx`, `ServiceGraphCanvas.tsx`, `ServiceDetailPanel.tsx` | Graph page, canvas and Service detail panel |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
 See the [API reference](../api-reference.md#eks-10) for response status and metadata
