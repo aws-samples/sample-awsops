@@ -257,7 +257,19 @@ def test_prose_naming_aws_is_kept_and_withheld_prose_is_disclosed():
         SECTIONS, bundle(), analysis(findings=[finding(explanation="Run aws ec2 describe-instances",
                                                        prerequisites=["Use kubectl get pods"])]), lang="en")))
     assert "describe-instances" not in text and "kubectl" not in text
-    assert text.count(presentation._WITHHELD["en"]) == 2
+    # Full body (explanation + prerequisites) plus every by-reference line disclose the withholding.
+    refs = [line for line in text.splitlines() if line.startswith("- **") and "finding-a" in line]
+    assert refs and all(presentation._WITHHELD["en"] in line for line in refs)
+    assert text.count(presentation._WITHHELD["en"]) == 2 + len(refs)
+
+
+def test_reference_lines_keep_the_claim_and_hypothesis_labels():
+    from diagnosis import presentation
+    rows = analysis(findings=[finding(claim="sizing_candidate")])
+    body = dict(presentation.render(SECTIONS, bundle(), rows, lang="en"))["recommendations"]
+    line = next(l for l in body.splitlines() if l.startswith("- **"))
+    assert "Provider candidate — manual verification required" in line
+    assert "_Hypothesis_: Memory pressure needs verification." in line
 
 
 @pytest.mark.parametrize("unsafe", ["See HTTPS://example.test", "Run Curl -X POST", "Use KUBECTL get pods",

@@ -373,11 +373,20 @@ def _coverage(bundle, analysis, copy, lang="ko"):
 
 
 def _reference(finding, copy, lang="ko"):
-    explanation = _safe_explanation(finding.get("explanation"))
+    # Same claim labeling as the full body: model prose is never shown as an unqualified assertion,
+    # and guard-withheld prose is disclosed here too.
+    claims = {"observation": copy[3], "hypothesis": copy[4],
+              "sizing_candidate": copy[5], "coverage_gap": copy[6]}
+    label = claims.get(finding.get("claim", "hypothesis"), copy[4])
+    raw = finding.get("explanation")
+    explanation = _safe_explanation(raw)
+    if not explanation and isinstance(raw, str) and raw.strip():
+        explanation = _WITHHELD.get(lang, _WITHHELD["ko"])
+    # Explanatory language is always a hypothesis; the claim label states what kind of claim it is.
+    prose = f"_{copy[4]}_: {explanation} " if explanation else ""
     return (f"- **{_label(_PILLARS, finding.get('pillar', ''), lang)} · "
             f"{_label(_SEVERITY_LABEL, finding.get('severity', ''), lang)}** — "
-            + (f"{explanation} " if explanation else "")
-            + f"({copy[0]} {_code(finding.get('id', ''))})")
+            f"{_cell(label)} — {prose}({copy[0]} {_code(finding.get('id', ''))})")
 
 
 def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
