@@ -285,7 +285,14 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of
-  records it did not inspect. Calls that cannot be mapped to one workload or managed
+  records it did not inspect. A partial publication also yields no trace edges, with a
+  notice (`partial_snapshot`): any gap other than the two baseline gaps every healthy
+  publication carries (`nfm:not_collected`, `kubernetes:live_ownership_unavailable`), or
+  any source that is stale, retained or capped, has no generation, or has a status other
+  than `ok`/`empty`; a page without `gaps` or `sources` counts as partial. The top-level
+  `status` is not used, because a healthy publication always reports `partial`. This
+  mirrors `partialInputs` in `web/lib/service-topology/read-published.ts`, since a capped
+  source may have dropped a second `runs_on` relation. Calls that cannot be mapped to one workload or managed
   datastore are counted, not guessed, and add no node.
 - Member clusters (full EKS ARN ids) read through the member role show Kubernetes
   structure and `db-refs` links but no trace edges. A host cluster outside the

@@ -15,8 +15,14 @@ const rel = (kind: string, source: string, target: string, spanCount?: number): 
 });
 const SNAP = '11111111-2222-4333-8444-555555555555';
 const RDS_HOST = 'orders.cluster-abc.ap-northeast-2.rds.amazonaws.com';
+// A healthy publication as the reader SQL returns it: top-level status 'partial' with the two baseline
+// gaps (published.ts always seeds them) and fully qualified sources.
+const HEALTHY_GAPS = ['nfm:not_collected', 'kubernetes:live_ownership_unavailable'];
+type Source = NonNullable<ServiceTopologyView['sources']>[number];
+const HEALTHY_SOURCE: Source = { sourceId: 'trace', generation: 'g1', status: 'ok', stale: false, retained: false, capped: false };
 const page = (entities: Entity[], relations: Relation[], over: Partial<ServiceTopologyView> = {}): ServiceTopologyView => ({
-  status: 'ok', snapshotId: SNAP, entities, relations, nextCursor: null, omitted: { entities: 0, relations: 0 }, ...over,
+  status: 'partial', snapshotId: SNAP, entities, relations, nextCursor: null, omitted: { entities: 0, relations: 0 },
+  gaps: [...HEALTHY_GAPS], sources: [{ ...HEALTHY_SOURCE }], ...over,
 });
 
 const fixture = () => page(
@@ -147,6 +153,48 @@ describe('buildTraceOverlay', () => {
     expect(o.workloadCalls).toHaveLength(2);
   });
 
+  it('joins a production-realistic healthy publication (status partial with only the baseline gaps)', () => {
+    const o = buildTraceOverlay([fixture()], HOST);
+    expect(o.available).toBe(true);
+    expect(o.workloadCalls).toHaveLength(2);
+  });
+
+  const PARTIAL = { available: false, reason: 'partial_snapshot', workloadCalls: [], omitted: 0 };
+  it('emits no calls for a gap beyond the baseline gaps', () => {
+    expect(buildTraceOverlay([{ ...fixture(), gaps: [...HEALTHY_GAPS, 'trace:capped'] }], HOST)).toEqual(PARTIAL);
+  });
+
+  it.each<[string, Partial<Source>]>([
+    ['stale', { stale: true }],
+    ['retained', { retained: true }],
+    ['capped', { capped: true }],
+    ['without a generation', { generation: null }],
+    ['with a missing generation', { generation: undefined }],
+    ['with status failed', { status: 'failed' }],
+    ['with a missing status', { status: undefined }],
+  ])('emits no calls when a source is %s', (_label, over) => {
+    const p = { ...fixture(), sources: [{ ...HEALTHY_SOURCE }, { ...HEALTHY_SOURCE, sourceId: 'metrics', ...over }] };
+    expect(buildTraceOverlay([p], HOST)).toEqual(PARTIAL);
+  });
+
+  it('accepts a source with status empty that has a generation', () => {
+    const p = { ...fixture(), sources: [{ ...HEALTHY_SOURCE }, { ...HEALTHY_SOURCE, sourceId: 'metrics', status: 'empty' }] };
+    const o = buildTraceOverlay([p], HOST);
+    expect(o.available).toBe(true);
+    expect(o.workloadCalls).toHaveLength(2);
+  });
+
+  it('fails closed when gaps or sources are missing', () => {
+    expect(buildTraceOverlay([{ ...fixture(), gaps: undefined }], HOST)).toEqual(PARTIAL);
+    expect(buildTraceOverlay([{ ...fixture(), sources: undefined }], HOST)).toEqual(PARTIAL);
+  });
+
+  it('emits no calls when only the second page of a multi-page read has an extra gap', () => {
+    const p = fixture();
+    const second = page(p.entities.slice(0, 2), p.relations.slice(0, 1), { gaps: [...HEALTHY_GAPS, 'manifest:unresolved_source_batches'] });
+    expect(buildTraceOverlay([p, second], HOST)).toEqual(PARTIAL);
+  });
+
   it('is unavailable for no pages, an unparseable id or a mixed snapshot', () => {
     expect(buildTraceOverlay([], HOST).reason).toBe('unavailable');
     expect(buildTraceOverlay([fixture()], { id: 'bad id', registeredNames: ['bad id'] }).reason).toBe('unavailable');
@@ -194,6 +242,17 @@ describe('fetchTraceOverlay', () => {
     expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
     stub(async () => respond(200, { ...fixture(), entities: 'nope' }));
     expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
+    stub(async () => respond(200, { ...fixture(), gaps: [1] }));
+    expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
+    stub(async () => respond(200, { ...fixture(), sources: ['x'] }));
+    expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
+    stub(async () => respond(200, { ...fixture(), sources: [{ ...HEALTHY_SOURCE, generation: 7 }] }));
+    expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
+  });
+
+  it('returns partial_snapshot for a fetched page with a stale source', async () => {
+    stub(async () => respond(200, { ...fixture(), sources: [{ ...HEALTHY_SOURCE, stale: true }] }));
+    expect(await fetchTraceOverlay(HOST)).toEqual({ available: false, reason: 'partial_snapshot', workloadCalls: [], omitted: 0 });
   });
 
   it('returns member_cluster, incomplete_listing or ambiguous_cluster without fetching', async () => {

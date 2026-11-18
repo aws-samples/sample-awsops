@@ -27,7 +27,6 @@ import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
 
 const KINDS = ['ingresses', 'services', 'pods', 'endpoints'] as const;
-const NO_DNS: DnsRead = { records: [], truncated: false, failed: false };
 
 interface ClusterRows { ingresses: IngressRow[]; services: ServiceRow[]; pods: PodRow[]; endpoints: EndpointRow[]; failedKinds: string[] }
 type ResolvedRef = DbRef & { resource: DbResource | null };
@@ -47,6 +46,7 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   // rule, not that this IS a member account.
   member_cluster: '트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 같은 이름의 클러스터가 없는지 확인할 수 없으므로 트레이스로 관측된 호출을 표시하지 않습니다.',
+  partial_snapshot: '트레이스 스냅샷이 일부만 수집되었거나 오래된 원본을 포함해 트레이스로 관측된 호출을 표시하지 않습니다.',
 };
 
 /**
@@ -101,7 +101,7 @@ export default function K8sMapView({ query }: { query: string }) {
   const [rows, setRows] = useState<ClusterRows | null>(null);
   const [dbRefs, setDbRefs] = useState<DbRefsState | null>(null);
   const [trace, setTrace] = useState<TraceOverlay | null>(null);
-  const [dnsRead, setDnsRead] = useState<DnsRead>(NO_DNS);
+  const [dnsRead, setDnsRead] = useState<DnsRead | null>(null);
   const [nodes, setNodes] = useState<NodesState | null>(null);
   const nodesAbort = useRef<AbortController | null>(null);
   const [hiddenNs, setHiddenNs] = useState<ReadonlySet<string>>(new Set());
@@ -215,7 +215,7 @@ export default function K8sMapView({ query }: { query: string }) {
 
   useEffect(() => {
     setTrace(null);
-    setDnsRead(NO_DNS);
+    setDnsRead(null);
     // An ARN id waits for the host-account lookup: reading earlier would mis-scope both reads.
     if (!cluster || hostForCluster === undefined) return;
     let live = true;
@@ -251,7 +251,7 @@ export default function K8sMapView({ query }: { query: string }) {
   const fullInput = useMemo<Omit<GraphInput, 'nodes'> | null>(() => rows && {
     services: rows.services, endpoints: rows.endpoints, pods: rows.pods, ingresses: rows.ingresses,
     dbRefs: dbRefs?.status === 'ok' ? dbRefs.refs : [], secretRefs: dbRefs?.status === 'ok' ? dbRefs.secretRefs : [],
-    trace, dns: dnsRead.records,
+    trace, dns: dnsRead?.records ?? [],
   }, [rows, dbRefs, trace, dnsRead]);
 
   const allNamespaces = useMemo(() => {
@@ -282,6 +282,7 @@ export default function K8sMapView({ query }: { query: string }) {
   }
 
   const busy = !!cluster && rows === null;
+  const evidencePending = !!rows && (dbRefs === null || trace === null || dnsRead === null);
   const visibleCount = listedNamespaces.filter((ns) => !hiddenNs.has(ns)).length;
   const notices: string[] = [];
   if (rows?.failedKinds.length) notices.push(`${tt('일부 리소스를 조회하지 못했습니다:')} ${rows.failedKinds.join(', ')}`);
@@ -290,8 +291,8 @@ export default function K8sMapView({ query }: { query: string }) {
   if (dbRefs?.status === 'ok' && dbRefs.truncated) notices.push(tt('데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.inventoryIncomplete) notices.push(tt('인벤토리 동기화 완료를 확인할 수 없어 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.inventoryCapped) notices.push(tt('인벤토리 조회가 상한에 도달해 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.'));
-  if (dnsRead.truncated) notices.push(tt('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.'));
-  if (dnsRead.failed) notices.push(tt('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.'));
+  if (dnsRead?.truncated) notices.push(tt('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.'));
+  if (dnsRead?.failed) notices.push(tt('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.'));
   if (trace && !trace.available) notices.push(tt(TRACE_NOTICE[trace.reason ?? 'unavailable']));
   if (trace?.available && trace.omitted > 0) notices.push(tt(traceOmittedNotice(trace.omitted)));
   if (nodes?.status === 'failed') notices.push(tt('노드 정보를 불러오지 못했습니다.'));
@@ -330,6 +331,7 @@ export default function K8sMapView({ query }: { query: string }) {
           </label>
         )}
         {busy && <span>{tt('불러오는 중…')}</span>}
+        {evidencePending && <span>{tt('연결 근거(데이터 저장소·트레이스·DNS)를 불러오는 중…')}</span>}
         {nodes?.status === 'loading' && <span>{tt('노드 정보를 불러오는 중…')}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
       </div>

@@ -10,6 +10,11 @@
 //    runs on exactly one `ns/deployment` in the selected cluster. Never by service-name similarity.
 //  - An incomplete read (anything omitted by the route's page/edge caps) cannot prove that a service
 //    runs on only one workload, so it yields no calls — only the omitted count is disclosed.
+//  - A partial publication (a gap other than the two baseline gaps, or a stale/retained/capped source,
+//    one without a generation, or one whose status is not 'ok'/'empty'; missing `gaps`/`sources` count
+//    as partial) may have dropped a second `runs_on` relation, so it also yields no calls
+//    (`partial_snapshot`). The top-level `status` is NOT used: every healthy publication reads 'partial'
+//    because the baseline gaps are always present.
 //
 // Snapshot contract (verified against the producers, not assumed):
 // | Snapshot element           | Shape                                                        | Producer                                          |
@@ -33,7 +38,8 @@ import { eksClusterName, parseEksClusterId } from './eks-cluster-id';
 import { extractManagedDbHosts } from './db-endpoint';
 
 export type TraceOverlayReason =
-  | 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'member_cluster' | 'incomplete_listing';
+  | 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'member_cluster' | 'incomplete_listing'
+  | 'partial_snapshot';
 export interface TraceWorkloadCall {
   fromWorkload: WorkloadRef;
   to: { workload: WorkloadRef } | { datastoreHost: string };
@@ -57,7 +63,17 @@ export interface ServiceTopologyView {
   relations: Relation[];
   nextCursor?: number | null;
   omitted?: { entities: number; relations: number };
+  /** Publication read gaps; anything beyond BASELINE_SNAPSHOT_GAPS makes the snapshot partial. */
+  gaps?: string[];
+  /** Per-source publication state (see `partialSource`). */
+  sources?: { sourceId?: string; generation?: string | null; status?: string; stale?: boolean; retained?: boolean; capped?: boolean }[];
 }
+
+/**
+ * Gaps every healthy publication carries (seeded by service-topology/published.ts), so they do not make a
+ * snapshot partial. Mirrors `partialInputs` in web/lib/service-topology/read-published.ts.
+ */
+export const BASELINE_SNAPSHOT_GAPS: readonly string[] = ['nfm:not_collected', 'kubernetes:live_ownership_unavailable'];
 export interface TraceCluster {
   id: string;
   /** Names (or ids) of every cluster listed in the current scope; the selected name must occur exactly once. */
@@ -115,6 +131,15 @@ export function buildTraceOverlay(pages: ServiceTopologyView[], cluster: TraceCl
   if (!Array.isArray(pages) || pages.length === 0) return unavailable('unavailable');
   const snapshotId = pages[0].snapshotId;
   if (pages.some((p) => p.snapshotId !== snapshotId)) return unavailable('unavailable');
+  // A partial publication cannot prove the "exactly one workload" join (a capped source may have dropped
+  // a second runs_on relation), so it yields no calls. Same rule as read-published.ts `partialInputs`;
+  // missing gaps/sources fail closed.
+  const partialSource = (s: NonNullable<ServiceTopologyView['sources']>[number]) =>
+    !!s.stale || !!s.retained || !!s.capped || !s.generation || !['ok', 'empty'].includes(s.status ?? '');
+  const partialPage = (p: ServiceTopologyView) =>
+    !Array.isArray(p.gaps) || !Array.isArray(p.sources)
+    || p.gaps.some((g) => !BASELINE_SNAPSHOT_GAPS.includes(g)) || p.sources.some(partialSource);
+  if (pages.some(partialPage)) return unavailable('partial_snapshot');
 
   const entities = new Map<string, Entity>();
   const relations = new Map<string, Relation>();
@@ -195,6 +220,11 @@ function validPage(body: unknown): ServiceTopologyView | null {
     .every((k) => typeof (r as Record<string, unknown>)[k] === 'string');
   if (!b.entities.every(okEntity) || !b.relations.every(okRelation)) return null;
   if (b.nextCursor != null && !(isCount(b.nextCursor) && b.nextCursor > 0 && b.nextCursor <= 20000)) return null;
+  if (b.gaps !== undefined && !(Array.isArray(b.gaps) && b.gaps.every((g) => typeof g === 'string'))) return null;
+  const okSource = (s: unknown) => !!s && typeof s === 'object' && !Array.isArray(s)
+    && ((s as { generation?: unknown }).generation === undefined || (s as { generation?: unknown }).generation === null
+      || typeof (s as { generation?: unknown }).generation === 'string');
+  if (b.sources !== undefined && !(Array.isArray(b.sources) && b.sources.every(okSource))) return null;
   return body as ServiceTopologyView;
 }
 

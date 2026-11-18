@@ -366,6 +366,27 @@ describe('K8sMapView service graph data', () => {
     expect(canvas.props!.input.dns).toEqual([]);
   });
 
+  it('shows a loading indicator, not a notice, while db-refs, trace and DNS evidence are still pending', async () => {
+    const PENDING = '연결 근거(데이터 저장소·트레이스·DNS)를 불러오는 중…';
+    const refs = deferred<Response>();
+    const overlay = deferred<TraceOverlay>();
+    const records = deferred<DnsRead>();
+    trace.override = () => overlay.promise;
+    dns.override = () => records.promise;
+    stubFetch(HOST_ONLY, 200, (u) => (u.includes('/db-refs') ? refs.promise : undefined));
+    view();
+    await waitFor(() => expect(canvas.props).not.toBeNull());
+    const indicator = await screen.findByText(PENDING);
+    expect(indicator.closest('[role="status"]')).toBeNull();
+    await act(async () => { refs.resolve(new Response(JSON.stringify(OK_REFS))); });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await act(async () => { overlay.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 0 }); });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await act(async () => { records.resolve({ records: [], truncated: false, failed: false }); });
+    await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull());
+    for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, PENDING)).not.toBe(PENDING);
+  });
+
   it('shows no Route53 notice for a complete read', async () => {
     const calls = stubFetch(HOST_ONLY);
     view();
@@ -441,6 +462,19 @@ describe('K8sMapView host account scope', () => {
     expect(calls.filter((u) => u === `/api/eks/${ENC_HOST_ARN}/incluster?kind=pods`)).toHaveLength(1);
   });
 
+  it('shows the evidence loading indicator while an ARN cluster waits for the host account lookup', async () => {
+    const PENDING = '연결 근거(데이터 저장소·트레이스·DNS)를 불러오는 중…';
+    const pending = deferred<Response>();
+    const calls = stubFetch(HOST_ARN_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
+    view();
+    await waitFor(() => expect(canvas.props).not.toBeNull());
+    await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_HOST_ARN}/db-refs`));
+    expect(await screen.findByText(PENDING)).toBeTruthy();
+    expect(calls.some((u) => u.startsWith('/api/inventory/route53') || u.startsWith('/api/topology'))).toBe(false);
+    await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
+    await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull());
+  });
+
   it('does not repeat the trace or Route53 read of a bare-name cluster when the host account lookup settles', async () => {
     const pending = deferred<Response>();
     const calls = stubFetch(HOST_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
@@ -473,7 +507,7 @@ describe('K8sMapView host account scope', () => {
 
 describe('K8sMapView trace notices', () => {
   it('has one translated notice per non-available trace-overlay reason', () => {
-    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'incomplete_listing', 'member_cluster', 'unavailable', 'unsupported_scope']);
+    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'incomplete_listing', 'member_cluster', 'partial_snapshot', 'unavailable', 'unsupported_scope']);
     for (const ko of Object.values(TRACE_NOTICE)) {
       for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ko)).not.toBe(ko);
     }
