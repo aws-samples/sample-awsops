@@ -958,3 +958,28 @@ class RuntimePolicyTests(unittest.TestCase):
                                        "arn:aws:iam::aws:policy/ReadOnlyAccess"]})
         change = self.change("aws_iam_role_policy.fixture", "aws_iam_role_policy", {"policy": safe})
         self.module.check_plan(self.plan([change]), "dev", "full", ACCOUNT)
+
+
+def test_service_topology_override_is_dev_full_only_and_uses_saved_plan_on_apply():
+    import subprocess
+    from pathlib import Path
+    import yaml
+
+    jobs = yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/workflows/terraform.yml").read_text())["jobs"]
+    step = next(s for s in jobs["plan"]["steps"] if s.get("name") == "terraform plan")
+    key = "CI_TOPOLOGY_ENTITIES_ENABLED_DEV"
+    assert step["env"][key] == "${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars.CI_TOPOLOGY_ENTITIES_ENABLED_DEV || '' }}"
+    assert key not in str(jobs["apply"])
+    stanza = step["run"].split('case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in', 1)[1].split("esac", 1)[0]
+    script = 'set -eu; args=(); case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in' + stanza + 'esac\nfor v in "${args[@]}"; do echo "$v"; done'
+    for raw, target, scope, result in [
+        ("", "dev", "full", []), ("true", "dev", "", ["-var=topology_entities_enabled=true"]),
+        ("true", "dev", "full", ["-var=topology_entities_enabled=true"]),
+        ("false", "dev", "full", ["-var=topology_entities_enabled=false"]),
+        ("invalid", "dev", "full", None), ("true", "main", "full", None), ("true", "dev", "ecr-bootstrap", None),
+    ]:
+        out = subprocess.run(["bash", "-c", script], env={key: raw, "TARGET": target, "PLAN_SCOPE": scope}, capture_output=True, text=True)
+        if result is None:
+            assert out.returncode and key in out.stdout
+        else:
+            assert out.returncode == 0 and out.stdout.splitlines() == result

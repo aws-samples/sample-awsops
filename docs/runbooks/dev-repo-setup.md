@@ -520,6 +520,8 @@ Readiness is a separate capability controlled by
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
 `CI_STEAMPIPE_AWS_FILL_RATE_DEV` optionally overrides refill 0.1–20 on full dev plans with the verified runtime profile; empty/unset preserves tfvars/defaults. Apply replays the reviewed plan. See the [refill contract](steampipe-quota-and-staleness.md#development-ci-refill-override).
+`CI_TOPOLOGY_ENTITIES_ENABLED_DEV` is an optional nonsecret repository variable for full development Terraform plans. Use `true` only after provisioning and verifying the dedicated reader secret and publishing the first host snapshot. Use `false` to plan deactivation. An unset variable preserves tfvars (Terraform defaults to false). Other branches and bootstrap plans ignore the variable. Apply replays the reviewed saved plan. See [the topology pilot switch](graph-read-contract.md#dev-pilot-switch).
+
 `CI_GRAPH_REBUILD_INTERVAL_MINS_DEV` is an optional nonsecret integer variable
 from 0 to 1440, accepted only for full dev plans with `CI_READONLY_RUNTIME_DEV=true`.
 It writes `graph_rebuild_interval_mins` to `ci-runtime.auto.tfvars.json` without
