@@ -331,3 +331,12 @@ describe('EKS evidence compatibility', () => {
     expect(await fetchEksIpEvidence()).toMatchObject({ status: 'partial', region, notConnected: 0 });
   });
 });
+
+it('only forwards immutable internal Pod records when the guarded lens requests them', async () => {
+  const arn = 'arn:aws:eks:us-east-1:111111111111:cluster/host-cluster';
+  const scoped = { ...cluster, arn, accountId:'111111111111' };
+  serve([{...pod,uid:'unique-pod',hostNetwork:false}],[],{clusters:[scoped]});
+  expect((await fetchEksIpMap()).bindings).toBeUndefined();
+  expect((await fetchEksIpMap(undefined,true)).bindings).toMatchObject([
+    {nativeId:'unique-pod',authority:arn,confidence:'observed',ip}]);
+});

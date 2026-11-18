@@ -1825,3 +1825,25 @@ Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestServiceProjection(unittest.TestCase):
+    def test_disabled_and_member_scopes_make_no_db_reads(self):
+        for flag, target, expected in [("", "self", 404), ("yes", "self", 404), ("true", "__all__", 422),
+                                       ("true", "222222222222", 422)]:
+            with mock.patch.dict(os.environ, {"TOPOLOGY_ENTITIES_ENABLED": flag}), \
+                 mock.patch.object(inv, "host_account_id", return_value="111111111111"), \
+                 mock.patch.object(inv, "_execute") as read:
+                out = inv.lambda_handler({"tool_name": "get_topology", "arguments": {
+                    "class": "service", "target_account_id": target}}, None)
+                self.assertEqual(out["statusCode"], expected)
+                read.assert_not_called()
+
+    def test_enabled_reads_shared_sql_projection_once(self):
+        view = {"snapshotId": "fixture", "status": "partial", "gaps": ["nfm:not_collected"]}
+        with mock.patch.dict(os.environ, {"TOPOLOGY_ENTITIES_ENABLED": "true"}), \
+             mock.patch.object(inv, "host_account_id", return_value="111111111111"), \
+             mock.patch.object(inv, "_execute", return_value=[{"view": json.dumps(view)}]) as read:
+            out = inv.lambda_handler({"tool_name": "get_topology", "arguments": {"class": "service"}}, None)
+            self.assertEqual(json.loads(out["body"]), view)
+            self.assertIn("sql_reader.service_topology_read", read.call_args.args[0])
+            self.assertEqual(read.call_count, 1)

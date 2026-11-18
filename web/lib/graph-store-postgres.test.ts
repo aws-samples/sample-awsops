@@ -5,6 +5,8 @@ import { Client, Pool } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { publishServiceTopology } from './service-topology/store';
+import { rebuildServiceTopology } from './service-topology/read-published';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
 import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
@@ -19,6 +21,7 @@ vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unkno
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
+import { GET as readServiceView } from '../app/api/topology/route';
 import { GET as inventoryGET } from '../app/api/inventory/[type]/route';
 
 // Opt-in, disposable PG17 server only. The Unix socket is mounted in a private task directory;
@@ -65,7 +68,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
     for (const suffix of ['_topology_graph.sql', '_topology_class.sql', '_inventory_sync_freshness.sql',
       '_inventory_sync_unknown_attrs.sql', '_topology_graph_collection_state.sql',
-      '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql'])
+      '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql', '_service_topology.sql'])
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
   });
   beforeEach(async () => {
@@ -117,6 +120,76 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
 
+  it('publishes from actual Aurora-shaped rows, reuses an unchanged head and exposes the same bounded body to both reader roles', async () => {
+    await trace();
+    await build('infra');
+    await build('flow');
+    const first = await rebuildServiceTopology(pool);
+    expect(first.outcome).toBe('published');
+    expect(await rebuildServiceTopology(pool)).toMatchObject({ snapshotId: first.snapshotId, outcome: 'unchanged' });
+    const tableOid = (await pool.query("SELECT 'public.service_topology_entities'::regclass::oid AS id")).rows[0].id;
+    const views = [];
+    for (const role of ['awsops_sql_reader', 'awsops_web']) {
+      const c = await pool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL ROLE ' + role);
+        if (role === 'awsops_sql_reader') await c.query('SET LOCAL search_path=sql_reader,pg_catalog');
+        const view = (await c.query("SELECT sql_reader.service_topology_read(NULL,'service','','',0,15) AS body")).rows[0].body;
+        expect(view.snapshotId).toBe(first.snapshotId);
+        expect(view.entities.map((n: any) => n.label).sort()).toEqual(['api','db']);
+        expect(view.relations).toHaveLength(1);
+        expect(view.relations[0]).toMatchObject({ metricCount: 7, kind: 'calls' });
+        expect(view.gaps).toContain('nfm:not_collected');
+        expect((await c.query("SELECT has_table_privilege(current_user,$1::oid,'INSERT') AS grant",[tableOid])).rows[0].grant).toBe(false);
+        views.push(view);
+      } finally { await c.query('ROLLBACK'); c.release(); }
+    }
+    expect(views[0]).toEqual(views[1]);
+    const flag=process.env.TOPOLOGY_ENTITIES_ENABLED;
+    try {
+      process.env.TOPOLOGY_ENTITIES_ENABLED='true';
+      const response=await readServiceView(new Request('http://localhost/api/topology?snapshot='+first.snapshotId));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(views[0]);
+    } finally { if(flag===undefined) delete process.env.TOPOLOGY_ENTITIES_ENABLED; else process.env.TOPOLOGY_ENTITIES_ENABLED=flag; }
+
+    await pool.query("UPDATE topology_graph_state SET status='partial' WHERE class='trace' AND account_id='self'");
+    const revised=await rebuildServiceTopology(pool);
+    expect(revised.snapshotId).not.toBe(first.snapshotId);
+    expect((await pool.query('SELECT body_snapshot_id FROM service_topology_snapshots WHERE snapshot_id=$1',
+      [revised.snapshotId])).rows[0].body_snapshot_id).toBe(first.snapshotId);
+    const empty={entities:[],relations:[],sources:[],gaps:[]};
+    await expect(publishServiceTopology(pool,empty,first.snapshotId,async()=>true)).rejects.toThrow('service_input_changed');
+    await expect(publishServiceTopology(pool,empty,revised.snapshotId,async()=>true)).rejects.toThrow('unconfirmed_empty_projection');
+    expect((await pool.query('SELECT snapshot_id FROM service_topology_heads')).rows[0].snapshot_id).toBe(revised.snapshotId);
+
+  });
+  it('discovers configured ECS services with no trace and keeps identically named services in different clusters separate', async () => {
+    const account='111111111111', region='us-east-1', base='arn:aws:ecs:'+region+':'+account+':cluster/';
+    const original=process.env.HOST_ACCOUNT_ID;
+    process.env.HOST_ACCOUNT_ID=account;
+    try {
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ('ecs_service','succeeded',$1,$1,$1,2,0)`,[recent]);
+      await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='ecs_task'");
+      for (const name of ['blue','green']) {
+        await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,account_id,region,data,captured_at)
+          VALUES ('ecs_service',$1,'self',$2,jsonb_build_object('cluster_arn',$3::text),$4)`,[base+name+'/orders',region,base+name,recent]);
+      }
+      await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,account_id,region,data,captured_at)
+        VALUES ('ecs_task','task-one','self',$1,$2::jsonb,$3)`,[region,JSON.stringify({cluster_arn:base+'blue',task_group:'service:orders',last_status:'RUNNING'}),recent]);
+      await hostParticipation();
+      const {snapshotId}=await rebuildServiceTopology(pool);
+      const read=async(focus='')=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','',$2,0,15) AS view",[snapshotId,focus])).rows[0].view;
+      const all=await read();
+      expect(all.entities).toHaveLength(2);
+      const blue=all.entities.find((e:any)=>e.evidenceRefs.some((r:string)=>r.includes('blue')));
+      const green=all.entities.find((e:any)=>e.id!==blue.id);
+      expect((await read(blue.id)).relations.map((r:any)=>r.kind)).toEqual(['member-of']);
+      expect((await read(green.id)).relations).toEqual([]);
+    } finally { if(original===undefined) delete process.env.HOST_ACCOUNT_ID; else process.env.HOST_ACCOUNT_ID=original; }
+  });
   it('retains trace rows while a legacy empty producer has no collection marker', async () => {
     await trace();
     const previous = await state('trace');

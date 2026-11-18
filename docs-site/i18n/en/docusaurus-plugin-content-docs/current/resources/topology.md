@@ -129,3 +129,7 @@ Using the detail panel's question chips or the **Ask AI** button opens the AI as
 ## Related pages
 - [Resource Inventory](./inventory) - browse resources by type
 - [AI Assistant](../overview/assistant) - continue the conversation with the context handed over from the graph
+
+## Unified service graph
+
+When enabled by an administrator, open **Unified service graph** from Request flow. Select the host account, all regions and global resources. Inspect a service to see its error spans and dependencies. Open source coverage to check missing or stale observations. Refresh loads the latest publication. Run a live NFM query in Service + Network.

@@ -973,6 +973,7 @@ resource "aws_lambda_function" "agent" {
       # needs the cluster ARN, a credential secret, and the DB name. Round 8: that credential is the
       # least-privilege `awsops_sql_reader` secret, NOT the RDS-managed master secret (both this
       # connector and rds-mcp's execute_sql are pure SELECT paths).
+      each.key == "inventory-read" && var.topology_entities_enabled ? { TOPOLOGY_ENTITIES_ENABLED = "true" } : {},
       each.key == "inventory-read" ? {
         AURORA_CLUSTER_ARN            = aws_rds_cluster.aurora.arn
         AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn

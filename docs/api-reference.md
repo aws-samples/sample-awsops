@@ -315,6 +315,12 @@ All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
+## Service topology
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/topology` | GET | Published host service snapshot with bounded service, entry, placement and evidence lenses. Select a returned entity with `focus`, filter by `q` and pin `snapshot` when following `nextCursor`. Returns 404 when disabled, 422 for unsupported scopes, or 410 for an expired snapshot. | `verifyUser` |
+
 ## network-topology (1)
 
 | Path | Method | Role | Auth |

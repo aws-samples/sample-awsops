@@ -199,6 +199,25 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     const strict = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc']);
     expect(inventoryAttempt(strict, ['eni', 'vpc'], 'flow', 'self', at()).publish).toBe(false);
   });
+  it.each([[8200, 0], [180, 60000]])('preserves ENI ownership and API routes ahead of %i listener rules', async (count, bytes) => {
+    const types = ['vpc', 'eni', 'apigatewayv2_route', 'alb_listener_rule'];
+    const point = at();
+    for (const type of types) {
+      const quantity = type === 'alb_listener_rule' ? count : 1;
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ($1,'succeeded',$2,$2,$2,$3,0)`, [type, point, quantity]);
+      await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self',$1,$2,$3)", [type, quantity, point]);
+      await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+        SELECT $1, 'item-'||n, 'fixture', jsonb_build_object('name', repeat('x', $4)), $2
+        FROM generate_series(1,$3::int)n`, [type, point, quantity, type === 'alb_listener_rule' ? bytes : 0]);
+    }
+    const enrichment = types.slice(1);
+    const input = await inventorySnapshot(pool, 'flow', 'self', types, undefined, enrichment);
+    expect(input.truncatedTypes).toEqual(['alb_listener_rule']);
+    expect(inventoryAttempt(input, types, 'flow', 'self', point, new Set(enrichment)))
+      .toMatchObject({ publish: true, status: 'ok', withheldTypes: ['alb_listener_rule'] });
+  });
+
   it('keeps flow detail fields consumed from meta.row', async () => {
     const detail = { subnet_id: 'subnet-fixture', subnets: ['subnet-fixture'], availability_zones: ['zone-fixture'],
       security_group_ids: ['sg-fixture'], vpc_security_group_ids: ['sg-fixture'], group_name: 'group-fixture', title: 'fixture-title' };

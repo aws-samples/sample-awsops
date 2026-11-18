@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace() {} }), useSearchParams: () => new URLSearchParams() }));
-vi.mock('@/lib/account-context', () => ({ useActiveAccount: () => ['self'], accountParam: () => 'account=self' }));
+vi.mock('@/lib/account-context', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/account-context')>(), useActiveAccount: () => ['self'], accountParam: () => 'account=self' }));
 vi.mock('@/components/shell/LanguageProvider', () => ({ useI18n: () => ({ lang: 'en', tt: (s: string) => s }) }));
 vi.mock('next/dynamic', () => ({ default: () => () => null }));
 vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {} }));

@@ -703,7 +703,9 @@ def lambda_handler(event, context):
     if isinstance(arguments, dict):
         # Reads stay host-scoped (never the requested account); the response says so via `scope`.
         requested_account_id = arguments.pop("target_account_id", None)
-    scope, scope_warning = _scope(requested_account_id)
+    service_projection = (tool_name == "get_topology" and isinstance(arguments, dict)
+                          and arguments.get("class") == "service")
+    scope, scope_warning = (None, None) if service_projection else _scope(requested_account_id)
 
     if tool_name in ("find_unused_resources", ""):
         by_type = _fetch_by_type(["target_group", "alb", "nlb", "cloudfront", "ebs"])
@@ -723,6 +725,40 @@ def lambda_handler(event, context):
         if resource_id is not None:
             resource_id = resource_id.strip()
         cls = (arguments.get("class") or "flow") if isinstance(arguments, dict) else "flow"
+        if cls == "service":
+            if os.environ.get("TOPOLOGY_ENTITIES_ENABLED") != "true":
+                return {"statusCode": 404, "body": json.dumps({"error": "topology_entities_disabled", "class": "service"})}
+            if requested_account_id not in (None, "", "self") and (
+                not isinstance(requested_account_id, str) or not re.fullmatch(r"\d{12}", requested_account_id)
+                or requested_account_id != host_account_id()
+            ):
+                return {"statusCode": 422, "body": json.dumps({"error": "unsupported_scope"})}
+            if resource_id and not re.fullmatch(r"[0-9a-f]{64}", resource_id):
+                return {"statusCode": 400, "body": json.dumps({"error": "invalid_entity_id"})}
+            try:
+                cadence = int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS", "0"))
+            except ValueError:
+                cadence = 0
+            try:
+                rows = _execute(
+                    # One MVCC read. Keep each Data API row comfortably below 64 KiB, even
+                    # for four-byte Unicode. Bound the complete formatted response as well.
+                    "WITH result AS MATERIALIZED (SELECT sql_reader.service_topology_read("
+                    "NULL,'service','',:focus,0,:age)::text AS doc) "
+                    "SELECT CASE WHEN octet_length(doc)<=524288 THEN substr(doc,n,4096) END AS view, "
+                    "(octet_length(doc)>524288) AS oversized FROM result "
+                    "CROSS JOIN LATERAL generate_series(1,CASE WHEN octet_length(doc)>524288 THEN 1 "
+                    "ELSE length(doc) END,4096) n ORDER BY n",
+                    [{"name": "focus", "value": {"stringValue": resource_id or ""}},
+                     {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}])
+                if rows and rows[0].get("oversized"):
+                    return {"statusCode": 413, "body": json.dumps({
+                        "error": "service_projection_too_large", "hint": "Select an exact service entity ID."})}
+                view = json.loads("".join(row["view"] for row in rows)) if rows else {
+                    "contractVersion": 1, "status": "unavailable", "snapshotId": None, "reason": "no_publication"}
+                return _ok(view)
+            except Exception:
+                return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns
             # 400 for the same input; a direct-MCP caller must get an error, not the WRONG layer's data

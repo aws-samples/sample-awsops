@@ -485,6 +485,35 @@ run "inventory_fingerprint_uses_the_deployed_archive" {
   }
 }
 
+run "published_topology_readers_default_off" {
+  command = plan
+  variables {
+    agentcore_enabled = true
+  }
+  assert {
+    condition = (
+      !contains([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.name], "TOPOLOGY_ENTITIES_ENABLED") &&
+      alltrue([for fn in aws_lambda_function.agent : !contains(keys(fn.environment[0].variables), "TOPOLOGY_ENTITIES_ENABLED")])
+    )
+    error_message = "The service snapshot must be disabled in both readers by default."
+  }
+}
+
+run "published_topology_readers_opt_in" {
+  command = plan
+  variables {
+    topology_entities_enabled = true
+    agentcore_enabled         = true
+  }
+  assert {
+    condition = (
+      one([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "TOPOLOGY_ENTITIES_ENABLED"]) == "true" &&
+      alltrue([for key, fn in aws_lambda_function.agent : lookup(fn.environment[0].variables, "TOPOLOGY_ENTITIES_ENABLED", "") == (key == "inventory-read" ? "true" : "")])
+    )
+    error_message = "Only the Web and inventory-read consumers should receive the enabled snapshot gate."
+  }
+}
+
 run "host_core_permissions_and_digest_binding" {
   command = plan
   variables {

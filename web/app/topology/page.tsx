@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, Suspense, type React
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useEntityTopology } from '@/components/topology/TopologyCapability';
+import ServiceTopologyView from '@/components/topology/ServiceTopologyView';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge } from '@xyflow/react';
@@ -17,6 +19,7 @@ import { fetchEksIpMap, inventoryEvidence, type EksIpResolution, type InventoryE
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { FLOW_INPUT_KEY as FLOW_KEY, INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
 import { infraNodeId } from '@/lib/graph-identity';
 import { selectGraphPaths } from '@/lib/graph-display';
 import useGraphViewport from '@/components/topology/useGraphViewport';
@@ -24,9 +27,6 @@ import useGraphViewport from '@/components/topology/useGraphViewport';
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 
-const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
-  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule',
-  'eni', 'vpc_endpoint', 'nat_gateway'] as const;
 type InvType = (typeof TYPES)[number];
 // Every inventory read the ENI owner resolver consults (eni-owner.ts) that this page fetches.
 const OWNER_TYPES: InvType[] = ['eni', 'vpc_endpoint', 'nat_gateway', 'alb', 'nlb', 'lambda', 'ec2'];
@@ -35,22 +35,6 @@ const OWNER_TYPES: InvType[] = ['eni', 'vpc_endpoint', 'nat_gateway', 'alb', 'nl
 // not fetched and always count as incomplete.
 const SAVED_GRAPH_ONLY_OWNER_TYPES = ['rds', 'rds_cluster', 'rds_proxy'];
 type Row = Record<string, unknown>;
-
-// InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
-// s3 resolves CloudFront S3 origins; apigatewayv2_* resolve execute-api origins → API GW → Lambda/LB;
-// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB; eni + its owner types
-// resolve IP targets that are neither EKS pods nor ECS tasks (eni-owner.ts).
-type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
-  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule'
-  | 'eni' | 'vpc_endpoint' | 'nat_gateway';
-const FLOW_KEY: Record<InvType, RowKey> = {
-  route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
-  ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
-  apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
-  cloudfront_vpc_origin: 'cloudfront_vpc_origin',
-  apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
-  eni: 'eni', vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
-};
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default
 // node text to light, so dark nodes get explicit dark fills + light text). Target nodes are
@@ -306,6 +290,7 @@ export default function TopologyPage() {
 }
 
 function TopologyScope() {
+  const enabled = useEntityTopology();
   const [scope, , ready] = useActiveScope();
   const router = useRouter();
   const params = useSearchParams() ?? new URLSearchParams();
@@ -328,11 +313,14 @@ function TopologyScope() {
   }, [ready, resetCluster, inventoryScope, clusterScope, params, router]);
   // Bind initial deep links too: Back/Forward must not restore another scope's cluster.
   if (!ready || resetCluster) return null;
+  if (enabled && params.get('lens') === 'service') return <ServiceTopologyView key={inventoryScope}
+    supported={account === 'self' && scope.regions === '__all__' && scope.includeGlobal} />;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
 function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: string; inventoryScope: string }) {
   const { tt, lang } = useI18n();
+  const entitiesEnabled = useEntityTopology();
   const router = useRouter();
   const params = useSearchParams() ?? new URLSearchParams();
   const e2e = params.get('view') === 'e2e';
@@ -407,7 +395,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       };
       const [, eks] = await Promise.all([
         Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-        account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
+        account === 'self' ? fetchEksIpMap(controller.signal, entitiesEnabled) : Promise.resolve(null),
       ]);
       if (!current()) return;
       const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
@@ -479,7 +467,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       clearTimeout(deadline);
       if (current()) setBusy(false);
     }
-  }, [activeAccount, inventoryScope]);
+  }, [activeAccount, inventoryScope, entitiesEnabled]);
 
   useEffect(() => { void load(); return () => { loadGeneration.current += 1; loadAbort.current?.abort(); }; }, [load]);
 
@@ -755,7 +743,10 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
     if (view) next.set('view', 'e2e'); else next.delete('view');
     return `/topology${next.size ? `?${next}` : ''}`;
   };
-  if (e2e) return <ServiceNetworkTopology configured={full} account={activeAccount}
+  if (e2e) return <ServiceNetworkTopology podBindings={entitiesEnabled ? eksResolution?.bindings?.filter(binding => {
+    const regions = new URLSearchParams(inventoryScope).get('regions');
+    return regions === '__all__' || (binding.region != null && regions?.split(',').includes(binding.region));
+  }) : undefined} configured={full} account={activeAccount}
     configuration={{ complete: !!data && !identityBlocked, loading: busy || (!data && !err), capturedAt: syncedAt, error: '',
       failedTypes: [], cappedTypes: [] }} evidence={inventoryEvidencePanel}
     backHref={viewHref(false)} onRefresh={() => void load()} />;
@@ -814,6 +805,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
               ))}
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
+            {entitiesEnabled && <Link href="/topology?lens=service" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]">{tt('통합 서비스 그래프')}</Link>}
             <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('서비스 + 네트워크 →')}
             </Link>

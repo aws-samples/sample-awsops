@@ -455,6 +455,10 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   {e.relation === 'configured-endpoint-match' && <p>
                     <span className="text-ink-400">{tt('대상 그룹 수집 시각')}</span>
                     {' · '}<CaptureTime value={e.meta?.targetCapturedAt} locale={locale} /></p>}
+                  {e.evidence === 'service' && typeof e.meta?.spanCount === 'number' && e.meta.spanCount > 0 &&
+                    <p>{tt('관측 스팬 수')} · {e.meta.spanCount.toLocaleString(locale)}</p>}
+                  {e.evidence === 'service' && typeof e.meta?.metricCount === 'number' && e.meta.metricCount > 0 &&
+                    <p>{tt('호출 메트릭 증가량')} · {e.meta.metricCount.toLocaleString(locale)}</p>}
                   {e.evidence === 'service' && <p>
                     <span className="text-ink-400">{tt('스냅샷 표시 시각')}</span>
                     {' · '}<CaptureTime value={e.meta?.snapshotCapturedAt} locale={locale} /></p>}

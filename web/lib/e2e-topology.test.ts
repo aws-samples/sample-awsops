@@ -1960,3 +1960,18 @@ describe('selectE2eGraph — filtering before bounds', () => {
     });
   });
 });
+
+it('shows one present Pod record for two internal peer observations without converting historical flows into owner matches', () => {
+  const account='111111111111', time=Date.parse('2026-09-11T09:16:00Z');
+  const current = {account,region:REGION,vpc:VPC,id:'cluster-arn',status:'ok' as const,
+    complete:true,stale:false,retained:false,capturedAt:time,window:{start:time,end:time}};
+  const base = input({hostAccountId:account,podBindings:[{...current,kind:'pod',nativeId:'pod-uid',authority:'cluster-arn',
+    ip:'10.0.1.10',label:'shop/internal',evidence:current,confidence:'observed'}],
+    network:[observation([flow({local:endpoint({podName:'internal',podNamespace:'shop'})}),
+      flow({local:endpoint({podName:'internal',podNamespace:'shop'})})])]});
+  const built=buildE2eGraph(base);
+  expect(built.nodes.filter(n=>n.kind==='pod')).toHaveLength(1);
+  expect(built.edges.filter(e=>e.relation==='current-pod-record').map(e=>e.evidence)).toEqual(['context','context']);
+  expect(built.summary.correlatedEndpoints).toBe(0);
+  expect(buildE2eGraph({...base,configurationComplete:false}).nodes.filter(n=>n.kind==='pod')).toHaveLength(0);
+});

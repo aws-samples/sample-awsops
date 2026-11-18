@@ -184,13 +184,13 @@ interface K8sList { items?: K8sItem[]; message?: string; kind?: string }
 // networking.k8s.io/v1 Ingress backend (read by normalizeIngress)
 interface IngressBackend { service?: { name?: string; port?: { number?: number; name?: string } } }
 interface K8sItem {
-  metadata?: { name?: string; namespace?: string; creationTimestamp?: string; labels?: Record<string, string>;
-    ownerReferences?: { kind?: string; name?: string }[] };
+  metadata?: { name?: string; uid?: string; namespace?: string; creationTimestamp?: string; labels?: Record<string, string>;
+    ownerReferences?: { kind?: string; name?: string; uid?: string; controller?: boolean }[] };
   status?: {
     conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
     nodeInfo?: { kubeletVersion?: string };
     phase?: string;
-    podIP?: string;
+    podIP?: string; podIPs?: { ip?: string }[];
     containerStatuses?: { restartCount?: number }[];
     readyReplicas?: number;
     availableReplicas?: number;
@@ -200,7 +200,7 @@ interface K8sItem {
     loadBalancer?: { ingress?: { hostname?: string; ip?: string }[] };
   };
   spec?: {
-    nodeName?: string;
+    nodeName?: string; hostNetwork?: boolean;
     replicas?: number;
     type?: string;
     clusterIP?: string;
@@ -344,6 +344,10 @@ export function podWorkload(it: K8sItem): string {
 }
 
 export function normalizePod(it: K8sItem): PodRow {
+  const owners = (it.metadata?.ownerReferences ?? []).filter(r => r.controller === true);
+  const owner = owners.length === 1 ? owners[0] : undefined;
+  const ips = [...new Set([it.status?.podIP, ...(it.status?.podIPs ?? []).map(p => p.ip)]
+    .filter((ip): ip is string => typeof ip === 'string' && ip.length > 0))];
   const restarts = (it.status?.containerStatuses ?? []).reduce((s, c) => s + (c.restartCount ?? 0), 0);
   // Effective pod request = max(sum(app containers), max(init container)) + overhead —
   // the scheduler's reservation semantics, so node bars match `kubectl describe node`
@@ -359,6 +363,12 @@ export function normalizePod(it: K8sItem): PodRow {
     restarts,
     age: age(it.metadata?.creationTimestamp),
     podIP: it.status?.podIP ?? '',
+    ...(ips.length ? { podIPs: ips } : {}),
+    ...(it.metadata?.uid ? { uid: it.metadata.uid } : {}),
+    ...(it.metadata?.creationTimestamp ? { createdAt: it.metadata.creationTimestamp } : {}),
+    ...(typeof it.spec?.hostNetwork === 'boolean' ? { hostNetwork: it.spec.hostNetwork } : {}),
+    ...(owner?.uid && owner.name && owner.kind
+      ? { controller: { uid: owner.uid, name: owner.name, kind: owner.kind } } : {}),
     workload: podWorkload(it),
     serviceAccount: it.spec?.serviceAccountName ?? '',
     // metadata.labels (gap L229 — the Service-selector join side). Non-secret metadata.

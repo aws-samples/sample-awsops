@@ -547,6 +547,8 @@ resource "aws_ecs_task_definition" "web" {
         ] : [], var.eks_auto_register_enabled ? [
         # EKS auto-register is on — the onboarding guide promises hands-free connection.
         { name = "EKS_AUTO_REGISTER", value = "true" }
+        ] : [], var.topology_entities_enabled ? [
+        { name = "TOPOLOGY_ENTITIES_ENABLED", value = "true" }
         ] : [], var.hybrid_routing_enabled ? [
         # ADR-003[legacy 038]: hybrid routing flag + classifier model (BFF reads both at runtime).
         { name = "HYBRID_ROUTING_ENABLED", value = "true" },

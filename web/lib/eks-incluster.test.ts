@@ -364,3 +364,16 @@ describe('ingresses kind (K8s map)', () => {
     expect(row.className).toBe('');
   });
 });
+
+it('preserves immutable Pod/controller evidence separately from the friendly workload name', () => {
+  const pod = normalizePod({
+    metadata: { name: 'worker-abc', uid: 'uid-p', namespace: 'shop', ownerReferences: [
+      { name: 'annotation', kind: 'Job', uid: 'other', controller: false },
+      { name: 'orders-2026', kind: 'ReplicaSet', uid: 'uid-rs', controller: true },
+    ] },
+    status: { phase: 'Running', podIP: '10.1.2.3', podIPs: [{ ip: '10.1.2.3' }, { ip: 'fd00::3' }] },
+    spec: { hostNetwork: true },
+  });
+  expect(pod).toMatchObject({ uid: 'uid-p', controller: { kind: 'ReplicaSet', uid: 'uid-rs', name: 'orders-2026' },
+    podIPs: ['10.1.2.3', 'fd00::3'], hostNetwork: true });
+});

@@ -129,3 +129,33 @@ it('bounds a whole service map and reports display omissions',async()=>{
  expect(screen.getAllByRole('button',{name:/service: service-/})).toHaveLength(350);
  expect(screen.getByText(/표시 한도에 따라 생략/).textContent).toContain('50');
 });
+
+it.each([
+  { accounts: ['123456789012'], regions: '__all__', includeGlobal: true },
+  { accounts: ['self'], regions: ['us-east-1'], includeGlobal: true },
+  { accounts: '__all__', regions: '__all__', includeGlobal: true },
+])('withholds the host snapshot for an unsupported stored scope %o', async scope => {
+  const fetcher = vi.fn();
+  vi.stubGlobal('fetch', fetcher);
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  localStorage.setItem('awsops:scope', JSON.stringify(scope));
+  try {
+    render(<ServiceMapPage />);
+    expect((await screen.findByRole('status')).textContent).toContain('현재 범위에서는');
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally { localStorage.removeItem('awsops:scope'); }
+});
+
+it('can retry a rejected read after the request settles', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce({ status: 400, ok: false })
+    .mockResolvedValue({ status: 200, ok: true, json: async () => ({
+      nodes: [{ id: 's1', kind: 'service', label: 'recovered' }], edges: [], captured_at: null,
+    }) });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ServiceMapPage />);
+  await screen.findByRole('alert');
+  fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+  expect(await screen.findByRole('button', { name: /service: recovered/ })).toBeTruthy();
+});

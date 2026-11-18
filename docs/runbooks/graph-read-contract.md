@@ -645,3 +645,20 @@ those rollout steps automatically.
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-010[legacy 043] (graph reads;
 decision bodies are maintained upstream).
+
+## Unified service snapshot pilot
+
+The opt-in `/topology?lens=service` view and `get_topology(class="service")` read the host partition through the same bounded SQL projection. The legacy trace and live network evidence views have their own capture times. The published service snapshot uses the existing Aurora flow, infra, trace and inventory records. Live Kubernetes ownership and NFM windows appear as collection gaps.
+
+Apply the reviewed `*_service_topology.sql` through the standalone migration workflow, verify exit 0 and reader synchronization, then start a fresh dev Web build. The new tables inherit narrowed grants. The existing worker DB principal publishes manually, while Web and the model-facing reader select from the scoped views. Review ADR-010 in private upstream before merging the schema. See [the release procedure](web-release.md).
+
+On an approved private host with the intended database and a scoped IAM session, install the locked Web dependencies, then use:
+
+```bash
+npm run build:service-topology --prefix web
+AURORA_USER=awsops_worker node scripts/v2/service-topology-rebuild.mjs --publish-host
+```
+
+Provide the deployment's AURORA_ENDPOINT, AURORA_DATABASE, AWS_REGION and trusted HOST_ACCOUNT_ID. The CLI outputs the snapshot ID, publication outcome, counts and gaps. Exit 2 identifies a published or retained head with partial inputs, and exit 1 identifies a failed publish. Record the snapshot ID and source clocks. Confirm a service, an observed dependency and a withheld or missing source against that same host generation. Repeating a publication with identical input reuses its head. For a newer generation the publisher checks the previous head and input ledger versions again. A change during capture requires a fresh run.
+
+The controller exposes the readers with `topology_entities_enabled=true` after schema, Lambda, Web and gateway compatibility checks. With the flag disabled the authenticated API and service tool return 404 before reading the graph. To disable the pilot, turn the flag off and stop manual publication. Scheduled collection and retention pruning belong to the subsequent collection rollout.
