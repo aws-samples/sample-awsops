@@ -275,7 +275,12 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   of the id's account (`self` for a bare name) and matched to gateway hosts exactly.
 - MSK and ElastiCache replication-group hosts stay unresolved host names, because
   their inventory rows store no endpoint.
-- Layout uses `elkjs` (`EPL-2.0 OR GPL-3.0-or-later`).
+- Layout (`web/lib/k8s-graph-layout.ts`) uses dagre (MIT, the dependency behind
+  `web/lib/flow-layout.ts`) only for the call order inside each namespace box, on plain
+  non-compound graphs; Services without calls inside their namespace, and components
+  above the dagre edge budget, wrap into a near-square grid. Columns, barycenter ordering
+  and box stacking are computed by the module itself. No edge route is precomputed: the
+  canvas draws each edge as a smoothstep path between node handles.
 
 ## Key files
 
@@ -294,7 +299,7 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
 | `web/lib/eks-db-refs.ts`, `web/lib/db-endpoint.ts`, `web/lib/db-ref-resolve.ts` | Server-side Pod env/ConfigMap host extraction and inventory matching for `db-refs` |
-| `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, ELK layout and Route 53 matching |
+| `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, namespace-boxed column layout and Route 53 matching |
 | `web/components/topology/K8sMapView.tsx`, `ServiceGraphCanvas.tsx`, `ServiceDetailPanel.tsx` | Graph page, canvas and Service detail panel |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
