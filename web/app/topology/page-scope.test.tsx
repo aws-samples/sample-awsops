@@ -182,6 +182,19 @@ it('passes existing subnet inventory into ECS resolution without a second subnet
     expect(requests.filter(url => url.pathname === '/api/inventory/subnet')).toHaveLength(1);
   });
 
+it('Enter confirming an IME composition does not select the first search match; plain Enter does', async () => {
+    serve();
+    mount();
+    await flowReady();
+    const box = screen.getByPlaceholderText('리소스 이름 검색…') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'ecs-api' } });
+    expect(await screen.findByRole('button', { name: /^ecs-api\s*target$/ })).toBeTruthy();
+    fireEvent.keyDown(box, { key: 'Enter', isComposing: true });
+    expect(box.value).toBe('ecs-api');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(box.value).toBe('');
+  });
+
 it('updates the cluster filter from same-page navigation and writes filter controls to the URL', async () => {
     serve();
     const router = mount('/topology?cluster=ecs%3Aecs-app');

@@ -6,6 +6,7 @@ import ReportSections from './ReportSections';
 import PillarCoverage from './PillarCoverage';
 import IntentPanel from './IntentPanel';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { isComposingKey } from '@/lib/ime';
 import { localeOf } from '@/lib/i18n';
 import { sectionsForTier, titleMatches, localizedTitle } from '@/lib/diagnosis-sections';
 import { CheckCircle, PanelLeft, PanelLeftClose, X } from 'lucide-react';
@@ -477,7 +478,7 @@ export default function DiagnosisView() {
                     value={tagDraft}
                     onChange={(e) => setTagDraft(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && tagDraft.trim()) {
+                      if (e.key === 'Enter' && !isComposingKey(e) && tagDraft.trim()) {
                         const next = Array.from(new Set([...(view!.tags ?? []), tagDraft.trim()]));
                         patchMeta(view!.id, { tags: next });
                         setTagDraft('');

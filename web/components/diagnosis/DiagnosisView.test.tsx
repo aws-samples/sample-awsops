@@ -454,6 +454,18 @@ describe('DiagnosisView — title / tags / soft delete', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH' && Array.isArray(c.body.tags) && c.body.tags.includes('보안'))).toBe(true));
   });
 
+  it('owner: Enter confirming an IME composition does not add a tag', async () => {
+    const calls: any[] = [];
+    mockMeta([{ id: 3, tier: 'mid', status: 'succeeded', created_at: 't', title: 'old', tags: [], can_edit: true, progress: {} }], calls);
+    render(<DiagnosisView />);
+    await screen.findByRole('button', { name: /제목 수정/ });
+    const tagInput = screen.getByLabelText('태그 추가');
+    fireEvent.change(tagInput, { target: { value: '보안' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter', isComposing: true });
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect((tagInput as HTMLInputElement).value).toBe('보안');
+  });
+
   it('non-owner: no edit/delete controls', async () => {
     mockMeta([{ id: 3, tier: 'mid', status: 'succeeded', created_at: 't', title: 'read only', tags: ['x'], can_edit: false, progress: {} }], []);
     render(<DiagnosisView />);
