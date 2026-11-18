@@ -257,7 +257,19 @@ def test_prose_naming_aws_is_kept_and_withheld_prose_is_disclosed():
         SECTIONS, bundle(), analysis(findings=[finding(explanation="Run aws ec2 describe-instances",
                                                        prerequisites=["Use kubectl get pods"])]), lang="en")))
     assert "describe-instances" not in text and "kubectl" not in text
-    assert text.count(presentation._WITHHELD["en"]) == 2
+    # Full body (explanation + prerequisites) plus every by-reference line disclose the withholding.
+    refs = [line for line in text.splitlines() if line.startswith("- **") and "finding-a" in line]
+    assert refs and all(presentation._WITHHELD["en"] in line for line in refs)
+    assert text.count(presentation._WITHHELD["en"]) == 2 + len(refs)
+
+
+def test_reference_lines_keep_the_claim_and_hypothesis_labels():
+    from diagnosis import presentation
+    rows = analysis(findings=[finding(claim="sizing_candidate")])
+    body = dict(presentation.render(SECTIONS, bundle(), rows, lang="en"))["recommendations"]
+    line = next(l for l in body.splitlines() if l.startswith("- **"))
+    assert "Provider candidate — manual verification required" in line
+    assert "_Hypothesis_: Memory pressure needs verification." in line
 
 
 @pytest.mark.parametrize("unsafe", ["See HTTPS://example.test", "Run Curl -X POST", "Use KUBECTL get pods",
@@ -376,3 +388,48 @@ def test_title_scrubs_arn_identities():
     target = data["resources"][0]["id"]
     meta = presentation.title_and_tags(data, analysis(findings=[finding(resource_ids=[target])]), lang="en")
     assert "111111111111" not in meta["title"] and "arn:aws" not in meta["title"]
+
+
+@pytest.mark.parametrize("value", [
+    "<script>x</script>", "see [Critical] now", "a | b", "use `code`", "**bold** text",
+    "_em_ text", "www.example.test", "mail me@example.test", "a://b", "- list item",
+    "> quote", "# heading", "&amp; entity", "x=y", "~~strike~~", "line\nbreak [Warning]",
+])
+def test_prose_falls_back_to_a_literal_for_any_markup_capable_text(value):
+    from diagnosis import presentation
+    cell = presentation._prose(value, 600)
+    assert re.fullmatch(r"(`+) (.*) \1", cell), "Markup-capable model text must stay a code literal"
+    assert "[Critical]" not in cell and "[Warning]" not in cell
+
+
+def test_plain_prose_renders_without_a_code_span():
+    from diagnosis import presentation
+    assert presentation._prose("메모리 부하는 추가 검증이 필요합니다.", 600) == "메모리 부하는 추가 검증이 필요합니다."
+
+
+def test_scope_line_keeps_sampling_account_and_resources_and_never_overstates_coverage():
+    from diagnosis import presentation
+    record = {"kind": "metrics", "region": "us-east-1", "captured_at": "2026-11-04T00:00:00Z",
+              "window": {"days": 14}, "account": "self", "resource_ids": ["r:a", "r:b"],
+              "coverage": {"complete": True, "sample_ratio": 0.5, "lookback_days": 7}, "fresh": False}
+    line = presentation._scope_text(record, "en")
+    assert "partial" in line and "complete" not in line.replace("partial", "")
+    assert "sample_ratio=0.5" in line and "lookback_days=7" in line
+    assert "account=self" in line and "resources=r:a, r:b" in line and "stale" in line
+    # A producer-flagged sampled record (X-Ray, Application Signals) is never shown as complete.
+    flagged = presentation._scope_text({"coverage": {"complete": True, "sampled": True}}, "en")
+    assert flagged.startswith("partial") and "sampled=true" in flagged
+    # A coverage dict without a boolean `complete` is still disclosed, not dropped.
+    assert "storage_scope=bucket" in presentation._scope_text({"coverage": {"storage_scope": "bucket"}}, "en")
+
+
+def test_pillar_table_and_localized_title():
+    from diagnosis import presentation
+    data = analysis(pillar_coverage={"security": {"status": "partial", "findings": 2,
+                                                  "revalidation_dropped": 1}})
+    body = dict(presentation.render(SECTIONS, bundle(), data, lang="en"))["executive_summary"]
+    assert "| Pillar | Status | Findings | Rejected | Downgraded | Other |" in body
+    assert "| Security | ` partial ` | ` 2 ` | — | — | ` revalidation_dropped=1 ` |" in body
+    two = analysis(findings=[finding(), finding(id="finding-b", severity="low")])
+    meta = presentation.title_and_tags(bundle(), two, lang="ko")
+    assert meta["title"] == "AWS 진단 — 성능 효율성 외 1건 (i-0123456789abcdef0)"
