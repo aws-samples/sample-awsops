@@ -370,8 +370,8 @@ function ScopedEksFleetCost({ scopeQuery }: { scopeQuery: string }) {
                         const k = `${pd.cluster}/${pd.node}`;
                         podsByNode.set(k, (podsByNode.get(k) ?? 0) + 1);
                       }
-                      const data = [...merged.nodes]
-                        .sort((a, b) => b.totalCost - a.totalCost)
+                      const data = merged.nodes
+                        .toSorted((a, b) => b.totalCost - a.totalCost)
                         .slice(0, 15)
                         .map((n) => ({
                           label: `${eksClusterLabel(n.cluster)}/${n.node}`,

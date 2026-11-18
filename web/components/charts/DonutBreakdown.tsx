@@ -58,7 +58,7 @@ export default function DonutBreakdown({
 
   // Sort descending so the rollup drops the smallest tail, then fold anything past
   // maxSlices-1 into one "기타" slice (keeps one slot for it within maxSlices total).
-  const sorted = [...data].sort((a, b) => (Number(b[valueKey]) || 0) - (Number(a[valueKey]) || 0));
+  const sorted = data.toSorted((a, b) => (Number(b[valueKey]) || 0) - (Number(a[valueKey]) || 0));
   const keep = maxSlices > 0 ? maxSlices - 1 : sorted.length;
   const shown = sorted.length > maxSlices ? sorted.slice(0, keep) : sorted;
   const etcValue = sorted.length > maxSlices

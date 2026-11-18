@@ -462,7 +462,7 @@ function ScopedFleetKindPage({ kind, scopeQuery }: { kind: FleetKind; scopeQuery
               });
               const fully = parsed.filter((d) => d.desired > 0 && d.ready === d.desired).length;
               const partial = parsed.length - fully;
-              const top = [...parsed].sort((a, b) => b.desired - a.desired || a.name.localeCompare(b.name)).slice(0, 20);
+              const top = parsed.toSorted((a, b) => b.desired - a.desired || a.name.localeCompare(b.name)).slice(0, 20);
               return (
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
