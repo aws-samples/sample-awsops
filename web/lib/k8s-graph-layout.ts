@@ -52,11 +52,26 @@ const EVIDENCE_ORDER: Evidence[] = ['trace', 'config', 'routing'];
 const PARTITION: Record<GKind, number> = { dns: 0, gateway: 1, service: 2, datastore: 3 };
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-let elkInstance: Promise<ELK> | null = null;
-function getElk(): Promise<ELK> {
-  elkInstance ??= import('elkjs/lib/elk.bundled.js').then((m) => new m.default());
-  return elkInstance;
+const LOAD_FAILED = 'Service graph layout engine could not be loaded.';
+const LAYOUT_FAILED = 'Service graph layout failed.';
+
+/**
+ * Memoized ELK loader: concurrent callers share one import and a successful one is kept, but a
+ * REJECTED import (e.g. a transient chunk-load error) is forgotten so the next call retries it —
+ * the canvas's retry button would otherwise never recover without a page reload. The rejection is
+ * replaced by a stable generic Error (the raw one can carry URLs or ids).
+ */
+export function createElkLoader(load: () => Promise<{ default: new () => ELK }>): () => Promise<ELK> {
+  let pending: Promise<ELK> | null = null;
+  return () => {
+    pending ??= load().then((m) => new m.default()).catch(() => {
+      pending = null;
+      throw new Error(LOAD_FAILED);
+    });
+    return pending;
+  };
 }
+const getElk = createElkLoader(() => import('elkjs/lib/elk.bundled.js'));
 
 /** Remaps edges onto visible boxes, merging the ones that touch collapsed namespaces. */
 function visibleEdges(graph: ServiceGraph, present: ReadonlySet<string>, boxOf: ReadonlyMap<string, string>): LaidOutEdge[] {
@@ -144,7 +159,14 @@ export async function layoutServiceGraph(graph: ServiceGraph, opts: LayoutOption
     edges: edges.map((e): ElkExtendedEdge => ({ id: e.id, sources: [e.source], targets: [e.target] })),
   };
 
-  const res = await (await getElk()).layout(root);
+  const engine = await getElk();
+  let res: ElkNode;
+  try {
+    res = await engine.layout(root);
+  } catch {
+    // ELK messages name nodes/options (graph ids): never pass them on.
+    throw new Error(LAYOUT_FAILED);
+  }
 
   const nodes: LaidOutNode[] = [];
   const groups: LaidOutGroup[] = [];
