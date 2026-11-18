@@ -14,6 +14,7 @@ mock_provider "aws" {
   mock_resource "aws_sqs_queue" { defaults = { url = "https://sqs.ap-northeast-2.amazonaws.com/123456789012/awsops-fixture-jobs" } }
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/fixture" } }
   mock_resource "aws_kms_key" { defaults = { arn = "arn:aws:kms:ap-northeast-2:123456789012:key/11111111-1111-1111-1111-111111111111" } }
+  mock_data "aws_secretsmanager_secret" { defaults = { arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:topology-fixture-secret" } }
   mock_resource "aws_secretsmanager_secret" { defaults = { arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:fixture" } }
   mock_resource "aws_ecs_cluster" { defaults = { arn = "arn:aws:ecs:ap-northeast-2:123456789012:cluster/awsops-fixture" } }
   mock_resource "aws_lambda_function" { defaults = { arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:fixture", code_sha256 = "TYwIZpErPrCndYW8xYnWWh3mI1YW6yiPScDIEh+Q+o8=" } }
@@ -492,6 +493,8 @@ run "published_topology_readers_default_off" {
   }
   assert {
     condition = (
+      length(aws_iam_role.inventory_topology_reader) == 0 &&
+      length(data.aws_secretsmanager_secret.topology_reader) == 0 &&
       !contains([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.name], "TOPOLOGY_ENTITIES_ENABLED") &&
       alltrue([for fn in aws_lambda_function.agent : !contains(keys(fn.environment[0].variables), "TOPOLOGY_ENTITIES_ENABLED")])
     )
@@ -511,6 +514,14 @@ run "published_topology_readers_opt_in" {
       alltrue([for key, fn in aws_lambda_function.agent : lookup(fn.environment[0].variables, "TOPOLOGY_ENTITIES_ENABLED", "") == (key == "inventory-read" ? "true" : "")])
     )
     error_message = "Only the Web and inventory-read consumers should receive the enabled snapshot gate."
+  }
+  assert {
+    condition = (
+      aws_lambda_function.agent["inventory-read"].environment[0].variables["TOPOLOGY_READER_SECRET_ARN"] == data.aws_secretsmanager_secret.topology_reader[0].arn &&
+      !contains(keys(aws_lambda_function.agent["rds-mcp"].environment[0].variables), "TOPOLOGY_READER_SECRET_ARN") &&
+      !strcontains(aws_iam_role_policy.agent_lambda_reader_scoped[0].policy, data.aws_secretsmanager_secret.topology_reader[0].arn)
+    )
+    error_message = "The generic SQL reader must lack both the pilot credential binding and its IAM read grant."
   }
 }
 

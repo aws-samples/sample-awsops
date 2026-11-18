@@ -173,6 +173,15 @@ const stamp = (value: unknown): number | null => {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
+interface InventorySource {
+  sourceId: string;
+  status: string;
+  capturedAtMs: number | null;
+  attemptedAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  finishedAtMs: number | null;
+  reasons: string[];
+}
 /** Enrichment sources only add ownership/endpoint detail to a graph built from its core sources.
  *  They never enter `details.sources`, so they cannot change the publication status, its
  *  freshness or any reader's reason vocabulary. A usable enrichment source must have a fully
@@ -181,7 +190,7 @@ const stamp = (value: unknown): number | null => {
  *  `details.enrichmentSources` for operators. */
 export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySnapshot>>, types: string[],
   cls: GraphClass, account: string, attemptedAt: string,
-  enrichment: ReadonlySet<string> = new Set()): GraphAttempt & { withheldTypes: string[] } {
+  enrichment: ReadonlySet<string> = new Set()): GraphAttempt & { withheldTypes: string[]; details: { sources: InventorySource[]; enrichmentSources?: InventorySource[] } } {
   const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
   const withheldTypes: string[] = [];
   // Every source this class can collect in this account contributes a coverage result.

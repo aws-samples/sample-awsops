@@ -711,6 +711,9 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
           {tt('선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.')}
         </p>}
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {entitiesEnabled && eksResolution?.bindingRead?.status === 'withheld' && <p role="status">
+          {tt('Pod 식별 근거를 확인할 수 없습니다.')} ({eksResolution.bindingRead.reasons.join(', ')})
+        </p>}
         {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
           {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
         </div>}

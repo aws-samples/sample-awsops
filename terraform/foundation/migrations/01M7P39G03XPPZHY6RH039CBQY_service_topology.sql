@@ -33,6 +33,25 @@ CREATE TABLE public.service_topology_heads (
   FOREIGN KEY(scope_key,snapshot_id) REFERENCES public.service_topology_snapshots(scope_key,snapshot_id)
 );
 
+-- The inventory-read tool needs this narrowly scoped projection. Its Data API credential
+-- is separate from the generic execute_sql principal. The role cannot log in until the
+-- operator provisions its dedicated credential during pilot activation.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='awsops_topology_reader') THEN
+    CREATE ROLE awsops_topology_reader NOLOGIN NOINHERIT;
+  ELSIF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='awsops_topology_reader'
+    AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls OR
+         EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member=r.oid))) THEN
+    RAISE EXCEPTION 'Unexpected privileged topology reader';
+  END IF;
+  IF pg_has_role('awsops_sql_reader','awsops_topology_reader','MEMBER') THEN
+    RAISE EXCEPTION 'Generic SQL role must not inherit topology-reader privileges';
+  END IF;
+END $$;
+ALTER ROLE awsops_topology_reader SET default_transaction_read_only=on;
+ALTER ROLE awsops_topology_reader SET search_path=sql_reader,pg_catalog;
+
 -- Legacy default grants give wide access to new public tables. Narrow all five here.
 REVOKE ALL ON public.topology_source_batches, public.service_topology_snapshots,
  public.service_topology_entities, public.service_topology_relations, public.service_topology_heads
@@ -41,24 +60,27 @@ GRANT SELECT, INSERT ON public.topology_source_batches, public.service_topology_
  public.service_topology_entities, public.service_topology_relations TO awsops_worker;
 GRANT SELECT, INSERT, UPDATE ON public.service_topology_heads TO awsops_worker;
 
-CREATE VIEW sql_reader.service_topology_heads AS
+CREATE VIEW sql_reader.service_topology_heads WITH (security_invoker=false) AS
  SELECT scope_key,snapshot_id,published_at FROM public.service_topology_heads;
-CREATE VIEW sql_reader.service_topology_snapshots AS
+CREATE VIEW sql_reader.service_topology_snapshots WITH (security_invoker=false) AS
  SELECT snapshot_id,scope_key,version,built_at,batch_ids,gaps,coalesce(body_snapshot_id,snapshot_id) AS body_id
  FROM public.service_topology_snapshots;
-CREATE VIEW sql_reader.service_topology_sources AS
+CREATE VIEW sql_reader.service_topology_sources WITH (security_invoker=false) AS
  SELECT batch_id,scope_key,source_id,generation_key,status,captured_at,attempted_at,
  window_start,window_end,stale,retained,capped,reasons FROM public.topology_source_batches;
-CREATE VIEW sql_reader.service_topology_entities AS
+CREATE VIEW sql_reader.service_topology_entities WITH (security_invoker=false) AS
  SELECT snapshot_id,id,kind,label,layers,claim,region,source_id,span_count,known_status,errors,duration_sum_ms,evidence_refs,cluster,namespace,vpc,owner_reason
  FROM public.service_topology_entities;
-CREATE VIEW sql_reader.service_topology_relations AS
+CREATE VIEW sql_reader.service_topology_relations WITH (security_invoker=false) AS
  SELECT snapshot_id,id,source,target,kind,layer,confidence,span_count,metric_count,evidence_refs
  FROM public.service_topology_relations;
-GRANT USAGE ON SCHEMA sql_reader TO awsops_web, awsops_sql_reader;
+REVOKE ALL ON sql_reader.service_topology_heads, sql_reader.service_topology_snapshots,
+ sql_reader.service_topology_sources, sql_reader.service_topology_entities,
+ sql_reader.service_topology_relations FROM PUBLIC, awsops_sql_reader;
+GRANT USAGE ON SCHEMA sql_reader TO awsops_web, awsops_topology_reader;
 GRANT SELECT ON sql_reader.service_topology_heads, sql_reader.service_topology_snapshots,
  sql_reader.service_topology_sources, sql_reader.service_topology_entities,
- sql_reader.service_topology_relations TO awsops_web, awsops_sql_reader;
+ sql_reader.service_topology_relations TO awsops_web, awsops_topology_reader;
 
 -- Both the BFF and the Data API tool use this single-statement MVCC read.
 CREATE OR REPLACE FUNCTION sql_reader.service_topology_read(p_snapshot uuid, p_lens text, p_search text,
@@ -114,5 +136,5 @@ SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.g
  'nextCursor',CASE WHEN (SELECT count(*) FROM eligible)>p_offset+200 THEN p_offset+200 END,'gaps',s.gaps)
 FROM snap s;
 $$;
-REVOKE ALL ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) TO awsops_web,awsops_sql_reader;
+REVOKE ALL ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) FROM PUBLIC, awsops_sql_reader;
+GRANT EXECUTE ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) TO awsops_web,awsops_topology_reader;

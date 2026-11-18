@@ -7,6 +7,7 @@ import { isTerminalPodPhase, type PodRow } from './eks-resources';
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 export interface EksIpResolution {
   bindings?: Binding[];
+  bindingRead?: { status: 'ok' | 'empty' | 'withheld'; reasons: string[] };
   map: NonNullable<FlowInput['ipResolved']>;
   blockedScopes: string[];
   coveredRegions: string[];
@@ -63,29 +64,32 @@ export function inventoryEvidence(
 // unique pod in a known active phase can establish ownership; conflicting references also
 // disqualify the pod fallback. PodRow.status is the normalized Kubernetes status.phase.
 export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = false): Promise<EksIpResolution> {
+  const fail = (reason?: EksIpResolution['reasons'][number]): EksIpResolution => ({
+    ...unavailable(reason), ...(includeBindings ? {bindingRead:{status:'withheld' as const,reasons:[reason ?? 'cluster_unreadable']}} : {}),
+  });
   const candidates = new Map<string, Resolution | null>();
   const blockedScopes = new Set<string>();
   const reasons = new Set<EksIpResolution['reasons'][number]>();
   let coveredRegions: string[] = [];
   let notConnected = 0;
   const bindings: Binding[] = [];
-  let incompleteBindings = false;
+  const bindingGaps = new Set<string>();
   let listHasErrors = false;
   try {
-    if (signal?.aborted) return unavailable();
+    if (signal?.aborted) return fail();
     const response = await fetch('/api/eks', { signal });
     const list = response.ok ? await response.json() : null;
-    if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
-    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
+    if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return fail();
+    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return fail();
     // The current API returns at most 25 descriptors and reports truncation.
     if (list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean')
-      || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
-    listHasErrors = list.status === 'partial' || (Array.isArray(list.errors) && list.errors.length > 0);
+      || (list.truncated !== false && list.clusters.length >= 25)) return fail('cluster_limit_possible');
+    listHasErrors = list.status === 'partial' || (list.errors !== undefined && (!Array.isArray(list.errors) || list.errors.length > 0));
     const clusters = list.clusters as Cluster[];
-    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
-    if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return unavailable();
+    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return fail();
+    if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return fail();
     coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
-    if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return unavailable();
+    if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return fail();
     await Promise.all(clusters.map(async cluster => {
       const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
       if (cluster.access !== 'connected') {
@@ -94,11 +98,14 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
         } else reasons.add('cluster_unreadable');
         blockedScopes.add(scope); return;
       }
+      let podReadAt: number | null = null;
       const get = async (kind: string) => {
         try {
           if (signal?.aborted) return null;
           const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
+          if (kind === 'pods' && typeof d?.generatedAt === 'string' && Number.isFinite(Date.parse(d.generatedAt))) podReadAt = Date.parse(d.generatedAt);
+          if (includeBindings && (d?.status === 'partial' || d?.truncated === true)) bindingGaps.add('binding_read_incomplete');
           return !signal?.aborted && !d?.error && d?.status !== 'error' && Array.isArray(d?.rows) ? d.rows : null;
         } catch { return null; }
       };
@@ -113,20 +120,31 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
             isRecord(target) && nonempty(target.ip) && optionalStrings(target, ['pod'])))) {
         blockedScopes.add(scope); reasons.add('cluster_unreadable'); return;
       }
-      const capturedAt = Date.now();
+      const capturedAt: number | null = podReadAt;
+      if (includeBindings && capturedAt === null) bindingGaps.add('binding_clock_unknown');
+      const validBindingRows = !includeBindings || pods.every(row => optionalStrings(row as unknown as Record<string, unknown>, ['uid']) &&
+        (row.hostNetwork == null || typeof row.hostNetwork === 'boolean') &&
+        (row.podIPs == null || (Array.isArray(row.podIPs) && row.podIPs.every(nonempty))));
+      if (!validBindingRows) bindingGaps.add('binding_rows_invalid');
       const clusterRef = cluster.arn && /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/.exec(cluster.arn);
       if (includeBindings && cluster.arn && cluster.accountId && clusterRef && clusterRef[1] === cluster.region &&
           clusterRef[2] === cluster.accountId && clusterRef[3] === cluster.name) {
-        const records = podBindings(pods, cluster.arn, {
+        if (capturedAt !== null && validBindingRows) {
+          const records = podBindings(pods, cluster.arn, {
           account: cluster.accountId, region: cluster.region!, vpc: cluster.vpcId!, id: cluster.arn,
+          // Point-in-time server read. Earlier flow windows can only use this as context.
           status: 'ok', complete: true, stale: false, retained: false, capturedAt, window: {start: capturedAt,end: capturedAt},
         });
-        if (records.length + bindings.length > 10000) incompleteBindings = true;
+        if (records.length + bindings.length > 10000) bindingGaps.add('binding_limit');
         else bindings.push(...records);
-      } else incompleteBindings = true;
+        }
+      } else if (includeBindings) bindingGaps.add('binding_authority_unverified');
       const podsByIp = new Map<string, PodRow[]>();
       for (const pod of pods ?? []) {
-        if (pod.podIP && !isTerminalPodPhase(pod.status)) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
+        if (pod.podIP && !isTerminalPodPhase(pod.status)) {
+          const seen = podsByIp.get(pod.podIP);
+          if (seen) seen.push(pod); else podsByIp.set(pod.podIP, [pod]);
+        }
       }
       const servicesByIp = new Map<string, EndpointRow[]>();
       for (const endpoint of endpoints ?? []) {
@@ -165,18 +183,23 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
     }));
   } catch {
     // Unknown scope or enumeration failure can hide an owner anywhere in the account.
-    return unavailable();
+    return fail();
   }
-  if (signal?.aborted) return unavailable();
+  if (signal?.aborted) return fail();
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
-  const usableBindings = !incompleteBindings && !blockedScopes.size && !listHasErrors && bindings.length
-    ? bindings.map(b => {
-      const proof = map[scopedTargetIp(b.region!, b.vpc!, b.ip)];
-      return proof?.meta?.pod && b.label === proof.meta.namespace + '/' + proof.meta.pod
-        ? b : { ...b, confidence: 'context' as const };
-    }) : [];
-  return { map, ...(usableBindings.length ? { bindings: usableBindings } : {}), ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+  if (listHasErrors || blockedScopes.size) bindingGaps.add('binding_read_incomplete');
+  const usableBindings = includeBindings && !bindingGaps.size ? bindings.map(b => {
+    const proof = b.region && b.vpc ? map[scopedTargetIp(b.region, b.vpc, b.ip)] : null;
+    const namespace = proof?.meta?.namespace, name = proof?.meta?.pod;
+    return nonempty(namespace) && nonempty(name) && b.label === namespace + '/' + name
+      ? b : { ...b, confidence: 'context' as const };
+  }) : [];
+  return { map, ...(includeBindings ? {
+    ...(!bindingGaps.size ? { bindings: usableBindings } : {}),
+    bindingRead: { status: bindingGaps.size ? 'withheld' as const : usableBindings.length ? 'ok' as const : 'empty' as const,
+      reasons: [...bindingGaps].sort() },
+  } : {}), ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
     : candidates.size ? 'ok' : 'empty', reasons: [...reasons].sort() };
 }
 

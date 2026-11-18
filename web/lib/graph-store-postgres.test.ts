@@ -129,13 +129,16 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await rebuildServiceTopology(pool)).toMatchObject({ snapshotId: first.snapshotId, outcome: 'unchanged' });
     const tableOid = (await pool.query("SELECT 'public.service_topology_entities'::regclass::oid AS id")).rows[0].id;
     const views = [];
-    for (const role of ['awsops_sql_reader', 'awsops_web']) {
+    expect((await pool.query("SELECT has_function_privilege('awsops_sql_reader','sql_reader.service_topology_read(uuid,text,text,text,integer,integer)','EXECUTE') AS allowed")).rows[0].allowed).toBe(false);
+    expect((await pool.query("SELECT has_table_privilege('awsops_sql_reader','sql_reader.service_topology_entities','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+    for (const role of ['awsops_topology_reader', 'awsops_web']) {
       const c = await pool.connect();
       try {
         await c.query('BEGIN');
         await c.query('SET LOCAL ROLE ' + role);
-        if (role === 'awsops_sql_reader') await c.query('SET LOCAL search_path=sql_reader,pg_catalog');
-        const view = (await c.query("SELECT sql_reader.service_topology_read(NULL,'service','','',0,15) AS body")).rows[0].body;
+        if (role === 'awsops_topology_reader') await c.query('SET LOCAL search_path=sql_reader,pg_catalog');
+        // Data API longValue is bigint. Exercise the same explicit conversion used by inventory-read.
+        const view = (await c.query("SELECT sql_reader.service_topology_read(NULL,'service','','',0,CAST($1::bigint AS integer)) AS body", [15])).rows[0].body;
         expect(view.snapshotId).toBe(first.snapshotId);
         expect(view.entities.map((n: any) => n.label).sort()).toEqual(['api','db']);
         expect(view.relations).toHaveLength(1);

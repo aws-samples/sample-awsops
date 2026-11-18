@@ -10,8 +10,9 @@ import {
   INFRA_TYPES,
 } from '../graph-inventory-read';
 import { inventorySourcesStale, readGraphState } from '../graph-state';
-import { FLOW_INPUT_KEY } from '../flow-inventory-types';
+import { FLOW_ENRICHMENT, FLOW_INPUT_KEY } from '../flow-inventory-types';
 import { currentHead, digest, publishServiceTopology } from './store';
+import { boundPublication } from './publication-limit';
 import { projectPublished, type GraphRow, type GraphLink } from './published';
 import type { Manifest } from './snapshot';
 
@@ -36,13 +37,20 @@ async function versionToken(c: PoolClient) {
 }
 
 export async function rebuildServiceTopology(pool: Pool) {
-  const input = await graphTransaction(pool, true, async (c) => {
-    const expected = await currentHead(c),
-      token = await versionToken(c);
-    const rows: GraphRow[] = [],
-      edges: GraphLink[] = [],
-      sources: Manifest[] = [];
-    for (const layer of classes) {
+  const { expected, token } = await graphTransaction(pool, true, async (c) => ({
+    expected: await currentHead(c),
+    token: await versionToken(c),
+  }));
+  const readPinned = <T>(read: (c: PoolClient) => Promise<T>) =>
+    graphTransaction(pool, true, async (c) => {
+      if ((await versionToken(c)) !== token) throw new Error('service_input_changed');
+      return read(c);
+    });
+  const rows: GraphRow[] = [],
+    edges: GraphLink[] = [],
+    sources: Manifest[] = [];
+  for (const layer of classes) {
+    await readPinned(async (c) => {
       const state = await readGraphState(c, 'self', layer);
       const nodes = await c.query(
         `SELECT id,kind,left(label,512) AS label,run_id,
@@ -132,155 +140,148 @@ export async function rebuildServiceTopology(pool: Pool) {
         if (pairs.rows.length > 1000) sources[sources.length - 1].capped = true;
       }
       edges.push(...stored);
-    }
-    const inv = await inventorySnapshotFromClient(c, 'flow', 'self', types, await inventoryCountsFromClient(c, types));
-    const attempt = inventoryAttempt(inv, types, 'flow', 'self', new Date().toISOString());
-    const records = inv.rows.slice(0, 8192).filter((r) => !r.oversized && r.resource_id && r.region);
-    for (const source of attempt.details.sources as {
-      sourceId: string;
-      status: string;
-      capturedAtMs: number | null;
-      attemptedAtMs: number | null;
-      lastSuccessAtMs: number | null;
-      finishedAtMs: number | null;
-      reasons: string[];
-    }[]) {
-      const type = source.sourceId.slice('inventory:'.length);
-      const items = records.filter((r) => r.resource_type === type);
-      const stamp = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
-      sources.push({
-        source: 'inventory',
-        sourceId: source.sourceId,
-        generation: digest([source, items.map((r) => [r.region, r.resource_id, iso(r.captured_at)])]),
-        status: source.status,
-        capturedAt: stamp(source.capturedAtMs ?? source.lastSuccessAtMs),
-        attemptedAt: stamp(source.attemptedAtMs),
-        stale: inventorySourcesStale([source]),
-        reasons: source.reasons,
-        retained: false,
-        capped: inv.truncatedTypes.includes(type),
-        window: null,
-      });
-    }
-    for (const r of records) {
-      const data = r.data as Record<string, unknown> | null;
-      const vpc = data?.vpc_id;
-      rows.push({
-        layer: 'inventory',
-        id: JSON.stringify([r.resource_type, r.region, r.resource_id]),
-        kind: r.resource_type,
-        label: r.resource_type === 'ecs_service' ? String(r.resource_id).split('/').at(-1)! : String(r.resource_id),
-        region: String(r.region),
-        nativeId: String(r.resource_id),
-        nativeKind: r.resource_type,
-        vpc: typeof vpc === 'string' ? vpc : undefined,
-        cluster: typeof data?.cluster_arn === 'string' ? data.cluster_arn : undefined,
-      });
-    }
-    const trustedAccount = currentAccountId();
-    const currentTypes = new Set(
-      sources
-        .filter((s) => s.source === 'inventory' && !s.stale && !s.capped && s.status === 'ok')
-        .map((s) => s.sourceId),
-    );
-    if (currentTypes.has('inventory:ecs_service') && currentTypes.has('inventory:ecs_task')) {
-      const services = new Set(
-        records.filter((r) => r.resource_type === 'ecs_service').map((r) => JSON.stringify([r.region, r.resource_id])),
-      );
-      for (const task of records.filter((r) => r.resource_type === 'ecs_task')) {
-        const data = task.data as Record<string, unknown>;
-        const arn =
-          typeof data.cluster_arn === 'string'
-            ? /^arn:aws(?:-[a-z0-9-]+)?:ecs:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/.exec(data.cluster_arn)
-            : null;
-        const group = typeof data.task_group === 'string' ? /^service:([\w-]+)$/.exec(data.task_group) : null;
-        if (!arn || arn[1] !== task.region || arn[2] !== trustedAccount || !group || data.last_status !== 'RUNNING')
-          continue;
-        const serviceKey = data.cluster_arn + '/' + group[1];
-        if (services.has(JSON.stringify([task.region, serviceKey])))
-          edges.push({
-            layer: 'inventory',
-            source: JSON.stringify(['ecs_task', task.region, task.resource_id]),
-            target: JSON.stringify(['ecs_service', task.region, serviceKey]),
-            rel: 'member-of',
-            confidence: 'configuration',
-          });
-      }
-    }
-    // Preserve ENI associations independently of LB targets. Each relation describes
-    // the recorded interface configuration, including the producer's confidence.
-    const ownerTypes = new Set([
-      'eni',
-      'ec2',
-      'alb',
-      'nlb',
-      'lambda',
-      'rds',
-      'rds_cluster',
-      'rds_proxy',
-      'vpc_endpoint',
-      'nat_gateway',
-    ]);
-    const incomplete = new Set(
-      sources
-        .filter(
-          (m) => m.source === 'inventory' && (m.stale || m.capped || m.retained || !['ok', 'empty'].includes(m.status)),
-        )
-        .map((m) => m.sourceId!.slice('inventory:'.length)),
-    );
-    const owners: EniOwnerInput = {};
-    for (const r of records)
-      if (ownerTypes.has(r.resource_type)) {
-        const k = r.resource_type as keyof EniOwnerInput;
-        (owners[k] ??= []).push({
-          ...(r.data as object),
-          resource_id: r.resource_id,
-          region: r.region,
-          account_id: r.account_id,
-        });
-      }
-    const eniRecords = new Map(rows.filter((r) => r.layer === 'inventory' && r.kind === 'eni').map((r) => [r.id, r]));
-    const byRegion = new Map<string, ReturnType<typeof inventoryOwners>>();
-    for (const eni of owners.eni ?? []) {
-      const region = String(eni.region),
-        ip = eni.private_ip_address,
-        vpc = eni.vpc_id;
-      if (typeof ip !== 'string' || typeof vpc !== 'string') continue;
-      let resolve = byRegion.get(region);
-      if (!resolve) {
-        resolve = inventoryOwners({ account: 'self', region, vpc: null }, owners, incomplete);
-        byRegion.set(region, resolve);
-      }
-      const result = resolve(ip, vpc);
-      const row = eniRecords.get(JSON.stringify(['eni', region, eni.resource_id]));
-      if (row)
-        row.ownerReason =
-          result.owner && incomplete.has(result.owner.kind) ? 'owner_inventory_incomplete' : result.reason;
-      if (!result.owner || incomplete.has(result.owner.kind)) continue;
-      edges.push({
-        layer: 'inventory',
-        source: JSON.stringify(['eni', region, eni.resource_id]),
-        target: JSON.stringify([result.owner.kind, region, result.owner.resourceId]),
-        rel: 'eni-owner-record',
-        confidence: result.owner.confidence,
-      });
-    }
-    return { expected, token, rows, edges, sources };
-  });
-  const snap = projectPublished(input.rows, input.edges, input.sources, currentAccountId());
-  const result = await publishServiceTopology(
-    pool,
-    snap,
-    input.expected,
-    async (c) => (await versionToken(c)) === input.token,
+    });
+  }
+  const counts = await readPinned((c) => inventoryCountsFromClient(c, types));
+  const inv = await readPinned((c) =>
+    inventorySnapshotFromClient(c, 'flow', 'self', types, counts, [...FLOW_ENRICHMENT]),
   );
+  const attempt = inventoryAttempt(inv, types, 'flow', 'self', new Date().toISOString(), FLOW_ENRICHMENT);
+  const withheld = new Set(attempt.withheldTypes);
+  const records = inv.rows
+    .slice(0, 8192)
+    .filter((r) => !r.oversized && r.resource_id && r.region && !withheld.has(r.resource_type));
+  for (const source of [...attempt.details.sources, ...(attempt.details.enrichmentSources ?? [])]) {
+    const type = source.sourceId.slice('inventory:'.length);
+    const items = records.filter((r) => r.resource_type === type);
+    const stamp = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+    sources.push({
+      source: 'inventory',
+      sourceId: source.sourceId,
+      generation: digest([source, items.map((r) => [r.region, r.resource_id, iso(r.captured_at)])]),
+      status: source.status,
+      capturedAt: stamp(source.capturedAtMs ?? source.lastSuccessAtMs),
+      attemptedAt: stamp(source.attemptedAtMs),
+      stale: inventorySourcesStale([source]),
+      reasons: source.reasons,
+      retained: false,
+      capped: inv.truncatedTypes.includes(type),
+      window: null,
+    });
+  }
+  for (const r of records) {
+    const data = r.data as Record<string, unknown> | null;
+    const vpc = data?.vpc_id;
+    rows.push({
+      layer: 'inventory',
+      id: JSON.stringify([r.resource_type, r.region, r.resource_id]),
+      kind: r.resource_type,
+      label: r.resource_type === 'ecs_service' ? String(r.resource_id).split('/').at(-1)! : String(r.resource_id),
+      region: String(r.region),
+      nativeId: String(r.resource_id),
+      nativeKind: r.resource_type,
+      vpc: typeof vpc === 'string' ? vpc : undefined,
+      cluster: typeof data?.cluster_arn === 'string' ? data.cluster_arn : undefined,
+    });
+  }
+  const trustedAccount = currentAccountId();
+  const currentTypes = new Set(
+    sources
+      .filter((s) => s.source === 'inventory' && !s.stale && !s.capped && s.status === 'ok')
+      .map((s) => s.sourceId),
+  );
+  if (currentTypes.has('inventory:ecs_service') && currentTypes.has('inventory:ecs_task')) {
+    const services = new Set(
+      records.filter((r) => r.resource_type === 'ecs_service').map((r) => JSON.stringify([r.region, r.resource_id])),
+    );
+    for (const task of records.filter((r) => r.resource_type === 'ecs_task')) {
+      const data = task.data as Record<string, unknown>;
+      const arn =
+        typeof data.cluster_arn === 'string'
+          ? /^arn:aws(?:-[a-z0-9-]+)?:ecs:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/.exec(data.cluster_arn)
+          : null;
+      const group = typeof data.task_group === 'string' ? /^service:([\w-]+)$/.exec(data.task_group) : null;
+      if (!arn || arn[1] !== task.region || arn[2] !== trustedAccount || !group || data.last_status !== 'RUNNING')
+        continue;
+      const serviceKey = data.cluster_arn + '/' + group[1];
+      if (services.has(JSON.stringify([task.region, serviceKey])))
+        edges.push({
+          layer: 'inventory',
+          source: JSON.stringify(['ecs_task', task.region, task.resource_id]),
+          target: JSON.stringify(['ecs_service', task.region, serviceKey]),
+          rel: 'member-of',
+          confidence: 'configuration',
+        });
+    }
+  }
+  // Preserve ENI associations independently of LB targets. Each relation describes
+  // the recorded interface configuration, including the producer's confidence.
+  const ownerTypes = new Set([
+    'eni',
+    'ec2',
+    'alb',
+    'nlb',
+    'lambda',
+    'rds',
+    'rds_cluster',
+    'rds_proxy',
+    'vpc_endpoint',
+    'nat_gateway',
+  ]);
+  const incomplete = new Set(
+    sources
+      .filter(
+        (m) => m.source === 'inventory' && (m.stale || m.capped || m.retained || !['ok', 'empty'].includes(m.status)),
+      )
+      .map((m) => m.sourceId!.slice('inventory:'.length)),
+  );
+  const owners: EniOwnerInput = {};
+  for (const r of records)
+    if (ownerTypes.has(r.resource_type)) {
+      const k = r.resource_type as keyof EniOwnerInput;
+      (owners[k] ??= []).push({
+        ...(r.data as object),
+        resource_id: r.resource_id,
+        region: r.region,
+        account_id: r.account_id,
+      });
+    }
+  const eniRecords = new Map(rows.filter((r) => r.layer === 'inventory' && r.kind === 'eni').map((r) => [r.id, r]));
+  const byRegion = new Map<string, ReturnType<typeof inventoryOwners>>();
+  for (const eni of owners.eni ?? []) {
+    const region = String(eni.region),
+      ip = eni.private_ip_address,
+      vpc = eni.vpc_id;
+    if (typeof ip !== 'string' || typeof vpc !== 'string') continue;
+    let resolve = byRegion.get(region);
+    if (!resolve) {
+      resolve = inventoryOwners({ account: 'self', region, vpc: null }, owners, incomplete);
+      byRegion.set(region, resolve);
+    }
+    const result = resolve(ip, vpc);
+    const owner = 'owner' in result ? result.owner : undefined;
+    const row = eniRecords.get(JSON.stringify(['eni', region, eni.resource_id]));
+    if (row) row.ownerReason = owner && incomplete.has(owner.kind) ? 'owner_inventory_incomplete' : result.reason;
+    if (!owner || incomplete.has(owner.kind)) continue;
+    edges.push({
+      layer: 'inventory',
+      source: JSON.stringify(['eni', region, eni.resource_id]),
+      target: JSON.stringify([owner.kind, region, owner.resourceId]),
+      rel: 'eni-owner-record',
+      confidence: owner.confidence,
+    });
+  }
+  const snap = boundPublication(projectPublished(rows, edges, sources, currentAccountId()));
+  const result = await publishServiceTopology(pool, snap, expected, async (c) => (await versionToken(c)) === token);
   return {
     ...result,
     entities: snap.entities.length,
     relations: snap.relations.length,
     gaps: snap.gaps,
-    partialInputs: snap.sources.some(
-      (s) => s.stale || s.retained || s.capped || !s.generation || !['ok', 'empty'].includes(s.status),
-    ),
+    partialInputs:
+      snap.gaps.some((g) => g.startsWith('projection_limit:')) ||
+      snap.sources.some(
+        (s) => s.stale || s.retained || s.capped || !s.generation || !['ok', 'empty'].includes(s.status),
+      ),
   };
 }

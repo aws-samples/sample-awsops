@@ -7,6 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  'Pod 식별 근거를 확인할 수 없습니다.': { en: 'Pod identity evidence is unavailable.', zh: '无法确认 Pod 身份依据。', ja: 'Pod の識別根拠を確認できません。' },
   '서비스 선택': { en: 'Select service', zh: '选择服务', ja: 'サービスを選択' },
   '로그인이 필요합니다.': { en: 'Sign in to read the graph.', zh: '请登录后查看图表。', ja: 'グラフを表示するにはログインしてください。' },
   '요청 흐름': { en: 'Request flow', zh: '请求流', ja: 'リクエストフロー' },

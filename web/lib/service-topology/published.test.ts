@@ -130,3 +130,15 @@ it('connects each trace pair only to its exact host infra endpoints and never fa
     ).relations,
   ).toHaveLength(2);
 });
+
+it('bounds a large publication deterministically, retains service priority and discloses removed pairs', async () => {
+  const { boundPublication } = await import('./publication-limit');
+  const rows:GraphRow[]=[row('trace','db-a'),row('trace','db-b'),{layer:'trace',id:'s',kind:'service',label:'orders'}];
+  const original = projectPublished(rows,[{layer:'trace',source:'s',target:'db-b',rel:'queries',confidence:'observed'}],[source('trace')]);
+  const bounded=boundPublication(original,{nodes:1,edges:1,bytes:4096});
+  expect(bounded.entities.map(e=>e.kind)).toEqual(['service']);
+  expect(bounded.relations).toHaveLength(0);
+  expect(bounded.gaps).toContain('projection_limit:entities_omitted=2');
+  expect(bounded.gaps).toContain('projection_limit:relations_omitted=1');
+  expect(original.entities).toHaveLength(3);
+});

@@ -469,7 +469,7 @@ def _inventory_graph_collection(cls):
 _execute_override = None  # tests may inject a fake (sql, params) -> [row-dict]
 
 
-def _execute(sql, params=None):
+def _execute(sql, params=None, *, topology=False):
     """Run read-only SQL through the RDS Data API; return rows as dicts (formatRecordsAs=JSON)."""
     if _execute_override:
         return _execute_override(sql, params)
@@ -477,7 +477,7 @@ def _execute(sql, params=None):
     client = boto3.client("rds-data", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
     kwargs = {
         "resourceArn": os.environ["AURORA_CLUSTER_ARN"],
-        "secretArn": os.environ["AURORA_SECRET_ARN"],
+        "secretArn": os.environ["TOPOLOGY_READER_SECRET_ARN" if topology else "AURORA_SECRET_ARN"],
         "database": os.environ.get("AURORA_DATABASE", "awsops"),
         "sql": sql,
         "formatRecordsAs": "JSON",
@@ -744,13 +744,13 @@ def lambda_handler(event, context):
                     # One MVCC read. Keep each Data API row comfortably below 64 KiB, even
                     # for four-byte Unicode. Bound the complete formatted response as well.
                     "WITH result AS MATERIALIZED (SELECT sql_reader.service_topology_read("
-                    "NULL,'service','',:focus,0,:age)::text AS doc) "
+                    "NULL,'service','',:focus,0,CAST(:age AS integer))::text AS doc) "
                     "SELECT CASE WHEN octet_length(doc)<=524288 THEN substr(doc,n,4096) END AS view, "
                     "(octet_length(doc)>524288) AS oversized FROM result "
                     "CROSS JOIN LATERAL generate_series(1,CASE WHEN octet_length(doc)>524288 THEN 1 "
                     "ELSE length(doc) END,4096) n ORDER BY n",
                     [{"name": "focus", "value": {"stringValue": resource_id or ""}},
-                     {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}])
+                     {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}], topology=True)
                 if rows and rows[0].get("oversized"):
                     return {"statusCode": 413, "body": json.dumps({
                         "error": "service_projection_too_large", "hint": "Select an exact service entity ID."})}
@@ -758,6 +758,7 @@ def lambda_handler(event, context):
                     "contractVersion": 1, "status": "unavailable", "snapshotId": None, "reason": "no_publication"}
                 return _ok(view)
             except Exception:
+                print("service_topology_read_failed")
                 return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns

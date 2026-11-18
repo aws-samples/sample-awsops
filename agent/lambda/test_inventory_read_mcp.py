@@ -1845,5 +1845,7 @@ class TestServiceProjection(unittest.TestCase):
              mock.patch.object(inv, "_execute", return_value=[{"view": json.dumps(view)}]) as read:
             out = inv.lambda_handler({"tool_name": "get_topology", "arguments": {"class": "service"}}, None)
             self.assertEqual(json.loads(out["body"]), view)
+            self.assertIn("CAST(:age AS integer)", read.call_args.args[0])
+            self.assertTrue(read.call_args.kwargs["topology"])
             self.assertIn("sql_reader.service_topology_read", read.call_args.args[0])
             self.assertEqual(read.call_count, 1)

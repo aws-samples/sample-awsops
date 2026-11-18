@@ -25,7 +25,8 @@ export async function GET(request: Request, { params: pendingParams }: { params:
       const { rows, source } = await listNodes(context.id);
       return Response.json({ kind, rows, source });
     }
-    return Response.json({ kind, rows: await listInCluster(context.id, kind) });
+    const rows = await listInCluster(context.id, kind);
+    return Response.json({ kind, rows, ...(kind === 'pods' ? { generatedAt: new Date().toISOString() } : {}) });
   } catch (e) {
     return Response.json({ status: 'error', ...eksReadFailure(e, 'incluster-list') }, { status: e instanceof EksScopeError ? e.status : 502 });
   }
