@@ -2203,6 +2203,7 @@ export const TERMS: Record<string, Pair> = {
   '인벤토리 조회가 상한에 도달해 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.': { en: 'The inventory read hit its limit, so some datastores are shown as host names without a matched inventory resource.', zh: '清单读取已达上限，因此部分数据存储未关联清单资源，仅显示主机名。', ja: 'インベントリの読み取りが上限に達したため、一部のデータストアはインベントリのリソースに関連付けず、ホスト名で表示しています。' },
   'Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.': { en: 'The Route 53 record read hit its limit, so DNS links may be only partially shown.', zh: 'Route 53 记录查询已达上限，DNS 连接可能仅显示部分。', ja: 'Route 53 レコードの取得が上限に達したため、DNS 接続は一部のみ表示される場合があります。' },
   'Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.': { en: 'Route 53 records could not be loaded, so DNS links are not shown.', zh: '无法加载 Route 53 记录，因此不显示 DNS 连接。', ja: 'Route 53 レコードを読み込めないため、DNS 接続は表示していません。' },
+  'Route 53 인벤토리 동기화 완료를 확인할 수 없어 DNS 연결을 표시하지 않습니다.': { en: 'Route 53 inventory sync completion could not be confirmed, so DNS links are not shown.', zh: '无法确认 Route 53 清单同步已完成，因此不显示 DNS 链接。', ja: 'Route 53 インベントリの同期完了を確認できないため、DNS リンクを表示しません。' },
   // Trace-overlay notices: one per non-available TraceOverlayReason (K8sMapView TRACE_NOTICE, lockstep-tested).
   '트레이스 토폴로지가 비활성화되어 있어 트레이스로 관측된 호출을 표시하지 않습니다.': { en: 'The trace topology is disabled, so trace-observed calls are not shown.', zh: '追踪拓扑未启用，因此不显示追踪观测到的调用。', ja: 'トレーストポロジーが無効のため、トレースで観測された呼び出しは表示していません。' },
   '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.': { en: 'Trace-observed calls cannot be shown for the current scope.', zh: '当前范围无法显示追踪观测到的调用。', ja: '現在の範囲ではトレースで観測された呼び出しを表示できません。' },

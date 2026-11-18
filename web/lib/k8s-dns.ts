@@ -1,8 +1,14 @@
 // Route53 → K8s gateway linking (optional data). A failed read yields no records with `failed`; a read
-// that stops at a page/record cap keeps what it read with `truncated`. The caller discloses both.
+// that stops at a page/record cap keeps what it read with `truncated`. Evidence gate (same checks as
+// fetchType in app/topology/page.tsx and db-ref-resolve.ts, via inventory-ledger.ts): every page must
+// carry consistency=statement-snapshot and ONE succeeded ledger version; a missing, running/partial/
+// failed, malformed or changed ledger yields no records with `incomplete`. The caller discloses all three.
 // Field names mirror flow-topology.ts's route53 handling: row.data.{name, type, alias_target.DNSName, records[]}.
 // Matching is EXACT host equality (case-/trailing-dot-insensitive) — never suffix/prefix/fuzzy, so a
 // record is only ever attached to a gateway whose host it names verbatim.
+import type { InventoryPage } from '@/lib/inventory';
+import { ledgerVersion } from '@/lib/inventory-ledger';
+
 export interface DnsRecord { name: string; target: string }
 
 const MAX_PAGES = 5, PAGE_SIZE = 500, MAX_RECORDS = 2000, MAX_NAME = 253;
@@ -62,13 +68,18 @@ export interface DnsRead {
   truncated: boolean;
   /** The read failed (non-OK status, malformed body, network error); `records` is empty. Never set for an aborted read. */
   failed: boolean;
+  /** The Route 53 inventory had no stable succeeded statement-snapshot evidence (ledger missing,
+   *  running/partial/failed, malformed, or changed between pages); `records` is withheld (empty). */
+  incomplete: boolean;
 }
-const dnsRead = (failed: boolean): DnsRead => ({ records: [], truncated: false, failed });
+const dnsRead = (failed: boolean): DnsRead => ({ records: [], truncated: false, failed, incomplete: false });
+const incompleteRead = (): DnsRead => ({ records: [], truncated: false, failed: false, incomplete: true });
 
 /** Browser-side read of the synced Route53 inventory (host: 'self'; members: the account id). Never throws. */
 export async function fetchDnsRecords(accountId: string, signal?: AbortSignal): Promise<DnsRead> {
   const records: DnsRecord[] = [];
   let truncated = false;
+  let version: string | undefined;
   try {
     for (let page = 0; page < MAX_PAGES && !truncated; page++) {
       if (signal?.aborted) return dnsRead(false);
@@ -77,6 +88,9 @@ export async function fetchDnsRecords(accountId: string, signal?: AbortSignal): 
       if (!r.ok) return dnsRead(true);
       const d: unknown = await r.json();
       if (!isRec(d) || !Array.isArray(d.rows)) return dnsRead(true);
+      const current = ledgerVersion(d as unknown as InventoryPage);
+      if (current === null || (version !== undefined && version !== current)) return incompleteRead();
+      version = current;
       for (const row of d.rows) {
         const rec = toRecord(row);
         if (!rec) continue;
@@ -86,7 +100,7 @@ export async function fetchDnsRecords(accountId: string, signal?: AbortSignal): 
       if (d.rows.length < PAGE_SIZE) break;          // short page: the inventory has no further rows
       if (page === MAX_PAGES - 1) truncated = true;  // page budget spent on a full page: more rows may exist
     }
-    return { records, truncated, failed: false };
+    return { records, truncated, failed: false, incomplete: false };
   } catch {
     return dnsRead(!signal?.aborted);
   }

@@ -16,6 +16,15 @@ vi.mock('./eks-incluster', async () => {
     k8sGetPath: (...a: unknown[]) => k8sGetPath(...a),
   };
 });
+// The real extractor, wrapped so a test can count how many values were scanned.
+const extractSpy = vi.fn();
+vi.mock('./db-endpoint', async () => {
+  const actual = await vi.importActual<typeof import('./db-endpoint')>('./db-endpoint');
+  return {
+    ...actual,
+    extractManagedDbHosts: (v: string) => { extractSpy(v); return actual.extractManagedDbHosts(v); },
+  };
+});
 
 import { EksKubernetesHttpError } from './eks-read-error';
 import { listDbRefs } from './eks-db-refs';
@@ -36,6 +45,7 @@ const W = (ns: string, name: string) => ({ namespace: ns, name });
 describe('listDbRefs', () => {
   beforeEach(() => {
     get.mockReset();
+    extractSpy.mockReset();
     k8sGetPath.mockReset().mockRejectedValue(new Error('k8sGetPath must not be used'));
     clusterConn.mockReset().mockResolvedValue(CONN);
     eksToken.mockReset().mockResolvedValue('bearer-1');
@@ -67,6 +77,60 @@ describe('listDbRefs', () => {
     expect(r.refs.filter((x) => x.workload.name === 'api' && x.host === RDS)).toHaveLength(1);
     expect(JSON.stringify(r)).not.toContain(PASSWORD);
     for (const x of r.refs) expect(Object.keys(x).sort()).toEqual(['host', 'kind', 'via', 'workload']);
+  });
+
+  it('scans each ConfigMap key once however many workloads consume it via envFrom', async () => {
+    const N = 50;
+    get.mockResolvedValueOnce(list(Array.from({ length: N }, (_, i) =>
+      pod(`w${i}-1`, 'shop', [{ envFrom: [{ configMapRef: { name: 'shared' } }] }]))));
+    get.mockResolvedValueOnce(JSON.stringify({ data: { db: `host=${RDS} password=${PASSWORD}`, redis: REDIS, plain: 'hello' } }));
+    const r = await listDbRefs('c1');
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(extractSpy).toHaveBeenCalledTimes(3); // one scan per key, not per (workload, key)
+    expect(r.refs).toHaveLength(N * 2);
+    for (let i = 0; i < N; i++) {
+      expect(r.refs).toContainEqual({ workload: W('shop', `w${i}`), via: 'configmap', host: RDS, kind: 'rds' });
+      expect(r.refs).toContainEqual({ workload: W('shop', `w${i}`), via: 'configmap', host: REDIS, kind: 'elasticache' });
+    }
+    expect(JSON.stringify(r)).not.toContain(PASSWORD);
+  });
+
+  it('attributes precomputed ConfigMap hosts per user: configMapKeyRef gets only its key, envFrom gets all keys', async () => {
+    get.mockResolvedValueOnce(list([
+      pod('a-1', 'shop', [{ env: [{ name: 'D', valueFrom: { configMapKeyRef: { name: 'cfg', key: 'db' } } }] }]),
+      pod('b-1', 'shop', [{ envFrom: [{ configMapRef: { name: 'cfg' } }] }]),
+    ]));
+    get.mockResolvedValueOnce(JSON.stringify({ data: { db: RDS, redis: REDIS } }));
+    const r = await listDbRefs('c1');
+    expect(extractSpy).toHaveBeenCalledTimes(2);
+    expect(r.refs.filter((x) => x.workload.name === 'a')).toEqual([{ workload: W('shop', 'a'), via: 'configmap', host: RDS, kind: 'rds' }]);
+    expect(r.refs.filter((x) => x.workload.name === 'b')).toEqual([
+      { workload: W('shop', 'b'), via: 'configmap', host: RDS, kind: 'rds' },
+      { workload: W('shop', 'b'), via: 'configmap', host: REDIS, kind: 'elasticache' },
+    ]);
+  });
+
+  it('does not scan ConfigMap keys no consumer references', async () => {
+    get.mockResolvedValueOnce(list([
+      pod('a-1', 'shop', [{ env: [{ name: 'D', valueFrom: { configMapKeyRef: { name: 'cfg', key: 'db' } } }] }]),
+    ]));
+    get.mockResolvedValueOnce(JSON.stringify({ data: { db: RDS, redis: REDIS } }));
+    const r = await listDbRefs('c1');
+    expect(extractSpy).toHaveBeenCalledTimes(1);
+    expect(r.refs).toEqual([{ workload: W('shop', 'a'), via: 'configmap', host: RDS, kind: 'rds' }]);
+  });
+
+  it.each([
+    ['items is an object', JSON.stringify({ items: {} })],
+    ['items is missing', JSON.stringify({})],
+    ['items carries a value but is not an array', JSON.stringify({ items: { leaked: PASSWORD } })],
+    ['the body is null', 'null'],
+  ])('rejects an HTTP 200 pod list whose %s with the fixed message', async (_label, body) => {
+    get.mockResolvedValueOnce(body);
+    const err = await listDbRefs('c1').then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe('Kubernetes API response could not be parsed.');
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it('returns secret names only and never requests secrets', async () => {

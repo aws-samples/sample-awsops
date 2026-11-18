@@ -56,8 +56,9 @@ export async function listDbRefs(
   let truncated = false;
   let partial = false;
 
-  const addRef = (workload: WorkloadRef, via: DbRef['via'], value: string) => {
-    for (const { host, kind } of extractManagedDbHosts(value)) {
+  type Hosts = ReturnType<typeof extractManagedDbHosts>;
+  const addHosts = (workload: WorkloadRef, via: DbRef['via'], hosts: Hosts) => {
+    for (const { host, kind } of hosts) {
       const key = `${workload.namespace}\0${workload.name}\0${via}\0${host}`;
       if (seenRefs.has(key)) continue;
       seenRefs.add(key);
@@ -83,7 +84,10 @@ export async function listDbRefs(
   }
   const podList = parseJson(podBody) as
     { items?: PodItem[]; metadata?: { continue?: string } } | null;
-  const items = Array.isArray(podList?.items) ? podList.items : [];
+  // A 200 body without an `items` array is not an empty cluster: fail with the same value-free error.
+  const rawItems: unknown = podList?.items;
+  if (!Array.isArray(rawItems)) throw new Error('Kubernetes API response could not be parsed.');
+  const items = rawItems as PodItem[];
   if (podList?.metadata?.continue || items.length > podCap) truncated = true;
 
   // (ns/cm) -> consumers; keys === null means envFrom (all keys), else specific keys.
@@ -114,7 +118,7 @@ export async function listDbRefs(
     };
     for (const c of [...(pod.spec?.containers ?? []), ...(pod.spec?.initContainers ?? [])]) {
       for (const e of c.env ?? []) {
-        if (typeof e.value === 'string') addRef(workload, 'env', e.value);
+        if (typeof e.value === 'string') addHosts(workload, 'env', extractManagedDbHosts(e.value));
         need(e.valueFrom?.configMapKeyRef?.name, e.valueFrom?.configMapKeyRef?.key ?? '');
         addSecret(e.valueFrom?.secretKeyRef?.name);
       }
@@ -139,11 +143,19 @@ export async function listDbRefs(
         `/api/v1/namespaces/${encodeURIComponent(e.ns)}/configmaps/${encodeURIComponent(e.cm)}`,
       )) as { data?: Record<string, unknown> } | null;
       const data = body?.data && typeof body.data === 'object' ? body.data : {};
+      // Scan each consumed key's value ONCE (extractManagedDbHosts bounds its own input length),
+      // then attribute the hosts to every consumer of that key, in `data` order.
+      const allKeys = e.users.some((u) => u.keys === null);
+      const hostsByKey = new Map<string, Hosts>();
+      for (const [k, v] of Object.entries(data)) {
+        if (typeof v !== 'string') continue;
+        if (!allKeys && !e.users.some((u) => u.keys?.has(k))) continue;
+        hostsByKey.set(k, extractManagedDbHosts(v));
+      }
       for (const u of e.users) {
-        for (const [k, v] of Object.entries(data)) {
-          if (typeof v !== 'string') continue;
+        for (const [k, hosts] of hostsByKey) {
           if (u.keys !== null && !u.keys.has(k)) continue;
-          addRef(u.workload, 'configmap', v);
+          addHosts(u.workload, 'configmap', hosts);
         }
       }
     } catch (err) {

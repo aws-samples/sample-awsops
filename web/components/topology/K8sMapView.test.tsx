@@ -50,6 +50,9 @@ const ROWS: Record<string, unknown[]> = {
     cpuCapacity: 4, cpuAllocatable: 4, memCapacity: 1, memAllocatable: 1, diskCapacity: 0, diskAllocatable: 0 }],
 };
 const OK_REFS = { refs: [], secretRefs: [], truncated: false, partial: false };
+// A succeeded statement-snapshot Route 53 ledger (k8s-dns.ts evidence gate).
+const DNS_RUN = { status: 'succeeded', finished_at: '2026-11-18T00:00:00.000Z', last_success_at: '2026-11-18T00:00:00.000Z', row_count: 0 };
+const DNS_INCOMPLETE_NOTICE = 'Route 53 인벤토리 동기화 완료를 확인할 수 없어 DNS 연결을 표시하지 않습니다.';
 
 type Handler = (url: string) => Response | Promise<Response> | undefined;
 function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Handler) {
@@ -63,7 +66,7 @@ function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Han
     if (url.includes('/incluster?')) return new Response(JSON.stringify({ kind, rows: ROWS[kind ?? ''] ?? [] }));
     if (url.includes('/db-refs')) return new Response(JSON.stringify(OK_REFS));
     if (url.startsWith('/api/topology')) return new Response('{}', { status: 404 });
-    if (url.startsWith('/api/inventory/route53')) return new Response(JSON.stringify({ rows: [] }));
+    if (url.startsWith('/api/inventory/route53')) return new Response(JSON.stringify({ rows: [], run: DNS_RUN, consistency: 'statement-snapshot' }));
     return new Response(JSON.stringify({ rows: [] }));
   }));
   return calls;
@@ -350,7 +353,7 @@ describe('K8sMapView service graph data', () => {
   });
 
   it('shows a visible notice when the Route53 read was capped, and still draws what was read', async () => {
-    dns.override = () => Promise.resolve({ records: [{ name: 'app.example.com', target: 'x.elb.amazonaws.com' }], truncated: true, failed: false });
+    dns.override = () => Promise.resolve({ records: [{ name: 'app.example.com', target: 'x.elb.amazonaws.com' }], truncated: true, failed: false, incomplete: false });
     stubFetch(HOST_ONLY);
     view();
     const notice = await screen.findByText('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.');
@@ -382,7 +385,7 @@ describe('K8sMapView service graph data', () => {
     expect(screen.getByText(PENDING)).toBeTruthy();
     await act(async () => { overlay.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 0 }); });
     expect(screen.getByText(PENDING)).toBeTruthy();
-    await act(async () => { records.resolve({ records: [], truncated: false, failed: false }); });
+    await act(async () => { records.resolve({ records: [], truncated: false, failed: false, incomplete: false }); });
     await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull());
     for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, PENDING)).not.toBe(PENDING);
   });
@@ -392,7 +395,31 @@ describe('K8sMapView service graph data', () => {
     view();
     await waitFor(() => expect(canvas.props).not.toBeNull());
     await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53'))).toBe(true));
+    // Wait until every evidence read settled, so the absence checks are not vacuous.
+    await waitFor(() => expect(screen.queryByText('연결 근거(데이터 저장소·트레이스·DNS)를 불러오는 중…')).toBeNull());
     expect(screen.queryByText(/Route 53 레코드/)).toBeNull();
+    expect(screen.queryByText(DNS_INCOMPLETE_NOTICE)).toBeNull();
+  });
+
+  it('discloses a Route53 read without stable inventory evidence and draws no DNS links', async () => {
+    dns.override = () => Promise.resolve({ records: [], truncated: false, failed: false, incomplete: true });
+    stubFetch(HOST_ONLY);
+    view();
+    const notice = await screen.findByText(DNS_INCOMPLETE_NOTICE);
+    expect(notice.closest('[role="status"]')).toBeTruthy();
+    expect(screen.getByTestId('canvas')).toBeTruthy();
+    expect(canvas.props!.input.dns).toEqual([]);
+    for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, DNS_INCOMPLETE_NOTICE)).not.toBe(DNS_INCOMPLETE_NOTICE);
+  });
+
+  it('discloses a real Route53 page whose sweep is still running', async () => {
+    stubFetch(HOST_ONLY, 200, (u) => (u.startsWith('/api/inventory/route53')
+      ? new Response(JSON.stringify({ rows: [], run: { ...DNS_RUN, status: 'running', finished_at: null }, consistency: 'statement-snapshot' }))
+      : undefined));
+    view();
+    expect(await screen.findByText(DNS_INCOMPLETE_NOTICE)).toBeTruthy();
+    expect(screen.queryByText('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.')).toBeNull();
+    expect(canvas.props!.input.dns).toEqual([]);
   });
 });
 

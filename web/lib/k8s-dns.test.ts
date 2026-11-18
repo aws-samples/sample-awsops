@@ -28,7 +28,12 @@ describe('matchDnsToGateways', () => {
 describe('fetchDnsRecords', () => {
   afterEach(() => vi.unstubAllGlobals());
   const row = (data: Record<string, unknown>) => ({ account_id: '1', region: 'global', resource_id: 'x', data });
-  const page = (rows: unknown[]) => ({ ok: true, json: async () => ({ rows }) });
+  // Same ledger shape as db-ref-resolve.test.ts: a succeeded statement-snapshot sweep.
+  const RUN = { status: 'succeeded', finished_at: '2026-11-18T00:00:00.000Z', last_success_at: '2026-11-18T00:00:00.000Z', row_count: 3 };
+  const page = (rows: unknown[], run: unknown = RUN, consistency: unknown = 'statement-snapshot') =>
+    ({ ok: true, json: async () => ({ rows, run, consistency }) });
+  const INCOMPLETE = { records: [], truncated: false, failed: false, incomplete: true };
+  const cname = (n: string) => row({ name: n, type: 'CNAME', records: [ELB] });
 
   it('normalizes alias and CNAME records; skips TXT/other values', async () => {
     const f = vi.fn().mockResolvedValue(page([
@@ -47,12 +52,13 @@ describe('fetchDnsRecords', () => {
       ],
       truncated: false,
       failed: false,
+      incomplete: false,
     });
     expect(String(f.mock.calls[0][0])).toContain('/api/inventory/route53?');
     expect(String(f.mock.calls[0][0])).toContain('accounts=self');
   });
   it('never throws: failures are flagged, an abort is not', async () => {
-    const failed = { records: [], truncated: false, failed: true };
+    const failed = { records: [], truncated: false, failed: true, incomplete: false };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }));
     expect(await fetchDnsRecords('self')).toEqual(failed);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('bad'); } }));
@@ -62,7 +68,7 @@ describe('fetchDnsRecords', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('net')));
     expect(await fetchDnsRecords('self')).toEqual(failed);
     const ac = new AbortController(); ac.abort();
-    expect(await fetchDnsRecords('self', ac.signal)).toEqual({ records: [], truncated: false, failed: false });
+    expect(await fetchDnsRecords('self', ac.signal)).toEqual({ records: [], truncated: false, failed: false, incomplete: false });
   });
   it('does not flag a fetch rejected by an abort of the passed signal', async () => {
     const ac = new AbortController();
@@ -70,7 +76,7 @@ describe('fetchDnsRecords', () => {
       ac.abort();
       throw new DOMException('aborted', 'AbortError');
     }));
-    expect(await fetchDnsRecords('self', ac.signal)).toEqual({ records: [], truncated: false, failed: false });
+    expect(await fetchDnsRecords('self', ac.signal)).toEqual({ records: [], truncated: false, failed: false, incomplete: false });
   });
   it('caps pages and records', async () => {
     const many = Array.from({ length: 500 }, (_, i) => row({ name: `h${i}.example.com`, type: 'CNAME', records: [ELB] }));
@@ -156,5 +162,48 @@ describe('fetchDnsRecords', () => {
       { name: 'other.example.com', target: 'dualstack.origin.example.net' },
       { name: 'cf.example.com', target: 'dualstack.d111.cloudfront.net' },
     ]);
+  });
+
+  describe('inventory evidence gate', () => {
+    it('withholds records when the page lacks the statement-snapshot marker', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rows: [cname('a.example.com')], run: RUN }) }));
+      expect(await fetchDnsRecords('self')).toEqual(INCOMPLETE);
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(page([cname('a.example.com')], RUN, 'unknown')));
+      expect(await fetchDnsRecords('self')).toEqual(INCOMPLETE);
+    });
+    it.each([
+      ['no ledger', null],
+      ['a running sweep', { ...RUN, status: 'running', finished_at: null }],
+      ['a failed sweep', { ...RUN, status: 'failed' }],
+      ['a partial sweep', { ...RUN, status: 'partial' }],
+      ['a malformed finished_at', { ...RUN, finished_at: 'not-a-time' }],
+      ['a missing last_success_at', { ...RUN, last_success_at: null }],
+      ['a negative row count', { ...RUN, row_count: -1 }],
+    ])('withholds records for %s', async (_label, run) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(page([cname('a.example.com')], run)));
+      expect(await fetchDnsRecords('self')).toEqual(INCOMPLETE);
+    });
+    it('withholds records already read when the ledger version changes between pages', async () => {
+      const later = { ...RUN, finished_at: '2026-11-18T00:05:00.000Z', last_success_at: '2026-11-18T00:05:00.000Z' };
+      const f = vi.fn()
+        .mockResolvedValueOnce(page(Array.from({ length: 500 }, (_, i) => cname(`a${i}.example.com`))))
+        .mockResolvedValueOnce(page([cname('b.example.com')], later));
+      vi.stubGlobal('fetch', f);
+      expect(await fetchDnsRecords('self')).toEqual(INCOMPLETE);
+      expect(f).toHaveBeenCalledTimes(2);
+    });
+    it('returns records across pages that share one succeeded ledger version', async () => {
+      const f = vi.fn()
+        .mockResolvedValueOnce(page(Array.from({ length: 500 }, (_, i) => cname(`a${i}.example.com`))))
+        .mockResolvedValueOnce(page([cname('b.example.com')], { ...RUN }));
+      vi.stubGlobal('fetch', f);
+      const out = await fetchDnsRecords('self');
+      expect(out.records).toHaveLength(501);
+      expect(out).toMatchObject({ truncated: false, failed: false, incomplete: false });
+    });
+    it('still reports a non-OK or malformed response as failed, not incomplete', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rows: 'nope', run: null }) }));
+      expect(await fetchDnsRecords('self')).toEqual({ records: [], truncated: false, failed: true, incomplete: false });
+    });
   });
 });

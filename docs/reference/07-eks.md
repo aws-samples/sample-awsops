@@ -313,7 +313,13 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   node's label, so a wildcard record (`\052` decoded to a leading `*.`) links like any
   other. The read stops after 5 pages of 500 rows or 2,000 alias/CNAME records. A read
   that stops at a cap keeps what it read and a failed read yields none; both show a
-  notice.
+  notice. Records use the same inventory evidence gate as datastore resolution
+  (`web/lib/inventory-ledger.ts`, the checks of `fetchType` in `app/topology/page.tsx`):
+  every page must carry `consistency: statement-snapshot` and one succeeded ledger
+  version (valid `finished_at`/`last_success_at`, non-negative integer `row_count`).
+  A missing, running, partial, failed or malformed ledger, or a ledger that changes
+  between pages, yields no records and an "inventory sync completion could not be
+  confirmed" notice instead of DNS links.
 - ElastiCache hosts resolve to cache-node endpoints (`elasticache`) or to
   replication-group primary and reader endpoints (`elasticache_replication_group`). MSK
   hosts and ElastiCache configuration endpoints stay unresolved host names, because

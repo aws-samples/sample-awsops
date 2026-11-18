@@ -285,7 +285,7 @@ export default function K8sMapView({ query }: { query: string }) {
     const current = () => live && !signal.aborted;
     fetchDnsRecords(dnsAccountOf(cluster, hostForCluster), signal)
       .then((r) => { if (current()) setDnsRead(r); })
-      .catch(() => { if (current()) setDnsRead({ records: [], truncated: false, failed: true }); });
+      .catch(() => { if (current()) setDnsRead({ records: [], truncated: false, failed: true, incomplete: false }); });
     return () => { live = false; ctrl.abort(); };
   }, [cluster, hostForCluster]);
 
@@ -348,6 +348,7 @@ export default function K8sMapView({ query }: { query: string }) {
   if (dbRefs?.status === 'ok' && dbRefs.inventoryCapped) notices.push(tt('인벤토리 조회가 상한에 도달해 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.'));
   if (dnsRead?.truncated) notices.push(tt('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.'));
   if (dnsRead?.failed) notices.push(tt('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.'));
+  if (dnsRead?.incomplete) notices.push(tt('Route 53 인벤토리 동기화 완료를 확인할 수 없어 DNS 연결을 표시하지 않습니다.'));
   if (trace && !trace.available) notices.push(tt(TRACE_NOTICE[trace.reason ?? 'unavailable']));
   if (trace?.available && trace.omitted > 0) notices.push(tt(traceOmittedNotice(trace.omitted)));
   if (nodes?.status === 'failed') notices.push(tt('노드 정보를 불러오지 못했습니다.'));

@@ -2,9 +2,12 @@
 // Reads the published service snapshot (`GET /api/topology?lens=service`) and reduces it to
 // workload-level calls for ONE selected cluster. Never-misattribute rules:
 //  - `k8s.cluster.name` (entity `cluster`) is a telemetry claim, not authority: the join runs only
-//    when the selected cluster's name occurs exactly once among the clusters listed in the current
-//    scope, and only when that listing is complete (not truncated, no per-target read failure) —
-//    an incomplete listing cannot prove that no same-named cluster exists.
+//    when the selected cluster's name occurs exactly once among the FLEET-WIDE cluster listing (all
+//    registered accounts and regions, as K8sMapView fetches it), and only when that listing is
+//    complete — `listingIncomplete` must be set when it was truncated, errored or failed, since an
+//    incomplete listing cannot prove that no same-named cluster exists. Callers must not pass a
+//    scope-filtered listing: a narrowed scope hides same-named clusters without any truncation or
+//    error flag.
 //  - The trace snapshot is host-only (`account=self`); member clusters are refused without a fetch.
 //  - A trace service maps to a K8s workload ONLY through its `runs_on` relation, and only when it
 //    runs on exactly one `ns/deployment` in the selected cluster. Never by service-name similarity.
@@ -76,9 +79,11 @@ export interface ServiceTopologyView {
 export const BASELINE_SNAPSHOT_GAPS: readonly string[] = ['nfm:not_collected', 'kubernetes:live_ownership_unavailable'];
 export interface TraceCluster {
   id: string;
-  /** Names (or ids) of every cluster listed in the current scope; the selected name must occur exactly once. */
+  /** Names (or ids) of every cluster in the FLEET-WIDE listing (all registered accounts and regions, as
+   *  K8sMapView fetches it); the selected name must occur exactly once. Never a scope-filtered listing:
+   *  a narrowed scope hides same-named clusters without any truncation or error flag. */
   registeredNames: string[];
-  /** The scope listing was truncated or had a per-target read failure: uniqueness is unprovable, so no join. */
+  /** The fleet listing was truncated, errored or failed: uniqueness is unprovable, so no join. */
   listingIncomplete?: boolean;
   /** Host account id. An ARN id is a host cluster only when its account equals this; otherwise member. */
   hostAccountId?: string;
