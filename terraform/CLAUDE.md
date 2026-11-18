@@ -50,6 +50,8 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   05 AgentCore · 06 Workers · 07 EKS).
 
 ## Flag Gates
+
+- `CI_TOPOLOGY_ENTITIES_ENABLED_DEV` overrides `topology_entities_enabled` on full dev plans only. Values are `true` or `false`. Unset preserves tfvars and the default is false. Provision the dedicated secret before enabling. Apply uses the reviewed saved plan. See [pilot activation](../docs/runbooks/graph-read-contract.md#dev-pilot-switch).
 - Optional `CI_STEAMPIPE_AWS_FILL_RATE_DEV` sets existing `steampipe_aws_fill_rate` only in full dev plans with the verified runtime profile. Empty preserves tfvars/defaults; finite 0.1–20 is required. Apply replays the saved plan and DNS/CORE guards still apply.
 - CI always generates ignored `ci-runtime.auto.tfvars.json`; `CI_READONLY_RUNTIME_DEV=true` enables
   inventory/AgentCore/workers and host-only inventory on dev by default; it does not enable readiness.

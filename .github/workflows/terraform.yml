@@ -371,9 +371,9 @@ jobs:
           case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in
             "") ;;
             true|false)
-              [ "$TARGET" = dev ] && [ "${PLAN_SCOPE:-full}" = full ] || { echo "::error::Invalid topology pilot scope"; exit 1; }
+              [ "$TARGET" = dev ] && [ "${PLAN_SCOPE:-full}" = full ] || { echo "::error::CI_TOPOLOGY_ENTITIES_ENABLED_DEV requires a full dev plan"; exit 1; }
               args+=("-var=topology_entities_enabled=$CI_TOPOLOGY_ENTITIES_ENABLED_DEV");;
-            *) echo "::error::Invalid topology pilot setting (expected true or false)"; exit 1;;
+            *) echo "::error::CI_TOPOLOGY_ENTITIES_ENABLED_DEV must be true or false"; exit 1;;
           esac
           # Append last so no restored or generated var-file can override the CI flag.
           case "${TF_VAR_ci_migrations_enabled:-false}" in
