@@ -41,7 +41,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='awsops_topology_reader') THEN
     CREATE ROLE awsops_topology_reader NOLOGIN NOINHERIT;
   ELSIF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='awsops_topology_reader'
-    AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls OR
+    AND (r.rolcanlogin OR r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls OR
          EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member=r.oid))) THEN
     RAISE EXCEPTION 'Unexpected privileged topology reader';
   END IF;
@@ -133,6 +133,8 @@ WITH snap AS (
 )
 SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.read_gaps)>0 OR EXISTS
  (SELECT 1 FROM src WHERE stale_now OR retained OR capped OR status NOT IN ('ok','empty')) THEN 'partial' ELSE 'ok' END,
+ 'selection',jsonb_build_object('status',CASE WHEN p_focus='' THEN 'unscoped'
+   WHEN EXISTS(SELECT 1 FROM focus_row) THEN 'resolved' ELSE 'not_found' END,'requestedId',nullif(p_focus,'')),
  'snapshotId',s.snapshot_id,'builtAt',s.built_at,'lens',p_lens,'scope',jsonb_build_object('account','self','regions','__all__','includeGlobal',true),
  'sources',coalesce((SELECT jsonb_agg(jsonb_build_object('sourceId',source_id,'generation',generation_key,'status',status,
  'stale',stale_now,'retained',retained,'capped',capped,'capturedAt',captured_at,'attemptedAt',attempted_at,

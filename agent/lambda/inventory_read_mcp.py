@@ -743,22 +743,37 @@ def lambda_handler(event, context):
                 rows = _execute(
                     # One MVCC read. Keep each Data API row comfortably below 64 KiB, even
                     # for four-byte Unicode. Bound the complete formatted response as well.
-                    "WITH result AS MATERIALIZED (SELECT sql_reader.service_topology_read("
-                    "NULL,'service','',:focus,0,CAST(:age AS integer))::text AS doc) "
-                    "SELECT CASE WHEN octet_length(doc)<=524288 THEN substr(doc,n,4096) END AS view, "
-                    "(octet_length(doc)>524288) AS oversized FROM result "
-                    "CROSS JOIN LATERAL generate_series(1,CASE WHEN octet_length(doc)>524288 THEN 1 "
+                    "WITH authority AS MATERIALIZED (SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r "
+                    "WHERE r.rolname=current_user AND current_user=session_user AND session_user='awsops_topology_reader' "
+                    "AND r.rolcanlogin AND NOT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication "
+                    "OR r.rolbypassrls OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid)) "
+                    "AND NOT pg_catalog.pg_has_role('awsops_sql_reader',r.oid,'MEMBER')) AS ok), "
+                    "result AS MATERIALIZED (SELECT ok,CASE WHEN ok THEN sql_reader.service_topology_read("
+                    "NULL,'service','',:focus,0,CAST(:age AS integer))::text END AS doc FROM authority) "
+                    "SELECT NOT ok AS denied, CASE WHEN ok AND octet_length(to_json(doc)::text)<=524288 THEN substr(doc,n,4096) END AS view, "
+                    "(octet_length(to_json(doc)::text)>524288) AS oversized FROM result "
+                    "CROSS JOIN LATERAL generate_series(1,CASE WHEN NOT ok OR octet_length(to_json(doc)::text)>524288 THEN 1 "
                     "ELSE length(doc) END,4096) n ORDER BY n",
                     [{"name": "focus", "value": {"stringValue": resource_id or ""}},
                      {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}], topology=True)
+                if rows and rows[0].get("denied"):
+                    print("service_topology_read_failed: credential_identity")
+                    return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
                 if rows and rows[0].get("oversized"):
                     return {"statusCode": 413, "body": json.dumps({
                         "error": "service_projection_too_large", "hint": "Select an exact service entity ID."})}
                 view = json.loads("".join(row["view"] for row in rows)) if rows else {
                     "contractVersion": 1, "status": "unavailable", "snapshotId": None, "reason": "no_publication"}
+                if view.get("snapshotId") and not view.get("entities"):
+                    view["warning"] = "An empty selection does not establish absence of services or healthy collection. Inspect selection, sources and gaps."
                 return _ok(view)
-            except Exception:
-                print("service_topology_read_failed")
+            except Exception as error:
+                provider_code = getattr(error, "response", {}).get("Error", {}).get("Code")
+                allowed = {"AccessDeniedException", "DatabaseErrorException", "SecretsErrorException",
+                           "DatabaseUnavailableException", "StatementTimeoutException"}
+                diagnostic = provider_code if provider_code in allowed else (
+                    "invalid_response" if isinstance(error, (ValueError, TypeError)) else "upstream_error")
+                print("service_topology_read_failed: " + diagnostic)
                 return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns

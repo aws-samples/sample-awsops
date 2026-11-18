@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { graphDiagnostic } from '@/lib/graph-state';
 import { getPool } from '@/lib/db';
 import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 
@@ -57,6 +58,7 @@ export async function GET(request: Request) {
       ? json({ error: 'snapshot_expired' }, 410)
       : json({ contractVersion: 1, status: 'unavailable', snapshotId: null, reason: 'no_publication' });
   } catch (e) {
+    console.error('[service-topology] read failed', graphDiagnostic('graph_read', e));
     return json(
       { error: e instanceof GraphReadBusy ? 'busy' : e instanceof GraphReadDeadline ? 'timeout' : 'read_unavailable' },
       503,

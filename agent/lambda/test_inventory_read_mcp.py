@@ -889,10 +889,11 @@ class TestTopologySelectionSQL(unittest.TestCase):
 
     @classmethod
     def _psql(cls, sql, reader=False):
+        username = "awsops_topology_reader" if reader == "topology" else "awsops_sql_reader" if reader else "postgres"
         if os.environ.get("GRAPH_TEST_POSTGRES_SOCKET"):
             import pg8000.native
             connection = pg8000.native.Connection(
-                user="awsops_sql_reader" if reader else "postgres", database="awsops",
+                user=username, database="awsops",
                 unix_sock=os.path.join(os.environ["GRAPH_TEST_POSTGRES_SOCKET"], ".s.PGSQL.5432"),
                 timeout=20,
             )
@@ -909,7 +910,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
             "container:" + os.environ["INVENTORY_TEST_POSTGRES_CONTAINER"],
             "--entrypoint", "psql", "postgres:17-alpine",
             "-h", "127.0.0.1", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U",
-            "awsops_sql_reader" if reader else "postgres", "-d", "awsops",
+            username, "-d", "awsops",
         ], input=sql, text=True, capture_output=True, timeout=20)
         if result.returncode:
             raise AssertionError(result.stderr or result.stdout)
@@ -1019,7 +1020,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
         )
         self.assertFalse(permissions[0]["base_read"])
 
-    def _execute(self, sql, params=None):
+    def _execute(self, sql, params=None, reader=True):
         # Translate the Data API's named scalar binds into PostgreSQL PREPARE binds.
         # JSON ID sets remain scalar string binds. This shim verifies SQL/view semantics;
         # unit tests separately verify the actual SDK parameter shapes.
@@ -1041,8 +1042,34 @@ class TestTopologySelectionSQL(unittest.TestCase):
         result = self._psql(
             f"PREPARE graph_read{signature} AS "
             f"SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM ({prepared}) r;"
-            f"EXECUTE graph_read{args};", reader=True)
+            f"EXECUTE graph_read{args};", reader=reader)
         return json.loads(result)
+
+    def test_service_data_api_query_requires_actual_constrained_role_and_reports_selection(self):
+        migrations = Path(__file__).resolve().parents[2] / "terraform/foundation/migrations"
+        self._psql(next(migrations.glob("*_service_topology.sql")).read_text())
+        self._psql("ALTER ROLE awsops_topology_reader LOGIN")
+        try:
+            self._psql("""
+              INSERT INTO public.service_topology_snapshots(snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest)
+              VALUES ('11111111-1111-4111-8111-111111111111','self:all-regions:include-global',1,now(),'{}','{}','fixture');
+              INSERT INTO public.service_topology_heads VALUES
+              ('self:all-regions:include-global','11111111-1111-4111-8111-111111111111',now());
+            """)
+            def read_as(reader):
+                inv._execute_override = lambda sql, params: self._execute(sql, params, reader=reader)
+                return inv.lambda_handler({"tool_name":"get_topology","arguments":{"class":"service","resource_id":"a"*64}}, None)
+            with mock.patch.dict(os.environ, {"TOPOLOGY_ENTITIES_ENABLED":"true"}):
+                response = read_as("topology")
+                self.assertEqual(response["statusCode"], 200, response)
+                doc = json.loads(response["body"])
+                self.assertEqual(doc["selection"], {"status":"not_found","requestedId":"a"*64})
+                self.assertIn("warning", doc)
+                self.assertEqual(read_as(False)["statusCode"], 503)
+                self._psql("ALTER ROLE awsops_topology_reader CREATEDB")
+                self.assertEqual(read_as("topology")["statusCode"], 503)
+        finally:
+            self._psql("ALTER ROLE awsops_topology_reader NOCREATEDB NOLOGIN")
 
     def _seed(self, ids, edges=(), cls="infra", account="self"):
         nodes = [{"id": key, "kind": key.split(":")[0], "label": key,
@@ -1836,7 +1863,7 @@ class TestServiceProjection(unittest.TestCase):
                 read.assert_not_called()
 
     def test_enabled_reads_shared_sql_projection_once(self):
-        view = {"snapshotId": "fixture", "status": "partial", "gaps": ["nfm:not_collected"]}
+        view = {"snapshotId": "fixture", "status": "partial", "entities": [{"id": "test"}], "gaps": ["nfm:not_collected"]}
         with mock.patch.dict(os.environ, {"TOPOLOGY_ENTITIES_ENABLED": "true"}), \
              mock.patch.object(inv, "host_account_id", return_value="111111111111"), \
              mock.patch.object(inv, "_execute", return_value=[{"view": json.dumps(view)}]) as read:
