@@ -205,7 +205,7 @@ function HostServiceMap() {
         {measures && <dl className="flex flex-wrap gap-x-5 pt-2">
           {measures.errorFraction !== null && <div><dt>{tt('상태가 확인된 스팬 중 오류')}</dt>
             <dd>{measures.errors} / {measures.knownStatus} ({(100 * measures.errorFraction).toFixed(1)}%)</dd></div>}
-          {measures.durationSumMs !== null && <div><dt>{tt('관측 스팬 소요 시간 합계')}</dt>
+          {measures.durationSumMs !== null && <div><dt>{tt('발행된 스팬 시간 합계 (표본·집계, 유효 건수 미확인)')}</dt>
             <dd>{measures.durationSumMs.toLocaleString()} ms</dd></div>}
         </dl>}
         {isClaim(selected.kind) && <p className="pt-2">{tt('Telemetry claim · AWS identity unverified')}</p>}

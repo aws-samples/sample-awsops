@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { graphTransaction } from '../graph-transaction';
+import { servicePublicationTransaction } from '../graph-transaction';
 import { SERVICE_SCOPE, type ServiceSnapshot } from './snapshot';
 export const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -25,7 +25,7 @@ export async function publishServiceTopology(
   )
     throw new Error('service_projection_limit');
   const body = digest([snapshot.entities, snapshot.relations]);
-  return graphTransaction(pool, false, async (client) => {
+  return servicePublicationTransaction(pool, async (client) => {
     const lock = await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [0x73766331]);
     if (!lock.rows[0]?.acquired || (await currentHead(client)) !== expectedHead || !(await verify(client)))
       throw new Error('service_input_changed');

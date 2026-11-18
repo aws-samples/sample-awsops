@@ -31,7 +31,7 @@ export const TERMS: Record<string, Pair> = {
   '호출 메트릭 증가량': { en: 'Call metric increase', zh: '调用指标增量', ja: '呼び出しメトリクス増分' },
   '관측 스팬 수': { en: 'Observed spans', zh: '观测到的 span 数', ja: '観測スパン数' },
   '상태가 확인된 스팬 중 오류': { en: 'Errors among spans with known status', zh: '已知状态 span 中的错误', ja: '状態が判明したスパンのエラー' },
-  '관측 스팬 소요 시간 합계': { en: 'Total observed span duration', zh: '观测 span 总耗时', ja: '観測スパンの合計所要時間' },
+  '발행된 스팬 시간 합계 (표본·집계, 유효 건수 미확인)': { en: 'Published span duration sum (sampled or aggregated; valid duration count unknown)', zh: '已发布 span 时长总和（采样或聚合，有效时长数量未知）', ja: '公開されたスパン時間の合計（標本または集計、有効な所要時間の件数は不明）' },
   '현재 범위에서는 서비스 맵을 표시할 수 없습니다. 호스트 계정, 전체 리전 및 전역 리소스를 선택하세요.': {
     en: 'Service map unavailable for this scope. Select the host account, all regions and global resources.',
     zh: '当前范围无法显示服务地图。请选择主账户、所有区域并包含全局资源。',

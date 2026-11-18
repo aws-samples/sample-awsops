@@ -348,7 +348,7 @@ export default function ServiceTopologyView({ supported }: { supported: boolean 
                   )}
                   {selected.durationSumMs != null && (
                     <p>
-                      {tt('관측 스팬 소요 시간 합계')} · {selected.durationSumMs} ms
+                      {tt('발행된 스팬 시간 합계 (표본·집계, 유효 건수 미확인)')} · {selected.durationSumMs} ms
                     </p>
                   )}
                   <details>

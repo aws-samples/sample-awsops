@@ -48,6 +48,8 @@ const nativeKinds = new Set([
   'lambda',
   'rds',
   'rds_cluster',
+  'route_table',
+  'neptune_cluster',
   'rds_proxy',
   'elasticache',
   'vpc',

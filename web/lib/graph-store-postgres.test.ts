@@ -12,7 +12,7 @@ import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
-import { graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
+import { servicePublicationTransaction, graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -119,6 +119,32 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:test', items, status,
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
+
+  it('isolates the longer transaction budget to manual service publication', async () => {
+    const timeouts = async (c: import('pg').PoolClient) => (await c.query(
+      "SELECT current_setting('statement_timeout') AS statement,current_setting('transaction_timeout') AS total"
+    )).rows[0];
+    expect(await servicePublicationTransaction(pool,timeouts)).toEqual({statement:'15s',total:'30s'});
+    expect(await graphTransaction(pool,false,timeouts)).toEqual({statement:'2s',total:'4s'});
+  });
+
+  it('admits database bridge endpoints only for relations visible in the service lens', async () => {
+    const id='335c9564-4a38-414e-9a12-d62f15ce9e99';
+    await pool.query(`INSERT INTO service_topology_snapshots(snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest)
+      VALUES ($1,'self:all-regions:include-global',1,now(),'{}','{}','fixture')`,[id]);
+    await pool.query(`INSERT INTO service_topology_entities(snapshot_id,id,kind,label,layers,claim,evidence_refs)
+      VALUES ($1,'svc','service','orders','{trace}',false,'{}'),($1,'db','rds','db','{infra}',false,'{}')`,[id]);
+    await pool.query(`INSERT INTO service_topology_relations(snapshot_id,id,source,target,kind,layer,confidence,evidence_refs)
+      VALUES ($1,'bridge','svc','db','database-record','infra','observed','{}')`,[id]);
+    const read=async()=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','','',0,15) doc",[id])).rows[0].doc;
+    const hidden=await read();
+    expect(hidden.entities.map((e:{id:string})=>e.id)).toEqual(['svc']);
+    expect(hidden.relations).toHaveLength(0);
+    await pool.query("UPDATE service_topology_relations SET layer='trace' WHERE snapshot_id=$1",[id]);
+    const visible=await read();
+    expect(visible.entities).toHaveLength(2);
+    expect(visible.relations).toHaveLength(1);
+  });
 
   it('withholds ok when a snapshot has no source references or cannot resolve them all', async () => {
     const id = 'c84553fb-52bf-4684-8056-51be30f7d117';

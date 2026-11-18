@@ -142,3 +142,11 @@ it('bounds a large publication deterministically, retains service priority and d
   expect(bounded.gaps).toContain('projection_limit:relations_omitted=1');
   expect(original.entities).toHaveLength(3);
 });
+
+
+it.each(['route_table','neptune_cluster'])('merges a qualified %s placement and inventory record', kind => {
+  const inputs = [row('inventory','one'),row('infra','two')].map(r => ({...r,kind,nativeKind:kind}));
+  const snap = projectPublished(inputs, [], [source('inventory'),source('infra')]);
+  expect(snap.entities).toHaveLength(1);
+  expect(snap.entities[0]).toMatchObject({kind,layers:['infra','inventory']});
+});

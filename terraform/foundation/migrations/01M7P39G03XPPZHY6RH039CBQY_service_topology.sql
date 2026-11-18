@@ -90,19 +90,18 @@ WITH snap AS (
  SELECT s.* FROM sql_reader.service_topology_snapshots s
  WHERE scope_key='self:all-regions:include-global' AND snapshot_id=coalesce(p_snapshot,(
  SELECT h.snapshot_id FROM sql_reader.service_topology_heads h WHERE h.scope_key='self:all-regions:include-global'))
-), nodes AS MATERIALIZED (
- SELECT e.* FROM sql_reader.service_topology_entities e JOIN snap s ON e.snapshot_id=s.body_id
- WHERE CASE p_lens WHEN 'service' THEN 'trace'=ANY(e.layers) OR e.kind IN ('ecs_service','lambda')
-  OR (p_focus<>'' AND EXISTS (SELECT 1 FROM sql_reader.service_topology_relations m WHERE m.snapshot_id=s.body_id
-    AND m.kind='member-of' AND m.source=e.id AND m.target=p_focus))
-  OR EXISTS (SELECT 1 FROM sql_reader.service_topology_relations bridge WHERE bridge.snapshot_id=s.body_id
-    AND bridge.kind IN ('instance-database','database-record') AND (bridge.source=e.id OR bridge.target=e.id))
-  WHEN 'entry' THEN 'flow'=ANY(e.layers) WHEN 'placement' THEN 'infra'=ANY(e.layers) OR 'inventory'=ANY(e.layers)
-  WHEN 'evidence' THEN true ELSE false END
 ), links AS MATERIALIZED (
  SELECT r.* FROM sql_reader.service_topology_relations r JOIN snap s ON r.snapshot_id=s.body_id
  WHERE CASE p_lens WHEN 'service' THEN r.layer='trace' OR r.kind='member-of' WHEN 'entry' THEN r.layer='flow'
   WHEN 'placement' THEN r.layer IN ('infra','inventory') WHEN 'evidence' THEN true ELSE false END
+), nodes AS MATERIALIZED (
+ SELECT e.* FROM sql_reader.service_topology_entities e JOIN snap s ON e.snapshot_id=s.body_id
+ WHERE CASE p_lens WHEN 'service' THEN 'trace'=ANY(e.layers) OR e.kind IN ('ecs_service','lambda')
+  OR (p_focus<>'' AND EXISTS (SELECT 1 FROM links m WHERE m.kind='member-of' AND m.source=e.id AND m.target=p_focus))
+  OR e.id IN (SELECT source FROM links WHERE kind IN ('instance-database','database-record')
+              UNION ALL SELECT target FROM links WHERE kind IN ('instance-database','database-record'))
+  WHEN 'entry' THEN 'flow'=ANY(e.layers) WHEN 'placement' THEN 'infra'=ANY(e.layers) OR 'inventory'=ANY(e.layers)
+  WHEN 'evidence' THEN true ELSE false END
 ), eligible AS MATERIALIZED (
  SELECT n.* FROM nodes n WHERE (p_search='' OR strpos(lower(n.label),lower(p_search))>0 OR n.id=p_search)
  AND (p_focus='' OR n.id=p_focus OR EXISTS (SELECT 1 FROM links r
