@@ -15,7 +15,11 @@ const TOKEN_RE = /[^\s,;"'=@/?#&<>()[\]{}\\|]+/g;
 const CANDIDATE_RE = /^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:\d{1,5})?$/;
 // One DNS label: 1–63 chars, alphanumeric at both ends, hyphens inside.
 const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-// Scheme-like prefixes written without '//' (e.g. `tcp:host:5432`, `rediss:host:6379`).
+// URL authority userinfo: after `://`, everything up to the LAST '@' before the next '/', '?', '#',
+// whitespace or the end. Removed BEFORE tokenizing, so no userinfo fragment is ever a candidate.
+const AUTHORITY_USERINFO_RE = /:\/\/[^/?#\s]*@/g;
+// Scheme-like prefixes written without '//' (e.g. `tcp:host:5432`, `rediss:host:6379`). Stripped
+// only at a real scheme position (start of input or after whitespace), never mid-value.
 const SCHEME_PREFIX_RE = /^(tcp|udp|tls|ssl|redis|rediss|http|https|jdbc|postgres|postgresql|mysql|mariadb|mongodb|amqp|amqps|kafka|plaintext|sasl_ssl|sasl_plaintext):/;
 // A credential-looking key immediately before the candidate: `password=`, `DB_PASSWORD: "`, `"secret": "`.
 const KEY_BEFORE_RE = /([A-Za-z0-9_.-]+)["']?\s*[=:]\s*["']?$/;
@@ -43,20 +47,23 @@ function credentialKeyBefore(before: string): boolean {
 
 export function extractManagedDbHosts(value: string): { host: string; kind: DbKind }[] {
   if (typeof value !== 'string' || value.length === 0) return [];
-  const input = value.slice(0, MAX_INPUT);
+  const input = value.slice(0, MAX_INPUT).replace(AUTHORITY_USERINFO_RE, '://');
   const out: { host: string; kind: DbKind }[] = [];
   const seen = new Set<string>();
   for (const t of input.matchAll(TOKEN_RE)) {
     const start = t.index ?? 0;
     const end = start + t[0].length;
-    // Userinfo is tokenized separately from the host: a token directly followed by '@' (user,
-    // password, or a fragment of a password containing delimiters / several '@') is never a host.
+    // URL userinfo is removed above. Any other token directly followed by '@' (a DSN like
+    // `user:pass@tcp(host)`, or a fragment of a password with several '@') is never a host either.
     if (input[end] === '@') continue;
     // A host-shaped value assigned to a credential key (`password=abc.rds.amazonaws.com`) is a
     // credential, not a reference.
     if (credentialKeyBefore(input.slice(Math.max(0, start - 128), start))) continue;
     let token = t[0].toLowerCase();
-    for (let i = 0; i < 3 && SCHEME_PREFIX_RE.test(token); i++) token = token.replace(SCHEME_PREFIX_RE, '');
+    // Elsewhere a `x:<non-digit>` token fails CANDIDATE_RE (only a numeric port may follow ':').
+    if (start === 0 || /\s/.test(input[start - 1])) {
+      for (let i = 0; i < 3 && SCHEME_PREFIX_RE.test(token); i++) token = token.replace(SCHEME_PREFIX_RE, '');
+    }
     const m = CANDIDATE_RE.exec(token);
     if (!m) continue;
     const host = m[1];

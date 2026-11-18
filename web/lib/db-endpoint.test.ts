@@ -115,6 +115,26 @@ describe('extractManagedDbHosts', () => {
       expect(host('ssl:b-1.x.kafka.us-east-1.amazonaws.com:9094')).toEqual(['b-1.x.kafka.us-east-1.amazonaws.com']);
       expect(host('rediss:cart.abc.use1.cache.amazonaws.com:6379')).toEqual(['cart.abc.use1.cache.amazonaws.com']);
     });
+
+    describe('scheme prefixes never apply to userinfo (parser differential)', () => {
+      const REAL = 'real.cluster-x.ap-northeast-2.rds.amazonaws.com';
+      it('returns only the real host when a password looks like tcp:<host>', () => {
+        expect(host(`postgres://user:tcp:abc.rds.amazonaws.com@${REAL}:5432/db`)).toEqual([REAL]);
+        expect(host('user:ssl:pw.rds.amazonaws.com@h.rds.amazonaws.com')).toEqual(['h.rds.amazonaws.com']);
+      });
+      it('strips the whole authority userinfo up to the last @, even with delimiters inside it', () => {
+        expect(host(`postgres://tcp:leak.rds.amazonaws.com/pw@${REAL}/db`)).toEqual([REAL]);
+        expect(host(`redis://ssl:leak.cache.amazonaws.com?x@${REAL}`)).toEqual([REAL]);
+        expect(host(`postgres://u@x:tcp:leak.rds.amazonaws.com@p@${REAL}:5432/db`)).toEqual([REAL]);
+        expect(host(`redis://a:b@one.x.use1.cache.amazonaws.com,redis://c:d@two.x.use1.cache.amazonaws.com`))
+          .toEqual(['one.x.use1.cache.amazonaws.com', 'two.x.use1.cache.amazonaws.com']);
+      });
+      it('strips a scheme prefix only at the start of the input or after whitespace', () => {
+        expect(host('tcp:real.x.rds.amazonaws.com:5432')).toEqual(['real.x.rds.amazonaws.com']);
+        expect(host('primary tcp:real.x.rds.amazonaws.com:5432')).toEqual(['real.x.rds.amazonaws.com']);
+        expect(extractManagedDbHosts('x/tcp:leak.rds.amazonaws.com')).toEqual([]);
+        expect(extractManagedDbHosts('@tcp:leak.rds.amazonaws.com')).toEqual([]);
+      });
+    });
   });
 });
-
