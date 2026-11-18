@@ -31,6 +31,38 @@ def compose(bundle, analysis, invariant, lang):
         names = [view._code(resources[r]["resource_id"]) for r in f.get("resource_ids", []) if r in resources]
         return ", ".join(names) or view._label(view._PILLARS, f["pillar"], lang)
 
+    evidence = {r["id"]: r for r in bundle.get("evidence", [])}
+
+    def provenance(f):
+        # Qualify every cited source window, without repeating the field ledger or
+        # presenting an arbitrary same-resource metric as evidence for a hypothesis.
+        notes = []
+        for ref in f.get("evidence_ids", []):
+            record = evidence.get(ref, {})
+            if not record:
+                continue
+            scope = {k: record[k] for k in ("kind", "region", "regions", "window", "captured_at", "fresh")
+                     if k in record}
+            coverage = record.get("coverage", {})
+            scope["coverage"] = {k: coverage[k] for k in ("sampled", "complete", "sample_ratio") if k in coverage}
+            text = view._scope_text(scope, lang)
+            if text:
+                notes.append(view._code(view._scrubbed(text)))
+            # A validated single-resource metrics observation is the code-owned
+            # collection statement, never a free-form hypothesis about a different metric.
+            refs = f.get("resource_ids", [])
+            if (f["claim"] == "observation" and record.get("kind") == "metrics"
+                    and len(refs) == 1 and record.get("resource_ids") == refs):
+                metrics = record.get("facts", {}).get("metrics", {})
+                for name, statistic, field in (("CPUUtilization", "Maximum", "max"),
+                                                ("FreeableMemory", "Minimum", "min")):
+                    series = metrics.get(name, {}).get(statistic, {})
+                    if (series.get("status") == "Complete" and type(series.get(field)) in (int, float)
+                            and series.get("unit")):
+                        notes.append(view._code(f"{name} ({statistic}, {field}) "
+                                                f"{series[field]} {series['unit']}"))
+        return ("\n\n" + copy[1] + " · " + "; ".join(dict.fromkeys(notes))) if notes else ""
+
     def paragraph(f):
         # Specialist explanatory language is a hypothesis even when the selected claim is observed.
         claim = f["claim"]
@@ -40,7 +72,7 @@ def compose(bundle, analysis, invariant, lang):
         prose = view._safe_explanation(text) or view._WITHHELD[lang]
         label = {"observation": copy[3], "sizing_candidate": copy[5],
                  "coverage_gap": copy[6]}.get(claim, copy[4])
-        return f"**{subject(f)}** · {label}\n\n{prose}"
+        return f"**{subject(f)}** · {label}\n\n{prose}" + provenance(f)
 
     def block(key, title, body):
         return {"key": key, "title": title, "body": body}
@@ -52,7 +84,7 @@ def compose(bundle, analysis, invariant, lang):
         marker = "[Critical]\n\n" if min(ranks) <= 1 else "[Warning]\n\n" if min(ranks) == 2 else ""
         return marker + "\n\n".join(paragraph(by_id[i]) for i in ids)
 
-    lead = paragraphs(plan["lead"], by_id)
+    lead = paragraphs(plan["lead"] or list(by_id)[:1], list(by_id))
     if any(bundle.get(k) or analysis.get(k) for k in ("gaps", "degraded", "incomplete", "rejected")):
         lead += "\n\n" + titles[4]
     result = [block("assessment", titles[0], lead)]
@@ -94,3 +126,19 @@ def compose(bundle, analysis, invariant, lang):
 
 def appendix_title(lang):
     return _TITLES[lang][3]
+
+def fit_sections(sections, limit, lang):
+    """Share body bytes across sections. Short sections return their unused allocation."""
+    remaining = max(0, limit)
+    ranked = sorted(sections, key=lambda section: len(section["body"].encode()))
+    clipped = []
+    for index, section in enumerate(ranked):
+        allowance = remaining // (len(ranked) - index)
+        body = section["body"]
+        if len(body.encode()) > allowance:
+            clipped.append(section["key"])
+            # Under a tiny artificial limit even the localized truncation marker may not fit.
+            body = view._trim(body, allowance, lang).encode()[:allowance].decode(errors="ignore")
+            section["body"] = body
+        remaining -= len(body.encode())
+    return clipped

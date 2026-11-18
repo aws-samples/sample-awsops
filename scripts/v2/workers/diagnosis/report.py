@@ -870,7 +870,6 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     from .budget import BudgetExceeded, ReportBudget
     budget = budget if budget is not None else ReportBudget(tier)
     base_catalog, model_id, _ = _resolve_tier(tier, model)
-    catalog = list(base_catalog) + [INTENDED_VS_ACTUAL_SECTION]
     total = len(presentation._PILLARS) + 4  # assessment, pillars, checks, invariant, appendix
 
     def emit(current, section, phase, completed=None):
@@ -957,22 +956,31 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     invariant = {"key": "intended_vs_actual", "title": localized_title(INTENDED_VS_ACTUAL_SECTION, lang),
                  "body": _render_intended_vs_actual(verdicts, lang)}
     reader_sections = editor.compose(bundle, analysis, invariant, lang)
-    headings = [f"### {localized_title(s, lang)}\n\n" for s in base_catalog]
-    room = (presentation.MAX_MARKDOWN_BYTES - sum(len(s["body"].encode()) for s in reader_sections)
-            - sum(len(h.encode()) + 2 for h in headings))
-    bodies = presentation.render(base_catalog, bundle, analysis, lang=lang, max_bytes=max(0, room))
-    appendix = "\n\n".join(h + body for h, (_, body) in zip(headings, bodies))
-    reader_sections.append({"key": "evidence_appendix", "title": editor.appendix_title(lang), "body": appendix})
-    clipped_appendix = presentation.SIZE_MARK in appendix
+    appendix_section = {"key": "evidence_appendix", "title": editor.appendix_title(lang), "body": ""}
+    now = datetime.now(timezone.utc)
+    chrome = build_markdown([{**s, "body": ""} for s in [*reader_sections, appendix_section]],
+                            account, tier, lang=lang, generated_at=now)
+    available = max(0, presentation.MAX_MARKDOWN_BYTES - len(chrome.encode()))
     mutating_mark = _MUTATING_MARK.get(lang, _MUTATING_MARK["ko"]).strip()
-    mutating = [key for key, body in bodies if mutating_mark in body]
+    mutating = [s["key"] for s in reader_sections if mutating_mark in s["body"]]
+    clipped = editor.fit_sections(reader_sections, available * 2 // 3, lang)
+    room = available - sum(len(s["body"].encode()) for s in reader_sections)
+    headings = [f"### {localized_title(s, lang)}\n\n" for s in base_catalog]
+    bodies = presentation.render(base_catalog, bundle, analysis, lang=lang,
+                                 max_bytes=max(0, room - sum(len(h.encode()) + 2 for h in headings)))
+    appendix_section["body"] = "\n\n".join(h + body for h, (_, body) in zip(headings, bodies))
+    mutating.extend(key for key, body in bodies if mutating_mark in body)
+    clipped.extend(editor.fit_sections([appendix_section], room, lang))
+    reader_sections.append(appendix_section)
     completed = []
     for index, section in enumerate(reader_sections, start=1):
         completed.append(section["title"])
         emit(index, section["title"], "render", list(completed))
     emit(total, "Assemble", "assemble", list(completed))
-    now = datetime.now(timezone.utc)
     md = build_markdown(reader_sections, account, tier, lang=lang, generated_at=now)
+    if len(md.encode()) > presentation.MAX_MARKDOWN_BYTES:
+        md = presentation._trim(md, presentation.MAX_MARKDOWN_BYTES, lang).encode()[:presentation.MAX_MARKDOWN_BYTES].decode(errors="ignore")
+        clipped.append("report")
     sources_used = list(dict.fromkeys(
         record.get("source", "discovery") for record in bundle.get("evidence", [])))
     degraded = list(dict.fromkeys(bundle.get("degraded", []) + analysis.get("degraded", [])
@@ -983,7 +991,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
         "incomplete": incomplete,  # by-design caps; never make the report partial
         "budget_incomplete": [k for k in incomplete
                               if k.endswith(("_deadline", "_exhausted", ":uncompleted"))],
-        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + (["evidence_appendix"] if clipped_appendix else []) + [
+        "render_degraded": list(dict.fromkeys(analysis.get("degraded", []) + mutating + clipped + [
             key for key, body in bodies if presentation.SIZE_MARK in body])),
         "drift": drift, "unassessed": unassessed, "invariant_coverage": _invariant_coverage(verdicts),
         "evidence_loop": {"enabled": True, "passes": analysis.get("passes", 0),

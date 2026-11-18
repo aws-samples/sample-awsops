@@ -1,5 +1,5 @@
-import re
 """Offline report-path acceptance; no paid model calls or AWS credentials."""
+import re
 import pytest
 
 from diagnosis import report
@@ -85,6 +85,7 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     md, summary, used = report.generate(object(), "self", tier,
                                        lang=lang, on_progress=lambda *a: progress.append(a))
     assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 10
+    assert len(re.findall(r"^### ", md.split("\n## ")[-1], re.M)) == count - 1
     assert summary["evidence_loop"]["enabled"] is True
     assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
@@ -626,13 +627,14 @@ def test_editor_rejects_new_facts_wrong_citations_and_unverified_paragraphs(monk
         pillar_agents.edit_report([finding()], model_id="test", budget=None, lang="en")
 
 
-def test_reader_body_contains_scoped_measurement_but_no_ledger(monkeypatch):
+def test_reader_body_qualifies_hypothesis_without_unrelated_measurement(monkeypatch):
     data = bundle()
     data["evidence"][0]["facts"]["metrics"] = {
         "CPUUtilization": {"Maximum": {"max": 25.25, "unit": "Percent", "status": "Complete"}}}
     prepare(monkeypatch, data=data)
     md, _, _ = report.generate(object(), "self", lang="en")
     body, appendix = md.split("\n## Evidence appendix\n", 1)
+    assert "2026-11-04" in body
     assert "25.25" not in body and "25.25" in appendix
     assert "Memory pressure needs verification." in body
     assert "| --- |" not in body.split("## Intended vs Actual")[0]
@@ -650,3 +652,21 @@ def test_editor_selection_cannot_hide_critical_or_unassessed_pillars(monkeypatch
     assert "[Critical]" in body.split("\n## Operational Excellence")[0]
     assert "Access controls need verification." in body.split("\n## Security")[1].split("\n## ")[0]
     assert "Unassessed" in body.split("\n## Sustainability")[1].split("\n## ")[0]
+
+def test_bounded_report_preserves_pillars_and_evidence_with_large_resource_names(monkeypatch):
+    from diagnosis.test_presentation import finding
+    from diagnosis.evidence import PILLARS
+    from diagnosis import presentation
+    data = bundle()
+    refs = []
+    for i in range(16):
+        data["resources"].append({**data["resources"][0], "id": str(i),
+                                  "resource_id": "가" * 240})
+        refs.append(str(i))
+    rows = [finding(id=f"{pillar}-{i}", pillar=pillar, resource_ids=refs)
+            for pillar in PILLARS for i in range(8)]
+    prepare(monkeypatch, data=data, findings=analysis(findings=rows))
+    md, summary, _ = report.generate(object(), "self", lang="en")
+    assert len(md.encode()) <= presentation.MAX_MARKDOWN_BYTES
+    assert len(md.split("\n## Evidence appendix")[1].encode()) > 1024
+    assert any(key in PILLARS for key in summary["render_degraded"])

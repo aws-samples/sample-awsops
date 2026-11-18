@@ -323,15 +323,13 @@ Unknown evidence, failed stages and uncompleted pillars remain visible.
 
 Model output selects admitted resource/evidence IDs and controlled claims.
 Code renders values, resource identities, scope, windows and provenance; it also
-selects the title/tags locally. Model explanations remain hypotheses. Neither
+uses a localized six-pillar account title and derives tags from the admitted pillars. Model explanations remain hypotheses. Neither
 valid JSON nor a reviewer citation establishes causality. Final summary and
 recommendations cannot introduce targets or savings absent from admitted facts.
 After the last review, a budgeted editor writes the assessment, supporting findings
 and follow-up checks in one of four report languages. The main document covers all six pillars, including unassessed or failed domains. The account-wide title does not depend on the top resource. A separate model call checks each
-paragraph against its matched finding. The worker inserts scoped measurements and
-identities locally. If drafting or verification fails, the report uses the admitted
-specialist explanations and records a degraded editorial stage. The appendix retains the 9/16
-catalog structure. Intended vs Actual remains deterministic. Scoped dependency pairs do not
+paragraph against its matched finding. The worker inserts resource identities and source scope in the body. Validated single-resource metric observations may show scoped CPU or memory measurements. Other findings keep measured values in the appendix. If drafting or verification fails, the report uses the admitted
+specialist explanations and records a degraded editorial stage. The appendix retains the eight standard or fifteen deep catalog sections. Intended vs Actual remains deterministic. Scoped dependency pairs do not
 certify the unresolved name-based invariant graph or an encryption aggregate;
 those live invariant inputs remain unassessed.
 

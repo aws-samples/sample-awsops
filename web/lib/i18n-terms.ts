@@ -40,6 +40,7 @@ export const TERMS: Record<string, Pair> = {
   '6-pillar 분석': { en: 'Six-pillar analysis', zh: '六大支柱分析', ja: '6つの柱の分析' },
   '운영 우수성': { en: 'Operational excellence', zh: '运营卓越', ja: '運用上の優秀性' },
   '보안': { en: 'Security', zh: '安全性', ja: 'セキュリティ' },
+  '신뢰성': { en: 'Reliability', zh: '可靠性', ja: '信頼性' },
   '안정성': { en: 'Reliability', zh: '可靠性', ja: '信頼性' },
   '비용 최적화': { en: 'Cost optimization', zh: '成本优化', ja: 'コスト最適化' },
   '성능 효율성': { en: 'Performance efficiency', zh: '性能效率', ja: 'パフォーマンス効率' },
