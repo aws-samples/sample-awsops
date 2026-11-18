@@ -56,5 +56,34 @@ describe('resolveDbHosts', () => {
     await resolveDbHosts(['a.rds.amazonaws.com'], 'self', read as never);
     const rdsCalls = (read.mock.calls as unknown as [string][]).filter(c => c[0] === 'rds');
     expect(rdsCalls).toHaveLength(5);
+    const rgCalls = (read.mock.calls as unknown as [string][]).filter(c => c[0] === 'elasticache_replication_group');
+    expect(rgCalls).toHaveLength(5);
+    expect(read).toHaveBeenCalledTimes(30);
+  });
+
+  it('resolves ElastiCache replication-group primary and reader endpoints', async () => {
+    const read = reader({ elasticache_replication_group: [row('sessions', { node_groups: [{
+      NodeGroupId: '0001',
+      PrimaryEndpoint: { Address: 'Master.sessions.abc123.apn2.cache.amazonaws.com', Port: 6379 },
+      ReaderEndpoint: { Address: 'replica.sessions.abc123.apn2.cache.amazonaws.com', Port: 6379 },
+    }] })] });
+    const primary = 'master.sessions.abc123.apn2.cache.amazonaws.com';
+    const replica = 'replica.sessions.abc123.apn2.cache.amazonaws.com';
+    const map = await resolveDbHosts([primary, replica], '111111111111', read as never);
+    const expected = { type: 'elasticache_replication_group', id: 'sessions', region: 'ap-northeast-2', accountId: '111111111111' };
+    expect(map.get(primary)).toEqual(expected);
+    expect(map.get(replica)).toEqual(expected);
+  });
+
+  it('leaves configuration endpoints and malformed node groups unresolved without throwing', async () => {
+    const read = reader({ elasticache_replication_group: [
+      row('cme', { node_groups: [{ NodeGroupId: '0001', Slots: '0-8191' }] }),
+      row('bad-1', { node_groups: 'nope' }),
+      row('bad-2', { node_groups: [null, 'x', { PrimaryEndpoint: null }, { PrimaryEndpoint: { Address: 7 } }] }),
+      row('bad-3', {}),
+    ] });
+    const host = 'clustercfg.cme.abc123.apn2.cache.amazonaws.com';
+    const map = await resolveDbHosts([host], '111111111111', read as never);
+    expect(map.has(host)).toBe(false);
   });
 });

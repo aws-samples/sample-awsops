@@ -29,7 +29,7 @@ const detail: ServiceDetail = {
   ],
   callers: [gnode('gw:prod/web', 'gateway', 'web-ingress')],
   callees: [gnode('svc:prod/pay', 'service', 'payments')],
-  datastores: [gnode('ds:rds_cluster:orders', 'datastore', 'orders', null)],
+  datastores: [gnode('ds:rds_cluster:111111111111:ap-northeast-2:orders', 'datastore', 'orders', null)],
   secretRefs: ['api-key', 'db-password'],
 };
 

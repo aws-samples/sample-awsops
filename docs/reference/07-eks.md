@@ -219,7 +219,9 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 namespace-grouped graph of Ingress gateways, Services and managed datastores
 (`web/lib/k8s-service-graph.ts`). Pods and Nodes are never graph nodes; they appear only
 in the Service detail panel, and Service-to-Pod membership comes only from ready
-Endpoints addresses. System namespaces (`kube-system`, `kube-public`,
+Endpoints addresses. A datastore matched to inventory is one node per resource, identified by type, account, region and
+resource id (`ds:<type>:<account>:<region>:<id>`), so the same identifier in another region or account
+is a separate node; an unmatched host is one node per host (`ds:<kind>:<host>`). System namespaces (`kube-system`, `kube-public`,
 `kube-node-lease`) are hidden by default, and namespaces start collapsed when the graph
 has more than 40 Services.
 
@@ -247,8 +249,9 @@ credential-like key (`password`, `passwd`, `pwd`, `secret`, `token`, `key`) is n
 returned; scheme prefixes such as `tcp:` are stripped only at the start of a value or
 after whitespace; and every label must be a valid DNS label (1–63 characters, 253 in total). Secrets are never requested; only the names of referenced
 Secrets are returned. Hosts are matched to inventory endpoints (`web/lib/db-ref-resolve.ts`)
-for `rds`, `rds_cluster`, `rds_proxy`, `opensearch` and `elasticache` rows of the
-cluster's account. The response is an explicit allow-list: workload, `via`
+for `rds`, `rds_cluster`, `rds_proxy`, `opensearch`, `elasticache` (cache-node endpoints) and
+`elasticache_replication_group` (primary and reader endpoints) rows of the cluster's account,
+reading at most 5 pages of 500 rows per type (30 inventory reads in the worst case). The response is an explicit allow-list: workload, `via`
 (`env` or `configmap`), host, kind, matched resource (type, id, region, account),
 secret names, and `truncated`/`partial` flags. A denied Pod list or an unreadable
 ConfigMap sets `partial`; hitting a cap sets `truncated`; exceeding the budget stops
@@ -267,13 +270,24 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of
   records it did not inspect. Calls that cannot be mapped to one workload or managed
-  datastore are counted, not guessed.
+  datastore are counted, not guessed, and add no node.
 - Member clusters (full EKS ARN ids) read through the member role show Kubernetes
-  structure and `db-refs` links but no trace edges. The listing does not expose the
-  host account id, so a host cluster outside the deployment region (ARN id) is also
-  treated as a member for traces. Route 53 records are read from the synced inventory
-  of the id's account (`self` for a bare name) and matched to gateway hosts exactly.
-- MSK and ElastiCache replication-group hosts stay unresolved host names, because
+  structure and `db-refs` links but no trace edges. A host cluster outside the
+  deployment region also has an ARN id, and the cluster listing reports a numeric
+  account for every row, so the page resolves the host account from the single
+  `isHost` row of `GET /api/accounts`: an ARN whose account equals it is a host cluster
+  for both trace edges and Route 53 records. If that lookup fails or does not return
+  exactly one 12-digit host account, every ARN id is treated as a member: no trace
+  edges, with the member-cluster notice, and Route 53 is read for the ARN's account.
+- Route 53 records are read from the synced inventory of the cluster's account (`self`
+  for the host) and matched to gateway hosts exactly; the record name is only the DNS
+  node's label, so a wildcard record (`\052` decoded to a leading `*.`) links like any
+  other. The read stops after 5 pages of 500 rows or 2,000 alias/CNAME records. A read
+  that stops at a cap keeps what it read and a failed read yields none; both show a
+  notice.
+- ElastiCache hosts resolve to cache-node endpoints (`elasticache`) or to
+  replication-group primary and reader endpoints (`elasticache_replication_group`). MSK
+  hosts and ElastiCache configuration endpoints stay unresolved host names, because
   their inventory rows store no endpoint.
 - Layout (`web/lib/k8s-graph-layout.ts`) uses dagre (MIT, the dependency behind
   `web/lib/flow-layout.ts`) only for the call order inside each namespace box, on plain

@@ -9,7 +9,16 @@
 //  - Secret refs are names shown in the detail panel; they never create nodes or edges.
 //  - Trace calls (k8s-trace-overlay.ts, already workload-level) attach only when each workload is
 //    fronted by exactly ONE Service (and a datastore host matches at most one node); anything else
-//    is skipped and counted in `notes`, never guessed.
+//    is skipped and counted in `notes`, never guessed, and creates no node.
+// Datastore node ids (opaque to the layout and canvas):
+//   resolved    ds:<type>:<account>:<region>:<resourceId>   type = inventory type (rds, rds_cluster, rds_proxy,
+//               opensearch, elasticache, elasticache_replication_group); account = 'self' or 12 digits;
+//               region = AWS region, '-' when the row has none. One node per inventory resource: the same
+//               identifier in another region or account is a different node.
+//   unresolved  ds:<kind>:<host>   kind = DbKind (rds, elasticache, opensearch, msk); host = lower-cased FQDN.
+// The forms never collide: a host contains no ':', so an unresolved id has exactly three ':'-separated parts
+// and a resolved id at least five. Every field of a node derives from its id plus sorted sets, so merging
+// refs is independent of input order.
 import type { ServiceRow, EndpointRow, IngressRow } from './eks-incluster';
 import { nodePodKeys, nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
 import type { DbRef, SecretRef } from './eks-db-refs';
@@ -85,7 +94,8 @@ const workloadsOf = (pods: PodRow[]) =>
   [...new Set(pods.map((p) => p.workload).filter((w): w is string => !!w))].sort(cmp);
 
 function datastoreId(ref: DbRef & { resource: DbResource | null }): { id: string; resolved: boolean } {
-  if (ref.resource?.id) return { id: `ds:${ref.resource.type}:${ref.resource.id}`, resolved: true };
+  const r = ref.resource;
+  if (r?.id) return { id: `ds:${r.type}:${r.accountId || '-'}:${r.region || '-'}:${r.id}`, resolved: true };
   return { id: `ds:${ref.kind}:${ref.host.toLowerCase()}`, resolved: false };
 }
 
@@ -163,12 +173,14 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
     if (existing) {
       const hosts = existing.meta.hosts as string[];
       if (!hosts.includes(host)) existing.meta.hosts = [...hosts, host].sort(cmp);
+      // `kind` is the only field not fixed by the id: keep the smallest so input order never matters.
+      if (cmp(ref.kind, existing.meta.kind as string) < 0) existing.meta.kind = ref.kind;
     } else {
       const r = ref.resource;
       nodes.set(id, {
         id, kind: 'datastore', namespace: null, status: 'neutral',
         label: resolved && r ? r.id : host,
-        sub: resolved && r ? r.type : ref.kind,
+        sub: resolved && r ? (r.region ? `${r.type} · ${r.region}` : r.type) : ref.kind,
         meta: resolved && r
           ? { unresolved: false, kind: ref.kind, type: r.type, resourceId: r.id, region: r.region, accountId: r.accountId, hosts: [host] }
           : { unresolved: true, kind: ref.kind, hosts: [host] },
@@ -187,6 +199,7 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
     for (const c of input.trace.workloadCalls) {
       const source = soleService(c.fromWorkload.namespace, c.fromWorkload.name);
       let target: string | null = null;
+      let created: GNode | null = null; // a trace-only datastore: added only once the call is mapped
       if ('workload' in c.to) target = soleService(c.to.workload.namespace, c.to.workload.name);
       else {
         const host = c.to.datastoreHost.toLowerCase();
@@ -195,13 +208,14 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
         if (matches.length === 1) target = matches[0].id;
         else if (matches.length === 0 && managed.length === 1 && managed[0].host === host) {
           target = `ds:${managed[0].kind}:${host}`;
-          nodes.set(target, {
+          created = {
             id: target, kind: 'datastore', namespace: null, status: 'neutral', label: host, sub: managed[0].kind,
             meta: { unresolved: true, kind: managed[0].kind, hosts: [host] },
-          });
+          };
         }
       }
       if (!source || !target) { unmappedTrace++; continue; }
+      if (created) nodes.set(created.id, created);
       if (source !== target) addEdge(source, target, 'trace');
     }
   }

@@ -13,6 +13,7 @@ const node = (over: Partial<NodeRow> & Pick<NodeRow, 'name'>): NodeRow => ({
 
 const RDS_HOST = 'orders.cluster-abc.ap-northeast-2.rds.amazonaws.com';
 const CACHE_HOST = 'sessions.xyz.apne2.cache.amazonaws.com';
+const ORDERS_DS = 'ds:rds_cluster:111111111111:ap-northeast-2:orders';
 
 const base = (): GraphInput => ({
   ingresses: [{ name: 'web', namespace: 'prod', className: 'alb', lbHostname: 'k8s-x.elb.amazonaws.com', backends: [{ service: 'api', port: '8080' }, { service: 'api', port: '9090' }], age: '1h' }],
@@ -61,9 +62,9 @@ describe('buildServiceGraph', () => {
 
   it('links service→datastore via Endpoints targetRef pod → workload → DB ref (config evidence)', () => {
     const g = buildServiceGraph(base());
-    const rds = edge(g, 'svc:prod/api', 'ds:rds_cluster:orders');
+    const rds = edge(g, 'svc:prod/api', ORDERS_DS);
     expect(rds?.evidence).toEqual(['config']);
-    expect(g.nodes.find((n) => n.id === 'ds:rds_cluster:orders')).toMatchObject({ kind: 'datastore', label: 'orders', namespace: null });
+    expect(g.nodes.find((n) => n.id === ORDERS_DS)).toMatchObject({ kind: 'datastore', label: 'orders', namespace: null });
     expect(g.nodes.find((n) => n.id === 'svc:prod/api')?.meta).toMatchObject({ podCount: 1, workloads: ['api'] });
   });
 
@@ -72,7 +73,7 @@ describe('buildServiceGraph', () => {
     const ds = g.nodes.find((n) => n.id === `ds:elasticache:${CACHE_HOST}`);
     expect(ds).toMatchObject({ kind: 'datastore', label: CACHE_HOST });
     expect(ds?.meta.unresolved).toBe(true);
-    expect(g.nodes.find((n) => n.id === 'ds:rds_cluster:orders')?.meta.unresolved).toBe(false);
+    expect(g.nodes.find((n) => n.id === ORDERS_DS)?.meta.unresolved).toBe(false);
     expect(edge(g, 'svc:prod/api', `ds:elasticache:${CACHE_HOST}`)?.evidence).toEqual(['config']);
   });
 
@@ -117,7 +118,7 @@ describe('buildServiceGraph', () => {
     input.endpoints = [{ name: 'api', namespace: 'prod', ips: ['10.0.2.10'], targets: [{ ip: '10.0.2.10' }] }];
     const g = buildServiceGraph(input);
     expect(g.nodes.find((n) => n.id === 'svc:prod/api')?.meta.podCount).toBe(1);
-    expect(edge(g, 'svc:prod/api', 'ds:rds_cluster:orders')).toBeDefined();
+    expect(edge(g, 'svc:prod/api', ORDERS_DS)).toBeDefined();
   });
 
   it('does not link an unready pod absent from Endpoints', () => {
@@ -170,6 +171,56 @@ describe('buildServiceGraph', () => {
     const g = buildServiceGraph(input);
     expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
   });
+
+  it('keeps same-id resources in different regions or accounts as separate nodes, independent of input order', () => {
+    const input = base();
+    input.dbRefs.push(
+      { workload: { namespace: 'prod', name: 'api' }, via: 'env', host: 'orders.cluster-xyz.us-west-2.rds.amazonaws.com', kind: 'rds',
+        resource: { type: 'rds_cluster', id: 'orders', region: 'us-west-2', accountId: '111111111111' } },
+      { workload: { namespace: 'prod', name: 'api' }, via: 'env', host: 'orders.cluster-other.ap-northeast-2.rds.amazonaws.com', kind: 'rds',
+        resource: { type: 'rds_cluster', id: 'orders', region: 'ap-northeast-2', accountId: '222222222222' } },
+    );
+    const g = buildServiceGraph(input);
+    expect(g.nodes.filter((n) => n.kind === 'datastore' && n.meta.unresolved === false).map((n) => n.id)).toEqual([
+      ORDERS_DS, 'ds:rds_cluster:111111111111:us-west-2:orders', 'ds:rds_cluster:222222222222:ap-northeast-2:orders',
+    ]);
+    const west = g.nodes.find((n) => n.id === 'ds:rds_cluster:111111111111:us-west-2:orders');
+    expect(west?.meta).toMatchObject({ region: 'us-west-2', accountId: '111111111111', hosts: ['orders.cluster-xyz.us-west-2.rds.amazonaws.com'] });
+    expect(west?.sub).toBe('rds_cluster · us-west-2');
+    expect(buildServiceGraph({ ...input, dbRefs: [...input.dbRefs].reverse() })).toEqual(g);
+  });
+
+  it('merges two hosts of one resolved resource into one node regardless of order', () => {
+    const input = base();
+    const reader = 'orders.cluster-ro-abc.ap-northeast-2.rds.amazonaws.com';
+    input.dbRefs.push({ workload: { namespace: 'prod', name: 'api' }, via: 'env', host: reader, kind: 'rds',
+      resource: { type: 'rds_cluster', id: 'orders', region: 'ap-northeast-2', accountId: '111111111111' } });
+    const g = buildServiceGraph(input);
+    const orders = g.nodes.filter((n) => n.id === ORDERS_DS);
+    expect(orders).toHaveLength(1);
+    expect(orders[0].meta.hosts).toEqual([RDS_HOST, reader]);
+    expect(buildServiceGraph({ ...input, dbRefs: [...input.dbRefs].reverse() })).toEqual(g);
+  });
+
+  it('never lets a resolved id collide with an unresolved host id', () => {
+    const input = base();
+    input.dbRefs = [
+      { workload: { namespace: 'prod', name: 'api' }, via: 'env', host: 'x.rds.amazonaws.com', kind: 'rds', resource: null },
+      { workload: { namespace: 'prod', name: 'api' }, via: 'env', host: 'other.rds.amazonaws.com', kind: 'rds',
+        resource: { type: 'rds', id: 'x.rds.amazonaws.com', region: 'ap-northeast-2', accountId: 'self' } },
+    ];
+    const g = buildServiceGraph(input);
+    expect(g.nodes.find((n) => n.id === 'ds:rds:x.rds.amazonaws.com')?.meta.unresolved).toBe(true);
+    expect(g.nodes.find((n) => n.id === 'ds:rds:self:ap-northeast-2:x.rds.amazonaws.com')?.meta.unresolved).toBe(false);
+  });
+
+  it('uses "-" for a missing region', () => {
+    const input = base();
+    input.dbRefs = [{ workload: { namespace: 'prod', name: 'api' }, via: 'env', host: 'db.a.rds.amazonaws.com', kind: 'rds',
+      resource: { type: 'rds', id: 'db', region: null, accountId: 'self' } }];
+    const g = buildServiceGraph(input);
+    expect(g.nodes.find((n) => n.id === 'ds:rds:self:-:db')).toMatchObject({ sub: 'rds' });
+  });
 });
 
 describe('buildServiceGraph trace overlay', () => {
@@ -201,7 +252,7 @@ describe('buildServiceGraph trace overlay', () => {
     const input = withWeb();
     input.trace = overlay([call('api', { datastoreHost: RDS_HOST })]);
     const g = buildServiceGraph(input);
-    expect(edge(g, 'svc:prod/api', 'ds:rds_cluster:orders')?.evidence).toEqual(['trace', 'config']);
+    expect(edge(g, 'svc:prod/api', ORDERS_DS)?.evidence).toEqual(['trace', 'config']);
     expect(g.nodes.filter((n) => n.kind === 'datastore')).toHaveLength(2);
   });
 
@@ -214,6 +265,26 @@ describe('buildServiceGraph trace overlay', () => {
     expect(edge(g, 'svc:prod/web', `ds:rds:${host}`)?.evidence).toEqual(['trace']);
   });
 
+  it('creates no datastore node for an unmapped trace call to a new managed host, and counts it', () => {
+    const input = withWeb();
+    const host = 'audit.abc.ap-northeast-2.rds.amazonaws.com';
+    input.trace = overlay([call('ghost', { datastoreHost: host })]);
+    const g = buildServiceGraph(input);
+    expect(g.nodes.some((n) => n.id === `ds:rds:${host}`)).toBe(false);
+    expect(g.nodes.filter((n) => n.kind === 'datastore')).toHaveLength(2);
+    expect(g.notes.find((n) => n.includes('trace'))).toContain('1');
+  });
+
+  it('creates the node once when a mapped call reaches the same host after an unmapped one', () => {
+    const input = withWeb();
+    const host = 'audit.abc.ap-northeast-2.rds.amazonaws.com';
+    input.trace = overlay([call('ghost', { datastoreHost: host }), call('web', { datastoreHost: host })]);
+    const g = buildServiceGraph(input);
+    expect(g.nodes.find((n) => n.id === `ds:rds:${host}`)?.meta).toMatchObject({ unresolved: true, hosts: [host] });
+    expect(edge(g, 'svc:prod/web', `ds:rds:${host}`)?.evidence).toEqual(['trace']);
+    expect(g.notes.find((n) => n.includes('trace'))).toContain('1');
+  });
+
   it('skips a trace call whose workload is fronted by two Services and counts it in notes (never guessed)', () => {
     const input = withWeb();
     input.services.push({ name: 'api-alt', namespace: 'prod', type: 'ClusterIP', clusterIP: '172.20.0.13', ports: '8080/TCP', age: '1h' });
@@ -222,7 +293,7 @@ describe('buildServiceGraph trace overlay', () => {
     const g = buildServiceGraph(input);
     expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
     // Config evidence is workload-level and still attaches to both Services.
-    expect(edge(g, 'svc:prod/api-alt', 'ds:rds_cluster:orders')?.evidence).toEqual(['config']);
+    expect(edge(g, 'svc:prod/api-alt', ORDERS_DS)?.evidence).toEqual(['config']);
     const note = g.notes.find((n) => n.includes('trace'));
     expect(note).toContain('3');
   });
@@ -254,7 +325,7 @@ describe('serviceDetail', () => {
     expect(d.nodes[0].readyText).toBe('Ready');
     expect(d.callers.map((n) => n.id)).toEqual(['gw:prod/web']);
     expect(d.callees).toEqual([]);
-    expect(d.datastores.map((n) => n.id)).toEqual([`ds:elasticache:${CACHE_HOST}`, 'ds:rds_cluster:orders']);
+    expect(d.datastores.map((n) => n.id)).toEqual([`ds:elasticache:${CACHE_HOST}`, ORDERS_DS]);
     expect(d.secretRefs).toEqual(['api-key', 'db-password']);
   });
 
@@ -324,6 +395,11 @@ describe('DNS and LoadBalancer gateways (Task 8)', () => {
     const b = base();
     const g = buildServiceGraph({ ...b, services: [...b.services, { ...lbSvc, lbHostname: ELB }], dns: [{ name: 'a.example.com', target: ELB }] });
     expect(g.edges.filter((e) => e.source === 'dns:a.example.com').map((e) => e.target).sort()).toEqual(['gw:lb:prod/edge', 'gw:prod/web']);
+  });
+  it('links a wildcard record to the gateway it targets', () => {
+    const g = buildServiceGraph({ ...base(), dns: [{ name: '*.apps.example.com', target: ELB }] });
+    expect(g.nodes.find((n) => n.id === 'dns:*.apps.example.com')).toBeDefined();
+    expect(edge(g, 'dns:*.apps.example.com', 'gw:prod/web')?.evidence).toEqual(['routing']);
   });
 });
 

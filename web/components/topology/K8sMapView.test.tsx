@@ -19,7 +19,7 @@ vi.mock('@/components/topology/ServiceGraphCanvas', () => ({
   },
 }));
 // fetchTraceOverlay is the real module unless a test overrides it.
-const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string }, s?: AbortSignal) => Promise<TraceOverlay>) }));
+const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string; hostAccountId?: string }, s?: AbortSignal) => Promise<TraceOverlay>) }));
 vi.mock('@/lib/k8s-trace-overlay', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/k8s-trace-overlay')>();
   return {
@@ -27,6 +27,13 @@ vi.mock('@/lib/k8s-trace-overlay', async (importActual) => {
     fetchTraceOverlay: (c: Parameters<typeof actual.fetchTraceOverlay>[0], s?: AbortSignal) =>
       (trace.override ? trace.override(c, s) : actual.fetchTraceOverlay(c, s)),
   };
+});
+// fetchDnsRecords is the real module unless a test overrides it.
+import type { DnsRead } from '@/lib/k8s-dns';
+const dns = vi.hoisted(() => ({ override: null as null | ((accountId: string, s?: AbortSignal) => Promise<DnsRead>) }));
+vi.mock('@/lib/k8s-dns', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/k8s-dns')>();
+  return { ...actual, fetchDnsRecords: (a: string, s?: AbortSignal) => (dns.override ? dns.override(a, s) : actual.fetchDnsRecords(a, s)) };
 });
 
 import K8sMapView, { TRACE_NOTICE, traceOmittedNotice } from './K8sMapView';
@@ -67,6 +74,11 @@ const HOST_AND_MEMBER = { clusters: [
   { id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected' },
   { id: 'offline', name: 'offline', accountId: '111111111111', access: 'denied' },
 ] };
+const HOST_ARN = 'arn:aws:eks:us-west-2:111111111111:cluster/west';
+const ENC_HOST_ARN = encodeURIComponent(HOST_ARN);
+const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111111111111', access: 'connected' }] };
+const ACCOUNTS = { accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true }, { accountId: '222222222222', alias: 'Member', isHost: false }] };
+const accountsHandler = (body: unknown, status = 200): Handler => (u) => (u === '/api/accounts' ? new Response(JSON.stringify(body), { status }) : undefined);
 const view = () => render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
 const graphNamespaces = () => canvas.props?.graph.namespaces.map((n) => n.name) ?? [];
 const deferred = <T,>() => {
@@ -79,6 +91,7 @@ beforeEach(() => {
   canvas.props = null;
   canvas.renders = 0;
   trace.override = null;
+  dns.override = null;
   window.localStorage.setItem('awsops:scope', JSON.stringify({ accounts: '__all__', regions: '__all__', includeGlobal: true }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear(); });
@@ -90,7 +103,7 @@ describe('K8sMapView', () => {
     const options = await screen.findAllByRole('option');
     expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual(['shared', MEMBER_ARN]);
     expect(options[1].textContent).toBe('shared (222222222222 / ap-northeast-2)');
-    expect(calls[0]).toContain('accounts=__all__');
+    expect(calls.find((u) => u.startsWith('/api/eks?'))).toContain('accounts=__all__');
     fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
     await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=pods`));
     for (const kind of ['ingresses', 'services', 'endpoints']) expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=${kind}`);
@@ -316,6 +329,127 @@ describe('K8sMapView service graph data', () => {
     await act(async () => { late.resolve(new Response(JSON.stringify({ rows: ROWS.nodes }))); });
     await waitFor(() => expect(canvas.props?.input.services.length).toBeGreaterThan(0));
     expect(canvas.props!.input.nodes).toEqual([]);
+  });
+
+  it('shows a visible notice when the Route53 read was capped, and still draws what was read', async () => {
+    dns.override = () => Promise.resolve({ records: [{ name: 'app.example.com', target: 'x.elb.amazonaws.com' }], truncated: true, failed: false });
+    stubFetch(HOST_ONLY);
+    view();
+    const notice = await screen.findByText('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.');
+    expect(notice.closest('[role="status"]')).toBeTruthy();
+    expect(canvas.props!.input.dns).toHaveLength(1);
+  });
+
+  it('discloses a failed Route53 read and still renders the graph', async () => {
+    stubFetch(HOST_ONLY, 200, (u) => (u.startsWith('/api/inventory/route53') ? new Response('{}', { status: 500 }) : undefined));
+    view();
+    expect(await screen.findByText('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.')).toBeTruthy();
+    expect(screen.getByTestId('canvas')).toBeTruthy();
+    expect(canvas.props!.input.dns).toEqual([]);
+  });
+
+  it('shows no Route53 notice for a complete read', async () => {
+    const calls = stubFetch(HOST_ONLY);
+    view();
+    await waitFor(() => expect(canvas.props).not.toBeNull());
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53'))).toBe(true));
+    expect(screen.queryByText(/Route 53 레코드/)).toBeNull();
+  });
+});
+
+describe('K8sMapView host account scope', () => {
+  it('treats an ARN-identified host-account cluster as the host for Route53 and traces', async () => {
+    const calls = stubFetch(HOST_ARN_ONLY, 200, accountsHandler(ACCOUNTS));
+    view();
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=self&'))).toBe(true));
+    expect(calls.some((u) => u.includes('accounts=111111111111'))).toBe(false);
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    expect(await screen.findByText(TRACE_NOTICE.disabled)).toBeTruthy();
+    expect(screen.queryByText(TRACE_NOTICE.member_cluster)).toBeNull();
+  });
+
+  it('passes the resolved host account id to the trace overlay only for an ARN id', async () => {
+    const seen: { id: string; hostAccountId?: string }[] = [];
+    trace.override = (c) => {
+      seen.push({ id: c.id, hostAccountId: c.hostAccountId });
+      return Promise.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 0 });
+    };
+    stubFetch(HOST_ARN_ONLY, 200, accountsHandler(ACCOUNTS));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === HOST_ARN)).toBe(true));
+    expect(seen.find((s) => s.id === HOST_ARN)?.hostAccountId).toBe('111111111111');
+    cleanup();
+    vi.unstubAllGlobals();
+    seen.length = 0;
+    stubFetch(HOST_ONLY, 200, accountsHandler(ACCOUNTS));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    expect(seen.find((s) => s.id === 'shared')?.hostAccountId).toBeUndefined();
+  });
+
+  it.each<[string, Handler]>([
+    ['a non-OK response', accountsHandler({}, 500)],
+    ['two host rows', accountsHandler({ accounts: [{ accountId: '111111111111', isHost: true }, { accountId: '333333333333', isHost: true }] })],
+    ['a malformed host id', accountsHandler({ accounts: [{ accountId: 'self', isHost: true }] })],
+    ['no accounts array', accountsHandler({ rows: [] })],
+    ['a rejected request', (u) => (u === '/api/accounts' ? Promise.reject(new Error('net')) : undefined)],
+  ])('keeps the member handling for an ARN cluster when the host account cannot be determined (%s)', async (_label, handler) => {
+    const calls = stubFetch(HOST_ARN_ONLY, 200, handler);
+    view();
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=111111111111&'))).toBe(true));
+    expect(await screen.findByText(TRACE_NOTICE.member_cluster)).toBeTruthy();
+    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'member_cluster' });
+  });
+
+  it('keeps a member ARN cluster a member when the host account is known', async () => {
+    const calls = stubFetch(HOST_AND_MEMBER, 200, accountsHandler(ACCOUNTS));
+    view();
+    await screen.findAllByRole('option');
+    fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=222222222222&'))).toBe(true));
+    expect(await screen.findByText(TRACE_NOTICE.member_cluster)).toBeTruthy();
+    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
+  });
+
+  it('waits for the host account lookup before the trace and Route53 reads of an ARN cluster, without repeating the in-cluster reads', async () => {
+    const pending = deferred<Response>();
+    const calls = stubFetch(HOST_ARN_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
+    view();
+    await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_HOST_ARN}/incluster?kind=pods`));
+    expect(calls.some((u) => u.startsWith('/api/inventory/route53') || u.startsWith('/api/topology'))).toBe(false);
+    await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=self&'))).toBe(true));
+    expect(calls.filter((u) => u === `/api/eks/${ENC_HOST_ARN}/incluster?kind=pods`)).toHaveLength(1);
+  });
+
+  it('does not repeat the trace or Route53 read of a bare-name cluster when the host account lookup settles', async () => {
+    const pending = deferred<Response>();
+    const calls = stubFetch(HOST_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
+    view();
+    await waitFor(() => expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1));
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
+    expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1);
+    expect(calls.filter((u) => u === '/api/topology?lens=service')).toHaveLength(1);
+  });
+
+  it('discloses a rejected trace read as unavailable instead of leaving the overlay unset', async () => {
+    trace.override = () => Promise.reject(new Error('boom'));
+    stubFetch(HOST_ONLY);
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.unavailable)).toBeTruthy();
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'unavailable' });
+    expect(screen.queryByText(/boom/)).toBeNull();
+  });
+
+  it('discloses a rejected Route53 read and still renders the graph', async () => {
+    dns.override = () => Promise.reject(new Error('boom'));
+    stubFetch(HOST_ONLY);
+    view();
+    expect(await screen.findByText('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.')).toBeTruthy();
+    expect(screen.getByTestId('canvas')).toBeTruthy();
+    expect(canvas.props!.input.dns).toEqual([]);
   });
 });
 

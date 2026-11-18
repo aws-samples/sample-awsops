@@ -89,6 +89,7 @@ const nodeRow = (over: Partial<NodeRow> & Pick<NodeRow, 'name'>): NodeRow => ({
 });
 const svc = (namespace: string, name: string) => ({ name, namespace, type: 'ClusterIP', clusterIP: '172.20.0.10', ports: '80/TCP', age: '1h' });
 const RDS_HOST = 'orders.cluster-abc.ap-northeast-2.rds.amazonaws.com';
+const ORDERS_DS = 'ds:rds_cluster:111111111111:ap-northeast-2:orders';
 
 const input = (): GraphInput => ({
   services: [svc('prod', 'api'), svc('prod', 'web'), svc('auth', 'login')],
@@ -165,9 +166,9 @@ describe('ServiceGraphCanvas', () => {
     const inp = input();
     for (let i = 0; i < 39; i++) inp.services.push(svc('batch', `job-${String(i).padStart(2, '0')}`));
     const g = graphOf(inp);
-    g.edges.push({ id: 'svc:prod/web->ds:rds_cluster:orders', source: 'svc:prod/web', target: 'ds:rds_cluster:orders', evidence: ['config'] });
+    g.edges.push({ id: `svc:prod/web->${ORDERS_DS}`, source: 'svc:prod/web', target: ORDERS_DS, evidence: ['config'] });
     await renderCanvas({ input: inp, graph: g });
-    expect(flowEdge('agg:ns:prod->ds:rds_cluster:orders')?.label).toBe('×2');
+    expect(flowEdge(`agg:ns:prod->${ORDERS_DS}`)?.label).toBe('×2');
   });
 
   it('collapses and expands all namespaces from the toolbar', async () => {
@@ -189,7 +190,7 @@ describe('ServiceGraphCanvas', () => {
   it('draws trace edges solid, config edges dashed, routing edges thin, with rps labels', async () => {
     await renderCanvas();
     const trace = flowEdge('svc:prod/web->svc:prod/api')!;
-    const config = flowEdge('svc:prod/api->ds:rds_cluster:orders')!;
+    const config = flowEdge(`svc:prod/api->${ORDERS_DS}`)!;
     const routing = flowEdge('gw:prod/shop->svc:prod/web')!;
     expect(trace.style?.strokeDasharray).toBeUndefined();
     expect(trace.label).toBe('12 rps');
@@ -206,7 +207,7 @@ describe('ServiceGraphCanvas', () => {
     const type = (id: string) => flowNodes().find((n) => n.id === id)?.type;
     expect(type('gw:prod/shop')).toBe('diamond');
     expect(type('svc:prod/api')).toBe('card');
-    expect(type('ds:rds_cluster:orders')).toBe('square');
+    expect(type(ORDERS_DS)).toBe('square');
   });
 
   it('opens the detail panel on a Service click and never renders Pods or Nodes as graph nodes', async () => {
@@ -232,7 +233,7 @@ describe('ServiceGraphCanvas', () => {
   it('does not open the panel for gateways or datastores', async () => {
     await renderCanvas();
     fireEvent.click(screen.getByTestId('node:gw:prod/shop'));
-    fireEvent.click(screen.getByTestId('node:ds:rds_cluster:orders'));
+    fireEvent.click(screen.getByTestId(`node:${ORDERS_DS}`));
     expect(screen.queryByRole('complementary', { name: '서비스 상세' })).toBeNull();
   });
 
@@ -242,7 +243,7 @@ describe('ServiceGraphCanvas', () => {
     render(<ServiceGraphCanvas graph={graphOf(inp)} input={inp} query="" theme="light" onSelectService={onSelectService} />);
     await waitFor(() => expect(flowNodes().length).toBeGreaterThan(0));
     fireEvent.click(screen.getByTestId('node:gw:prod/shop'));
-    fireEvent.click(screen.getByTestId('node:ds:rds_cluster:orders'));
+    fireEvent.click(screen.getByTestId(`node:${ORDERS_DS}`));
     expect(onSelectService).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('node:svc:prod/api'));
     expect(onSelectService).toHaveBeenCalledTimes(1);

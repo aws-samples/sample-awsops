@@ -15,7 +15,12 @@ const strMap = (v: unknown): string[] =>
   v && typeof v === 'object' && !Array.isArray(v) ? Object.values(v).flatMap(str) : [];
 
 // Endpoint field names per inventory type (see scripts/v2/steampipe/sync_lambda.py + inventory-types.ts).
-// MSK and ElastiCache replication groups store no endpoint, so those hosts stay unresolved.
+// ElastiCache: applications dial a replication group's primary/reader endpoint, stored on the
+// `elasticache_replication_group` row (node_groups[].PrimaryEndpoint / ReaderEndpoint); per-node endpoints
+// are on the `elasticache` cache-cluster row (cache_nodes[].Endpoint). Every host is checked against every
+// type. Neither sync stores a configuration endpoint (cluster mode enabled, Memcached auto-discovery) and
+// MSK stores no broker endpoint, so those hosts stay unresolved.
+// Bound: MAX_PAGES x PAGE rows per type, so at most 6 x 5 = 30 sequential reads (15,000 rows) per call.
 const ENDPOINT_FIELDS: Record<string, (d: Row) => string[]> = {
   rds: d => str(d.endpoint_address),
   rds_cluster: d => [...str(d.endpoint), ...str(d.reader_endpoint), ...(Array.isArray(d.custom_endpoints) ? d.custom_endpoints.flatMap(str) : [])],
@@ -24,6 +29,10 @@ const ENDPOINT_FIELDS: Record<string, (d: Row) => string[]> = {
   elasticache: d => (Array.isArray(d.cache_nodes) ? d.cache_nodes : []).flatMap(n => {
     const ep = (n as { Endpoint?: { Address?: unknown } } | null)?.Endpoint;
     return str(ep?.Address);
+  }),
+  elasticache_replication_group: d => (Array.isArray(d.node_groups) ? d.node_groups : []).flatMap(g => {
+    const ng = g as { PrimaryEndpoint?: { Address?: unknown } | null; ReaderEndpoint?: { Address?: unknown } | null } | null;
+    return [...str(ng?.PrimaryEndpoint?.Address), ...str(ng?.ReaderEndpoint?.Address)];
   }),
 };
 

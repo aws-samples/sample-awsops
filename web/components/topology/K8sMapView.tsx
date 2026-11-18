@@ -6,15 +6,16 @@
 //  - in-cluster kinds ingresses/services/pods/endpoints (failed kinds are disclosed, never hidden)
 //  - db-refs (config-inferred datastores; failure/partial/truncated is disclosed, the graph still renders)
 //  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters and an
-//    incomplete scope listing itself)
-//  - Route53 records for the cluster's account (optional; any failure yields none)
+//    incomplete scope listing itself). An ARN id is a host cluster only when its account equals the
+//    unique isHost account of /api/accounts; if that lookup fails, every ARN id is a member.
+//  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders)
 //  - nodes LAZILY, the first time a Service is selected (detail panel only).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import ServiceGraphCanvas from '@/components/topology/ServiceGraphCanvas';
 import { buildServiceGraph, filterGraphInputByNamespace, SYSTEM_NAMESPACES, type GraphInput } from '@/lib/k8s-service-graph';
 import { fetchTraceOverlay, type TraceOverlay, type TraceOverlayReason } from '@/lib/k8s-trace-overlay';
-import { fetchDnsRecords, type DnsRecord } from '@/lib/k8s-dns';
+import { fetchDnsRecords, type DnsRead } from '@/lib/k8s-dns';
 import type { DbRef, SecretRef } from '@/lib/eks-db-refs';
 import type { DbResource } from '@/lib/db-ref-resolve';
 import type { IngressRow, ServiceRow, EndpointRow } from '@/lib/eks-incluster';
@@ -26,6 +27,7 @@ import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
 
 const KINDS = ['ingresses', 'services', 'pods', 'endpoints'] as const;
+const NO_DNS: DnsRead = { records: [], truncated: false, failed: false };
 
 interface ClusterRows { ingresses: IngressRow[]; services: ServiceRow[]; pods: PodRow[]; endpoints: EndpointRow[]; failedKinds: string[] }
 type ResolvedRef = DbRef & { resource: DbResource | null };
@@ -40,8 +42,9 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   unsupported_scope: '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.',
   unavailable: '트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.',
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.',
-  // The client cannot know the host account id, so an ARN-identified host cluster (outside the
-  // deployment region) lands here too: the copy states the rule, not that this IS a member account.
+  // Reached by a real member cluster, and by an ARN-identified host cluster (outside the deployment
+  // region) only when the host account could not be resolved from /api/accounts. The copy states the
+  // rule, not that this IS a member account.
   member_cluster: '트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 같은 이름의 클러스터가 없는지 확인할 수 없으므로 트레이스로 관측된 호출을 표시하지 않습니다.',
 };
@@ -54,8 +57,27 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
 export const traceOmittedNotice = (omitted: number) =>
   `트레이스 스냅샷이 커서 전부 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다 (확인하지 못한 레코드 ${omitted}개).`;
 
-/** Account whose Route53 inventory is read: a bare-name id is the host ('self'); an ARN carries its account. */
-const dnsAccountOf = (id: string) => parseEksClusterId(id)?.accountId ?? 'self';
+/**
+ * Account whose Route53 inventory is read. Inventory keys host rows as 'self', so a bare-name id and an
+ * ARN whose account is the resolved host account both read 'self'; any other ARN reads its own account.
+ * With an unknown host account (null) an ARN keeps its numeric account: the conservative member handling,
+ * matching the trace overlay's member_cluster refusal.
+ */
+const dnsAccountOf = (id: string, hostAccountId: string | null) => {
+  const account = parseEksClusterId(id)?.accountId;
+  return !account || account === hostAccountId ? 'self' : account;
+};
+
+/** The unique host row's 12-digit account id from `GET /api/accounts`, or null when it is absent,
+ *  ambiguous (more than one host row) or malformed. Never guessed. */
+function hostAccountOf(body: unknown): string | null {
+  const accounts = (body as { accounts?: unknown } | null)?.accounts;
+  const hosts = Array.isArray(accounts)
+    ? accounts.filter((a): a is { accountId?: unknown } => !!a && typeof a === 'object' && (a as { isHost?: unknown }).isHost === true)
+    : [];
+  const id = hosts.length === 1 ? hosts[0].accountId : undefined;
+  return typeof id === 'string' && /^\d{12}$/.test(id) ? id : null;
+}
 
 async function readJson(r: Response): Promise<Record<string, unknown>> {
   // An OK response must parse; error bodies are best-effort only (message is never shown for kinds).
@@ -79,11 +101,21 @@ export default function K8sMapView({ query }: { query: string }) {
   const [rows, setRows] = useState<ClusterRows | null>(null);
   const [dbRefs, setDbRefs] = useState<DbRefsState | null>(null);
   const [trace, setTrace] = useState<TraceOverlay | null>(null);
-  const [dns, setDns] = useState<DnsRecord[]>([]);
+  const [dnsRead, setDnsRead] = useState<DnsRead>(NO_DNS);
   const [nodes, setNodes] = useState<NodesState | null>(null);
   const nodesAbort = useRef<AbortController | null>(null);
   const [hiddenNs, setHiddenNs] = useState<ReadonlySet<string>>(new Set());
   const [showSystem, setShowSystem] = useState(false);
+  // Host account id, needed only for ARN-identified clusters: undefined = lookup pending, null = not determinable.
+  const [hostAccount, setHostAccount] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    fetch('/api/accounts')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (live) setHostAccount(hostAccountOf(body)); })
+      .catch(() => { if (live) setHostAccount(null); });
+    return () => { live = false; };
+  }, []);
 
   useEffect(() => {
     if (!scopeReady) return;
@@ -127,12 +159,13 @@ export default function K8sMapView({ query }: { query: string }) {
   // listing incomplete; the informational wildcard-scope note does not. An incomplete listing also
   // cannot prove the selected name is unique, so it blocks the trace join.
   const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!e.reason);
+  // Only an ARN id needs the host account. A bare name is the host by construction, so it neither waits
+  // for the lookup nor re-reads when it settles. undefined = an ARN id whose lookup is still pending.
+  const hostForCluster = cluster && parseEksClusterId(cluster)?.accountId ? hostAccount : null;
   useEffect(() => {
     // Switching clusters (or scope) clears every per-cluster piece before anything new arrives.
     setRows(null);
     setDbRefs(null);
-    setTrace(null);
-    setDns([]);
     setNodes(null);
     setHiddenNs(new Set());
     if (!cluster) return;
@@ -171,21 +204,34 @@ export default function K8sMapView({ query }: { query: string }) {
       })
       .catch(() => { if (current()) setDbRefs({ status: 'failed' }); });
 
-    // hostAccountId is not knowable from the /api/eks listing (every row carries a numeric account),
-    // so it stays undefined: a host cluster outside the default region (ARN id) is refused as a member.
-    fetchTraceOverlay({ id: cluster, registeredNames: namesKey ? namesKey.split('\n') : [], listingIncomplete: inconclusive }, signal)
-      .then((o) => { if (current()) setTrace(o); });
-
-    fetchDnsRecords(dnsAccountOf(cluster), signal)
-      .then((r) => { if (current()) setDns(r); });
-
     return () => {
       live = false;
       ctrl.abort();
       nodesAbort.current?.abort();
       nodesAbort.current = null;
     };
-  }, [cluster, namesKey, inconclusive]);
+  }, [cluster]);
+
+  useEffect(() => {
+    setTrace(null);
+    setDnsRead(NO_DNS);
+    // An ARN id waits for the host-account lookup: reading earlier would mis-scope both reads.
+    if (!cluster || hostForCluster === undefined) return;
+    let live = true;
+    const ctrl = new AbortController();
+    const { signal } = ctrl;
+    const current = () => live && !signal.aborted;
+    fetchTraceOverlay({
+      id: cluster, registeredNames: namesKey ? namesKey.split('\n') : [], listingIncomplete: inconclusive,
+      ...(hostForCluster ? { hostAccountId: hostForCluster } : {}),
+    }, signal)
+      .then((o) => { if (current()) setTrace(o); })
+      .catch(() => { if (current()) setTrace({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 }); });
+    fetchDnsRecords(dnsAccountOf(cluster, hostForCluster), signal)
+      .then((r) => { if (current()) setDnsRead(r); })
+      .catch(() => { if (current()) setDnsRead({ records: [], truncated: false, failed: true }); });
+    return () => { live = false; ctrl.abort(); };
+  }, [cluster, namesKey, inconclusive, hostForCluster]);
 
   // Nodes only feed the detail panel: read them the first time a Service is selected (again after a failure).
   const nodesStatus = nodes?.status;
@@ -204,8 +250,8 @@ export default function K8sMapView({ query }: { query: string }) {
   const fullInput = useMemo<Omit<GraphInput, 'nodes'> | null>(() => rows && {
     services: rows.services, endpoints: rows.endpoints, pods: rows.pods, ingresses: rows.ingresses,
     dbRefs: dbRefs?.status === 'ok' ? dbRefs.refs : [], secretRefs: dbRefs?.status === 'ok' ? dbRefs.secretRefs : [],
-    trace, dns,
-  }, [rows, dbRefs, trace, dns]);
+    trace, dns: dnsRead.records,
+  }, [rows, dbRefs, trace, dnsRead]);
 
   const allNamespaces = useMemo(() => {
     if (!rows) return [];
@@ -241,6 +287,8 @@ export default function K8sMapView({ query }: { query: string }) {
   if (dbRefs?.status === 'failed') notices.push(tt('데이터 저장소 참조를 불러오지 못해 설정 기반 연결을 표시하지 않습니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.partial) notices.push(tt('일부 워크로드의 설정을 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.truncated) notices.push(tt('데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.'));
+  if (dnsRead.truncated) notices.push(tt('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.'));
+  if (dnsRead.failed) notices.push(tt('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.'));
   if (trace && !trace.available) notices.push(tt(TRACE_NOTICE[trace.reason ?? 'unavailable']));
   if (trace?.available && trace.omitted > 0) notices.push(tt(traceOmittedNotice(trace.omitted)));
   if (nodes?.status === 'failed') notices.push(tt('노드 정보를 불러오지 못했습니다.'));
