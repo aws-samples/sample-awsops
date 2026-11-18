@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildServiceGraph, serviceDetail, SYSTEM_NAMESPACES, type GraphInput } from './k8s-service-graph';
 import { nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
+import type { TraceOverlay, TraceWorkloadCall } from './k8s-trace-overlay';
 
 const pod = (over: Partial<PodRow> & Pick<PodRow, 'name' | 'namespace'>): PodRow => ({
   status: 'Running', node: 'node-a', restarts: 0, age: '1h', cpuRequest: 0, memRequest: 0, diskRequest: 0, ...over,
@@ -163,13 +164,85 @@ describe('buildServiceGraph', () => {
     expect(g.notes[0]).toContain('1');
   });
 
-  it('ignores trace and dns content for now (no dns nodes, no trace edges)', () => {
+  it('ignores dns content for now and draws no trace edges for an empty overlay', () => {
     const input = base();
     input.dns = [{ name: 'shop.example.com', target: 'k8s-x.elb.amazonaws.com' }];
-    input.trace = { available: true, omitted: 0 };
+    input.trace = { available: true, workloadCalls: [], omitted: 0 };
     const g = buildServiceGraph(input);
     expect(g.nodes.some((n) => n.kind === 'dns')).toBe(false);
     expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
+  });
+});
+
+describe('buildServiceGraph trace overlay', () => {
+  // prod/web (pod web-1) fronts workload `web`; prod/api fronts workload `api` (base fixture).
+  const withWeb = (): GraphInput => {
+    const input = base();
+    input.services.push({ name: 'web', namespace: 'prod', type: 'ClusterIP', clusterIP: '172.20.0.12', ports: '80/TCP', age: '1h' });
+    input.endpoints.push({ name: 'web', namespace: 'prod', ips: ['10.0.2.20'], targets: [{ ip: '10.0.2.20', pod: 'web-1' }] });
+    input.pods.push(pod({ name: 'web-1', namespace: 'prod', podIP: '10.0.2.20', workload: 'web' }));
+    return input;
+  };
+  const call = (from: string, to: { workload: string } | { datastoreHost: string }, spanCount?: number): TraceWorkloadCall => ({
+    fromWorkload: { namespace: 'prod', name: from },
+    to: 'workload' in to ? { workload: { namespace: 'prod', name: to.workload } } : to,
+    ...(spanCount !== undefined ? { spanCount } : {}),
+  });
+  const overlay = (workloadCalls: TraceWorkloadCall[], over: Partial<TraceOverlay> = {}): TraceOverlay =>
+    ({ available: true, workloadCalls, omitted: 0, skipped: 0, ...over });
+
+  it('maps an overlay workload call to a service → service edge with trace evidence', () => {
+    const input = withWeb();
+    input.trace = overlay([call('web', { workload: 'api' }, 7)]);
+    const g = buildServiceGraph(input);
+    expect(edge(g, 'svc:prod/web', 'svc:prod/api')?.evidence).toEqual(['trace']);
+    expect(g.notes).toHaveLength(1); // only the pre-existing unlinked-ref note
+  });
+
+  it('merges a trace call with the existing config edge for the same pair as [trace, config]', () => {
+    const input = withWeb();
+    input.trace = overlay([call('api', { datastoreHost: RDS_HOST })]);
+    const g = buildServiceGraph(input);
+    expect(edge(g, 'svc:prod/api', 'ds:rds_cluster:orders')?.evidence).toEqual(['trace', 'config']);
+    expect(g.nodes.filter((n) => n.kind === 'datastore')).toHaveLength(2);
+  });
+
+  it('adds an unresolved datastore node for a trace-only managed host', () => {
+    const input = withWeb();
+    const host = 'audit.abc.ap-northeast-2.rds.amazonaws.com';
+    input.trace = overlay([call('web', { datastoreHost: host })]);
+    const g = buildServiceGraph(input);
+    expect(g.nodes.find((n) => n.id === `ds:rds:${host}`)).toMatchObject({ kind: 'datastore', label: host, meta: { unresolved: true, hosts: [host] } });
+    expect(edge(g, 'svc:prod/web', `ds:rds:${host}`)?.evidence).toEqual(['trace']);
+  });
+
+  it('skips a trace call whose workload is fronted by two Services and counts it in notes (never guessed)', () => {
+    const input = withWeb();
+    input.services.push({ name: 'api-alt', namespace: 'prod', type: 'ClusterIP', clusterIP: '172.20.0.13', ports: '8080/TCP', age: '1h' });
+    input.endpoints.push({ name: 'api-alt', namespace: 'prod', ips: ['10.0.2.10'], targets: [{ ip: '10.0.2.10', pod: 'api-7d9-abc' }] });
+    input.trace = overlay([call('web', { workload: 'api' }), call('api', { workload: 'web' }), call('ghost', { workload: 'api' })]);
+    const g = buildServiceGraph(input);
+    expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
+    // Config evidence is workload-level and still attaches to both Services.
+    expect(edge(g, 'svc:prod/api-alt', 'ds:rds_cluster:orders')?.evidence).toEqual(['config']);
+    const note = g.notes.find((n) => n.includes('trace'));
+    expect(note).toContain('3');
+  });
+
+  it('adds the overlay-skipped count to the same note and discloses an incomplete read', () => {
+    const input = withWeb();
+    input.trace = overlay([], { skipped: 2 });
+    expect(buildServiceGraph(input).notes.find((n) => n.includes('trace'))).toContain('2');
+    input.trace = overlay([], { omitted: 9 });
+    expect(buildServiceGraph(input).notes.find((n) => n.includes('trace'))).toContain('9');
+  });
+
+  it('draws nothing and adds no note for an unavailable overlay', () => {
+    const input = withWeb();
+    input.trace = { available: false, reason: 'member_cluster', workloadCalls: [call('web', { workload: 'api' })], omitted: 0 };
+    const g = buildServiceGraph(input);
+    expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
+    expect(g.notes).toHaveLength(1);
   });
 });
 

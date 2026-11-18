@@ -7,10 +7,15 @@
 //  - Service→datastore comes from DB refs on the linked pods' workloads; refs on workloads not
 //    behind any Service are disclosed in `notes`, never attached elsewhere.
 //  - Secret refs are names shown in the detail panel; they never create nodes or edges.
+//  - Trace calls (k8s-trace-overlay.ts, already workload-level) attach only when each workload is
+//    fronted by exactly ONE Service (and a datastore host matches at most one node); anything else
+//    is skipped and counted in `notes`, never guessed.
 import type { ServiceRow, EndpointRow, IngressRow } from './eks-incluster';
 import { nodePodKeys, nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
 import type { DbRef, SecretRef } from './eks-db-refs';
 import type { DbResource } from './db-ref-resolve';
+import type { TraceOverlay } from './k8s-trace-overlay';
+import { extractManagedDbHosts } from './db-endpoint';
 
 export type Evidence = 'trace' | 'config' | 'routing';
 export type GKind = 'dns' | 'gateway' | 'service' | 'datastore';
@@ -24,9 +29,7 @@ export interface ServiceGraph {
   nodes: GNode[]; edges: GEdge[]; notes: string[];
 }
 
-// Placeholders until the trace overlay (k8s-trace-overlay.ts) and DNS (k8s-dns.ts) modules own
-// these types; the builder ignores their content for now.
-export interface TraceOverlay { available: boolean; omitted: number }
+// Placeholder until the DNS module (k8s-dns.ts) owns this type; the builder ignores its content for now.
 export interface DnsRecord { name: string; target: string }
 
 export interface GraphInput {
@@ -150,6 +153,35 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
     for (const s of fronts) addEdge(s, id, 'config');
   }
 
+  let unmappedTrace = input.trace?.available ? (input.trace.skipped ?? 0) : 0;
+  const traceOmitted = input.trace?.available ? input.trace.omitted : 0;
+  if (input.trace?.available) {
+    const soleService = (ns: string, name: string) => {
+      const fronts = svcByWorkload.get(wlKey(ns, name));
+      return fronts && fronts.length === 1 ? fronts[0] : null;
+    };
+    for (const c of input.trace.workloadCalls) {
+      const source = soleService(c.fromWorkload.namespace, c.fromWorkload.name);
+      let target: string | null = null;
+      if ('workload' in c.to) target = soleService(c.to.workload.namespace, c.to.workload.name);
+      else {
+        const host = c.to.datastoreHost.toLowerCase();
+        const matches = [...nodes.values()].filter((n) => n.kind === 'datastore' && (n.meta.hosts as string[]).includes(host));
+        const managed = extractManagedDbHosts(host);
+        if (matches.length === 1) target = matches[0].id;
+        else if (matches.length === 0 && managed.length === 1 && managed[0].host === host) {
+          target = `ds:${managed[0].kind}:${host}`;
+          nodes.set(target, {
+            id: target, kind: 'datastore', namespace: null, status: 'neutral', label: host, sub: managed[0].kind,
+            meta: { unresolved: true, kind: managed[0].kind, hosts: [host] },
+          });
+        }
+      }
+      if (!source || !target) { unmappedTrace++; continue; }
+      if (source !== target) addEdge(source, target, 'trace');
+    }
+  }
+
   const nsMap = new Map<string, string[]>();
   for (const n of nodes.values()) {
     if (n.namespace === null) continue;
@@ -161,6 +193,8 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
 
   const notes: string[] = [];
   if (unlinkedRefs) notes.push(`${unlinkedRefs} datastore reference(s) from workloads not behind a Service are not shown.`);
+  if (unmappedTrace) notes.push(`${unmappedTrace} trace-observed call(s) could not be mapped to exactly one Service or datastore and are not shown.`);
+  if (traceOmitted) notes.push(`The trace snapshot was only partially read (${traceOmitted} record(s) not inspected); trace-observed calls are not shown.`);
 
   return { namespaces, nodes: [...nodes.values()].sort(byId), edges: [...edges.values()].sort(byId), notes };
 }
