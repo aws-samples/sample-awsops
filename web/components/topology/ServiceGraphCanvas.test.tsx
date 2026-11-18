@@ -267,10 +267,13 @@ describe('ServiceGraphCanvas', () => {
   it('shows a translatable notice for builder notes, keeping the English text out of the visible copy', async () => {
     const g = graphOf(input());
     const note = '2 trace-observed call(s) could not be mapped to exactly one Service or datastore and are not shown.';
-    await renderCanvas({ graph: { ...g, notes: [note] } });
+    const other = '3 datastore reference(s) from workloads not behind a Service are not shown.';
+    await renderCanvas({ graph: { ...g, notes: [note, other] } });
     const notice = screen.getByText(/일부 연결은 근거가 부족해 표시하지 않았습니다/);
-    expect(notice.textContent).toContain('1');
+    // Never a count of note TYPES (notes mix units): the visible copy carries no number at all.
+    expect(notice.textContent).toBe('일부 연결은 근거가 부족해 표시하지 않았습니다');
     expect(notice.closest('[title]')?.getAttribute('title')).toContain(note);
+    expect(notice.closest('[title]')?.getAttribute('title')).toContain(other);
     expect(screen.queryByText(note)).toBeNull();
   });
 

@@ -42,6 +42,14 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   member_cluster: '멤버 계정 클러스터에는 트레이스로 관측된 호출을 표시하지 않습니다 (호스트 계정 전용).',
 };
 
+/**
+ * Visible notice for an available but partially read trace snapshot (page/edge caps): the overlay
+ * then yields no calls, and `omitted` is the real number of snapshot records it could not inspect.
+ * Korean source, translated through an i18n RULE (lockstep-tested).
+ */
+export const traceOmittedNotice = (omitted: number) =>
+  `트레이스 스냅샷이 커서 전부 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다 (확인하지 못한 레코드 ${omitted}개).`;
+
 /** Account whose Route53 inventory is read: a bare-name id is the host ('self'); an ARN carries its account. */
 const dnsAccountOf = (id: string) => parseEksClusterId(id)?.accountId ?? 'self';
 
@@ -229,6 +237,7 @@ export default function K8sMapView({ query }: { query: string }) {
   if (dbRefs?.status === 'ok' && dbRefs.partial) notices.push(tt('일부 워크로드의 설정을 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.truncated) notices.push(tt('데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.'));
   if (trace && !trace.available) notices.push(tt(TRACE_NOTICE[trace.reason ?? 'unavailable']));
+  if (trace?.available && trace.omitted > 0) notices.push(tt(traceOmittedNotice(trace.omitted)));
   if (nodes?.status === 'failed') notices.push(tt('노드 정보를 불러오지 못했습니다.'));
 
   return (

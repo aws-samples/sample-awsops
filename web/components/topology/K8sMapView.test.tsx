@@ -29,7 +29,7 @@ vi.mock('@/lib/k8s-trace-overlay', async (importActual) => {
   };
 });
 
-import K8sMapView, { TRACE_NOTICE } from './K8sMapView';
+import K8sMapView, { TRACE_NOTICE, traceOmittedNotice } from './K8sMapView';
 import { applyTerms } from '@/lib/i18n-terms';
 
 const MEMBER_ARN = 'arn:aws:eks:ap-northeast-2:222222222222:cluster/shared';
@@ -269,6 +269,23 @@ describe('K8sMapView service graph data', () => {
     expect(canvas.props!.input.trace).toMatchObject({ reason: 'member_cluster' });
   });
 
+  it('shows a visible, counted notice when the trace snapshot was only partially read', async () => {
+    trace.override = () => Promise.resolve({ available: true, workloadCalls: [], omitted: 1234, skipped: 0 });
+    stubFetch(HOST_ONLY);
+    view();
+    const notice = await screen.findByText(traceOmittedNotice(1234));
+    expect(notice.closest('[role="status"]')).toBeTruthy();
+    expect(notice.textContent).toContain('1234');
+  });
+
+  it('shows no partial-snapshot notice when the trace snapshot was read completely', async () => {
+    trace.override = () => Promise.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 2 });
+    stubFetch(HOST_ONLY);
+    view();
+    await waitFor(() => expect(canvas.props?.input.trace).toMatchObject({ available: true }));
+    expect(screen.queryByText(/트레이스 스냅샷이 커서/)).toBeNull();
+  });
+
   it('drops a late node read after a cluster switch', async () => {
     const late = deferred<Response>();
     const calls = stubFetch(HOST_AND_MEMBER, 200, (u) => (u === '/api/eks/shared/incluster?kind=nodes' ? late.promise as unknown as Response : undefined));
@@ -289,6 +306,18 @@ describe('K8sMapView trace notices', () => {
     expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'member_cluster', 'unavailable', 'unsupported_scope']);
     for (const ko of Object.values(TRACE_NOTICE)) {
       for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ko)).not.toBe(ko);
+    }
+  });
+
+  it('translates the partial-snapshot notice in every locale, keeping the real omitted count', () => {
+    for (const n of [1, 37, 12345]) {
+      const ko = traceOmittedNotice(n);
+      expect(ko).toContain(String(n));
+      for (const lang of ['en', 'zh', 'ja'] as const) {
+        const out = applyTerms(lang, ko);
+        expect(out).not.toBe(ko);
+        expect(out).toContain(String(n));
+      }
     }
   });
 });

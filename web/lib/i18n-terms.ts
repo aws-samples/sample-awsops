@@ -2303,6 +2303,11 @@ const RULES: { re: RegExp; en: (m: RegExpMatchArray) => string; zh: (m: RegExpMa
   { re: /^⚠ (.+) (\d+)개 초과 — 일부만 표시$/, en: (m) => `⚠ ${m[1]} exceeded ${m[2]} — showing partial`, zh: (m) => `⚠ ${m[1]} 超过 ${m[2]} 个 — 仅显示部分`, ja: (m) => `⚠ ${m[1]} が ${m[2]} 件を超過 — 一部のみ表示` },
   { re: /^매치 (\d+)개$/, en: (m) => `${m[1]} matches`, zh: (m) => `匹配 ${m[1]} 项`, ja: (m) => `マッチ ${m[1]} 件` },
   { re: /^서비스 ([\d,]+)개$/, en: (m) => `${m[1]} services`, zh: (m) => `${m[1]} 个服务`, ja: (m) => `サービス ${m[1]} 件` },
+  // K8sMapView traceOmittedNotice (lockstep-tested): partially read trace snapshot, real omitted count.
+  { re: /^트레이스 스냅샷이 커서 전부 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다 \(확인하지 못한 레코드 ([\d,]+)개\)\.$/,
+    en: (m) => `The trace snapshot is larger than could be read completely, so trace-observed calls are not shown (${m[1]} record(s) not inspected).`,
+    zh: (m) => `追踪快照过大，无法完整读取，因此不显示追踪观测到的调用（${m[1]} 条记录未检查）。`,
+    ja: (m) => `トレーススナップショットが大きく完全には読み取れないため、トレースで観測された呼び出しは表示していません（未確認のレコード ${m[1]} 件）。` },
   { re: /^관계 그래프 · (.+)$/, en: (m) => `Relationship Graph · ${m[1]}`, zh: (m) => `关系图 · ${m[1]}`, ja: (m) => `関係グラフ · ${m[1]}` },
 ];
 

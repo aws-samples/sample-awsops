@@ -352,9 +352,10 @@ export default function ServiceGraphCanvas({ graph, input, query, theme, onSelec
         <span className="inline-flex items-center gap-1 text-ink-600">{legendLine(EDGE_COLORS.config[theme], 1.6, '5 4')}{tt('점선: 설정(ConfigMap·Pod env)에서 추론')}</span>
         <span className="inline-flex items-center gap-1 text-ink-600">{legendLine(EDGE_COLORS.routing[theme], 1)}{tt('가는 선: Ingress 라우팅')}</span>
         {graph.notes.length > 0 && (
-          // Builder notes are English operator diagnostics: shown only via the tooltip.
+          // Builder notes are English operator diagnostics with their own counts (mixed units), shown
+          // only via the tooltip. No number here: the note count is not a count of connections.
           <span className="text-warning-text" title={graph.notes.join('\n')}>
-            {`${tt('일부 연결은 근거가 부족해 표시하지 않았습니다')} (${graph.notes.length})`}
+            {tt('일부 연결은 근거가 부족해 표시하지 않았습니다')}
           </span>
         )}
         {graph.namespaces.length > 0 && (
