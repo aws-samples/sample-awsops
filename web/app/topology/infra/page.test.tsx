@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-vi.mock('next/navigation', () => ({ useRouter: () => ({ replace() {} }), useSearchParams: () => new URLSearchParams() }));
+const nav = vi.hoisted(() => ({ params: new URLSearchParams() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace() {} }), useSearchParams: () => nav.params }));
 vi.mock('@/lib/account-context', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/account-context')>(), useActiveAccount: () => ['self'], accountParam: () => 'account=self' }));
 vi.mock('@/components/shell/LanguageProvider', () => ({ useI18n: () => ({ lang: 'en', tt: (s: string) => s }) }));
 vi.mock('next/dynamic', () => ({ default: () => () => null }));
 vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {} }));
 import InfraPage from './page';
+import { applyTerms } from '@/lib/i18n-terms';
 import ResourcePage from '../resource/[id]/page';
 import ServicesPage from '../services/page';
 beforeEach(() => {
@@ -14,7 +16,7 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => {});
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); nav.params = new URLSearchParams(); });
 
 it('paginates the populated default VPC and clears invalid filters after implicit search scope changes', async () => {
   const resources = Array.from({ length: 7 }, (_, i) => ({ id: `app-${i}`, kind: 'ec2', label: `app-${i}` }));
@@ -118,4 +120,14 @@ it.each(['infra','resource','services'])('recovers a typed busy response automat
   await act(async () => { render(page === 'infra' ? <InfraPage /> : page === 'resource' ? <ResourcePage params={Promise.resolve({ id: 'vpc:one' })} /> : <ServicesPage />); });
   expect((await screen.findByRole('alert')).textContent).toContain('Collection failed');
   expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('describes the K8s view as the namespaced service graph, translated in every locale', async () => {
+  const subtitle = 'DNS → Gateway → Service → DB 흐름을 네임스페이스별로 묶은 서비스 그래프. Service를 클릭하면 Pod·Node를 표시합니다.';
+  nav.params = new URLSearchParams('view=k8s');
+  vi.stubGlobal('fetch', async () => Response.json({ clusters: [] }));
+  await act(async () => { render(<InfraPage />); });
+  expect(screen.getByText(subtitle)).toBeTruthy();
+  expect(screen.queryByText(/Ingress → Service → Pod → Node/)).toBeNull();
+  for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, subtitle)).not.toBe(subtitle);
 });

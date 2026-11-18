@@ -18,6 +18,7 @@ const OPERATIONS = {
   'eks-metrics': ['EKS metrics are unavailable.', 502],
   'incluster-list': ['EKS resources are unavailable.', 502],
   'incluster-describe': ['EKS resource details are unavailable.', 502],
+  'db-refs': ['Database references are unavailable.', 502],
   k8sgpt: ['K8sGPT diagnosis is unavailable.', 502],
   'pod-transfer': ['Pod transfer metrics are unavailable.', 502],
   'node-eni': ['Node ENI details are unavailable.', 500],

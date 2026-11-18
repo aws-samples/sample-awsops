@@ -26,9 +26,21 @@ resource "aws_eks_access_entry" "web" {
 # It can read Secrets, but the BFF only proxies an allow-listed set of kinds
 # (nodes/pods/deployments/services/namespaces/events/endpoints + explorer kinds replicasets/
 # daemonsets/statefulsets/jobs/pvcs/configmaps[METADATA-ONLY]/ingresses[routing metadata only] in eks-incluster.ts isKind/KIND_PATH)
-# — Secret objects and ConfigMap values never transit; tests pin this boundary.
-# ⚠️ This allow-list is the single line of defense behind AdminView: ANY new kind added
-# to eks-incluster.ts MUST update this comment + the negative-kind test in the same PR.
+# — on these kind-addressed paths Secret objects are never requested, the configmaps list
+# returns a key count only and configmaps describe returns key names with redacted values;
+# tests pin this boundary.
+# db-refs (web/lib/eks-db-refs.ts, served by GET /api/eks/[cluster]/db-refs) is a fixed read
+# path outside that kind allow-list. With the same per-cluster credential (host AdminView,
+# member View) it reads the Pod list and the ConfigMaps those Pods reference, and scans Pod
+# env values and the referenced ConfigMap values on the server for managed-datastore
+# hostnames. Its response carries only the matched hostnames (with workload, source and
+# inventory match) and the NAMES of referenced Secrets. Everything else in the scanned
+# values is discarded on the server and never returned by that path, and the path never
+# requests a Secret object (both pinned by web/lib/eks-db-refs.test.ts and the db-refs
+# route tests); it logs no value.
+# ⚠️ This allow-list is the single line of defense behind AdminView for kind-addressed reads:
+# ANY new kind added to eks-incluster.ts, and ANY change to what the db-refs path reads or
+# returns, MUST update this comment + the negative-kind test in the same PR.
 resource "aws_eks_access_policy_association" "web_view" {
   for_each      = toset(var.onboard_eks_clusters)
   cluster_name  = each.value

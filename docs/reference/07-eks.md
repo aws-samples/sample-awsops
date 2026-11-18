@@ -213,6 +213,129 @@ separate worker/target-role principal, and
 Lambda principal. An entry for one actor does not grant access to the others.
 An explicit saved web AssumeRole override also needs authorization for its own role.
 
+## Kubernetes service graph
+
+`/topology/infra?view=k8s` (`K8sMapView`) draws one selected cluster as a
+namespace-grouped graph of Ingress gateways, Services and managed datastores
+(`web/lib/k8s-service-graph.ts`). Pods and Nodes are never graph nodes; they appear only
+in the Service detail panel, and Service-to-Pod membership comes only from ready
+Endpoints addresses. A datastore matched to inventory is one node per resource, identified by type, account, region and
+resource id (`ds:<type>:<account>:<region>:<id>`), so the same identifier in another region or account
+is a separate node; an unmatched host is one node per host (`ds:<kind>:<host>`). System namespaces (`kube-system`, `kube-public`,
+`kube-node-lease`) are hidden by default, and namespaces start collapsed when the graph
+has more than 40 Services.
+
+Edge evidence, strongest first (an edge with several sources shows the strongest):
+
+| Line | Evidence | Source |
+|---|---|---|
+| Solid | Observed in traces | Published service snapshot (`/api/topology?lens=service`) |
+| Dashed | Inferred from configuration | Managed-database hostnames in Pod env and ConfigMaps (`db-refs`) |
+| Thin | Routing | Ingress rules, Service selection and exact Route 53 host matches |
+
+### `db-refs` extraction and security posture
+
+`GET /api/eks/[cluster]/db-refs` reads the Pod list (cap 2,000) and the ConfigMaps Pods
+reference (cap 200, concurrency 8) with the cluster's read credentials, in
+`web/lib/eks-db-refs.ts`, the only server code that scans env or ConfigMap values for
+content (the explorer `incluster` list returns a ConfigMap key count and
+`incluster/describe` redacts ConfigMap values). `terraform/foundation/eks.tf` registers
+this read next to the kind allow-list.
+The cluster connection and bearer are resolved once per request and reused for every
+read (`k8sGetWith`), and the run has a 20-second overall budget; a caller-supplied budget is
+capped at 50 seconds, below the bearer's 60-second lifetime. The Pod cap is always at least 1
+(Kubernetes treats `limit=0` as unlimited), and referenced ConfigMaps are read in
+namespace/name order so a cap always keeps the same ones.
+Env values and referenced ConfigMap data are scanned by `web/lib/db-endpoint.ts` for
+RDS/Aurora, ElastiCache, OpenSearch and MSK hostnames. Only the bare lower-cased host
+is kept: userinfo, port, path and the raw value are dropped, and all values are
+discarded after scanning. URL userinfo (after `://`, up to the authority's last `@`) is
+removed before scanning; a token directly followed by `@` or assigned to a
+credential-like key (`password`, `passwd`, `pwd`, `secret`, `token`, `key`) is never
+returned; scheme prefixes such as `tcp:` are stripped only at the start of a value or
+after whitespace; and every label must be a valid DNS label (1–63 characters, 253 in total). Secrets are never requested; only the names of referenced
+Secrets are returned. Hosts are matched to inventory endpoints (`web/lib/db-ref-resolve.ts`)
+for `rds`, `rds_cluster`, `rds_proxy`, `opensearch`, `elasticache` (cache-node endpoints) and
+`elasticache_replication_group` (primary and reader endpoints) rows of the cluster's account,
+reading at most 5 pages of 500 rows per type (30 inventory reads in the worst case). Only the
+types that can carry a wanted host's kind are read, and a type is no longer paged once every
+host it could resolve is matched. A host is bound to a resource only from a type whose pages
+all carry `consistency=statement-snapshot` and one unchanged succeeded sync-ledger version
+(`status`, `finished_at`, `last_success_at`, `row_count`), the evidence rule `/topology`
+applies to its critical inventory reads. A type whose ledger is missing, running, partial,
+failed, malformed or changes between pages sets `inventoryIncomplete`; a type that still
+returns a full page at the page cap with a wanted host unresolved sets `inventoryCapped`.
+Either way that type's matches are withheld, its hosts stay unmatched host names and the page
+shows a notice. The response is an explicit allow-list: workload, `via`
+(`env` or `configmap`), host, kind, matched resource (type, id, region, account),
+secret names, and the `truncated`/`partial` and `inventoryCapped`/`inventoryIncomplete` flags. A denied Pod list or a ConfigMap that could
+not be read (denied, failed, timed out or unparsable) sets `partial`; a referenced ConfigMap that
+does not exist (404) holds no values and does not; hitting a cap sets `truncated`; exceeding the budget stops
+issuing reads, keeps the references found so far and sets both. Only `account` and `region`
+query parameters are accepted, and responses are `Cache-Control: private, no-store`.
+
+### Scope and limits
+
+- Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
+  snapshot, which is host-account only. A trace service maps to a workload only
+  through its `runs_on` relation to exactly one `namespace/deployment` of the selected
+  cluster, and the cluster name must be unique across the fleet-wide cluster listing
+  (all registered accounts and regions), not just the clusters of the selected scope: a
+  narrowed scope, including the default host-account-only scope, hides same-named
+  clusters of other accounts or regions without any truncation or error flag. When the
+  selected scope is already all accounts and all regions, its listing is reused;
+  otherwise the page reads the fleet listing separately (the cluster selector still
+  follows the selected scope). A truncated scope or fleet listing, one with a per-target
+  read failure, or a failed or unparseable fleet listing cannot prove that uniqueness, so
+  the join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
+  API returns at most 200 entities per page with relations between same-page entities
+  only; the overlay reads up to 5 pages and draws trace edges only when it can account
+  for every entity and relation, otherwise it draws none and discloses the count of
+  records it did not inspect. A partial publication also yields no trace edges, with a
+  notice (`partial_snapshot`): any gap other than the two baseline gaps every healthy
+  publication carries (`nfm:not_collected`, `kubernetes:live_ownership_unavailable`), or
+  any source that is stale, retained or capped, has no generation, or has a status other
+  than `ok`/`empty`; a page without `gaps` or `sources` counts as partial. The top-level
+  `status` is not used, because a healthy publication always reports `partial`. This
+  mirrors `partialInputs` in `web/lib/service-topology/read-published.ts`, since a capped
+  source may have dropped a second `runs_on` relation. Calls that cannot be mapped to one workload or managed
+  datastore are counted, not guessed, and add no node.
+- Member clusters (full EKS ARN ids) read through the member role show Kubernetes
+  structure and `db-refs` links but no trace edges. A host cluster outside the
+  deployment region also has an ARN id, and the cluster listing reports a numeric
+  account for every row, so the page resolves the host account from the single
+  `isHost` row of `GET /api/accounts`: an ARN whose account equals it is a host cluster
+  for both trace edges and Route 53 records. If that lookup fails or does not return
+  exactly one 12-digit host account, every ARN id is treated as a member: no trace
+  edges, with the member-cluster notice, and Route 53 is read for the ARN's account.
+- Route 53 records are read from the synced inventory of the cluster's account (`self`
+  for the host) and matched to gateway hosts exactly; the record name is only the DNS
+  node's label, so a wildcard record (`\052` decoded to a leading `*.`) links like any
+  other. The read stops after 5 pages of 500 rows or 2,000 alias/CNAME records. A read
+  that stops at a cap keeps what it read and a failed read yields none; both show a
+  notice. Records use the same inventory evidence gate as datastore resolution
+  (`web/lib/inventory-ledger.ts`, the checks of `fetchType` in `app/topology/page.tsx`):
+  every page must carry `consistency: statement-snapshot` and one succeeded ledger
+  version (valid `finished_at`/`last_success_at`, non-negative integer `row_count`).
+  A missing, running, partial, failed or malformed ledger, or a ledger that changes
+  between pages, yields no records and an "inventory sync completion could not be
+  confirmed" notice instead of DNS links.
+- ElastiCache hosts resolve to cache-node endpoints (`elasticache`) or to
+  replication-group primary and reader endpoints (`elasticache_replication_group`). MSK
+  hosts and ElastiCache configuration endpoints stay unresolved host names, because
+  their inventory rows store no endpoint.
+- Layout (`web/lib/k8s-graph-layout.ts`) uses dagre (MIT, the dependency behind
+  `web/lib/flow-layout.ts`) only for the call order inside each namespace box, on plain
+  non-compound graphs, one connected component of intra-namespace calls at a time.
+  dagre time grows quickly with dense meshes, so it is budgeted: a component with more
+  than 150 edges never gets dagre, and all expanded namespaces share a 600-edge budget
+  spent on components in ascending edge count (ties: namespace name, then smallest Service
+  id). A small call graph therefore keeps its call direction whichever other namespaces
+  are expanded. Services without calls inside their namespace, and components left out of
+  the budget, are packed into a near-square grid in their box. Columns, barycenter ordering
+  and box stacking are computed by the module itself. No edge route is precomputed: the
+  canvas draws each edge as a smoothstep path between node handles.
+
 ## Key files
 
 | File | Responsibility |
@@ -229,6 +352,9 @@ An explicit saved web AssumeRole override also needs authorization for its own r
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
+| `web/lib/eks-db-refs.ts`, `web/lib/db-endpoint.ts`, `web/lib/db-ref-resolve.ts` | Server-side Pod env/ConfigMap host extraction and inventory matching for `db-refs` |
+| `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, namespace-boxed column layout and Route 53 matching |
+| `web/components/topology/K8sMapView.tsx`, `ServiceGraphCanvas.tsx`, `ServiceDetailPanel.tsx` | Graph page, canvas and Service detail panel |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
 See the [API reference](../api-reference.md#eks-10) for response status and metadata

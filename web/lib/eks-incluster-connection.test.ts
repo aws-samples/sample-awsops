@@ -138,6 +138,24 @@ describe('EKS scoped connections and token identity', () => {
     expect(classifyEksReadError(error)).toBe('unreachable');
   });
 
+  it('k8sGetWith reuses a resolved connection and bearer without any scope or credential resolution', async () => {
+    const { k8sGetWith } = await import('./eks-incluster');
+    const caPem = Buffer.from('given-ca');
+    const body = await k8sGetWith({ endpoint: 'https://given.eks.amazonaws.com:8443', caPem }, 'given-bearer', '/api/v1/pods?limit=5');
+    expect(body).toBe('{"items":[]}');
+    const options = request.mock.calls[0][0];
+    expect(options).toMatchObject({
+      hostname: 'given.eks.amazonaws.com', port: '8443', path: '/api/v1/pods?limit=5', method: 'GET',
+      headers: { Authorization: 'Bearer given-bearer', Accept: 'application/json' },
+    });
+    expect(options.agent.options).toEqual({ ca: caPem });
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(getClusterAuth).not.toHaveBeenCalled();
+    expect(credsForAccount).not.toHaveBeenCalled();
+    expect(hostSend).not.toHaveBeenCalled();
+    expect(memberSend).not.toHaveBeenCalled();
+  });
+
   it('discovers target endpoint and CA with the member role and raw cluster name', async () => {
     const { clusterConn } = await import('./eks-incluster');
     expect(await clusterConn(MEMBER_ID)).toEqual({
