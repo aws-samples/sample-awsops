@@ -8,7 +8,7 @@
 //    behind any Service are disclosed in `notes`, never attached elsewhere.
 //  - Secret refs are names shown in the detail panel; they never create nodes or edges.
 import type { ServiceRow, EndpointRow, IngressRow } from './eks-incluster';
-import { nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
+import { nodePodKeys, nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
 import type { DbRef, SecretRef } from './eks-db-refs';
 import type { DbResource } from './db-ref-resolve';
 
@@ -175,7 +175,8 @@ export function serviceDetail(graph: ServiceGraph, input: GraphInput, serviceId:
 
   const pods = servicePods(input).get(serviceId) ?? [];
   const placed = new Set(pods.map((p) => p.node).filter(Boolean));
-  const nodes = input.nodes.filter((n) => placed.has(n.name)).sort((a, b) => cmp(a.name, b.name))
+  // nodePodKeys: by name, plus instance id for EC2-view (aws-api) rows named by private DNS.
+  const nodes = input.nodes.filter((n) => nodePodKeys(n).some((k) => placed.has(k))).sort((a, b) => cmp(a.name, b.name))
     .map((n) => ({ ...n, readyText: nodeReadyText(n) }));
 
   const callers: GNode[] = []; const callees: GNode[] = []; const datastores: GNode[] = [];

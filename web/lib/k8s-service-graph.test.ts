@@ -195,6 +195,18 @@ describe('serviceDetail', () => {
     expect(d.nodes[0].readyText).toBe('EC2 running · Ready unknown');
   });
 
+  it('matches aws-api node rows to pods that reference the node by instance id', () => {
+    const input = base();
+    input.pods[0] = { ...input.pods[0], node: 'i-0abc' };
+    input.nodes = [
+      node({ name: 'ip-10-0-1-1.ec2.internal', status: 'EC2 running', source: 'aws-api', instanceId: 'i-0abc' }),
+      node({ name: 'ip-10-0-1-2.ec2.internal', status: 'EC2 running', source: 'aws-api', instanceId: 'i-0def' }),
+    ];
+    const d = serviceDetail(buildServiceGraph(input), input, 'svc:prod/api');
+    expect(d.nodes.map((n) => n.name)).toEqual(['ip-10-0-1-1.ec2.internal']);
+    expect(d.nodes[0].readyText).toBe('EC2 running · Ready unknown');
+  });
+
   it('returns an empty detail for an unknown or non-service id', () => {
     const input = base();
     const g = buildServiceGraph(input);
