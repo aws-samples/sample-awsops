@@ -122,7 +122,7 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
       }
       const capturedAt: number | null = podReadAt;
       if (includeBindings && capturedAt === null) bindingGaps.add('binding_clock_unknown');
-      const validBindingRows = !includeBindings || pods.every(row => optionalStrings(row as unknown as Record<string, unknown>, ['uid']) &&
+      const validBindingRows = !includeBindings || pods.every(row => nonempty(row.uid) &&
         (row.hostNetwork == null || typeof row.hostNetwork === 'boolean') &&
         (row.podIPs == null || (Array.isArray(row.podIPs) && row.podIPs.every(nonempty))));
       if (!validBindingRows) bindingGaps.add('binding_rows_invalid');

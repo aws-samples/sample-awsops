@@ -103,12 +103,19 @@ WITH snap AS (
   WHEN 'entry' THEN 'flow'=ANY(e.layers) WHEN 'placement' THEN 'infra'=ANY(e.layers) OR 'inventory'=ANY(e.layers)
   WHEN 'evidence' THEN true ELSE false END
 ), eligible AS MATERIALIZED (
- SELECT n.* FROM nodes n WHERE (p_search='' OR strpos(lower(n.label),lower(p_search))>0 OR n.id=p_search)
+ SELECT n.* FROM nodes n WHERE (n.id=p_focus OR p_search='' OR strpos(lower(n.label),lower(p_search))>0 OR n.id=p_search)
  AND (p_focus='' OR n.id=p_focus OR EXISTS (SELECT 1 FROM links r
  WHERE (r.source=p_focus AND r.target=n.id) OR (r.target=p_focus AND r.source=n.id)))
+), focus_row AS MATERIALIZED (
+ SELECT * FROM eligible WHERE p_focus<>'' AND id=p_focus
+), page_bounds AS (
+ SELECT (200-count(*))::integer AS slots FROM focus_row
+), neighbors AS MATERIALIZED (
+ SELECT * FROM eligible WHERE p_focus='' OR id<>p_focus
+ ORDER BY (kind='service') DESC,errors DESC NULLS LAST,label,id
+ LIMIT (SELECT slots FROM page_bounds) OFFSET greatest(0,least(p_offset,20000))
 ), visible AS MATERIALIZED (
- SELECT * FROM eligible ORDER BY (id=p_focus) DESC,(kind='service') DESC,errors DESC NULLS LAST,label,id
- LIMIT 200 OFFSET greatest(0,least(p_offset,20000))
+ SELECT * FROM focus_row UNION ALL SELECT * FROM neighbors
 ), all_edges AS MATERIALIZED (
  SELECT r.* FROM links r JOIN eligible a ON r.source=a.id JOIN eligible b ON r.target=b.id
 ), visible_edges AS (
@@ -138,7 +145,7 @@ SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.r
  'confidence',confidence,'spanCount',span_count,'metricCount',metric_count,'evidenceRefs',evidence_refs[1:20],'omittedEvidence',greatest(0,cardinality(evidence_refs)-20)) ORDER BY id) FROM visible_edges),'[]'::jsonb),
  'omitted',jsonb_build_object('entities',(SELECT count(*) FROM eligible)-(SELECT count(*) FROM visible),
  'relations',(SELECT count(*) FROM all_edges)-(SELECT count(*) FROM visible_edges)),
- 'nextCursor',CASE WHEN (SELECT count(*) FROM eligible)>p_offset+200 THEN p_offset+200 END,'gaps',s.read_gaps)
+ 'nextCursor',CASE WHEN (SELECT count(*) FROM eligible)>(p_offset+200) THEN p_offset+(SELECT slots FROM page_bounds) END,'gaps',s.read_gaps)
 FROM evidence s;
 $$;
 REVOKE ALL ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) FROM PUBLIC, awsops_sql_reader;

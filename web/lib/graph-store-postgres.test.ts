@@ -175,6 +175,34 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(result.reasons).not.toContain('snapshot_limit');
   });
 
+  it('keeps the focus and its edges on every page without skipping neighbors', async () => {
+    const id='20202020-1234-4123-8888-444444444444';
+    await pool.query(`INSERT INTO service_topology_snapshots(snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest)
+      VALUES ($1,'self:all-regions:include-global',1,now(),'{}','{}','fixture')`,[id]);
+    await pool.query(`INSERT INTO service_topology_entities(snapshot_id,id,kind,label,layers,claim,evidence_refs)
+      SELECT $1,n::text,'service',n::text,'{trace}',false,'{}' FROM generate_series(0,203)n`,[id]);
+    await pool.query(`INSERT INTO service_topology_relations(snapshot_id,id,source,target,kind,layer,confidence,evidence_refs)
+      SELECT $1,n::text,'0',n::text,'calls','trace','observed','{}' FROM generate_series(1,203)n`,[id]);
+    const read=async(offset:number)=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','','0',$2,15) doc",[id,offset])).rows[0].doc;
+    const first=await read(0),second=await read(first.nextCursor);
+    expect(first.entities).toHaveLength(200);
+    expect(first.nextCursor).toBe(199);
+    expect(second.entities.map((n:{id:string})=>n.id)).toContain('0');
+    expect(second.relations).toHaveLength(4);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.relations,...second.relations].map(r=>r.target)).size).toBe(203);
+  });
+
+  it('discloses a single oversize trace pair without returning its payload', async () => {
+    await trace();
+    await pool.query(`UPDATE topology_edges SET rel='queries',meta=jsonb_build_object(
+      'instance_observations',jsonb_build_array(jsonb_build_object('db_host',repeat('x',8200)))) WHERE class='trace'`);
+    const result=await rebuildServiceTopology(pool);
+    expect(result.partialInputs).toBe(true);
+    const sources=(await pool.query("SELECT (sql_reader.service_topology_read($1,'service','','',0,15))->'sources' AS src",[result.snapshotId])).rows[0].src;
+    expect(sources.find((m:{sourceId:string})=>m.sourceId==='trace')).toMatchObject({capped:true,reasons:expect.arrayContaining(['pair_size_limit'])});
+  });
+
   it('publishes from actual Aurora-shaped rows, reuses an unchanged head and exposes the same bounded body to both reader roles', async () => {
     await trace();
     await build('infra');

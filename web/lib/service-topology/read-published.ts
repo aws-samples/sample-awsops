@@ -122,18 +122,27 @@ export async function rebuildServiceTopology(pool: Pool) {
       const stored: GraphLink[] = links.rows.slice(0, 8000).map((e) => ({ ...e, layer }));
       if (layer === 'trace') {
         const pairs =
-          await c.query(`SELECT e.source,e.target,p.value->>'account' AS account,p.value->>'region' AS region,
-          p.value->>'instance_ref' AS instance_ref,p.value->>'database_ref' AS database_ref,
-          p.value->>'instance_id' AS instance_id,p.value->>'db_host' AS db_host,p.value->>'provenance' AS provenance,
-          p.value->'observed_at_ms' AS observed_at_ms FROM topology_edges e
-          CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(e.meta->'instance_observations')='array'
-            THEN e.meta->'instance_observations' ELSE '[]'::jsonb END) WITH ORDINALITY AS p(value,ord)
-          WHERE e.account_id='self' AND e.class='trace' AND e.rel='queries' AND octet_length(p.value::text)<=8192
-          ORDER BY e.source,e.target,p.ord LIMIT 1001`);
+          await c.query(`WITH observed AS MATERIALIZED (
+            SELECT e.source,e.target,p.ord,CASE WHEN octet_length(p.value::text)<=8192 THEN p.value END AS pair
+            FROM topology_edges e CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(e.meta->'instance_observations')='array'
+                THEN e.meta->'instance_observations' ELSE '[]'::jsonb END) WITH ORDINALITY AS p(value,ord)
+            WHERE e.account_id='self' AND e.class='trace' AND e.rel='queries'
+            ORDER BY e.source,e.target,p.ord LIMIT 1001
+          ) SELECT source,target,pair IS NULL AS oversized,pair->>'account' AS account,pair->>'region' AS region,
+            pair->>'instance_ref' AS instance_ref,pair->>'database_ref' AS database_ref,
+            pair->>'instance_id' AS instance_id,pair->>'db_host' AS db_host,pair->>'provenance' AS provenance,
+            pair->'observed_at_ms' AS observed_at_ms FROM observed ORDER BY source,target,ord`);
+        if (pairs.rows.some(p => p.oversized)) {
+          const manifest=sources[sources.length-1];
+          manifest.capped=true;
+          manifest.reasons?.push('pair_size_limit');
+        }
         const byPair = new Map(
           stored.filter((e) => e.rel === 'queries').map((e) => [JSON.stringify([e.source, e.target]), e]),
         );
         for (const p of pairs.rows.slice(0, 1000)) {
+          if (p.oversized) continue;
           const edge = byPair.get(JSON.stringify([p.source, p.target]));
           if (edge) (edge.pairs ??= []).push(p as NonNullable<GraphLink['pairs']>[number]);
         }
