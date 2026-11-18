@@ -1,6 +1,8 @@
 // Server-side Pod env / ConfigMap reference extractor (read-only).
-// SECURITY: this module is the ONLY server-side reader of env / ConfigMap VALUES.
-// Values never leave it: results carry only hosts returned by extractManagedDbHosts.
+// SECURITY: this module is the only code that SCANS Pod env / ConfigMap VALUES for content (the
+// explorer list/describe paths in eks-incluster.ts return a ConfigMap key count / redacted values).
+// Scanned values never leave it: results carry only hosts returned by extractManagedDbHosts.
+// Read-boundary register: terraform/foundation/eks.tf (update it when this module reads or returns more).
 // Secret VALUES are never requested (no /secrets path); only Secret NAMES are kept.
 // Errors are rethrown/absorbed as fixed strings — never include bodies or values.
 import { clusterConn, eksToken, k8sGetWith, podWorkload } from './eks-incluster';
@@ -17,6 +19,11 @@ const CM_CONCURRENCY = 8;
 /** Overall wall-clock budget for one run. Past it no new GET is issued (in-flight reads are
  *  still bounded by the per-request timeout); the result is then partial + truncated. */
 const DEFAULT_DEADLINE_MS = 20_000;
+/** Ceiling for the run budget. The bearer from eksToken() is presigned for 60 s (eks-incluster.ts,
+ *  see the k8sGetWith contract) and is minted after the budget clock starts; a GET can be issued
+ *  until the deadline and then runs for at most the 4 s per-request timeout. 50 s keeps every GET
+ *  inside the bearer lifetime. */
+const MAX_DEADLINE_MS = 50_000;
 
 interface EnvVar {
   name?: string;
@@ -38,7 +45,10 @@ export async function listDbRefs(
   caps: { pods: number; configMaps: number } = DEFAULT_CAPS,
   { deadlineMs = DEFAULT_DEADLINE_MS, now = Date.now }: { deadlineMs?: number; now?: () => number } = {},
 ): Promise<DbRefsResult> {
-  const deadline = now() + deadlineMs;
+  const budgetMs = Number.isFinite(deadlineMs) ? Math.min(Math.max(deadlineMs, 0), MAX_DEADLINE_MS) : DEFAULT_DEADLINE_MS;
+  const deadline = now() + budgetMs;
+  // Kubernetes treats limit=0 as "no limit", so the pod cap is always a positive integer.
+  const podCap = Number.isFinite(caps.pods) ? Math.max(1, Math.floor(caps.pods)) : DEFAULT_CAPS.pods;
   const refs: DbRef[] = [];
   const secretRefs: SecretRef[] = [];
   const seenRefs = new Set<string>();
@@ -63,7 +73,7 @@ export async function listDbRefs(
 
   let podBody: string;
   try {
-    podBody = await get(`/api/v1/pods?limit=${caps.pods}`);
+    podBody = await get(`/api/v1/pods?limit=${podCap}`);
   } catch (err) {
     // Read role denied pod list: disclose as partial instead of failing. Other errors are value-free; rethrow.
     if (err instanceof EksKubernetesHttpError && err.statusCode === 403) {
@@ -74,12 +84,12 @@ export async function listDbRefs(
   const podList = parseJson(podBody) as
     { items?: PodItem[]; metadata?: { continue?: string } } | null;
   const items = Array.isArray(podList?.items) ? podList.items : [];
-  if (podList?.metadata?.continue || items.length > caps.pods) truncated = true;
+  if (podList?.metadata?.continue || items.length > podCap) truncated = true;
 
   // (ns/cm) -> consumers; keys === null means envFrom (all keys), else specific keys.
   const cmNeeds = new Map<string, { ns: string; cm: string; users: { workload: WorkloadRef; keys: Set<string> | null }[] }>();
 
-  for (const pod of items.slice(0, caps.pods)) {
+  for (const pod of items.slice(0, podCap)) {
     const ns = pod.metadata?.namespace ?? '';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const name = podWorkload(pod as any);
@@ -115,7 +125,10 @@ export async function listDbRefs(
     }
   }
 
-  let queue = [...cmNeeds.values()];
+  // Namespace, then name, by code unit (not locale): the cap and the deadline always keep the same
+  // ConfigMaps for the same cluster state.
+  const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  let queue = [...cmNeeds.values()].sort((a, b) => byCodeUnit(a.ns, b.ns) || byCodeUnit(a.cm, b.cm));
   if (queue.length > caps.configMaps) { truncated = true; queue = queue.slice(0, caps.configMaps); }
 
   let outOfTime = false;
@@ -133,8 +146,11 @@ export async function listDbRefs(
           addRef(u.workload, 'configmap', v);
         }
       }
-    } catch {
-      partial = true; // never surface the error (403/404/timeout/parse) detail
+    } catch (err) {
+      // A referenced ConfigMap that does not exist (404) holds no values, so nothing was missed.
+      // Every other failure (401/403, 5xx, timeout, unparsable body) may hide values: partial.
+      // The error detail is never surfaced either way.
+      if (!(err instanceof EksKubernetesHttpError && err.statusCode === 404)) partial = true;
     }
   };
   for (let i = 0; i < queue.length && !outOfTime; i += CM_CONCURRENCY) {

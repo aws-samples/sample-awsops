@@ -4,7 +4,7 @@
 // Data flow per selected cluster (all reads abort/stale-safe: switching clusters aborts in-flight
 // requests, clears state, and every late result is dropped by the `live` flag / `signal.aborted`):
 //  - in-cluster kinds ingresses/services/pods/endpoints (failed kinds are disclosed, never hidden)
-//  - db-refs (config-inferred datastores; failure/partial/truncated is disclosed, the graph still renders)
+//  - db-refs (config-inferred datastores; failure/partial/truncated and a capped or unconfirmed inventory match are disclosed, the graph still renders)
 //  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters and an
 //    incomplete scope listing itself). An ARN id is a host cluster only when its account equals the
 //    unique isHost account of /api/accounts; if that lookup fails, every ARN id is a member.
@@ -32,7 +32,7 @@ const NO_DNS: DnsRead = { records: [], truncated: false, failed: false };
 interface ClusterRows { ingresses: IngressRow[]; services: ServiceRow[]; pods: PodRow[]; endpoints: EndpointRow[]; failedKinds: string[] }
 type ResolvedRef = DbRef & { resource: DbResource | null };
 type DbRefsState =
-  | { status: 'ok'; refs: ResolvedRef[]; secretRefs: SecretRef[]; truncated: boolean; partial: boolean }
+  | { status: 'ok'; refs: ResolvedRef[]; secretRefs: SecretRef[]; truncated: boolean; partial: boolean; inventoryCapped: boolean; inventoryIncomplete: boolean }
   | { status: 'failed' };
 type NodesState = { status: 'loading' | 'failed'; rows: NodeRow[] } | { status: 'ok'; rows: NodeRow[] };
 
@@ -200,7 +200,8 @@ export default function K8sMapView({ query }: { query: string }) {
         if (!current()) return;
         if (!Array.isArray(d.refs) || !Array.isArray(d.secretRefs)) throw new Error('malformed');
         setDbRefs({ status: 'ok', refs: d.refs as ResolvedRef[],
-          secretRefs: d.secretRefs as SecretRef[], truncated: d.truncated === true, partial: d.partial === true });
+          secretRefs: d.secretRefs as SecretRef[], truncated: d.truncated === true, partial: d.partial === true,
+          inventoryCapped: d.inventoryCapped === true, inventoryIncomplete: d.inventoryIncomplete === true });
       })
       .catch(() => { if (current()) setDbRefs({ status: 'failed' }); });
 
@@ -287,6 +288,8 @@ export default function K8sMapView({ query }: { query: string }) {
   if (dbRefs?.status === 'failed') notices.push(tt('데이터 저장소 참조를 불러오지 못해 설정 기반 연결을 표시하지 않습니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.partial) notices.push(tt('일부 워크로드의 설정을 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.'));
   if (dbRefs?.status === 'ok' && dbRefs.truncated) notices.push(tt('데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.'));
+  if (dbRefs?.status === 'ok' && dbRefs.inventoryIncomplete) notices.push(tt('인벤토리 동기화 완료를 확인할 수 없어 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.'));
+  if (dbRefs?.status === 'ok' && dbRefs.inventoryCapped) notices.push(tt('인벤토리 조회가 상한에 도달해 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.'));
   if (dnsRead.truncated) notices.push(tt('Route 53 레코드 조회가 상한에 도달해 DNS 연결이 일부만 표시될 수 있습니다.'));
   if (dnsRead.failed) notices.push(tt('Route 53 레코드를 불러오지 못해 DNS 연결을 표시하지 않습니다.'));
   if (trace && !trace.available) notices.push(tt(TRACE_NOTICE[trace.reason ?? 'unavailable']));

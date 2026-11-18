@@ -140,4 +140,21 @@ describe('fetchDnsRecords', () => {
     const out = await fetchDnsRecords('self');
     expect(out.records).toEqual([]);
   });
+
+  it('strips a dualstack. alias prefix only when the remainder is an ELB host', async () => {
+    const ALB = 'web-123.ap-northeast-2.elb.amazonaws.com';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(page([
+      row({ name: 'alb.example.com.', type: 'A', alias_target: { DNSName: `dualstack.${ALB}.` } }),
+      row({ name: 'nlb.example.com.', type: 'A', alias_target: { DNSName: `dualstack.${ELB}.` } }),
+      row({ name: 'other.example.com.', type: 'A', alias_target: { DNSName: 'dualstack.origin.example.net.' } }),
+      row({ name: 'cf.example.com.', type: 'A', alias_target: { DNSName: 'dualstack.d111.cloudfront.net.' } }),
+    ])));
+    const out = await fetchDnsRecords('self');
+    expect(out.records).toEqual([
+      { name: 'alb.example.com', target: ALB },
+      { name: 'nlb.example.com', target: ELB },
+      { name: 'other.example.com', target: 'dualstack.origin.example.net' },
+      { name: 'cf.example.com', target: 'dualstack.d111.cloudfront.net' },
+    ]);
+  });
 });

@@ -237,9 +237,15 @@ Edge evidence, strongest first (an edge with several sources shows the strongest
 
 `GET /api/eks/[cluster]/db-refs` reads the Pod list (cap 2,000) and the ConfigMaps Pods
 reference (cap 200, concurrency 8) with the cluster's read credentials, in
-`web/lib/eks-db-refs.ts`, the only server code that reads env or ConfigMap values.
+`web/lib/eks-db-refs.ts`, the only server code that scans env or ConfigMap values for
+content (the explorer `incluster` list returns a ConfigMap key count and
+`incluster/describe` redacts ConfigMap values). `terraform/foundation/eks.tf` registers
+this read next to the kind allow-list.
 The cluster connection and bearer are resolved once per request and reused for every
-read (`k8sGetWith`), and the run has a 20-second overall budget.
+read (`k8sGetWith`), and the run has a 20-second overall budget; a caller-supplied budget is
+capped at 50 seconds, below the bearer's 60-second lifetime. The Pod cap is always at least 1
+(Kubernetes treats `limit=0` as unlimited), and referenced ConfigMaps are read in
+namespace/name order so a cap always keeps the same ones.
 Env values and referenced ConfigMap data are scanned by `web/lib/db-endpoint.ts` for
 RDS/Aurora, ElastiCache, OpenSearch and MSK hostnames. Only the bare lower-cased host
 is kept: userinfo, port, path and the raw value are dropped, and all values are
@@ -251,10 +257,20 @@ after whitespace; and every label must be a valid DNS label (1–63 characters, 
 Secrets are returned. Hosts are matched to inventory endpoints (`web/lib/db-ref-resolve.ts`)
 for `rds`, `rds_cluster`, `rds_proxy`, `opensearch`, `elasticache` (cache-node endpoints) and
 `elasticache_replication_group` (primary and reader endpoints) rows of the cluster's account,
-reading at most 5 pages of 500 rows per type (30 inventory reads in the worst case). The response is an explicit allow-list: workload, `via`
+reading at most 5 pages of 500 rows per type (30 inventory reads in the worst case). Only the
+types that can carry a wanted host's kind are read, and a type is no longer paged once every
+host it could resolve is matched. A host is bound to a resource only from a type whose pages
+all carry `consistency=statement-snapshot` and one unchanged succeeded sync-ledger version
+(`status`, `finished_at`, `last_success_at`, `row_count`), the evidence rule `/topology`
+applies to its critical inventory reads. A type whose ledger is missing, running, partial,
+failed, malformed or changes between pages sets `inventoryIncomplete`; a type that still
+returns a full page at the page cap with a wanted host unresolved sets `inventoryCapped`.
+Either way that type's matches are withheld, its hosts stay unmatched host names and the page
+shows a notice. The response is an explicit allow-list: workload, `via`
 (`env` or `configmap`), host, kind, matched resource (type, id, region, account),
-secret names, and `truncated`/`partial` flags. A denied Pod list or an unreadable
-ConfigMap sets `partial`; hitting a cap sets `truncated`; exceeding the budget stops
+secret names, and the `truncated`/`partial` and `inventoryCapped`/`inventoryIncomplete` flags. A denied Pod list or a ConfigMap that could
+not be read (denied, failed, timed out or unparsable) sets `partial`; a referenced ConfigMap that
+does not exist (404) holds no values and does not; hitting a cap sets `truncated`; exceeding the budget stops
 issuing reads, keeps the references found so far and sets both. Only `account` and `region`
 query parameters are accepted, and responses are `Cache-Control: private, no-store`.
 

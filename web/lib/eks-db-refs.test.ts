@@ -159,4 +159,64 @@ describe('listDbRefs', () => {
     get.mockRejectedValueOnce(new EksKubernetesHttpError(500));
     await expect(listDbRefs('c1')).rejects.toBeInstanceOf(EksKubernetesHttpError);
   });
+
+  it('does not mark partial for a referenced ConfigMap that does not exist (404)', async () => {
+    get.mockResolvedValueOnce(list([
+      pod('a-1', 'n', [{ env: [{ name: 'D', value: RDS }], envFrom: [{ configMapRef: { name: 'gone' } }] }]),
+    ]));
+    get.mockRejectedValueOnce(new EksKubernetesHttpError(404));
+    expect(await listDbRefs('c1')).toEqual({
+      refs: [{ workload: W('n', 'a'), via: 'env', host: RDS, kind: 'rds' }], secretRefs: [], truncated: false, partial: false,
+    });
+  });
+
+  it.each([401, 500, 503])('marks partial on ConfigMap HTTP %s', async (status) => {
+    get.mockResolvedValueOnce(list([pod('a-1', 'n', [{ envFrom: [{ configMapRef: { name: 'cfg' } }] }])]));
+    get.mockRejectedValueOnce(new EksKubernetesHttpError(status));
+    expect((await listDbRefs('c1')).partial).toBe(true);
+  });
+
+  it('marks partial on a ConfigMap timeout or unparsable body', async () => {
+    get.mockResolvedValueOnce(list([pod('a-1', 'n', [{ envFrom: [{ configMapRef: { name: 'cfg' } }] }])]));
+    get.mockRejectedValueOnce(Object.assign(new Error('Kubernetes API request timed out.'), { name: 'TimeoutError', code: 'ETIMEDOUT' }));
+    expect((await listDbRefs('c1')).partial).toBe(true);
+    get.mockResolvedValueOnce(list([pod('a-1', 'n', [{ envFrom: [{ configMapRef: { name: 'cfg' } }] }])]));
+    get.mockResolvedValueOnce('{not json');
+    expect((await listDbRefs('c1')).partial).toBe(true);
+  });
+
+  it.each([[10 * 60_000, 7000], [Number.NaN, 3000]])('clamps a run budget of %s ms below the 60 s bearer lifetime', async (deadlineMs, step) => {
+    let t = 0;
+    const names = Array.from({ length: 24 }, (_, i) => `cm${String(i).padStart(2, '0')}`);
+    get.mockResolvedValueOnce(list([pod('a-1', 'n', [{ envFrom: names.map((name) => ({ configMapRef: { name } })) }])]));
+    get.mockImplementation(async () => { await Promise.resolve(); t += step; return JSON.stringify({ data: {} }); });
+    const r = await listDbRefs('c1', undefined, { deadlineMs, now: () => t });
+    expect(get).toHaveBeenCalledTimes(1 + 8); // 8 x 7 s = 56 s > the 50 s ceiling; NaN falls back to 20 s (8 x 3 s = 24 s)
+    expect(r).toMatchObject({ partial: true, truncated: true });
+  });
+
+  it('never sends limit=0 (unlimited in Kubernetes): the pod cap is a positive integer', async () => {
+    get.mockResolvedValueOnce(list([pod('a-1', 'n', [{ env: [{ name: 'D', value: RDS }] }])]));
+    const r = await listDbRefs('c1', { pods: 0, configMaps: 10 });
+    expect(get.mock.calls[0][2]).toBe('/api/v1/pods?limit=1');
+    expect(r.refs).toEqual([{ workload: W('n', 'a'), via: 'env', host: RDS, kind: 'rds' }]);
+    expect(r.truncated).toBe(false);
+    get.mockResolvedValueOnce(list([]));
+    await listDbRefs('c1', { pods: 2.7, configMaps: 10 });
+    expect(get.mock.calls[1][2]).toBe('/api/v1/pods?limit=2');
+  });
+
+  it('applies the ConfigMap cap in namespace/name order, not pod arrival order', async () => {
+    get.mockResolvedValueOnce(list([
+      pod('a-1', 'n', [{ envFrom: [{ configMapRef: { name: 'zeta' } }] }]),
+      pod('b-1', 'n', [{ envFrom: [{ configMapRef: { name: 'alpha' } }] }]),
+      pod('c-1', 'm', [{ envFrom: [{ configMapRef: { name: 'omega' } }] }]),
+    ]));
+    get.mockResolvedValue(JSON.stringify({ data: {} }));
+    const r = await listDbRefs('c1', { pods: 10, configMaps: 2 });
+    expect(get.mock.calls.slice(1).map((c) => c[2])).toEqual([
+      '/api/v1/namespaces/m/configmaps/omega', '/api/v1/namespaces/n/configmaps/alpha',
+    ]);
+    expect(r.truncated).toBe(true);
+  });
 });

@@ -23,7 +23,7 @@ beforeEach(() => {
   allowed.mockResolvedValue(true);
   resolve.mockReset().mockResolvedValue(HOST);
   listDbRefs.mockReset().mockResolvedValue({ refs: [], secretRefs: [], truncated: false, partial: false });
-  resolveDbHosts.mockReset().mockResolvedValue(new Map());
+  resolveDbHosts.mockReset().mockResolvedValue({ map: new Map(), capped: false, incomplete: false });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -63,7 +63,7 @@ describe('GET /api/eks/[cluster]/db-refs', () => {
       secretRefs: [{ workload: w, secret: 'db-creds' }], truncated: true, partial: true,
     });
     const resource = { type: 'rds', id: 'db-1', region: 'ap-northeast-2', accountId: 'self' };
-    resolveDbHosts.mockResolvedValue(new Map([[host, resource]]));
+    resolveDbHosts.mockResolvedValue({ map: new Map([[host, resource]]), capped: false, incomplete: false });
     resolve.mockResolvedValue({ ...HOST, accountId: '111111111111' });
     const { GET } = await import('./route');
     const res = await GET(req(), ctx());
@@ -75,6 +75,7 @@ describe('GET /api/eks/[cluster]/db-refs', () => {
         { workload: w, via: 'configmap', host: 'x.cache.amazonaws.com', kind: 'elasticache', resource: null },
       ],
       secretRefs: [{ workload: w, secret: 'db-creds' }], truncated: true, partial: true,
+      inventoryCapped: false, inventoryIncomplete: false,
     });
     expect(listDbRefs).toHaveBeenCalledWith('fsi');
     expect(resolveDbHosts).toHaveBeenCalledWith([host, 'x.cache.amazonaws.com'], '111111111111');
@@ -88,13 +89,28 @@ describe('GET /api/eks/[cluster]/db-refs', () => {
       secretRefs: [{ workload: w, secret: 'db-creds', value: PASSWORD, data: { password: PASSWORD } }],
       truncated: false, partial: false, raw: PASSWORD,
     });
-    resolveDbHosts.mockResolvedValue(new Map([[host, { type: 'rds', id: 'db-1', region: null, accountId: 'self', password: PASSWORD }]]));
+    resolveDbHosts.mockResolvedValue({
+      map: new Map([[host, { type: 'rds', id: 'db-1', region: null, accountId: 'self', password: PASSWORD }]]),
+      capped: PASSWORD, incomplete: { detail: PASSWORD }, raw: PASSWORD,
+    });
     const { GET } = await import('./route');
     const res = await GET(req(), ctx());
     const text = await res.text();
     expect(res.status).toBe(200);
     expect(text).not.toContain(PASSWORD);
     expect(text).toContain('db-creds');
+    const body = JSON.parse(text);
+    expect(body.inventoryCapped).toBe(false);
+    expect(body.inventoryIncomplete).toBe(false);
+    expect(Object.keys(body).sort()).toEqual(['inventoryCapped', 'inventoryIncomplete', 'partial', 'refs', 'secretRefs', 'truncated']);
+  });
+
+  it('discloses a capped or unconfirmed inventory match as explicit booleans', async () => {
+    resolveDbHosts.mockResolvedValue({ map: new Map(), capped: true, incomplete: true });
+    const { GET } = await import('./route');
+    const body = await (await GET(req(), ctx())).json();
+    expect(body.inventoryCapped).toBe(true);
+    expect(body.inventoryIncomplete).toBe(true);
   });
 
   it('502 with a generic body when the extractor throws', async () => {

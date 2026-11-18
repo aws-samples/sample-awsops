@@ -20,7 +20,7 @@ beforeEach(() => {
   allowed.mockResolvedValue(true);
   resolve.mockReset().mockResolvedValue({ id: ARN, name: 'shared', accountId: '222222222222', region: 'us-west-2' });
   listDbRefs.mockResolvedValue({ refs: [], secretRefs: [], truncated: false, partial: false });
-  resolveDbHosts.mockResolvedValue(new Map());
+  resolveDbHosts.mockResolvedValue({ map: new Map(), capped: false, incomplete: false });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 

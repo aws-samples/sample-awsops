@@ -28,11 +28,11 @@ export async function GET(request: Request, { params: pendingParams }: { params:
       return Response.json({ status: 'error', message: 'unknown cluster' }, { status: 404, headers: HEADERS });
     }
     const result = await listDbRefs(context.id);
-    const resources = await resolveDbHosts([...new Set(result.refs.map(r => r.host))], context.accountId);
+    const resolved = await resolveDbHosts([...new Set(result.refs.map(r => r.host))], context.accountId);
     // Explicit allow-list serialization: no value, error body or extra field can pass through.
     return Response.json({
       refs: result.refs.map(r => {
-        const found = resources.get(r.host);
+        const found = resolved.map.get(r.host);
         return {
           workload: { namespace: r.workload.namespace, name: r.workload.name },
           via: r.via, host: r.host, kind: r.kind,
@@ -41,6 +41,8 @@ export async function GET(request: Request, { params: pendingParams }: { params:
       }),
       secretRefs: result.secretRefs.map(s => ({ workload: { namespace: s.workload.namespace, name: s.workload.name }, secret: s.secret })),
       truncated: result.truncated, partial: result.partial,
+      // Inventory-match evidence (db-ref-resolve.ts): strict booleans, nothing else from the resolver result.
+      inventoryCapped: resolved.capped === true, inventoryIncomplete: resolved.incomplete === true,
     }, { headers: HEADERS });
   } catch (e) {
     return Response.json({ status: 'error', ...eksReadFailure(e, 'db-refs') }, { status: e instanceof EksScopeError ? e.status : 502, headers: HEADERS });

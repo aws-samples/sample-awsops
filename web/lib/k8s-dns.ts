@@ -16,6 +16,16 @@ const validName = (n: string): boolean => n.length > 0 && n.length <= MAX_NAME &
 // charset (decoding `\056` would turn a literal dot into a label separator), so such names still fail
 // validation. A wildcard name is safe to keep: gateways are matched on the record TARGET, never the name.
 const recordName = (v: unknown): string => bare(v).replace(/\\052/g, '*');
+// `dualstack.` is an ELB alias-target convention. Strip it ONLY when the remainder is an ELB host
+// (ALB `<name>.<region>.elb.amazonaws.com`, NLB `<name>.elb.<region>.amazonaws.com`); a literal
+// `dualstack.`-prefixed non-ELB name is kept verbatim. Same guard as bareDns in flow-topology.ts —
+// keep the two in step.
+const isElbHost = (h: string): boolean => /\.elb\.(?:[a-z0-9-]+\.)?amazonaws\.com$/.test(h);
+const aliasTarget = (v: unknown): string => {
+  const d = bare(v);
+  const stripped = d.replace(/^dualstack\./, '');
+  return stripped !== d && isElbHost(stripped) ? stripped : d;
+};
 
 export function matchDnsToGateways(records: DnsRecord[], gatewayHosts: string[]): { record: DnsRecord; gatewayHost: string }[] {
   const out: { record: DnsRecord; gatewayHost: string }[] = [];
@@ -38,7 +48,7 @@ function toRecord(row: unknown): DnsRecord | null {
   if (!validName(name)) return null;
   let target = '';
   if (isRec(d.alias_target) && d.alias_target.DNSName) {
-    target = bare(d.alias_target.DNSName).replace(/^dualstack\./, '');
+    target = aliasTarget(d.alias_target.DNSName);
   } else if (type === 'CNAME' && Array.isArray(d.records) && d.records.length) {
     const first = d.records[0];
     target = bare(typeof first === 'string' ? first : isRec(first) ? first.Value : '');

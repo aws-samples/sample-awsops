@@ -118,12 +118,16 @@ export async function clusterConn(cluster: string): Promise<ClusterConn> {
 }
 
 // ── in-cluster list + normalize ────────────────────────────────────────────
-// NOTE: lib/eks-db-refs.ts is the sole server-side reader of ConfigMap/env VALUES (host-only output);
-// this Kind list and its list/describe paths stay value-redacted.
+// NOTE: lib/eks-db-refs.ts (GET /api/eks/[cluster]/db-refs) is a fixed read path OUTSIDE this Kind
+// list. With the same per-cluster credential it scans Pod env values and the ConfigMap values Pods
+// reference, on the server, for managed-datastore hostnames; it returns hostnames and Secret NAMES
+// only, discards the rest of every value and never requests a Secret. This Kind list and its
+// list/describe paths stay value-redacted for ConfigMaps.
+// Read-boundary register: terraform/foundation/eks.tf (update it with any new read path).
 export type Kind =
   | 'nodes' | 'pods' | 'deployments' | 'services' | 'namespaces' | 'events' | 'endpoints'
   // EKS 탐색기 kinds (v1 K9s-style explorer parity). SECURITY: secrets stay REJECTED (the pinned
-  // allow-list invariant); configmaps are METADATA-ONLY — the normalizer never carries data values.
+  // allow-list invariant); configmaps are METADATA-ONLY on this path — the normalizer never carries data values.
   | 'replicasets' | 'daemonsets' | 'statefulsets' | 'jobs' | 'configmaps' | 'pvcs'
   // gap-audit L164 K8s map — networking.k8s.io routing metadata, read-only GET.
   | 'ingresses';
@@ -239,7 +243,7 @@ export interface ServiceRow {
   /** spec.selector (gap L229 — the Service Resources join key). Absent on selectorless
    *  Services (ExternalName / manual-Endpoints) — those join nothing, disclosed in the UI. */
   selector?: Record<string, string>;
-  /** status.loadBalancer.ingress[0].hostname — only for type LoadBalancer with a provisioned hostname. */
+  /** Hostname of the first status.loadBalancer.ingress entry that has one — only for type LoadBalancer; absent for ip-only load balancers. */
   lbHostname?: string;
 }
 export interface NamespaceRow { name: string; status: string; age: string }
@@ -255,6 +259,7 @@ export interface EventRow {
   count: number; lastSeen: string; lastSeenTs: number;
 }
 // EKS 탐색기 rows — 요약 메타데이터만 (configmap/secret VALUES는 절대 미전송).
+// The db-refs path (see the NOTE above `Kind`) is separate: it scans values server-side and returns hostnames only.
 export interface ReplicaSetRow { name: string; namespace: string; desired: number; ready: number; age: string }
 export interface DaemonSetRow { name: string; namespace: string; desired: number; current: number; ready: number; age: string }
 export interface StatefulSetRow { name: string; namespace: string; ready: string; age: string }
@@ -409,7 +414,11 @@ export function normalizeDeployment(it: K8sItem): DeploymentRow {
 }
 
 export function normalizeService(it: K8sItem): ServiceRow {
-  const lbHostname = it.spec?.type === 'LoadBalancer' ? it.status?.loadBalancer?.ingress?.[0]?.hostname : undefined;
+  // First entry WITH a hostname — entry[0] can be an empty placeholder or ip-only. ip-only entries
+  // are skipped: an IP can never equal a Route 53 alias/CNAME target.
+  const lbHostname = it.spec?.type === 'LoadBalancer'
+    ? (it.status?.loadBalancer?.ingress ?? []).find((e) => e.hostname)?.hostname
+    : undefined;
   const ports = (it.spec?.ports ?? [])
     .map((p) => `${p.port}${p.protocol ? `/${p.protocol}` : ''}`)
     .join(',');

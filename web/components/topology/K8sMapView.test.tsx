@@ -171,6 +171,24 @@ describe('K8sMapView service graph data', () => {
     expect(screen.getByText('데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.')).toBeTruthy();
   });
 
+  it('discloses a capped or unconfirmed inventory match, translated in every locale', async () => {
+    const INCOMPLETE = '인벤토리 동기화 완료를 확인할 수 없어 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.';
+    const CAPPED = '인벤토리 조회가 상한에 도달해 일부 데이터 저장소를 인벤토리 리소스와 연결하지 않고 호스트 이름으로 표시합니다.';
+    stubFetch(HOST_ONLY, 200, (u) => (u.includes('/db-refs') ? new Response(JSON.stringify({ ...OK_REFS, inventoryCapped: true, inventoryIncomplete: true })) : undefined));
+    view();
+    expect((await screen.findByText(INCOMPLETE)).closest('[role="status"]')).toBeTruthy();
+    expect(screen.getByText(CAPPED)).toBeTruthy();
+    for (const ko of [INCOMPLETE, CAPPED]) for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ko)).not.toBe(ko);
+  });
+
+  it('shows no inventory notice when the flags are absent', async () => {
+    stubFetch(HOST_ONLY);
+    view();
+    await waitFor(() => expect(canvas.props).not.toBeNull());
+    expect(screen.queryByText(/인벤토리 동기화 완료를/)).toBeNull();
+    expect(screen.queryByText(/인벤토리 조회가 상한에/)).toBeNull();
+  });
+
   it('discloses failed in-cluster kinds by kind name without the error body', async () => {
     stubFetch(HOST_ONLY, 200, (u) => (u.includes('kind=endpoints') ? new Response(JSON.stringify({ message: 'raw-detail' }), { status: 502 }) : undefined));
     view();
