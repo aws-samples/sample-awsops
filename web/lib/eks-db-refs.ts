@@ -3,7 +3,7 @@
 // Values never leave it: results carry only hosts returned by extractManagedDbHosts.
 // Secret VALUES are never requested (no /secrets path); only Secret NAMES are kept.
 // Errors are rethrown/absorbed as fixed strings — never include bodies or values.
-import { k8sGetPath, podWorkload } from './eks-incluster';
+import { clusterConn, eksToken, k8sGetWith, podWorkload } from './eks-incluster';
 import { EksKubernetesHttpError } from './eks-read-error';
 import { extractManagedDbHosts, type DbKind } from './db-endpoint';
 
@@ -14,6 +14,9 @@ export interface DbRefsResult { refs: DbRef[]; secretRefs: SecretRef[]; truncate
 
 const DEFAULT_CAPS = { pods: 2000, configMaps: 200 };
 const CM_CONCURRENCY = 8;
+/** Overall wall-clock budget for one run. Past it no new GET is issued (in-flight reads are
+ *  still bounded by the per-request timeout); the result is then partial + truncated. */
+const DEFAULT_DEADLINE_MS = 20_000;
 
 interface EnvVar {
   name?: string;
@@ -33,7 +36,9 @@ function parseJson(body: string): unknown {
 export async function listDbRefs(
   cluster: string,
   caps: { pods: number; configMaps: number } = DEFAULT_CAPS,
+  { deadlineMs = DEFAULT_DEADLINE_MS, now = Date.now }: { deadlineMs?: number; now?: () => number } = {},
 ): Promise<DbRefsResult> {
+  const deadline = now() + deadlineMs;
   const refs: DbRef[] = [];
   const secretRefs: SecretRef[] = [];
   const seenRefs = new Set<string>();
@@ -50,9 +55,15 @@ export async function listDbRefs(
     }
   };
 
+  // Resolve scope, endpoint/CA and bearer ONCE for the whole run (each resolution costs several
+  // Aurora queries for a member cluster); every GET below reuses them. Resolution errors rethrow.
+  const conn = await clusterConn(cluster);
+  const token = await eksToken(cluster);
+  const get = (path: string) => k8sGetWith(conn, token, path);
+
   let podBody: string;
   try {
-    podBody = await k8sGetPath(cluster, `/api/v1/pods?limit=${caps.pods}`);
+    podBody = await get(`/api/v1/pods?limit=${caps.pods}`);
   } catch (err) {
     // Read role denied pod list: disclose as partial instead of failing. Other errors are value-free; rethrow.
     if (err instanceof EksKubernetesHttpError && err.statusCode === 403) {
@@ -107,10 +118,12 @@ export async function listDbRefs(
   let queue = [...cmNeeds.values()];
   if (queue.length > caps.configMaps) { truncated = true; queue = queue.slice(0, caps.configMaps); }
 
+  let outOfTime = false;
   const fetchOne = async (e: (typeof queue)[number]) => {
+    if (outOfTime || now() >= deadline) { outOfTime = true; return; }
     try {
-      const body = parseJson(await k8sGetPath(
-        cluster, `/api/v1/namespaces/${encodeURIComponent(e.ns)}/configmaps/${encodeURIComponent(e.cm)}`,
+      const body = parseJson(await get(
+        `/api/v1/namespaces/${encodeURIComponent(e.ns)}/configmaps/${encodeURIComponent(e.cm)}`,
       )) as { data?: Record<string, unknown> } | null;
       const data = body?.data && typeof body.data === 'object' ? body.data : {};
       for (const u of e.users) {
@@ -124,9 +137,11 @@ export async function listDbRefs(
       partial = true; // never surface the error (403/404/timeout/parse) detail
     }
   };
-  for (let i = 0; i < queue.length; i += CM_CONCURRENCY) {
+  for (let i = 0; i < queue.length && !outOfTime; i += CM_CONCURRENCY) {
     await Promise.all(queue.slice(i, i + CM_CONCURRENCY).map(fetchOne));
   }
+  // Deadline hit with reads left unissued: what was gathered is kept and disclosed as incomplete.
+  if (outOfTime) { partial = true; truncated = true; }
 
   return { refs, secretRefs, truncated, partial };
 }

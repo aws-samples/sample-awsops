@@ -604,6 +604,16 @@ export async function k8sGetPath(cluster: string, path: string): Promise<string>
   return k8sGet(endpoint, path, token, caPem);
 }
 
+/**
+ * GET with a connection and bearer the caller already resolved via `clusterConn` + `eksToken`
+ * for the same cluster. For bounded multi-read runs (lib/eks-db-refs.ts): it skips the per-call
+ * scope/auth/credential resolution (several Aurora queries per call for a member cluster).
+ * The caller owns keeping the run short (the bearer is presigned with a 60 s expiry).
+ */
+export function k8sGetWith(conn: ClusterConn, token: string, path: string): Promise<string> {
+  return k8sGet(conn.endpoint, path, token, conn.caPem);
+}
+
 // ── describe (탐색기 심층 조회) — full object GET, read-only. managedFields stripped (huge);
 // configmap data/binaryData VALUES are redacted (키 이름만) — the metadata-only invariant holds
 // for describe too. Secrets are not a Kind, so they can never be described.

@@ -236,6 +236,8 @@ Edge evidence, strongest first (an edge with several sources shows the strongest
 `GET /api/eks/[cluster]/db-refs` reads the Pod list (cap 2,000) and the ConfigMaps Pods
 reference (cap 200, concurrency 8) with the cluster's read credentials, in
 `web/lib/eks-db-refs.ts`, the only server code that reads env or ConfigMap values.
+The cluster connection and bearer are resolved once per request and reused for every
+read (`k8sGetWith`), and the run has a 20-second overall budget.
 Env values and referenced ConfigMap data are scanned by `web/lib/db-endpoint.ts` for
 RDS/Aurora, ElastiCache, OpenSearch and MSK hostnames. Only the bare lower-cased host
 is kept: userinfo, port, path and the raw value are dropped, and all values are
@@ -245,7 +247,8 @@ for `rds`, `rds_cluster`, `rds_proxy`, `opensearch` and `elasticache` rows of th
 cluster's account. The response is an explicit allow-list: workload, `via`
 (`env` or `configmap`), host, kind, matched resource (type, id, region, account),
 secret names, and `truncated`/`partial` flags. A denied Pod list or an unreadable
-ConfigMap sets `partial`; hitting a cap sets `truncated`. Only `account` and `region`
+ConfigMap sets `partial`; hitting a cap sets `truncated`; exceeding the budget stops
+issuing reads, keeps the references found so far and sets both. Only `account` and `region`
 query parameters are accepted, and responses are `Cache-Control: private, no-store`.
 
 ### Scope and limits
