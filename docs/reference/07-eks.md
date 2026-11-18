@@ -241,7 +241,9 @@ read (`k8sGetWith`), and the run has a 20-second overall budget.
 Env values and referenced ConfigMap data are scanned by `web/lib/db-endpoint.ts` for
 RDS/Aurora, ElastiCache, OpenSearch and MSK hostnames. Only the bare lower-cased host
 is kept: userinfo, port, path and the raw value are dropped, and all values are
-discarded after scanning. Secrets are never requested; only the names of referenced
+discarded after scanning. A token directly followed by `@` (userinfo) or assigned to a
+credential-like key (`password`, `passwd`, `pwd`, `secret`, `token`, `key`) is never
+returned, and every label must be a valid DNS label (1–63 characters, 253 in total). Secrets are never requested; only the names of referenced
 Secrets are returned. Hosts are matched to inventory endpoints (`web/lib/db-ref-resolve.ts`)
 for `rds`, `rds_cluster`, `rds_proxy`, `opensearch` and `elasticache` rows of the
 cluster's account. The response is an explicit allow-list: workload, `via`
