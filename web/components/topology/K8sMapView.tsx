@@ -5,7 +5,8 @@
 // requests, clears state, and every late result is dropped by the `live` flag / `signal.aborted`):
 //  - in-cluster kinds ingresses/services/pods/endpoints (failed kinds are disclosed, never hidden)
 //  - db-refs (config-inferred datastores; failure/partial/truncated is disclosed, the graph still renders)
-//  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters itself)
+//  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters and an
+//    incomplete scope listing itself)
 //  - Route53 records for the cluster's account (optional; any failure yields none)
 //  - nodes LAZILY, the first time a Service is selected (detail panel only).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -39,7 +40,10 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   unsupported_scope: '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.',
   unavailable: '트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.',
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.',
-  member_cluster: '멤버 계정 클러스터에는 트레이스로 관측된 호출을 표시하지 않습니다 (호스트 계정 전용).',
+  // The client cannot know the host account id, so an ARN-identified host cluster (outside the
+  // deployment region) lands here too: the copy states the rule, not that this IS a member account.
+  member_cluster: '트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.',
+  incomplete_listing: '클러스터 목록이 일부만 조회되어 같은 이름의 클러스터가 없는지 확인할 수 없으므로 트레이스로 관측된 호출을 표시하지 않습니다.',
 };
 
 /**
@@ -119,6 +123,10 @@ export default function K8sMapView({ query }: { query: string }) {
   }, [scopeQuery, scopeReady]);
 
   const namesKey = registeredNames.join('\n');
+  // Only a real read failure (route `eksReadFailure` shape carries `reason`) or truncation makes the
+  // listing incomplete; the informational wildcard-scope note does not. An incomplete listing also
+  // cannot prove the selected name is unique, so it blocks the trace join.
+  const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!e.reason);
   useEffect(() => {
     // Switching clusters (or scope) clears every per-cluster piece before anything new arrives.
     setRows(null);
@@ -165,7 +173,7 @@ export default function K8sMapView({ query }: { query: string }) {
 
     // hostAccountId is not knowable from the /api/eks listing (every row carries a numeric account),
     // so it stays undefined: a host cluster outside the default region (ARN id) is refused as a member.
-    fetchTraceOverlay({ id: cluster, registeredNames: namesKey ? namesKey.split('\n') : [] }, signal)
+    fetchTraceOverlay({ id: cluster, registeredNames: namesKey ? namesKey.split('\n') : [], listingIncomplete: inconclusive }, signal)
       .then((o) => { if (current()) setTrace(o); });
 
     fetchDnsRecords(dnsAccountOf(cluster), signal)
@@ -177,7 +185,7 @@ export default function K8sMapView({ query }: { query: string }) {
       nodesAbort.current?.abort();
       nodesAbort.current = null;
     };
-  }, [cluster, namesKey]);
+  }, [cluster, namesKey, inconclusive]);
 
   // Nodes only feed the detail panel: read them the first time a Service is selected (again after a failure).
   const nodesStatus = nodes?.status;
@@ -217,9 +225,6 @@ export default function K8sMapView({ query }: { query: string }) {
     return next;
   });
 
-  // Only a real read failure (route `eksReadFailure` shape carries `reason`) or truncation makes an
-  // empty listing inconclusive; the informational wildcard-scope note does not.
-  const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!e.reason);
   if (clusters !== null && clusters.length === 0 && !err) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-[13px] text-ink-500">

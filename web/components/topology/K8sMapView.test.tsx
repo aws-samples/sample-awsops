@@ -171,7 +171,7 @@ describe('K8sMapView service graph data', () => {
     view();
     await screen.findAllByRole('option');
     fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
-    expect(await screen.findByText('멤버 계정 클러스터에는 트레이스로 관측된 호출을 표시하지 않습니다 (호스트 계정 전용).')).toBeTruthy();
+    expect(await screen.findByText('트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.')).toBeTruthy();
     expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
     expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'member_cluster' });
   });
@@ -188,6 +188,24 @@ describe('K8sMapView service graph data', () => {
     view();
     expect(await screen.findByText('같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.')).toBeTruthy();
     expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+  });
+
+  it.each([
+    ['a truncated listing', { truncated: true }],
+    ['a listing with a per-target read failure', { errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }] }],
+  ])('refuses the trace join without reading the snapshot for %s', async (_label, extra) => {
+    const calls = stubFetch({ ...HOST_ONLY, ...extra });
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' });
+  });
+
+  it('still reads the trace snapshot when the only listing note is informational (no reason)', async () => {
+    const calls = stubFetch({ ...HOST_ONLY, errors: [{ accountId: 'self', region: '__all__', message: 'All-region discovery covers configured and registered regions only.' }] });
+    view();
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    expect(screen.queryByText(TRACE_NOTICE.incomplete_listing)).toBeNull();
   });
 
   it('reads Route53 records for the cluster account: host as self, member by its account id', async () => {
@@ -261,7 +279,7 @@ describe('K8sMapView service graph data', () => {
     view();
     await waitFor(() => expect(seen.map((s) => s.id)).toContain('shared'));
     fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
-    expect(await screen.findByText('멤버 계정 클러스터에는 트레이스로 관측된 호출을 표시하지 않습니다 (호스트 계정 전용).')).toBeTruthy();
+    expect(await screen.findByText('트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.')).toBeTruthy();
     expect(seen[0].signal?.aborted).toBe(true);
     // An aborted read resolves like a failure; it must not replace the member cluster's overlay.
     await act(async () => { first.resolve({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 }); });
@@ -303,7 +321,7 @@ describe('K8sMapView service graph data', () => {
 
 describe('K8sMapView trace notices', () => {
   it('has one translated notice per non-available trace-overlay reason', () => {
-    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'member_cluster', 'unavailable', 'unsupported_scope']);
+    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'incomplete_listing', 'member_cluster', 'unavailable', 'unsupported_scope']);
     for (const ko of Object.values(TRACE_NOTICE)) {
       for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ko)).not.toBe(ko);
     }

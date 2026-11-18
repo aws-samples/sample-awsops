@@ -256,7 +256,9 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 - Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
   snapshot, which is host-account only. A trace service maps to a workload only
   through its `runs_on` relation to exactly one `namespace/deployment` of the selected
-  cluster, and the cluster name must be unique among registered clusters. The snapshot
+  cluster, and the cluster name must be unique among the clusters listed in the current
+  scope. A truncated listing or one with a per-target read failure cannot prove that
+  uniqueness, so the join is refused (`incomplete_listing`) without reading the snapshot. The snapshot
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of

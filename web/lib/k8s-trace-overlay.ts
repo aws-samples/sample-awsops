@@ -2,7 +2,9 @@
 // Reads the published service snapshot (`GET /api/topology?lens=service`) and reduces it to
 // workload-level calls for ONE selected cluster. Never-misattribute rules:
 //  - `k8s.cluster.name` (entity `cluster`) is a telemetry claim, not authority: the join runs only
-//    when the selected cluster's name occurs exactly once among the registered cluster names.
+//    when the selected cluster's name occurs exactly once among the clusters listed in the current
+//    scope, and only when that listing is complete (not truncated, no per-target read failure) —
+//    an incomplete listing cannot prove that no same-named cluster exists.
 //  - The trace snapshot is host-only (`account=self`); member clusters are refused without a fetch.
 //  - A trace service maps to a K8s workload ONLY through its `runs_on` relation, and only when it
 //    runs on exactly one `ns/deployment` in the selected cluster. Never by service-name similarity.
@@ -30,7 +32,8 @@ import type { WorkloadRef } from './eks-db-refs';
 import { eksClusterName, parseEksClusterId } from './eks-cluster-id';
 import { extractManagedDbHosts } from './db-endpoint';
 
-export type TraceOverlayReason = 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'member_cluster';
+export type TraceOverlayReason =
+  | 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'member_cluster' | 'incomplete_listing';
 export interface TraceWorkloadCall {
   fromWorkload: WorkloadRef;
   to: { workload: WorkloadRef } | { datastoreHost: string };
@@ -57,8 +60,10 @@ export interface ServiceTopologyView {
 }
 export interface TraceCluster {
   id: string;
-  /** Names (or ids) of every registered cluster in scope; the selected name must occur exactly once. */
+  /** Names (or ids) of every cluster listed in the current scope; the selected name must occur exactly once. */
   registeredNames: string[];
+  /** The scope listing was truncated or had a per-target read failure: uniqueness is unprovable, so no join. */
+  listingIncomplete?: boolean;
   /** Host account id. An ARN id is a host cluster only when its account equals this; otherwise member. */
   hostAccountId?: string;
 }
@@ -76,6 +81,7 @@ function clusterGate(cluster: TraceCluster): { name: string } | { refuse: TraceO
   if (!parsed) return { refuse: unavailable('unavailable') };
   if (parsed.accountId && !(/^\d{12}$/.test(cluster.hostAccountId ?? '') && parsed.accountId === cluster.hostAccountId))
     return { refuse: unavailable('member_cluster') };
+  if (cluster.listingIncomplete) return { refuse: unavailable('incomplete_listing') };
   const names = Array.isArray(cluster.registeredNames) ? cluster.registeredNames : [];
   if (names.filter((n) => typeof n === 'string' && eksClusterName(n) === parsed.name).length !== 1)
     return { refuse: unavailable('ambiguous_cluster') };

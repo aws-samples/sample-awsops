@@ -79,6 +79,15 @@ describe('buildTraceOverlay', () => {
     }
   });
 
+  it('refuses the join when the cluster listing is incomplete (a same-named cluster may be unlisted)', () => {
+    expect(buildTraceOverlay([fixture()], { ...HOST, listingIncomplete: true }))
+      .toEqual({ available: false, reason: 'incomplete_listing', workloadCalls: [], omitted: 0 });
+    // A member cluster keeps its own, more specific refusal.
+    expect(buildTraceOverlay([fixture()], { id: 'arn:aws:eks:us-east-1:222222222222:cluster/mall-a', registeredNames: ['mall-a'], listingIncomplete: true }).reason)
+      .toBe('member_cluster');
+    expect(buildTraceOverlay([fixture()], { ...HOST, listingIncomplete: false }).available).toBe(true);
+  });
+
   it('maps a service call only through runs_on, never by service-name similarity', () => {
     const p = fixture();
     // payments loses its runs_on relation; a workload labelled prod/payments still exists.
@@ -187,11 +196,12 @@ describe('fetchTraceOverlay', () => {
     expect((await fetchTraceOverlay(HOST)).reason).toBe('unavailable');
   });
 
-  it('returns member_cluster or ambiguous_cluster without fetching', async () => {
+  it('returns member_cluster, incomplete_listing or ambiguous_cluster without fetching', async () => {
     const fn = stub(async () => respond(200, fixture()));
     expect((await fetchTraceOverlay({ id: 'arn:aws:eks:ap-northeast-2:222222222222:cluster/mall-a', registeredNames: ['mall-a'] })).reason)
       .toBe('member_cluster');
     expect((await fetchTraceOverlay({ id: 'mall-a', registeredNames: ['mall-a', 'mall-a'] })).reason).toBe('ambiguous_cluster');
+    expect((await fetchTraceOverlay({ ...HOST, listingIncomplete: true })).reason).toBe('incomplete_listing');
     expect(fn).not.toHaveBeenCalled();
   });
 
