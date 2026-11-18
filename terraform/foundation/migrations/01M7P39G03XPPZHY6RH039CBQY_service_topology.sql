@@ -117,9 +117,15 @@ WITH snap AS (
 ), src AS (
  SELECT b.*, (b.stale OR b.captured_at IS NULL OR b.captured_at>statement_timestamp()
   OR b.captured_at<statement_timestamp()-make_interval(mins=>greatest(1,least(p_max_age_minutes,2880)))) AS stale_now
- FROM sql_reader.service_topology_sources b JOIN snap s ON b.batch_id=ANY(s.batch_ids)
+ FROM sql_reader.service_topology_sources b JOIN snap s ON b.scope_key=s.scope_key AND b.batch_id=ANY(s.batch_ids)
+), evidence AS (
+ SELECT s.*, CASE
+   WHEN cardinality(s.batch_ids)=0 THEN array_append(s.gaps,'manifest:empty_source_batches')
+   WHEN cardinality(s.batch_ids)<>(SELECT count(*) FROM src) THEN array_append(s.gaps,'manifest:unresolved_source_batches')
+   ELSE s.gaps END AS read_gaps
+ FROM snap s
 )
-SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.gaps)>0 OR EXISTS
+SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.read_gaps)>0 OR EXISTS
  (SELECT 1 FROM src WHERE stale_now OR retained OR capped OR status NOT IN ('ok','empty')) THEN 'partial' ELSE 'ok' END,
  'snapshotId',s.snapshot_id,'builtAt',s.built_at,'lens',p_lens,'scope',jsonb_build_object('account','self','regions','__all__','includeGlobal',true),
  'sources',coalesce((SELECT jsonb_agg(jsonb_build_object('sourceId',source_id,'generation',generation_key,'status',status,
@@ -133,8 +139,8 @@ SELECT jsonb_build_object('contractVersion',1,'status',CASE WHEN cardinality(s.g
  'confidence',confidence,'spanCount',span_count,'metricCount',metric_count,'evidenceRefs',evidence_refs[1:20],'omittedEvidence',greatest(0,cardinality(evidence_refs)-20)) ORDER BY id) FROM visible_edges),'[]'::jsonb),
  'omitted',jsonb_build_object('entities',(SELECT count(*) FROM eligible)-(SELECT count(*) FROM visible),
  'relations',(SELECT count(*) FROM all_edges)-(SELECT count(*) FROM visible_edges)),
- 'nextCursor',CASE WHEN (SELECT count(*) FROM eligible)>p_offset+200 THEN p_offset+200 END,'gaps',s.gaps)
-FROM snap s;
+ 'nextCursor',CASE WHEN (SELECT count(*) FROM eligible)>p_offset+200 THEN p_offset+200 END,'gaps',s.read_gaps)
+FROM evidence s;
 $$;
 REVOKE ALL ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) FROM PUBLIC, awsops_sql_reader;
 GRANT EXECUTE ON FUNCTION sql_reader.service_topology_read(uuid,text,text,text,integer,integer) TO awsops_web,awsops_topology_reader;

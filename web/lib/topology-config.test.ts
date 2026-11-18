@@ -347,8 +347,9 @@ it('uses the Pod reader clock and distinguishes empty, withheld authority and in
   expect((await fetchEksIpMap(undefined,true)).bindings?.[0].evidence.capturedAt).toBe(Date.parse('2026-11-18T00:00:00Z'));
   serve([],[],{clusters:[scoped]});
   expect(await fetchEksIpMap(undefined,true)).toMatchObject({bindings:[],bindingRead:{status:'empty'}});
-  serve([pod],[],{clusters:[{...scoped,region:'us-west-2'}]});
-  expect((await fetchEksIpMap(undefined,true)).bindingRead?.status).toBe('withheld');
+  const wrongAccount = {...scoped,arn:scoped.arn.replace('111111111111','222222222222')};
+  serve([pod],[],{clusters:[wrongAccount]});
+  expect((await fetchEksIpMap(undefined,true)).bindingRead).toEqual({status:'withheld',reasons:['binding_authority_unverified']});
   serve(Array.from({length:10001},()=>({...pod,uid:'u'})),[],{clusters:[scoped]});
   const bounded=await fetchEksIpMap(undefined,true);
   expect(bounded.bindingRead).toEqual({status:'withheld',reasons:['binding_limit']});

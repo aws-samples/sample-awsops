@@ -279,7 +279,7 @@ export async function rebuildServiceTopology(pool: Pool) {
     relations: snap.relations.length,
     gaps: snap.gaps,
     partialInputs:
-      snap.gaps.some((g) => g.startsWith('projection_limit:')) ||
+      snap.gaps.some(g => g !== 'nfm:not_collected' && g !== 'kubernetes:live_ownership_unavailable') ||
       snap.sources.some(
         (s) => s.stale || s.retained || s.capped || !s.generation || !['ok', 'empty'].includes(s.status),
       ),

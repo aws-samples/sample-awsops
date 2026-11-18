@@ -26,7 +26,8 @@ interface MetricsCallsSourceLike {
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.
 
 // Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
-const TYPES = Object.keys(FLOW_INPUT_KEY);
+// The saved flow class omits L7 display labels. Only their consumers should spend the inventory budget on them.
+const TYPES = Object.keys(FLOW_INPUT_KEY).filter(type => type !== 'apigatewayv2_route' && type !== 'alb_listener_rule');
 // Infra sources that only add DB endpoint nodes for trace binding.
 const INFRA_ENRICHMENT: ReadonlySet<string> = new Set(['rds_cluster', 'rds_proxy']);
 const FLOW_LOCK = 0x746f706f;   // 'topo' — flow rebuilds serialize on this key

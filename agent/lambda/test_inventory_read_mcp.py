@@ -1823,9 +1823,6 @@ Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
                 self.assertTrue(any("topology_graph_state" in sql for sql, _ in calls))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestServiceProjection(unittest.TestCase):
     def test_disabled_and_member_scopes_make_no_db_reads(self):
         for flag, target, expected in [("", "self", 404), ("yes", "self", 404), ("true", "__all__", 422),
@@ -1849,3 +1846,7 @@ class TestServiceProjection(unittest.TestCase):
             self.assertTrue(read.call_args.kwargs["topology"])
             self.assertIn("sql_reader.service_topology_read", read.call_args.args[0])
             self.assertEqual(read.call_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

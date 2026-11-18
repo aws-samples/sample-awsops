@@ -120,6 +120,35 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
 
+  it('withholds ok when a snapshot has no source references or cannot resolve them all', async () => {
+    const id = 'c84553fb-52bf-4684-8056-51be30f7d117';
+    const scope = 'self:all-regions:include-global';
+    await pool.query(`INSERT INTO topology_source_batches
+      (batch_id,scope_key,source_id,status,captured_at,stale,retained,capped,reasons)
+      VALUES ('manifest-valid',$1,'trace','ok',now(),false,false,false,'{}')`, [scope]);
+    await pool.query(`INSERT INTO service_topology_snapshots
+      (snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest) VALUES ($1,$2,1,now(),'{}','{}','test')`,[id,scope]);
+    for (const [refs, gap] of [
+      [[], 'manifest:empty_source_batches'],
+      [['manifest-valid','unknown'], 'manifest:unresolved_source_batches'],
+      [['manifest-valid'], null],
+    ] as const) {
+      await pool.query('UPDATE service_topology_snapshots SET batch_ids=$2 WHERE snapshot_id=$1',[id,refs]);
+      const result = (await pool.query("SELECT sql_reader.service_topology_read($1,'service','','',0,15) AS doc",[id])).rows[0].doc;
+      expect(result.status).toBe(gap ? 'partial' : 'ok');
+      expect(result.gaps).toEqual(gap ? [gap] : []);
+      expect(result.sources.length).toBe(refs.length ? 1 : 0);
+    }
+  });
+
+  it('does not charge display-only listener rules to the saved flow rebuild', async () => {
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'alb_listener_rule','rule-'||n,'fixture','{}',now() FROM generate_series(1,8200) n`);
+    const result = await rebuildGraph(pool);
+    expect(result.published).toBeGreaterThan(0);
+    expect(result.reasons).not.toContain('snapshot_limit');
+  });
+
   it('publishes from actual Aurora-shaped rows, reuses an unchanged head and exposes the same bounded body to both reader roles', async () => {
     await trace();
     await build('infra');
