@@ -229,8 +229,11 @@ const initialCollapsed = (graph: ServiceGraph): Set<string> => {
 const collapseKey = (graph: ServiceGraph) =>
   `${graph.namespaces.map((ns) => ns.name).join('\u0000')}#${graph.nodes.filter((n) => n.kind === 'service').length > EXPAND_ALL_MAX_SERVICES}`;
 
-export default function ServiceGraphCanvas({ graph, input, query, theme }:
-  { graph: ServiceGraph; input: GraphInput; query: string; theme: Theme }) {
+export default function ServiceGraphCanvas({ graph, input, query, theme, onSelectService }: {
+  graph: ServiceGraph; input: GraphInput; query: string; theme: Theme;
+  /** Called with the Service node id each time a Service is selected (e.g. to lazy-load detail data). */
+  onSelectService?: (id: string) => void;
+}) {
   const { tt } = useI18n();
   const [collapseState, setCollapseState] = useState(() => ({ key: collapseKey(graph), collapsed: initialCollapsed(graph) as ReadonlySet<string> }));
   const key = collapseKey(graph);
@@ -330,8 +333,8 @@ export default function ServiceGraphCanvas({ graph, input, query, theme }:
 
   const handleNodeClick = useCallback((_: unknown, node: Node) => {
     if (node.type === 'namespace') { expand(node.id.slice(NS_PREFIX.length)); return; }
-    if (byId.get(node.id)?.kind === 'service') setSelectedId(node.id);
-  }, [byId, expand]);
+    if (byId.get(node.id)?.kind === 'service') { setSelectedId(node.id); onSelectService?.(node.id); }
+  }, [byId, expand, onSelectService]);
 
   const totalServices = useMemo(() => graph.nodes.filter((n) => n.kind === 'service').length, [graph]);
   const allCollapsed = graph.namespaces.length > 0 && graph.namespaces.every((ns) => collapsed.has(ns.name));

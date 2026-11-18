@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildServiceGraph, serviceDetail, SYSTEM_NAMESPACES, type GraphInput } from './k8s-service-graph';
+import { buildServiceGraph, filterGraphInputByNamespace, serviceDetail, SYSTEM_NAMESPACES, type GraphInput } from './k8s-service-graph';
 import { nodeReadyText, type PodRow, type NodeRow } from './eks-resources';
 import type { TraceOverlay, TraceWorkloadCall } from './k8s-trace-overlay';
 
@@ -324,5 +324,40 @@ describe('DNS and LoadBalancer gateways (Task 8)', () => {
     const b = base();
     const g = buildServiceGraph({ ...b, services: [...b.services, { ...lbSvc, lbHostname: ELB }], dns: [{ name: 'a.example.com', target: ELB }] });
     expect(g.edges.filter((e) => e.source === 'dns:a.example.com').map((e) => e.target).sort()).toEqual(['gw:lb:prod/edge', 'gw:prod/web']);
+  });
+});
+
+describe('filterGraphInputByNamespace', () => {
+  const traceTo = (calls: TraceWorkloadCall[]): TraceOverlay => ({ available: true, workloadCalls: calls, omitted: 0, skipped: 0 });
+  const withTrace = (): GraphInput => ({ ...base(), trace: traceTo([
+    { fromWorkload: { namespace: 'prod', name: 'api' }, to: { workload: { namespace: 'kube-system', name: 'coredns' } } },
+    { fromWorkload: { namespace: 'kube-system', name: 'coredns' }, to: { workload: { namespace: 'prod', name: 'api' } } },
+    { fromWorkload: { namespace: 'prod', name: 'api' }, to: { datastoreHost: RDS_HOST } },
+  ]) });
+
+  it('drops every namespaced row of a hidden namespace and keeps the rest untouched', () => {
+    const f = filterGraphInputByNamespace(base(), (ns) => ns !== 'dev' && !SYSTEM_NAMESPACES.has(ns));
+    expect(f.services.map((s) => `${s.namespace}/${s.name}`)).toEqual(['prod/api', 'prod/idle']);
+    expect(f.pods.every((p) => p.namespace === 'prod')).toBe(true);
+    expect(f.dbRefs.every((r) => r.workload.namespace === 'prod')).toBe(true);
+    expect(f.secretRefs.map((r) => r.secret)).toEqual(['db-password', 'api-key']);
+    expect(f.ingresses).toHaveLength(1);
+    expect(f.nodes).toHaveLength(2); // nodes are cluster-scoped
+    const g = buildServiceGraph(f);
+    expect(g.namespaces.map((n) => n.name)).toEqual(['prod']);
+    // the dev ref is dropped, not disclosed as an unlinked ref
+    expect(g.notes.some((n) => /datastore reference/.test(n))).toBe(false);
+  });
+
+  it('drops trace calls that touch a hidden namespace instead of counting them as unmapped', () => {
+    const f = filterGraphInputByNamespace(withTrace(), (ns) => !SYSTEM_NAMESPACES.has(ns));
+    expect(f.trace?.workloadCalls).toEqual([{ fromWorkload: { namespace: 'prod', name: 'api' }, to: { datastoreHost: RDS_HOST } }]);
+    expect(buildServiceGraph(f).notes.some((n) => /trace-observed/.test(n))).toBe(false);
+  });
+
+  it('keeps an unavailable or absent trace overlay as-is', () => {
+    const off: TraceOverlay = { available: false, reason: 'member_cluster', workloadCalls: [], omitted: 0 };
+    expect(filterGraphInputByNamespace({ ...base(), trace: off }, () => false).trace).toBe(off);
+    expect(filterGraphInputByNamespace(base(), () => false).trace).toBeNull();
   });
 });

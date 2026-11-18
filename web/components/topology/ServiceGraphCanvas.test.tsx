@@ -234,6 +234,19 @@ describe('ServiceGraphCanvas', () => {
     expect(screen.queryByRole('complementary', { name: '서비스 상세' })).toBeNull();
   });
 
+  it('reports a Service selection through onSelectService, and only for Services', async () => {
+    const onSelectService = vi.fn();
+    const inp = input();
+    render(<ServiceGraphCanvas graph={graphOf(inp)} input={inp} query="" theme="light" onSelectService={onSelectService} />);
+    await waitFor(() => expect(flowNodes().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId('node:gw:prod/shop'));
+    fireEvent.click(screen.getByTestId('node:ds:rds_cluster:orders'));
+    expect(onSelectService).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('node:svc:prod/api'));
+    expect(onSelectService).toHaveBeenCalledTimes(1);
+    expect(onSelectService).toHaveBeenCalledWith('svc:prod/api');
+  });
+
   it('dims nodes that do not match the query (case-insensitive on label/namespace/sub)', async () => {
     await renderCanvas({ query: 'LOGIN' });
     const opacity = (id: string) => flowNodes().find((n) => n.id === id)?.style?.opacity;

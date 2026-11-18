@@ -223,6 +223,29 @@ export function buildServiceGraph(input: GraphInput): ServiceGraph {
   return { namespaces, nodes: [...nodes.values()].sort(byId), edges: [...edges.values()].sort(byId), notes };
 }
 
+/**
+ * Namespace view filter, applied to the INPUT before `buildServiceGraph` so a hidden namespace
+ * vanishes entirely: its Services, Ingresses, Endpoints, Pods, DB/Secret refs are dropped, and a
+ * trace call with either end in a hidden namespace is dropped too (an edge to a hidden node is
+ * never drawn, and never counted as "unmapped" in `notes`). Nodes and DNS are cluster-scoped and kept.
+ */
+export function filterGraphInputByNamespace(input: GraphInput, visible: (namespace: string) => boolean): GraphInput {
+  const trace = input.trace?.available
+    ? { ...input.trace, workloadCalls: input.trace.workloadCalls.filter((c) =>
+      visible(c.fromWorkload.namespace) && (!('workload' in c.to) || visible(c.to.workload.namespace))) }
+    : input.trace;
+  return {
+    ...input,
+    services: input.services.filter((s) => visible(s.namespace)),
+    endpoints: input.endpoints.filter((e) => visible(e.namespace)),
+    pods: input.pods.filter((p) => visible(p.namespace)),
+    ingresses: input.ingresses.filter((i) => visible(i.namespace)),
+    dbRefs: input.dbRefs.filter((r) => visible(r.workload.namespace)),
+    secretRefs: input.secretRefs.filter((r) => visible(r.workload.namespace)),
+    trace,
+  };
+}
+
 const EMPTY_DETAIL = (): ServiceDetail => ({ pods: [], nodes: [], callers: [], callees: [], datastores: [], secretRefs: [] });
 
 export function serviceDetail(graph: ServiceGraph, input: GraphInput, serviceId: string): ServiceDetail {
