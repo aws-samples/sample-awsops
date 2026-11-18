@@ -371,7 +371,7 @@ jobs:
           case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in
             "") ;;
             true|false)
-              [ "$TARGET" = dev ] && [ "$PLAN_SCOPE" = full ] || { echo "::error::Invalid topology pilot scope"; exit 1; }
+              [ "$TARGET" = dev ] && [ "${PLAN_SCOPE:-full}" = full ] || { echo "::error::Invalid topology pilot scope"; exit 1; }
               args+=("-var=topology_entities_enabled=$CI_TOPOLOGY_ENTITIES_ENABLED_DEV");;
             *) echo "::error::Invalid topology pilot setting (expected true or false)"; exit 1;;
           esac
