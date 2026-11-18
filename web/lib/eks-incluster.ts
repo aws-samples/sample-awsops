@@ -118,6 +118,8 @@ export async function clusterConn(cluster: string): Promise<ClusterConn> {
 }
 
 // ── in-cluster list + normalize ────────────────────────────────────────────
+// NOTE: lib/eks-db-refs.ts is the sole server-side reader of ConfigMap/env VALUES (host-only output);
+// this Kind list and its list/describe paths stay value-redacted.
 export type Kind =
   | 'nodes' | 'pods' | 'deployments' | 'services' | 'namespaces' | 'events' | 'endpoints'
   // EKS 탐색기 kinds (v1 K9s-style explorer parity). SECURITY: secrets stay REJECTED (the pinned
