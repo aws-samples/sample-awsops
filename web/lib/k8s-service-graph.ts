@@ -1,6 +1,6 @@
 // Pure namespaced service-graph builder for the K8s map (React-free, deterministic: sorted by id).
 // Nodes: gateway (Ingress) · service · datastore. Pods/Nodes are detail-only (serviceDetail).
-// Never-misattribute rules (carried over from k8s-map.ts):
+// Never-misattribute rules (carried over from the former 4-column K8s map builder):
 //  - Service→Pod comes ONLY from core Endpoints READY addresses: the targetRef pod identity
 //    (preferred) or a same-namespace IP that resolves to exactly ONE non-hostNetwork pod.
 //    hostNetwork pods carry the node IP, so an IP never identifies one of them.

@@ -2187,6 +2187,23 @@ export const TERMS: Record<string, Pair> = {
   '호출 주체': { en: 'Callers', zh: '调用方', ja: '呼び出し元' },
   '호출 대상': { en: 'Callees', zh: '被调用方', ja: '呼び出し先' },
   '데이터 저장소': { en: 'Datastores', zh: '数据存储', ja: 'データストア' },
+  // K8s service graph toolbar and disclosures (K8sMapView).
+  '연결된 EKS 클러스터가 없습니다 —': { en: 'No connected EKS clusters —', zh: '没有已连接的 EKS 集群 —', ja: '接続済みの EKS クラスターがありません —' },
+  '/eks에서 클러스터를 등록': { en: 'register a cluster on /eks', zh: '请在 /eks 注册集群', ja: '/eks でクラスターを登録' },
+  '하세요.': { en: '.', zh: '。', ja: 'してください。' },
+  '시스템 네임스페이스 표시': { en: 'Show system namespaces', zh: '显示系统命名空间', ja: 'システム名前空間を表示' },
+  '노드 정보를 불러오는 중…': { en: 'Loading node details…', zh: '正在加载节点信息…', ja: 'ノード情報を読み込み中…' },
+  '노드 정보를 불러오지 못했습니다.': { en: 'Could not load node details.', zh: '无法加载节点信息。', ja: 'ノード情報を読み込めませんでした。' },
+  '일부 리소스를 조회하지 못했습니다:': { en: 'Some resources could not be read:', zh: '部分资源查询失败：', ja: '一部のリソースを取得できませんでした:' },
+  '데이터 저장소 참조를 불러오지 못해 설정 기반 연결을 표시하지 않습니다.': { en: 'Datastore references could not be loaded, so config-inferred connections are not shown.', zh: '无法加载数据存储引用，因此不显示基于配置推断的连接。', ja: 'データストア参照を読み込めないため、設定から推定した接続は表示していません。' },
+  '일부 워크로드의 설정을 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.': { en: 'Some workload configuration could not be read, so datastore connections are only partially shown.', zh: '部分工作负载的配置无法读取，因此仅显示部分数据存储连接。', ja: '一部のワークロードの設定を読み取れないため、データストア接続は一部のみ表示されます。' },
+  '데이터 저장소 참조 조회가 상한에 도달해 일부만 표시됩니다.': { en: 'The datastore reference read hit its limit, so only part is shown.', zh: '数据存储引用查询已达上限，仅显示部分。', ja: 'データストア参照の取得が上限に達したため、一部のみ表示されます。' },
+  // Trace-overlay notices: one per non-available TraceOverlayReason (K8sMapView TRACE_NOTICE, lockstep-tested).
+  '트레이스 토폴로지가 비활성화되어 있어 트레이스로 관측된 호출을 표시하지 않습니다.': { en: 'The trace topology is disabled, so trace-observed calls are not shown.', zh: '追踪拓扑未启用，因此不显示追踪观测到的调用。', ja: 'トレーストポロジーが無効のため、トレースで観測された呼び出しは表示していません。' },
+  '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.': { en: 'Trace-observed calls cannot be shown for the current scope.', zh: '当前范围无法显示追踪观测到的调用。', ja: '現在の範囲ではトレースで観測された呼び出しを表示できません。' },
+  '트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.': { en: 'The trace snapshot could not be read, so trace-observed calls are not shown.', zh: '无法读取追踪快照，因此不显示追踪观测到的调用。', ja: 'トレーススナップショットを読み取れないため、トレースで観測された呼び出しは表示していません。' },
+  '같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.': { en: 'Several clusters share this name, so trace calls cannot be attributed to this cluster.', zh: '存在多个同名集群，因此无法将追踪调用归属到此集群。', ja: '同名のクラスターが複数あるため、トレース呼び出しをこのクラスターに関連付けられません。' },
+  '멤버 계정 클러스터에는 트레이스로 관측된 호출을 표시하지 않습니다 (호스트 계정 전용).': { en: 'Trace-observed calls are not shown for member-account clusters (host account only).', zh: '成员账户集群不显示追踪观测到的调用（仅限主机账户）。', ja: 'メンバーアカウントのクラスターではトレースで観測された呼び出しを表示しません（ホストアカウントのみ）。' },
 
 };
 
