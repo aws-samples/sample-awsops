@@ -648,29 +648,40 @@ decision bodies are maintained upstream).
 
 ## Unified service snapshot pilot
 
-The opt-in `/topology?lens=service` view and `get_topology(class="service")` read the host partition through the same bounded SQL projection. The legacy trace and live network evidence views have their own capture times. The published service snapshot uses the existing Aurora flow, infra, trace and inventory records. Live Kubernetes ownership and NFM windows appear as collection gaps.
+The host's service graph is available at `/topology?lens=service` when the pilot is enabled. The Web API and the AgentCore inventory-read tool (`get_topology(class="service")`) call `sql_reader.service_topology_read` on the same Aurora snapshot. Live Kubernetes ownership and Network Flow Monitor (NFM) windows are reported as gaps.
 
-Review the schema and reader permissions against ADR-010 in private upstream before merging. Run the standalone migration workflow and verify exit 0 and reader synchronization. Then start a fresh dev Web build. See [the release procedure](web-release.md).
+### Prepare the readers
 
-1. The migration creates `awsops_topology_reader` with login disabled on first installation. On the approved private host, use an authenticated, TLS-verified administrative PostgreSQL session to set its dedicated password with `\password awsops_topology_reader`. Store the matching credential under `ops/<project>/agent/topology-reader` in Secrets Manager, using the default Secrets Manager key. The credential identifies database `awsops`, username `awsops_topology_reader`, the cluster endpoint and port 5432. Keep the password out of shell arguments, task environment variables and logs.
-2. After credential synchronization, enable that login with `ALTER ROLE awsops_topology_reader LOGIN`. Check the generic account's isolation with the following read-only query. Both columns must return false.
+1. Review the schema and reader grants against the private inventory and resource model decision (ADR-010). Run the standalone migration, verify exit 0 and reader synchronization, then start a fresh dev Web build. See [the release procedure](web-release.md).
+2. The migration creates `awsops_topology_reader` with login disabled on first installation. In a TLS-verified private administrative PostgreSQL session, set its dedicated password with `\password awsops_topology_reader`.
+3. Store the matching credential in Secrets Manager at `ops/<project>/agent/topology-reader` using the default Secrets Manager key. Include username `awsops_topology_reader`, database `awsops`, the cluster endpoint and port 5432. Keep the password out of shell arguments, task environment variables and logs.
+4. Enable the dedicated login with `ALTER ROLE awsops_topology_reader LOGIN`. Check isolation using the query below. Both columns must return false.
 
    ```sql
    SELECT has_table_privilege('awsops_sql_reader', 'sql_reader.service_topology_entities', 'SELECT') AS can_read_entities,
           has_function_privilege('awsops_sql_reader', 'sql_reader.service_topology_read(uuid,text,text,text,integer,integer)', 'EXECUTE') AS can_call_reader;
    ```
 
-3. The Web reader and inventory-read Lambda call the same `sql_reader.service_topology_read` function. Terraform creates the dedicated Lambda execution role only when AgentCore and `topology_entities_enabled` are enabled. Only inventory-read receives that role and the topology secret binding. The existing generic SQL Lambda keeps its original role and credential.
+### Publish and verify
 
-The publisher rechecks source versions between its class and inventory transactions and before updating the head. Its 8,192-row / 8 MiB inventory budget prioritizes core inputs, then ENI/owner enrichment, API routes and listener rules. The published projection allows up to 20,000 entities, 32,000 relations and 8 MiB. When it reaches a limit, the CLI exits 2. Inspect the entity and relation omission counts in its JSON receipt.
+1. On an approved private host, provide `AURORA_ENDPOINT`, `AURORA_DATABASE`, `AWS_REGION`, the trusted `HOST_ACCOUNT_ID` and a scoped IAM session. Install locked Web dependencies and build the publisher.
+   ```bash
+   npm ci --prefix web
+   npm run build:service-topology --prefix web
+   ```
+2. Publish the current host projection.
+   ```bash
+   AURORA_USER=awsops_worker node scripts/v2/service-topology-rebuild.mjs --publish-host
+   ```
+3. Inspect the CLI exit code and receipt.
 
-On an approved private host with the intended database and a scoped IAM session, install the locked Web dependencies, then use:
+   | Exit | Meaning | Operator action |
+   |---|---|---|
+   | 0 | Confirmed inputs and publication, or reuse of the same head | Record snapshot ID and clocks. |
+   | 2 | Partial publication | Inspect source gaps and the reported numbers of omitted entities and relations. |
+   | 1 | Publication failed | Check the bundle, database role and schema, then retry with a fresh read. |
 
-```bash
-npm run build:service-topology --prefix web
-AURORA_USER=awsops_worker node scripts/v2/service-topology-rebuild.mjs --publish-host
-```
+4. After schema, Lambda, Web and gateway compatibility checks, the controller enables `topology_entities_enabled`. When AgentCore and the pilot are both enabled, Terraform creates the dedicated IAM execution role `aws_iam_role.inventory_topology_reader`. Only inventory-read receives this role and the topology secret binding. Verify one real Data API invocation and compare its snapshot ID, a dependency and a source gap with the Web result.
+5. To disable the pilot, turn off the feature flag and stop manual publication. Disabled authenticated requests for the service class return 404 before a graph read.
 
-Provide the deployment's AURORA_ENDPOINT, AURORA_DATABASE, AWS_REGION and trusted HOST_ACCOUNT_ID. The CLI outputs the snapshot ID, publication outcome, counts and gaps. Exit 2 identifies a published or retained head with partial inputs (including publication omissions), and exit 1 identifies a failed publish. Record the snapshot ID and source clocks. Confirm a service, an observed dependency and a withheld or missing source against that same host generation. Repeating a publication with identical input reuses its head. For a newer generation the publisher checks the previous head and input ledger versions again. A change during capture requires a fresh run.
-
-The controller exposes the readers with `topology_entities_enabled=true` after credential, schema, Lambda, Web and gateway compatibility checks. Exercise a real inventory-read Data API invocation as part of that verification. With the flag disabled the authenticated API and service tool return 404 before reading the graph. To disable the pilot, turn the flag off and stop manual publication. Scheduled collection and retention pruning belong to the subsequent collection rollout.
+The publisher rechecks source versions across short transactions before updating the head. Its 8,192-row / 8 MiB inventory budget prioritizes core inputs, then elastic network interface (ENI) enrichment, API routes and listener rules. The derived projection allows up to 20,000 entities, 32,000 relations and 8 MiB. The CLI reports omissions as partial publication.
