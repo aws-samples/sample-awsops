@@ -133,7 +133,7 @@ export default function VpcResourceMap({
     }
     // Subnets grouped by AZ (sorted).
     const azGroups = new Map<string, SubnetRow[]>();
-    for (const s of [...subnets].sort((a, b) => String(a.availability_zone).localeCompare(String(b.availability_zone)))) {
+    for (const s of subnets.toSorted((a, b) => String(a.availability_zone).localeCompare(String(b.availability_zone)))) {
       const az = s.availability_zone ?? '?';
       azGroups.set(az, [...(azGroups.get(az) ?? []), s]);
     }

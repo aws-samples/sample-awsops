@@ -76,7 +76,7 @@ export async function GET(request: Request) {
         instanceTypes: instanceTypeDistribution(nodes),
         podStatus: podStatusCounts(pods),
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
-        events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
+        events: events.toSorted((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
         ...(source ? { nodesSource: source } : {}),
         ...(nodesFailure ? { nodesReason: nodesFailure.reason, nodesError: nodesFailure.message } : {}),
         ...(eventsFailure ? { eventsReason: eventsFailure.reason, eventsError: eventsFailure.message } : {}),

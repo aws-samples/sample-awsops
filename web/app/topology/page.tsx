@@ -12,6 +12,7 @@ import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
+import { isComposingKey } from '@/lib/ime';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
@@ -769,7 +770,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && searchMatches[0]) { setSelected(searchMatches[0]); setQuery(''); }
+                    if (e.key === 'Enter' && !isComposingKey(e) && searchMatches[0]) { setSelected(searchMatches[0]); setQuery(''); }
                     if (e.key === 'Escape') setQuery('');
                   }}
                   placeholder={tt('리소스 이름 검색…')}

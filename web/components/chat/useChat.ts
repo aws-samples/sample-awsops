@@ -255,7 +255,7 @@ export function useChat() {
       ...(m.role === 'assistant' && m.tools?.length ? { tools: m.tools } : {}),
     }));
     // Follow-up continuity: the section that answered last (server re-validates; a keyword wins).
-    const previousSection = [...msgs].reverse().find((m) => m.role === 'assistant' && m.gateway)?.gateway;
+    const previousSection = msgs.toReversed().find((m) => m.role === 'assistant' && m.gateway)?.gateway;
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);
     setBusy(true);
     const ac = new AbortController();
@@ -309,8 +309,8 @@ export function useChat() {
   }
 
   function resendWith(sectionKey: string) {
-    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-    const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant');
+    const lastUser = msgs.toReversed().find((m) => m.role === 'user');
+    const lastAssistant = msgs.toReversed().find((m) => m.role === 'assistant');
     // Only a misroute candidate if the previous answer came from a LIVE agent —
     // switching away from an inactive-section guidance bubble is not a misroute (ADR-003[legacy 038] §5).
     const prevGateway = lastAssistant?.gateway;

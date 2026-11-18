@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Korean/CJK text input: pressing Enter to confirm an IME composition no longer sends the chat message, runs the data source query or AI query generation, adds a diagnosis tag or subscriber, picks the first topology search match, or activates the command palette selection.
 - Topology K8s map: follows the shared account/region selector and lists connected clusters from every registered account in scope, not only the host account. Member clusters are selected and read by their full EKS ARN through the member read role, labeled with account and region, so a shared cluster name never shows another account's data; partially failed or capped cluster listings and rejected scopes are shown instead of an apparently complete list.
 - AgentCore cross-account reads: the new optional `agent_external_id` Terraform input sends the target account's ExternalId from the AgentCore tool Lambdas, and the target-account role template has an optional `AgentLambdaRoleArn` trust statement under the same ExternalId condition. Together they let chat tools such as ENI, security group and route lookups assume an onboarded account's read-only role instead of failing with `AccessDenied`. The value is shared by every target, so it works for targets whose trust uses that ExternalId. Unset, nothing changes.
 - Graph refresh after a web restart: when a rebuild finds an inventory collection still in progress, the background graph timer retries every two minutes until the collection finishes (bounded by the collector's seven-minute limit) instead of keeping the previous request-flow, infrastructure and service-map graphs until the timing happens to shift, which could last indefinitely after a restart.
@@ -727,6 +728,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### 수정
 
+- 한국어/CJK 입력: IME 조합을 확정하려고 Enter를 눌러도 채팅 메시지 전송, 데이터소스 쿼리 실행·AI 쿼리 생성, 진단 태그·구독자 추가, 토폴로지 검색의 첫 결과 선택, 명령 팔레트 선택 실행이 동작하지 않습니다.
 - 토폴로지 K8s 맵: 공통 계정·리전 선택을 따르며, host 계정뿐 아니라 범위 안의 모든 등록 계정에서 connected 클러스터를 나열합니다. 멤버 클러스터는 전체 EKS ARN으로 선택하고 멤버 읽기 역할로 조회하며 계정·리전을 함께 표시하므로, 같은 이름의 클러스터가 다른 계정 데이터를 보여 주지 않습니다. 일부 실패했거나 상한에서 잘린 목록과 거부된 범위는 완전한 목록처럼 보이지 않도록 표시합니다.
 - AgentCore 교차 계정 조회: 선택 Terraform 입력 `agent_external_id`를 설정하면 AgentCore 도구 Lambda가 대상 계정의 ExternalId를 보내고, 대상 계정 역할 템플릿에는 같은 ExternalId 조건이 붙는 선택 `AgentLambdaRoleArn` 신뢰 문이 추가됩니다. 둘을 함께 설정하면 ENI·보안 그룹·라우팅 조회 같은 채팅 도구가 `AccessDenied`로 실패하지 않고 등록된 계정의 읽기 전용 역할을 맡습니다. 값은 모든 대상 계정이 함께 쓰므로 신뢰 정책에 같은 ExternalId를 쓰는 대상 계정에서만 동작합니다. 설정하지 않으면 아무것도 바뀌지 않습니다.
 - web 재시작 후 그래프 갱신: 그래프 재생성 시점에 인벤토리 수집이 진행 중이면 백그라운드 타이머가 수집이 끝날 때까지 2분 간격으로 다시 시도합니다(수집기의 7분 제한까지). 이전에는 재시작 시각에 따라 요청 흐름·인프라·서비스 맵 그래프가 계속 이전 상태로 남을 수 있었습니다.

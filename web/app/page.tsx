@@ -450,7 +450,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
     if (impactTrend?.degraded) return [];
     if (resTrend?.accounts && impactTrend?.accounts
       && !sameAccountSet(resTrend.accounts, impactTrend.accounts)) return [];
-    const pts = [...(impactTrend?.trend ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+    const pts = (impactTrend?.trend ?? []).toSorted((a, b) => a.date.localeCompare(b.date));
     if (pts.length < 2) return [];
     const last = pts[pts.length - 1];
     if (nearestSnapshot(pts, 0) !== last) return []; // latest point itself is stale

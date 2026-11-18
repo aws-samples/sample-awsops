@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { isComposingKey } from '@/lib/ime';
 
 // Mailing list for diagnosis-completion email (v1 parity — manual + scheduled). Reads/writes
 // /api/diagnosis/subscribers (SNS topic email subscriptions). Visible only when the feature is enabled
@@ -187,7 +188,7 @@ export default function SubscribersPanel() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') add();
+              if (e.key === 'Enter' && !isComposingKey(e)) add();
             }}
             placeholder="email@example.com"
             aria-label={tt('구독 이메일 추가')}

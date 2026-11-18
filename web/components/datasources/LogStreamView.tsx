@@ -37,7 +37,7 @@ export default function LogStreamView({ rows }: { rows: LogRow[] }) {
   if (!rows.length) return null;
   // The normalizer flattens Loki streams block-by-block (no cross-stream order) — sort here so
   // the "최신순" header is actually true. ISO timestamps compare lexically; blanks sort last.
-  const sorted = [...rows].sort((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
+  const sorted = rows.toSorted((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-ink-100 px-3 py-2 text-[12px] text-ink-500">

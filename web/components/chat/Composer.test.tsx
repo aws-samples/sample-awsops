@@ -90,6 +90,14 @@ describe('Composer multiline (Shift+Enter)', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend.mock.calls[0][0]).toBe('hello there');
   });
+  it('Enter that confirms an IME composition does NOT submit', () => {
+    const { input, onSend } = setup();
+    fireEvent.change(input, { target: { value: '안녕' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe('안녕');
+  });
   it('renders a textarea (multiline-capable), not a single-line input', () => {
     const { input } = setup();
     expect(input.tagName).toBe('TEXTAREA');

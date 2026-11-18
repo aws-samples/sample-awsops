@@ -143,7 +143,7 @@ export default function DataTable({
 
   const sortedRows = useMemo(() => {
     if (!sort) return rows;
-    return [...rows].sort((ra, rb) => compareValues(ra[sort.key], rb[sort.key], sort.dir));
+    return rows.toSorted((ra, rb) => compareValues(ra[sort.key], rb[sort.key], sort.dir));
   }, [rows, sort]);
 
   const toggleSort = (key: string) =>

@@ -107,17 +107,13 @@ const SNS_URL_PATTERN = /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com\//;
 async function confirmSnsSubscription(body: Record<string, unknown>): Promise<NextResponse> {
   const subscribeUrl = body.SubscribeURL;
   if (typeof subscribeUrl === 'string' && SNS_URL_PATTERN.test(subscribeUrl)) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
     try {
-      const res = await fetch(subscribeUrl, { signal: ctrl.signal });
+      const res = await fetch(subscribeUrl, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error('confirm http error'); // non-2xx → fall to 400 so SNS retries
       console.log('[IncidentWebhook] SNS subscription confirmed'); // never log TopicArn/URL
       return NextResponse.json({ status: 'subscription_confirmed' });
     } catch {
       console.error('[IncidentWebhook] SNS subscription confirmation failed');
-    } finally {
-      clearTimeout(timer);
     }
   }
   return NextResponse.json({ error: 'Invalid subscription URL' }, { status: 400 });

@@ -46,7 +46,7 @@ export default function NodeCapacityList({ rows, requestsPending = false }: { ro
     n.memAllocatableMiB > 0 && n.memRequestMiB != null ? n.memRequestMiB / n.memAllocatableMiB : 0,
   );
   const shown = rows.length > MAX_RENDER
-    ? [...rows].sort((a, b) => (Number(unknown(b)) - Number(unknown(a))) || (pressure(b) - pressure(a))).slice(0, MAX_RENDER)
+    ? rows.toSorted((a, b) => (Number(unknown(b)) - Number(unknown(a))) || (pressure(b) - pressure(a))).slice(0, MAX_RENDER)
     : rows;
   // Pending (pods fan-out in flight) reads '로딩 중', failed reads '미상' — never conflated.
   const unknownText = requestsPending ? tt('요청량 로딩 중…') : tt('요청량 미상');

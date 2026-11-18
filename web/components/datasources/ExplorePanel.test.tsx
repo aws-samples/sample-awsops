@@ -139,6 +139,30 @@ describe('ExplorePanel', () => {
     expect(JSON.parse(qbodies[0]).range).toMatchObject({ window: 3600 });
   });
 
+  it('Enter confirming an IME composition neither generates nor runs; plain Enter does', async () => {
+    const urls: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url === '/api/datasources') return { ok: true, status: 200, json: async () => ({ datasources: INSTANCES }) };
+      if (url === '/api/datasources/generate') return { ok: true, status: 200, json: async () => ({ query: 'up', lang: 'PromQL' }) };
+      return { ok: true, status: 200, json: async () => ({ result: { shape: 'empty' } }) };
+    }) as unknown as typeof fetch;
+    render(<ExplorePanel instanceId={1} />);
+    const nl = await screen.findByPlaceholderText(/자연어/);
+    fireEvent.change(nl, { target: { value: '노드 cpu' } });
+    fireEvent.keyDown(nl, { key: 'Enter', isComposing: true });
+    const q = screen.getByPlaceholderText(/PromQL/);
+    fireEvent.change(q, { target: { value: 'up' } });
+    fireEvent.keyDown(q, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(q, { key: 'Enter', keyCode: 229 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(urls.filter((u) => u.endsWith('/generate') || u.endsWith('/query'))).toEqual([]);
+    fireEvent.keyDown(nl, { key: 'Enter' });
+    await waitFor(() => expect(urls).toContain('/api/datasources/generate'));
+    fireEvent.keyDown(q, { key: 'Enter' });
+    await waitFor(() => expect(urls).toContain('/api/datasources/query'));
+  });
+
   // --- Part 2 / Task 3: instant ranked bar chart (gated to prom/mimir vector) ---
   function mockApi(instances: unknown[], resultPayload: unknown) {
     global.fetch = vi.fn(async (url: string) => ({

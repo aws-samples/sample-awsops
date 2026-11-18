@@ -235,7 +235,7 @@ function EksOverview({ scopeQuery }: { scopeQuery: string }) {
   // GET flag) are surfaced first and registered only when the admin clicks [조회 등록].
   const verifiedRows = useMemo(() => (rows ?? []).filter((c) => isVerifiedCandidate(c, admin)), [rows, admin]);
   const cardRows = useMemo(
-    () => [...facetRows].sort((a, b) => Number(isVerifiedCandidate(b, admin)) - Number(isVerifiedCandidate(a, admin))),
+    () => facetRows.toSorted((a, b) => Number(isVerifiedCandidate(b, admin)) - Number(isVerifiedCandidate(a, admin))),
     [facetRows, admin],
   );
   // The card-click scope must not silently zero every panel when the facet excludes it.
