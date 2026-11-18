@@ -53,7 +53,7 @@ function mockList(reports: Array<Record<string, unknown>>) {
 describe('DiagnosisView six-pillar coverage', () => {
   const keys = ['operational_excellence', 'security', 'reliability',
     'performance_efficiency', 'cost_optimization', 'sustainability'];
-  const names = ['운영 우수성', '보안', '안정성', '성능 효율성', '비용 최적화', '지속 가능성'];
+  const names = ['운영 우수성', '보안', '신뢰성', '성능 효율성', '비용 최적화', '지속 가능성'];
 
   function show(summary: Record<string, unknown>) {
     const report = { id: 11, tier: 'deep', status: 'partial',

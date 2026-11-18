@@ -98,3 +98,11 @@ def test_ledger_reads_the_same_task_and_reserve_env_as_report():
     env = {**os.environ, "DIAGNOSIS_TASK_BUDGET_S": "1800", "DIAGNOSIS_POST_RENDER_RESERVE_S": "300"}
     workers = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     subprocess.run([sys.executable, "-c", code], cwd=workers, env=env, check=True)
+
+
+def test_editor_cannot_spend_last_call_reserved_for_checker():
+    budget = ReportBudget("mid")
+    budget.limits["attempts"] = 1
+    with pytest.raises(BudgetExceeded):
+        budget.reserve("report_editor", "sonnet", 1, 1)
+    budget.reserve("report_editor_check", "sonnet", 1, 1)

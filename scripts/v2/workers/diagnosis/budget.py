@@ -72,7 +72,7 @@ class ReportBudget:
                 raise BudgetExceeded("analysis deadline exhausted")
             # Every specialist/retry leaves capacity for a bounded final review.
             # Review attempts can consume this reserve. Nothing refunds a failed attempt.
-            final = stage in {"review", "final_review"}
+            final = stage in {"review", "final_review", "report_editor_check"}
             held_calls = 0 if final else 1
             held_bytes = 0 if final else MAX_INPUT_BYTES
             # The review may run on a heavier model than this specialist (Opus-class thinking).

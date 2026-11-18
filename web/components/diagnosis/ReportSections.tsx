@@ -71,10 +71,15 @@ function SeverityIcon({ severity, title }: { severity: Severity; title: string }
 export default function ReportSections({ markdown }: { markdown: string }) {
   const { tt } = useI18n();
   const { preamble, sections } = useMemo(() => splitSections(markdown), [markdown]);
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const initialCollapsed = useMemo(() => {
+    const toc = markdown.split(/^## /m, 1)[0].split('\n');
+    return new Set(sections.flatMap((section, i) =>
+      toc.includes(`- [${section.title}](#evidence_appendix)`) ? [i] : []));
+  }, [markdown, sections]);
+  const [collapsed, setCollapsed] = useState<Set<number>>(initialCollapsed);
   const refs = useRef<(HTMLElement | null)[]>([]);
   // Switching to another report must not carry report A's collapsed indexes onto report B.
-  useEffect(() => { setCollapsed(new Set()); }, [markdown]);
+  useEffect(() => { setCollapsed(initialCollapsed); }, [initialCollapsed]);
 
   // No sections (legacy/degraded markdown) → the original continuous document, unchanged.
   if (sections.length === 0) return <ReportMarkdown markdown={markdown} />;

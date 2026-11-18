@@ -162,10 +162,10 @@ def test_findings_render_in_the_pillar_dedicated_section(pillar, deep, shared):
     assert "| Evidence |" in dict(presentation.render(SECTIONS, bundle(), rows, lang="en"))[shared]
 
 
-def test_local_title_and_tags_use_pillar_and_native_identity():
+def test_local_title_describes_account_and_tags_preserve_findings():
     from diagnosis import presentation
     meta = presentation.title_and_tags(bundle(), analysis(), lang="en")
-    assert "i-0123456789abcdef0" in meta["title"]
+    assert meta["title"] == "AWS account assessment — six Well-Architected pillars"
     assert "performance_efficiency" in meta["tags"]
     assert "Memory pressure" not in meta["title"]
 
@@ -432,4 +432,4 @@ def test_pillar_table_and_localized_title():
     assert "| Security | ` partial ` | ` 2 ` | — | — | ` revalidation_dropped=1 ` |" in body
     two = analysis(findings=[finding(), finding(id="finding-b", severity="low")])
     meta = presentation.title_and_tags(bundle(), two, lang="ko")
-    assert meta["title"] == "AWS 진단 — 성능 효율성 외 1건 (i-0123456789abcdef0)"
+    assert meta["title"] == "AWS 계정 종합진단 — Well-Architected 6대 영역 점검"

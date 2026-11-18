@@ -68,7 +68,7 @@ def _commandlike(value):
 _PILLARS = {
     "operational_excellence": ("Operational Excellence", "運用上の優秀性", "运营卓越", "운영 우수성"),
     "security": ("Security", "セキュリティ", "安全性", "보안"),
-    "reliability": ("Reliability", "信頼性", "可靠性", "안정성"),
+    "reliability": ("Reliability", "信頼性", "可靠性", "신뢰성"),
     "performance_efficiency": ("Performance Efficiency", "パフォーマンス効率", "性能效率", "성능 효율성"),
     "cost_optimization": ("Cost Optimization", "コスト最適化", "成本优化", "비용 최적화"),
     "sustainability": ("Sustainability", "持続可能性", "可持续性", "지속 가능성"),
@@ -389,7 +389,7 @@ def _reference(finding, copy, lang="ko"):
             f"{_cell(label)} — {prose}({copy[0]} {_code(finding.get('id', ''))})")
 
 
-def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
+def render(catalog, bundle, analysis, *, lang="ko", invariant_md="", max_bytes=None):
     """Return catalog-ordered bodies; each admitted finding renders in full exactly once."""
     copy = _COPY.get(lang, _COPY["ko"])
     evidence = {e["id"]: e for e in bundle.get("evidence", [])}
@@ -434,8 +434,9 @@ def render(catalog, bundle, analysis, *, lang="ko", invariant_md=""):
             output[key] += "\n\n" + _coverage(bundle, analysis, copy, lang)
     bodies = {key: _swept(output[key], lang) for key in keys}
     # Trim the largest sections first; the deterministic intended-vs-actual verdicts go last.
+    limit = MAX_MARKDOWN_BYTES if max_bytes is None else max_bytes
     for key in sorted(keys, key=lambda k: (k == "intended_vs_actual", -len(bodies[k].encode()))):
-        over = sum(len(b.encode()) for b in bodies.values()) - MAX_MARKDOWN_BYTES
+        over = sum(len(b.encode()) for b in bodies.values()) - limit
         if over <= 0:
             break
         bodies[key] = _trim(bodies[key], len(bodies[key].encode()) - over, lang)
@@ -452,26 +453,9 @@ def _trim(body, limit, lang):
 
 def title_and_tags(bundle, analysis, *, lang="ko"):
     findings = _ordered(analysis)
-    default = {"ko": "근거 기반 AWS 진단", "en": "Evidence-based AWS diagnosis",
-               "zh": "基于证据的 AWS 诊断", "ja": "根拠に基づく AWS 診断"}
-    if not findings:
-        return {"title": default.get(lang, default["ko"]), "tags": ["diagnosis"]}
-    top = findings[0]
-    pillar = top.get("pillar")
-    names = _PILLARS.get(pillar, ("AWS",) * 4)
-    label = names[{"en": 0, "ja": 1, "zh": 2, "ko": 3}.get(lang, 3)]
-    resources = {r["id"]: r for r in bundle.get("resources", [])}
-    targets = [resources[rid]["resource_id"] for rid in top.get("resource_ids", []) if rid in resources]
-    # Titles are plain text; never echo model prose or telemetry labels.
-    # The title reaches the SNS digest; scrub identities (ARNs, account ids) like the body.
-    from .evidence import _scrub_text
-    head = {"ko": "AWS 진단 — {label}", "en": "AWS diagnosis — {label}",
-            "zh": "AWS 诊断 — {label}", "ja": "AWS 診断 — {label}"}
-    more = {"ko": " 외 {n}건", "en": " and {n} more", "zh": " 等 {n} 项", "ja": " ほか{n}件"}
-    title = head.get(lang, head["ko"]).format(label=label)
-    if len(findings) > 1:
-        title += more.get(lang, more["ko"]).format(n=len(findings) - 1)
-    if targets:
-        title = title[:96] + " (" + _scrub_text(str(targets[0]), "")[:100] + ")"
-    return {"title": title[:200],
-            "tags": list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))[:6]}
+    titles = {"ko": "AWS 계정 종합진단 — Well-Architected 6대 영역 점검",
+              "en": "AWS account assessment — six Well-Architected pillars",
+              "zh": "AWS 账户综合诊断 — Well-Architected 六大支柱",
+              "ja": "AWS アカウント総合診断 — Well-Architected の六つの柱"}
+    tags = list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))
+    return {"title": titles.get(lang, titles["ko"]), "tags": tags or ["diagnosis"]}

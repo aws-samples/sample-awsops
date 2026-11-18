@@ -1,4 +1,5 @@
 """Offline report-path acceptance; no paid model calls or AWS credentials."""
+import re
 import pytest
 
 from diagnosis import report
@@ -83,13 +84,14 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     progress = []
     md, summary, used = report.generate(object(), "self", tier,
                                        lang=lang, on_progress=lambda *a: progress.append(a))
-    assert summary["sections"] == count
+    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 10
+    assert len(re.findall(r"^### ", md.split("\n## ")[-1], re.M)) == count - 1
     assert summary["evidence_loop"]["enabled"] is True
     assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
     assert "17.25" in md
-    assert progress[-1][0:2] == (count, count)
-    assert len(progress[-1][4]) == count
+    assert progress[-1][0:2] == (10, 10)
+    assert len(progress[-1][4]) == 10
     assert used
 
 
@@ -417,7 +419,13 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
             assert request["thinking"] == {"type": "between_tools"}
             assert "temperature" not in request
             context = json.loads(request["messages"][0]["content"][0]["text"])
-            if "findings" not in context:
+            if "candidates" in context:
+                row = context["candidates"][0]
+                output = {"lead": [row["id"]], "context": [], "next": [row["id"]],
+                          "paragraphs": [] if row["claim"] == "observation" else [{"id": row["id"], "text": row["explanation"]}]}
+            elif "pairs" in context:
+                output = {"accepted": [row["source"]["id"] for row in context["pairs"]]}
+            elif "findings" not in context:
                 pillar = request["system"].split("Required pillar key: ")[1].split(".", 1)[0]
                 rows = []
                 if pillar == "reliability":
@@ -449,7 +457,8 @@ def test_actual_structured_loop_admits_pair_and_summary_without_model_numbers(mo
     monkeypatch.setattr(report, "_bedrock_render", lambda *a: pytest.fail("free Markdown inference"))
     md, summary, used = report.generate(object(), ACCOUNT, "light", lang="en",
                                        budget=ReportBudget("light"))
-    assert summary["budget"]["attempt_count"] == 7
+    assert summary["budget"]["attempt_count"] == 9
+    assert [s["stage"] for s in summary["model_stages"][-2:]] == ["report_editor", "report_editor_check"]
     assert summary["pillar_coverage"]["reliability"]["status"] == "partial"
     assert any(row["id"] == "rel:fabricated" for row in summary["rejected_findings"])
     assert "123.75" in md and "USD" in md and "posture" in used
@@ -478,7 +487,13 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
         def invoke_model(self, *, modelId, body):
             request = json.loads(body)
             context = json.loads(request["messages"][0]["content"][0]["text"])
-            if "Required pillar key: " in request["system"]:
+            if "candidates" in context:
+                row = context["candidates"][0]
+                output = {"lead": [row["id"]], "context": [], "next": [row["id"]],
+                          "paragraphs": [] if row["claim"] == "observation" else [{"id": row["id"], "text": row["explanation"]}]}
+            elif "pairs" in context:
+                output = {"accepted": [row["source"]["id"] for row in context["pairs"]]}
+            elif "Required pillar key: " in request["system"]:
                 pillar = request["system"].split("Required pillar key: ")[1].split(".", 1)[0]
                 findings = []
                 if pillar == "reliability":
@@ -512,7 +527,8 @@ def test_actual_discovery_to_report_preserves_two_same_service_pairs(monkeypatch
     assert set(observed_pairs) == {(I1, "db1"), (I2, "db2")}
     assert summary["pillar_coverage"]["reliability"]["findings"] == 2
     assert summary["pillar_coverage"]["reliability"]["status"] == "completed"
-    assert summary["budget"]["attempt_count"] == 7
+    assert summary["budget"]["attempt_count"] == 8
+    assert summary["model_stages"][-1]["stage"] == "report_editor"
     md = html.unescape(md)
     assert f"` {I1} `, ` db1 `" in md and f"` {I2} `, ` db2 `" in md
     assert f"` {I1} `, ` db2 `" not in md and f"` {I2} `, ` db1 `" not in md
@@ -590,3 +606,67 @@ def test_connection_broken_during_follow_up_keeps_the_rendered_report(monkeypatc
     monkeypatch.setattr(report.ddb, "get_report_summary", lambda *a: pytest.fail("reused a closed conn"))
     md, summary, _ = report.generate(object(), "self", report_id=4)
     assert md and "database_connection_broken" in summary["degraded"] and "diff" not in summary
+
+
+@pytest.mark.parametrize("failure", ["number", "scope", "unsupported"])
+def test_editor_rejects_new_facts_wrong_citations_and_unverified_paragraphs(monkeypatch, failure):
+    from diagnosis import pillar_agents
+    from diagnosis.pillar_agents import ModelStageError
+    from diagnosis.test_presentation import finding
+
+    def reply(stage, *args, **kwargs):
+        if stage == "report_editor":
+            return {"lead": ["F1"], "context": [], "next": [],
+                    "paragraphs": [{"id": "F2" if failure == "scope" else "F1",
+                                    "text": "Memory is 99% full." if failure == "number" else
+                                            "Memory pressure needs verification."}], "_stage": {}}
+        assert failure == "unsupported"
+        return {"accepted": [], "_stage": {}}
+    monkeypatch.setattr(pillar_agents, "_structured", reply)
+    with pytest.raises(ModelStageError):
+        pillar_agents.edit_report([finding()], model_id="test", budget=None, lang="en")
+
+
+def test_reader_body_qualifies_hypothesis_without_unrelated_measurement(monkeypatch):
+    data = bundle()
+    data["evidence"][0]["facts"]["metrics"] = {
+        "CPUUtilization": {"Maximum": {"max": 25.25, "unit": "Percent", "status": "Complete"}}}
+    prepare(monkeypatch, data=data)
+    md, _, _ = report.generate(object(), "self", lang="en")
+    body, appendix = md.split("\n## Evidence appendix\n", 1)
+    assert "2026-11-04" in body
+    assert "25.25" not in body and "25.25" in appendix
+    assert "Memory pressure needs verification." in body
+    assert "| --- |" not in body.split("## Intended vs Actual")[0]
+    assert data["evidence"][0]["id"] not in body and data["evidence"][0]["id"] in appendix
+
+
+def test_editor_selection_cannot_hide_critical_or_unassessed_pillars(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id="minor", severity="low"), finding(id="urgent", pillar="security",
+            severity="critical", explanation="Access controls need verification.")]
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["minor"], "context": [], "next": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    body = md.split("\n## Evidence appendix")[0]
+    assert "[Critical]" in body.split("\n## Operational Excellence")[0]
+    assert "Access controls need verification." in body.split("\n## Security")[1].split("\n## ")[0]
+    assert "Unassessed" in body.split("\n## Sustainability")[1].split("\n## ")[0]
+
+def test_bounded_report_preserves_pillars_and_evidence_with_large_resource_names(monkeypatch):
+    from diagnosis.test_presentation import finding
+    from diagnosis.evidence import PILLARS
+    from diagnosis import presentation
+    data = bundle()
+    refs = []
+    for i in range(16):
+        data["resources"].append({**data["resources"][0], "id": str(i),
+                                  "resource_id": "가" * 240})
+        refs.append(str(i))
+    rows = [finding(id=f"{pillar}-{i}", pillar=pillar, resource_ids=refs)
+            for pillar in PILLARS for i in range(8)]
+    prepare(monkeypatch, data=data, findings=analysis(findings=rows))
+    md, summary, _ = report.generate(object(), "self", lang="en")
+    assert len(md.encode()) <= presentation.MAX_MARKDOWN_BYTES
+    assert len(md.split("\n## Evidence appendix")[1].encode()) > 1024
+    assert any(key in PILLARS for key in summary["render_degraded"])

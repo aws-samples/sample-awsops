@@ -4,7 +4,7 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 const PILLARS = [
   ['operational_excellence', '운영 우수성'],
   ['security', '보안'],
-  ['reliability', '안정성'],
+  ['reliability', '신뢰성'],
   ['performance_efficiency', '성능 효율성'],
   ['cost_optimization', '비용 최적화'],
   ['sustainability', '지속 가능성'],
