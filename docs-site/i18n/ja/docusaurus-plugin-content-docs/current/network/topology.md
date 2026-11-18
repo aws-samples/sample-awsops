@@ -23,7 +23,7 @@ AWS インフラと Kubernetes クラスターの関係を視覚的に探索す�
 | **VPC 接続** | VPC の接続構成 | TGW・ピアリング接続の確認 |
 | **配置グラフ（デフォルト）** | 保存済み AWS リソース | VPC・サブネット別の絞り込みとページ切り替え |
 | **インフラマップ** | 保存済み AWS リソース | リソース階層の確認 |
-| **K8s マップ** | EKS ワークロード | Pod・Service・Ingress・Node の関係 |
+| **K8s マップ** | EKS ワークロード | 名前空間ごとの Service グラフ (DNS → Gateway → Service → データストア) |
 
 ### Infrastructure ビュー
 
@@ -54,20 +54,22 @@ AWS インフラと Kubernetes クラスターの関係を視覚的に探索す�
 
 ### Kubernetes ビュー
 
-4 カラムのリソースマップで EKS ワークロードを表示します:
+選択したクラスターを名前空間ごとにまとめた Service グラフで表示します (DNS → Gateway → Service → データストア):
 
-| カラム | リソース | 説明 |
+| ノード | リソース | 説明 |
 |------|--------|------|
-| **Ingress** | K8s Ingress | 外部トラフィックのエントリーポイント |
-| **Services** | K8s Service | ロードバランシング、ClusterIP/NodePort/LoadBalancer |
-| **Pods** | K8s Pod | 実行中のコンテナ |
-| **Nodes** | EKS Node | ワーカーノード(EC2) |
+| **DNS** | Route 53 レコード | ゲートウェイのロードバランサーホスト名を正確に指すエイリアス・CNAME レコード |
+| **Gateway** | K8s Ingress、LoadBalancer Service | 外部トラフィックのエントリーポイント |
+| **Service** | K8s Service | 名前空間のボックス内に表示 |
+| **データストア** | RDS・ElastiCache・OpenSearch・MSK | Pod の環境変数・ConfigMap またはトレースで確認したマネージドホスト |
+
+実線はトレースで観測された呼び出し、点線は設定から推定したデータストア接続、細線は DNS・Ingress・LoadBalancer のルーティングです。トレースの呼び出しはホストアカウントのクラスターにのみ表示されます。Pod と Node はグラフには描かず、Service をクリックすると開く詳細パネルに表示します。システム名前空間はデフォルトで非表示です。
 
 ### インタラクション機能
 
 **検索**
 - Infrastructure: EC2、Subnet、VPC を名前/ID/CIDR で検索
-- Kubernetes: Pod、Service、Namespace を検索
+- Kubernetes: Service、Ingress、Namespace、データストアを検索
 - マッチしたリソースと関連リソースを自動でハイライト
 
 **クリック選択**
@@ -99,10 +101,10 @@ AWS インフラと Kubernetes クラスターの関係を視覚的に探索す�
 
 ### K8s トラフィックフローの分析
 
-1. **Kubernetes** ビューを選択
-2. Ingress → Service → Pod → Node の流れを確認
-3. Service をクリックして接続された Pod を確認
-4. 検索で特定のワークロードを追跡
+1. **K8s マップ** タブを選択
+2. DNS → Gateway → Service → データストアの流れを確認
+3. Service をクリックして詳細パネルで Pod・Node を確認
+4. 検索で特定の Service・名前空間を追跡
 
 ### Graph View の活用
 
@@ -123,20 +125,21 @@ AWS インフラと Kubernetes クラスターの関係を視覚的に探索す�
 
 :::tip K8s Service のデバッグ
 「Service に Pod が接続されていない」問題の解決:
-1. Kubernetes ビューで Service をクリック
-2. 接続された Pod を確認(0 pods なら問題あり)
+1. K8s マップで Service をクリック
+2. 詳細パネルの Pod 一覧を確認(空なら問題あり)
 3. Pod の labels と Service の selector が一致しているか確認
-4. Pod があれば Node まで追跡してリソースの状態を確認
+4. Pod があれば詳細パネルの Node 情報でリソースの状態を確認
 :::
 
 :::info 色の凡例
 | 色 | Infrastructure | Kubernetes |
 |------|---------------|------------|
-| Cyan | VPC, IGW | Ingress |
-| Green | Subnet | Node |
-| Purple | EC2 | Pod |
+| Cyan | VPC, IGW | - |
+| Green | Subnet | - |
+| Purple | EC2 | DNS, Gateway |
+| Blue | - | Service |
 | Pink | ELB | - |
-| Orange | RDS, NAT | Service |
+| Orange | RDS, NAT | データストア |
 | Red | TGW | - |
 
 マップ上部の情報行の凡例チップは現在のグラフに存在する種類のみ表示します。カード名の横のステータスドットも凡例に表示されます — **ok**（緑）/ **warn**（オレンジ）/ **bad**（赤）/ **neutral**（グレー）。

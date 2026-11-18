@@ -23,7 +23,7 @@ AWS 인프라와 Kubernetes 클러스터의 관계를 시각적으로 탐색하�
 | **VPC 연결** | VPC 연결 구성 | TGW·피어링 연결 조회 |
 | **배치 그래프 (기본)** | 저장된 AWS 리소스 | VPC·서브넷별 필터와 페이지 탐색 |
 | **인프라 맵** | 저장된 AWS 리소스 | 리소스 계층 보기 |
-| **K8s 맵** | EKS 워크로드 | Pod·Service·Ingress·Node 관계 |
+| **K8s 맵** | EKS 워크로드 | 네임스페이스별 Service 그래프 (DNS → Gateway → Service → 데이터 저장소) |
 
 ### Infrastructure 뷰
 
@@ -54,20 +54,22 @@ AWS 인프라와 Kubernetes 클러스터의 관계를 시각적으로 탐색하�
 
 ### Kubernetes 뷰
 
-4컬럼 리소스 맵으로 EKS 워크로드를 표시합니다:
+선택한 클러스터를 네임스페이스별로 묶은 Service 그래프로 표시합니다 (DNS → Gateway → Service → 데이터 저장소):
 
-| 컬럼 | 리소스 | 설명 |
+| 노드 | 리소스 | 설명 |
 |------|--------|------|
-| **Ingress** | K8s Ingress | 외부 트래픽 진입점 |
-| **Services** | K8s Service | 로드밸런싱, ClusterIP/NodePort/LoadBalancer |
-| **Pods** | K8s Pod | 실행 중인 컨테이너 |
-| **Nodes** | EKS Node | 워커 노드 (EC2) |
+| **DNS** | Route 53 레코드 | 게이트웨이의 로드밸런서 호스트 이름을 정확히 가리키는 별칭·CNAME 레코드 |
+| **Gateway** | K8s Ingress, LoadBalancer Service | 외부 트래픽 진입점 |
+| **Service** | K8s Service | 네임스페이스 상자 안에 표시 |
+| **데이터 저장소** | RDS·ElastiCache·OpenSearch·MSK | Pod 환경 변수·ConfigMap 또는 트레이스에서 확인한 관리형 호스트 |
+
+실선은 트레이스로 관측된 호출, 점선은 설정에서 추론한 데이터 저장소 연결, 가는 선은 DNS·Ingress·LoadBalancer 라우팅입니다. 트레이스 호출은 host 계정 클러스터에만 표시됩니다. Pod와 Node는 그래프에 그리지 않고 Service를 클릭하면 열리는 상세 패널에 표시합니다. 시스템 네임스페이스는 기본으로 숨겨집니다.
 
 ### 상호작용 기능
 
 **검색**
 - Infrastructure: EC2, Subnet, VPC 이름/ID/CIDR 검색
-- Kubernetes: Pod, Service, Namespace 검색
+- Kubernetes: Service, Ingress, Namespace, 데이터 저장소 검색
 - 매칭된 리소스와 연관 리소스 자동 하이라이트
 
 **클릭 선택**
@@ -99,10 +101,10 @@ AWS 인프라와 Kubernetes 클러스터의 관계를 시각적으로 탐색하�
 
 ### K8s 트래픽 흐름 분석
 
-1. **Kubernetes** 뷰 선택
-2. Ingress → Service → Pod → Node 흐름 확인
-3. Service 클릭으로 연결된 Pod 확인
-4. 검색으로 특정 워크로드 추적
+1. **K8s 맵** 탭 선택
+2. DNS → Gateway → Service → 데이터 저장소 흐름 확인
+3. Service 클릭으로 상세 패널에서 Pod·Node 확인
+4. 검색으로 특정 Service·네임스페이스 추적
 
 ### Graph View 활용
 
@@ -123,20 +125,21 @@ AWS 인프라와 Kubernetes 클러스터의 관계를 시각적으로 탐색하�
 
 :::tip K8s Service 디버깅
 "Service에 Pod가 연결되지 않음" 문제 해결:
-1. Kubernetes 뷰에서 Service 클릭
-2. 연결된 Pod 확인 (0 pods면 문제)
+1. K8s 맵에서 Service 클릭
+2. 상세 패널의 Pod 목록 확인 (비어 있으면 문제)
 3. Pod의 labels와 Service의 selector 일치 여부 확인
-4. Pod가 있으면 Node까지 추적하여 리소스 상태 확인
+4. Pod가 있으면 상세 패널의 Node 정보로 리소스 상태 확인
 :::
 
 :::info 색상 범례
 | 색상 | Infrastructure | Kubernetes |
 |------|---------------|------------|
-| Cyan | VPC, IGW | Ingress |
-| Green | Subnet | Node |
-| Purple | EC2 | Pod |
+| Cyan | VPC, IGW | - |
+| Green | Subnet | - |
+| Purple | EC2 | DNS, Gateway |
+| Blue | - | Service |
 | Pink | ELB | - |
-| Orange | RDS, NAT | Service |
+| Orange | RDS, NAT | 데이터 저장소 |
 | Red | TGW | - |
 
 맵 상단 정보 줄의 범례 칩은 현재 그래프에 존재하는 종류만 표시합니다. 카드 이름 옆의 상태 점(dot)도 범례로 표시됩니다 — **ok**(초록) / **warn**(주황) / **bad**(빨강) / **neutral**(회색).

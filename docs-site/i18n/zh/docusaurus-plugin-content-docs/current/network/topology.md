@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **VPC 连接** | VPC 连接配置 | 查看 TGW 和对等连接 |
 | **资源布局图（默认）** | 已保存的 AWS 资源 | 按 VPC 和子网筛选、翻页 |
 | **基础设施地图** | 已保存的 AWS 资源 | 查看资源层级 |
-| **K8s 地图** | EKS 工作负载 | Pod、Service、Ingress 和 Node 关系 |
+| **K8s 地图** | EKS 工作负载 | 按命名空间分组的 Service 图 (DNS → Gateway → Service → 数据存储) |
 
 ### Infrastructure 视图
 
@@ -54,20 +54,22 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### Kubernetes 视图
 
-以 4 列资源图展示 EKS 工作负载：
+以按命名空间分组的 Service 图展示所选集群 (DNS → Gateway → Service → 数据存储)：
 
-| 列 | 资源 | 说明 |
+| 节点 | 资源 | 说明 |
 |------|--------|------|
-| **Ingress** | K8s Ingress | 外部流量入口 |
-| **Services** | K8s Service | 负载均衡、ClusterIP/NodePort/LoadBalancer |
-| **Pods** | K8s Pod | 正在运行的容器 |
-| **Nodes** | EKS Node | 工作节点（EC2） |
+| **DNS** | Route 53 记录 | 精确指向网关负载均衡器主机名的别名或 CNAME 记录 |
+| **Gateway** | K8s Ingress、LoadBalancer Service | 外部流量入口 |
+| **Service** | K8s Service | 显示在其命名空间框内 |
+| **数据存储** | RDS、ElastiCache、OpenSearch、MSK | 在 Pod 环境变量、ConfigMap 或追踪中发现的托管主机 |
+
+实线是在追踪中观测到的调用，虚线是根据配置推断的数据存储连接，细线是 DNS、Ingress 和 LoadBalancer 路由。追踪调用仅对主机账户集群显示。Pod 和 Node 不在图中绘制，点击 Service 后在打开的详情面板中显示。系统命名空间默认隐藏。
 
 ### 交互功能
 
 **搜索**
 - Infrastructure：按 EC2、Subnet、VPC 的名称/ID/CIDR 搜索
-- Kubernetes：搜索 Pod、Service、Namespace
+- Kubernetes：搜索 Service、Ingress、Namespace、数据存储
 - 自动高亮匹配的资源及其关联资源
 
 **点击选择**
@@ -99,10 +101,10 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 分析 K8s 流量走向
 
-1. 选择 **Kubernetes** 视图
-2. 确认 Ingress → Service → Pod → Node 的流向
-3. 点击 Service 查看关联的 Pod
-4. 通过搜索追踪特定工作负载
+1. 选择 **K8s 地图** 标签页
+2. 确认 DNS → Gateway → Service → 数据存储 的流向
+3. 点击 Service，在详情面板中查看 Pod 和 Node
+4. 通过搜索追踪特定 Service 或命名空间
 
 ### 使用 Graph View
 
@@ -123,20 +125,21 @@ import Screenshot from '@site/src/components/Screenshot';
 
 :::tip 调试 K8s Service
 解决 "Service 没有关联的 Pod" 问题：
-1. 在 Kubernetes 视图中点击 Service
-2. 查看关联的 Pod（若为 0 pods 则存在问题）
+1. 在 K8s 地图中点击 Service
+2. 查看详情面板中的 Pod 列表（若为空则存在问题）
 3. 确认 Pod 的 labels 与 Service 的 selector 是否匹配
-4. 若存在 Pod，则追踪至 Node 查看资源状态
+4. 若存在 Pod，则通过详情面板中的 Node 信息查看资源状态
 :::
 
 :::info 颜色图例
 | 颜色 | Infrastructure | Kubernetes |
 |------|---------------|------------|
-| Cyan | VPC, IGW | Ingress |
-| Green | Subnet | Node |
-| Purple | EC2 | Pod |
+| Cyan | VPC, IGW | - |
+| Green | Subnet | - |
+| Purple | EC2 | DNS, Gateway |
+| Blue | - | Service |
 | Pink | ELB | - |
-| Orange | RDS, NAT | Service |
+| Orange | RDS, NAT | 数据存储 |
 | Red | TGW | - |
 
 地图上方信息行中的图例仅显示当前图中存在的类型。卡片名称旁的状态点也会出现在图例中 — **ok**（绿）/ **warn**（橙）/ **bad**（红）/ **neutral**（灰）。

@@ -23,7 +23,7 @@ Choose among four tabs:
 | **VPC connections** | VPC connection configuration | Inspect TGW and peering connections |
 | **Placement graph (default)** | Saved AWS resources | Filter and page by VPC/subnet |
 | **Infrastructure map** | Saved AWS resources | Inspect the resource hierarchy |
-| **K8s map** | EKS workloads | Pod, Service, Ingress and Node relationships |
+| **K8s map** | EKS workloads | Namespace-grouped Service graph (DNS → Gateway → Service → datastore) |
 
 ### Infrastructure View
 
@@ -54,20 +54,22 @@ The infrastructure relationship graph and an individual resource's relationship 
 
 ### Kubernetes View
 
-Displays EKS workloads in a 4-column resource map:
+Displays the selected cluster as a namespace-grouped Service graph (DNS → Gateway → Service → datastore):
 
-| Column | Resource | Description |
-|--------|----------|-------------|
-| **Ingress** | K8s Ingress | External traffic entry point |
-| **Services** | K8s Service | Load balancing, ClusterIP/NodePort/LoadBalancer |
-| **Pods** | K8s Pod | Running containers |
-| **Nodes** | EKS Node | Worker nodes (EC2) |
+| Node | Resource | Description |
+|------|----------|-------------|
+| **DNS** | Route 53 record | Alias or CNAME record that targets a gateway's load-balancer hostname exactly |
+| **Gateway** | K8s Ingress, LoadBalancer Service | External traffic entry point |
+| **Service** | K8s Service | Shown inside its namespace box |
+| **Datastore** | RDS, ElastiCache, OpenSearch, MSK | Managed host found in Pod env, ConfigMaps or traces |
+
+Solid lines are calls observed in traces, dashed lines are datastore links inferred from configuration, and thin lines are DNS, Ingress and LoadBalancer routing. Trace calls are shown for host-account clusters only. Pods and Nodes are not drawn in the graph; they appear in the detail panel that opens when you click a Service. System namespaces are hidden by default.
 
 ### Interactive Features
 
 **Search**
 - Infrastructure: Search EC2, Subnet, VPC by name/ID/CIDR
-- Kubernetes: Search Pod, Service, Namespace
+- Kubernetes: Search Service, Ingress, Namespace, datastore
 - Automatically highlights matched and related resources
 
 **Click Selection**
@@ -99,10 +101,10 @@ Displays EKS workloads in a 4-column resource map:
 
 ### Analyze K8s Traffic Flow
 
-1. Select **Kubernetes** view
-2. Follow the Ingress → Service → Pod → Node flow
-3. Click a Service to see connected Pods
-4. Search to track specific workloads
+1. Select the **K8s map** tab
+2. Follow the DNS → Gateway → Service → datastore flow
+3. Click a Service to see its Pods and Nodes in the detail panel
+4. Search to track a specific Service or namespace
 
 ### Use Graph View
 
@@ -123,20 +125,21 @@ To trace the path from a specific EC2 to the external internet:
 
 :::tip K8s Service Debugging
 Troubleshooting "No Pods connected to Service":
-1. Click the Service in Kubernetes view
-2. Check connected Pods (0 pods indicates a problem)
+1. Click the Service in the K8s map
+2. Check the Pod list in the detail panel (an empty list indicates a problem)
 3. Verify Pod labels match Service selector
-4. If Pods exist, trace to Node to check resource status
+4. If Pods exist, check resource status in the detail panel's Node details
 :::
 
 :::info Color Legend
 | Color | Infrastructure | Kubernetes |
 |-------|---------------|------------|
-| Cyan | VPC, IGW | Ingress |
-| Green | Subnet | Node |
-| Purple | EC2 | Pod |
+| Cyan | VPC, IGW | - |
+| Green | Subnet | - |
+| Purple | EC2 | DNS, Gateway |
+| Blue | - | Service |
 | Pink | ELB | - |
-| Orange | RDS, NAT | Service |
+| Orange | RDS, NAT | Datastore |
 | Red | TGW | - |
 
 The legend chips in the info line above the map show only the kinds present in the current graph. The status dot next to a card name is also shown in the legend — **ok** (green) / **warn** (amber) / **bad** (red) / **neutral** (gray).

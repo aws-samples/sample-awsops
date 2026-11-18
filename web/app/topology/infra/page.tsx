@@ -274,7 +274,7 @@ const SUBTITLES: Record<View, string> = {
   vpc: 'VPC를 선택하여 TGW·피어링 연결을 조회합니다. 선은 활성 구성 관계이며 통신 가능성을 보장하지 않습니다.',
   graph: 'VPC·서브넷별로 리소스를 크게 표시합니다. 배치 관계이며 실제 통신 경로를 증명하지 않습니다.',
   map: 'External | VPC | Subnet | Compute | NAT 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
-  k8s: 'Ingress → Service → Pod → Node 컬럼 맵. 노드 클릭으로 교차 하이라이트.',
+  k8s: 'DNS → Gateway → Service → DB 흐름을 네임스페이스별로 묶은 서비스 그래프. Service를 클릭하면 Pod·Node를 표시합니다.',
 };
 
 /** 계정 전체 인프라 배치 그래프 + 컬럼형 맵 뷰 (v1 Infra Map/K8s Map parity). */
