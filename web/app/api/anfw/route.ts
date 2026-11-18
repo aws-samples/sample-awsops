@@ -96,11 +96,8 @@ async function lookupNetworkFirewallMutations(region: string, deadlineAt: number
 const auditPaceGates = new Map<string, Promise<void>>();
 function acquireAuditPaceSlot(region: string): Promise<void> {
   const prevSlot = auditPaceGates.get(region) ?? Promise.resolve();
-  // 리뷰 MAJOR(라운드10): 콜백 안에서만 대입되는 `let release: () => void;`는
-  // TS strict의 definite-assignment 분석이 콜백을 통과한 대입을 추적하지 못해
-  // TS2454("used before being assigned")로 next build(strict)가 깨진다.
-  let release: () => void = () => {};
-  auditPaceGates.set(region, new Promise<void>((res) => { release = res; }));
+  const { promise, resolve: release } = Promise.withResolvers<void>();
+  auditPaceGates.set(region, promise);
   return prevSlot.then(() => new Promise<void>((res) => setTimeout(res, 600))).then(() => { release(); });
 }
 
