@@ -5,8 +5,8 @@ import { currentAccountId } from '../account';
 import { graphTransaction } from '../graph-transaction';
 import {
   inventoryAttempt,
-  inventoryCountsFromClient,
-  inventorySnapshotFromClient,
+  inventoryCounts,
+  inventorySnapshot,
   INFRA_TYPES,
 } from '../graph-inventory-read';
 import { inventorySourcesStale, readGraphState } from '../graph-state';
@@ -41,9 +41,12 @@ export async function rebuildServiceTopology(pool: Pool) {
     expected: await currentHead(c),
     token: await versionToken(c),
   }));
+  const verifyGeneration = async (client: PoolClient) => {
+    if ((await versionToken(client)) !== token) throw new Error('service_input_changed');
+  };
   const readPinned = <T>(read: (c: PoolClient) => Promise<T>) =>
     graphTransaction(pool, true, async (c) => {
-      if ((await versionToken(c)) !== token) throw new Error('service_input_changed');
+      await verifyGeneration(c);
       return read(c);
     });
   const rows: GraphRow[] = [],
@@ -151,10 +154,8 @@ export async function rebuildServiceTopology(pool: Pool) {
       edges.push(...stored);
     });
   }
-  const counts = await readPinned((c) => inventoryCountsFromClient(c, types));
-  const inv = await readPinned((c) =>
-    inventorySnapshotFromClient(c, 'flow', 'self', types, counts, [...FLOW_ENRICHMENT]),
-  );
+  const counts = await inventoryCounts(pool, types, verifyGeneration);
+  const inv = await inventorySnapshot(pool, 'flow', 'self', types, counts, [...FLOW_ENRICHMENT], verifyGeneration);
   const attempt = inventoryAttempt(inv, types, 'flow', 'self', new Date().toISOString(), FLOW_ENRICHMENT);
   const withheld = new Set(attempt.withheldTypes);
   const records = inv.rows

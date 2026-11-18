@@ -150,3 +150,11 @@ it.each(['route_table','neptune_cluster'])('merges a qualified %s placement and 
   expect(snap.entities).toHaveLength(1);
   expect(snap.entities[0]).toMatchObject({kind,layers:['infra','inventory']});
 });
+
+
+it.each(['cloudfront','route53','waf','apigatewayv2_api'])('joins scoped %s flow and inventory evidence', kind => {
+  const rows = [row('inventory','inventory-id'),row('flow','flow-id')].map(r => ({ ...r,kind,nativeKind:kind }));
+  const sources = [source('inventory'),source('flow')];
+  expect(projectPublished(rows,[],sources).entities).toHaveLength(1);
+  expect(projectPublished([rows[0],{...rows[1],region:'another-region'}],[],sources).entities).toHaveLength(2);
+});

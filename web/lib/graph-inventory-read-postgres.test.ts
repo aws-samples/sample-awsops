@@ -58,6 +58,19 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self','vpc',$1,$2)", [selfCount, point]);
     return point;
   }
+  it('validates generation pins inside both repeatable-read read-only inventory transactions', async () => {
+    await seed();
+    const observations: string[] = [];
+    await inventorySnapshot(pool, 'infra', 'self', ['vpc'], undefined, [], async client => {
+      const result = await client.query("SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS mode");
+      observations.push(result.rows[0].isolation + '/' + result.rows[0].mode);
+    });
+    expect(observations).toEqual(['repeatable read/on', 'repeatable read/on']);
+    await expect(inventorySnapshot(pool, 'infra', 'self', ['vpc'], new Map(), [], async () => {
+      throw new Error('service_input_changed');
+    })).rejects.toThrow('service_input_changed');
+  });
+
   it('returns affirmative self-empty evidence only with reconciled succeeded counts', async () => {
     await seed();
     const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);

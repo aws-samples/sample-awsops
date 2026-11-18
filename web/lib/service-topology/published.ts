@@ -1,4 +1,5 @@
 import { DB_ENDPOINT_KINDS } from '../infra-topology';
+import { FLOW_INPUT_KEY } from '../flow-inventory-types';
 import { createHash } from 'node:crypto';
 import { spanMeasurements, edgeCounts } from './metrics';
 import type { Layer, Manifest, Entity, Relation, ServiceSnapshot } from './snapshot';
@@ -41,27 +42,10 @@ export interface GraphLink {
 }
 const hash = (parts: string[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 const order = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// Flow input keys are canonical inventory type names. Placement-only inputs extend them.
 const nativeKinds = new Set([
-  'ec2',
-  'ecs_task',
-  'ecs_service',
-  'lambda',
-  'rds',
-  'rds_cluster',
-  'route_table',
-  'neptune_cluster',
-  'rds_proxy',
-  'elasticache',
-  'vpc',
-  'subnet',
-  'security_group',
-  'alb',
-  'nlb',
-  'target_group',
-  's3',
-  'nat_gateway',
-  'vpc_endpoint',
-  'eni',
+  ...Object.keys(FLOW_INPUT_KEY),
+  'ecs_service', 'route_table', 'neptune_cluster', 'elasticache', 'vpc', 'security_group',
 ]);
 const safe = (v: unknown, max = 240) => (typeof v === 'string' && v.length <= max ? v : null);
 

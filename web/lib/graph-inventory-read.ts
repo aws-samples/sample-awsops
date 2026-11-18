@@ -63,11 +63,14 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
 }
 
 /** One fleet reconciliation per class/pass. A changed ledger invalidates its proof. */
-export async function inventoryCounts(pool: Pool, types: string[]) {
-  return graphTransaction(pool, true, client => inventoryCountsFromClient(client, types));
+export async function inventoryCounts(pool: Pool, types: string[], verifyGeneration?: (client: PoolClient) => Promise<void>) {
+  return graphTransaction(pool, true, async client => {
+    await verifyGeneration?.(client);
+    return inventoryCountsFromClient(client, types);
+  });
 }
 
-export async function inventoryCountsFromClient(client: PoolClient, types: string[]) {
+async function inventoryCountsFromClient(client: PoolClient, types: string[]) {
   const runs = await client.query(`SELECT resource_type, xmin::text AS version
     FROM inventory_sync_runs WHERE account_id='self' AND status='succeeded' AND resource_type=ANY($1)`, [types]);
   const countTypes = runs.rows.map(run => run.resource_type);
@@ -79,13 +82,17 @@ export async function inventoryCountsFromClient(client: PoolClient, types: strin
 }
 
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
-  proof?: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = []) {
+  proof?: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = [],
+  verifyGeneration?: (client: PoolClient) => Promise<void>) {
   types = [...new Set(types)];
-  const counts = proof ?? await inventoryCounts(pool, types);
-  return graphTransaction(pool, true, client => inventorySnapshotFromClient(client, cls, account, types, counts, enrichment));
+  const counts = proof ?? await inventoryCounts(pool, types, verifyGeneration);
+  return graphTransaction(pool, true, async client => {
+    await verifyGeneration?.(client);
+    return inventorySnapshotFromClient(client, cls, account, types, counts, enrichment);
+  });
 }
 
-export async function inventorySnapshotFromClient(client: PoolClient, cls: GraphClass, account: string, types: string[],
+async function inventorySnapshotFromClient(client: PoolClient, cls: GraphClass, account: string, types: string[],
   counts: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = []) {
   // Both classes use the already-supported flow envelope; bytes/time still bound the read.
   const rowCap = INVENTORY_ROW_CAP;
