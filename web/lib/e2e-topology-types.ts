@@ -1,3 +1,4 @@
+import type { Binding } from './service-topology/types';
 import type { FlowGraph } from './flow-topology';
 import type { NetworkObservation } from './topology-observations';
 export type { NetworkObservation } from './topology-observations';
@@ -35,7 +36,7 @@ export interface E2eEdge {
 export interface ServiceSnapshot {
   /** Workload identity requires accountId/region claims here or on incoming runs_on services. */
   nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown>; captured_at?: string | null }[];
-  edges: { source: string; target: string; rel: string; confidence?: string }[];
+  edges: { source: string; target: string; rel: string; confidence?: string; meta?: { spanCount?: number; metricCount?: number } }[];
   captured_at: string | null;
 }
 export interface E2eNetworkRead {
@@ -44,6 +45,7 @@ export interface E2eNetworkRead {
   unknownWindowCategories?: readonly string[];
 }
 export interface E2eInput {
+  podBindings?: readonly Binding[];
   account: string;
   /** Trusted 12-digit ID from authenticated /api/accounts' unique isHost entry, never telemetry. */
   hostAccountId?: string;

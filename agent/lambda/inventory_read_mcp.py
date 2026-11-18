@@ -469,7 +469,7 @@ def _inventory_graph_collection(cls):
 _execute_override = None  # tests may inject a fake (sql, params) -> [row-dict]
 
 
-def _execute(sql, params=None):
+def _execute(sql, params=None, *, topology=False):
     """Run read-only SQL through the RDS Data API; return rows as dicts (formatRecordsAs=JSON)."""
     if _execute_override:
         return _execute_override(sql, params)
@@ -477,7 +477,7 @@ def _execute(sql, params=None):
     client = boto3.client("rds-data", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
     kwargs = {
         "resourceArn": os.environ["AURORA_CLUSTER_ARN"],
-        "secretArn": os.environ["AURORA_SECRET_ARN"],
+        "secretArn": os.environ["TOPOLOGY_READER_SECRET_ARN" if topology else "AURORA_SECRET_ARN"],
         "database": os.environ.get("AURORA_DATABASE", "awsops"),
         "sql": sql,
         "formatRecordsAs": "JSON",
@@ -703,7 +703,9 @@ def lambda_handler(event, context):
     if isinstance(arguments, dict):
         # Reads stay host-scoped (never the requested account); the response says so via `scope`.
         requested_account_id = arguments.pop("target_account_id", None)
-    scope, scope_warning = _scope(requested_account_id)
+    service_projection = (tool_name == "get_topology" and isinstance(arguments, dict)
+                          and arguments.get("class") == "service")
+    scope, scope_warning = (None, None) if service_projection else _scope(requested_account_id)
 
     if tool_name in ("find_unused_resources", ""):
         by_type = _fetch_by_type(["target_group", "alb", "nlb", "cloudfront", "ebs"])
@@ -723,6 +725,56 @@ def lambda_handler(event, context):
         if resource_id is not None:
             resource_id = resource_id.strip()
         cls = (arguments.get("class") or "flow") if isinstance(arguments, dict) else "flow"
+        if cls == "service":
+            if os.environ.get("TOPOLOGY_ENTITIES_ENABLED") != "true":
+                return {"statusCode": 404, "body": json.dumps({"error": "topology_entities_disabled", "class": "service"})}
+            if requested_account_id not in (None, "", "self") and (
+                not isinstance(requested_account_id, str) or not re.fullmatch(r"\d{12}", requested_account_id)
+                or requested_account_id != host_account_id()
+            ):
+                return {"statusCode": 422, "body": json.dumps({"error": "unsupported_scope"})}
+            if resource_id and not re.fullmatch(r"[0-9a-f]{64}", resource_id):
+                return {"statusCode": 400, "body": json.dumps({"error": "invalid_entity_id"})}
+            try:
+                cadence = int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS", "0"))
+            except ValueError:
+                cadence = 0
+            try:
+                rows = _execute(
+                    # One MVCC read. Keep each Data API row comfortably below 64 KiB, even
+                    # for four-byte Unicode. Bound the complete formatted response as well.
+                    "WITH authority AS MATERIALIZED (SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r "
+                    "WHERE r.rolname=current_user AND current_user=session_user AND session_user='awsops_topology_reader' "
+                    "AND r.rolcanlogin AND NOT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication "
+                    "OR r.rolbypassrls OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid)) "
+                    "AND NOT pg_catalog.pg_has_role('awsops_sql_reader',r.oid,'MEMBER')) AS ok), "
+                    "result AS MATERIALIZED (SELECT ok,CASE WHEN ok THEN sql_reader.service_topology_read("
+                    "NULL,'service','',:focus,0,CAST(:age AS integer))::text END AS doc FROM authority) "
+                    "SELECT NOT ok AS denied, CASE WHEN ok AND octet_length(to_json(doc)::text)<=524288 THEN substr(doc,n,4096) END AS view, "
+                    "(octet_length(to_json(doc)::text)>524288) AS oversized FROM result "
+                    "CROSS JOIN LATERAL generate_series(1,CASE WHEN NOT ok OR octet_length(to_json(doc)::text)>524288 THEN 1 "
+                    "ELSE length(doc) END,4096) n ORDER BY n",
+                    [{"name": "focus", "value": {"stringValue": resource_id or ""}},
+                     {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}], topology=True)
+                if rows and rows[0].get("denied"):
+                    print("service_topology_read_failed: credential_identity")
+                    return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
+                if rows and rows[0].get("oversized"):
+                    return {"statusCode": 413, "body": json.dumps({
+                        "error": "service_projection_too_large", "hint": "Select an exact service entity ID."})}
+                view = json.loads("".join(row["view"] for row in rows)) if rows else {
+                    "contractVersion": 1, "status": "unavailable", "snapshotId": None, "reason": "no_publication"}
+                if view.get("snapshotId") and not view.get("entities"):
+                    view["warning"] = "An empty selection does not establish absence of services or healthy collection. Inspect selection, sources and gaps."
+                return _ok(view)
+            except Exception as error:
+                provider_code = getattr(error, "response", {}).get("Error", {}).get("Code")
+                allowed = {"AccessDeniedException", "DatabaseErrorException", "SecretsErrorException",
+                           "DatabaseUnavailableException", "StatementTimeoutException"}
+                diagnostic = provider_code if provider_code in allowed else (
+                    "invalid_response" if isinstance(error, (ValueError, TypeError)) else "upstream_error")
+                print("service_topology_read_failed: " + diagnostic)
+                return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns
             # 400 for the same input; a direct-MCP caller must get an error, not the WRONG layer's data

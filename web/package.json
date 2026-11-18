@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
+    "build:service-topology": "vite build --config service-topology.vite.config.mts",
     "start": "next start",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p ."

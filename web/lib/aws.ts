@@ -13,7 +13,7 @@ function ceClient(accountId?: string): Promise<CostExplorerClient> {
 }
 
 export interface ClusterInfo {
-  name: string; status: string; version: string; endpoint: string; createdAt: string;
+  name: string; arn?: string; status: string; version: string; endpoint: string; createdAt: string;
   region: string; vpcId: string; platformVersion: string;
 }
 
@@ -26,7 +26,7 @@ export async function listClusterInventory(accountId?: string, region = REGION):
   for (const name of clusters.slice(0, 25)) {
     const { cluster } = await c.send(new DescribeClusterCommand({ name }), options);
     out.push({
-      name,
+      name, ...(cluster?.arn ? { arn: cluster.arn } : {}),
       status: cluster?.status ?? '?',
       version: cluster?.version ?? '?',
       endpoint: cluster?.endpoint ?? '',

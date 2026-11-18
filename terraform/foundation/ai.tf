@@ -475,6 +475,42 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
 # awsops_web / awsops_worker / steampipe_reader) is NOT reachable on this path, and a password
 # secret is unavoidable. Terraform owns the password; `make migrate` pushes it into the DB role
 # (scripts/v2/migrate.mjs), so this secret stays the single source of truth.
+locals {
+  topology_reader_count = var.topology_entities_enabled ? local.ac_count : 0
+}
+
+# Operator provisions this fixed-purpose credential during standalone DB activation.
+data "aws_secretsmanager_secret" "topology_reader" {
+  count = local.topology_reader_count
+  name  = "ops/${var.project}/agent/topology-reader"
+}
+
+resource "aws_iam_role" "inventory_topology_reader" {
+  count              = local.topology_reader_count
+  name               = "${var.project}-inventory-topology-reader"
+  assume_role_policy = data.aws_iam_policy_document.agent_lambda_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "inventory_topology_logs" {
+  count      = local.topology_reader_count
+  role       = aws_iam_role.inventory_topology_reader[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "inventory_topology_reader" {
+  count = local.topology_reader_count
+  role  = aws_iam_role.inventory_topology_reader[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = "rds-data:ExecuteStatement", Resource = aws_rds_cluster.aurora.arn },
+      { Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = [
+        aws_secretsmanager_secret.agent_sql_reader[0].arn, data.aws_secretsmanager_secret.topology_reader[0].arn
+      ] }
+    ]
+  })
+}
+
 resource "random_password" "agent_sql_reader" {
   count   = local.ac_count
   length  = 40
@@ -942,7 +978,9 @@ resource "aws_lambda_function" "agent" {
   function_name = "${var.project}-agent-${each.key}"
   # rds-mcp/inventory-read run under the dedicated reader role (agent_lambda_reader) — see the
   # PR #197 review comment above that role's definition. Every other slice is unaffected.
-  role             = contains(["rds-mcp", "inventory-read"], each.key) ? aws_iam_role.agent_lambda_reader[0].arn : aws_iam_role.agent_lambda[0].arn
+  role = each.key == "inventory-read" && var.topology_entities_enabled ? aws_iam_role.inventory_topology_reader[0].arn : (
+    contains(["rds-mcp", "inventory-read"], each.key) ? aws_iam_role.agent_lambda_reader[0].arn : aws_iam_role.agent_lambda[0].arn
+  )
   runtime          = "python3.14"
   handler          = each.value.handler
   filename         = data.archive_file.agent[each.key].output_path
@@ -973,6 +1011,10 @@ resource "aws_lambda_function" "agent" {
       # needs the cluster ARN, a credential secret, and the DB name. Round 8: that credential is the
       # least-privilege `awsops_sql_reader` secret, NOT the RDS-managed master secret (both this
       # connector and rds-mcp's execute_sql are pure SELECT paths).
+      each.key == "inventory-read" && var.topology_entities_enabled ? {
+        TOPOLOGY_ENTITIES_ENABLED  = "true"
+        TOPOLOGY_READER_SECRET_ARN = data.aws_secretsmanager_secret.topology_reader[0].arn
+      } : {},
       each.key == "inventory-read" ? {
         AURORA_CLUSTER_ARN            = aws_rds_cluster.aurora.arn
         AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn

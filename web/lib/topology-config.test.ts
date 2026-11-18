@@ -20,7 +20,7 @@ function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
       if (options.failure === 'http') return json({ error: 'Forbidden' }, 403);
       if (options.failure === 'transport') throw new Error('unavailable');
       if (options.failure === 'envelope') return json({ error: 'Unavailable', rows: pods });
-      return json({ kind: 'pods', rows: pods });
+      return json({ kind: 'pods', rows: pods, generatedAt: '2026-11-18T00:00:00Z' });
     }
     if (url.searchParams.get('kind') === 'endpoints') {
       if (options.endpointFailure === 'http') return json({ error: 'Forbidden' }, 403);
@@ -330,4 +330,34 @@ describe('EKS evidence compatibility', () => {
     serve([pod], [endpoint], { failure });
     expect(await fetchEksIpEvidence()).toMatchObject({ status: 'partial', region, notConnected: 0 });
   });
+});
+
+it('only forwards immutable internal Pod records when the guarded lens requests them', async () => {
+  const arn = 'arn:aws:eks:us-east-1:111111111111:cluster/host-cluster';
+  const scoped = { ...cluster, arn, accountId:'111111111111' };
+  serve([{...pod,uid:'unique-pod',hostNetwork:false}],[],{clusters:[scoped]});
+  expect((await fetchEksIpMap()).bindings).toBeUndefined();
+  expect((await fetchEksIpMap(undefined,true)).bindings).toMatchObject([
+    {nativeId:'unique-pod',authority:arn,confidence:'observed',ip}]);
+});
+
+it('uses the Pod reader clock and distinguishes empty, withheld authority and incomplete bindings', async () => {
+  const scoped={...cluster,arn:'arn:aws:eks:us-east-1:111111111111:cluster/host-cluster',accountId:'111111111111'};
+  serve([{...pod,uid:'u'}],[],{clusters:[scoped]});
+  expect((await fetchEksIpMap(undefined,true)).bindings?.[0].evidence.capturedAt).toBe(Date.parse('2026-11-18T00:00:00Z'));
+  serve([],[],{clusters:[scoped]});
+  expect(await fetchEksIpMap(undefined,true)).toMatchObject({bindings:[],bindingRead:{status:'empty'}});
+  const wrongAccount = {...scoped,arn:scoped.arn.replace('111111111111','222222222222')};
+  for (const uid of [undefined,'','  ']) {
+    serve([{...pod,uid}],[],{clusters:[scoped]});
+    const invalid=await fetchEksIpMap(undefined,true);
+    expect(invalid.bindingRead).toEqual({status:'withheld',reasons:['binding_rows_invalid']});
+    expect(invalid.bindings).toBeUndefined();
+  }
+  serve([{...pod,uid:'valid'}],[],{clusters:[wrongAccount]});
+  expect((await fetchEksIpMap(undefined,true)).bindingRead).toEqual({status:'withheld',reasons:['binding_authority_unverified']});
+  serve(Array.from({length:10001},()=>({...pod,uid:'u'})),[],{clusters:[scoped]});
+  const bounded=await fetchEksIpMap(undefined,true);
+  expect(bounded.bindingRead).toEqual({status:'withheld',reasons:['binding_limit']});
+  expect(bounded.bindings).toBeUndefined();
 });

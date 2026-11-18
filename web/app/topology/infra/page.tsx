@@ -7,6 +7,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { Background, Controls, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useTheme } from '@/lib/use-theme';
 import PageHeader from '@/components/ui/PageHeader';
 import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -40,6 +41,7 @@ const COLORS: Record<string, [string, string]> = {
   sg: ['#FBEFE0', '#C9842B'],
 };
 const RESOURCE = ['#EEF0F2', '#9AA6B2'] as const;
+const DARK_FILLS: Record<string, string> = { vpc: '#16243E', subnet: '#0E2E1C', sg: '#33260C' };
 const HILITE = '#D13212';
 
 const relLabel: Record<string, string> = {
@@ -54,6 +56,7 @@ const LEGEND: { kind: string; label: string }[] = [
 /** Readable pages of saved placement relations; filtering does not establish reachability. */
 function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
   const { tt } = useI18n();
+  const dark = useTheme() === 'dark';
   const [activeAccount] = useActiveAccount();
   const [graph, setGraph] = useState<Graph | null>(null);
   const [err, setErr] = useState<GraphFetchFailure | null>(null);
@@ -156,10 +159,10 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
         // Side lanes bypass intervening cards instead of implying a chained hop.
         targetPosition: viewport.vertical ? Position.Right : Position.Left,
         style: {
-          background: bg,
+          background: dark ? DARK_FILLS[n.kind] ?? '#1F262D' : bg,
           border: `${hit ? `2px solid ${HILITE}` : `1px solid ${border}`}`,
           borderRadius: 10, fontSize: 18, padding: 10, width: CARD_WIDTH,
-          height: CARD_HEIGHT, color: '#16202A',
+          height: CARD_HEIGHT, color: dark ? '#E3E9EE' : '#16202A',
         },
       };
     });
@@ -170,7 +173,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
       style: { stroke: '#9AA6B2', strokeWidth: 1.5 },
     }));
     return { nodes, edges };
-  }, [graph, display, matches, viewport.vertical]);
+  }, [graph, display, matches, viewport.vertical, dark]);
   const canvasHeight = useMemo(() => {
     if (!nodes.length) return 520;
     const top = Math.min(...nodes.map(n => n.position.y));
@@ -219,7 +222,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
       )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
         <span>{tt('VPC 노드를 클릭하면 TGW·피어링 연결을 조회할 수 있습니다.')}</span>
-        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
+        <button type="button" disabled={busy || err === 'unauthenticated' || err === 'forbidden'} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <GraphReadError reason={err} />}
         {graph && !unavailable && <span>{tt('저장된 그래프:')} {tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
@@ -227,7 +230,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
           return (
             <span key={l.kind} className="inline-flex items-center gap-1">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: bg, border: `1px solid ${border}` }} />
+              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: dark ? DARK_FILLS[l.kind] ?? '#1F262D' : bg, border: `1px solid ${border}` }} />
               {tt(l.label)}
             </span>
           );
@@ -244,7 +247,7 @@ function GraphView({ q, onVpc }: { q: string; onVpc: (id: string) => void }) {
       </div>}
       {graph && !unavailable && !busy && display.totalResources === 0 && <p className="px-4 py-2 text-sm text-ink-500">{tt('선택 조건에 맞는 리소스가 없습니다.')}</p>}
       <div ref={viewport.container} style={{ height: canvasHeight }} className="min-h-[520px] min-w-0 shrink-0 overflow-hidden">
-        <ReactFlow nodes={nodes} edges={edges} onInit={viewport.onInit} fitView fitViewOptions={{ padding: FIT_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }} minZoom={0.25}
+        <ReactFlow colorMode={dark ? 'dark' : 'light'} nodes={nodes} edges={edges} onInit={viewport.onInit} fitView fitViewOptions={{ padding: FIT_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }} minZoom={0.25}
           onNodeClick={(_, node) => {
             if (node.data.kind !== 'vpc') return;
             const meta = node.data.meta as GNode['meta'];

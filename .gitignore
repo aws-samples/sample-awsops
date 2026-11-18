@@ -155,3 +155,5 @@ backfill-owner-sub-*.json
 
 # hyperframes render artifacts
 docs-site/hyperframes/*/renders/
+
+web/.service-topology/

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { FLOW_INPUT_KEY, FLOW_ENRICHMENT } from './flow-inventory-types';
 import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
 import type { TraceSource, TraceRead, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
@@ -25,19 +26,8 @@ interface MetricsCallsSourceLike {
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.
 
 // Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
-const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'ownershipRead'>> = {
-  route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg',
-  waf: 'waf', ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
-  // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
-  apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
-  cloudfront_vpc_origin: 'cloudfront_vpc_origin',
-  // ENI ownership for IP targets (eni-owner.ts) and the owner types it may name.
-  eni: 'eni', rds: 'rds', rds_cluster: 'rds_cluster', rds_proxy: 'rds_proxy',
-  vpc_endpoint: 'vpc_endpoint', nat_gateway: 'nat_gateway',
-};
-const TYPES = Object.keys(TYPE_TO_KEY);
-// Flow sources that only resolve IP-target ownership; a blocked one never withholds the flow graph.
-const FLOW_ENRICHMENT: ReadonlySet<string> = new Set(['eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway']);
+// The saved flow class omits L7 display labels. Only their consumers should spend the inventory budget on them.
+const TYPES = Object.keys(FLOW_INPUT_KEY).filter(type => type !== 'apigatewayv2_route' && type !== 'alb_listener_rule');
 // Infra sources that only add DB endpoint nodes for trace binding.
 const INFRA_ENRICHMENT: ReadonlySet<string> = new Set(['rds_cluster', 'rds_proxy']);
 const FLOW_LOCK = 0x746f706f;   // 'topo' — flow rebuilds serialize on this key
@@ -273,7 +263,7 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
     const input: FlowInput = { ownershipRead: { configurationOnly: true,
       ...(withheld.length ? { ownerIncomplete: withheld } : {}) } };
     for (const row of rows) {
-      const key = TYPE_TO_KEY[row.resource_type];
+      const key = FLOW_INPUT_KEY[row.resource_type as keyof typeof FLOW_INPUT_KEY];
       if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id,
         region: row.region, captured_at: row.captured_at });
     }

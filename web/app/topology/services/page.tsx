@@ -11,6 +11,8 @@ import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import { boundGraphDisplay, selectGraphPaths, serviceOverview } from '@/lib/graph-display';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { spanMeasurements } from '@/lib/service-topology/metrics';
+import { useActiveScope, ALL_REGIONS } from '@/lib/account-context';
 import { useTheme } from '@/lib/use-theme';
 import GraphCollectionStatus, { type GraphCollection } from '@/components/topology/GraphCollectionStatus';
 import useGraphViewport from '@/components/topology/useGraphViewport';
@@ -36,6 +38,19 @@ const relLabel: Record<string, string> = {
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 
 export default function ServiceMapPage() {
+  const [scope, , ready] = useActiveScope();
+  const { tt } = useI18n();
+  if (!ready) return null;
+  if (!(Array.isArray(scope.accounts) && scope.accounts.length === 1 && scope.accounts[0] === 'self'
+    && scope.regions === ALL_REGIONS && scope.includeGlobal)) {
+    return <div><PageHeader title={tt('서비스 맵')} /><p role="status" className="m-4 text-sm text-ink-600">
+      {tt('현재 범위에서는 서비스 맵을 표시할 수 없습니다. 호스트 계정, 전체 리전 및 전역 리소스를 선택하세요.')}
+    </p></div>;
+  }
+  return <HostServiceMap />;
+}
+
+function HostServiceMap() {
   const { tt } = useI18n();
   const dark = useTheme() === 'dark';
   const [graph, setGraph] = useState<Graph | null>(null);
@@ -76,6 +91,7 @@ export default function ServiceMapPage() {
   }, [overview, query]);
   const focusId = overview.nodes.some(n => n.id === selectedId) ? selectedId : !showAll ? services[0]?.id ?? null : null;
   const selected = overview.nodes.find(n => n.id === focusId);
+  const measures = selected?.kind === 'service' ? spanMeasurements(selected.meta) : null;
   const eligible = useMemo(() => {
     if (query.trim()) return selectGraphPaths(overview, matches.map(n => n.id), 2);
     return focusId && !showAll ? selectGraphPaths(overview, [focusId], 2) : overview;
@@ -144,7 +160,7 @@ export default function ServiceMapPage() {
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={showWorkloads} onChange={e => setShowWorkloads(e.target.checked)} />{tt('워크로드 표시')}</label>
         <button type="button" aria-pressed={showAll} onClick={() => { setShowAll(v => !v); setQuery(''); setSelectedId(null); }}
           className="rounded-md border border-ink-200 bg-card px-2 py-2">{tt(showAll ? '서비스 중심 보기' : '전체 그래프')}</button>
-        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)}
+        <button type="button" disabled={busy || err === 'unauthenticated' || err === 'forbidden'} onClick={() => setRevision(n => n + 1)}
           className="rounded-md border border-ink-200 bg-card px-2 py-2 disabled:opacity-50">{tt('새로고침')}</button>
       </div>
       {err && <GraphReadError reason={err} />}
@@ -186,6 +202,12 @@ export default function ServiceMapPage() {
       </div>
       {selected && <details className="shrink-0 border-t border-ink-100 bg-card px-4 py-2 text-xs">
         <summary className="cursor-pointer font-medium">{tt('선택한 리소스 상세')} · {selected.kind}: {selected.label}</summary>
+        {measures && <dl className="flex flex-wrap gap-x-5 pt-2">
+          {measures.errorFraction !== null && <div><dt>{tt('상태가 확인된 스팬 중 오류')}</dt>
+            <dd>{measures.errors} / {measures.knownStatus} ({(100 * measures.errorFraction).toFixed(1)}%)</dd></div>}
+          {measures.durationSumMs !== null && <div><dt>{tt('발행된 스팬 시간 합계 (표본·집계, 유효 건수 미확인)')}</dt>
+            <dd>{measures.durationSumMs.toLocaleString()} ms</dd></div>}
+        </dl>}
         {isClaim(selected.kind) && <p className="pt-2">{tt('Telemetry claim · AWS identity unverified')}</p>}
         <dl className="grid max-h-40 grid-cols-[auto_1fr] gap-x-4 gap-y-1 overflow-y-auto pt-2">
           {['environment','cluster','namespace','sourceId','host','system','broker','destination','arn','provider','model','endpoint','port','identityProvenance','deployment','pods','spanCount','errorSpanCount','unknownStatusSpanCount','claimedAccountId','claimedRegion'].map(key =>

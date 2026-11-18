@@ -18,20 +18,33 @@ function admit(pool: Pool) {
   };
 }
 
+// The private publisher inserts a bounded graph body in one atomic commit. Reserve the
+// longer budget only for that CLI writer; web reads and legacy rebuilds keep their limits.
+const budgets = {
+  request: { statement: '1500ms', idle: '1500ms', transaction: '2s', watchdogMs: 0 },
+  rebuild: { statement: '2s', idle: '3s', transaction: '4s', watchdogMs: 6000 },
+  publication: { statement: '15s', idle: '3s', transaction: '30s', watchdogMs: 32000 },
+} as const;
+type Budget = keyof typeof budgets;
+
 /** Reads and rebuilds share two slots. Keep admission until a late checkout settles. */
 export function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
-  return admittedTransaction(pool, true, fn, true);
+  return admittedTransaction(pool, true, fn, 'request');
 }
 
 export function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
-  return admittedTransaction(pool, readOnly, fn, false);
+  return admittedTransaction(pool, readOnly, fn, 'rebuild');
+}
+
+export function servicePublicationTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+  return admittedTransaction(pool, false, fn, 'publication');
 }
 
 async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
-  fn: (client: PoolClient) => Promise<T>, requestBudget: boolean) {
+  fn: (client: PoolClient) => Promise<T>, budget: Budget) {
   const release = admit(pool);
   const lease: ReadLease = { expired: false, released: false };
-  const operation = runTransaction(pool, readOnly, fn, requestBudget, lease).finally(release);
+  const operation = runTransaction(pool, readOnly, fn, budget, lease).finally(release);
   let timer: ReturnType<typeof setTimeout>;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -46,10 +59,9 @@ async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
       }
     };
     timer = setTimeout(() => {
-      if (requestBudget || !lease.client) expire();
+      if (budget === 'request' || !lease.client) expire();
     }, 2000);
-    // Leave two seconds beyond PG's 4s limit for abort/response handling, excluding checkout.
-    if (!requestBudget) lease.acquired = () => { watchdog = setTimeout(expire, 6000); };
+    if (budgets[budget].watchdogMs) lease.acquired = () => { watchdog = setTimeout(expire, budgets[budget].watchdogMs); };
   });
   try { return await Promise.race([operation, deadline]); }
   finally { clearTimeout(timer!); if (watchdog) clearTimeout(watchdog); }
@@ -57,7 +69,7 @@ async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
 
 /** One shared-pool slot for a short transaction. Bounded lock waits and no remote IO in the callback.
  * PG17 transaction_timeout also bounds the sum of individually short statements. */
-async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>, requestBudget: boolean, lease?: ReadLease) {
+async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>, budget: Budget, lease?: ReadLease) {
   const client = await pool.connect();
   if (lease) {
     lease.client = client;
@@ -75,10 +87,10 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
   client.on('error', onError);
   try {
     await client.query(readOnly ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN');
-    await client.query(requestBudget ? "SET LOCAL statement_timeout = '1500ms'" : "SET LOCAL statement_timeout = '2s'");
+    await client.query(`SET LOCAL statement_timeout = '${budgets[budget].statement}'`);
     await client.query("SET LOCAL lock_timeout = '100ms'");
-    await client.query(requestBudget ? "SET LOCAL idle_in_transaction_session_timeout = '1500ms'" : "SET LOCAL idle_in_transaction_session_timeout = '3s'");
-    await client.query(requestBudget ? "SET LOCAL transaction_timeout = '2s'" : "SET LOCAL transaction_timeout = '4s'");
+    await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${budgets[budget].idle}'`);
+    await client.query(`SET LOCAL transaction_timeout = '${budgets[budget].transaction}'`);
     const result = await fn(client);
     if (clientError) throw clientError;
     if (lease?.expired) throw new GraphReadDeadline('transaction');

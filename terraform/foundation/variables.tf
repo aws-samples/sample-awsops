@@ -178,6 +178,12 @@ variable "workers_enabled" {
   default     = false
 }
 
+variable "topology_entities_enabled" {
+  type        = bool
+  default     = false
+  description = "Expose the published host service topology to authenticated web and inventory-read consumers."
+}
+
 variable "graph_rebuild_interval_mins" {
   type        = number
   description = "Minutes between web-instrumentation topology graph-rebuilds (flow/infra/trace layers, ADR-010[legacy 043] + 2026-06-25 trace-topology design). 0 (default) = the interval never starts; the manual `scripts/v2/graph-rebuild.mjs` path is unaffected either way. No new AWS resource — runs in the existing web task using perms it already holds. Recommended: 15 (matches steampipe.tf's inventory-sync cadence)."

@@ -5,6 +5,7 @@ import { ArrowLeft, RefreshCw } from 'lucide-react';
 import type { FlowGraph } from '@/lib/flow-topology';
 import type { E2eNetworkRead, ServiceSnapshot } from '@/lib/e2e-topology-types';
 import type { NfmCategory, NfmMetric } from '@/lib/nfm';
+import { edgeCounts } from '@/lib/service-topology/metrics';
 import { buildE2eGraph } from '@/lib/e2e-topology';
 import {
   loadNetworkObservations, TOPOLOGY_CATEGORIES, TOPOLOGY_METRICS, TOPOLOGY_RANGES,
@@ -27,6 +28,7 @@ export interface ConfigurationStatus {
   failedTypes: string[];
 }
 interface Props {
+  podBindings?: import('@/lib/service-topology/types').Binding[];
   configured: FlowGraph;
   account: string;
   configuration: ConfigurationStatus;
@@ -177,7 +179,7 @@ function readServices(body: Record<string, unknown>): ObservedServices {
     nodes: body.nodes.map((node) => ({ id: node.id, kind: node.kind, label: node.label, ...(node.meta ? { meta: node.meta } : {}),
       ...(validTime(node.captured_at) ? { captured_at: node.captured_at } : {}) })),
     edges: body.edges.map((edge) => ({
-      source: edge.source, target: edge.target, rel: edge.rel,
+      source: edge.source, target: edge.target, rel: edge.rel, meta: edgeCounts(edge.meta),
       ...(edge.confidence != null ? { confidence: edge.confidence } : {}),
     })),
     captured_at: validTime(body.captured_at) ? body.captured_at : null,
@@ -231,7 +233,7 @@ export default function ServiceNetworkTopology(props: Props) {
   return <ScopedServiceNetworkTopology key={props.account} {...props} />;
 }
 
-function ScopedServiceNetworkTopology({ configured, account, configuration, onBack, backHref, evidence, onRefresh }: Props) {
+function ScopedServiceNetworkTopology({ podBindings, configured, account, configuration, onBack, backHref, evidence, onRefresh }: Props) {
   const { tt } = useI18n();
   const host = account === 'self';
   const [monitors, setMonitors] = useState<Source<MonitorStatus>>(() => emptySource(host));
@@ -333,9 +335,9 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
     unknownWindowCategories: Object.entries(batch?.windowQuality ?? {}).filter(([, quality]) => quality === 'unknown').map(([category]) => category),
   }), [host, network.loading, network.error, batch]);
   const graph = useMemo(() => buildE2eGraph({
-    account, configured, services: host ? services.data : null, network: batch?.observations ?? [],
+    account, configured, podBindings, services: host ? services.data : null, network: batch?.observations ?? [],
     hostAccountId: hostIdentity.data ?? undefined, configurationComplete, servicesComplete, networkRead,
-  }), [account, configured, host, services.data, batch, hostIdentity.data, configurationComplete, servicesComplete, networkRead]);
+  }), [account, configured, podBindings, host, services.data, batch, hostIdentity.data, configurationComplete, servicesComplete, networkRead]);
   const changed = batch !== null && (filters.monitor !== batch.filters.monitor || filters.metric !== batch.filters.metric
     || filters.category !== batch.filters.category || filters.rangeSec !== batch.filters.rangeSec);
   const rows = batch?.observations.reduce((count, observation) => count + observation.rows.length, 0) ?? 0;
