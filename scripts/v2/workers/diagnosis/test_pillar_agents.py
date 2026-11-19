@@ -437,3 +437,35 @@ def test_source_redaction_preserves_real_opaque_citation_ids(monkeypatch):
                              model_id="global.anthropic.claude-sonnet-5-5", budget=budget)
     assert reviewed["finding_ids"] == [selected["id"]]
     assert index.validate_request(reviewed["follow_up"][0]) is not None
+
+
+@pytest.mark.parametrize("bad,reason", [("oversized", "invalid_editor_selection"), ("numeric", "invalid_editor_text")])
+def test_editor_corrects_invalid_draft_within_attempt_budget(monkeypatch, bad, reason):
+    row = {"id": "known", "claim": "hypothesis", "pillar": "security", "severity": "high",
+           "prerequisites": [], "explanation": "Data protection requires review."}
+    clean = {"lead": ["F1"], "context": [], "next": [],
+             "paragraphs": [{"id": "F1", "text": row["explanation"]}]}
+    invalid = ({**clean, "context": ["F1"] * 9} if bad == "oversized" else
+               {**clean, "paragraphs": [{"id": "F1", "text": "A secret value is 999."}]})
+    client = FakeClient([response(invalid), response(clean), response({"accepted": ["F1"]})])
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("deep")
+    plan, stages = agents.edit_report([row], model_id="global.anthropic.claude-sonnet-5-5", budget=budget, lang="en")
+    assert plan["lead"] == ["known"] and len(stages[0]["attempt_ids"]) == 2
+    assert [a["outcome"] for a in budget.snapshot()["attempts"]] == ["invalid_output", "succeeded", "succeeded"]
+    hint = json.loads(client.calls[1]["body"])["messages"][0]["content"][-1]["text"]
+    assert ("0-8" if reason == "invalid_editor_selection" else "digits") in hint
+    assert "999" not in hint
+
+
+def test_invalid_editor_draft_exhausts_same_two_attempts_without_a_verifier(monkeypatch):
+    row = {"id": "known", "claim": "hypothesis", "pillar": "security", "severity": "high",
+           "prerequisites": [], "explanation": "Data protection requires review."}
+    bad = {"lead": ["F1"], "context": ["F1"], "next": [], "paragraphs": []}
+    client = FakeClient([response(bad), response(bad)])
+    monkeypatch.setattr(agents, "_client", lambda *_: client)
+    budget = ReportBudget("deep")
+    with pytest.raises(agents.ModelStageError, match="invalid_editor_selection"):
+        agents.edit_report([row], model_id="global.anthropic.claude-sonnet-5-5", budget=budget, lang="en")
+    assert [(a["stage"], a["outcome"]) for a in budget.snapshot()["attempts"]] == [
+        ("report_editor", "invalid_output"), ("report_editor", "invalid_output")]
