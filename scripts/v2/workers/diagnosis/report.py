@@ -946,8 +946,9 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
             stage = "report_editor_check" if stages else "report_editor"
             print(f"{stage} failed: {type(exc).__name__}", file=sys.stderr)
             reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "editor_unavailable"
-            if isinstance(exc, pillar_agents.ModelStageError) and str(exc) == "editor_verification_failed":
-                reason = "editor_verification_failed"
+            if isinstance(exc, pillar_agents.ModelStageError) and str(exc) in {
+                    "invalid_editor_text", "invalid_editor_selection", "editor_verification_failed"}:
+                reason = str(exc)
             analysis["model_stages"].extend(stages)
             analysis["degraded"].append(f"{stage}:{reason}")
             if isinstance(exc, BudgetExceeded):

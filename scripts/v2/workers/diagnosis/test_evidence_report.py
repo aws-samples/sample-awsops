@@ -616,10 +616,12 @@ def test_editor_rejects_new_facts_wrong_citations_and_unverified_paragraphs(monk
 
     def reply(stage, *args, **kwargs):
         if stage == "report_editor":
-            return {"lead": ["F1"], "context": [], "next": [],
+            draft = {"lead": ["F1"], "context": [], "next": [],
                     "paragraphs": [{"id": "F2" if failure == "scope" else "F1",
                                     "text": "Memory is 99% full." if failure == "number" else
                                             "Memory pressure needs verification."}], "_stage": {}}
+            kwargs["validate"](draft)
+            return draft
         assert failure == "unsupported"
         return {"accepted": [], "_stage": {}}
     monkeypatch.setattr(pillar_agents, "_structured", reply)
