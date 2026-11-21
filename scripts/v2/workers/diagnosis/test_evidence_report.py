@@ -87,7 +87,7 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 11
     assert len(re.findall(r"^### ", md.split("\n## ")[-1], re.M)) == count - 1
     assert summary["evidence_loop"]["enabled"] is True
-    assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
+    assert summary["title_and_tags"]["tags"] == ["Amazon EC2", "CloudWatch", "performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
     assert "17.25" in md
     assert progress[-1][0:2] == (11, 11)
@@ -639,7 +639,7 @@ def test_reader_body_qualifies_hypothesis_without_unrelated_measurement(monkeypa
     assert "2026-11-04" in body
     assert "25.25" not in body and "25.25" in appendix
     assert "Memory pressure needs verification." in body
-    assert "| --- |" not in body.split("## Intended vs Actual")[0]
+    assert "| Evidence | Scope / window |" not in body
     assert data["evidence"][0]["id"] not in body and data["evidence"][0]["id"] in appendix
 
 
@@ -700,6 +700,18 @@ def test_customer_guide_prioritizes_admitted_checks_and_keeps_local_detail(monke
         "lead": ["other"], "next": ["other"], "context": [], "paragraphs": {}}))
     md, _, _ = report.generate(object(), "self", lang="en")
     front, pillars = md.split("\n## Current architecture\n", 1)
-    assert "Confirm data classification." in front.split("### What to check first")[1]
+    assert "Confirm data classification." in front.split("### Immediate checks")[1]
     sec = pillars.split("\n## Security\n")[1].split("\n## ")[0]
     assert "Confirm data classification." in sec and "Decision criteria" in sec
+
+def test_executive_brief_ranks_admitted_findings_before_editor_preference(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id=str(i), severity="low", explanation=text) for i, text in enumerate(
+        ["Review demand.", "Review trend.", "Review capacity."])]
+    rows.append(finding(id="important", pillar="security", severity="high", explanation="Review exposure."))
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["0"], "next": [], "context": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    top = md.split("### Top risks")[1].split("### Immediate checks")[0]
+    assert "| 1 | Security · High |" in top and "Review exposure." in top
+    assert "| 3 |" in top and "| 4 |" not in top and "cloudwatch" in top

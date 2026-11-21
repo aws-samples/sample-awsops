@@ -49,11 +49,19 @@ _DECISIONS = {
         "リクエストやバッチなどの処理単位を定め、単位当たりの資源使用量を記録し、可用性と処理量を維持した状態で比較します。",
         "选取请求或批任务等业务单位，记录单位资源用量，并在可用性和吞吐量相同的前提下比较消耗。"),
 }
-_GUIDE = {
-    "ko": ("먼저 확인할 일", "현장 확인", "개선 여부를 결정하는 기준"),
-    "en": ("What to check first", "Verify with the owner", "Decision criteria"),
-    "ja": ("最初に確認すること", "担当者による確認", "改善を判断する基準"),
-    "zh": ("优先核查", "与负责人核实", "改进决策依据"),
+_DECISION_HEADING = {"ko": "개선 여부를 결정하는 기준", "en": "Decision criteria",
+                     "ja": "改善を判断する基準", "zh": "改进决策依据"}
+
+# Number of risks is an upper bound; an empty or partial run must not manufacture rows.
+_BRIEF = {
+    "ko": ("핵심 리스크", "순위", "영역 · 심각도", "대상 · 판단", "근거 출처", "출처 미확인",
+           "즉시 확인할 사항", "대상", "확인 방법", "수집 범위와 미확인 항목"),
+    "en": ("Top risks", "Rank", "Pillar · severity", "Subject · assessment", "Evidence source", "Source unavailable",
+           "Immediate checks", "Subject", "How to verify", "Coverage and unknowns"),
+    "ja": ("主要リスク", "順位", "柱・重要度", "対象・判断", "根拠の出所", "出所未確認",
+           "最初の確認事項", "対象", "確認方法", "収集範囲と未確認事項"),
+    "zh": ("关键风险", "顺序", "支柱 · 严重性", "对象 · 判断", "证据来源", "来源未确认",
+           "立即核查", "对象", "核查方法", "采集范围与未知项"),
 }
 
 
@@ -68,8 +76,10 @@ def compose(bundle, analysis, invariant, lang):
         "next": [f["id"] for f in ordered if f.get("prerequisites")][:4],
     }
 
-    def subject(f):
+    def subject(f, *, compact=False):
         names = [view._code(resources[r]["resource_id"]) for r in f.get("resource_ids", []) if r in resources]
+        if compact and len(names) > 1:
+            return f"{names[0]} (+{len(names) - 1})"
         return ", ".join(names) or view._label(view._PILLARS, f["pillar"], lang)
 
     evidence = {r["id"]: r for r in bundle.get("evidence", [])}
@@ -109,7 +119,7 @@ def compose(bundle, analysis, invariant, lang):
                                   if isinstance(raw, str) and not _has_mutating_cli(raw)
                                   for text in [view._safe_explanation(raw)] if text))
 
-    def paragraph(f, detailed):
+    def assessment(f):
         # Specialist explanatory language is a hypothesis even when the selected claim is observed.
         claim = f["claim"]
         text = f.get("explanation")
@@ -118,31 +128,66 @@ def compose(bundle, analysis, invariant, lang):
         prose = view._safe_explanation(text) or view._WITHHELD[lang]
         label = {"observation": copy[3], "sizing_candidate": copy[5],
                  "coverage_gap": copy[6]}.get(claim, copy[4])
-        body = f"**{subject(f)}** · {label}\n\n{prose}" + provenance(f)
-        checks = safe_checks(f) if detailed else []
-        if checks:
-            body += f"\n\n**{_GUIDE[lang][1]}**\n\n" + "\n".join("- " + check for check in checks)
-        return body
+        return label, prose
+
+    def paragraph(f):
+        label, prose = assessment(f)
+        return f"**{subject(f)}** · {label}\n\n{prose}" + provenance(f)
 
     def block(key, title, body):
         return {"key": key, "title": title, "body": body}
 
-    def paragraphs(ids, severity_scope=None):
-        if not ids:
-            return copy[7]
-        ranks = [view._SEVERITY.get(by_id[i]["severity"], 5) for i in (severity_scope or ids)]
-        marker = "[Critical]\n\n" if min(ranks) <= 1 else "[Warning]\n\n" if min(ranks) == 2 else ""
-        return marker + "\n\n".join(paragraph(by_id[i], detailed=severity_scope is None) for i in ids)
+    def severity_marker(ids):
+        ranks = [view._SEVERITY.get(by_id[i]["severity"], 5) for i in ids] or [5]
+        return "[Critical]\n\n" if min(ranks) <= 1 else "[Warning]\n\n" if min(ranks) == 2 else ""
 
-    lead = paragraphs(plan["lead"] or list(by_id)[:1], list(by_id))
-    if any(bundle.get(k) or analysis.get(k) for k in ("gaps", "degraded", "incomplete", "rejected")):
-        lead += "\n\n" + titles[4]
-    # A critical check remains visible even when the editor selects only lower priorities.
-    first = next(((f, checks[0]) for f in ordered if (checks := safe_checks(f))), None)
+    def paragraphs(ids):
+        return severity_marker(ids) + "\n\n".join(paragraph(by_id[i]) for i in ids) if ids else copy[7]
+
+    (risk_title, rank_col, severity_col, issue_col, source_col, unknown_source,
+     quick_title, subject_col, check_col, scope_title) = _BRIEF[lang]
+    # The editor breaks severity ties. Unselected serious findings still outrank selected low ones.
+    pref = {ident: i for i, ident in enumerate(plan["lead"])}
+    ranked = sorted(ordered, key=lambda f: (view._SEVERITY.get(f["severity"], 5),
+                                            pref.get(f["id"], len(pref))))
+    first = next(((f, checks[0]) for f in ranked if (checks := safe_checks(f))), None)
+    if ranked:
+        table = [f"| {rank_col} | {severity_col} | {issue_col} | {source_col} |", "| ---: | --- | --- | --- |"]
+        for n, f in enumerate(ranked[:3], 1):
+            label, prose = assessment(f)
+            pillar = view._label(view._PILLARS, f["pillar"], lang)
+            severity = view._label(view._SEVERITY_LABEL, f["severity"], lang)
+            records = [evidence[i] for i in f.get("evidence_ids", []) if i in evidence]
+            cited = []
+            for record in records:
+                source_name = record.get("source")
+                if not source_name:
+                    continue
+                scope = {k: record[k] for k in ("region", "captured_at", "fresh") if k in record}
+                scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
+                                     if k in {"complete", "sampled", "sample_ratio"}}
+                detail = view._scope_text(scope, lang)
+                text = " · ".join(filter(None, [source_name, detail]))
+                cited.append(view._code(view._scrubbed(text)))
+            cited = list(dict.fromkeys(cited))
+            source = ", ".join(cited[:2]) or unknown_source
+            if len(cited) > 2:
+                source += f" (+{len(cited) - 2})"
+            table.append(f"| {n} | {pillar} · {severity} | **{subject(f, compact=True)}** · {label} — {prose} | {source} |")
+        lead = severity_marker(list(by_id)) + f"### {risk_title}\n\n" + "\n".join(table)
+    else:
+        lead = copy[7]
     if first:
-        f, check = first
-        rank = view._label(view._SEVERITY_LABEL, f["severity"], lang)
-        lead = f"### {_GUIDE[lang][0]}\n\n**{subject(f)}** · {rank}\n\n{check}\n\n" + lead
+        quick = [f"| {subject_col} | {check_col} |", "| --- | --- |"]
+        for f in ranked:
+            checks = safe_checks(f)
+            if checks:
+                quick.append(f"| {subject(f, compact=True)} | {checks[0]} |")
+            if len(quick) == 5:
+                break
+        lead += f"\n\n### {quick_title}\n\n" + "\n".join(quick)
+    if any(bundle.get(k) or analysis.get(k) for k in ("gaps", "degraded", "incomplete", "rejected")):
+        lead += f"\n\n**{scope_title}** · " + titles[4]
     priorities = {rid for finding in ordered if finding["severity"] in {"critical", "high"}
                   for rid in finding.get("resource_ids", [])}
     current = architecture.section(analysis.get("evidence_bundle", {}), lang, priorities)
@@ -162,8 +207,20 @@ def compose(bundle, analysis, invariant, lang):
         warning = "[Warning]\n\n" if state in {"partial", "failed"} else ""
         body = f"{warning}{status} · {labels[4]} {len(ids)}\n\n{paragraphs(ids)}"
         if ids:
+            how = {"ko": "원인 분석 및 조치", "en": "Cause analysis and follow-up",
+                   "ja": "原因分析と対応", "zh": "原因分析与后续行动"}[lang]
+            rows = []
+            for ident in ids:
+                f = by_id[ident]
+                checks = safe_checks(f)
+                if checks:
+                    label, _ = assessment(f)
+                    rows.append(f"| {subject(f)} · {label} | " + " / ".join(checks) + " |")
+            if rows:
+                table = [f"| {subject_col} | {check_col} |", "| --- | --- |", *rows]
+                body += f"\n\n### {how}\n\n" + "\n".join(table)
             language_index = ("ko", "en", "ja", "zh").index(lang)
-            body += f"\n\n**{_GUIDE[lang][2]}**\n\n" + _DECISIONS[pillar][language_index]
+            body += f"\n\n**{_DECISION_HEADING[lang]}**\n\n" + _DECISIONS[pillar][language_index]
         result.append(block(pillar, view._label(view._PILLARS, pillar, lang), body))
     checks = []
     withheld = False
@@ -202,8 +259,15 @@ def compose(bundle, analysis, invariant, lang):
                    "先在一个工作负载上评估方案，决定实施前记录成功和回退条件。",
                    "按相同负载和时段对照基线，达到目标并确认依赖关系后再扩大范围。"),
         }[lang]
-        body += f"\n\n### {phases[0]}\n\n" + "\n".join(
-            f"{i}. {phase}" for i, phase in enumerate(phases[1:], 1))
+        horizon, decision, *periods = {
+            "ko": ("시점", "다음 단계로 넘어갈 기준", "즉시", "단기", "중기"),
+            "en": ("Horizon", "Decision to advance", "Immediate", "Near term", "Medium term"),
+            "ja": ("時期", "次の段階への判断基準", "直ちに", "短期", "中期"),
+            "zh": ("阶段", "进入下一阶段的判断依据", "立即", "近期", "中期"),
+        }[lang]
+        table = [f"| {horizon} | {decision} |", "| --- | --- |"]
+        table.extend(f"| {period} | {phase} |" for period, phase in zip(periods, phases[1:]))
+        body += f"\n\n### {phases[0]}\n\n" + "\n".join(table)
     result.append(block("next_checks", titles[2], body))
     for section in result:
         section["body"] = view._swept(section["body"], lang)

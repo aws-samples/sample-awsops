@@ -451,6 +451,46 @@ def _trim(body, limit, lang):
     return _swept((kept[:cut + 1] if cut >= 0 else kept) + SIZE_MARK + note, lang)
 
 
+# Report titles are also used in digests. Only code-owned topics, derived from
+# cited, admitted evidence, can appear here. Resource names and model prose stay in the body.
+_TOPICS = {
+    "storage": ("저장 암호화가 꺼진 리소스 확인", "Resource found with storage encryption disabled", "保存時の暗号化が無効なリソースを確認", "发现未启用存储加密的资源"),
+    "posture": ("보안 탐지 범위 확인", "Verify security detection coverage", "セキュリティ検出範囲を確認", "核实安全检测覆盖范围"),
+    "backup": ("백업 보존과 복구 목표 검토", "Compare backup retention with recovery objectives", "バックアップ保持と復旧目標を確認", "对照备份保留期与恢复目标"),
+    "cost": ("비용 귀속과 절감 근거 검토", "Review cost attribution and savings evidence", "費用の帰属と削減根拠を確認", "核查成本归属与节省依据"),
+    "metrics": ("워크로드 부하와 용량 검토", "Review workload demand and capacity", "負荷と容量を確認", "核查工作负载与容量"),
+    "calls": ("서비스 호출 경로 확인", "Verify service call paths", "サービス呼び出し経路を確認", "核实服务调用路径"),
+}
+_SOURCE_TAGS = {"inventory": "AWS Inventory", "cloudwatch": "CloudWatch", "xray": "X-Ray",
+                "cost": "Cost Explorer", "provider_sizing": "Compute Optimizer"}
+_RESOURCE_TAGS = {"rds": "Amazon RDS", "rds_cluster": "Amazon RDS", "ec2": "Amazon EC2",
+                  "ebs_volume": "Amazon EBS", "ecs_service": "Amazon ECS", "eks_cluster": "Amazon EKS"}
+
+
+def _finding_topic(finding, records):
+    pillar = finding["pillar"]
+    kinds = {r["kind"] for r in records}
+    inventory = [r.get("facts", {}) for r in records if r["kind"] == "inventory"
+                 and r.get("fresh") is True and r.get("coverage", {}).get("complete") is True
+                 and len(finding.get("resource_ids", [])) == 1
+                 and r.get("resource_ids") == finding["resource_ids"]]
+    if pillar == "security":
+        flags = [f[k] for f in inventory for k in ("storage_encrypted", "encrypted") if k in f]
+        if flags and all(value is False for value in flags):
+            return "storage"
+        if any(r.get("source") == "posture" for r in records):
+            return "posture"
+    if pillar == "reliability" and any("backup_retention_period" in f or "backup_retention" in f for f in inventory):
+        return "backup"
+    if pillar == "cost_optimization" and any(r.get("source") in {"cost", "provider_sizing"} for r in records):
+        return "cost"
+    if pillar in {"performance_efficiency", "sustainability"} and "metrics" in kinds:
+        return "metrics"
+    if "observed_call" in kinds:
+        return "calls"
+    return None
+
+
 def title_and_tags(bundle, analysis, *, lang="ko"):
     findings = _ordered(analysis)
     titles = {"ko": "AWS 계정 종합진단 — Well-Architected 6대 영역 점검",
@@ -458,4 +498,24 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
               "zh": "AWS 账户综合诊断 — Well-Architected 六大支柱",
               "ja": "AWS アカウント総合診断 — Well-Architected の六つの柱"}
     tags = list(dict.fromkeys(f["pillar"] for f in findings if f.get("pillar") in _PILLARS))
-    return {"title": titles.get(lang, titles["ko"]), "tags": tags or ["diagnosis"]}
+    title = titles.get(lang, titles["ko"])
+    index = {r["id"]: r for r in bundle.get("resources", [])}
+    evidence = {r["id"]: r for r in bundle.get("evidence", [])}
+    topics = []
+    service_tags = []
+    for finding in findings:
+        records = [evidence[k] for k in finding.get("evidence_ids", []) if k in evidence]
+        if not records:
+            continue
+        topic = _finding_topic(finding, records)
+        if topic and finding["severity"] == findings[0]["severity"] and topic not in topics:
+            topics.append(topic)
+        service_tags.extend(_RESOURCE_TAGS.get(index[k]["kind"])
+                            for k in finding.get("resource_ids", []) if k in index)
+        service_tags.extend(_SOURCE_TAGS.get(r.get("source")) for r in records)
+    if topics:
+        i = ("ko", "en", "ja", "zh").index(lang) if lang in titles else 0
+        title += " · " + _TOPICS[topics[0]][i]
+    services = list(dict.fromkeys(t for t in service_tags if t))[:4]
+    tags = services + tags
+    return {"title": title, "tags": tags or ["diagnosis"]}
