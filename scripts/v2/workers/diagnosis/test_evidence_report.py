@@ -84,14 +84,14 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     progress = []
     md, summary, used = report.generate(object(), "self", tier,
                                        lang=lang, on_progress=lambda *a: progress.append(a))
-    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 10
+    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 11
     assert len(re.findall(r"^### ", md.split("\n## ")[-1], re.M)) == count - 1
     assert summary["evidence_loop"]["enabled"] is True
-    assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
+    assert summary["title_and_tags"]["tags"] == ["Amazon EC2", "CloudWatch", "performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
     assert "17.25" in md
-    assert progress[-1][0:2] == (10, 10)
-    assert len(progress[-1][4]) == 10
+    assert progress[-1][0:2] == (11, 11)
+    assert len(progress[-1][4]) == 11
     assert used
 
 
@@ -639,7 +639,7 @@ def test_reader_body_qualifies_hypothesis_without_unrelated_measurement(monkeypa
     assert "2026-11-04" in body
     assert "25.25" not in body and "25.25" in appendix
     assert "Memory pressure needs verification." in body
-    assert "| --- |" not in body.split("## Intended vs Actual")[0]
+    assert "| Evidence | Scope / window |" not in body
     assert data["evidence"][0]["id"] not in body and data["evidence"][0]["id"] in appendix
 
 
@@ -672,3 +672,46 @@ def test_bounded_report_preserves_pillars_and_evidence_with_large_resource_names
     assert len(md.encode()) <= presentation.MAX_MARKDOWN_BYTES
     assert len(md.split("\n## Evidence appendix")[1].encode()) > 1024
     assert any(key in PILLARS for key in summary["render_degraded"])
+
+
+def test_customer_guide_distinguishes_calls_flows_and_configuration():
+    from diagnosis.architecture import section
+    resources = [{"id": k, "resource_id": k, "kind": "test"} for k in ("service-A", "database-B")]
+    evidence, edges = [], []
+    for kind in ("configured_dependency", "observed_network_flow", "observed_call"):
+        evidence.append({"id": kind, "kind": kind, "source": "fixture", "resource_ids": ["service-A", "database-B"],
+                         "facts": {}, "fresh": False, "coverage": {"complete": False, "sampled": True}})
+        edges.append({"id": kind, "kind": kind, "source": "service-A", "target": "database-B", "evidence_ids": [kind]})
+    body = section({"resources": resources, "evidence": evidence, "relationships": edges}, "en")["body"]
+    for row in body.splitlines():
+        if row.startswith("| Observed call"):
+            assert "→" in row and "stale" in row
+        if row.startswith(("| Configuration", "| Network flow")):
+            assert "→" not in row and " / " in row
+    assert all(name in body for name in ["Observed call", "Network flow", "Configuration", "3 / 3"])
+    assert "No relationship with verified endpoints" in section({"resources": resources}, "en")["body"]
+
+
+def test_customer_guide_prioritizes_admitted_checks_and_keeps_local_detail(monkeypatch):
+    from diagnosis.test_presentation import finding
+    findings = [finding(id="other", severity="medium", prerequisites=["Compare wait times."]),
+                finding(id="first", pillar="security", severity="high", prerequisites=["Confirm data classification."])]
+    prepare(monkeypatch, findings=analysis(findings=findings, editor_plan={
+        "lead": ["other"], "next": ["other"], "context": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    front, pillars = md.split("\n## Current architecture\n", 1)
+    assert "Confirm data classification." in front.split("### Immediate checks")[1]
+    sec = pillars.split("\n## Security\n")[1].split("\n## ")[0]
+    assert "Confirm data classification." in sec and "Decision criteria" in sec
+
+def test_executive_brief_ranks_admitted_findings_before_editor_preference(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id=str(i), severity="low", explanation=text) for i, text in enumerate(
+        ["Review demand.", "Review trend.", "Review capacity."])]
+    rows.append(finding(id="important", pillar="security", severity="high", explanation="Review exposure."))
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["0"], "next": [], "context": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    top = md.split("### Top risks")[1].split("### Immediate checks")[0]
+    assert "| 1 | Security · High |" in top and "Review exposure." in top
+    assert "| 3 |" in top and "| 4 |" not in top and "cloudwatch" in top
