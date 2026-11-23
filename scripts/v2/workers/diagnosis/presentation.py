@@ -515,7 +515,7 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
         service_tags.extend(_SOURCE_TAGS.get(r.get("source")) for r in records)
     if topics:
         i = ("ko", "en", "ja", "zh").index(lang) if lang in titles else 0
-        title += " · " + _TOPICS[topics[0]][i]
+        title = _TOPICS[topics[0]][i] + " · " + title
     services = list(dict.fromkeys(t for t in service_tags if t))[:3]  # leave room for a manual tag
     tags = services + tags
     return {"title": title, "tags": tags or ["diagnosis"]}
