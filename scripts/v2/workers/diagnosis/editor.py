@@ -178,13 +178,14 @@ def compose(bundle, analysis, invariant, lang):
     else:
         lead = copy[7]
     if first:
-        quick = [f"| {subject_col} | {check_col} |", "| --- | --- |"]
+        quick_rows = []
         for f in ranked:
             checks = safe_checks(f)
             if checks:
-                quick.append(f"| {subject(f, compact=True)} | {checks[0]} |")
-            if len(quick) == 5:
+                quick_rows.append(f"| {subject(f, compact=True)} | {checks[0]} |")
+            if len(quick_rows) == 3:
                 break
+        quick = [f"| {subject_col} | {check_col} |", "| --- | --- |", *quick_rows]
         lead += f"\n\n### {quick_title}\n\n" + "\n".join(quick)
     if any(bundle.get(k) or analysis.get(k) for k in ("gaps", "degraded", "incomplete", "rejected")):
         lead += f"\n\n**{scope_title}** · " + titles[4]
@@ -231,6 +232,8 @@ def compose(bundle, analysis, invariant, lang):
         available = safe_checks(f)
         withheld |= any(not view._safe_explanation(raw) or _has_mutating_cli(raw)
                         for raw in f.get("prerequisites", []))
+        if len(checks) >= 4:
+            continue
         rank = view._label(view._SEVERITY_LABEL, f["severity"], lang)
         pillar = view._label(view._PILLARS, f["pillar"], lang)
         for check in available:
@@ -238,8 +241,6 @@ def compose(bundle, analysis, invariant, lang):
             if item not in checks:
                 checks.append(item)
                 break
-        if len(checks) == 4:
-            break
     body = "\n\n".join("- " + check for check in checks) or titles[5]
     if withheld:
         body += "\n\n" + view._WITHHELD[lang]

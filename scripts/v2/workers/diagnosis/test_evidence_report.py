@@ -737,3 +737,30 @@ def test_report_architecture_masks_fact_values_before_formatting_verified_edges(
     assert "Configuration" in architecture and "stored_graph" in architecture and "us-east-1" in architecture
     assert "relation.example.internal" not in architecture and "binding.example.internal" not in architecture
     assert "<host> · <host>" in architecture
+
+
+def test_architecture_distinguishes_telemetry_services_from_inventory():
+    from diagnosis.architecture import section
+    nodes = [{"id": "left", "kind": "service", "resource_id": "xray:3", "region": "us-east-1",
+              "facts": {"name": "checkout"}},
+             {"id": "right", "kind": "service", "resource_id": "xray:7", "region": "us-east-1",
+              "facts": {"name": "orders"}},
+             {"id": "db", "kind": "rds", "resource_id": "backend", "facts": {}}]
+    e = {"id": "call", "kind": "observed_call", "source": "xray", "resource_ids": ["left", "right"],
+         "facts": {"resource_binding": "unresolved"}, "coverage": {"sampled": True}, "fresh": True}
+    data = {"resources": nodes, "evidence": [e], "relationships": [
+        {"id": "pair", "kind": "observed_call", "source": "left", "target": "right", "evidence_ids": ["call"]}]}
+    body = section(data, "en")["body"]
+    inventory, telem = body.split("### Services in telemetry")
+    assert "backend" in inventory and "checkout" not in inventory
+    table, relationships = telem.split("| Relationship |")
+    assert "2" in table and ("checkout" in table or "orders" in table)
+    assert "checkout" in relationships and "orders" in relationships and "→" in relationships
+    assert "workload binding unverified" in relationships and "xray:3" not in body
+    nodes[0]["facts"]["name"] = "orders"
+    same_name_pair = section(data, "en")["body"].split("| Relationship |")[1]
+    assert "xray:3" in same_name_pair and "xray:7" in same_name_pair
+    nodes[0]["facts"] = {}
+    assert "xray:3" in section(data, "en")["body"]
+    nodes[0]["facts"]["name"] = "private.service.internal"
+    assert "private.service.internal" not in section(data, "en")["body"]

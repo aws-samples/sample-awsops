@@ -1,5 +1,5 @@
 """Customer-facing architecture view of the admitted projection used by the specialists."""
-from collections import Counter, defaultdict
+from collections import defaultdict
 from itertools import zip_longest
 from . import presentation as view
 
@@ -30,6 +30,13 @@ _COPY = {
 }
 _KINDS = ("observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency", "allowed_path")
 
+_TELEMETRY = {
+    "ko": ("텔레메트리에 나타난 서비스", "실행 워크로드 연결 미확인"),
+    "en": ("Services in telemetry", "workload binding unverified"),
+    "ja": ("テレメトリで観測されたサービス", "実行ワークロードとの対応は未確認"),
+    "zh": ("遥测中的服务", "与运行工作负载的关联尚未确认"),
+}
+
 
 def section(bundle, lang, priority_resources=()):
     (title, components, type_label, count_label, example, relation, endpoints, source,
@@ -44,24 +51,42 @@ def section(bundle, lang, priority_resources=()):
     relation_labels = dict(zip(_KINDS, descriptions))
     resources = {r["id"]: r for r in bundle.get("resources", [])}
     evidence = {e["id"]: e for e in bundle.get("evidence", [])}
-    body = ["[Info]", scope_note, f"### {components}"]
-    kinds = Counter(r["kind"] for r in resources.values())
-    if kinds:
-        examples = {}
-        for r in sorted(resources.values(), key=lambda r: r["resource_id"]):
-            examples.setdefault(r["kind"], r["resource_id"])
+    telemetry_heading, unbound = _TELEMETRY[lang]
+    body = ["[Info]", scope_note]
+    inventory = defaultdict(list)
+    telemetry = defaultdict(list)
+    names = {}
+    telemetry_names = defaultdict(list)
+    for rid, resource in resources.items():
+        native = resource["resource_id"]
+        logical = resource["kind"] == "service" and native.startswith(("xray:", "managed:"))
+        observed = resource.get("facts", {}).get("name") if logical else None
+        name = view._scrubbed(observed.strip(), "name") if isinstance(observed, str) else None
+        names[rid] = view._code(name or native)
+        if logical:
+            telemetry["X-Ray" if native.startswith("xray:") else "Service discovery"].append(rid)
+            telemetry_names[names[rid], resource.get("region")].append(rid)
+        else:
+            inventory[resource["kind"]].append(rid)
+    # Equal service names can represent different trace nodes even within one region.
+    for ids in telemetry_names.values():
+        if len(ids) > 1:
+            for rid in ids:
+                names[rid] += f" ({view._code(resources[rid]['resource_id'])})"
+    for heading, buckets in ((components, inventory), (telemetry_heading, telemetry)):
+        if not buckets:
+            continue
         table = [f"| {type_label} | {count_label} | {example} |", "| --- | ---: | --- |"]
-        for kind, count in sorted(kinds.items(), key=lambda item: (-item[1], item[0])):
-            table.append(f"| {view._code(kind)} | {count} | {view._code(examples[kind])} |")
-        body.append("\n".join(table))
-    else:
+        for kind, ids in sorted(buckets.items(), key=lambda item: (-len(item[1]), item[0])):
+            representative = min(names[rid] for rid in ids)
+            table.append(f"| {view._code(kind)} | {len(ids)} | {representative} |")
+        body.extend([f"### {heading}", "\n".join(table)])
+    if not resources:
         body.append(empty)
 
     def endpoint(key):
-        resource = resources[key]
-        name = view._code(resource["resource_id"])
-        region = resource.get("region")
-        return f"{name} ({view._code(region)})" if region else name
+        region = resources[key].get("region")
+        return f"{names[key]} ({view._code(region)})" if region else names[key]
 
     groups = defaultdict(list)
     for edge in bundle.get("relationships", []):
@@ -78,7 +103,7 @@ def section(bundle, lang, priority_resources=()):
             scope = {k: record[k] for k in ("kind", "region", "regions", "window", "captured_at", "fresh")
                      if k in record}
             scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
-                                 if k in {"sampled", "complete", "sample_ratio"}}
+                                 if k in {"sampled", "complete", "sample_ratio", "producer_status", "unknown_attributes"}}
             facts = record.get("facts", {})
             # A hostname is masked as a whole field. Joining first loses that boundary.
             details = [view._scrubbed(record.get("source"), "source"),
@@ -88,7 +113,13 @@ def section(bundle, lang, priority_resources=()):
             refs.append(view._cell(" · ".join(str(v) for v in details if v)))
         label = relation_labels[kind]
         pair = f"{a} → {b}" if kind == "observed_call" else f"{a} / {b}"
-        row = f"| {label} | {pair} | {'; '.join(dict.fromkeys(refs))} |"
+        if any(r.get("facts", {}).get("resource_binding") == "unresolved" for r in cited):
+            label += f" ({unbound})"
+        references = list(dict.fromkeys(refs))
+        citation = "; ".join(references[:3])
+        if len(references) > 3:
+            citation += f" (+{len(references) - 3})"
+        row = f"| {label} | {pair} | {citation} |"
         rank = (not all(r.get("fresh") is True for r in cited),
                 not any(ref in priority_resources for ref in (edge["source"], edge["target"])), edge["id"])
         groups[kind].append((rank, row))
