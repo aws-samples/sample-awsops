@@ -870,7 +870,7 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
     from .budget import BudgetExceeded, ReportBudget
     budget = budget if budget is not None else ReportBudget(tier)
     base_catalog, model_id, _ = _resolve_tier(tier, model)
-    total = len(presentation._PILLARS) + 4  # assessment, pillars, checks, invariant, appendix
+    total = len(presentation._PILLARS) + 5  # assessment, architecture, pillars, checks, invariant, appendix
 
     def emit(current, section, phase, completed=None):
         if on_progress is not None:

@@ -34,3 +34,13 @@ def test_ts_mirror_matches_python_catalog():
     for key, variants in S.TITLES_I18N.items():
         assert mirror[key]["variants"] == [variants["en"], variants["zh"], variants["ja"]], \
             f"localized variants drifted for {key}"
+
+
+def test_informational_architecture_titles_match_the_reader():
+    from diagnosis import architecture
+
+    reader = _TS.parents[1] / "components" / "diagnosis" / "ReportSections.tsx"
+    marker = re.search(r"\[('Intended vs Actual', [^\]]+)\]\.includes\(title\)", reader.read_text())
+    assert marker, "architecture Info titles must map to the neutral reader state"
+    assert set(re.findall(r"'([^']+)'", marker[1])) == {
+        "Intended vs Actual", *(copy[0] for copy in architecture._COPY.values())}

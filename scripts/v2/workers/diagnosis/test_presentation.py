@@ -165,7 +165,7 @@ def test_findings_render_in_the_pillar_dedicated_section(pillar, deep, shared):
 def test_local_title_describes_account_and_tags_preserve_findings():
     from diagnosis import presentation
     meta = presentation.title_and_tags(bundle(), analysis(), lang="en")
-    assert meta["title"] == "AWS account assessment — six Well-Architected pillars"
+    assert meta["title"] == "Review workload demand and capacity · AWS account assessment — six Well-Architected pillars"
     assert "performance_efficiency" in meta["tags"]
     assert "Memory pressure" not in meta["title"]
 
@@ -432,4 +432,19 @@ def test_pillar_table_and_localized_title():
     assert "| Security | ` partial ` | ` 2 ` | — | — | ` revalidation_dropped=1 ` |" in body
     two = analysis(findings=[finding(), finding(id="finding-b", severity="low")])
     meta = presentation.title_and_tags(bundle(), two, lang="ko")
-    assert meta["title"] == "AWS 계정 종합진단 — Well-Architected 6대 영역 점검"
+    assert meta["title"] == "워크로드 부하와 용량 검토 · AWS 계정 종합진단 — Well-Architected 6대 영역 점검"
+
+def test_title_requires_matched_current_inventory_for_encryption_topic():
+    from diagnosis import presentation
+    data = bundle()
+    record = data["evidence"][0]
+    record.update(kind="inventory", source="inventory", facts={"storage_encrypted": False})
+    rows = analysis(findings=[finding(pillar="security")])
+    def meta():
+        return presentation.title_and_tags(data, rows, lang="ko")
+    assert "저장 암호화" in meta()["title"]
+    record["fresh"] = False
+    assert "저장 암호화" not in meta()["title"]
+    record.update(fresh=True, resource_ids=["another"])
+    assert "저장 암호화" not in meta()["title"]
+    assert presentation.title_and_tags(data, {"findings": []})["title"] == "AWS 계정 종합진단 — Well-Architected 6대 영역 점검"

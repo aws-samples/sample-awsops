@@ -84,14 +84,14 @@ def test_enabled_report_preserves_catalog_locale_progress_and_local_metadata(mon
     progress = []
     md, summary, used = report.generate(object(), "self", tier,
                                        lang=lang, on_progress=lambda *a: progress.append(a))
-    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 10
+    assert summary["sections"] == len(re.findall(r"^## ", md, re.M)) == 11
     assert len(re.findall(r"^### ", md.split("\n## ")[-1], re.M)) == count - 1
     assert summary["evidence_loop"]["enabled"] is True
-    assert summary["title_and_tags"]["tags"] == ["performance_efficiency"]
+    assert summary["title_and_tags"]["tags"] == ["Amazon EC2", "CloudWatch", "performance_efficiency"]
     assert summary["budget"]["attempt_count"] == 0
     assert "17.25" in md
-    assert progress[-1][0:2] == (10, 10)
-    assert len(progress[-1][4]) == 10
+    assert progress[-1][0:2] == (11, 11)
+    assert len(progress[-1][4]) == 11
     assert used
 
 
@@ -639,7 +639,7 @@ def test_reader_body_qualifies_hypothesis_without_unrelated_measurement(monkeypa
     assert "2026-11-04" in body
     assert "25.25" not in body and "25.25" in appendix
     assert "Memory pressure needs verification." in body
-    assert "| --- |" not in body.split("## Intended vs Actual")[0]
+    assert "| Evidence | Scope / window |" not in body
     assert data["evidence"][0]["id"] not in body and data["evidence"][0]["id"] in appendix
 
 
@@ -672,3 +672,116 @@ def test_bounded_report_preserves_pillars_and_evidence_with_large_resource_names
     assert len(md.encode()) <= presentation.MAX_MARKDOWN_BYTES
     assert len(md.split("\n## Evidence appendix")[1].encode()) > 1024
     assert any(key in PILLARS for key in summary["render_degraded"])
+
+
+def test_customer_guide_distinguishes_calls_flows_and_configuration():
+    from diagnosis.architecture import section
+    resources = [{"id": k, "resource_id": k, "kind": "test"} for k in ("service-A", "database-B")]
+    evidence, edges = [], []
+    for kind in ("configured_dependency", "observed_network_flow", "observed_call"):
+        evidence.append({"id": kind, "kind": kind, "source": "fixture", "resource_ids": ["service-A", "database-B"],
+                         "facts": {}, "fresh": False, "coverage": {"complete": False, "sampled": True}})
+        edges.append({"id": kind, "kind": kind, "source": "service-A", "target": "database-B", "evidence_ids": [kind]})
+    body = section({"resources": resources, "evidence": evidence, "relationships": edges}, "en")["body"]
+    for row in body.splitlines():
+        if row.startswith("| Observed call"):
+            assert "→" in row and "stale" in row
+        if row.startswith(("| Configuration", "| Network flow")):
+            assert "→" not in row and " / " in row
+    assert all(name in body for name in ["Observed call", "Network flow", "Configuration", "3 / 3"])
+    assert "No relationship with verified endpoints" in section({"resources": resources}, "en")["body"]
+
+
+def test_customer_guide_prioritizes_admitted_checks_and_keeps_local_detail(monkeypatch):
+    from diagnosis.test_presentation import finding
+    findings = [finding(id="other", severity="medium", prerequisites=["Compare wait times."]),
+                finding(id="first", pillar="security", severity="high", prerequisites=["Confirm data classification."])]
+    prepare(monkeypatch, findings=analysis(findings=findings, editor_plan={
+        "lead": ["other"], "next": ["other"], "context": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    front, pillars = md.split("\n## Current architecture\n", 1)
+    assert "Confirm data classification." in front.split("### Immediate checks")[1]
+    sec = pillars.split("\n## Security\n")[1].split("\n## ")[0]
+    assert "Confirm data classification." in sec and "Decision criteria" in sec
+
+def test_executive_brief_ranks_admitted_findings_before_editor_preference(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id=str(i), severity="low", explanation=text) for i, text in enumerate(
+        ["Review demand.", "Review trend.", "Review capacity."])]
+    rows.append(finding(id="important", pillar="security", severity="high", explanation="Review exposure."))
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["0"], "next": [], "context": [], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    top = md.split("### Top risks")[1].split("### Immediate checks")[0]
+    assert "| 1 | Security · High |" in top and "Review exposure." in top
+    assert "| 3 |" in top and "| 4 |" not in top and "cloudwatch" in top
+
+
+def test_report_architecture_masks_fact_values_before_formatting_verified_edges(monkeypatch):
+    data = bundle()
+    endpoint = data["resources"][0]
+    peer = {**endpoint, "id": oid("r-peer"), "resource_id": "peer"}
+    data["resources"].append(peer)
+    refs = [endpoint["id"], peer["id"]]
+    relationship = {"id": oid("binding"), "source": refs[0], "target": refs[1],
+                    "kind": "configured_dependency", "evidence_ids": [oid("edge-evidence")]}
+    data["relationships"] = [relationship]
+    data["evidence"].append({"id": oid("edge-evidence"), "kind": relationship["kind"],
+                             "source": "stored_graph", "resource_ids": refs, "fresh": True,
+                             "regions": ["us-east-1"], "coverage": {"complete": True},
+                             "facts": {"relation": "relation.example.internal",
+                                       "resource_binding": "binding.example.internal"}})
+    prepare(monkeypatch, data=data, findings=analysis(findings=[], evidence_bundle=data))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    architecture = md.split("\n## Current architecture\n", 1)[1].split("\n## ", 1)[0]
+    assert "Configuration" in architecture and "stored_graph" in architecture and "us-east-1" in architecture
+    assert "relation.example.internal" not in architecture and "binding.example.internal" not in architecture
+    assert "<host> · <host>" in architecture
+
+
+def test_architecture_distinguishes_telemetry_services_from_inventory():
+    from diagnosis.architecture import section
+    nodes = [{"id": "left", "kind": "service", "resource_id": "xray:3", "region": "us-east-1",
+              "facts": {"name": "checkout"}},
+             {"id": "right", "kind": "service", "resource_id": "xray:7", "region": "us-east-1",
+              "facts": {"name": "orders"}},
+             {"id": "db", "kind": "rds", "resource_id": "backend", "facts": {}}]
+    e = {"id": "call", "kind": "observed_call", "source": "xray", "resource_ids": ["left", "right"],
+         "facts": {"resource_binding": "unresolved"}, "coverage": {"sampled": True}, "fresh": True}
+    data = {"resources": nodes, "evidence": [e], "relationships": [
+        {"id": "pair", "kind": "observed_call", "source": "left", "target": "right", "evidence_ids": ["call"]}]}
+    body = section(data, "en")["body"]
+    inventory, telem = body.split("### Services in telemetry")
+    assert "backend" in inventory and "checkout" not in inventory
+    table, relationships = telem.split("| Relationship |")
+    assert "2" in table and ("checkout" in table or "orders" in table)
+    assert "checkout" in relationships and "orders" in relationships and "→" in relationships
+    assert "workload binding unverified" in relationships and "xray:3" not in body
+    nodes[0]["facts"]["name"] = "orders"
+    same_name_pair = section(data, "en")["body"].split("| Relationship |")[1]
+    assert "xray:3" in same_name_pair and "xray:7" in same_name_pair
+    nodes[0]["facts"] = {}
+    assert "xray:3" in section(data, "en")["body"]
+    nodes[0]["facts"]["name"] = "private.service.internal"
+    assert "private.service.internal" not in section(data, "en")["body"]
+
+
+def test_architecture_groups_correlated_flows_but_preserves_directed_call_pairs():
+    from diagnosis.architecture import section
+    nodes = [{"id": k, "resource_id": k, "kind": "ec2"} for k in ("left", "right")]
+    edges, evidence = [], []
+    for n, (kind, left, right) in enumerate([
+            ("observed_network_flow", "left", "right"),
+            ("observed_network_flow", "left", "right"),
+            ("observed_network_flow", "right", "left"),
+            ("observed_call", "left", "right"), ("observed_call", "right", "left")]):
+        key = f"record-{n}"
+        facts = {"binding": "dns_window_correlation"} if n == 1 else {}
+        evidence.append({"id": key, "source": "flow" if n < 3 else "trace", "kind": kind,
+                         "fresh": True, "facts": facts, "coverage": {"truncated": True, "complete": False}})
+        edges.append({"id": f"edge-{n}", "source": left, "target": right, "kind": kind,
+                      "evidence_ids": [key]})
+    body = section({"resources": nodes, "evidence": evidence, "relationships": edges}, "en")["body"]
+    assert body.count("| Network flow") == 1 and body.count("| Observed call") == 2
+    assert "3 / 3" in body and "DNS-window correlation" in body and "truncated" in body
+    assert "` left ` → ` right `" in body and "` right ` → ` left `" in body
