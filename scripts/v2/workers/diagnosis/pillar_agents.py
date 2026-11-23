@@ -90,7 +90,7 @@ _TRUSTED_RULES = (
     "verification selects a controlled read-only capability; do not output CLI/SQL/URLs. "
     "In the explanation connect the scoped architectural observation to a customer consequence "
     "and its uncertainty. In prerequisites describe a specific read-only check, what to compare, "
-    "and how the result changes the decision. Avoid generic advice and invented benchmarks. "
+    "and how the result changes the decision, in words without digits, units or thresholds. Avoid generic advice and invented benchmarks. "
     "Return concise conclusions and uncertainty; never return private reasoning. "
     "Produce at most eight findings and at most four prerequisites per finding."
 )

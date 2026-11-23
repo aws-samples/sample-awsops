@@ -1,6 +1,7 @@
 """Compose the operator report from validated findings, keeping the evidence ledger in an appendix."""
 from . import architecture, presentation as view
 from .report import _has_mutating_cli
+from .sections import RCA_HEADINGS
 
 _TITLES = {
     "ko": ("진단 의견", "주요 소견과 평가 범위", "확인할 순서", "근거 부록",
@@ -208,8 +209,6 @@ def compose(bundle, analysis, invariant, lang):
         warning = "[Warning]\n\n" if state in {"partial", "failed"} else ""
         body = f"{warning}{status} · {labels[4]} {len(ids)}\n\n{paragraphs(ids)}"
         if ids:
-            how = {"ko": "원인 분석 및 조치", "en": "Cause analysis and follow-up",
-                   "ja": "原因分析と対応", "zh": "原因分析与后续行动"}[lang]
             rows = []
             for ident in ids:
                 f = by_id[ident]
@@ -219,7 +218,7 @@ def compose(bundle, analysis, invariant, lang):
                     rows.append(f"| {subject(f)} · {label} | " + " / ".join(checks) + " |")
             if rows:
                 table = [f"| {subject_col} | {check_col} |", "| --- | --- |", *rows]
-                body += f"\n\n### {how}\n\n" + "\n".join(table)
+                body += f"\n\n### {RCA_HEADINGS[lang]}\n\n" + "\n".join(table)
             language_index = ("ko", "en", "ja", "zh").index(lang)
             body += f"\n\n**{_DECISION_HEADING[lang]}**\n\n" + _DECISIONS[pillar][language_index]
         result.append(block(pillar, view._label(view._PILLARS, pillar, lang), body))

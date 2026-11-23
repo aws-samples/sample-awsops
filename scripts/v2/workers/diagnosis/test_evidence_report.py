@@ -764,3 +764,24 @@ def test_architecture_distinguishes_telemetry_services_from_inventory():
     assert "xray:3" in section(data, "en")["body"]
     nodes[0]["facts"]["name"] = "private.service.internal"
     assert "private.service.internal" not in section(data, "en")["body"]
+
+
+def test_architecture_groups_correlated_flows_but_preserves_directed_call_pairs():
+    from diagnosis.architecture import section
+    nodes = [{"id": k, "resource_id": k, "kind": "ec2"} for k in ("left", "right")]
+    edges, evidence = [], []
+    for n, (kind, left, right) in enumerate([
+            ("observed_network_flow", "left", "right"),
+            ("observed_network_flow", "left", "right"),
+            ("observed_network_flow", "right", "left"),
+            ("observed_call", "left", "right"), ("observed_call", "right", "left")]):
+        key = f"record-{n}"
+        facts = {"binding": "dns_window_correlation"} if n == 1 else {}
+        evidence.append({"id": key, "source": "flow" if n < 3 else "trace", "kind": kind,
+                         "fresh": True, "facts": facts, "coverage": {"truncated": True, "complete": False}})
+        edges.append({"id": f"edge-{n}", "source": left, "target": right, "kind": kind,
+                      "evidence_ids": [key]})
+    body = section({"resources": nodes, "evidence": evidence, "relationships": edges}, "en")["body"]
+    assert body.count("| Network flow") == 1 and body.count("| Observed call") == 2
+    assert "3 / 3" in body and "DNS-window correlation" in body and "truncated" in body
+    assert "` left ` → ` right `" in body and "` right ` → ` left `" in body
