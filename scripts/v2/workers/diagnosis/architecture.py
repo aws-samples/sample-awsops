@@ -10,23 +10,23 @@ _COPY = {
            "DNS 조회", "구성 관계", "허용 경로", "검증된 구성요소가 없습니다.",
            "양 끝점을 확인한 관계가 없습니다. 리소스 목록만으로 서비스 호출이나 장애 전파 경로를 판정할 수 없습니다.",
            "아래 수치는 이번 분석에 포함된 범위입니다. 구성·허용·DNS 정보만으로 실제 서비스 호출을 확정할 수 없습니다.",
-           "표시한 관계 / 분석에 포함된 관계", "트래픽 방향과 실행 리소스의 연결 여부는 원천 근거의 범위를 따릅니다."),
+           "표시한 관계 / 검증된 관계", "트래픽 방향과 실행 리소스의 연결 여부는 원천 근거의 범위를 따릅니다."),
     "en": ("Current architecture", "Components in the assessed scope", "Type", "Count", "Example resource",
            "Relationship", "Endpoints", "Source and scope", "Observed call", "Network flow (direction unconfirmed)",
            "DNS lookup", "Configuration", "Permitted path", "No verified components were available.",
            "No relationship with verified endpoints was available. Inventory alone cannot establish a call or failure path.",
            "Counts cover the assessed projection. Configuration, permissions and DNS alone cannot establish a service call.",
-           "Relationships shown / in scope", "Direction and workload attribution depend on the source evidence."),
+           "Relationships shown / verified", "Direction and workload attribution depend on the source evidence."),
     "ja": ("現在のアーキテクチャ", "分析対象の構成要素", "種類", "件数", "リソース例", "関係", "両端", "根拠と範囲",
            "観測された呼び出し", "ネットワークフロー（方向未確認）", "DNS 照会", "構成上の関係", "許可された経路",
            "確認済みの構成要素がありません。", "両端が確認できた関係がありません。構成一覧だけでは呼び出しや障害の波及経路を確定できません。",
            "件数は今回の分析範囲です。構成・許可・DNS だけでは実際の呼び出しを確定できません。",
-           "表示した関係 / 分析対象の関係", "通信方向と実行リソースとの対応は観測範囲に依存します。"),
+           "表示した関係 / 確認済みの関係", "通信方向と実行リソースとの対応は観測範囲に依存します。"),
     "zh": ("当前架构", "本次评估的组件", "类型", "数量", "资源示例", "关系", "两个端点", "证据和范围",
            "观测到的调用", "网络流（方向未确认）", "DNS 查询", "配置关系", "允许的路径",
            "没有已验证的组件。", "没有两端均已确认的关系。仅凭清单无法判断调用关系或故障传播路径。",
            "数量只涵盖本次分析范围。配置、权限及 DNS 记录本身不足以确认服务调用。",
-           "显示关系 / 评估范围内关系", "流量方向和工作负载归属取决于证据范围。"),
+           "已显示关系 / 已验证关系", "流量方向和工作负载归属取决于证据范围。"),
 }
 _KINDS = ("observed_call", "observed_network_flow", "observed_dns_resolution", "configured_dependency", "allowed_path")
 
@@ -34,6 +34,13 @@ _KINDS = ("observed_call", "observed_network_flow", "observed_dns_resolution", "
 def section(bundle, lang, priority_resources=()):
     (title, components, type_label, count_label, example, relation, endpoints, source,
      *descriptions, empty, no_edges, scope_note, shown, direction_note) = _COPY[lang]
+    if bundle is None:
+        # Discovery may still have raw rows on failure; they did not pass admission.
+        message = {"ko": "검증된 아키텍처 근거를 확보하지 못했습니다.",
+                   "en": "Verified architecture evidence was unavailable.",
+                   "ja": "検証済みのアーキテクチャ根拠を取得できませんでした。",
+                   "zh": "未能获得已验证的架构证据。"}[lang]
+        return {"key": "architecture", "title": title, "body": "[Warning]\n\n" + message}
     relation_labels = dict(zip(_KINDS, descriptions))
     resources = {r["id"]: r for r in bundle.get("resources", [])}
     evidence = {e["id"]: e for e in bundle.get("evidence", [])}
@@ -73,9 +80,12 @@ def section(bundle, lang, priority_resources=()):
             scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
                                  if k in {"sampled", "complete", "sample_ratio"}}
             facts = record.get("facts", {})
-            details = [record.get("source"), facts.get("relation"), facts.get("resource_binding"),
-                       view._scope_text(scope, lang)]
-            refs.append(view._cell(view._scrubbed(" · ".join(str(v) for v in details if v))))
+            # A hostname is masked as a whole field. Joining first loses that boundary.
+            details = [view._scrubbed(record.get("source"), "source"),
+                       view._scrubbed(facts.get("relation"), "relation"),
+                       view._scrubbed(facts.get("resource_binding"), "resource_binding"),
+                       view._scope_text(view._scrubbed(scope), lang)]
+            refs.append(view._cell(" · ".join(str(v) for v in details if v)))
         label = relation_labels[kind]
         pair = f"{a} → {b}" if kind == "observed_call" else f"{a} / {b}"
         row = f"| {label} | {pair} | {'; '.join(dict.fromkeys(refs))} |"

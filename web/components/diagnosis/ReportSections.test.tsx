@@ -76,7 +76,9 @@ describe('sectionSeverity', () => {
   });
   it('keeps explicit information neutral rather than displaying an assessed pass', () => {
     expect(sectionSeverity('[Info]\nNo active invariants. No assessment was performed.', 'Intended vs Actual')).toBe('info');
-    expect(sectionSeverity('[Info]\n확인된 구성요소', '현재 아키텍처')).toBe('info');
+    for (const title of ['현재 아키텍처', 'Current architecture', '現在のアーキテクチャ', '当前架构']) {
+      expect(sectionSeverity('[Info]\nInventory', title)).toBe('info');
+    }
     expect(sectionSeverity('[Info] note\n[Warning] failed invariant')).toBe('warning');
     expect(sectionSeverity('[Info] note\n[Critical] failed invariant')).toBe('critical');
   });

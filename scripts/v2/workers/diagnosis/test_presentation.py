@@ -447,4 +447,4 @@ def test_title_requires_matched_current_inventory_for_encryption_topic():
     assert "저장 암호화" not in meta()["title"]
     record.update(fresh=True, resource_ids=["another"])
     assert "저장 암호화" not in meta()["title"]
-    assert not presentation.title_and_tags(data, {"findings": []})["title"].endswith("저장 암호화 설정 검토")
+    assert presentation.title_and_tags(data, {"findings": []})["title"] == "AWS 계정 종합진단 — Well-Architected 6대 영역 점검"

@@ -96,7 +96,7 @@ def compose(bundle, analysis, invariant, lang):
                      if k in record}
             coverage = record.get("coverage", {})
             scope["coverage"] = {k: coverage[k] for k in ("sampled", "complete", "sample_ratio") if k in coverage}
-            text = view._scope_text(scope, lang)
+            text = view._scope_text(view._scrubbed(scope), lang)
             if text:
                 notes.append(view._code(view._scrubbed(text)))
             # A validated single-resource metrics observation is the code-owned
@@ -150,7 +150,7 @@ def compose(bundle, analysis, invariant, lang):
     pref = {ident: i for i, ident in enumerate(plan["lead"])}
     ranked = sorted(ordered, key=lambda f: (view._SEVERITY.get(f["severity"], 5),
                                             pref.get(f["id"], len(pref))))
-    first = next(((f, checks[0]) for f in ranked if (checks := safe_checks(f))), None)
+    first = next((f for f in ranked if safe_checks(f)), None)
     if ranked:
         table = [f"| {rank_col} | {severity_col} | {issue_col} | {source_col} |", "| ---: | --- | --- | --- |"]
         for n, f in enumerate(ranked[:3], 1):
@@ -163,11 +163,11 @@ def compose(bundle, analysis, invariant, lang):
                 source_name = record.get("source")
                 if not source_name:
                     continue
-                scope = {k: record[k] for k in ("region", "captured_at", "fresh") if k in record}
+                scope = {k: record[k] for k in ("region", "regions", "captured_at", "fresh") if k in record}
                 scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
                                      if k in {"complete", "sampled", "sample_ratio"}}
-                detail = view._scope_text(scope, lang)
-                text = " · ".join(filter(None, [source_name, detail]))
+                detail = view._scope_text(view._scrubbed(scope), lang)
+                text = " · ".join(filter(None, [view._scrubbed(source_name, "source"), detail]))
                 cited.append(view._code(view._scrubbed(text)))
             cited = list(dict.fromkeys(cited))
             source = ", ".join(cited[:2]) or unknown_source
@@ -190,7 +190,7 @@ def compose(bundle, analysis, invariant, lang):
         lead += f"\n\n**{scope_title}** · " + titles[4]
     priorities = {rid for finding in ordered if finding["severity"] in {"critical", "high"}
                   for rid in finding.get("resource_ids", [])}
-    current = architecture.section(analysis.get("evidence_bundle", {}), lang, priorities)
+    current = architecture.section(analysis.get("evidence_bundle"), lang, priorities)
     result = [block("assessment", titles[0], lead), current]
     labels = {
         "ko": ("분석 완료", "부분 평가", "분석 실패", "미평가", "채택 소견"),
@@ -224,21 +224,20 @@ def compose(bundle, analysis, invariant, lang):
         result.append(block(pillar, view._label(view._PILLARS, pillar, lang), body))
     checks = []
     withheld = False
-    first_ids = [first[0]["id"]] if first else []
+    first_ids = [first["id"]] if first else []
     candidates = list(dict.fromkeys(first_ids + plan["next"] + list(by_id)))
     for ident in candidates:
         f = by_id[ident]
-        for raw in f.get("prerequisites", []):
-            check = view._safe_explanation(raw)
-            if check and not _has_mutating_cli(raw):
-                rank = view._label(view._SEVERITY_LABEL, f["severity"], lang)
-                pillar = view._label(view._PILLARS, f["pillar"], lang)
-                item = f"{rank} · {pillar} · {subject(f)} — {check}"
-                if item not in checks:
-                    checks.append(item)
-                    break
-            else:
-                withheld = True
+        available = safe_checks(f)
+        withheld |= any(not view._safe_explanation(raw) or _has_mutating_cli(raw)
+                        for raw in f.get("prerequisites", []))
+        rank = view._label(view._SEVERITY_LABEL, f["severity"], lang)
+        pillar = view._label(view._PILLARS, f["pillar"], lang)
+        for check in available:
+            item = f"{rank} · {pillar} · {subject(f)} — {check}"
+            if item not in checks:
+                checks.append(item)
+                break
         if len(checks) == 4:
             break
     body = "\n\n".join("- " + check for check in checks) or titles[5]

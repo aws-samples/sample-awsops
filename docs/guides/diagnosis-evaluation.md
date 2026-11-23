@@ -323,7 +323,7 @@ Unknown evidence, failed stages and uncompleted pillars remain visible.
 
 Model output selects admitted resource/evidence IDs and controlled claims.
 Code renders values, resource identities, scope, windows and provenance; it also
-uses a localized six-pillar account title and derives tags from the admitted pillars. Model explanations remain hypotheses. Neither
+uses a localized six-pillar account title. Model explanations remain hypotheses. Neither
 valid JSON nor a reviewer citation establishes causality. Final summary and
 recommendations cannot introduce targets or savings absent from admitted facts.
 After the last review, a budgeted editor writes the assessment, supporting findings

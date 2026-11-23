@@ -462,9 +462,9 @@ _TOPICS = {
     "calls": ("서비스 호출 경로 확인", "Verify service call paths", "サービス呼び出し経路を確認", "核实服务调用路径"),
 }
 _SOURCE_TAGS = {"inventory": "AWS Inventory", "cloudwatch": "CloudWatch", "xray": "X-Ray",
-                "cost": "Cost Explorer", "provider_sizing": "Compute Optimizer"}
+                "cost": "Cost Explorer", "compute_optimizer": "Compute Optimizer"}
 _RESOURCE_TAGS = {"rds": "Amazon RDS", "rds_cluster": "Amazon RDS", "ec2": "Amazon EC2",
-                  "ebs_volume": "Amazon EBS", "ecs_service": "Amazon ECS", "eks_cluster": "Amazon EKS"}
+                  "ebs_volume": "Amazon EBS", "ecs_service": "Amazon ECS"}
 
 
 def _finding_topic(finding, records):
@@ -482,7 +482,7 @@ def _finding_topic(finding, records):
             return "posture"
     if pillar == "reliability" and any("backup_retention_period" in f or "backup_retention" in f for f in inventory):
         return "backup"
-    if pillar == "cost_optimization" and any(r.get("source") in {"cost", "provider_sizing"} for r in records):
+    if pillar == "cost_optimization" and ("provider_sizing" in kinds or any(r.get("source") == "cost" for r in records)):
         return "cost"
     if pillar in {"performance_efficiency", "sustainability"} and "metrics" in kinds:
         return "metrics"
@@ -516,6 +516,6 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
     if topics:
         i = ("ko", "en", "ja", "zh").index(lang) if lang in titles else 0
         title += " · " + _TOPICS[topics[0]][i]
-    services = list(dict.fromkeys(t for t in service_tags if t))[:4]
+    services = list(dict.fromkeys(t for t in service_tags if t))[:3]  # leave room for a manual tag
     tags = services + tags
     return {"title": title, "tags": tags or ["diagnosis"]}

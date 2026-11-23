@@ -715,3 +715,25 @@ def test_executive_brief_ranks_admitted_findings_before_editor_preference(monkey
     top = md.split("### Top risks")[1].split("### Immediate checks")[0]
     assert "| 1 | Security · High |" in top and "Review exposure." in top
     assert "| 3 |" in top and "| 4 |" not in top and "cloudwatch" in top
+
+
+def test_report_architecture_masks_fact_values_before_formatting_verified_edges(monkeypatch):
+    data = bundle()
+    endpoint = data["resources"][0]
+    peer = {**endpoint, "id": oid("r-peer"), "resource_id": "peer"}
+    data["resources"].append(peer)
+    refs = [endpoint["id"], peer["id"]]
+    relationship = {"id": oid("binding"), "source": refs[0], "target": refs[1],
+                    "kind": "configured_dependency", "evidence_ids": [oid("edge-evidence")]}
+    data["relationships"] = [relationship]
+    data["evidence"].append({"id": oid("edge-evidence"), "kind": relationship["kind"],
+                             "source": "stored_graph", "resource_ids": refs, "fresh": True,
+                             "regions": ["us-east-1"], "coverage": {"complete": True},
+                             "facts": {"relation": "relation.example.internal",
+                                       "resource_binding": "binding.example.internal"}})
+    prepare(monkeypatch, data=data, findings=analysis(findings=[], evidence_bundle=data))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    architecture = md.split("\n## Current architecture\n", 1)[1].split("\n## ", 1)[0]
+    assert "Configuration" in architecture and "stored_graph" in architecture and "us-east-1" in architecture
+    assert "relation.example.internal" not in architecture and "binding.example.internal" not in architecture
+    assert "<host> · <host>" in architecture

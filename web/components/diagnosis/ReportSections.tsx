@@ -55,7 +55,7 @@ export function sectionSeverity(body: string, title?: string): Severity {
   if (/\[warning\]/i.test(body) || /degraded|섹션 생성에 실패/i.test(body)) return 'warning';
   // Code-owned evidence-loop fallback: absence of admitted findings is not a pass.
   if (/검증된 진단 없음; 커버리지는 미확인입니다\.|No admitted findings; coverage remains unknown\.|没有已验证的诊断；覆盖情况仍未知。|検証済み診断なし。カバレッジは未確認です。/.test(body)) return 'info';
-  // Architecture and invariant summaries have code-owned informational markers.
+  // The four worker-owned architecture titles mirror diagnosis/architecture.py (_COPY).
   // Other model-rendered sections retain their existing informational/green convention.
   if (title && ['Intended vs Actual', '현재 아키텍처', 'Current architecture', '現在のアーキテクチャ', '当前架构'].includes(title) && body.trimStart().split('\n', 1)[0].trim() === '[Info]') return 'info';
   return 'ok';
