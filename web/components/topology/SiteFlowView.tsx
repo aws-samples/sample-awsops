@@ -54,6 +54,7 @@ export const BINDING_NOTICE: Record<string, string> = {
   binding_authority_unverified: '클러스터 ARN을 확인할 수 없어 Pod 식별 근거를 사용하지 않습니다.',
   cluster_unreadable: 'EKS 클러스터 목록을 읽지 못했거나 클러스터 정보(VPC 등)가 없어 Pod 식별 근거를 사용하지 않습니다.',
   cluster_limit_possible: 'EKS 클러스터 목록이 상한에 도달해 Pod 식별 근거를 사용하지 않습니다.',
+  binding_fleet_incomplete: 'EKS 클러스터 전체 목록을 확인하지 못해 조회할 리전을 정할 수 없으므로 Pod 식별 근거를 사용하지 않습니다.',
   binding_scope_blocked: '연결되지 않았거나 읽지 못한 EKS 클러스터가 있어 그 클러스터의 네트워크(VPC)에 있는 Pod는 확인하지 않습니다:',
 };
 const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';

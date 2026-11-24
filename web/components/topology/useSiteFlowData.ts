@@ -7,9 +7,9 @@
 //    partial or running yields `inventory_incomplete`; so does a missing sync record (`unknown`) for the hop types
 //    the builder walks (HOP_TYPES).
 //  - EKS pod map + bindings: the scoped listing (`eksScope`). An all-region listing returns a discovery note that
-//    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions: one listing per account
-//    with only that account's connected-cluster regions from the fleet listing (no accounts × regions product, so
-//    a region one account lacks never 403s another). Inventory reads keep the page scope, so no LB/TG row is
+//    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions derived from a COMPLETE
+//    fleet listing: one listing per account over the regions where any account has a connected cluster (see
+//    deriveEksScope; an incomplete fleet fails the EKS read closed). Inventory reads keep the page scope, so no LB/TG row is
 //    dropped. Targets outside those regions stay unresolved (`eks_not_enumerated`).
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
@@ -72,27 +72,39 @@ export function parseFleet(body: unknown): Fleet {
 const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
   !c.id.startsWith('arn:') || (hostAccount && c.accountId === hostAccount) ? 'self' : c.accountId ?? '';
 
+/** Binding reason when the fleet listing needed to derive the EKS scope was incomplete (read failed closed). */
+export const FLEET_INCOMPLETE_REASON = 'binding_fleet_incomplete';
+
 /**
- * The scope for the EKS read. Explicit page regions pass through unchanged. For an all-region page scope: one
- * query per account owning a CONNECTED fleet cluster inside the selected accounts, with only that account's
- * cluster regions (each well under the server's 12-target cap unless one account spans >12 regions, which
- * then fails closed as a truncated listing). A listing still returns every cluster in those regions; a
- * not-connected one blocks only its own region|vpc (fetchEksIpMap `binding_scope_blocked`, disclosed).
- * Nothing derivable (no fleet, no connected cluster in scope) keeps the page scope, whose all-region note then
- * withholds bindings with a disclosed reason.
+ * The scope for the EKS read. Explicit page regions pass through unchanged. For an all-region page scope:
+ * R = the regions of every CONNECTED fleet cluster in the selected accounts (any account). Each selected account
+ * with ANY fleet cluster (any access) in a region of R is listed in exactly those regions (its fleet regions ∩ R),
+ * so a not-connected cluster of any account in a region we resolve is always listed and can veto its VPC (e.g. a
+ * RAM-shared VPC): fetchEksIpMap then blocks that region|vpc (`binding_scope_blocked`, disclosed). One query per
+ * account avoids the server's accounts × regions product (a region one account lacks 403s the whole listing);
+ * an account spanning >12 regions fails closed as a truncated listing. Accounts with no fleet cluster in R need no
+ * request. A truncated, errored or failed fleet listing cannot prove which clusters exist: `null` (the caller fails
+ * the EKS read closed). No connected cluster in scope keeps the page scope (its all-region note withholds
+ * bindings with a disclosed reason).
  */
-export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, hostAccount: string | null): string | string[] {
+export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, hostAccount: string | null): string | string[] | null {
   const q = new URLSearchParams(inventoryScope);
-  if ((q.get('regions') ?? ALL_REGIONS) !== ALL_REGIONS || !fleet) return inventoryScope;
+  if ((q.get('regions') ?? ALL_REGIONS) !== ALL_REGIONS) return inventoryScope;
+  if (!fleet || fleet.incomplete) return null;
   const accounts = q.get('accounts') || 'self';
   const selected = accounts === ALL_ACCOUNTS ? null : new Set(accounts.split(','));
-  const inScope = fleet.clusters.filter((c) => c.access === 'connected' && nonempty(c.region) && REGION_RE.test(c.region)
+  const inScope = fleet.clusters.filter((c) => nonempty(c.region) && REGION_RE.test(c.region)
     && ownerOf(c, hostAccount) && (!selected || selected.has(ownerOf(c, hostAccount))));
-  if (!inScope.length) return inventoryScope;
-  const owners = [...new Set(inScope.map((c) => ownerOf(c, hostAccount)))].sort();
-  return owners.map((owner) => new URLSearchParams({ accounts: owner,
-    regions: [...new Set(inScope.filter((c) => ownerOf(c, hostAccount) === owner).map((c) => c.region!))].sort().join(','),
-    includeGlobal: q.get('includeGlobal') ?? '1' }).toString());
+  const resolving = new Set(inScope.filter((c) => c.access === 'connected').map((c) => c.region!));
+  if (!resolving.size) return inventoryScope;
+  const byOwner = new Map<string, Set<string>>();
+  for (const c of inScope) {
+    if (!resolving.has(c.region!)) continue;
+    const owner = ownerOf(c, hostAccount);
+    (byOwner.get(owner) ?? byOwner.set(owner, new Set()).get(owner)!).add(c.region!);
+  }
+  return [...byOwner.keys()].sort().map((owner) => new URLSearchParams({ accounts: owner,
+    regions: [...byOwner.get(owner)!].sort().join(','), includeGlobal: q.get('includeGlobal') ?? '1' }).toString());
 }
 
 /** Mirror each enumerated `<hostId>|region` to the `self|region` key host inventory rows use. */
@@ -124,11 +136,13 @@ export function useSiteInventory(inventoryScope: string): {
     void host.then((h) => { if (live) setHostAccount(h); });
     void fleetRead.then((f) => { if (live) setFleet(f); });
     const eksScope = Promise.all([host, fleetRead]).then(([h, f]) => deriveEksScope(inventoryScope, f, h));
-    loadFlowInput(inventoryScope, signal, true, { eksScope: true, eksScopeQuery: eksScope })
+    // An underivable scope (incomplete fleet) issues no listing: fetchEksIpMap fails an empty query list closed.
+    loadFlowInput(inventoryScope, signal, true, { eksScope: true, eksScopeQuery: eksScope.then((scope) => scope ?? []) })
       .then(async (loaded) => {
         const [h, scope] = await Promise.all([host, eksScope]);
         if (!live) return;
         if (loaded.allFailed) { setError(loaded.failed.map((r) => r.error).join('; ')); return; }
+        if (scope === null && loaded.eks) loaded.eks.bindingRead = { status: 'withheld', reasons: [FLEET_INCOMPLETE_REASON] };
         const own = loaded.input.ownershipRead;
         if (own?.eksAccountRegions) own.eksAccountRegions = withHostAlias(own.eksAccountRegions, h);
         const issues: InventoryIssue[] = [];
@@ -143,7 +157,7 @@ export function useSiteInventory(inventoryScope: string): {
           flow: buildFlowGraph(loaded.input),
           cloudfrontRows: (loaded.input.cloudfront ?? []) as Row[],
           bindings: loaded.eks?.bindings ?? [],
-          eks: loaded.eks, issues, eksScope: scope,
+          eks: loaded.eks, issues, eksScope: scope ?? [],
         });
       })
       .catch(() => { if (live) setError('site: invalid inventory response'); })

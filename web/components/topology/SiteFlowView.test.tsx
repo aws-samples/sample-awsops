@@ -366,11 +366,12 @@ describe('SiteFlowView', () => {
   });
 
   it('withheld bindings (all-region listing) → pods_unresolved with the reason', async () => {
-    // No connected cluster can be derived from a failed fleet listing, so the page scope (all regions) is used.
+    // A complete fleet with no connected cluster in scope derives nothing, so the page scope (all regions) is used;
+    // its listing carries the all-region discovery note.
     const hostScope = 'accounts=self&regions=__all__&includeGlobal=1';
     const rows = inventory();
     stubFetch((u) => {
-      if (u === FLEET_URL) return json({ status: 'error' }, 502);
+      if (u === FLEET_URL) return json({ clusters: [{ ...CLUSTERS[0], access: 'unknown' }] });
       if (u.startsWith('/api/eks?')) return json({ ...FLEET, clusters: [CLUSTERS[0]] });
       return undefined;
     }, { ...rows, target_group: [rows.target_group[0]], nlb: [rows.nlb[0]] });
@@ -381,6 +382,67 @@ describe('SiteFlowView', () => {
     expect(notices()).toContain(GAP_NOTICE.pods_unresolved);
     expect(notices()).toContain(BINDING_NOTICE.binding_scope_partial);
     expect(ids()).not.toContain(wl(HOST_ARN, 'web/front'));
+  });
+
+  it.each([
+    ['truncated', () => json({ ...FLEET, truncated: true })],
+    ['failed', () => json({ status: 'error' }, 502)],
+    ['errored', () => json({ ...FLEET, errors: [{ accountId: MEMBER, region: REGION, message: 'x', reason: 'denied' }] })],
+  ])('a %s fleet listing is never narrowed from: the EKS read fails closed with a disclosed reason', async (_l, fleet) => {
+    stubFetch((u) => (u === FLEET_URL ? fleet() : undefined));
+    view();
+    await settled();
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && u !== FLEET_URL)).toEqual([]);
+    expect(ids()).not.toContain(wl(HOST_ARN, 'web/front'));
+    expect(ids()).not.toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(notices()).toContain(BINDING_NOTICE.binding_fleet_incomplete);
+  });
+
+  it('a not-connected cluster of another account in a resolved region vetoes a shared VPC', async () => {
+    // Host `shop` (connected, ap-northeast-2, VPC V). Member: connected `orders` in us-east-1 and a NOT-connected
+    // `legacy` in ap-northeast-2 inside the same (RAM-shared) VPC V. The member must be listed in ap-northeast-2 too.
+    const east = 'us-east-1', eastArn = `arn:aws:eks:${east}:${MEMBER}:cluster/orders`;
+    const legacyArn = `arn:aws:eks:${REGION}:${MEMBER}:cluster/legacy`;
+    const listed = [CLUSTERS[0], { ...cluster(eastArn, 'orders', MEMBER, eastArn, MEMBER_VPC), region: east },
+      cluster(legacyArn, 'legacy', MEMBER, legacyArn, HOST_VPC, 'no-entry')];
+    const rows = inventory();
+    rows.target_group = [rows.target_group[0], inv(MEMBER, 'api-tg', { ...tg(MEMBER, 'api-tg', API_NLB_ARN, MEMBER_VPC, ['10.1.1.20']).data, region: east })];
+    rows.nlb = [rows.nlb[0], inv(MEMBER, 'api-nlb', { arn: API_NLB_ARN, dns_name: API_NLB_DNS, scheme: 'internal', region: east, vpc_id: MEMBER_VPC })];
+    stubFetch((u) => {
+      if (u === FLEET_URL) return json({ clusters: listed });
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      if (u === `/api/eks/${encodeURIComponent(eastArn)}/incluster?kind=pods`) return json({ kind: 'pods', rows: MEMBER_PODS.map(pod('biz', 'orders-api')), generatedAt: NOW });
+      if (u === `/api/eks/${encodeURIComponent(eastArn)}/db-refs`) return json(DB_REFS[ENC_MEMBER]);
+      return undefined;
+    }, rows);
+    view();
+    await settled();
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && u !== FLEET_URL).sort()).toEqual([
+      `/api/eks?accounts=${MEMBER}&regions=${encodeURIComponent(`${REGION},${east}`)}&includeGlobal=1`,
+      `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
+    expect(ids()).not.toContain(wl(HOST_ARN, 'web/front')); // V is blocked by `legacy`
+    expect(ids()).toContain(wl(eastArn, 'biz/orders-api'));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
+  });
+
+  it('lists an account whose only clusters in a resolved region are not connected', async () => {
+    const third = '222222222222', idleArn = `arn:aws:eks:${REGION}:${third}:cluster/idle`;
+    const listed = [...CLUSTERS, cluster(idleArn, 'idle', third, idleArn, 'vpc-0idle', 'entry-only'),
+      { ...cluster(`arn:aws:eks:eu-west-1:${third}:cluster/far`, 'far', third, `arn:aws:eks:eu-west-1:${third}:cluster/far`, 'vpc-0far', 'no-entry'), region: 'eu-west-1' }];
+    stubFetch((u) => {
+      if (u === FLEET_URL) return json({ clusters: listed });
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      return undefined;
+    });
+    view();
+    await settled();
+    // eu-west-1 has no connected cluster, so it is not a resolved region and is not requested.
+    expect(calls).toContain(`/api/eks?accounts=${third}&regions=${REGION}&includeGlobal=1`);
+    expect(calls.some((u) => u.includes('eu-west-1'))).toBe(false);
+    expect(ids()).toEqual(expect.arrayContaining([wl(HOST_ARN, 'web/front'), wl(MEMBER_ARN, 'biz/orders-api')]));
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} idle (${third} / ${REGION})`);
   });
 
   it('a listed cluster without a VPC withholds every pod (notice covers the unknown network)', async () => {
@@ -437,9 +499,13 @@ describe('SiteFlowView', () => {
   });
 
   it('trace listing guard: an incomplete fleet listing refuses the trace join (incomplete_listing)', async () => {
+    // Explicit page regions do not derive from the fleet, so pods still resolve; the trace join is refused.
+    const scope = `accounts=__all__&regions=${REGION}&includeGlobal=1`;
     stubFetch((u) => (u === FLEET_URL ? json({ ...FLEET, truncated: true }) : undefined));
-    view();
+    view('view=site&host=mall.example.com', scope);
     await settled();
+    expect(calls).toContain(`/api/eks?${scope}`);
+    expect(ids()).toContain(wl(HOST_ARN, 'web/front'));
     expect(canvas.props!.flow.gaps).toContain('incomplete_listing');
     expect(ids()).not.toContain(wl(HOST_ARN, 'web/catalog'));
     expect(notices()).toContain(GAP_NOTICE.incomplete_listing);

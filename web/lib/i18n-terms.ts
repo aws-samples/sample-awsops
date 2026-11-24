@@ -163,6 +163,11 @@ export const TERMS: Record<string, Pair> = {
     en: 'The EKS cluster listing reached its limit, so pod identity evidence is not used.', zh: 'EKS 集群列表已达到上限，因此不使用 Pod 识别依据。',
     ja: 'EKS クラスター一覧が上限に達したため、Pod 識別の根拠を使用しません。',
   },
+  'EKS 클러스터 전체 목록을 확인하지 못해 조회할 리전을 정할 수 없으므로 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The full EKS cluster listing could not be confirmed, so the regions to query cannot be determined and pod identity evidence is not used.',
+    zh: '无法确认完整的 EKS 集群列表，无法确定要查询的区域，因此不使用 Pod 识别依据。',
+    ja: 'EKS クラスターの全体一覧を確認できず、取得するリージョンを決められないため、Pod 識別の根拠を使用しません。',
+  },
   '연결되지 않았거나 읽지 못한 EKS 클러스터가 있어 그 클러스터의 네트워크(VPC)에 있는 Pod는 확인하지 않습니다:': {
     en: 'Some EKS clusters are not connected or could not be read, so pods in their networks (VPCs) are not resolved:',
     zh: '部分 EKS 集群未连接或无法读取，因此不确认这些集群网络（VPC）中的 Pod：',
