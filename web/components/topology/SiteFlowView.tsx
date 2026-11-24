@@ -11,6 +11,10 @@
 //    canvas only re-highlights in place); evidence landing changes the structure (the canvas re-lays out from the
 //    known positions). The canvas is keyed by host: a new host starts a fresh instance and layout.
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
+//  - trace routes (useSiteInventory `routes`, read once per load) continue the path highlight past the gateway; they
+//    reach the builder only for a read with status `ok`/`partial`. Until the first read lands, `route_unavailable` is
+//    not shown (evidence pending). A `partial` read adds a notice with its reasons; with no trace datasource
+//    registered (`no_trace_source`) that cause replaces the generic `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -64,6 +68,12 @@ export const BINDING_NOTICE: Record<string, string> = {
   binding_deadline: 'EKS 조회가 제한 시간(30초) 안에 끝나지 않아 Pod 식별 근거를 사용하지 않습니다. 새로고침으로 다시 시도하세요.',
 };
 const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';
+
+/** Trace route read notices (Korean source, lockstep-tested): `partial` is followed by the read's reasons. */
+export const ROUTE_NOTICE = {
+  partial: '경로별 트레이스 집계가 일부만 확인되어 경로 강조가 일부 경로를 따라가지 못할 수 있습니다.',
+  no_trace_source: '연결된 트레이스 데이터 소스가 없어 요청 경로를 API 이후로 따라가지 못합니다.',
+} as const;
 
 /** Gaps stage 1 always carries for bound clusters until their evidence lands. */
 const PENDING_ARTIFACTS = new Set<SiteGap>(['trace_unavailable', 'db_refs_partial']);
@@ -173,10 +183,14 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const arns = useMemo(() => [...new Set((stage1?.nodes ?? []).flatMap((n) => (n.kind === 'workload' && n.ref?.cluster ? [n.ref.cluster] : [])))].sort(),
     [stage1]);
   const ev = useClusterEvidence(arns, inv.fleet);
+  const routeRead = inv.routes;
+  // Only a read that returned routes (ok/partial) feeds the builder; the memo key is the routes array itself, so a
+  // read without routes (pending → failed/unavailable) never rebuilds the flow.
+  const routes = routeRead && (routeRead.status === 'ok' || routeRead.status === 'partial') ? routeRead.routes : null;
 
   const flow = useMemo<SiteFlow | null>(() => (data && host ? buildSiteFlow({ host, path: urlPath, flow: data.flow,
-    cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, gaps: baseGaps }) : null),
-  [data, host, urlPath, ev.traces, ev.dbRefs, baseGaps]);
+    cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, routes, gaps: baseGaps }) : null),
+  [data, host, urlPath, ev.traces, ev.dbRefs, routes, baseGaps]);
 
   // ---- URL state ----
   const hrefWith = useCallback((next: { host?: string; path?: string }) => {
@@ -241,10 +255,13 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
     ? `/topology/infra?${new URLSearchParams({ view: 'k8s', cluster: listedId(selected.ref.cluster, inv.fleet) })}` : null;
 
   // ---- disclosures ----
-  const evidencePending = inv.pending || (!!host && ev.pending);
+  const evidencePending = inv.pending || (!!host && (ev.pending || inv.routesPending));
+  const noTraceSource = routeRead?.status === 'unavailable' && routeRead.reasons.includes('no_trace_source');
   const notices: string[] = [];
   for (const g of flow?.gaps ?? []) {
     if (ev.pending && PENDING_ARTIFACTS.has(g)) continue;
+    if (g === 'route_unavailable' && !routeRead) continue; // the first route read has not landed yet
+    if (g === 'route_unavailable' && noTraceSource) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
     if (g === 'inventory_incomplete' && data?.issues.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {
@@ -264,6 +281,9 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   }
   if (bindingRead?.status === 'partial') {
     notices.push(`${tt(BINDING_NOTICE.binding_scope_blocked)} ${(bindingRead.blockedClusters ?? []).map(eksClusterLabel).join(', ')}`);
+  }
+  if (flow && routeRead?.status === 'partial') {
+    notices.push(routeRead.reasons.length ? `${tt(ROUTE_NOTICE.partial)} (${routeRead.reasons.join(', ')})` : tt(ROUTE_NOTICE.partial));
   }
 
   const listId = 'site-host-options';

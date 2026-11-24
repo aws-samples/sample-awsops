@@ -105,6 +105,16 @@ export const TERMS: Record<string, Pair> = {
     zh: '无法读取按路由的链路追踪汇总，路径高亮在路由未知处停止。',
     ja: 'ルート別のトレース集計を読み取れないため、パスの強調表示はルートが不明な地点で止まります。',
   },
+  '경로별 트레이스 집계가 일부만 확인되어 경로 강조가 일부 경로를 따라가지 못할 수 있습니다.': {
+    en: 'Per-route trace aggregates were only partly confirmed, so path highlighting may miss some routes.',
+    zh: '按路由的链路追踪汇总仅部分确认，路径高亮可能无法跟随部分路由。',
+    ja: 'ルート別のトレース集計が一部しか確認できていないため、パスの強調表示が一部のルートをたどれない場合があります。',
+  },
+  '연결된 트레이스 데이터 소스가 없어 요청 경로를 API 이후로 따라가지 못합니다.': {
+    en: 'No trace datasource is connected, so the request path cannot be followed past the API.',
+    zh: '未连接链路追踪数据源，因此无法在 API 之后继续跟随请求路径。',
+    ja: 'トレースのデータソースが接続されていないため、リクエストパスを API より先までたどれません。',
+  },
   '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.': {
     en: 'Datastore references of some workloads could not be read, so datastore links are incomplete.',
     zh: '部分工作负载的数据存储引用无法读取，因此数据存储连接仅部分显示。',

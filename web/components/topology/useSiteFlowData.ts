@@ -22,6 +22,11 @@
 //    listed clusters drive deriveEksScope; the trace join's name uniqueness uses listed ∪ registered clusters.
 //    Any failed / errored / truncated / malformed request, or a failed or malformed `/api/accounts`, marks it
 //    incomplete.
+//  - trace routes: `/api/topology/site-routes` (default 60-minute window) once per load, on the same signal and
+//    bounded by the same deadline (raced, so a read that ignores the abort still settles). App-level datasources:
+//    no account/region scope. Committed on its own (never delays the inventory) and kept across a refresh until
+//    the replacement lands. Routes are used only for status `ok`/`partial`; `unavailable`, a 404 (flag off), any
+//    other non-OK response, a malformed body or the deadline give no routes (the builder reports `route_unavailable`).
 //  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for one fleet read.
 //  - refresh (`reload`): every read above runs again and no cached cluster evidence is reused.
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -32,7 +37,7 @@ import type { Binding } from '@/lib/service-topology/types';
 import { fetchTraceOverlay, type TraceOverlay } from '@/lib/k8s-trace-overlay';
 import type { DbRef } from '@/lib/eks-db-refs';
 import type { DbResource } from '@/lib/db-ref-resolve';
-import type { SiteFlowInput } from '@/lib/site-flow';
+import type { SiteFlowInput, SiteRoute } from '@/lib/site-flow';
 import { hostAccountOf } from '@/lib/host-account';
 import { ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
 import { INCOMPLETE_FLEET, readFleet, type Fleet, type FleetCluster } from '@/lib/eks-fleet';
@@ -66,6 +71,52 @@ export interface SiteInventory {
 
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+/** One `/api/topology/site-routes` read. `routes` is non-null only for status `ok`/`partial`; `failed` = the read itself
+ *  failed (404 flag off, non-OK, malformed body, network error, abort or deadline). */
+export interface SiteRouteRead {
+  status: 'ok' | 'partial' | 'unavailable' | 'failed';
+  reasons: string[];
+  routes: SiteRoute[] | null;
+}
+const ROUTE_STATUS = new Set(['ok', 'partial', 'unavailable']);
+const ROUTES_FAILED = (): SiteRouteRead => ({ status: 'failed', reasons: [], routes: null });
+/** Exactly the `required` keys plus any of `optional`, nothing else. */
+const exactKeys = (o: Record<string, unknown>, required: string[], optional: string[] = []) =>
+  required.every((k) => k in o) && Object.keys(o).every((k) => required.includes(k) || optional.includes(k));
+const count = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+
+/** Strict parse of the route body `{ status, reasons, routes }` (hops `{ service, route, calls, next }`, next entries
+ *  `{ service, calls, route? }`); any other key, type or status fails the whole read (no routes). */
+export function parseSiteRoutes(body: unknown): SiteRouteRead {
+  if (!record(body) || !exactKeys(body, ['status', 'reasons', 'routes']) || typeof body.status !== 'string'
+    || !ROUTE_STATUS.has(body.status) || !Array.isArray(body.reasons) || !body.reasons.every(nonempty)
+    || !Array.isArray(body.routes)) return ROUTES_FAILED();
+  const routes: SiteRoute[] = [];
+  for (const h of body.routes) {
+    if (!record(h) || !exactKeys(h, ['service', 'route', 'calls', 'next']) || !nonempty(h.service) || !nonempty(h.route)
+      || !count(h.calls) || !Array.isArray(h.next)) return ROUTES_FAILED();
+    const next: NonNullable<SiteRoute['next']> = [];
+    for (const n of h.next) {
+      if (!record(n) || !exactKeys(n, ['service', 'calls'], ['route']) || !nonempty(n.service) || !count(n.calls)
+        || ('route' in n && !nonempty(n.route))) return ROUTES_FAILED();
+      next.push({ service: n.service, ...(nonempty(n.route) ? { route: n.route } : {}) });
+    }
+    routes.push({ service: h.service, route: h.route, next });
+  }
+  const status = body.status as SiteRouteRead['status'];
+  return { status, reasons: [...body.reasons as string[]], routes: status === 'unavailable' ? null : routes };
+}
+
+/** `/api/topology/site-routes` (default window): any failure → `failed` with no routes. */
+export async function readSiteRoutes(signal: AbortSignal): Promise<SiteRouteRead> {
+  try {
+    const r = await fetch('/api/topology/site-routes', { signal });
+    return r.ok ? parseSiteRoutes(await r.json()) : ROUTES_FAILED();
+  } catch {
+    return ROUTES_FAILED();
+  }
+}
 
 /** Host-alias account of a listed cluster: bare-id rows are host default-region clusters by construction. */
 const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
@@ -127,29 +178,38 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
 }
 
 /**
- * Inventory + EKS map + host lookup + fleet listing for one page scope (the view is keyed by it). A new `reload`
- * value re-runs every read. The previous inventory, host account and fleet stay on screen until the reload lands and
- * are then replaced together; the new fleet makes useClusterEvidence re-read every cluster, which keeps the previous
- * evidence shown until the new batch commits. A reload that fails (every inventory type failed, or an invalid
- * response) clears the inventory: no stale flow beside the failure.
+ * Inventory + EKS map + host lookup + fleet listing + trace routes for one page scope (the view is keyed by it). A
+ * new `reload` value re-runs every read. The previous inventory, host account and fleet stay on screen until the
+ * reload lands and are then replaced together; the new fleet makes useClusterEvidence re-read every cluster, which
+ * keeps the previous evidence shown until the new batch commits. A reload that fails (every inventory type failed, or
+ * an invalid response) clears the inventory: no stale flow beside the failure. The route read commits on its own:
+ * `routes` is null until the first read lands, then holds the last landed read (kept while a reload's read runs).
  */
 export function useSiteInventory(inventoryScope: string, reload = 0): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
+  routes: SiteRouteRead | null; routesPending: boolean;
 } {
   const [data, setData] = useState<SiteInventory | null>(null);
   const [error, setError] = useState('');
   const [hostAccount, setHostAccount] = useState<string | null | undefined>(undefined);
   const [fleet, setFleet] = useState<Fleet | null>(null);
   const [loading, setLoading] = useState(true);
+  const [routes, setRoutes] = useState<SiteRouteRead | null>(null);
+  const [routesLoading, setRoutesLoading] = useState(true);
   useEffect(() => {
     let live = true;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setRoutesLoading(true);
     const ctrl = new AbortController();
     const { signal } = ctrl;
     // The deadline aborts every read; a read it cut is disclosed as `binding_deadline` (refresh retries), never as
     // a failure of the cluster or fleet. A read that settled before it keeps its own reason.
     let timedOut = false;
-    const deadline = setTimeout(() => { timedOut = true; ctrl.abort(); }, DEADLINE_MS);
+    let cutRoutes = () => {};
+    const routesCut = new Promise<void>((r) => { cutRoutes = r; });
+    const deadline = setTimeout(() => { timedOut = true; ctrl.abort(); cutRoutes(); }, DEADLINE_MS);
+    // Trace routes: independent of the inventory (never delays it); raced against the deadline.
+    const routesRead = Promise.race([readSiteRoutes(signal), routesCut.then(ROUTES_FAILED)])
+      .then((r) => { if (live) { setRoutes(r); setRoutesLoading(false); } });
     let fleetCut = false;
     const accountsBody: Promise<unknown> = fetch('/api/accounts', { signal })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null);
@@ -159,7 +219,7 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
       .then((f) => { fleetCut = signal.aborted; return f; });
     const eksScope = Promise.all([host, fleetRead]).then(([h, f]) => deriveEksScope(inventoryScope, f, h));
     // An underivable scope (incomplete fleet) issues no listing: fetchEksIpMap fails an empty query list closed.
-    loadFlowInput(inventoryScope, signal, true, { eksScope: true, eksScopeQuery: eksScope.then((scope) => scope ?? []) })
+    const inventoryRead = loadFlowInput(inventoryScope, signal, true, { eksScope: true, eksScopeQuery: eksScope.then((scope) => scope ?? []) })
       .then(async (loaded) => {
         const [h, f, scope] = await Promise.all([host, fleetRead, eksScope]);
         if (!live) return;
@@ -187,11 +247,12 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
           eks: loaded.eks, issues, eksScope: scope ?? [],
         });
       })
-      .catch(() => { if (live) { setLoading(false); setData(null); setFleet(null); setError('site: invalid inventory response'); } })
-      .finally(() => clearTimeout(deadline));
+      .catch(() => { if (live) { setLoading(false); setData(null); setFleet(null); setError('site: invalid inventory response'); } });
+    // The deadline stays armed until BOTH reads settle (the route read may outlast the inventory).
+    void Promise.all([inventoryRead, routesRead]).finally(() => clearTimeout(deadline));
     return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
   }, [inventoryScope, reload]);
-  return { data, error, hostAccount, fleet, pending: loading };
+  return { data, error, hostAccount, fleet, pending: loading, routes, routesPending: routesLoading };
 }
 
 export interface ClusterEvidence {
