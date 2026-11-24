@@ -7,6 +7,9 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '발표 보기': { en: 'Present', zh: '演示', ja: 'プレゼン表示' },
+  '발표 자료 생성 중…': { en: 'Preparing slides…', zh: '正在生成幻灯片…', ja: 'スライドを作成中…' },
+  '발표 자료를 만들지 못했습니다.': { en: 'Could not create the slides.', zh: '无法生成幻灯片。', ja: 'スライドを作成できませんでした。' },
   'Pod 식별 근거를 확인할 수 없습니다.': { en: 'Pod identity evidence is unavailable.', zh: '无法确认 Pod 身份依据。', ja: 'Pod の識別根拠を確認できません。' },
   '서비스 선택': { en: 'Select service', zh: '选择服务', ja: 'サービスを選択' },
   '로그인이 필요합니다.': { en: 'Sign in to read the graph.', zh: '请登录后查看图表。', ja: 'グラフを表示するにはログインしてください。' },

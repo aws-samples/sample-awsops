@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useCallback, type CSSProperties } from 're
 import SchedulePanel from './SchedulePanel';
 import SubscribersPanel from './SubscribersPanel';
 import ReportSections from './ReportSections';
+import PresentationDownloads from './PresentationDownloads';
 import PillarCoverage from './PillarCoverage';
 import IntentPanel from './IntentPanel';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -504,6 +505,9 @@ export default function DiagnosisView() {
                   >
                     {tt('인쇄용 보기')}
                   </a>
+                  <PresentationDownloads key={view.id} report={{
+                    id: view.id, title: view.title, tier: view.tier, status: view.status, markdown: view.markdown,
+                  }} />
                   {(['md', 'docx', 'pdf'] as const).map((f) => (
                     <a
                       key={f}

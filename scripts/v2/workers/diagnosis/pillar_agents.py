@@ -517,7 +517,7 @@ def edit_report(findings, *, model_id, budget, lang, stages=None):
     paragraphs = {r["id"]: r["text"] for r in draft["paragraphs"]}
     stages.append(draft["_stage"])
     plan = {k: [aliases[i] for i in draft[k]] for k in ("lead", "context", "next")}
-    plan["paragraphs"] = {aliases[i]: text for i, text in paragraphs.items()}
+    plan["paragraphs"] = {}
     if not paragraphs:
         return plan, stages
     check = _structured(
@@ -531,7 +531,14 @@ def edit_report(findings, *, model_id, budget, lang, stages=None):
         None, _object({"accepted": _strings()}), model_id=model_id, budget=budget,
         extra={"pairs": [{"source": {**row, "explanation": source["explanation"]}, "draft": paragraphs[row["id"]]}
                          for row, source in zip(candidates, findings) if row["id"] in paragraphs]})
-    if set(check["accepted"]) != set(paragraphs) or len(check["accepted"]) != len(paragraphs):
+    accepted = set(check["accepted"])
+    if not accepted or len(accepted) != len(check["accepted"]) or not accepted.issubset(paragraphs):
         raise ModelStageError("editor_verification_failed")
-    stages.append(check["_stage"])
+    # Only verified rewrites can replace a finding's original prose. An omitted
+    # alias keeps that finding's already-admitted specialist text in the renderer.
+    plan["paragraphs"] = {aliases[i]: paragraphs[i] for i in paragraphs if i in accepted}
+    stage = {**check["_stage"], "checked_count": len(paragraphs), "accepted_count": len(accepted)}
+    if len(accepted) < len(paragraphs):
+        stage["status"] = "partial"
+    stages.append(stage)
     return plan, stages

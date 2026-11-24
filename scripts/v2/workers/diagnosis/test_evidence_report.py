@@ -785,3 +785,49 @@ def test_architecture_groups_correlated_flows_but_preserves_directed_call_pairs(
     assert body.count("| Network flow") == 1 and body.count("| Observed call") == 2
     assert "3 / 3" in body and "DNS-window correlation" in body and "truncated" in body
     assert "` left ` → ` right `" in body and "` right ` → ` left `" in body
+
+
+@pytest.mark.parametrize("accepted,valid", [(["F1"], True), (["F1", "F1"], False), (["F1", "F3"], False)])
+def test_editor_preserves_only_verified_rewrites(monkeypatch, accepted, valid):
+    from diagnosis import pillar_agents
+    from diagnosis.test_presentation import finding
+
+    rows = [finding(id="first"), finding(id="second")]
+    def reply(stage, *args, **kwargs):
+        meta = {"stage": stage, "status": "succeeded"}
+        if stage == "report_editor_check":
+            return {"accepted": accepted, "_stage": meta}
+        draft = {"lead": ["F1"], "context": ["F2"], "next": [], "_stage": meta,
+                 "paragraphs": [{"id": "F1", "text": "Review available memory."},
+                                {"id": "F2", "text": "Unconfirmed explanation."}]}
+        kwargs["validate"](draft)
+        return draft
+    monkeypatch.setattr(pillar_agents, "_structured", reply)
+    if not valid:
+        with pytest.raises(pillar_agents.ModelStageError, match="editor_verification_failed"):
+            pillar_agents.edit_report(rows, model_id="test", budget=None, lang="en")
+        return
+    plan, stages = pillar_agents.edit_report(rows, model_id="test", budget=None, lang="en")
+    assert plan["paragraphs"] == {"first": "Review available memory."}
+    assert stages[-1] == {"stage": "report_editor_check", "status": "partial",
+                          "checked_count": 2, "accepted_count": 1}
+
+
+def test_partially_verified_editor_keeps_report_partial_and_renders_both_sources(monkeypatch):
+    from diagnosis import pillar_agents
+    from diagnosis.test_presentation import finding
+
+    rows = [finding(id="first"), finding(id="second", explanation="Check the scope of the sample.")]
+    prepare(monkeypatch, findings=analysis(findings=rows, evidence_bundle=bundle(), model_stages=[]))
+
+    def mixed(_findings, *, stages, **_kwargs):
+        stages.extend([{"stage": "report_editor", "status": "succeeded"},
+                       {"stage": "report_editor_check", "status": "partial", "checked_count": 2, "accepted_count": 1}])
+        return {"lead": ["first"], "context": ["second"], "next": [],
+                "paragraphs": {"first": "Review available memory."}}, stages
+    monkeypatch.setattr(pillar_agents, "edit_report", mixed)
+    md, summary, _ = report.generate(object(), "self", lang="en")
+    body = md.split("\n## Evidence appendix")[0]
+    assert "Review available memory." in body and "Check the scope of the sample." in body
+    assert "report_editor_check:partial_verification" in summary["render_degraded"]
+    assert summary["model_stages"][-1]["accepted_count"] == 1
