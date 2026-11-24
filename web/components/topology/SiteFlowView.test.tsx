@@ -117,7 +117,7 @@ const DB_REFS: Record<string, unknown> = {
 const ACCOUNTS = { accounts: [{ accountId: HOST_ID, isHost: true, enabled: true }, { accountId: MEMBER, isHost: false, enabled: true },
   { accountId: THIRD, isHost: false, enabled: true }, { accountId: '333333333333', isHost: false, enabled: false }] };
 
-type Handler = (url: string) => Response | Promise<Response> | undefined;
+type Handler = (url: string, init?: RequestInit) => Response | Promise<Response> | undefined;
 type Listed = ReturnType<typeof cluster>;
 /** Scoped `/api/eks?` listing honoring `accounts`/`regions` like the server (host = `self` = bare id or HOST_ID). */
 function listingFor(url: string, all: Listed[]) {
@@ -138,9 +138,9 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 let calls: string[] = [];
 function stubFetch(over: Handler = () => undefined, rows = inventory()) {
   calls = [];
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url);
-    const custom = over(url);
+    const custom = over(url, init);
     if (custom) return custom;
     if (url === '/api/accounts') return json(ACCOUNTS);
     if (isFleet(url)) return fleetOf(url, CLUSTERS);
@@ -518,6 +518,69 @@ describe('SiteFlowView', () => {
     expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toHaveLength(8);
     expect(peak).toBeLessThanOrEqual(4);
     expect(peak).toBeGreaterThan(1);
+  });
+
+  it('the 30 s load deadline cutting the EKS read is disclosed as its own reason, not as an unreadable cluster', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    /** Never answers; rejects like fetch once the request is aborted. */
+    const hang = (init?: RequestInit) => new Promise<Response>((_r, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    });
+    stubFetch((u, init) => (u.startsWith('/api/eks?') && !isFleet(u) ? hang(init) : undefined));
+    view();
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/eks?') && !isFleet(u))).toBe(true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(notices()).toContain(BINDING_NOTICE.binding_deadline);
+    expect(notices()).not.toContain(BINDING_NOTICE.cluster_unreadable);
+    expect(notices()).not.toContain(BINDING_NOTICE.binding_fleet_incomplete);
+  });
+
+  it('the deadline cutting the fleet read is disclosed as the deadline, not as an incomplete fleet', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    stubFetch((u, init) => (u === fleetUrl(MEMBER) ? new Promise<Response>((_r, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }) : undefined));
+    view();
+    await waitFor(() => expect(calls).toContain(fleetUrl(MEMBER)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await settled();
+    expect(notices()).toContain(BINDING_NOTICE.binding_deadline);
+    expect(notices()).not.toContain(BINDING_NOTICE.binding_fleet_incomplete);
+  });
+
+  it('a genuinely failed EKS read that settled before the deadline keeps its own reason', async () => {
+    stubFetch((u) => (!isFleet(u) && u.startsWith(`/api/eks?accounts=${MEMBER}&`) ? json({ status: 'error' }, 403) : undefined));
+    view();
+    await settled();
+    expect(notices()).toContain(BINDING_NOTICE.cluster_unreadable);
+    expect(notices()).not.toContain(BINDING_NOTICE.binding_deadline);
+  });
+
+  it('refresh re-runs every load and re-reads cluster evidence (no cached trace/db-refs reused)', async () => {
+    let failMember = true;
+    stubFetch((u) => (!isFleet(u) && u.startsWith(`/api/eks?accounts=${MEMBER}&`) && failMember ? json({ status: 'error' }, 403) : undefined));
+    view();
+    await settled();
+    expect(notices()).toContain(BINDING_NOTICE.cluster_unreadable);
+    const count = (u: string) => calls.filter((c) => c === u).length;
+    expect(count('/api/accounts')).toBe(1);
+    expect(count('/api/eks/shop/db-refs')).toBe(0); // no binding → no evidence read yet
+    failMember = false;
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api')), { timeout: 3000 });
+    await settled();
+    expect(count('/api/accounts')).toBe(2);
+    expect(count(fleetUrl('self'))).toBe(2);
+    expect(count('/api/eks/shop/db-refs')).toBe(1);
+    expect(notices()).not.toContain(BINDING_NOTICE.cluster_unreadable);
+    // A second refresh re-reads the evidence too: the per-ARN cache does not survive a reload.
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(count('/api/eks/shop/db-refs')).toBe(2), { timeout: 3000 });
+    expect(count(`/api/eks/${ENC_MEMBER}/db-refs`)).toBe(2);
+    await settled();
+    expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api'));
   });
 
   it('a not-connected cluster of another account in a resolved region vetoes a shared VPC', async () => {

@@ -7,6 +7,11 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  'EKS 조회가 제한 시간(30초) 안에 끝나지 않아 Pod 식별 근거를 사용하지 않습니다. 새로고침으로 다시 시도하세요.': {
+    en: 'The EKS read did not finish within the time limit (30 seconds), so pod identity evidence is not used. Refresh to try again.',
+    zh: 'EKS 查询未在时限（30 秒）内完成，因此不使用 Pod 身份依据。请刷新后重试。',
+    ja: 'EKS の取得が制限時間（30 秒）内に終わらなかったため、Pod の識別根拠を使用しません。更新して再試行してください。',
+  },
   'Pod 식별 근거를 확인할 수 없습니다.': { en: 'Pod identity evidence is unavailable.', zh: '无法确认 Pod 身份依据。', ja: 'Pod の識別根拠を確認できません。' },
   '서비스 선택': { en: 'Select service', zh: '选择服务', ja: 'サービスを選択' },
   '로그인이 필요합니다.': { en: 'Sign in to read the graph.', zh: '请登录后查看图表。', ja: 'グラフを表示するにはログインしてください。' },

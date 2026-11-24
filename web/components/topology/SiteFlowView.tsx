@@ -10,6 +10,7 @@
 //    theme switch never hands the canvas a new flow (a new flow re-lays the canvas out).
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
+//  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -57,6 +58,7 @@ export const BINDING_NOTICE: Record<string, string> = {
   cluster_limit_possible: 'EKS 클러스터 목록이 상한에 도달해 Pod 식별 근거를 사용하지 않습니다.',
   binding_fleet_incomplete: 'EKS 클러스터 전체 목록을 확인하지 못해 조회할 리전을 정할 수 없으므로 Pod 식별 근거를 사용하지 않습니다.',
   binding_scope_blocked: '연결되지 않았거나 읽지 못한 EKS 클러스터가 있어 그 클러스터의 네트워크(VPC)에 있는 Pod는 확인하지 않습니다:',
+  binding_deadline: 'EKS 조회가 제한 시간(30초) 안에 끝나지 않아 Pod 식별 근거를 사용하지 않습니다. 새로고침으로 다시 시도하세요.',
 };
 const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';
 
@@ -138,7 +140,8 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const urlPath = params.get('path') ?? '';
   const paramsKey = params.toString();
 
-  const inv = useSiteInventory(inventoryScope);
+  const [reload, setReload] = useState(0);
+  const inv = useSiteInventory(inventoryScope, reload);
   const data = inv.data;
   const hosts = useMemo(() => (data ? siteHosts(data.flow) : []), [data]);
   const baseGaps = useMemo<SiteGap[]>(() => (data?.issues.length ? ['inventory_incomplete'] : []), [data]);
@@ -287,6 +290,10 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
               placeholder={tt('요청 경로 (예: /products/1)')}
               className={`w-48 ${inputCls}`}
             />
+            <button type="button" onClick={() => setReload((r) => r + 1)} disabled={inv.pending}
+              className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50 disabled:opacity-50">
+              {tt('새로고침')}
+            </button>
             <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('요청 흐름 그래프 →')}
             </Link>

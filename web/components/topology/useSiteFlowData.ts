@@ -20,7 +20,8 @@
 //    targets server-side and truncates on a real fleet. The merged fleet drives deriveEksScope and the trace
 //    join's name uniqueness; any failed / reasoned-error / truncated request, or a failed or malformed
 //    `/api/accounts`, marks it incomplete.
-//  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for the mount.
+//  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for one fleet read.
+//  - refresh (`reload`): every read above runs again and no cached cluster evidence is reused.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildFlowGraph, type FlowGraph } from '@/lib/flow-topology';
 import { loadFlowInput, type Row } from '@/lib/flow-load';
@@ -61,6 +62,8 @@ const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
 
 /** Binding reason when the fleet listing needed to derive the EKS scope was incomplete (read failed closed). */
 export const FLEET_INCOMPLETE_REASON = 'binding_fleet_incomplete';
+/** Binding reason when the load deadline (DEADLINE_MS) cut the EKS read or the fleet listing it depends on. */
+export const DEADLINE_REASON = 'binding_deadline';
 
 /**
  * The scope for the EKS read: one listing per account (the server's accounts × regions product 403s the whole
@@ -112,24 +115,35 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
   return [...new Set([...keys, ...extra])].sort();
 }
 
-/** Inventory + EKS map + host lookup + fleet listing for one page scope (the view is keyed by it). */
-export function useSiteInventory(inventoryScope: string): {
+/**
+ * Inventory + EKS map + host lookup + fleet listing for one page scope (the view is keyed by it). A new `reload`
+ * value re-runs every read: the previous composition stays on screen (no canvas teardown) while the fleet and host
+ * lookup go back to pending, so cluster evidence is re-read against the new fleet (useClusterEvidence).
+ */
+export function useSiteInventory(inventoryScope: string, reload = 0): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
 } {
   const [data, setData] = useState<SiteInventory | null>(null);
   const [error, setError] = useState('');
   const [hostAccount, setHostAccount] = useState<string | null | undefined>(undefined);
   const [fleet, setFleet] = useState<Fleet | null>(null);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let live = true;
+    setLoading(true); setError(''); setFleet(null); setHostAccount(undefined);
     const ctrl = new AbortController();
     const { signal } = ctrl;
-    const deadline = setTimeout(() => ctrl.abort(), DEADLINE_MS);
+    // The deadline aborts every read; a read it cut is disclosed as `binding_deadline` (refresh retries), never as
+    // a failure of the cluster or fleet. A read that settled before it keeps its own reason.
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; ctrl.abort(); }, DEADLINE_MS);
+    let fleetCut = false;
     const accountsBody: Promise<unknown> = fetch('/api/accounts', { signal })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null);
     const host = accountsBody.then(hostAccountOf);
     // Fail closed: a failed, aborted or unparseable fleet listing cannot prove name uniqueness.
-    const fleetRead = accountsBody.then((body) => readFleet(body, signal)).catch(INCOMPLETE_FLEET);
+    const fleetRead = accountsBody.then((body) => readFleet(body, signal)).catch(INCOMPLETE_FLEET)
+      .then((f) => { fleetCut = signal.aborted; return f; });
     void host.then((h) => { if (live) setHostAccount(h); });
     void fleetRead.then((f) => { if (live) setFleet(f); });
     const eksScope = Promise.all([host, fleetRead]).then(([h, f]) => deriveEksScope(inventoryScope, f, h));
@@ -138,8 +152,11 @@ export function useSiteInventory(inventoryScope: string): {
       .then(async (loaded) => {
         const [h, scope] = await Promise.all([host, eksScope]);
         if (!live) return;
+        setLoading(false);
         if (loaded.allFailed) { setError(loaded.failed.map((r) => r.error).join('; ')); return; }
-        if (scope === null && loaded.eks) loaded.eks.bindingRead = { status: 'withheld', reasons: [FLEET_INCOMPLETE_REASON] };
+        const cut = timedOut && (loaded.eksAborted || (scope === null && fleetCut));
+        if (loaded.eks && cut) loaded.eks.bindingRead = { status: 'withheld', reasons: [DEADLINE_REASON] };
+        else if (scope === null && loaded.eks) loaded.eks.bindingRead = { status: 'withheld', reasons: [FLEET_INCOMPLETE_REASON] };
         const own = loaded.input.ownershipRead;
         if (own?.eksAccountRegions) own.eksAccountRegions = withHostAlias(own.eksAccountRegions, h);
         const issues: InventoryIssue[] = [];
@@ -157,11 +174,11 @@ export function useSiteInventory(inventoryScope: string): {
           eks: loaded.eks, issues, eksScope: scope ?? [],
         });
       })
-      .catch(() => { if (live) setError('site: invalid inventory response'); })
+      .catch(() => { if (live) { setLoading(false); setError('site: invalid inventory response'); } })
       .finally(() => clearTimeout(deadline));
     return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
-  }, [inventoryScope]);
-  return { data, error, hostAccount, fleet, pending: !data && !error };
+  }, [inventoryScope, reload]);
+  return { data, error, hostAccount, fleet, pending: loading };
 }
 
 export interface ClusterEvidence {
@@ -211,30 +228,32 @@ async function readClusterEvidence(arn: string, fleet: Fleet, signal: AbortSigna
 }
 
 /**
- * Trace overlay + db-refs per bound cluster ARN (sorted, deduped by the caller). Results are cached per ARN for the
- * mount and committed in ONE state update per batch, so the flow is rebuilt once when the evidence lands.
+ * Trace overlay + db-refs per bound cluster ARN (sorted, deduped by the caller). Results are cached per ARN and
+ * fleet read (a refresh yields a new fleet, so nothing cached survives it) and committed in ONE state update per
+ * batch, so the flow is rebuilt once when the evidence lands.
  */
 export function useClusterEvidence(arns: string[], fleet: Fleet | null): {
   pending: boolean; traces: SiteFlowInput['traces']; dbRefs: SiteFlowInput['dbRefs']; failedDbRefs: string[];
 } {
   const key = arns.join('\n');
-  const cache = useRef(new Map<string, ClusterEvidence>());
+  const cache = useRef(new Map<string, { fleet: Fleet; ev: ClusterEvidence }>());
+  const cached = (arn: string) => { const c = cache.current.get(arn); return c && c.fleet === fleet ? c.ev : undefined; };
   const [version, setVersion] = useState(0);
   useEffect(() => {
     if (!key || !fleet) return undefined;
-    const missing = key.split('\n').filter((a) => !cache.current.has(a));
+    const missing = key.split('\n').filter((a) => !cached(a));
     if (!missing.length) return undefined;
     let live = true;
     const ctrl = new AbortController();
     void Promise.all(missing.map((arn) => readClusterEvidence(arn, fleet, ctrl.signal))).then((list) => {
       if (!live) return;
-      list.forEach((ev, i) => cache.current.set(missing[i], ev));
+      list.forEach((ev, i) => cache.current.set(missing[i], { fleet, ev }));
       setVersion((v) => v + 1);
     });
     return () => { live = false; ctrl.abort(); };
   }, [key, fleet]);
   return useMemo(() => {
-    const entries = key ? key.split('\n').map((a) => cache.current.get(a)) : [];
+    const entries = key ? key.split('\n').map(cached) : [];
     const pending = !!key && (fleet === null || entries.some((e) => !e));
     const done = pending ? [] : (entries as ClusterEvidence[]);
     return {

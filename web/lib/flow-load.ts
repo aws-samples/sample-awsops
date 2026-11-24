@@ -94,6 +94,7 @@ export type FlowLoad = {
   failed: ReadResult[];
   allFailed: boolean;              // every interactive type failed to read
   incomplete: boolean;             // any interactive type had an unstable sweep
+  eksAborted: boolean;             // the signal was already aborted when the EKS read settled (it was cut, not failed)
 };
 
 export interface FlowLoadOptions {
@@ -134,11 +135,13 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
       results[index] = await read(types[index]);
     }
   };
+  let eksAborted = false;
   const [, eks] = await Promise.all([
     Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-    options.eksScope ? Promise.resolve(options.eksScopeQuery ?? inventoryScope)
+    (options.eksScope ? Promise.resolve(options.eksScopeQuery ?? inventoryScope)
       .then(scope => fetchEksIpMap(signal, entitiesEnabled, scope))
-      : account === 'self' ? fetchEksIpMap(signal, entitiesEnabled) : Promise.resolve(null),
+      : account === 'self' ? fetchEksIpMap(signal, entitiesEnabled) : Promise.resolve(null))
+      .then((r) => { eksAborted = signal.aborted; return r; }),
   ]);
   const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
   const failed = results.filter(result => result.readFailed);
@@ -160,5 +163,5 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
   } };
   TYPES.forEach((t, i) => { input[FLOW_KEY[t]] = res[i].rows; });
   return { input, types, results, res, net, eks, failed, allFailed: res.every(r => r.readFailed),
-    incomplete: res.some(r => r.incomplete) };
+    incomplete: res.some(r => r.incomplete), eksAborted };
 }
