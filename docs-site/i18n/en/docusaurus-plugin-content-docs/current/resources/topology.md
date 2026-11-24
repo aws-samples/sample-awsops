@@ -119,14 +119,14 @@ Numeric trace account IDs are reconciled only with the authenticated host accoun
 
 Workload identity also requires a complete, fresh service-snapshot read with known zero node/edge drops, orphan/invalid spans and unresolved messaging. Missing loss metadata, a capped root or a subgraph response cannot certify complete workload membership. The source panel preserves read failures, retained publication metadata, source query windows and separate producer clocks. Stale, retained, dropped, capped, partial or unknown service evidence remains visible but cannot establish the related workload identity. This verifies evidence within the query scope, not collection of all traffic.
 
-## Site view
+## Site flow
 
 Open `/topology?view=site` for this opt-in view; it is not the default view yet. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
 
-- **Path input**: enter a path to highlight the branch it takes. API links matched by name are marked as inferred.
+- **Path input**: enter a path to highlight the branch it takes.
 - **Expanding groups**: click a group to expand the nodes inside it.
 - **Line styles**: solid lines are observed, dotted lines are configured, and dashed lines are inferred. Traced calls carry their call counts.
-- **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn.
+- **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn. **Refresh** reads all evidence again.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:

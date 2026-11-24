@@ -285,12 +285,13 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   cluster, and the cluster's bare name must be unique across the fleet-wide cluster listing
   (all registered accounts and regions), not just the clusters of the selected scope: a
   narrowed scope, including the default host-account-only scope, hides same-named
-  clusters of other accounts or regions without any truncation or error flag. When the
-  selected scope is already all accounts and all regions, its listing is reused;
-  otherwise the page reads the fleet listing separately (the cluster selector still
-  follows the selected scope). A truncated scope or fleet listing, one with a per-target
-  read failure, or a failed or unparseable fleet listing cannot prove that uniqueness, so
-  the join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
+  clusters of other accounts or regions without any truncation or error flag. The page
+  therefore never reuses the selected scope's listing for this check: it always reads the
+  per-account fleet built from `GET /api/accounts` (see the fleet paragraph below; the
+  cluster selector still follows the selected scope). A truncated scope or fleet listing,
+  one with a per-target read failure, or a failed or unparseable fleet listing cannot
+  prove that uniqueness, so the join is refused (`incomplete_listing`, no trace edges)
+  without reading the snapshot. The snapshot
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of
@@ -307,8 +308,21 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   trace join as host clusters. The only cluster-level trace guards are the two above: fleet-wide
   uniqueness of the bare cluster name (`ambiguous_cluster` when another account or
   region has a cluster with the same name) and a completely read fleet listing
-  (`incomplete_listing`). The trace read never waits for the host-account lookup.
-- The host-account lookup is used for Route 53 only. A host cluster outside the
+  (`incomplete_listing`). Because the fleet is built from the `GET /api/accounts` body, the
+  trace read waits for that lookup; a failed or malformed lookup leaves the fleet
+  incomplete and the join is refused with `incomplete_listing`.
+- The fleet listing (`readFleet` in `web/lib/eks-fleet.ts`, shared by the K8s map and the
+  site flow view) issues one `GET /api/eks?accounts=<id>&regions=__all__&includeGlobal=1`
+  per enabled registered account from `GET /api/accounts` (the host as `self`, disabled
+  accounts skipped), at most 4 in flight, and merges the clusters (deduplicated by ARN).
+  A single all-account request is not used because the server caps a listing without
+  registrations at 12 account × region targets (`TARGET_CAP` in `web/lib/eks-scope.ts`)
+  and reports it truncated, which a real fleet exceeds. Any failed, truncated or
+  reasoned-error per-account listing, an aborted read, or an `/api/accounts` body with a
+  row lacking a 12-digit `accountId` or a boolean `enabled` marks the whole fleet
+  incomplete.
+- Apart from the fleet's account list, the host account resolved from that lookup is
+  used for Route 53 only. A host cluster outside the
   deployment region also has an ARN id, and the cluster listing reports a numeric
   account for every row, so the page resolves the host account from the single
   `isHost` row of `GET /api/accounts`: an ARN whose account equals it reads the host's

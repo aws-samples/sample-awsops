@@ -63,7 +63,7 @@ Displays the selected cluster as a namespace-grouped Service graph (DNS → Gate
 | **Service** | K8s Service | Shown inside its namespace box |
 | **Datastore** | RDS, ElastiCache, OpenSearch, MSK | Managed host found in Pod env, ConfigMaps or traces |
 
-Solid lines are calls observed in traces, dashed lines are datastore links inferred from configuration, and thin lines are DNS, Ingress and LoadBalancer routing. Trace calls are shown for clusters of every registered account; a member-account cluster joins only when its name is unique across a completely read fleet-wide cluster listing. Pods and Nodes are not drawn in the graph; they appear in the detail panel that opens when you click a Service. System namespaces are hidden by default.
+Solid lines are calls observed in traces, dashed lines are datastore links inferred from configuration, and thin lines are DNS, Ingress and LoadBalancer routing. Trace calls are shown for clusters of every registered account; a cluster, host or member alike, joins only when its name is unique across a completely read fleet-wide cluster listing. Pods and Nodes are not drawn in the graph; they appear in the detail panel that opens when you click a Service. System namespaces are hidden by default.
 
 ### Interactive Features
 
