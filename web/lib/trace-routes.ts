@@ -4,10 +4,13 @@
 import { invokeMcpLambdaTool } from '@/lib/mcp-lambda-invoke';
 import { clickhouseRows, otelAggregateShape, resolveSource } from '@/lib/trace-source';
 
+/** `calls` counts distinct traces in the window: for a hop, traces where the service handled the
+ *  route; for a `next` entry, those of them that reached that downstream service/route. */
 export interface RouteHop { service: string; route: string; next: { service: string; route?: string; calls: number }[]; calls: number }
 export interface RouteRead {
   status: 'ok' | 'partial' | 'unavailable'; reasons: string[]; routes: RouteHop[];
-  /** Distinct traces skipped because one service had several server spans (pairing ambiguous). */
+  /** Internal diagnostic: distinct traces skipped because one service had several entry spans
+   *  (pairing ambiguous). API routes must strip it and return exactly `{ status, reasons, routes }`. */
   ambiguousTraces?: number;
 }
 
@@ -22,6 +25,9 @@ const VALUE_MAX = 512;
 // SpanKind as text ('Server'/'Client'); toString() also admits a numeric column's OTLP codes.
 const SERVER_KINDS = "toString(SpanKind) IN ('Server', 'SERVER', 'SPAN_KIND_SERVER', '2')";
 const CLIENT_KINDS = "toString(SpanKind) IN ('Client', 'CLIENT', 'SPAN_KIND_CLIENT', '3')";
+// Entry spans: a consumer span of the service is another request it handles in the trace.
+const ENTRY_KINDS = "toString(SpanKind) IN ('Server', 'SERVER', 'SPAN_KIND_SERVER', '2', " +
+  "'Consumer', 'CONSUMER', 'SPAN_KIND_CONSUMER', '5')";
 const ROUTE = "SpanAttributes['http.route']";
 
 function unavailable(reason: RouteReason): RouteRead {
@@ -32,15 +38,16 @@ function unavailable(reason: RouteReason): RouteRead {
  *  allowlisted window/limit. A client span is paired with its service's routed server span by
  *  (trace, service) rather than by direct parent, so INTERNAL controller/middleware spans in
  *  between do not hide the downstream hop. That pairing is only sound when the service has exactly
- *  one server span in the trace; traces with several are skipped and counted separately. */
+ *  one entry (server or consumer) span in the trace; traces with several are skipped and counted
+ *  separately. `s` is then unique per (trace, service), so counts are distinct traces. */
 function routeSql(table: string, windowMins: number, endMs: number, limit: number) {
   const window = `Timestamp >= fromUnixTimestamp64Milli(${endMs}) - INTERVAL ${windowMins} MINUTE ` +
     `AND Timestamp <= fromUnixTimestamp64Milli(${endMs})`;
-  // Every server span counts toward ambiguity (an unrouted one would otherwise donate its client
+  // Every entry span counts toward ambiguity (an unrouted one would otherwise donate its client
   // calls to the routed one); only (trace, service) pairs with a routed server span are kept.
-  const perTrace = 'SELECT TraceId, ServiceName, count() AS Servers, ' +
+  const perTrace = 'SELECT TraceId, ServiceName, count() AS Entries, ' +
     "anyIf(SpanRoute, SpanRoute != '') AS RouteTemplate FROM (SELECT TraceId, ServiceName, " +
-    `${ROUTE} AS SpanRoute FROM ${table} WHERE ${window} AND ${SERVER_KINDS}) ` +
+    `if(${SERVER_KINDS}, ${ROUTE}, '') AS SpanRoute FROM ${table} WHERE ${window} AND ${ENTRY_KINDS}) ` +
     "GROUP BY TraceId, ServiceName HAVING countIf(SpanRoute != '') > 0";
   const downstream = 'SELECT c.TraceId AS TraceId, c.ServiceName AS ClientService, d.ServiceName AS ServiceName, ' +
     `d.HttpRoute AS HttpRoute FROM (SELECT TraceId, SpanId, ServiceName FROM ${table} ` +
@@ -48,13 +55,16 @@ function routeSql(table: string, windowMins: number, endMs: number, limit: numbe
     `${ROUTE} AS HttpRoute FROM ${table} WHERE ${window} AND ${SERVER_KINDS} AND ParentSpanId != '') AS d ` +
     'ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId';
   // Equality-only joins; same-service children become '' in the projection so the route still counts.
+  // RouteCalls is a window count over `s` (one row per trace), computed before the join fans out.
   const routes = 'SELECT s.ServiceName AS Svc, s.RouteTemplate AS Route, ' +
     "if(n.ServiceName = s.ServiceName, '', n.ServiceName) AS NextSvc, " +
-    "if(n.ServiceName = s.ServiceName, '', n.HttpRoute) AS NextRoute, count() AS Calls " +
-    `FROM (SELECT TraceId, ServiceName, RouteTemplate FROM (${perTrace}) WHERE Servers = 1) AS s ` +
+    "if(n.ServiceName = s.ServiceName, '', n.HttpRoute) AS NextRoute, uniqExact(s.TraceId) AS Calls, " +
+    'any(s.RouteCalls) AS RouteCalls FROM (SELECT TraceId, ServiceName, RouteTemplate, ' +
+    'count() OVER (PARTITION BY ServiceName, RouteTemplate) AS RouteCalls ' +
+    `FROM (${perTrace}) WHERE Entries = 1) AS s ` +
     `LEFT JOIN (${downstream}) AS n ON n.TraceId = s.TraceId AND n.ClientService = s.ServiceName ` +
-    `GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY Calls DESC LIMIT ${limit}`;
-  const ambiguous = `SELECT uniqExact(TraceId) AS AmbiguousTraces FROM (${perTrace}) WHERE Servers > 1`;
+    `GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Calls DESC LIMIT ${limit}`;
+  const ambiguous = `SELECT uniqExact(TraceId) AS AmbiguousTraces FROM (${perTrace}) WHERE Entries > 1`;
   return { routes, ambiguous };
 }
 
@@ -84,24 +94,23 @@ function fold(rows: unknown[]): RouteHop[] | undefined {
   const hops = new Map<string, RouteHop & { byNext: Map<string, RouteHop['next'][number]> }>();
   for (const value of rows) {
     const row = record(value);
-    const service = bounded(row?.Svc), route = bounded(row?.Route), calls = count(row?.Calls);
+    const service = bounded(row?.Svc), route = bounded(row?.Route);
+    const calls = count(row?.Calls), routeCalls = count(row?.RouteCalls);
     const nextService = optional(row?.NextSvc), nextRoute = optional(row?.NextRoute);
-    if (!service || !route || calls === undefined || !nextService.ok || !nextRoute.ok) return undefined;
+    if (!service || !route || calls === undefined || routeCalls === undefined || calls > routeCalls
+        || !nextService.ok || !nextRoute.ok) return undefined;
     const key = JSON.stringify([service, route]);
     let hop = hops.get(key);
-    if (!hop) { hop = { service, route, next: [], calls: 0, byNext: new Map() }; hops.set(key, hop); }
-    hop.calls += calls;
+    if (!hop) { hop = { service, route, next: [], calls: routeCalls, byNext: new Map() }; hops.set(key, hop); }
+    // Distinct-trace counts do not add up: every row of a hop must carry the same route total.
+    if (hop.calls !== routeCalls) return undefined;
     if (!nextService.value || nextService.value === service) continue;
     const nextKey = JSON.stringify([nextService.value, nextRoute.value ?? null]);
-    const next = hop.byNext.get(nextKey);
-    if (next) next.calls += calls;
-    else {
-      const entry = { service: nextService.value, ...(nextRoute.value ? { route: nextRoute.value } : {}), calls };
-      hop.byNext.set(nextKey, entry);
-      hop.next.push(entry);
-    }
+    if (hop.byNext.has(nextKey)) return undefined;
+    const entry = { service: nextService.value, ...(nextRoute.value ? { route: nextRoute.value } : {}), calls };
+    hop.byNext.set(nextKey, entry);
+    hop.next.push(entry);
   }
-  for (const hop of hops.values()) if (!Number.isSafeInteger(hop.calls)) return undefined;
   return [...hops.values()]
     .map(({ service, route, next, calls: total }) => ({
       service, route, calls: total,
@@ -111,19 +120,23 @@ function fold(rows: unknown[]): RouteHop[] | undefined {
 }
 
 async function query(
-  opts: { instanceId?: number; template?: string }, windowMins: number, limit: number, endMs: number,
+  opts: { instanceId?: number; template?: string; deadlineMs: number }, windowMins: number, limit: number, endMs: number,
 ): Promise<RouteRead> {
   const shape = otelAggregateShape(opts.template);
   if (!shape || !shape.spanKind) return unavailable('route_unsupported_schema');
   const { connConfig, reason } = await resolveSource('clickhouse', opts.instanceId);
   if (reason) return unavailable(reason === 'missing_configuration' ? reason : 'configuration_failed');
   const sql = routeSql(shape.table, windowMins, endMs, limit);
+  // The tool only tightens its own execution bound, so ClickHouse stops when the BFF gives up.
+  const maxExecutionTime = Math.max(1, Math.ceil(opts.deadlineMs / 1000));
   const run = (text: string, maxRows: number) => invokeMcpLambdaTool({
-    kind: 'clickhouse', tool: 'clickhouse_query', args: { sql: text, max_rows: maxRows }, connConfig,
+    kind: 'clickhouse', tool: 'clickhouse_query',
+    args: { sql: text, max_rows: maxRows, max_execution_time: maxExecutionTime }, connConfig,
   });
   let payloads: [unknown, unknown];
   try {
-    payloads = await Promise.all([run(sql.routes, limit), run(sql.ambiguous, 1)]);
+    // The connector marks len(rows) >= max_rows as truncated; the single count row needs headroom.
+    payloads = await Promise.all([run(sql.routes, limit), run(sql.ambiguous, 2)]);
   } catch {
     return unavailable('query_failed');
   }
@@ -153,7 +166,8 @@ async function query(
 }
 
 /** Aggregate route templates per traced service over an allowlisted window. Every read is bounded
- *  by `deadlineMs` (datasource resolution included) and returns only fixed reason strings. */
+ *  by `deadlineMs` (datasource resolution included) and returns only fixed reason strings.
+ *  `template` is the registry catalog's otel_v1 SQL (graph-sources); never a request input. */
 export async function readTraceRoutes(opts: {
   instanceId?: number; template?: string; windowMins: 15 | 60 | 180; deadlineMs: number; limit: number;
 }): Promise<RouteRead> {

@@ -17,13 +17,19 @@ import { readTraceRoutes, type RouteHop } from './trace-routes';
 import type { SiteRoute } from './site-flow';
 
 const row = (over: Record<string, unknown> = {}) => ({
-  Svc: 'frontend', Route: '/api/orders/{id}', NextSvc: 'orders', NextRoute: '/orders/{id}', Calls: '12', ...over,
+  Svc: 'frontend', Route: '/api/orders/{id}', NextSvc: 'orders', NextRoute: '/orders/{id}', Calls: '12',
+  RouteCalls: '12', ...over,
 });
-const isAmbiguity = (sql: string) => sql.includes('uniqExact');
+// The clickhouse_query tool's real body (agent/lambda/clickhouse_mcp.py _run_sql).
+const envelope = (rows: unknown[], maxRows: number, extra: Record<string, unknown> = {}) => ({
+  rowCount: rows.length, rows, meta: [{ name: 'Calls', type: 'UInt64' }],
+  truncated: rows.length >= maxRows, collectionStatus: rows.length >= maxRows ? 'partial' : rows.length ? 'ok' : 'empty',
+  ...extra,
+});
+const isAmbiguity = (sql: string) => sql.includes('AS AmbiguousTraces');
 const answer = (rows: unknown[], extra: Record<string, unknown> = {}, ambiguity: unknown[] = [{ AmbiguousTraces: '0' }]) =>
-  invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => isAmbiguity(args.sql)
-    ? { rows: ambiguity, collectionStatus: 'ok' }
-    : { rows, collectionStatus: rows.length ? 'ok' : 'empty', ...extra });
+  invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string; max_rows: number } }) =>
+    isAmbiguity(args.sql) ? envelope(ambiguity, args.max_rows) : envelope(rows, args.max_rows, extra));
 const read = (over: Partial<Parameters<typeof readTraceRoutes>[0]> = {}) =>
   readTraceRoutes({ windowMins: 60, deadlineMs: 5_000, limit: 200, ...over });
 const callOf = (ambiguity = false) => invokeMcpLambdaTool.mock.calls
@@ -48,7 +54,11 @@ describe('readTraceRoutes', () => {
       });
     }
     expect(callOf().args.max_rows).toBe(120);
-    expect(callOf(true).args.max_rows).toBe(1);
+    // The connector flags len(rows) >= max_rows as truncated; the one count row needs headroom.
+    expect(callOf(true).args.max_rows).toBe(2);
+    // The tool only tightens its execution bound: ClickHouse stops when the BFF deadline does.
+    expect(callOf().args.max_execution_time).toBe(5);
+    expect(callOf(true).args.max_execution_time).toBe(5);
     const sql = sqlOf();
     expect(sql).toMatch(/INTERVAL 15 MINUTE/);
     expect(sql).toMatch(/LIMIT 120$/);
@@ -67,32 +77,38 @@ describe('readTraceRoutes', () => {
     expect(sql).toContain("toString(SpanKind) IN ('Server', 'SERVER', 'SPAN_KIND_SERVER', '2')");
     expect(sql).toContain("toString(SpanKind) IN ('Client', 'CLIENT', 'SPAN_KIND_CLIENT', '3')");
     expect(sql).toContain("countIf(SpanRoute != '') > 0");
+    expect(sql).toContain("'Consumer', 'CONSUMER', 'SPAN_KIND_CONSUMER', '5'");
+    expect(sql).toContain("if(toString(SpanKind) IN ('Server', 'SERVER', 'SPAN_KIND_SERVER', '2'), SpanAttributes['http.route'], '')");
+    expect(sql).toContain('uniqExact(s.TraceId) AS Calls');
+    expect(sql).toContain('count() OVER (PARTITION BY ServiceName, RouteTemplate) AS RouteCalls');
     expect(sql).toContain('LEFT JOIN');
     expect(sqlOf(true)).toMatch(/INTERVAL 15 MINUTE/);
-    expect(sqlOf(true)).toMatch(/WHERE Servers > 1$/);
-    expect(sql).toMatch(/GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY Calls DESC LIMIT 120$/);
+    expect(sqlOf(true)).toMatch(/WHERE Entries > 1$/);
+    expect(sql).toMatch(/GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Calls DESC LIMIT 120$/);
     // Same-service children are excluded from `next` without dropping the parent route.
     expect(sql).toMatch(/if\(\w+\.ServiceName = \w+\.ServiceName, '', /);
   });
 
   it('clamps the limit to 500 and rejects windows outside the allowlist', async () => {
     answer([row()]);
-    await read({ limit: 10_000 });
+    await read({ limit: 10_000, deadlineMs: 1 });
     expect(sqlOf()).toMatch(/LIMIT 500$/);
     expect(callOf().args.max_rows).toBe(500);
+    expect(callOf().args.max_execution_time).toBe(1);
     invokeMcpLambdaTool.mockClear();
     expect(await read({ windowMins: 61 as 60 })).toEqual({ status: 'unavailable', reasons: ['invalid_request'], routes: [] });
     expect(await read({ limit: Number.NaN })).toEqual({ status: 'unavailable', reasons: ['invalid_request'], routes: [] });
     expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
   });
 
-  it('folds rows into one hop per service route with summed calls and per-downstream next', async () => {
+  it('folds rows into one hop per service route with distinct-trace counts and per-downstream next', async () => {
+    // 20 traces hit the route; 12 reached orders, 5 payments (some may reach both), 3 neither.
     answer([
-      row(),
-      row({ NextSvc: 'payments', NextRoute: '', Calls: '5' }),
-      row({ NextSvc: '', NextRoute: '', Calls: '3' }),
-      row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: 40 }),
-      row({ Svc: 'orders', Route: '/orders/{id}', NextSvc: null, NextRoute: null, Calls: '9' }),
+      row({ RouteCalls: '20' }),
+      row({ NextSvc: 'payments', NextRoute: '', Calls: '5', RouteCalls: '20' }),
+      row({ NextSvc: '', NextRoute: '', Calls: '3', RouteCalls: '20' }),
+      row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: 40, RouteCalls: 40 }),
+      row({ Svc: 'orders', Route: '/orders/{id}', NextSvc: null, NextRoute: null, Calls: '9', RouteCalls: '9' }),
     ]);
     const out = await read({ instanceId: 7 });
     expect(getDatasource).toHaveBeenCalledWith(7);
@@ -136,7 +152,8 @@ describe('readTraceRoutes', () => {
     answer([row(), row({ NextSvc: 'payments', Calls: '2' })]);
     const out = await read({ limit: 2 });
     expect(out.status).toBe('partial');
-    expect(out.reasons).toEqual(['capped']);
+    // The connector's own truncation markers for the same saturated read are carried alongside.
+    expect(out.reasons).toEqual(['payload_truncated', 'incomplete_collection', 'capped']);
     expect(out.routes).toHaveLength(1);
   });
 
@@ -154,7 +171,7 @@ describe('readTraceRoutes', () => {
     expect(sql).not.toMatch(/ParentSpanId = s\.SpanId/);
     expect(sql).toContain('ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId');
     // Only (trace, service) pairs with exactly one server span are paired.
-    expect(sql).toContain('WHERE Servers = 1) AS s');
+    expect(sql).toContain('WHERE Entries = 1) AS s');
   });
 
   it('skips traces where a service has several server spans and reports them as partial', async () => {
@@ -170,7 +187,7 @@ describe('readTraceRoutes', () => {
   });
 
   it('fails closed on a malformed or missing ambiguity count', async () => {
-    for (const ambiguity of [[], [{ AmbiguousTraces: '-1' }], [{ AmbiguousTraces: 'x' }], [{}], [{ AmbiguousTraces: '1' }, { AmbiguousTraces: '1' }]]) {
+    for (const ambiguity of [[], [{ AmbiguousTraces: '-1' }], [{ AmbiguousTraces: 'x' }], [{}]]) {
       invokeMcpLambdaTool.mockReset();
       answer([row()], {}, ambiguity);
       expect(await read()).toEqual({ status: 'unavailable', reasons: ['malformed_rows'], routes: [] });
@@ -179,6 +196,20 @@ describe('readTraceRoutes', () => {
     invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => isAmbiguity(args.sql)
       ? { error: 'DB::Exception: detail', collectionStatus: 'error' } : { rows: [row()], collectionStatus: 'ok' });
     expect(await read()).toEqual({ status: 'unavailable', reasons: ['query_failed'], routes: [] });
+  });
+
+  it('never accepts a truncated ambiguity count as a clean read', async () => {
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string; max_rows: number } }) =>
+      isAmbiguity(args.sql)
+        ? envelope([{ AmbiguousTraces: '0' }], args.max_rows, { truncated: true, collectionStatus: 'partial' })
+        : envelope([row()], args.max_rows));
+    const out = await read();
+    expect(out.status).not.toBe('ok');
+    expect(out.reasons).toContain('payload_truncated');
+    // Two count rows (only possible from a connector ignoring the SQL shape) are malformed.
+    invokeMcpLambdaTool.mockReset();
+    answer([row()], {}, [{ AmbiguousTraces: '0' }, { AmbiguousTraces: '0' }]);
+    expect(await read()).toMatchObject({ status: 'unavailable', routes: [] });
   });
 
   it('refuses non-exporter shapes before querying', async () => {
@@ -206,6 +237,7 @@ describe('readTraceRoutes', () => {
     for (const bad of [
       row({ Calls: '0' }), row({ Calls: '1.5' }), row({ Svc: '' }), row({ Route: 42 }),
       row({ NextSvc: 7 }), row({ Route: `/a${'x'.repeat(600)}` }), row({ Svc: 'a\nb' }), 'nope',
+      row({ RouteCalls: '13', NextSvc: 'payments' }), row({ Calls: '13' }), row({ RouteCalls: undefined }), row(),
     ]) {
       invokeMcpLambdaTool.mockReset();
       answer([row(), bad]);
