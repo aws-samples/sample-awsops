@@ -33,6 +33,7 @@ import SiteFlowView, { BINDING_NOTICE, GAP_NOTICE, HighlightChain, ROUTE_NOTICE 
 import { applyTerms } from '@/lib/i18n-terms';
 import { parseSiteRoutes, useClusterEvidence, withHostAlias } from './useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
+import type { RouteHop } from '@/lib/trace-routes';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
 const REGION = 'ap-northeast-2', HOST_ID = '123456789012', MEMBER = '111111111111';
@@ -1059,8 +1060,9 @@ const ROUTES_URL = '/api/topology/site-routes';
 const CATALOG_DS = `ds:rds_cluster:${HOST_ID}:${REGION}:catalog`;
 const ORDERS_DS = `ds:rds_cluster:${MEMBER}:${REGION}:orders`;
 const CACHE_DS = `ds:elasticache:${CACHE_HOST}`;
-/** front (gateway behind the default behavior) → catalog → catalog's datastore. */
-const ROUTES = [
+/** front (gateway behind the default behavior) → catalog → catalog's datastore. Typed as the server's hop shape so
+ *  a server-side contract change fails the typecheck here. */
+const ROUTES: RouteHop[] = [
   { service: 'front', route: '/products/{id}', calls: 9, next: [{ service: 'catalog', route: '/catalog/{id}', calls: 9 }] },
   { service: 'catalog', route: '/catalog/{id}', calls: 9, next: [] },
 ];
