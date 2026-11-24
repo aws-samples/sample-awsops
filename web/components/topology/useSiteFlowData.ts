@@ -8,10 +8,11 @@
 //    the builder walks (HOP_TYPES).
 //  - EKS pod map + bindings: the scoped listing (`eksScope`). An all-region listing returns a discovery note that
 //    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions derived from a COMPLETE
-//    fleet listing: one listing per enabled account (selected or not, so any cluster can veto its VPC) over the
-//    explicit page regions, or for an all-region page over the regions where a selected account has a connected
-//    cluster (see deriveEksScope; an incomplete fleet fails the EKS read closed). Inventory reads keep the page scope, so no LB/TG row is dropped. Targets outside those regions stay
-//    unresolved (`eks_not_enumerated`).
+//    fleet listing (see deriveEksScope; an incomplete fleet fails the EKS read closed). R = the explicit page regions,
+//    or for an all-region page the regions where a SELECTED account has a connected cluster. Only accounts with a
+//    fleet cluster in R, selected or not, and wildcard-scan accounts are listed, each in its fleet regions ∩ R
+//    (wildcard accounts in all of R). Inventory reads keep the page scope, so no LB/TG row is dropped. Targets
+//    outside those regions stay unresolved (`eks_not_enumerated`).
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
 //    recognized when deriving the EKS scope. The EKS read waits for this lookup (evidence pending meanwhile).
@@ -69,11 +70,12 @@ export const DEADLINE_REASON = 'binding_deadline';
  * The scope for the EKS read: one listing per account (the server's accounts × regions product 403s the whole
  * listing when one account lacks a region, and a single request is capped at 12 targets), over a region set R:
  * the explicit page regions, or for an all-region page scope the regions of every CONNECTED fleet cluster in the
- * SELECTED accounts (the page selection decides whose resources are shown and resolved). Veto, however, is not
- * limited by the selection: EVERY enabled account with ANY fleet cluster (any access) in a region of R is listed in
- * exactly those regions (its fleet regions ∩ R), so a not-connected cluster of any account — selected or not — in a
- * region we resolve is listed and vetoes its VPC (e.g. a RAM-shared VPC): fetchEksIpMap then blocks that region|vpc
- * (`binding_scope_blocked`, disclosed). Every wildcard-scan account (fleet `wildcard`) is listed in all of R, since its
+ * SELECTED accounts. The selection decides R and which accounts' inventory (targets) is shown; it does not decide
+ * which clusters take part: EVERY enabled account with ANY fleet cluster (any access) in a region of R is listed in
+ * exactly those regions (its fleet regions ∩ R), selected or not. A listed CONNECTED cluster of any account may
+ * resolve pods and contribute bindings (and gets trace/db-refs reads), since a shared-VPC target can legitimately
+ * belong to another account's pod; a listed not-connected cluster vetoes its VPC (e.g. a RAM-shared VPC):
+ * fetchEksIpMap then blocks that region|vpc (`binding_scope_blocked`, disclosed). Every wildcard-scan account (fleet `wildcard`) is listed in all of R, since its
  * fleet listing may miss clusters there. An account spanning >12 regions fails closed as a truncated listing. Accounts
  * with no fleet cluster in R need no request. A truncated, errored, malformed or failed fleet listing cannot prove which
  * clusters exist: `null` (the caller fails the EKS read closed). An empty R (all regions, no connected cluster in the

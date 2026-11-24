@@ -694,6 +694,31 @@ describe('SiteFlowView', () => {
     expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} shadow (${THIRD} / ${REGION})`);
   });
 
+  it('an UNSELECTED account\'s CONNECTED cluster in R resolves a shared-VPC target to its pod (qualified binding)', async () => {
+    // Page scope = the member only. THIRD is enabled but not selected; its connected `cart` cluster runs the pod behind
+    // a member target group in the member's (RAM-shared) VPC. Selection decides R and which targets are shown, not
+    // which clusters can own them, so the target resolves to THIRD's workload and its evidence is read.
+    const cartArn = `arn:aws:eks:${REGION}:${THIRD}:cluster/cart`, encCart = encodeURIComponent(cartArn);
+    const listed = [...CLUSTERS, cluster(cartArn, 'cart', THIRD, cartArn, MEMBER_VPC)];
+    const rows = inventory();
+    rows.target_group = [rows.target_group[1], tg(MEMBER, 'cart-tg', API_NLB_ARN, MEMBER_VPC, ['10.1.1.30'])];
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, listed);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      if (u === `/api/eks/${encCart}/incluster?kind=pods`) return json({ kind: 'pods', rows: [pod('shop', 'cart')(['10.1.1.30', 'cart-6b7c-a'])], generatedAt: NOW });
+      if (u === `/api/eks/${encCart}/db-refs`) return json({ refs: [], secretRefs: [], truncated: false, partial: false, inventoryCapped: false, inventoryIncomplete: false });
+      return undefined;
+    }, rows);
+    view('view=site&host=mall.example.com', `accounts=${MEMBER}&regions=__all__&includeGlobal=1`);
+    await settled();
+    expect(calls).toContain(`/api/eks?accounts=${THIRD}&regions=${REGION}&includeGlobal=1`);
+    // A workload node exists only for an observed binding whose label matches the pod map (a qualified binding).
+    expect(ids()).toEqual(expect.arrayContaining([wl(cartArn, 'shop/cart'), wl(MEMBER_ARN, 'biz/orders-api')]));
+    expect(calls).toContain(`/api/eks/${encCart}/db-refs`);
+    expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
+    expect(notices()).not.toContain(BINDING_NOTICE.binding_scope_blocked);
+  });
+
   it('lists a wildcard-scan member (all-region note) in ALL resolved regions, so an unlisted cluster there can veto', async () => {
     // The member's fleet listing covers only its configured/registered regions (us-east-1) and carries the note;
     // an explicit ap-northeast-2 listing reveals a not-connected cluster in the host's (RAM-shared) VPC.
