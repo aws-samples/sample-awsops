@@ -99,10 +99,10 @@ export const TERMS: Record<string, Pair> = {
     en: 'The trace snapshot is only partially collected, so trace calls are not shown.', zh: '链路追踪快照仅部分采集，因此不显示链路追踪调用。',
     ja: 'トレースのスナップショットが一部しか収集されていないため、トレースの呼び出しを表示しません。',
   },
-  '경로별 트레이스 집계를 읽지 못해 경로 강조가 이름 기반 추론에 머뭅니다.': {
-    en: 'Per-route trace aggregates could not be read, so path highlighting relies on name-based inference.',
-    zh: '无法读取按路由的链路追踪汇总，路径高亮仅基于名称推断。',
-    ja: 'ルート別のトレース集計を読み取れないため、パスの強調表示は名前に基づく推定にとどまります。',
+  '경로별 트레이스 집계를 읽지 못해 경로 강조가 게이트웨이 워크로드에서 멈춥니다.': {
+    en: 'Per-route trace aggregates could not be read, so path highlighting stops at the gateway workload.',
+    zh: '无法读取按路由的链路追踪汇总，路径高亮止于网关工作负载。',
+    ja: 'ルート別のトレース集計を読み取れないため、パスの強調表示はゲートウェイのワークロードで止まります。',
   },
   '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.': {
     en: 'Datastore references of some workloads could not be read, so datastore links are incomplete.',

@@ -861,6 +861,12 @@ describe('SiteFlowView notices', () => {
     expect(Object.keys(GAP_NOTICE).sort()).toEqual([...GAPS].sort());
     expect(new Set(Object.values(GAP_NOTICE)).size).toBe(GAPS.length);
   });
+  it('route_unavailable says the highlight stops at the gateway and claims no inference', () => {
+    // Page→API inference needs the per-route aggregates this gap reports missing, so none is drawn.
+    expect(GAP_NOTICE.route_unavailable).toContain('게이트웨이');
+    expect(GAP_NOTICE.route_unavailable).not.toContain('추론');
+    for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, GAP_NOTICE.route_unavailable)).not.toMatch(/infer|推断|推定/i);
+  });
   it('binding_scope_partial names its only trigger (no connected cluster in scope) and gives no region advice', () => {
     // The per-account derivation lists explicit regions whenever a cluster is in scope, so the all-region note
     // only remains when no connected cluster is in the selected scope; picking regions would not change that.
