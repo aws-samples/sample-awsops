@@ -8,6 +8,7 @@
 // an aborted signal, or a failed or malformed `/api/accounts` body (any row without a 12-digit `accountId` or a
 // boolean `enabled`) marks it incomplete.
 import { ALL_REGIONS } from './account-context';
+import { hostAccountOf } from './host-account';
 
 export interface FleetCluster { id: string; name: string; arn?: string; accountId?: string; region?: string; access?: string }
 export interface Fleet {
@@ -34,7 +35,8 @@ export const REGISTRATIONS_URL = '/api/eks/registrations';
 interface Registered { id: string; name: string; accountId: string; region: string }
 /** `/api/eks/registrations` body → registered clusters; null (fleet incomplete) on any malformed shape. */
 export function parseRegistrations(body: unknown): Registered[] | null {
-  const list = record(body) && Array.isArray(body.clusters) ? body.clusters : null;
+  if (!record(body) || body.truncated === true || body.status === 'error') return null; // a capped registry proves nothing
+  const list = Array.isArray(body.clusters) ? body.clusters : null;
   if (!list || !list.every((c) => record(c) && nonempty(c.id) && nonempty(c.name)
     && typeof c.accountId === 'string' && /^(?:self|\d{12})$/.test(c.accountId)
     && typeof c.region === 'string' && REGION_RE.test(c.region))) return null;
@@ -110,7 +112,11 @@ export async function readFleet(accountsBody: unknown, signal: AbortSignal): Pro
     const key = c.arn ?? c.id;
     if (!seen.has(key)) { seen.add(key); clusters.push(c); }
   }
-  const identity = (c: { accountId?: string; region?: string; name: string }) => `${c.accountId}|${c.region}|${c.name}`;
+  // `self` and the host's numeric id name the same account (listings report numeric ids; the registry reports
+  // `self` when the server has no HOST_ACCOUNT_ID). Without a known host id only `self` itself is the host.
+  const hostId = hostAccountOf(accountsBody);
+  const account = (id: string | undefined) => (id === 'self' || (hostId !== null && id === hostId) ? 'host' : id);
+  const identity = (c: { accountId?: string; region?: string; name: string }) => `${account(c.accountId)}|${c.region}|${c.name}`;
   const known = new Set(clusters.map(identity));
   const names = clusters.map((c) => c.id);
   for (const r of (registered ?? []) as Registered[]) {

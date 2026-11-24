@@ -87,7 +87,29 @@ describe('eks-fleet', () => {
     });
 
     it.each([
-      ['failed', () => json({ status: 'error' }, 503)],
+      ['numeric host id', '123456789012'],
+      ['`self` (HOST_ACCOUNT_ID unset on the server)', 'self'],
+    ])('a host cluster listed by numeric id and registered as %s counts once (no spurious ambiguity)', async (_l, regAccount) => {
+      serve(() => json({ clusters: [{ id: 'shop', name: 'shop', accountId: regAccount, region: 'ap-northeast-2' },
+        { id: A_ORDERS.id, name: 'orders', accountId: '111111111111', region: 'ap-northeast-2' }] }));
+      const fleet = await readFleet(ACCOUNTS_BODY, new AbortController().signal);
+      expect(fleet.names.filter((n) => n === 'shop')).toHaveLength(1);
+      expect(buildTraceOverlay([], { id: 'shop', registeredNames: fleet.names, listingIncomplete: fleet.incomplete }).reason)
+        .not.toBe('ambiguous_cluster');
+    });
+
+    it('without a known host id a `self` registration cannot be tied to the numeric listed host row: counted twice (fail closed)', async () => {
+      serve(() => json({ clusters: [{ id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' }] }));
+      const fleet = await readFleet({ accounts: ACCOUNTS_BODY.accounts.map((a) => ({ ...a, isHost: false })) }, new AbortController().signal);
+      expect(fleet.names.filter((n) => n === 'shop')).toHaveLength(2);
+      expect(buildTraceOverlay([], { id: 'shop', registeredNames: fleet.names, listingIncomplete: fleet.incomplete }).reason)
+        .toBe('ambiguous_cluster');
+    });
+
+    it.each([
+      ['truncated', () => json({ clusters: [], truncated: true })],
+      ['status error with rows', () => json({ clusters: [], status: 'error' })],
+
       ['malformed (no clusters array)', () => json({ rows: [] })],
       ['malformed row', () => json({ clusters: [{ id: 'arn:aws:eks:us-west-2:222222222222:cluster/orders', name: 'orders', accountId: '222222222222' }] })],
       ['non-JSON', () => new Response('<html>', { status: 200 })],

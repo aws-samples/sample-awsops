@@ -28,12 +28,20 @@ describe('GET /api/eks/registrations', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('private, no-store');
     const body = await res.json();
-    expect(Object.keys(body)).toEqual(['clusters']);
+    expect(Object.keys(body).sort()).toEqual(['clusters', 'truncated']);
+    expect(body.truncated).toBe(false); // the registry read is uncapped; said explicitly so the client can rely on it
     expect(body.clusters).toEqual([
       { id: 'arn:aws:eks:us-east-1:111111111111:cluster/orders', name: 'orders', accountId: '111111111111', region: 'us-east-1' },
       { id: 'shop', name: 'shop', accountId: '123456789012', region: 'ap-northeast-2' },
     ]);
     expect(getAllowedClusters).toHaveBeenCalledWith(true); // the registry is required, never env-only
+  });
+
+  it('a bare id names the numeric host account, or `self` when HOST_ACCOUNT_ID is unset', async () => {
+    getAllowedClusters.mockResolvedValue(new Set(['shop']));
+    expect((await (await GET(req())).json()).clusters[0].accountId).toBe('123456789012');
+    vi.stubEnv('HOST_ACCOUNT_ID', '');
+    expect((await (await GET(req())).json()).clusters[0].accountId).toBe('self');
   });
 
   it('an unavailable registry is a 503 error, never a partial list', async () => {
