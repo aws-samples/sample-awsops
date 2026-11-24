@@ -30,6 +30,7 @@ const SURFACES = [
   'components/topology/MapCanvas.tsx',
   'components/topology/ServiceGraphCanvas.tsx',
   'components/topology/SiteFlowCanvas.tsx',
+  'components/topology/SiteFlowView.tsx',
   'components/topology/ServiceDetailPanel.tsx',
   'components/topology/K8sMapView.tsx',
   'components/chat/TimeSeriesTable.tsx',

@@ -38,6 +38,135 @@ export const TERMS: Record<string, Pair> = {
     ja: 'この範囲ではサービスマップを表示できません。ホストアカウント、全リージョン、グローバルリソースを選択してください。',
   },
   '사이트 흐름 그래프': { en: 'Site flow graph', zh: '站点流量图', ja: 'サイトフローグラフ' },
+  // Site view (SiteFlowView): inputs, chrome, one notice per SiteGap and per withheld-binding reason.
+  '사이트 흐름': { en: 'Site flow', zh: '站点流量', ja: 'サイトフロー' },
+  '사이트 흐름 →': { en: 'Site flow →', zh: '站点流量 →', ja: 'サイトフロー →' },
+  '호스트 하나의 요청 흐름 (DNS → CloudFront → LB → 워크로드 → 데이터 저장소)': {
+    en: 'Request flow of one host (DNS → CloudFront → LB → workloads → datastores)',
+    zh: '单个主机的请求流量（DNS → CloudFront → LB → 工作负载 → 数据存储）',
+    ja: '1つのホストのリクエストフロー（DNS → CloudFront → LB → ワークロード → データストア）',
+  },
+  '사이트 호스트': { en: 'Site host', zh: '站点主机', ja: 'サイトホスト' },
+  '호스트 검색…': { en: 'Search hosts…', zh: '搜索主机…', ja: 'ホストを検索…' },
+  '요청 경로': { en: 'Request path', zh: '请求路径', ja: 'リクエストパス' },
+  '요청 경로 (예: /products/1)': { en: 'Request path (e.g. /products/1)', zh: '请求路径（例如 /products/1）', ja: 'リクエストパス（例: /products/1）' },
+  '요청 흐름 그래프 →': { en: 'Request flow graph →', zh: '请求流量图 →', ja: 'リクエストフローグラフ →' },
+  '홉': { en: 'Hops', zh: '跳数', ja: 'ホップ' },
+  '호스트 목록': { en: 'Hosts', zh: '主机列表', ja: 'ホスト一覧' },
+  '호스트를 선택하면 해당 사이트의 요청 흐름을 표시합니다.': {
+    en: 'Pick a host to show that site’s request flow.', zh: '选择主机后将显示该站点的请求流量。', ja: 'ホストを選ぶと、そのサイトのリクエストフローを表示します。',
+  },
+  '인벤토리에 표시할 호스트가 없습니다.': { en: 'The inventory has no hosts to show.', zh: '资产清单中没有可显示的主机。', ja: 'インベントリに表示できるホストがありません。' },
+  '검색으로 나머지 호스트를 찾으세요.': { en: 'Search to find the remaining hosts.', zh: '请通过搜索查找其余主机。', ja: '残りのホストは検索で探してください。' },
+  '사이트 흐름 근거 상태': { en: 'Site flow evidence status', zh: '站点流量证据状态', ja: 'サイトフローの根拠の状態' },
+  '연결 근거(인벤토리·EKS·트레이스·데이터 저장소)를 불러오는 중…': {
+    en: 'Loading connection evidence (inventory, EKS, traces, datastores)…',
+    zh: '正在加载连接依据（资产清单、EKS、链路追踪、数据存储）…',
+    ja: '接続の根拠（インベントリ・EKS・トレース・データストア）を読み込み中…',
+  },
+  '강조된 요청 경로': { en: 'Highlighted request path', zh: '高亮的请求路径', ja: '強調表示されたリクエストパス' },
+  '추론': { en: 'inferred', zh: '推断', ja: '推定' },
+  '이 경로로 강조할 요청 흐름이 없습니다.': { en: 'No request flow to highlight for this path.', zh: '此路径没有可高亮的请求流量。', ja: 'このパスで強調表示できるリクエストフローはありません。' },
+  'K8s 맵에서 보기 →': { en: 'Open in K8s map →', zh: '在 K8s 地图中查看 →', ja: 'K8sマップで表示 →' },
+  '일부 인벤토리를 조회하지 못했거나 동기화가 끝나지 않아 흐름이 일부만 표시될 수 있습니다.': {
+    en: 'Some inventory could not be read or has not finished syncing, so the flow may be incomplete.',
+    zh: '部分资产清单无法读取或尚未完成同步，流量可能显示不完整。',
+    ja: '一部のインベントリを取得できないか同期が完了していないため、フローが一部しか表示されない場合があります。',
+  },
+  '일부 대상의 Pod를 확인하지 못해 워크로드 대신 대상으로 표시합니다. 조회 범위 밖의 클러스터이거나, 클러스터 네트워크(VPC)를 알 수 없거나, Pod 식별 근거가 부족한 경우입니다.': {
+    en: 'Some targets could not be matched to pods and are shown as targets instead of workloads: the cluster is outside the queried scope, its network (VPC) is unknown, or the pod identity evidence is insufficient.',
+    zh: '部分目标无法确认对应的 Pod，因此显示为目标而非工作负载：集群不在查询范围内、集群网络（VPC）未知，或 Pod 识别依据不足。',
+    ja: '一部のターゲットは Pod を確認できないため、ワークロードではなくターゲットとして表示します。クラスターが取得範囲外である、クラスターのネットワーク（VPC）が不明である、または Pod 識別の根拠が不足している場合です。',
+  },
+  '트레이스를 읽지 못해 서비스 간 호출을 표시하지 않습니다.': {
+    en: 'Traces could not be read, so service-to-service calls are not shown.', zh: '无法读取链路追踪，因此不显示服务间调用。',
+    ja: 'トレースを読み取れないため、サービス間の呼び出しを表示しません。',
+  },
+  '같은 이름의 클러스터가 여러 개라 트레이스 호출을 클러스터에 연결할 수 없습니다.': {
+    en: 'Several clusters share this name, so trace calls cannot be attributed to a cluster.', zh: '存在多个同名集群，因此无法将链路追踪调用关联到集群。',
+    ja: '同じ名前のクラスターが複数あるため、トレースの呼び出しをクラスターに関連付けられません。',
+  },
+  '클러스터 목록이 일부만 조회되어 트레이스 호출을 연결하지 않습니다.': {
+    en: 'The cluster listing is incomplete, so trace calls are not attributed.', zh: '集群列表仅部分获取，因此不关联链路追踪调用。',
+    ja: 'クラスター一覧が一部しか取得できていないため、トレースの呼び出しを関連付けません。',
+  },
+  '트레이스 스냅샷이 일부만 수집되어 트레이스 호출을 표시하지 않습니다.': {
+    en: 'The trace snapshot is only partially collected, so trace calls are not shown.', zh: '链路追踪快照仅部分采集，因此不显示链路追踪调用。',
+    ja: 'トレースのスナップショットが一部しか収集されていないため、トレースの呼び出しを表示しません。',
+  },
+  '경로별 트레이스 집계를 읽지 못해 경로 강조가 이름 기반 추론에 머뭅니다.': {
+    en: 'Per-route trace aggregates could not be read, so path highlighting relies on name-based inference.',
+    zh: '无法读取按路由的链路追踪汇总，路径高亮仅基于名称推断。',
+    ja: 'ルート別のトレース集計を読み取れないため、パスの強調表示は名前に基づく推定にとどまります。',
+  },
+  '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.': {
+    en: 'Datastore references of some workloads could not be read, so datastore links are incomplete.',
+    zh: '部分工作负载的数据存储引用无法读取，因此数据存储连接仅部分显示。',
+    ja: '一部のワークロードのデータストア参照を読み取れないため、データストアへの接続が一部のみ表示されます。',
+  },
+  '인벤토리에서 이 호스트를 찾지 못했습니다.': { en: 'This host was not found in the inventory.', zh: '在资产清单中未找到此主机。', ja: 'インベントリにこのホストが見つかりません。' },
+  'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.': {
+    en: 'CloudFront cache behaviors could not be read, so per-path behaviors are not shown.', zh: '无法读取 CloudFront 缓存行为，因此不显示按路径的行为。',
+    ja: 'CloudFront のキャッシュ動作を読み取れないため、パス別の動作を表示しません。',
+  },
+  '요청 경로에 맞는 API 경로가 여러 개라 하나로 강조하지 않습니다.': {
+    en: 'Several API routes match this request path, so none is highlighted as the one.', zh: '有多个 API 路由与此请求路径匹配，因此不高亮其中任何一个。',
+    ja: 'このリクエストパスに一致する API ルートが複数あるため、1つに絞って強調表示しません。',
+  },
+  '일부 트레이스 호출을 워크로드나 데이터 저장소에 연결하지 못해 생략했습니다.': {
+    en: 'Some trace calls could not be mapped to a workload or datastore and were omitted.', zh: '部分链路追踪调用无法关联到工作负载或数据存储，已省略。',
+    ja: '一部のトレースの呼び出しはワークロードやデータストアに関連付けられないため省略しました。',
+  },
+  '프라이빗 호스팅 영역에만 있는 호스트라 공개 요청 경로를 강조하지 않습니다.': {
+    en: 'This host exists only in a private hosted zone, so no public request path is highlighted.', zh: '此主机仅存在于私有托管区域，因此不高亮公共请求路径。',
+    ja: 'このホストはプライベートホストゾーンにのみ存在するため、公開リクエストパスを強調表示しません。',
+  },
+  '로드 밸런서 리스너 규칙을 확인하지 못해 경로 강조가 일부에서 멈춥니다.': {
+    en: 'Load balancer listener rules could not be confirmed, so path highlighting stops partway.', zh: '无法确认负载均衡器监听规则，因此路径高亮在中途停止。',
+    ja: 'ロードバランサーのリスナールールを確認できないため、パスの強調表示が途中で止まります。',
+  },
+  '요청 경로에 맞는 캐시 동작이나 리스너 규칙이 없습니다.': {
+    en: 'No cache behavior or listener rule matches this request path.', zh: '没有与此请求路径匹配的缓存行为或监听规则。',
+    ja: 'このリクエストパスに一致するキャッシュ動作やリスナールールはありません。',
+  },
+  '전체 리전 범위의 EKS 목록은 일부 리전만 확인하므로 Pod 식별 근거를 사용하지 않습니다. 계정·리전 선택에서 리전을 지정하세요.': {
+    en: 'An all-region EKS listing covers only some regions, so pod identity evidence is not used. Select regions in the account/region selector.',
+    zh: '全区域范围的 EKS 列表仅覆盖部分区域，因此不使用 Pod 识别依据。请在账户/区域选择中指定区域。',
+    ja: '全リージョン範囲の EKS 一覧は一部のリージョンしか確認しないため、Pod 識別の根拠を使用しません。アカウント・リージョンの選択でリージョンを指定してください。',
+  },
+  '일부 EKS 클러스터를 읽지 못했거나 연결되지 않아 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'Some EKS clusters could not be read or are not connected, so pod identity evidence is not used.',
+    zh: '部分 EKS 集群无法读取或未连接，因此不使用 Pod 识别依据。', ja: '一部の EKS クラスターを読み取れないか未接続のため、Pod 識別の根拠を使用しません。',
+  },
+  'Pod 조회 시각을 확인할 수 없어 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The pod read time is unknown, so pod identity evidence is not used.', zh: '无法确认 Pod 读取时间，因此不使用 Pod 识别依据。',
+    ja: 'Pod の取得時刻を確認できないため、Pod 識別の根拠を使用しません。',
+  },
+  'Pod 조회 결과 형식이 올바르지 않아 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The pod read returned malformed rows, so pod identity evidence is not used.', zh: 'Pod 读取结果格式不正确，因此不使用 Pod 识别依据。',
+    ja: 'Pod の取得結果の形式が正しくないため、Pod 識別の根拠を使用しません。',
+  },
+  'Pod 수가 상한을 넘어 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The pod count exceeds the limit, so pod identity evidence is not used.', zh: 'Pod 数量超过上限，因此不使用 Pod 识别依据。',
+    ja: 'Pod 数が上限を超えたため、Pod 識別の根拠を使用しません。',
+  },
+  '클러스터 ARN을 확인할 수 없어 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The cluster ARN could not be verified, so pod identity evidence is not used.', zh: '无法确认集群 ARN，因此不使用 Pod 识别依据。',
+    ja: 'クラスター ARN を確認できないため、Pod 識別の根拠を使用しません。',
+  },
+  'EKS 클러스터 목록을 읽지 못했거나 클러스터 정보(VPC 등)가 없어 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The EKS cluster listing could not be read or lacks cluster details (such as the VPC), so pod identity evidence is not used.',
+    zh: '无法读取 EKS 集群列表或缺少集群信息（如 VPC），因此不使用 Pod 识别依据。',
+    ja: 'EKS クラスター一覧を読み取れないか、クラスター情報（VPC など）がないため、Pod 識別の根拠を使用しません。',
+  },
+  'EKS 클러스터 목록이 상한에 도달해 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'The EKS cluster listing reached its limit, so pod identity evidence is not used.', zh: 'EKS 集群列表已达到上限，因此不使用 Pod 识别依据。',
+    ja: 'EKS クラスター一覧が上限に達したため、Pod 識別の根拠を使用しません。',
+  },
+  '연결되지 않은 EKS 클러스터가 있어 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'Some EKS clusters are not connected, so pod identity evidence is not used.', zh: '存在未连接的 EKS 集群，因此不使用 Pod 识别依据。',
+    ja: '未接続の EKS クラスターがあるため、Pod 識別の根拠を使用しません。',
+  },
   '엣지': { en: 'Edges', zh: '边', ja: 'エッジ' },
   '6-pillar 분석': { en: 'Six-pillar analysis', zh: '六大支柱分析', ja: '6つの柱の分析' },
   '운영 우수성': { en: 'Operational excellence', zh: '运营卓越', ja: '運用上の優秀性' },

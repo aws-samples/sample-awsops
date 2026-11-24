@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEntityTopology } from '@/components/topology/TopologyCapability';
 import ServiceTopologyView from '@/components/topology/ServiceTopologyView';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
+import SiteFlowView from '@/components/topology/SiteFlowView';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -244,6 +245,9 @@ function TopologyScope() {
   if (!ready || resetCluster) return null;
   if (enabled && params.get('lens') === 'service') return <ServiceTopologyView key={inventoryScope}
     supported={account === 'self' && scope.regions === '__all__' && scope.includeGlobal} />;
+  // The site view loads its own inventory; mounting it here (not inside ScopedTopologyPage) avoids a second
+  // full inventory load against the shared PG pool.
+  if (params.get('view') === 'site') return <SiteFlowView key={inventoryScope} inventoryScope={inventoryScope} />;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
@@ -701,6 +705,9 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
             {entitiesEnabled && <Link href="/topology?lens=service" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]">{tt('통합 서비스 그래프')}</Link>}
+            <Link href="/topology?view=site" scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+              {tt('사이트 흐름 →')}
+            </Link>
             <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('서비스 + 네트워크 →')}
             </Link>
