@@ -96,9 +96,20 @@ export type FlowLoad = {
   incomplete: boolean;             // any interactive type had an unstable sweep
 };
 
+export interface FlowLoadOptions {
+  /** Resolve pod IPs on clusters in the selected accounts/regions (site view only). */
+  eksScope?: boolean;
+}
+
 // `entitiesEnabled` is forwarded to fetchEksIpMap (the page reads it from useEntityTopology).
-export async function loadFlowInput(inventoryScope: string, signal: AbortSignal, entitiesEnabled = false): Promise<FlowLoad> {
+// By default only the host scope enumerates EKS: the /topology flow view's contract is that a
+// member or all-account load is `configurationOnly` (target owners carry `eks_not_enumerated`),
+// and its unscoped listing would cover host clusters only. `eksScope` opts a caller into the
+// scoped listing for any account selection; the result then carries enumerated regions instead.
+export async function loadFlowInput(inventoryScope: string, signal: AbortSignal, entitiesEnabled = false,
+  options: FlowLoadOptions = {}): Promise<FlowLoad> {
   const account = new URLSearchParams(inventoryScope).get('accounts') || 'self';
+  const enumerated = options.eksScope === true || account === 'self';
   const read = async (type: FetchedType): Promise<ReadResult> => {
     try { return { ...await fetchType(type, inventoryScope, signal), readFailed: false, error: '' }; }
     catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
@@ -118,7 +129,8 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
   };
   const [, eks] = await Promise.all([
     Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-    account === 'self' ? fetchEksIpMap(signal, entitiesEnabled) : Promise.resolve(null),
+    options.eksScope ? fetchEksIpMap(signal, entitiesEnabled, inventoryScope)
+      : account === 'self' ? fetchEksIpMap(signal, entitiesEnabled) : Promise.resolve(null),
   ]);
   const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
   const failed = results.filter(result => result.readFailed);
@@ -132,7 +144,7 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
   const input: FlowInput = { ipResolved: eks?.map, ownershipRead: {
     targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
     eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
-    ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
+    ...(enumerated ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
     // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
     ownerIncomplete: [...OWNER_TYPES.filter(ownerIssue), ...SAVED_GRAPH_ONLY_OWNER_TYPES],
   } };

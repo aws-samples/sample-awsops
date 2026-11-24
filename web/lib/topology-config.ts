@@ -18,11 +18,22 @@ export interface EksIpResolution {
 }
 const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
   ({ map: {}, blockedScopes: [], coveredRegions: [], globalUnknown: true, status: 'unavailable', reasons: [reason] });
-type Cluster = { name: string; arn?: string; accountId?: string; access?: string; region?: string; vpcId?: string };
+type Cluster = { id?: string; name: string; arn?: string; accountId?: string; access?: string; region?: string; vpcId?: string };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 const validRegion = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9-]{1,64}$/.test(value);
+const SCOPE_KEYS = ['accounts', 'regions', 'includeGlobal'] as const;
+/** Only the listing scope keys reach /api/eks; anything else in the page scope is dropped. */
+function eksListUrl(scopeQuery: string): string {
+  const source = new URLSearchParams(scopeQuery), query = new URLSearchParams();
+  for (const key of SCOPE_KEYS) { const value = source.get(key); if (value !== null) query.set(key, value); }
+  return query.size ? `/api/eks?${query}` : '/api/eks';
+}
+// A multi-target listing answers 200 with surviving clusters plus per-target `errors` that carry
+// a `reason`. Survivors cannot certify their regions, so only the reason-less all-region
+// discovery note (getEksScope) is tolerated, and it still withholds bindings.
+const discoveryNote = (entry: unknown) => isRecord(entry) && entry.reason === undefined && entry.region === '__all__';
 const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
   keys.every(key => row[key] == null || typeof row[key] === 'string');
 
@@ -63,7 +74,10 @@ export function inventoryEvidence(
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod in a known active phase can establish ownership; conflicting references also
 // disqualify the pod fallback. PodRow.status is the normalized Kubernetes status.phase.
-export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = false): Promise<EksIpResolution> {
+//
+// `scopeQuery` (the page inventory scope) widens the listing to the selected member accounts and
+// regions; without it the server lists host clusters in the deployment region only.
+export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = false, scopeQuery = ''): Promise<EksIpResolution> {
   const fail = (reason?: EksIpResolution['reasons'][number]): EksIpResolution => ({
     ...unavailable(reason), ...(includeBindings ? {bindingRead:{status:'withheld' as const,reasons:[reason ?? 'cluster_unreadable']}} : {}),
   });
@@ -77,15 +91,20 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
   let listHasErrors = false;
   try {
     if (signal?.aborted) return fail();
-    const response = await fetch('/api/eks', { signal });
+    const listUrl = eksListUrl(scopeQuery), scoped = listUrl !== '/api/eks';
+    const response = await fetch(listUrl, { signal });
     const list = response.ok ? await response.json() : null;
     if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return fail();
     if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return fail();
     // The current API returns at most 25 descriptors and reports truncation.
     if (list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean')
       || (list.truncated !== false && list.clusters.length >= 25)) return fail('cluster_limit_possible');
-    listHasErrors = list.status === 'partial' || (list.errors !== undefined && (!Array.isArray(list.errors) || list.errors.length > 0));
+    if (list.errors !== undefined && (!Array.isArray(list.errors) || !list.errors.every(discoveryNote))) return fail();
+    listHasErrors = list.status === 'partial' || (list.errors !== undefined && list.errors.length > 0);
     const clusters = list.clusters as Cluster[];
+    // Member and non-default-region rows are addressed by their listed id (full ARN); a bare
+    // name would be read as a host deployment-region cluster, so scoped rows require it.
+    if (scoped ? !clusters.every(c => nonempty(c.id)) : clusters.some(c => c.id !== undefined && !nonempty(c.id))) return fail();
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return fail();
     if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return fail();
     coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
@@ -102,7 +121,7 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
       const get = async (kind: string) => {
         try {
           if (signal?.aborted) return null;
-          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`, { signal });
+          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.id ?? cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
           if (kind === 'pods' && typeof d?.generatedAt === 'string' && Number.isFinite(Date.parse(d.generatedAt))) podReadAt = Date.parse(d.generatedAt);
           if (includeBindings && (d?.status === 'partial' || d?.truncated === true)) bindingGaps.add('binding_read_incomplete');

@@ -105,6 +105,33 @@ describe('loadFlowInput', () => {
     expect(r.input.ownershipRead?.configurationOnly).toBe(true);
   });
 
+  it('keeps the default self-only EKS call exactly as before', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => page([])));
+    const self = scope.replace(ACCOUNT, 'self');
+    await loadFlowInput(self, new AbortController().signal, true);
+    expect(fetchEksIpMap).toHaveBeenCalledWith(expect.any(AbortSignal), true);
+    expect(vi.mocked(fetchEksIpMap).mock.calls[0]).toHaveLength(2);
+  });
+
+  it.each([ACCOUNT, `${ACCOUNT},111111111111`, '__all__'])('with eksScope resolves pods in %s through the scoped listing', async accounts => {
+    vi.stubGlobal('fetch', vi.fn(async () => page([])));
+    const scoped = scope.replace(ACCOUNT, encodeURIComponent(accounts));
+    const r = await loadFlowInput(scoped, new AbortController().signal, true, { eksScope: true });
+    expect(fetchEksIpMap).toHaveBeenCalledTimes(1);
+    expect(fetchEksIpMap).toHaveBeenCalledWith(expect.any(AbortSignal), true, scoped);
+    expect(r.input.ownershipRead?.configurationOnly).toBeUndefined();
+    expect(r.input.ownershipRead?.eksRegions).toEqual(['ap-northeast-2']);
+    expect(r.input.ownershipRead?.eksUnknown).toBe(false);
+  });
+
+  it('keeps configuration-only for non-self scopes unless eksScope is requested', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => page([])));
+    const r = await loadFlowInput(scope, new AbortController().signal, true, {});
+    expect(fetchEksIpMap).not.toHaveBeenCalled();
+    expect(r.input.ownershipRead?.configurationOnly).toBe(true);
+    expect(r.input.ownershipRead?.eksRegions).toBeUndefined();
+  });
+
   it('reports failed reads and allFailed when every type errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }) as Response));
     const r = await loadFlowInput(scope, new AbortController().signal);
