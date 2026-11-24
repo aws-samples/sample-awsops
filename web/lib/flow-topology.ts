@@ -32,11 +32,28 @@ const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map(str) : []);
 export type FlowKind = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'target' | 'waf' | 'origin' | 'more' | 'apigw' | 'lambda';
 export type Confidence = 'observed' | 'inferred';
 export interface FlowNode { id: string; kind: FlowKind; label: string; meta?: Record<string, unknown> }
-export interface FlowEdge { id: string; source: string; target: string; confidence: Confidence; label?: string }
+export interface FlowEdge { id: string; source: string; target: string; confidence: Confidence; label?: string;
+  /** CloudFront origins[].Id values this CloudFront→origin edge was built from (merged on dedup). */
+  originIds?: string[];
+  /** Per origin Id: the confidence of THAT origin's resolution (the weaker one wins on dedup). The edge's own
+   *  `confidence` stays first-seen, so a direct and a Route53-chain origin merged onto one LB keep apart here. */
+  originConfidence?: Record<string, Confidence>;
+  /** ALB→TG edges: the forward listener rules reaching this TG (structured form of `label`), followed by the LB's
+   *  redirect/fixed-response rules on the same listener and its forward rules to unsynced TGs (both `other: true`;
+   *  weight-0 targets of a weighted forward are not forward targets). A single catch-all `other` rule when the LB
+   *  forwards nowhere, or its rule order is unknown while it can answer requests itself. Absent when the LB has no
+   *  synced rules, another TG of it has forward rules but this one has none, or its rule order is otherwise unknown
+   *  (an unparseable priority, forward rules on more than one listener). */
+  rules?: FlowRule[];
+  /** ALB→TG edges: every synced forward rule naming this TG gives it weight 0, so it receives no requests. */
+  receivesNothing?: boolean }
+/** One ALB listener rule: path-pattern/host-header Values; `other` = any other condition (or one without Values). */
+export interface FlowRule { priority: number | 'default'; paths: string[]; hosts: string[]; other: boolean }
 export interface FlowGraph {
   nodes: FlowNode[]; edges: FlowEdge[];
   /** Complete ordered membership by original target node ID; never persisted in node.meta. */
-  targetMembers?: Record<string, { id: string; pod?: string; namespace?: string }[]>;
+  /** `workload` = the member's own owner-derived workload name (EKS members), never the group's. */
+  targetMembers?: Record<string, { id: string; pod?: string; namespace?: string; workload?: string }[]>;
 }
 
 export interface FlowInput {
@@ -182,6 +199,43 @@ function lbArnFromListener(uri: string): string | null {
   return uri.replace(':listener/', ':loadbalancer/').replace(/\/[^/]+$/, '');
 }
 
+/** A TG row's load_balancer_arns: an array of plain ARN strings (not objects), or its JSON string. */
+function tgLbArns(t: Row): string[] {
+  const v = t.load_balancer_arns;
+  if (Array.isArray(v)) return (v as unknown[]).map(str);
+  if (typeof v === 'string' && v.trim().startsWith('[')) {
+    try { const p = JSON.parse(v); return Array.isArray(p) ? (p as unknown[]).map(str) : []; } catch { return []; }
+  }
+  return [];
+}
+
+/** A jsonb array (or its JSON string); null when it is present but not an array (unreadable). */
+function arrayOrNull(v: unknown): Row[] | null {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v as Row[];
+  if (typeof v !== 'string') return null;
+  try { const p = JSON.parse(v); return Array.isArray(p) ? p : null; } catch { return null; }
+}
+/** ELBv2 caps a path-pattern/host-header value at 128 characters; a longer one is unreadable (never compiled). */
+const MAX_RULE_VALUE = 128;
+
+/** Path-pattern/host-header Values of one listener-rule row; any other (or unreadable) condition sets `other`. */
+function parseRule(r: Row, priority: FlowRule['priority']): FlowRule {
+  const rule: FlowRule = { priority, paths: [], hosts: [], other: false };
+  const conditions = arrayOrNull(r.conditions);
+  if (!conditions || (priority !== 'default' && !conditions.length)) rule.other = true; // unreadable or condition-less non-default
+  for (const c of conditions ?? []) {
+    const field = str(c.Field);
+    const config = field === 'path-pattern' ? c.PathPatternConfig : field === 'host-header' ? c.HostHeaderConfig : undefined;
+    const values = ((config as Row | undefined)?.Values) ?? c.Values;
+    const ok = (field === 'path-pattern' || field === 'host-header') && Array.isArray(values) && values.length > 0
+      && values.every((v) => typeof v === 'string' && v !== '' && v.length <= MAX_RULE_VALUE);
+    if (!ok) { rule.other = true; continue; }
+    (field === 'path-pattern' ? rule.paths : rule.hosts).push(...(values as string[]));
+  }
+  return rule;
+}
+
 export function buildFlowGraph(input: FlowInput): FlowGraph {
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
@@ -196,15 +250,22 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   };
   // label (optional): L7 routing detail on an edge — ALB path/host + port, or API GW route_key.
   // Edges dedup by source->target, so a 2nd edge between the same pair only adds its label.
-  const addEdge = (source: string, target: string, confidence: Confidence = 'observed', label?: string) => {
+  const addEdge = (source: string, target: string, confidence: Confidence = 'observed', label?: string, originId?: string) => {
     if (!ids.has(source) || !ids.has(target)) return; // both endpoints must be real nodes
     const id = `${source}->${target}`;
     if (edgeIds.has(id)) {
-      if (label) { const e = edges.find((x) => x.id === id); if (e) e.label = e.label ? `${e.label} | ${label}` : label; }
+      const e = (label || originId) ? edges.find((x) => x.id === id) : undefined;
+      if (e && label) e.label = e.label ? `${e.label} | ${label}` : label;
+      if (e && originId && !e.originIds?.includes(originId)) e.originIds = [...(e.originIds ?? []), originId];
+      if (e && originId) {
+        const prev = e.originConfidence && Object.hasOwn(e.originConfidence, originId) ? e.originConfidence[originId] : undefined;
+        e.originConfidence = { ...e.originConfidence, [originId]: prev === 'inferred' ? 'inferred' : confidence };
+      }
       return;
     }
     edgeIds.add(id);
-    edges.push({ id, source, target, confidence, ...(label ? { label } : {}) });
+    edges.push({ id, source, target, confidence, ...(label ? { label } : {}),
+      ...(originId ? { originIds: [originId], originConfidence: { [originId]: confidence } } : {}) });
   };
 
   // 1) nodes first so edge endpoint checks resolve.
@@ -302,6 +363,100 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
     }
   }
 
+  // Structured form of the same rules (lbArn|tgArn → rules) for path matching. Kept apart from the label loop above so
+  // labels stay byte-identical. Rule order is only known within one listener, and the listener a request arrives on is
+  // assumed to be the single forwarding one (Route 53-direct and VPC-origin entries are taken as HTTPS; CloudFront's
+  // OriginProtocolPolicy is not used to pick a listener). A listener without forward rules is ignored only when every
+  // one of its rules is a redirect to HTTPS (the :80 → HTTPS redirect, which lands back on the forwarding listener).
+  // A redirect/fixed-response rule on the forwarding listener answers the request at the LB, so it is appended to every
+  // TG edge with forward rules as an undecidable (`other`) rule; a TG edge without forward rules stays rule-less
+  // (partial rule data). A listener is keyed by `listener_arn`, else port; a rule with neither has an unknown listener
+  // (never ignorable). The LB's rule order is unknown when its forward rules span more than one listener or one of
+  // them has an unknown listener, an evaluated rule has an unparseable priority, or a non-ignorable listener has no
+  // forward rule. Such an LB gets no rules — unless it can answer requests itself (a non-forward rule that is not an
+  // ignorable HTTPS redirect): then every TG edge gets one catch-all undecidable rule, so even a lone TG is not
+  // claimed. An LB with no forward rule gets that catch-all too, unless all its rules are ignorable HTTPS redirects.
+  const rulesByLbTg = new Map<string, FlowRule[]>();
+  const unorderedLbs = new Set<string>();
+  const lbCatchAll = new Set<string>(); // LBs whose every TG edge carries the catch-all undecidable rule
+  const forwardListeners = new Map<string, Set<string>>(); // lbArn → listener keys carrying forward rules
+  // lbArn → its redirect/fixed-response rules (rule null = unparseable priority; https = a redirect to HTTPS).
+  const nonForward = new Map<string, { listener: string; rule: FlowRule | null; https: boolean }[]>();
+  const forwardTgs = new Map<string, Set<string>>(); // lbArn → every TG ARN a forward rule sends to (synced or not)
+  const zeroWeightTgs = new Map<string, Set<string>>(); // lbArn → TG ARNs some weighted forward gives weight 0
+  for (const r of input.alb_listener_rule ?? []) {
+    const lbArn = str(r.load_balancer_arn); if (!lbArn) continue;
+    const listener = str(r.listener_arn) || (str(r.port) ? `port:${str(r.port)}` : '');
+    const tgArns = new Set<string>();
+    let weightUnreadable = false;
+    const actions = arrayOrNull(r.actions) ?? []; // unreadable actions forward nowhere known: an undecidable rule
+    for (const a of actions) {
+      const weighted = arr((a.ForwardConfig as Row)?.TargetGroups);
+      // A weighted forward sends nothing to a weight-0 target (the number 0 or the string "0"); an absent Weight keeps
+      // the target; any other non-positive-integer Weight keeps it too but makes the rule undecidable.
+      // ForwardConfig supersedes the top-level TargetGroupArn.
+      if (weighted.length) {
+        for (const tg of weighted) {
+          if (!tg.TargetGroupArn) continue;
+          const w = tg.Weight, arn = str(tg.TargetGroupArn);
+          if (w === 0 || w === '0') { (zeroWeightTgs.get(lbArn) ?? zeroWeightTgs.set(lbArn, new Set()).get(lbArn)!).add(arn); continue; }
+          if (!(w == null || (typeof w === 'number' && Number.isSafeInteger(w) && w > 0) || (typeof w === 'string' && /^[1-9]\d*$/.test(w)))) {
+            weightUnreadable = true;
+          }
+          tgArns.add(arn);
+        }
+      } else if (a.TargetGroupArn) tgArns.add(str(a.TargetGroupArn));
+    }
+    const rawPriority = str(r.priority).trim();
+    const n = /^\d+$/.test(rawPriority) ? Number(rawPriority) : NaN;
+    const priority: FlowRule['priority'] | null = r.is_default === true || rawPriority.toLowerCase() === 'default' ? 'default'
+      : Number.isSafeInteger(n) && n > 0 ? n : null;
+    if (!tgArns.size) {
+      const https = actions.length > 0 && actions.some((a) => str(a.Type) === 'redirect' && str((a.RedirectConfig as Row)?.Protocol) === 'HTTPS')
+        && actions.every((a) => ['redirect', 'authenticate-oidc', 'authenticate-cognito'].includes(str(a.Type)));
+      const list = nonForward.get(lbArn) ?? nonForward.set(lbArn, []).get(lbArn)!;
+      list.push({ listener, rule: priority === null ? null : { ...parseRule(r, priority), other: true }, https });
+      continue;
+    }
+    (forwardListeners.get(lbArn) ?? forwardListeners.set(lbArn, new Set()).get(lbArn)!).add(listener);
+    for (const tgArn of tgArns) (forwardTgs.get(lbArn) ?? forwardTgs.set(lbArn, new Set()).get(lbArn)!).add(tgArn);
+    if (priority === null) { unorderedLbs.add(lbArn); continue; }
+    const rule = parseRule(r, priority);
+    if (weightUnreadable) rule.other = true;
+    for (const tgArn of tgArns) {
+      const key = `${lbArn}|${tgArn}`;
+      (rulesByLbTg.get(key) ?? rulesByLbTg.set(key, []).get(key)!).push({ ...rule, paths: [...rule.paths], hosts: [...rule.hosts] });
+    }
+  }
+  // A forward rule to a TG with no synced LB→TG edge sends requests somewhere the graph does not show: its rules
+  // leave the per-TG lists and act like a non-forward rule (undecidable when it matches) on the synced TG edges.
+  const syncedLbTg = new Set<string>();
+  for (const t of input.tg ?? []) for (const lbArn of tgLbArns(t)) syncedLbTg.add(`${lbArn}|${str(t.resource_id)}`);
+  const unsyncedRules = new Map<string, FlowRule[]>();
+  for (const [key, list] of [...rulesByLbTg]) {
+    if (syncedLbTg.has(key)) continue;
+    const lbArn = key.slice(0, key.lastIndexOf('|'));
+    const into = unsyncedRules.get(lbArn) ?? unsyncedRules.set(lbArn, []).get(lbArn)!;
+    for (const x of list) into.push({ ...x, other: true });
+    rulesByLbTg.delete(key);
+  }
+  for (const lbArn of new Set([...forwardListeners.keys(), ...nonForward.keys()])) {
+    const fwd = forwardListeners.get(lbArn) ?? new Set<string>(), answers = nonForward.get(lbArn) ?? [];
+    const unsynced = [...(forwardTgs.get(lbArn) ?? [])].some((tg) => !syncedLbTg.has(`${lbArn}|${tg}`));
+    // Non-forward rules that matter: all but those on a known, non-forwarding listener that only redirects to HTTPS.
+    const byListener = new Map<string, typeof answers>();
+    for (const x of answers) (byListener.get(x.listener) ?? byListener.set(x.listener, []).get(x.listener)!).push(x);
+    const relevant = [...byListener].filter(([l, xs]) => l === '' || fwd.has(l) || !xs.every((x) => x.https)).flatMap(([, xs]) => xs);
+    if (!fwd.size) { if (relevant.length) lbCatchAll.add(lbArn); continue; } // the synced rules forward nowhere
+    if (fwd.size > 1 || fwd.has('') || relevant.some((x) => !fwd.has(x.listener) || !x.rule)) unorderedLbs.add(lbArn);
+    if (unorderedLbs.has(lbArn)) { if (relevant.length || unsynced) lbCatchAll.add(lbArn); continue; }
+    const extra = [...relevant.map((x) => x.rule!), ...(unsyncedRules.get(lbArn) ?? [])];
+    if (!extra.length) continue;
+    const own = [...rulesByLbTg].filter(([key]) => key.slice(0, key.lastIndexOf('|')) === lbArn);
+    if (!own.length) { lbCatchAll.add(lbArn); continue; } // every forward rule goes to an unsynced TG
+    for (const [, list] of own) for (const x of extra) list.push({ ...x, paths: [...x.paths], hosts: [...x.hosts] });
+  }
+
   // L7 API GW route label: integrationId → route_key(s). route.target = 'integrations/<id>'.
   // keyed by api_id:integration_id — integration ids are API-scoped, so a bare id can collide across APIs.
   const routeKeyByIntegration = new Map<string, string>();
@@ -392,7 +547,8 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
     // clean record name (r.resource_id is the composite "name TYPE"); used for label + alias match.
     const recName = dns(r.name) || dns(r.resource_id);
     const downstream =
-      cfByDomain.get(targetDns) || lbByDns.get(targetDns) ||  // alias → CF / LB
+      // CF domains carry no dualstack prefix; ELB ALIAS targets usually do (`dualstack.<lb dns>.`).
+      cfByDomain.get(targetDns) || lbByDns.get(bareDns(aliasT.DNSName)) ||  // alias → CF / LB
       cfByAlias.get(recName);                                 // record name == a CF custom-domain alias
     if (!downstream) continue;
     const rid = `r53:${str(r.resource_id) || recName}`;
@@ -408,19 +564,20 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
 
     arr(c.origins).forEach((o, i) => {
       const domain = str(o.DomainName);
+      const originId = str(o.Id) || undefined; // joins a cache behavior's targetOriginId to this edge
       const lbId = lbByDns.get(domain.toLowerCase());
-      if (lbId) { addEdge(cfId, lbId); return; }
+      if (lbId) { addEdge(cfId, lbId, 'observed', undefined, originId); return; }
       // API Gateway execute-api origin → apigw node (ONLY when the api is synced; otherwise fall
       // through so the origin is still represented as an honest unresolved node, not dropped).
       const apiId = executeApiId(domain);
-      if (apiId && apigwIds.has(apiId)) { addEdge(cfId, `apigw:${apiId}`); return; }
+      if (apiId && apigwIds.has(apiId)) { addEdge(cfId, `apigw:${apiId}`, 'observed', undefined, originId); return; }
       // CloudFront VPC origin: this specific origin (distribution id + its domain) → backing ALB/NLB
       // via the SDK-sourced cloudfront_vpc_origin. Domain-scoped so a co-resident external origin
       // on the same distribution is NOT mislinked.
       const voArns = voByDistDomain.get(`${str(c.resource_id)}|${domain}`);
       if (voArns) {
         let linked = false;
-        for (const arn of voArns) { const id = lbByArn.get(arn); if (id) { addEdge(cfId, id); linked = true; } }
+        for (const arn of voArns) { const id = lbByArn.get(arn); if (id) { addEdge(cfId, id, 'observed', undefined, originId); linked = true; } }
         if (linked) return;
         // Known VPC origin but backing LB not synced: it is NOT reached via public DNS, so do NOT
         // fall through to the Route53 public-resolution path below (that would draw a misleading
@@ -442,7 +599,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           const lid = lbByDns.get(term);
           // Draw the edge ONLY to a synced, internet-facing LB (a standard custom origin can't reach
           // an internal LB). DNS-chain-derived → 'inferred' (dashed). Otherwise surface the target.
-          if (lid && internetFacingLbDns.has(term)) { addEdge(cfId, lid, 'inferred'); return; }
+          if (lid && internetFacingLbDns.has(term)) { addEdge(cfId, lid, 'inferred', undefined, originId); return; }
           resolvedTarget = term;
         }
       }
@@ -462,7 +619,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         const label = resolvedTarget ? `${domain} → ${resolvedTarget}` : `${domain || 'origin'}${vpc}`;
         addNode(oid, 'origin', label, { unresolved: true, ...(resolvedTarget ? { resolvedTarget } : {}) });
       }
-      addEdge(cfId, oid);
+      addEdge(cfId, oid, 'observed', undefined, originId);
     });
   }
 
@@ -495,15 +652,21 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   // 4) ALB/NLB → TG (via load_balancer_arns) and TG → targets (target_health_descriptions).
   for (const t of input.tg ?? []) {
     const tgId = `tg:${str(t.resource_id)}`;
-    // load_balancer_arns is an array of plain ARN strings (not objects) → normalize separately.
-    const lbArns = Array.isArray(t.load_balancer_arns)
-      ? (t.load_balancer_arns as unknown[]).map(str)
-      : (typeof t.load_balancer_arns === 'string' && t.load_balancer_arns.trim().startsWith('[')
-          ? (() => { try { return (JSON.parse(t.load_balancer_arns as string) as unknown[]).map(str); } catch { return []; } })()
-          : []);
+    const lbArns = tgLbArns(t);
     for (const lbArn of lbArns) {
       const lbId = lbByArn.get(lbArn);
       if (lbId) addEdge(lbId, tgId, 'observed', ruleLabelByLbTg.get(`${lbArn}|${str(t.resource_id)}`));
+      const rules: FlowRule[] | undefined = !lbId ? undefined
+        : lbCatchAll.has(lbArn) ? [{ priority: 'default', paths: [], hosts: [], other: true }]
+        : unorderedLbs.has(lbArn) ? undefined : rulesByLbTg.get(`${lbArn}|${str(t.resource_id)}`);
+      const e = rules ? edges.find((x) => x.id === `${lbId}->${tgId}`) : undefined;
+      if (e && !e.rules) e.rules = rules;
+      // A synced TG that forward rules only ever give weight 0 receives no requests (blue/green standby).
+      if (lbId && !rules && !lbCatchAll.has(lbArn) && zeroWeightTgs.get(lbArn)?.has(str(t.resource_id))
+        && !forwardTgs.get(lbArn)?.has(str(t.resource_id))) {
+        const z = edges.find((x) => x.id === `${lbId}->${tgId}`);
+        if (z && !z.rules) z.receivesNothing = true;
+      }
     }
 
     // GROUP targets by resolved workload: an ASG / EKS replicas / ECS tasks behind a TG are ONE
@@ -512,7 +675,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
     // per-target shape (label/id/port) so 1:1 cases render exactly as before.
     const thds = arr(t.target_health_descriptions);
     const ttype = str(t.target_type);
-    interface Grp { key: string; groupLabel: string; resolved: string; meta: Record<string, unknown>; members: { id: string; port: unknown; health: string; label: string; pod?: string; namespace?: string }[] }
+    interface Grp { key: string; groupLabel: string; resolved: string; meta: Record<string, unknown>; members: { id: string; port: unknown; health: string; label: string; pod?: string; namespace?: string; workload?: string }[] }
     const groups = new Map<string, Grp>();
     thds.forEach((thd, i) => {
       const target = (thd.Target && typeof thd.Target === 'object') ? (thd.Target as Row) : {};
@@ -578,7 +741,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }
       g.members.push({ id: targetId, port: target.Port ?? null, health: str(health.State) || 'unknown', label: mlabel,
-        ...(resolved === 'eks' ? { pod: str(meta.pod), namespace: str(meta.namespace) } : {}) });
+        ...(resolved === 'eks' ? { pod: str(meta.pod), namespace: str(meta.namespace), workload: str(meta.workload) } : {}) });
     });
     for (const g of groups.values()) {
       const total = g.members.length;
@@ -587,8 +750,8 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       const aggHealth = total === healthy ? 'healthy' : g.members.some((m) => m.health === 'unhealthy') ? 'unhealthy' : (g.members.find((m) => m.health !== 'healthy')?.health || 'unknown');
       const single = total === 1;
       const nodeId = `target:${str(t.resource_id)}:${g.key}`;
-      if (!Object.hasOwn(targetMembers, nodeId)) targetMembers[nodeId] = g.members.map(({ id, pod, namespace }) => ({
-        id, ...(g.resolved === 'eks' ? { pod, namespace } : {}),
+      if (!Object.hasOwn(targetMembers, nodeId)) targetMembers[nodeId] = g.members.map(({ id, pod, namespace, workload }) => ({
+        id, ...(g.resolved === 'eks' ? { pod, namespace, workload } : {}),
       }));
       addNode(nodeId, 'target', single ? g.members[0].label : `${g.groupLabel} ×${total}`, {
         targetType: ttype,
