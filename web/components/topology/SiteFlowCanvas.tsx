@@ -15,8 +15,11 @@
 //    toggles it on the SAME instance and re-runs fcose with `randomize: false`, seeding revealed nodes at the toggled group's position;
 //  - `theme` / `themeKey` changes only restyle (colours re-read from CSS tokens), never rebuild or re-layout.
 //    `themeKey` is the raw app theme (teal/cobalt/dark): two light themes differ in brand tokens.
-// The container is role="img" with a count summary; the view provides the accessible list fallback.
-import { useEffect, useRef } from 'react';
+//  - a failed dynamic import (e.g. a chunk 404 after a redeploy) or a throw while building the instance renders a
+//    translated role="alert" with a retry that re-runs the init (ServiceGraphCanvas precedent); a role="status"
+//    shows while loading.
+// Only a drawn graph is role="img" with a count summary; the view provides the accessible list fallback.
+import { useEffect, useRef, useState } from 'react';
 import type { Core, ElementDefinition, LayoutOptions, Position } from 'cytoscape';
 import type { SiteFlow, SiteNode } from '@/lib/site-flow';
 import { buildSiteElements, initialExpanded, toggleGroup, zoomLimits } from '@/lib/site-flow-elements';
@@ -105,12 +108,15 @@ export default function SiteFlowCanvas({ flow, theme, themeKey, onSelect }: {
   const expandedRef = useRef<Set<string>>(initialExpanded(flow));
   const knownGroupsRef = useRef<Set<string>>(new Set(flow.groups.map((g) => g.id)));
   const structureRef = useRef<string | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
     let cancelled = false;
     let cy: Core | null = null;
+    setStatus('loading');
     void (async () => {
       const [{ default: cytoscape }, { default: fcose }] = await Promise.all([import('cytoscape'), import('cytoscape-fcose')]);
       if (cancelled) return;
@@ -142,7 +148,15 @@ export default function SiteFlowCanvas({ flow, theme, themeKey, onSelect }: {
         expandedRef.current = toggleGroup(expandedRef.current, id);
         rebuild(cy, (prev) => () => prev.get(id));
       });
-    })();
+      setStatus('ready');
+    })().catch(() => {
+      // Never leave an empty box that reads as "no connections": disclose and offer a retry.
+      cy?.destroy();
+      cy = null;
+      cyRef.current = null;
+      structureRef.current = null;
+      if (!cancelled) setStatus('failed');
+    });
 
     return () => {
       cancelled = true;
@@ -150,7 +164,7 @@ export default function SiteFlowCanvas({ flow, theme, themeKey, onSelect }: {
       cy = null;
       cyRef.current = null;
     };
-  }, []);
+  }, [attempt]);
 
   useEffect(() => {
     flowRef.current = flow;
@@ -207,12 +221,25 @@ export default function SiteFlowCanvas({ flow, theme, themeKey, onSelect }: {
     cyRef.current?.style(tokenStyle());
   }, [theme, themeKey]);
 
+  const ready = status === 'ready';
   return (
-    <div
-      ref={containerRef}
-      role="img"
-      aria-label={`${tt('사이트 흐름 그래프')} · ${tt('노드')} ${flow.nodes.length} · ${tt('엣지')} ${flow.edges.length}`}
-      className="h-[560px] w-full rounded-lg border border-ink-100 bg-card"
-    />
+    <div className="relative h-[560px] w-full rounded-lg border border-ink-100 bg-card">
+      <div
+        ref={containerRef}
+        {...(ready ? { role: 'img', 'aria-label': `${tt('사이트 흐름 그래프')} · ${tt('노드')} ${flow.nodes.length} · ${tt('엣지')} ${flow.edges.length}` }
+          : { 'aria-hidden': true })}
+        className="h-full w-full"
+      />
+      {status === 'loading' && (
+        <div role="status" className="absolute inset-0 flex items-center justify-center text-[12px] text-ink-500">{tt('그래프 배치 중…')}</div>
+      )}
+      {status === 'failed' && (
+        <div role="alert" className="absolute inset-0 flex flex-col items-start gap-2 p-6 text-sm text-ink-600">
+          <p>{tt('사이트 흐름 그래프를 표시하지 못했습니다.')}</p>
+          <button type="button" onClick={() => setAttempt((a) => a + 1)}
+            className="rounded-md border border-ink-200 bg-card px-2 py-1 text-xs">{tt('다시 시도')}</button>
+        </div>
+      )}
+    </div>
   );
 }

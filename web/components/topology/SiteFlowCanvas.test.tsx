@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SiteFlow } from '@/lib/site-flow';
 
@@ -51,10 +51,16 @@ const h = vi.hoisted(() => {
     return cy;
   };
   const factory = Object.assign(vi.fn(make), { use: vi.fn() });
-  return { instances, factory, fcose: { fcose: true } };
+  return { instances, factory, fcose: { fcose: true }, failImport: 0 };
 });
 vi.mock('cytoscape', () => ({ default: h.factory }));
-vi.mock('cytoscape-fcose', () => ({ default: h.fcose }));
+// `failImport` > 0 makes the next dynamic import of cytoscape-fcose reject (like a chunk 404 after a redeploy).
+vi.mock('cytoscape-fcose', () => ({
+  get default() {
+    if (h.failImport > 0) { h.failImport -= 1; throw new Error('Loading chunk failed'); }
+    return h.fcose;
+  },
+}));
 
 import SiteFlowCanvas from './SiteFlowCanvas';
 
@@ -103,7 +109,7 @@ async function mounted(n = 1) {
 }
 
 afterEach(cleanup);
-beforeEach(() => { h.instances.length = 0; h.factory.mockClear(); document.documentElement.style.cssText = ''; });
+beforeEach(() => { h.instances.length = 0; h.factory.mockClear(); h.failImport = 0; document.documentElement.style.cssText = ''; });
 
 describe('SiteFlowCanvas', () => {
   it('creates one fcose-laid-out instance with compound parents and collapsed (+N) groups', async () => {
@@ -267,10 +273,34 @@ describe('SiteFlowCanvas', () => {
     expect(h.factory).toHaveBeenCalledTimes(1);
   });
 
-  it('exposes an image role with a node/edge count summary', () => {
+  it('exposes an image role with a node/edge count summary once the graph is drawn (a status while loading)', async () => {
     render(<SiteFlowCanvas flow={flow()} theme="light" />);
-    const img = screen.getByRole('img');
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.getByRole('status')).toBeTruthy();
+    await mounted();
+    const img = await screen.findByRole('img');
     expect(img.getAttribute('aria-label')).toContain('7');
     expect(img.getAttribute('aria-label')).toContain('6');
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('a failed dynamic import shows an alert with a retry (no graph claimed); retry draws the canvas', async () => {
+    h.failImport = 1;
+    render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('사이트 흐름 그래프를 표시하지 못했습니다.');
+    expect(screen.queryByRole('img')).toBeNull(); // the empty box never claims nodes/edges
+    expect(h.factory).not.toHaveBeenCalled();
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }));
+    await mounted();
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect((await screen.findByRole('img')).getAttribute('aria-label')).toContain('7');
+  });
+
+  it('a throw while building the instance is caught the same way', async () => {
+    h.factory.mockImplementationOnce(() => { throw new Error('bad style'); });
+    render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    expect((await screen.findByRole('alert')).textContent).toContain('사이트 흐름 그래프를 표시하지 못했습니다.');
+    expect(screen.queryByRole('img')).toBeNull();
   });
 });

@@ -42,6 +42,7 @@ export const TERMS: Record<string, Pair> = {
     zh: '当前范围无法显示服务地图。请选择主账户、所有区域并包含全局资源。',
     ja: 'この範囲ではサービスマップを表示できません。ホストアカウント、全リージョン、グローバルリソースを選択してください。',
   },
+  '사이트 흐름 그래프를 표시하지 못했습니다.': { en: 'Could not display the site flow graph.', zh: '无法显示站点流量图。', ja: 'サイトフローグラフを表示できませんでした。' },
   '사이트 흐름 그래프': { en: 'Site flow graph', zh: '站点流量图', ja: 'サイトフローグラフ' },
   // Site view (SiteFlowView): inputs, chrome, one notice per SiteGap and per withheld-binding reason.
   '사이트 흐름': { en: 'Site flow', zh: '站点流量', ja: 'サイトフロー' },
