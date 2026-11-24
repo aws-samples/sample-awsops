@@ -298,7 +298,7 @@ h3 {
 .stages dl { padding: .8em; margin: 0; }
 .stages dt, .comparison figcaption { font-weight: 700; color: var(--accent); }
 .stages dd { margin: .2em 0 .8em; }
-.comparison { margin: 0; }
+.comparison { margin: 0; font-size: clamp(19px, 1.4vw, 22px); }
 .comparison ul { list-style: none; padding: 0; }
 .comparison li { display: grid; grid-template-columns: 2fr 1fr; gap: .2rem .8rem; padding: .55em 0; }
 .comparison meter, .comparison p { margin: 0; width: 100%; grid-column: 1 / -1; }

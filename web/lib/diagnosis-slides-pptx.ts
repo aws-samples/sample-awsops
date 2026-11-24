@@ -238,14 +238,14 @@ function comparison(
       showValue: true,
       dataLabelPosition: 'outEnd',
       dataLabelFormatCode: format,
-      valAxisLabelFormatCode: format,
+      valAxisLabelFormatCode: visual.unit === '%' ? '0%' : '#,##0',
       valAxisMinVal: 0,
       valAxisMaxVal: Math.max(...values) * 1.3,
       catAxisLabelFontFace: fontFace,
-      catAxisLabelFontSize: 13,
-      valAxisLabelFontSize: 12,
+      catAxisLabelFontSize: 14,
+      valAxisLabelFontSize: 14,
       dataLabelColor: ink,
-      dataLabelFontSize: 13,
+      dataLabelFontSize: 14,
       chartColors: [accent],
     },
   );
@@ -253,8 +253,11 @@ function comparison(
   const slot = (bottom - top - 0.6) / visual.rows.length;
   visual.rows.forEach((r, i) => {
     const y = top + 0.56 + i * slot;
-    text(r[0], 7.65, y, 4.9, 0.35, 16, { bold: true });
-    text(r[2], 7.65, y + 0.39, 4.9, slot - 0.46, 16, { valign: 'top' });
+    const note = r[0] + '　' + r[2];
+    slide.addText([{ text: r[0] + '　', options: { bold: true } }, { text: r[2] }], {
+      x: 7.65, y: y + 0.05, w: 4.9, h: slot - 0.10, margin: 0,
+      fontFace, fontSize: fittedSize(note, 4.9, slot - 0.10, 17), color: ink, fit: 'shrink', valign: 'middle',
+    });
   });
 }
 
