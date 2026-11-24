@@ -110,15 +110,17 @@ def compose(bundle, analysis, invariant, lang):
                 if text:
                     notes.append(view._code(view._scrubbed(text)))
             else:
-                # Keep material qualifiers beside a hypothesis without repeating the collection ledger.
-                qualifiers = []
-                if record.get("fresh") is False:
-                    qualifiers.append(view._SCOPE[lang][2])
-                if coverage.get("sampled") is True or coverage.get("complete") is False:
-                    qualifiers.append({"ko": "관측 표본", "en": "limited scope", "ja": "限定範囲", "zh": "有限范围"}[lang])
-                if qualifiers:
-                    source = view._code(view._scrubbed(record.get("source") or record.get("kind"), "source"))
-                    notes.append(source + " (" + ", ".join(qualifiers) + ")")
+                # Put a concise source, window and material qualification beside the conclusion.
+                # Producer status codes, percentages of rows and the full ledger stay in the appendix.
+                scope.pop("kind", None)
+                ratio = coverage.get("sample_ratio")
+                partial = (coverage.get("sampled") is True or coverage.get("complete") is False
+                           or (type(ratio) in (int, float) and ratio < 1))
+                scope["coverage"] = {"complete": False} if partial else {}
+                source = view._scrubbed(record.get("source") or record.get("kind"), "source")
+                context = view._scope_text(view._scrubbed(scope), lang)
+                if source:
+                    notes.append(view._code(" · ".join(filter(None, [source, context]))))
             # A validated single-resource metrics observation is the code-owned
             # collection statement, never a free-form hypothesis about a different metric.
             refs = f.get("resource_ids", [])
@@ -132,7 +134,10 @@ def compose(bundle, analysis, invariant, lang):
                             and series.get("unit")):
                         notes.append(view._code(f"{name} ({statistic}, {field}) "
                                                 f"{series[field]} {series['unit']}"))
-        return ("\n\n" + copy[1] + " · " + "; ".join(dict.fromkeys(notes))) if notes else ""
+        unique = list(dict.fromkeys(notes))
+        if f["claim"] != "observation" and len(unique) > 2:
+            unique = [*unique[:2], f"+{len(unique) - 2}"]
+        return ("\n\n" + copy[1] + " · " + "; ".join(unique)) if unique else ""
 
     def safe_checks(f):
         return list(dict.fromkeys(text for raw in f.get("prerequisites", [])
