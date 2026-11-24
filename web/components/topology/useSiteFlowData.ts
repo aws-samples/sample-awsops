@@ -8,9 +8,10 @@
 //    the builder walks (HOP_TYPES).
 //  - EKS pod map + bindings: the scoped listing (`eksScope`). An all-region listing returns a discovery note that
 //    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions derived from a COMPLETE
-//    fleet listing: one listing per account over the regions where any account has a connected cluster (see
-//    deriveEksScope; an incomplete fleet fails the EKS read closed). Inventory reads keep the page scope, so no LB/TG row is
-//    dropped. Targets outside those regions stay unresolved (`eks_not_enumerated`).
+//    fleet listing: one listing per account over the explicit page regions, or for an all-region page over the
+//    regions where any account has a connected cluster (see deriveEksScope; an incomplete fleet fails the EKS read
+//    closed). Inventory reads keep the page scope, so no LB/TG row is dropped. Targets outside those regions stay
+//    unresolved (`eks_not_enumerated`).
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
 //    recognized when deriving the EKS scope. The EKS read waits for this lookup (evidence pending meanwhile).
@@ -62,26 +63,30 @@ const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
 export const FLEET_INCOMPLETE_REASON = 'binding_fleet_incomplete';
 
 /**
- * The scope for the EKS read. Explicit page regions pass through unchanged. For an all-region page scope:
- * R = the regions of every CONNECTED fleet cluster in the selected accounts (any account). Each selected account
- * with ANY fleet cluster (any access) in a region of R is listed in exactly those regions (its fleet regions ∩ R),
- * so a not-connected cluster of any account in a region we resolve is always listed and can veto its VPC (e.g. a
- * RAM-shared VPC): fetchEksIpMap then blocks that region|vpc (`binding_scope_blocked`, disclosed). One query per
- * account avoids the server's accounts × regions product (a region one account lacks 403s the whole listing);
- * an account spanning >12 regions fails closed as a truncated listing. Accounts with no fleet cluster in R need no
- * request, except wildcard-scan accounts (fleet `wildcard`), which are listed in all of R. A truncated, errored or failed fleet listing cannot prove which clusters exist: `null` (the caller fails
- * the EKS read closed). No connected cluster in scope keeps the page scope (its all-region note withholds
- * bindings with a disclosed reason).
+ * The scope for the EKS read: one listing per account (the server's accounts × regions product 403s the whole
+ * listing when one account lacks a region, and a single request is capped at 12 targets), over a region set R:
+ * the explicit page regions, or for an all-region page scope the regions of every CONNECTED fleet cluster in the
+ * selected accounts (any account). Each selected account with ANY fleet cluster (any access) in a region of R is
+ * listed in exactly those regions (its fleet regions ∩ R), so a not-connected cluster of any account in a region we
+ * resolve is always listed and can veto its VPC (e.g. a RAM-shared VPC): fetchEksIpMap then blocks that region|vpc
+ * (`binding_scope_blocked`, disclosed). An account spanning >12 regions fails closed as a truncated listing.
+ * Accounts with no fleet cluster in R need no request, except wildcard-scan accounts (fleet `wildcard`), which are
+ * listed in all of R. A truncated, errored or failed fleet listing cannot prove which clusters exist: `null` (the
+ * caller fails the EKS read closed). An empty R (all regions, no connected cluster in scope) or a derivation with
+ * no account to list keeps the page scope: there is nothing to resolve, and the all-region note then withholds
+ * bindings with a disclosed reason (`binding_scope_partial`).
  */
 export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, hostAccount: string | null): string | string[] | null {
-  const q = new URLSearchParams(inventoryScope);
-  if ((q.get('regions') ?? ALL_REGIONS) !== ALL_REGIONS) return inventoryScope;
   if (!fleet || fleet.incomplete) return null;
+  const q = new URLSearchParams(inventoryScope);
+  const pageRegions = q.get('regions') ?? ALL_REGIONS;
   const accounts = q.get('accounts') || 'self';
   const selected = accounts === ALL_ACCOUNTS ? null : new Set(accounts.split(','));
   const inScope = fleet.clusters.filter((c) => nonempty(c.region) && REGION_RE.test(c.region)
     && ownerOf(c, hostAccount) && (!selected || selected.has(ownerOf(c, hostAccount))));
-  const resolving = new Set(inScope.filter((c) => c.access === 'connected').map((c) => c.region!));
+  const resolving = pageRegions === ALL_REGIONS
+    ? new Set(inScope.filter((c) => c.access === 'connected').map((c) => c.region!))
+    : new Set(pageRegions.split(',').filter((r) => REGION_RE.test(r)));
   if (!resolving.size) return inventoryScope;
   const byOwner = new Map<string, Set<string>>();
   for (const c of inScope) {
@@ -95,6 +100,7 @@ export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, host
   for (const owner of fleet.wildcard) {
     if (!selected || selected.has(owner)) byOwner.set(owner, new Set(resolving));
   }
+  if (!byOwner.size) return inventoryScope;
   return [...byOwner.keys()].sort().map((owner) => new URLSearchParams({ accounts: owner,
     regions: [...byOwner.get(owner)!].sort().join(','), includeGlobal: q.get('includeGlobal') ?? '1' }).toString());
 }

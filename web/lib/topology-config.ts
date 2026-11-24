@@ -80,10 +80,11 @@ export function inventoryEvidence(
 //
 // `scopeQuery` (the page inventory scope) widens the listing to the selected member accounts and
 // regions; without it the server lists host clusters in the deployment region only. An array issues one
-// scoped listing per entry (e.g. one per account with only that account's regions, so a region one account
-// lacks never 403s another and each request stays under the server's target cap). Every sub-listing is
-// validated on its own and computes its own coverage with its own `accounts`; any failed, errored or
-// truncated sub-listing fails the whole read. The cluster lists are concatenated (deduped by ARN) BEFORE
+// scoped listing per entry: the site view (deriveEksScope in components/topology/useSiteFlowData.ts) passes
+// one entry per account with only that account's regions, for explicit page regions and all-region pages
+// alike, so a region one account lacks never 403s another and each request stays under the server's
+// 12-target cap. Every sub-listing is validated on its own and computes its own coverage with its own
+// `accounts`; any failed, errored or truncated sub-listing fails the whole read. The cluster lists are concatenated (deduped by ARN) BEFORE
 // the candidate loop, so duplicate-IP vetoes and blocked scopes apply across accounts.
 //
 // Blocked scopes (a not-connected or unreadable cluster's region|vpc) null that scope's map entries. In scoped
