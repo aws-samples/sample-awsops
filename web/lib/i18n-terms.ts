@@ -37,6 +37,8 @@ export const TERMS: Record<string, Pair> = {
     zh: '当前范围无法显示服务地图。请选择主账户、所有区域并包含全局资源。',
     ja: 'この範囲ではサービスマップを表示できません。ホストアカウント、全リージョン、グローバルリソースを選択してください。',
   },
+  '사이트 흐름 그래프': { en: 'Site flow graph', zh: '站点流量图', ja: 'サイトフローグラフ' },
+  '엣지': { en: 'Edges', zh: '边', ja: 'エッジ' },
   '6-pillar 분석': { en: 'Six-pillar analysis', zh: '六大支柱分析', ja: '6つの柱の分析' },
   '운영 우수성': { en: 'Operational excellence', zh: '运营卓越', ja: '運用上の優秀性' },
   '보안': { en: 'Security', zh: '安全性', ja: 'セキュリティ' },

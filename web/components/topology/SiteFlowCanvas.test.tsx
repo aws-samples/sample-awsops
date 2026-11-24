@@ -1,0 +1,215 @@
+// @vitest-environment jsdom
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SiteFlow } from '@/lib/site-flow';
+
+type El = { group?: string; data: Record<string, unknown>; classes?: string; position?: { x: number; y: number } };
+interface FakeCy {
+  opts: Record<string, unknown>; els: El[]; handlers: Map<string, (evt: unknown) => void>;
+  add: ReturnType<typeof vi.fn>; layout: ReturnType<typeof vi.fn>; run: ReturnType<typeof vi.fn>;
+  style: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; minZoom: ReturnType<typeof vi.fn>; maxZoom: ReturnType<typeof vi.fn>;
+  tap(id: string, y?: number): void;
+}
+
+const h = vi.hoisted(() => {
+  const instances: FakeCy[] = [];
+  const make = (opts: Record<string, unknown>): FakeCy => {
+    const run = vi.fn();
+    const cy: FakeCy = {
+      opts, els: [...(opts.elements as El[])], handlers: new Map(), run,
+      add: vi.fn((list: El[]) => { cy.els = [...list]; }),
+      layout: vi.fn(() => ({ run })),
+      style: vi.fn(), destroy: vi.fn(), minZoom: vi.fn(), maxZoom: vi.fn(),
+      // `y` = tap position; every fake body's top edge is at y=50, so the default y=40 is a label-band tap.
+      tap(id, y = 40) {
+        const el = cy.els.find((e) => e.data.id === id);
+        if (!el) throw new Error(`no element ${id}`);
+        cy.handlers.get('tap node')?.({
+          position: { x: 0, y },
+          target: { id: () => id, data: (k: string) => el.data[k], boundingBox: () => ({ x1: 0, y1: 50, x2: 300, y2: 400 }) },
+        });
+      },
+    };
+    Object.assign(cy, {
+      on: (evt: string, sel: string, fn: (e: unknown) => void) => { cy.handlers.set(`${evt} ${sel}`, fn); },
+      batch: (fn: () => void) => fn(),
+      elements: () => ({ remove: () => { cy.els = []; } }),
+      nodes: () => cy.els.filter((e) => e.group === 'nodes').map((e) => ({
+        id: () => String(e.data.id), position: () => ({ x: 100, y: 200 }),
+      })),
+    });
+    instances.push(cy);
+    return cy;
+  };
+  const factory = Object.assign(vi.fn(make), { use: vi.fn() });
+  return { instances, factory, fcose: { fcose: true } };
+});
+vi.mock('cytoscape', () => ({ default: h.factory }));
+vi.mock('cytoscape-fcose', () => ({ default: h.fcose }));
+
+import SiteFlowCanvas from './SiteFlowCanvas';
+
+const ARN = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/shop';
+const CL = `eks:${ARN}`;
+const NS = `ns:${ARN}:web`;
+function flow(over: Partial<SiteFlow> = {}): SiteFlow {
+  return {
+    host: 'shop.example.com', path: null,
+    nodes: [
+      { id: 'dns1', kind: 'dns', label: 'shop.example.com', group: 'host:shop.example.com' },
+      { id: 'cf1', kind: 'cdn', label: 'E123', group: 'cdn:cf1' },
+      { id: 'alb1', kind: 'lb', label: 'alb-web', group: 'lb:alb1' },
+      { id: 'tg1', kind: 'tg', label: 'tg-web', group: 'lb:alb1' },
+      { id: 'wl:front', kind: 'workload', label: 'front', group: NS, account: '123456789012' },
+      { id: 'wl:api', kind: 'workload', label: 'api', group: NS },
+      { id: 'db1', kind: 'datastore', label: 'orders-db', group: 'datastore:rds' },
+    ],
+    edges: [
+      { id: 'e1', source: 'dns1', target: 'cf1', evidence: 'configured' },
+      { id: 'e2', source: 'cf1', target: 'alb1', evidence: 'configured' },
+      { id: 'e3', source: 'alb1', target: 'tg1', evidence: 'observed' },
+      { id: 'e4', source: 'tg1', target: 'wl:front', evidence: 'observed' },
+      { id: 'e5', source: 'tg1', target: 'wl:api', evidence: 'inferred' },
+      { id: 'e6', source: 'wl:api', target: 'db1', evidence: 'traced', calls: 9, errors: 1 },
+    ],
+    groups: [
+      { id: 'host:shop.example.com', kind: 'host', label: 'shop.example.com' },
+      { id: 'cdn:cf1', kind: 'cdn', label: 'E123', parent: 'host:shop.example.com' },
+      { id: 'lb:alb1', kind: 'lb', label: 'alb-web', parent: 'cdn:cf1' },
+      { id: CL, kind: 'cluster', label: 'shop', parent: 'lb:alb1' },
+      { id: NS, kind: 'namespace', label: 'web', parent: CL },
+      { id: 'datastore:rds', kind: 'datastore', label: 'rds', parent: 'host:shop.example.com' },
+    ],
+    highlight: null, gaps: [],
+    ...over,
+  };
+}
+
+const ids = (els: El[]) => new Set(els.map((e) => String(e.data.id)));
+const get = (els: El[], id: string) => els.find((e) => e.data.id === id);
+const cls = (e: El | undefined) => new Set(String(e?.classes ?? '').split(/\s+/).filter(Boolean));
+async function mounted(n = 1) {
+  await waitFor(() => expect(h.instances).toHaveLength(n));
+  return h.instances[n - 1];
+}
+
+afterEach(cleanup);
+beforeEach(() => { h.instances.length = 0; h.factory.mockClear(); document.documentElement.style.cssText = ''; });
+
+describe('SiteFlowCanvas', () => {
+  it('creates one fcose-laid-out instance with compound parents and collapsed (+N) groups', async () => {
+    render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const cy = await mounted();
+    expect(h.factory.use).toHaveBeenCalledWith(h.fcose);
+    const els = cy.opts.elements as El[];
+    expect(get(els, 'cdn:cf1')?.data.parent).toBe('host:shop.example.com');
+    expect(get(els, 'tg1')?.data.parent).toBe('lb:alb1');
+    expect(get(els, CL)?.data).toMatchObject({ label: 'shop (+2)', role: 'collapsed', parent: 'lb:alb1' });
+    expect(get(els, 'datastore:rds')?.data.label).toBe('rds (+1)');
+    for (const hidden of [NS, 'wl:front', 'wl:api', 'db1']) expect(ids(els).has(hidden)).toBe(false);
+    expect(cy.opts.layout).toMatchObject({
+      name: 'fcose', quality: 'default', nodeDimensionsIncludeLabels: true, packComponents: true, fit: true, randomize: true,
+    });
+    expect(cy.opts.minZoom as number).toBeGreaterThan(0);
+    expect(cy.opts.maxZoom as number).toBeGreaterThan(1);
+  });
+
+  it('re-points edges into collapsed groups and dedupes them with the strongest evidence', async () => {
+    render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const els = (await mounted()).opts.elements as El[];
+    const toCluster = els.filter((e) => e.group === 'edges' && e.data.target === CL);
+    expect(toCluster).toHaveLength(1);
+    expect(toCluster[0].data).toMatchObject({ source: 'tg1', evidence: 'observed', members: ['e4', 'e5'] });
+    const toDb = els.filter((e) => e.group === 'edges' && e.data.source === CL);
+    expect(toDb).toHaveLength(1);
+    expect(toDb[0].data).toMatchObject({ target: 'datastore:rds', evidence: 'traced', calls: 9, errors: 1 });
+    expect(cls(toDb[0]).has('has-errors')).toBe(true);
+  });
+
+  it('fades non-highlighted elements and marks inferred edges with the dashed overlay class', async () => {
+    const f = flow({ highlight: { nodes: ['dns1', 'cf1'], edges: ['e1'], inferred: ['alb1', 'e2'] } });
+    render(<SiteFlowCanvas flow={f} theme="light" />);
+    const cy = await mounted();
+    const els = cy.opts.elements as El[];
+    expect(cls(get(els, 'dns1')).has('hl')).toBe(true);
+    expect(cls(get(els, 'tg1')).has('faded')).toBe(true);
+    expect(cls(get(els, 'e3')).has('faded')).toBe(true);
+    expect(cls(get(els, 'e2'))).toEqual(new Set(['ev-configured', 'inferred']));
+    expect(cls(get(els, 'alb1')).has('inferred')).toBe(true);
+    const style = cy.opts.style as { selector: string; style: Record<string, unknown> }[];
+    expect(style.find((s) => s.selector === 'edge.inferred')?.style).toMatchObject({ 'line-style': 'dashed' });
+    expect(style.find((s) => s.selector === '.faded')?.style).toMatchObject({ opacity: 0.15 });
+  });
+
+  it('calls onSelect with the SiteNode on a leaf tap', async () => {
+    const onSelect = vi.fn();
+    const f = flow();
+    render(<SiteFlowCanvas flow={f} theme="light" onSelect={onSelect} />);
+    const cy = await mounted();
+    cy.tap('tg1');
+    expect(onSelect).toHaveBeenCalledWith(f.nodes.find((n) => n.id === 'tg1'));
+    expect(cy.add).not.toHaveBeenCalled();
+  });
+
+  it('expands a collapsed group on tap and collapses it from its label, re-running fcose without randomizing', async () => {
+    const onSelect = vi.fn();
+    render(<SiteFlowCanvas flow={flow()} theme="light" onSelect={onSelect} />);
+    const cy = await mounted();
+    cy.tap(CL);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(get(cy.els, CL)?.data).toMatchObject({ label: 'shop', role: 'group' });
+    expect(get(cy.els, NS)?.data).toMatchObject({ label: 'web (+2)', parent: CL });
+    expect(get(cy.els, NS)?.position).toEqual({ x: 100, y: 200 }); // seeded at the toggled group's position
+    expect(cy.layout).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'fcose', randomize: false }));
+    expect(cy.run).toHaveBeenCalledTimes(1);
+    cy.tap(NS);
+    expect(ids(cy.els).has('wl:front')).toBe(true);
+    cy.tap(CL, 200); // a tap on the expanded group's blank body does nothing
+    expect(get(cy.els, CL)?.data.role).toBe('group');
+    expect(cy.run).toHaveBeenCalledTimes(2);
+    cy.tap(CL); // a tap on its label collapses it (and everything inside)
+    expect(get(cy.els, CL)?.data.role).toBe('collapsed');
+    expect(ids(cy.els).has('wl:front')).toBe(false);
+    expect(cy.run).toHaveBeenCalledTimes(3);
+    expect(h.factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the instance on unmount and rebuilds when the flow changes', async () => {
+    const { rerender, unmount } = render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const first = await mounted();
+    rerender(<SiteFlowCanvas flow={flow({ path: '/products' })} theme="light" />);
+    const second = await mounted(2);
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(second.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('never creates an instance when unmounted before the dynamic import resolves', async () => {
+    const { unmount } = render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    unmount();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.factory).not.toHaveBeenCalled();
+  });
+
+  it('restyles from CSS tokens on theme change without rebuilding', async () => {
+    document.documentElement.style.setProperty('--warning', '#123456');
+    const f = flow();
+    const { rerender } = render(<SiteFlowCanvas flow={f} theme="light" />);
+    const cy = await mounted();
+    const first = cy.opts.style as { selector: string; style: Record<string, unknown> }[];
+    expect(first.find((s) => s.selector === 'edge.inferred')?.style['line-color']).toBe('#123456');
+    document.documentElement.style.setProperty('--warning', '#abcdef');
+    rerender(<SiteFlowCanvas flow={f} theme="dark" />);
+    await waitFor(() => expect(cy.style).toHaveBeenCalled());
+    const next = cy.style.mock.calls.at(-1)![0] as { selector: string; style: Record<string, unknown> }[];
+    expect(next.find((s) => s.selector === 'edge.inferred')?.style['line-color']).toBe('#abcdef');
+    expect(h.factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes an image role with a node/edge count summary', () => {
+    render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const img = screen.getByRole('img');
+    expect(img.getAttribute('aria-label')).toContain('7');
+    expect(img.getAttribute('aria-label')).toContain('6');
+  });
+});
