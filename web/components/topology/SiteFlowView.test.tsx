@@ -1008,6 +1008,31 @@ describe('SiteFlowView', () => {
     expect(screen.getAllByRole('listitem').filter((li) => li.textContent?.includes('(추론)'))).toHaveLength(1);
   });
 
+  // A synthetic highlighted chain: every node highlighted, edges `a->b` highlighted in the given order.
+  const chainFlow = (nodes: [string, SiteNode['kind'], string][], links: [string, string][]): SiteFlow => ({
+    host: 'mall.example.com', path: '/x', groups: [], gaps: [],
+    nodes: nodes.map(([id, kind, label]) => ({ id, kind, label })),
+    edges: links.map(([source, target]) => ({ id: `${source}->${target}`, source, target, evidence: 'observed' as const })),
+    highlight: { nodes: nodes.map(([id]) => id), edges: links.map(([s, t]) => `${s}->${t}`), inferred: [] },
+  });
+  const chainItems = (flow: SiteFlow) => {
+    render(<LanguageProvider><HighlightChain flow={flow} /></LanguageProvider>);
+    return screen.getAllByRole('listitem').map((li) => li.textContent);
+  };
+
+  it('lists sequential workload hops in request order (front before catalog), not sorted by label or id', () => {
+    const front = wl(HOST_ARN, 'web/front'), catalog = wl(HOST_ARN, 'web/catalog');
+    expect(chainItems(chainFlow([[catalog, 'workload', 'catalog'], [front, 'workload', 'front']], [[front, catalog]])))
+      .toEqual(['Workload front', 'Workload catalog']);
+  });
+
+  it('keeps an NLB → TG → ALB → TG chain interleaved in request order', () => {
+    expect(chainItems(chainFlow([
+      ['lb:alb', 'lb', 'web-alb'], ['lb:nlb', 'lb', 'web-nlb'], ['tg:a', 'tg', 'web-tg'], ['tg:b', 'tg', 'app-tg'],
+    ], [['lb:nlb', 'tg:a'], ['tg:a', 'lb:alb'], ['lb:alb', 'tg:b']])))
+      .toEqual(['LB web-nlb', 'Target Group web-tg', 'LB web-alb', 'Target Group app-tg']);
+  });
+
   it('leaf click: infra node → DetailPanel with its inventory row; workload → K8s map link for that cluster', async () => {
     stubFetch();
     view();

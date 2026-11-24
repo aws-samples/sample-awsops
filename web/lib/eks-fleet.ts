@@ -6,7 +6,8 @@
 // (`names`) is the listed clusters ∪ every registered cluster, while `clusters` (scope derivation, vetoes) stays the
 // listed set. Fail closed: any failed / errored / truncated / malformed listing (parseFleet) or registrations read,
 // an aborted signal, or a failed or malformed `/api/accounts` body (any row without a 12-digit `accountId` or a
-// boolean `enabled`) marks it incomplete.
+// boolean `enabled`) marks it incomplete. Listing host rows may report `self` (HOST_ACCOUNT_ID unset on the server);
+// they are verified against the `/api/accounts` host id like registrations.
 import { ALL_REGIONS } from './account-context';
 import { hostAccountOf } from './host-account';
 
@@ -59,34 +60,46 @@ export function parseRegistrations(body: unknown, hostId: string | null = null):
 }
 
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
-const ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/[\w-]+$/;
-/** ARN_RE plus the cluster name (registrations cross-check the row's name too). */
+/** An EKS cluster ARN: region, account and cluster name (listing and registration rows cross-check all three). */
 const REG_ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/;
 /** An EKS cluster name (a bare registration id). */
 const CLUSTER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 /** The reason-less all-region discovery note the server adds for a wildcard-scan account (the only tolerated error). */
 const isDiscoveryNote = (e: unknown): e is { accountId: string } => record(e) && e.reason === undefined && e.region === ALL_REGIONS
   && typeof e.accountId === 'string' && /^(?:self|\d{12})$/.test(e.accountId);
-/** A fully validated listing row: id, name, region, access and a 12-digit owning account that any ARN agrees with. */
-function validRow(c: unknown): c is Record<string, string> {
+/** A fully validated listing row: id, name, region, access and an owning account (`self` or 12-digit) that any ARN
+ *  agrees with. `/api/eks` reports host rows as `self` when the server has no HOST_ACCOUNT_ID; an ARN names a numeric
+ *  account, so on a `self` row it is checked against the caller-known host id (`hostId`): a `self` ARN id is
+ *  unverifiable without it. Every ARN (the id and the `arn` field) must name the row's region, account and cluster
+ *  name; the one exception is the `arn` field of a bare `self` row with no known host id, whose account cannot be
+ *  checked (the row is the host by construction). A bare (non-ARN) id is a host default-region row: a valid cluster
+ *  name equal to the row's name, on the host (`self` or `hostId`). */
+function validRow(c: unknown, hostId: string | null): c is Record<string, string> {
   if (!record(c) || !nonempty(c.id) || !nonempty(c.name) || !nonempty(c.access)
     || typeof c.region !== 'string' || !REGION_RE.test(c.region)
-    || typeof c.accountId !== 'string' || !/^\d{12}$/.test(c.accountId)) return false;
-  for (const arn of [c.id.startsWith('arn:') ? c.id : null, c.arn === undefined ? null : c.arn]) {
+    || typeof c.accountId !== 'string' || !/^(?:self|\d{12})$/.test(c.accountId)) return false;
+  const owner = c.accountId === 'self' ? hostId : c.accountId;
+  const onHost = c.accountId === 'self' || (hostId !== null && c.accountId === hostId);
+  const bare = !c.id.startsWith('arn:');
+  if (bare && !(CLUSTER_NAME_RE.test(c.id) && c.id === c.name && onHost)) return false;
+  for (const arn of [bare ? null : c.id, c.arn === undefined ? null : c.arn]) {
     if (arn === null) continue;
-    const m = typeof arn === 'string' ? ARN_RE.exec(arn) : null;
-    if (!m || m[1] !== c.region || m[2] !== c.accountId) return false;
+    const m = typeof arn === 'string' ? REG_ARN_RE.exec(arn) : null;
+    if (!m || m[1] !== c.region || m[3] !== c.name) return false;
+    // A bare `self` row is the host by construction; without a known host id only its `arn` account is unknown.
+    if (owner === null ? !bare : m[2] !== owner) return false;
   }
   return true;
 }
 
 /**
  * One listing body → clusters/names. Fail closed: a malformed, truncated or reasoned-error listing, a non-array
- * `errors`, any error entry other than the discovery note, or any cluster row that is not fully valid (validRow)
- * marks it incomplete, since the fleet proves trace-name uniqueness and scopes pod bindings.
+ * `errors`, any error entry other than the discovery note, or any cluster row that is not fully valid (validRow,
+ * `hostId`: the host's numeric id from `/api/accounts`, for `self` and bare host rows) marks it incomplete, since the
+ * fleet proves trace-name uniqueness and scopes pod bindings.
  */
-export function parseFleet(body: unknown): Fleet {
-  if (!record(body) || !Array.isArray(body.clusters) || !body.clusters.every(validRow)) return INCOMPLETE_FLEET();
+export function parseFleet(body: unknown, hostId: string | null = null): Fleet {
+  if (!record(body) || !Array.isArray(body.clusters) || !body.clusters.every((c) => validRow(c, hostId))) return INCOMPLETE_FLEET();
   if (body.errors !== undefined && !Array.isArray(body.errors)) return INCOMPLETE_FLEET();
   const errors: unknown[] = Array.isArray(body.errors) ? body.errors : [];
   const clusters: FleetCluster[] = (body.clusters as Record<string, string>[]).map((c) => ({
@@ -118,7 +131,7 @@ export async function readFleet(accountsBody: unknown, signal: AbortSignal): Pro
   // The registrations read is one more task in the same FLEET_CONCURRENCY budget.
   const tasks = [...accounts.map((account, i) => async () => {
     parts[i] = await fetch(fleetUrl(account), { signal })
-      .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
+      .then((r) => (r.ok ? r.json() : null)).then((b) => parseFleet(b, hostId)).catch(INCOMPLETE_FLEET);
   }), async () => {
     registered = await fetch(REGISTRATIONS_URL, { signal })
       .then((r) => (r.ok ? r.json() : null)).then((b) => parseRegistrations(b, hostId)).catch(() => null);

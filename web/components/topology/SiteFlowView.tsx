@@ -67,7 +67,6 @@ const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';
 
 /** Gaps stage 1 always carries for bound clusters until their evidence lands. */
 const PENDING_ARTIFACTS = new Set<SiteGap>(['trace_unavailable', 'db_refs_partial']);
-const KIND_ORDER: SiteKind[] = ['dns', 'cdn', 'behavior', 'rule', 'origin', 'lb', 'tg', 'target', 'workload', 'service', 'datastore'];
 // Technical kind labels stay English (FLOW_KIND_LABELS precedent).
 const KIND_LABEL: Record<SiteKind, string> = {
   dns: 'DNS', cdn: 'CloudFront', behavior: 'Behavior', rule: 'Rule', origin: 'Origin', lb: 'LB', tg: 'Target Group',
@@ -105,17 +104,36 @@ function detailOf(node: SiteNode, inv: SiteInventory | null): { title: string; d
   return { title: node.label, data };
 }
 
-/** The highlighted chain as a text list (accessible / narrow-screen fallback), in request order; inferred hops labelled. */
+const byIdOrder = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The highlighted chain as a text list (accessible / narrow-screen fallback), in request order taken from the
+ *  highlight's own edges (observed and inferred): the entries (highlighted nodes with no highlighted incoming edge)
+ *  first, then a breadth-first walk over the highlighted edges emitting each node once in visit order (siblings by
+ *  node id); nodes the walk cannot reach (cycles) follow, by id. Inferred hops are labelled. */
 export function HighlightChain({ flow }: { flow: SiteFlow }) {
   const { tt } = useI18n();
   const chain = useMemo(() => {
     if (!flow.highlight) return [];
     const byId = new Map(flow.nodes.map((n) => [n.id, n]));
     const inferred = new Set(flow.highlight.inferred);
-    return [...flow.highlight.nodes, ...flow.highlight.inferred].flatMap((id) => {
-      const n = byId.get(id);
-      return n ? [{ node: n, inferred: inferred.has(id) }] : [];
-    }).sort((a, b) => KIND_ORDER.indexOf(a.node.kind) - KIND_ORDER.indexOf(b.node.kind) || a.node.label.localeCompare(b.node.label));
+    const members = new Set([...flow.highlight.nodes, ...flow.highlight.inferred].filter((id) => byId.has(id)));
+    const edgeIds = new Set([...flow.highlight.edges, ...flow.highlight.inferred]);
+    const out = new Map<string, string[]>();
+    const entered = new Set<string>();
+    for (const e of flow.edges) {
+      if (!edgeIds.has(e.id) || e.source === e.target || !members.has(e.source) || !members.has(e.target)) continue;
+      out.set(e.source, [...(out.get(e.source) ?? []), e.target]);
+      entered.add(e.target);
+    }
+    const queue = [...members].filter((id) => !entered.has(id)).sort(byIdOrder);
+    const seen = new Set(queue);
+    for (let i = 0; i < queue.length; i++) {
+      for (const next of [...(out.get(queue[i]) ?? [])].sort(byIdOrder)) {
+        if (!seen.has(next)) { seen.add(next); queue.push(next); }
+      }
+    }
+    const order = [...queue, ...[...members].filter((id) => !seen.has(id)).sort(byIdOrder)];
+    return order.map((id) => ({ node: byId.get(id)!, inferred: inferred.has(id) }));
   }, [flow]);
   if (!chain.length) return <p className="text-[12px] text-ink-500">{tt('이 경로로 강조할 요청 흐름이 없습니다.')}</p>;
   return (

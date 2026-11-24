@@ -28,7 +28,8 @@ describe('eks-fleet', () => {
     const ok = { id: 'arn:aws:eks:us-east-1:111111111111:cluster/api', name: 'api', arn: 'arn:aws:eks:us-east-1:111111111111:cluster/api',
       accountId: '111111111111', region: 'us-east-1', access: 'connected' };
     const host = { id: 'shop', name: 'shop', accountId: '123456789012', region: 'ap-northeast-2', access: 'connected' };
-    expect(parseFleet({ clusters: [ok, host], errors: [] }).incomplete).toBe(false);
+    // A bare (host default-region) id with a numeric account is the host only for the caller-known host id.
+    expect(parseFleet({ clusters: [ok, host], errors: [] }, '123456789012').incomplete).toBe(false);
     // errors: must be an array of exactly the reason-less `__all__` discovery note
     expect(parseFleet({ clusters: [ok], errors: 'oops' }).incomplete).toBe(true);
     expect(parseFleet({ clusters: [ok], errors: { accountId: 'self', region: '__all__' } }).incomplete).toBe(true);
@@ -42,8 +43,53 @@ describe('eks-fleet', () => {
       { ...ok, accountId: '222222222222' }, // ARN id names another account
       { ...ok, arn: 'arn:aws:eks:us-east-1:222222222222:cluster/api' }, // ARN names another account
       { ...ok, arn: 'arn:aws:eks:eu-west-1:111111111111:cluster/api' }, // ARN names another region
-      { ...host, accountId: undefined }, { ...host, accountId: 'self' },
+      { ...host, accountId: undefined },
     ]) expect(parseFleet({ clusters: [bad], errors: [] }).incomplete, JSON.stringify(bad)).toBe(true);
+  });
+
+  it('accepts host rows reported as `self` (HOST_ACCOUNT_ID unset on the server)', () => {
+    const selfBare = { id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2', access: 'connected' };
+    const hostArn = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/shop';
+    const selfArn = { id: hostArn, name: 'shop', arn: hostArn, accountId: 'self', region: 'ap-northeast-2', access: 'connected' };
+    // A `self` bare host row is valid with or without a known host id.
+    expect(parseFleet({ clusters: [selfBare], errors: [] }).incomplete).toBe(false);
+    expect(parseFleet({ clusters: [selfBare], errors: [] }, '123456789012')).toMatchObject({ incomplete: false,
+      clusters: [{ id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2', access: 'connected' }] });
+    // A `self` ARN row agrees only when the caller-known host id is the ARN's account.
+    expect(parseFleet({ clusters: [selfArn], errors: [] }, '123456789012').incomplete).toBe(false);
+    expect(parseFleet({ clusters: [selfArn], errors: [] }).incomplete).toBe(true);
+    expect(parseFleet({ clusters: [selfArn], errors: [] }, '111111111111').incomplete).toBe(true);
+    // The real host row carries its DescribeCluster `arn`: with a known host id its account must match; without one
+    // (no host row in /api/accounts when HOST_ACCOUNT_ID is unset) only its region and name are checked.
+    expect(parseFleet({ clusters: [{ ...selfBare, arn: hostArn }], errors: [] }, '123456789012').incomplete).toBe(false);
+    expect(parseFleet({ clusters: [{ ...selfBare, arn: hostArn }], errors: [] }).incomplete).toBe(false);
+    expect(parseFleet({ clusters: [{ ...selfBare, arn: hostArn }], errors: [] }, '111111111111').incomplete).toBe(true);
+    expect(parseFleet({ clusters: [{ ...selfBare, arn: 'arn:aws:eks:ap-northeast-2:123456789012:cluster/cart' }], errors: [] })
+      .incomplete).toBe(true);
+    expect(parseFleet({ clusters: [{ ...selfBare, arn: 'arn:aws:eks:us-east-1:123456789012:cluster/shop' }], errors: [] })
+      .incomplete).toBe(true);
+    // A numeric host row stays valid.
+    const numeric = { ...selfBare, accountId: '123456789012' };
+    expect(parseFleet({ clusters: [numeric, { ...selfArn, accountId: '123456789012' }], errors: [] }, '123456789012').incomplete)
+      .toBe(false);
+  });
+
+  it('cross-checks the cluster name between id, arn and name; a bare id belongs to the host only', () => {
+    const arn = 'arn:aws:eks:us-east-1:111111111111:cluster/api';
+    const ok = { id: arn, name: 'api', arn, accountId: '111111111111', region: 'us-east-1', access: 'connected' };
+    const bare = { id: 'shop', name: 'shop', accountId: '123456789012', region: 'ap-northeast-2', access: 'connected' };
+    expect(parseFleet({ clusters: [ok, bare], errors: [] }, '123456789012').incomplete).toBe(false);
+    for (const [bad, hostId] of [
+      [{ ...ok, name: 'cart' }, null], // the ARN id (and arn) name another cluster
+      [{ ...ok, arn: 'arn:aws:eks:us-east-1:111111111111:cluster/cart' }, null], // the arn field names another cluster
+      [{ ...ok, id: 'arn:aws:eks:us-east-1:111111111111:cluster/cart', arn: undefined }, null], // the ARN id does
+      [{ ...bare, name: 'payments' }, '123456789012'], // bare id names another cluster
+      [{ ...bare, arn: 'arn:aws:eks:ap-northeast-2:123456789012:cluster/payments' }, '123456789012'], // arn names another
+      [{ ...bare, accountId: '111111111111' }, '123456789012'], // bare id on a member account
+      [bare, null], // numeric account without a known host id
+      [bare, '111111111111'], // numeric account that is not the host
+      [{ ...bare, id: '-shop', name: '-shop' }, '123456789012'], // not a valid cluster name
+    ] as const) expect(parseFleet({ clusters: [bad], errors: [] }, hostId).incomplete, JSON.stringify(bad)).toBe(true);
   });
 
   it('registrations: an ARN id must agree with the row name/account/region (`self` only for the known host id)', () => {
@@ -135,12 +181,41 @@ describe('eks-fleet', () => {
         .not.toBe('ambiguous_cluster');
     });
 
-    it('without a known host id a `self` registration cannot be tied to the numeric listed host row: counted twice (fail closed)', async () => {
+    it('without a known host id the numeric bare listed host row is unverifiable: the fleet is incomplete (fail closed)', async () => {
       serve(() => json({ clusters: [{ id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' }] }));
       const fleet = await readFleet({ accounts: ACCOUNTS_BODY.accounts.map((a) => ({ ...a, isHost: false })) }, new AbortController().signal);
-      expect(fleet.names.filter((n) => n === 'shop')).toHaveLength(2);
+      expect(fleet.incomplete).toBe(true);
       expect(buildTraceOverlay([], { id: 'shop', registeredNames: fleet.names, listingIncomplete: fleet.incomplete }).reason)
-        .toBe('ambiguous_cluster');
+        .toBe('incomplete_listing');
+    });
+
+    it('a host listing that reports `self` (HOST_ACCOUNT_ID unset) is complete and dedupes with a `self` registration', async () => {
+      const hostArn = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/shop';
+      const listing = (rows: unknown[]) => vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+        if (u === '/api/eks/registrations') return json({ clusters: [{ id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' }] });
+        const account = new URL(u, 'http://x').searchParams.get('accounts');
+        return json({ clusters: account === 'self' ? rows : account === '111111111111' ? [A_ORDERS] : [], errors: [] });
+      }));
+      const selfBare = { ...HOST_SHOP, accountId: 'self', arn: hostArn };
+      listing([selfBare]);
+      const fleet = await readFleet(ACCOUNTS_BODY, new AbortController().signal);
+      expect(fleet.incomplete).toBe(false);
+      expect(fleet.clusters.map((c) => c.id).sort()).toEqual([A_ORDERS.id, 'shop'].sort());
+      expect(fleet.names.filter((n) => n === 'shop')).toHaveLength(1);
+      // A `self` ARN host row agrees with the known host id.
+      listing([{ ...HOST_SHOP, id: hostArn, arn: hostArn, accountId: 'self' }]);
+      expect((await readFleet(ACCOUNTS_BODY, new AbortController().signal)).incomplete).toBe(false);
+      // Without a known host id (no host row) the `self` ARN row cannot be verified.
+      listing([{ ...HOST_SHOP, id: hostArn, arn: hostArn, accountId: 'self' }]);
+      const noHost = { accounts: ACCOUNTS_BODY.accounts.map((a) => ({ ...a, isHost: false })) };
+      expect((await readFleet(noHost, new AbortController().signal)).incomplete).toBe(true);
+      // The bare `self` host row (with its DescribeCluster arn) stays valid without a host id.
+      listing([selfBare]);
+      expect((await readFleet(noHost, new AbortController().signal)).incomplete).toBe(false);
+      // With a mismatched host id the `self` ARN row is not verifiable either.
+      listing([{ ...HOST_SHOP, id: hostArn, arn: hostArn, accountId: 'self' }]);
+      const otherHost = { accounts: [{ accountId: '333333333333', isHost: true, enabled: true }, ...ACCOUNTS_BODY.accounts.slice(1)] };
+      expect((await readFleet(otherHost, new AbortController().signal)).incomplete).toBe(true);
     });
 
     it.each([
