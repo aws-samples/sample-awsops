@@ -63,7 +63,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **Service** | K8s Service | 显示在其命名空间框内 |
 | **数据存储** | RDS、ElastiCache、OpenSearch、MSK | 在 Pod 环境变量、ConfigMap 或追踪中发现的托管主机 |
 
-实线是在追踪中观测到的调用，虚线是根据配置推断的数据存储连接，细线是 DNS、Ingress 和 LoadBalancer 路由。追踪调用会显示所有已注册账户的集群；无论是主机账户还是成员账户的集群，都仅在其名称在完整读取的全部集群列表中唯一时才会加入。Pod 和 Node 不在图中绘制，点击 Service 后在打开的详情面板中显示。系统命名空间默认隐藏。
+实线是在追踪中观测到的调用，虚线是根据配置推断的数据存储连接，细线是 DNS、Ingress 和 LoadBalancer 路由。追踪调用会显示所有已注册账户的集群；无论是主机账户还是成员账户的集群，都仅在其名称在完整读取的全部集群列表及所有已注册集群中唯一时才会加入。Pod 和 Node 不在图中绘制，点击 Service 后在打开的详情面板中显示。系统命名空间默认隐藏。
 
 ### 交互功能
 

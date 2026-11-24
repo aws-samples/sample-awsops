@@ -282,16 +282,16 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   account, host and member, join the same way: a bare-name id and a full EKS ARN id are
   matched by their bare cluster name. A trace service maps to a workload only
   through its `runs_on` relation to exactly one `namespace/deployment` of the selected
-  cluster, and the cluster's bare name must be unique across the fleet-wide cluster listing
-  (all registered accounts and regions), not just the clusters of the selected scope: a
-  narrowed scope, including the default host-account-only scope, hides same-named
-  clusters of other accounts or regions without any truncation or error flag. The page
-  therefore never reuses the selected scope's listing for this check: it always reads the
-  per-account fleet built from `GET /api/accounts` (see the fleet paragraph below; the
-  cluster selector still follows the selected scope). A truncated scope or fleet listing,
-  one with a per-target read failure, or a failed or unparseable fleet listing cannot
-  prove that uniqueness, so the join is refused (`incomplete_listing`, no trace edges)
-  without reading the snapshot. The snapshot
+  cluster, and the cluster's bare name must be unique across the listed fleet clusters ∪
+  every registered cluster (all registered accounts and regions), not just the clusters of
+  the selected scope: a narrowed scope, including the default host-account-only scope,
+  hides same-named clusters of other accounts or regions without any truncation or error
+  flag. The page therefore never reuses the selected scope's listing for this check: it
+  always reads the per-account fleet built from `GET /api/accounts` plus the registry (see
+  the fleet paragraph below; the cluster selector still follows the selected scope). A
+  truncated scope or fleet listing, one with a per-target read failure, or a failed or
+  unparseable fleet listing or registrations read cannot prove that uniqueness, so the
+  join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of
@@ -305,22 +305,34 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   source may have dropped a second `runs_on` relation. Calls that cannot be mapped to one workload or managed
   datastore are counted, not guessed, and add no node.
 - Member clusters (full EKS ARN ids) are read through the member role and get the same
-  trace join as host clusters. The only cluster-level trace guards are the two above: fleet-wide
-  uniqueness of the bare cluster name (`ambiguous_cluster` when another account or
-  region has a cluster with the same name) and a completely read fleet listing
-  (`incomplete_listing`). Because the fleet is built from the `GET /api/accounts` body, the
-  trace read waits for that lookup; a failed or malformed lookup leaves the fleet
-  incomplete and the join is refused with `incomplete_listing`.
+  trace join as host clusters. Besides the snapshot checks above, the cluster-level guards
+  are uniqueness of the bare cluster name in that set (`ambiguous_cluster` when it appears
+  more than once) and a completely read fleet (`incomplete_listing`). Because the fleet is
+  built from the `GET /api/accounts` body, the trace read waits for that lookup; a failed
+  or malformed lookup leaves the fleet incomplete and the join is refused with
+  `incomplete_listing`.
+- Residual gaps: uniqueness is proven only over clusters AWSops can see, listed or
+  registered. Telemetry from a producer that is neither (an unregistered cluster in an
+  unlisted region, or a non-EKS producer emitting the same `k8s.cluster.name`) cannot be
+  excluded and would be attributed to the selected cluster. The trace snapshot stays
+  scoped to the host's publication even when the join target is a member cluster.
 - The fleet listing (`readFleet` in `web/lib/eks-fleet.ts`, shared by the K8s map and the
-  site flow view) issues one `GET /api/eks?accounts=<id>&regions=__all__&includeGlobal=1`
-  per enabled registered account from `GET /api/accounts` (the host as `self`, disabled
-  accounts skipped), at most 4 in flight, and merges the clusters (deduplicated by ARN).
-  A single all-account request is not used because the server caps a listing without
-  registrations at 12 account × region targets (`TARGET_CAP` in `web/lib/eks-scope.ts`)
-  and reports it truncated, which a real fleet exceeds. Any failed, truncated or
-  reasoned-error per-account listing, an aborted read, or an `/api/accounts` body with a
-  row lacking a 12-digit `accountId` or a boolean `enabled` marks the whole fleet
-  incomplete.
+  site flow view) issues one `GET /api/eks?accounts=<id>&regions=__all__` per enabled
+  registered account from `GET /api/accounts` (the host as `self`, disabled accounts
+  skipped) plus one `GET /api/eks/registrations`, at most 4 requests in flight. Listed
+  clusters are merged and deduplicated by ARN, else by listed id (the bare id for host
+  default-region rows); they drive the site view's EKS scope and vetoes. For a non-wildcard
+  account `__all__` covers only its configured regions, so the uniqueness set adds every
+  registered cluster (registry and env clusters, disabled accounts included) not already
+  listed under the same account, region and name. A single all-account request is not used
+  because the server caps a listing without registrations at 12 account × region targets
+  (`TARGET_CAP` in `web/lib/eks-scope.ts`) and reports it truncated; the cap still applies
+  per account, so an account spanning more than 12 regions truncates and the join is
+  refused (`incomplete_listing`). A failed, truncated, errored or malformed per-account
+  listing (any error entry other than the reason-less `__all__` note, or a row without a
+  valid id, region, access and account), a failed or malformed registrations read, an
+  aborted read, or an `/api/accounts` body with a row lacking a 12-digit `accountId` or a
+  boolean `enabled` marks the whole fleet incomplete.
 - Apart from the fleet's account list, the host account resolved from that lookup is
   used for Route 53 only. A host cluster outside the
   deployment region also has an ARN id, and the cluster listing reports a numeric
@@ -372,12 +384,15 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
+| `web/app/api/eks/registrations/route.ts` | Every registered cluster id (no AWS call) for trace-name uniqueness |
+| `web/lib/eks-fleet.ts` | Per-account fleet listing plus registry: listed clusters and the uniqueness set |
+| `web/lib/host-account.ts` | Host account id from the unique `isHost` row of `GET /api/accounts` |
 | `web/lib/eks-db-refs.ts`, `web/lib/db-endpoint.ts`, `web/lib/db-ref-resolve.ts` | Server-side Pod env/ConfigMap host extraction and inventory matching for `db-refs` |
 | `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, namespace-boxed column layout and Route 53 matching |
 | `web/components/topology/K8sMapView.tsx`, `ServiceGraphCanvas.tsx`, `ServiceDetailPanel.tsx` | Graph page, canvas and Service detail panel |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
-See the [API reference](../api-reference.md#eks-10) for response status and metadata
+See the [API reference](../api-reference.md#eks-12) for response status and metadata
 contracts, including conditional envelope `region`, partial `errors`, and `truncated`.
 NFM pod-transfer attribution remains host/deployment-region only; member and other
 region requests return explicit unavailability rather than a host namesake's data.

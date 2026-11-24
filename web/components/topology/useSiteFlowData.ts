@@ -16,11 +16,12 @@
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
 //    recognized when deriving the EKS scope. The EKS read waits for this lookup (evidence pending meanwhile).
-//  - fleet listing: one `/api/eks?accounts=<id>&regions=__all__&includeGlobal=1` per enabled registered account
-//    from `/api/accounts` (host as `self`), merged. A single all-account request is capped at 12 account×region
-//    targets server-side and truncates on a real fleet. The merged fleet drives deriveEksScope and the trace
-//    join's name uniqueness; any failed / reasoned-error / truncated request, or a failed or malformed
-//    `/api/accounts`, marks it incomplete.
+//  - fleet listing (web/lib/eks-fleet.ts readFleet): one `/api/eks?accounts=<id>&regions=__all__` per enabled
+//    registered account from `/api/accounts` (host as `self`), merged, plus `/api/eks/registrations`. A single
+//    all-account request is capped at 12 account×region targets server-side and truncates on a real fleet. The
+//    listed clusters drive deriveEksScope; the trace join's name uniqueness uses listed ∪ registered clusters.
+//    Any failed / errored / truncated / malformed request, or a failed or malformed `/api/accounts`, marks it
+//    incomplete.
 //  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for one fleet read.
 //  - refresh (`reload`): every read above runs again and no cached cluster evidence is reused.
 import { useEffect, useMemo, useRef, useState } from 'react';

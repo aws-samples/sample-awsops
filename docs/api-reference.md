@@ -91,7 +91,7 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [EKS evidence producer](../web/lib/topology-config.ts), and
 [IP-target builder](../web/lib/flow-topology.ts).
 
-## eks (10)
+## eks (12)
 | Path | Method | Behavior | Authentication |
 |------|--------|----------|----------------|
 | `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; never writes; for an administrator, an unregistered member cluster with a verified Access Entry is flagged `accessEntryVerified: true` so the admin page can offer one-click registration (the ordinary register POST, sent only when the admin clicks); partial errors and enumeration limits are disclosed | verifyUser |
