@@ -15,6 +15,7 @@ function readable(node: Nodes): string {
     case 'root':
       return children;
     case 'text':
+    case 'html':
       return escape(node.value);
     case 'inlineCode':
       return '<code>' + escape(node.value) + '</code>';
@@ -387,8 +388,8 @@ const script = `
     const key = slides[index].dataset.section;
     document.querySelectorAll('.paper details').forEach((s) => (s.open = s.dataset.id === key));
     dialog.showModal();
-    const sel = document.querySelector('.paper details[open]');
-    if (sel) sel.scrollIntoView({ block: 'start' });
+    const openedSection = document.querySelector('.paper details[open]');
+    if (openedSection) openedSection.scrollIntoView({ block: 'start' });
     else dialog.scrollTop = 0;
   };
   document.getElementById('dismiss').onclick = () => dialog.close();
@@ -463,7 +464,7 @@ export async function renderDeckHtml(deck: DiagnosisDeck): Promise<string> {
                         : '　' +
                           r.count +
                           '<meter min="0" max="' +
-                          Math.max(1, ...s.items.map((i) => i.count ?? 0)) +
+                          Math.max(1, ...s.items.map((item) => item.count ?? 0)) +
                           '" value="' +
                           r.count +
                           '"></meter>') +

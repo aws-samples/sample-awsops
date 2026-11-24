@@ -289,6 +289,9 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
     };
     for (const group of groups) {
       const tables = group.nodes.filter((n): n is Table => n.type === 'table');
+      // Notes retain original order and evidence windows, even when a line is
+      // deliberately left off the visible cards or moved to a decision slide.
+      const proseNotes = group.nodes.filter(n => n.type !== 'table').map(n => plain(n)).filter(Boolean).join('\n\n');
       const allItems = toItems(group.nodes);
       const decisions = allItems.filter(r => decisionHeadings.has(r.label));
       const paragraphs = allItems.filter(r => !decisionHeadings.has(r.label));
@@ -297,8 +300,8 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         const findings = paragraphs.filter((r) => r.label && !coverageLine.test(r.text));
         const status = paragraphs.find((r) => coverageLine.test(r.text));
         if (findings.length) {
-          add(block.title, findings, status?.text);
-        } else add(block.title, paragraphs);
+          add(block.title, findings, status?.text, proseNotes);
+        } else add(block.title, paragraphs, '', proseNotes);
       } else if (
         !tables.length &&
         !(
@@ -309,7 +312,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
           !paragraphs[0].label
         )
       ) {
-        add(group.heading || block.title, paragraphs);
+        add(group.heading || block.title, paragraphs, '', proseNotes);
       }
       for (const table of tables) {
         const rows = tableItems(table);
@@ -332,9 +335,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
           .slice(1)
           .map((row) => row.map((cell, index) => header[index] + ': ' + cell).join('\n'))
           .join('\n\n');
-        const notes = [originals, ...paragraphs.map((r) => [r.label, r.text].filter(Boolean).join(' '))].join(
-          '\n\n',
-        );
+        const notes = [originals, proseNotes].filter(Boolean).join('\n\n');
         add(label, rows, scope, notes);
       }
       for (const decision of decisions) add(decision.label, [{ label: '', text: decision.text }]);

@@ -70,6 +70,15 @@ describe('stored heading and decision-role compatibility', () => {
   });
 });
 
+it('retains each finding and its scoped provenance in native slide notes only', () => {
+  const md = '## Security\n\nPartial assessment · Admitted findings 1\n\n**DB** · Hypothesis\n\n' +
+    'Review storage protection.\n\nEvidence · Inventory, historical scope only.\n\nAdditional qualification.';
+  const slide = buildDiagnosisDeck({id: 9, markdown:md}, 'en').slides[1];
+  expect(slide.items).toEqual([{label:'DB · Hypothesis',text:'Review storage protection.'}]);
+  expect(slide.notes).toContain('Evidence · Inventory, historical scope only.');
+  expect(slide.notes).toContain('Additional qualification.');
+});
+
 it('keeps the worker-owned audit appendix outside customer HTML and PowerPoint input', async () => {
   const markdown = '# Assessment\n\n- [Risks](#assessment)\n- [Evidence appendix](#evidence_appendix)\n\n' +
     '## Risks\n\nReview the storage protection policy.\n\n## Evidence appendix\n\nCollector diagnostic marker.\n';
