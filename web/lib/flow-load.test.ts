@@ -122,6 +122,17 @@ describe('loadFlowInput', () => {
     expect(r.input.ownershipRead?.configurationOnly).toBeUndefined();
     expect(r.input.ownershipRead?.eksRegions).toEqual(['ap-northeast-2']);
     expect(r.input.ownershipRead?.eksUnknown).toBe(false);
+    expect(r.input.ownershipRead?.eksAccountRegions).toEqual([]); // absent coverage proves nothing
+  });
+
+  it('forwards per-account coverage only for the scoped listing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => page([])));
+    vi.mocked(fetchEksIpMap).mockResolvedValueOnce({ map: {}, blockedScopes: [], globalUnknown: false, status: 'ok', reasons: [],
+      coveredRegions: ['ap-northeast-2'], coveredAccountRegions: [`${ACCOUNT}|ap-northeast-2`] });
+    const r = await loadFlowInput(scope, new AbortController().signal, false, { eksScope: true });
+    expect(r.input.ownershipRead?.eksAccountRegions).toEqual([`${ACCOUNT}|ap-northeast-2`]);
+    const d = await loadFlowInput(scope.replace(ACCOUNT, 'self'), new AbortController().signal);
+    expect(d.input.ownershipRead).not.toHaveProperty('eksAccountRegions');
   });
 
   it('keeps configuration-only for non-self scopes unless eksScope is requested', async () => {

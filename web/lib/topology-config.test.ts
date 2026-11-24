@@ -450,8 +450,59 @@ describe('scope-aware EKS listing', () => {
     const result = await fetchEksIpMap(undefined, true, `accounts=${member}&regions=__all__`);
     expect(result).toMatchObject({ status: 'ok', globalUnknown: false, coveredRegions: [mRegion] });
     expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
-    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_scope_partial'] });
     expect(result.bindings).toBeUndefined();
+  });
+
+  it('keeps the unscoped default path byte-for-byte: name URLs and errors that only withhold bindings', async () => {
+    const hostArn = `arn:aws:eks:${region}:${other}:cluster/host-cluster`;
+    const f = serveScoped({ region, clusters: [{ ...cluster, id: hostArn, arn: hostArn, accountId: other }],
+      errors: [{ accountId: 'self', region, message: 'EKS inventory query failed', reason: 'denied' }] });
+    const result = await fetchEksIpMap(undefined, true);
+    expect(requested(f).slice(1).every(u => u.startsWith('/api/eks/host-cluster/incluster?'))).toBe(true);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false, coveredRegions: [region] });
+    expect(result.map[scopedTargetIp(region, vpcId, ip)]).toMatchObject({ resolved: 'eks' });
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    expect(result.coveredAccountRegions).toBeUndefined();
+    for (const errors of ['boom', [{ region: '__all__', message: 'note' }]]) {
+      serveScoped({ region, clusters: [{ ...cluster, id: '' }], errors });
+      const legacy = await fetchEksIpMap(undefined, true);
+      expect(legacy).toMatchObject({ status: 'ok', bindingRead: { status: 'withheld' } });
+      expect(legacy.bindingRead?.reasons).toContain('binding_read_incomplete');
+      expect(legacy.bindingRead?.reasons).not.toContain('binding_scope_partial');
+    }
+  });
+
+  it('reports coverage per account, never letting one account cover another in the same region', async () => {
+    serveScoped({ clusters: [memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member},${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+    serveScoped({ region: mRegion, clusters: [] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${other}|${mRegion}`]);
+  });
+
+  it('keys host clusters as self only when the listing identifies them as host', async () => {
+    const hostArn = `arn:aws:eks:us-west-2:${other}:cluster/far`;
+    const far = { ...memberCluster, id: hostArn, arn: hostArn, name: 'far', accountId: other, region: 'us-west-2', vpcId: 'vpc-far' };
+    serveScoped({ clusters: [far] });
+    expect((await fetchEksIpMap(undefined, false, 'accounts=self&regions=__all__')).coveredAccountRegions)
+      .toEqual([`${other}|us-west-2`, 'self|us-west-2']);
+    const bare = { ...memberCluster, id: 'home', arn: `arn:aws:eks:${mRegion}:${other}:cluster/home`, name: 'home', accountId: other };
+    serveScoped({ clusters: [far, bare, memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`, `${other}|${mRegion}`, `${other}|us-west-2`, `self|${mRegion}`, 'self|us-west-2'].sort());
+    serveScoped({ clusters: [far, memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`, `${other}|us-west-2`].sort());
+  });
+
+  it('refuses a scoped row without a valid account id', async () => {
+    for (const accountId of [undefined, '', 'acct']) {
+      serveScoped({ region: mRegion, clusters: [{ ...memberCluster, accountId }] });
+      expect(await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${mRegion}`))
+        .toMatchObject({ globalUnknown: true, status: 'unavailable' });
+    }
   });
 
   it('cannot certify coverage for a multi-target listing with no clusters', async () => {

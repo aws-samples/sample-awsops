@@ -11,6 +11,8 @@ export interface EksIpResolution {
   map: NonNullable<FlowInput['ipResolved']>;
   blockedScopes: string[];
   coveredRegions: string[];
+  /** Scoped listings only: `account|region` pairs proven enumerated. Host rows also key as `self`. */
+  coveredAccountRegions?: string[];
   globalUnknown: boolean;
   notConnected?: number;
   status: 'ok' | 'empty' | 'partial' | 'unavailable';
@@ -85,13 +87,14 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
   const blockedScopes = new Set<string>();
   const reasons = new Set<EksIpResolution['reasons'][number]>();
   let coveredRegions: string[] = [];
+  let coveredAccountRegions: string[] = [];
   let notConnected = 0;
   const bindings: Binding[] = [];
   const bindingGaps = new Set<string>();
-  let listHasErrors = false;
+  let listHasErrors = false, scopePartial = false;
+  const listUrl = eksListUrl(scopeQuery), scoped = listUrl !== '/api/eks';
   try {
     if (signal?.aborted) return fail();
-    const listUrl = eksListUrl(scopeQuery), scoped = listUrl !== '/api/eks';
     const response = await fetch(listUrl, { signal });
     const list = response.ok ? await response.json() : null;
     if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return fail();
@@ -99,16 +102,37 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
     // The current API returns at most 25 descriptors and reports truncation.
     if (list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean')
       || (list.truncated !== false && list.clusters.length >= 25)) return fail('cluster_limit_possible');
-    if (list.errors !== undefined && (!Array.isArray(list.errors) || !list.errors.every(discoveryNote))) return fail();
-    listHasErrors = list.status === 'partial' || (list.errors !== undefined && list.errors.length > 0);
     const clusters = list.clusters as Cluster[];
-    // Member and non-default-region rows are addressed by their listed id (full ARN); a bare
-    // name would be read as a host deployment-region cluster, so scoped rows require it.
-    if (scoped ? !clusters.every(c => nonempty(c.id)) : clusters.some(c => c.id !== undefined && !nonempty(c.id))) return fail();
+    if (scoped) {
+      if (list.errors !== undefined && (!Array.isArray(list.errors) || !list.errors.every(discoveryNote))) return fail();
+      if (list.status === 'partial') listHasErrors = true;
+      if (Array.isArray(list.errors) && list.errors.length) scopePartial = true;
+      // Member and non-default-region rows are addressed by their listed id (full ARN); a bare
+      // name would be read as a host deployment-region cluster, so scoped rows require it. The
+      // account keys per-account coverage below.
+      if (!clusters.every(c => nonempty(c.id) && typeof c.accountId === 'string' && /^(?:self|\d{12})$/.test(c.accountId))) return fail();
+    } else {
+      listHasErrors = list.status === 'partial' || (list.errors !== undefined && (!Array.isArray(list.errors) || list.errors.length > 0));
+    }
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return fail();
     if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return fail();
     coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
     if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return fail();
+    if (scoped) {
+      // A region is enumerated per account: one account's clusters prove nothing about another
+      // account's listing there. Without an error or truncation, a returned row proves its
+      // account|region target was listed; a single-target listing also proves its own target
+      // when empty. Host inventory rows are keyed `self`; the listing reports the host's numeric
+      // id, recognizable only on bare-id (host deployment-region) rows or a self-only scope.
+      // Host clusters elsewhere then stay unproven for `self` rows (fail closed).
+      const accounts = new URLSearchParams(scopeQuery).get('accounts') ?? 'self';
+      const hostIds = new Set(['self', ...clusters.filter(c => accounts === 'self' || !c.id!.startsWith('arn:'))
+        .map(c => c.accountId!)]);
+      const keys = new Set(clusters.flatMap(c => [`${c.accountId}|${c.region}`,
+        ...(hostIds.has(c.accountId!) ? [`self|${c.region}`] : [])]));
+      if (nonempty(list.region) && accounts !== '__all__' && !accounts.includes(',')) keys.add(`${accounts}|${list.region}`);
+      coveredAccountRegions = [...keys].sort();
+    }
     await Promise.all(clusters.map(async cluster => {
       const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
       if (cluster.access !== 'connected') {
@@ -121,7 +145,7 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
       const get = async (kind: string) => {
         try {
           if (signal?.aborted) return null;
-          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.id ?? cluster.name)}/incluster?kind=${kind}`, { signal });
+          const r = await fetch(`/api/eks/${encodeURIComponent(scoped ? cluster.id! : cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
           if (kind === 'pods' && typeof d?.generatedAt === 'string' && Number.isFinite(Date.parse(d.generatedAt))) podReadAt = Date.parse(d.generatedAt);
           if (includeBindings && (d?.status === 'partial' || d?.truncated === true)) bindingGaps.add('binding_read_incomplete');
@@ -208,6 +232,8 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
   if (listHasErrors || blockedScopes.size) bindingGaps.add('binding_read_incomplete');
+  // Reason-less all-region discovery note: listed targets are sound, unlisted regions unknown.
+  if (scopePartial) bindingGaps.add('binding_scope_partial');
   const usableBindings = includeBindings && !bindingGaps.size ? bindings.map(b => {
     const proof = b.region && b.vpc ? map[scopedTargetIp(b.region, b.vpc, b.ip)] : null;
     const namespace = proof?.meta?.namespace, name = proof?.meta?.pod;
@@ -218,7 +244,8 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
     ...(!bindingGaps.size ? { bindings: usableBindings } : {}),
     bindingRead: { status: bindingGaps.size ? 'withheld' as const : usableBindings.length ? 'ok' as const : 'empty' as const,
       reasons: [...bindingGaps].sort() },
-  } : {}), ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+  } : {}), ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions,
+    ...(scoped ? { coveredAccountRegions } : {}), globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
     : candidates.size ? 'ok' : 'empty', reasons: [...reasons].sort() };
 }
 

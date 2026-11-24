@@ -145,6 +145,8 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
     targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
     eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
     ...(enumerated ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
+    // Scoped coverage is per account; an absent list (failed read) proves no account.
+    ...(options.eksScope ? { eksAccountRegions: eks?.coveredAccountRegions ?? [] } : {}),
     // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
     ownerIncomplete: [...OWNER_TYPES.filter(ownerIssue), ...SAVED_GRAPH_ONLY_OWNER_TYPES],
   } };
