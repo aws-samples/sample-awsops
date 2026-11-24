@@ -423,3 +423,8 @@ API reference / API 참고:
 ### Presentation exports
 
 The report detail and printable view build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the source sections for inspection. The PowerPoint contains native text and chart elements, with the source rows for each briefing slide in its speaker notes. Large groups show a bounded excerpt with a range and total; the detailed evidence appendix is available in the original report.
+
+
+### Customer findings and collection coverage
+
+The executive ranking uses admitted, readable findings. Coverage gaps, withheld prose and a bare statement that metrics were collected do not qualify as customer risks. A pillar can instead identify a concrete prerequisite that changes a decision. When nothing supports a correction, the report defers that decision and retains the pillar status. The underlying admission ledger and source diagnostics remain available in the authenticated evidence appendix and Markdown archive. For this report path the customer Word and PDF omit the technical appendix.

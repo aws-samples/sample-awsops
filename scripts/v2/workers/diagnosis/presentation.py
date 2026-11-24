@@ -491,6 +491,16 @@ def _finding_topic(finding, records):
     return None
 
 
+def customer_explanation(finding, analysis):
+    """Only readable, admitted assessments support a customer-facing risk."""
+    if finding.get("claim") == "coverage_gap":
+        return ""
+    text = finding.get("explanation")
+    if finding.get("claim") != "observation":
+        text = (analysis.get("editor_plan") or {}).get("paragraphs", {}).get(finding["id"], text)
+    return _safe_explanation(text)
+
+
 def title_and_tags(bundle, analysis, *, lang="ko"):
     findings = _ordered(analysis)
     titles = {"ko": "AWS 계정 종합진단 — Well-Architected 6대 영역 점검",
@@ -503,12 +513,15 @@ def title_and_tags(bundle, analysis, *, lang="ko"):
     evidence = {r["id"]: r for r in bundle.get("evidence", [])}
     topics = []
     service_tags = []
+    lead_severity = None
     for finding in findings:
         records = [evidence[k] for k in finding.get("evidence_ids", []) if k in evidence]
-        if not records:
+        if not records or not customer_explanation(finding, analysis):
             continue
+        if lead_severity is None:
+            lead_severity = finding["severity"]
         topic = _finding_topic(finding, records)
-        if topic and finding["severity"] == findings[0]["severity"] and topic not in topics:
+        if topic and finding["severity"] == lead_severity and topic not in topics:
             topics.append(topic)
         service_tags.extend(_RESOURCE_TAGS.get(index[k]["kind"])
                             for k in finding.get("resource_ids", []) if k in index)
