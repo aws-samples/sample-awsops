@@ -70,10 +70,10 @@ const KIND: Record<FlowKind, SiteKind> = {
 };
 const TRACE_GAP: Record<TraceOverlayReason, SiteGap> = {
   disabled: 'trace_unavailable', unsupported_scope: 'trace_unavailable', unavailable: 'trace_unavailable',
-  member_cluster: 'trace_unavailable', partial_snapshot: 'partial_snapshot', ambiguous_cluster: 'ambiguous_cluster',
+  partial_snapshot: 'partial_snapshot', ambiguous_cluster: 'ambiguous_cluster',
   incomplete_listing: 'incomplete_listing',
 };
-const EVIDENCE_RANK: Record<SiteEvidence, number> = { inferred: 0, configured: 1, observed: 2, traced: 3 };
+export const EVIDENCE_RANK: Record<SiteEvidence, number> = { inferred: 0, configured: 1, observed: 2, traced: 3 };
 const ROUTE_LABEL_CAP = 3;
 
 /** Lowercase, trim, strip scheme/userinfo/path/query/port and trailing dots (Route53 spelling). */

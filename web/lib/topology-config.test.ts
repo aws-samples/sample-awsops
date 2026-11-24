@@ -361,3 +361,355 @@ it('uses the Pod reader clock and distinguishes empty, withheld authority and in
   expect(bounded.bindingRead).toEqual({status:'withheld',reasons:['binding_limit']});
   expect(bounded.bindings).toBeUndefined();
 });
+
+describe('scope-aware EKS listing', () => {
+  const member = '123456789012', other = '111111111111', mRegion = 'ap-northeast-2', mVpc = 'vpc-member';
+  const memberArn = `arn:aws:eks:${mRegion}:${member}:cluster/shop-cluster`;
+  const memberCluster = { id: memberArn, arn: memberArn, name: 'shop-cluster', accountId: member,
+    access: 'connected', region: mRegion, vpcId: mVpc };
+  const memberPod = { ...pod, uid: 'member-pod', hostNetwork: false };
+  function serveScoped(list: Record<string, unknown>, pods: unknown[] = [memberPod]) {
+    const f = vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      if (url.pathname === '/api/eks') return json(list);
+      if (url.searchParams.get('kind') === 'pods') return json({ kind: 'pods', rows: pods, generatedAt: '2026-11-18T00:00:00Z' });
+      if (url.searchParams.get('kind') === 'endpoints') return json({ kind: 'endpoints', rows: [endpoint] });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', f);
+    return f;
+  }
+  const requested = (f: ReturnType<typeof serveScoped>) => f.mock.calls.map(call => String((call as unknown[])[0]));
+
+  it('requests the selected accounts and regions and drops other keys', async () => {
+    let f = serveScoped({ region: mRegion, clusters: [memberCluster] });
+    await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${mRegion}`);
+    expect(requested(f)[0]).toBe(`/api/eks?accounts=${member}&regions=${mRegion}`);
+    f = serveScoped({ region: mRegion, clusters: [memberCluster] });
+    await fetchEksIpMap(undefined, false, `limit=5&accounts=${member},${other}&cluster=x&regions=${mRegion}&includeGlobal=1`);
+    const url = new URL(requested(f)[0], 'http://localhost');
+    expect(url.pathname).toBe('/api/eks');
+    expect([...url.searchParams.keys()]).toEqual(['accounts', 'regions', 'includeGlobal']);
+    expect(url.searchParams.get('accounts')).toBe(`${member},${other}`);
+    expect(url.searchParams.get('includeGlobal')).toBe('1');
+  });
+
+  it('keeps the unscoped default and a scope with no allowed keys on the bare listing', async () => {
+    let f = serveScoped({ region, clusters: [cluster] });
+    await fetchEksIpMap();
+    expect(requested(f)[0]).toBe('/api/eks');
+    expect(requested(f).slice(1).every(u => u.startsWith('/api/eks/host-cluster/incluster?'))).toBe(true);
+    f = serveScoped({ region, clusters: [cluster] });
+    await fetchEksIpMap(undefined, false, 'foo=bar');
+    expect(requested(f)[0]).toBe('/api/eks');
+  });
+
+  it('binds a member cluster ARN row by region|vpc|ip and reads it through the encoded ARN', async () => {
+    const f = serveScoped({ clusters: [memberCluster, { ...memberCluster, id: memberArn.replace(member, other),
+      arn: memberArn.replace(member, other), accountId: other, vpcId: 'vpc-other' }] });
+    const result = await fetchEksIpMap(undefined, true, `accounts=${member},${other}&regions=${mRegion}`);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false, coveredRegions: [mRegion] });
+    expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks', label: 'shop/external-service',
+      meta: { cluster: 'shop-cluster', pod: 'orders-a', region: mRegion, vpcId: mVpc } });
+    expect(result.map[scopedTargetIp(mRegion, 'vpc-other', ip)]).toMatchObject({ resolved: 'eks' });
+    const incluster = requested(f).slice(1);
+    expect(incluster).toContain(`/api/eks/${encodeURIComponent(memberArn)}/incluster?kind=pods`);
+    expect(incluster.every(u => u.startsWith('/api/eks/arn%3Aaws%3Aeks%3A'))).toBe(true);
+    expect(result.bindingRead).toEqual({ status: 'ok', reasons: [] });
+    expect(result.bindings?.find(b => b.authority === memberArn)).toMatchObject({ nativeId: 'member-pod', ip, confidence: 'observed' });
+  });
+
+  it('refuses a scoped row without its listed id instead of reading it as a host cluster name', async () => {
+    const { id: _omit, ...unnamed } = memberCluster;
+    void _omit;
+    const f = serveScoped({ region: mRegion, clusters: [unnamed] });
+    expect(await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${mRegion}`))
+      .toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
+    expect(requested(f)).toHaveLength(1);
+  });
+
+  it('fails a truncated scoped listing', async () => {
+    serveScoped({ clusters: [memberCluster], truncated: true });
+    expect(await fetchEksIpMap(undefined, true, `accounts=__all__&regions=${mRegion}`)).toMatchObject({
+      map: {}, globalUnknown: true, reasons: ['cluster_limit_possible'], bindingRead: { status: 'withheld' } });
+  });
+
+  it.each([
+    ['a reason-bearing target failure', { accountId: other, region: mRegion, message: 'EKS inventory query failed', reason: 'denied' }],
+    ['a malformed error entry', 'boom'],
+    ['an error entry with a non-string reason', { accountId: other, region: '__all__', message: 'x', reason: 1 }],
+  ])('fails the whole map on %s instead of covering fewer clusters', async (_label, error) => {
+    serveScoped({ clusters: [memberCluster], errors: [error] });
+    expect(await fetchEksIpMap(undefined, true, `accounts=${member},${other}&regions=${mRegion}`)).toMatchObject({
+      map: {}, globalUnknown: true, status: 'unavailable', bindingRead: { status: 'withheld' } });
+  });
+
+  it('keeps the map but withholds bindings under the reason-less all-region discovery note', async () => {
+    serveScoped({ clusters: [memberCluster], errors: [{ accountId: member, region: '__all__',
+      message: 'All-region discovery covers configured and registered regions only.' }] });
+    const result = await fetchEksIpMap(undefined, true, `accounts=${member}&regions=__all__`);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false, coveredRegions: [mRegion] });
+    expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_scope_partial'] });
+    expect(result.bindings).toBeUndefined();
+  });
+
+  it('keeps the unscoped default path byte-for-byte: name URLs and errors that only withhold bindings', async () => {
+    const hostArn = `arn:aws:eks:${region}:${other}:cluster/host-cluster`;
+    const f = serveScoped({ region, clusters: [{ ...cluster, id: hostArn, arn: hostArn, accountId: other }],
+      errors: [{ accountId: 'self', region, message: 'EKS inventory query failed', reason: 'denied' }] });
+    const result = await fetchEksIpMap(undefined, true);
+    expect(requested(f).slice(1).every(u => u.startsWith('/api/eks/host-cluster/incluster?'))).toBe(true);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false, coveredRegions: [region] });
+    expect(result.map[scopedTargetIp(region, vpcId, ip)]).toMatchObject({ resolved: 'eks' });
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    expect(result.coveredAccountRegions).toBeUndefined();
+    for (const errors of ['boom', [{ region: '__all__', message: 'note' }]]) {
+      serveScoped({ region, clusters: [{ ...cluster, id: '' }], errors });
+      const legacy = await fetchEksIpMap(undefined, true);
+      expect(legacy).toMatchObject({ status: 'ok', bindingRead: { status: 'withheld' } });
+      expect(legacy.bindingRead?.reasons).toContain('binding_read_incomplete');
+      expect(legacy.bindingRead?.reasons).not.toContain('binding_scope_partial');
+    }
+  });
+
+  it('reports coverage per account, never letting one account cover another in the same region', async () => {
+    serveScoped({ clusters: [memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member},${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+    serveScoped({ region: mRegion, clusters: [] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${other}|${mRegion}`]);
+  });
+
+  it('credits every requested account|region of a clean explicit listing, even regions without clusters', async () => {
+    const scope = `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`;
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    const result = await fetchEksIpMap(undefined, false, scope);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false });
+    expect(result.coveredAccountRegions).toEqual([`${member}|${mRegion}`, `${member}|us-west-2`]);
+    expect(result.coveredRegions).toEqual([mRegion, 'us-west-2']);
+    expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    // Multi-account explicit request: only the request's own accounts are credited.
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member},${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${other}|${mRegion}`, `${member}|${mRegion}`].sort());
+  });
+
+  it.each([
+    ['a partial status', { status: 'partial', truncated: false }],
+    ['the reason-less discovery note', { truncated: false, errors: [{ accountId: member, region: '__all__', message: 'note' }] }],
+    ['an unreported truncation flag', {}],
+  ])('grants no request-derived coverage under %s', async (_label, extra) => {
+    serveScoped({ clusters: [memberCluster], ...extra });
+    const result = await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`);
+    expect(result.coveredAccountRegions).toEqual([`${member}|${mRegion}`]);
+    expect(result.coveredRegions).toEqual([mRegion]);
+  });
+
+  it('still fails a clean-looking explicit listing that errors or truncates', async () => {
+    for (const extra of [{ truncated: true }, { truncated: false, errors: [{ accountId: member, region: 'us-west-2', message: 'x', reason: 'denied' }] }]) {
+      serveScoped({ clusters: [memberCluster], ...extra });
+      expect(await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`))
+        .toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
+    }
+  });
+
+  it('keeps row-derived coverage for __all__ accounts or regions', async () => {
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member}&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+  });
+
+  it('keys host clusters as self only when the listing identifies them as host', async () => {
+    const hostArn = `arn:aws:eks:us-west-2:${other}:cluster/far`;
+    const far = { ...memberCluster, id: hostArn, arn: hostArn, name: 'far', accountId: other, region: 'us-west-2', vpcId: 'vpc-far' };
+    serveScoped({ clusters: [far] });
+    expect((await fetchEksIpMap(undefined, false, 'accounts=self&regions=__all__')).coveredAccountRegions)
+      .toEqual([`${other}|us-west-2`, 'self|us-west-2']);
+    const bare = { ...memberCluster, id: 'home', arn: `arn:aws:eks:${mRegion}:${other}:cluster/home`, name: 'home', accountId: other };
+    serveScoped({ clusters: [far, bare, memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`, `${other}|${mRegion}`, `${other}|us-west-2`, `self|${mRegion}`, 'self|us-west-2'].sort());
+    serveScoped({ clusters: [far, memberCluster] });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`, `${other}|us-west-2`].sort());
+  });
+
+  it('refuses a scoped row without a valid account id', async () => {
+    for (const accountId of [undefined, '', 'acct']) {
+      serveScoped({ region: mRegion, clusters: [{ ...memberCluster, accountId }] });
+      expect(await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${mRegion}`))
+        .toMatchObject({ globalUnknown: true, status: 'unavailable' });
+    }
+  });
+
+  it('drops only the bindings of a blocked region|vpc scope and names the blocked clusters (partial)', async () => {
+    const legacyArn = `arn:aws:eks:${mRegion}:${member}:cluster/legacy`;
+    const legacy = { ...memberCluster, id: legacyArn, arn: legacyArn, name: 'legacy', vpcId: 'vpc-legacy', access: 'no-entry' };
+    serveScoped({ clusters: [memberCluster, legacy] });
+    const result = await fetchEksIpMap(undefined, true, `accounts=${member}&regions=${mRegion}`);
+    expect(result.bindingRead).toEqual({ status: 'partial', reasons: ['binding_scope_blocked'], blockedClusters: [legacyArn] });
+    expect(result.bindings?.map(b => b.authority)).toEqual([memberArn]);
+    expect(result.blockedScopes).toEqual([scopedTargetIp(mRegion, 'vpc-legacy', '')]);
+    expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    // Sharing the VPC with the blocked cluster: that scope's bindings are dropped too (it could hold the IP).
+    serveScoped({ clusters: [memberCluster, { ...legacy, vpcId: mVpc }] });
+    const shared = await fetchEksIpMap(undefined, true, `accounts=${member}&regions=${mRegion}`);
+    expect(shared.bindingRead).toMatchObject({ status: 'partial', blockedClusters: [legacyArn] });
+    expect(shared.bindings).toEqual([]);
+    expect(shared.map[scopedTargetIp(mRegion, mVpc, ip)]).toBeNull();
+    // A blocked target still reads as an unresolved EKS scope in the flow graph, never as "not a pod".
+    const graph = buildFlowGraph({ ipResolved: shared.map, ownershipRead: { eksScopes: shared.blockedScopes,
+      eksAccountRegions: shared.coveredAccountRegions }, tg: [{ resource_id: 'tg', account_id: member, region: mRegion, vpc_id: mVpc,
+      target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] }] });
+    expect(graph.nodes.find(n => n.kind === 'target')?.meta?.ambiguity).toBe('eks_inventory_incomplete');
+  });
+
+  it('keeps the unscoped default path withholding every binding when any cluster is blocked', async () => {
+    const hostArn = `arn:aws:eks:${region}:${other}:cluster/host-cluster`;
+    serveScoped({ region, clusters: [{ ...cluster, id: hostArn, arn: hostArn, accountId: other },
+      { ...cluster, name: 'offline', id: 'offline', vpcId: 'vpc-offline', access: 'no-entry' }] });
+    const result = await fetchEksIpMap(undefined, true);
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    expect(result.bindings).toBeUndefined();
+    expect(result.map[scopedTargetIp(region, vpcId, ip)]).toMatchObject({ resolved: 'eks' });
+  });
+
+  it('keeps global withholding for listing errors and partial pod reads alongside a blocked scope', async () => {
+    const legacyArn = `arn:aws:eks:${mRegion}:${member}:cluster/legacy`;
+    const legacy = { ...memberCluster, id: legacyArn, arn: legacyArn, name: 'legacy', vpcId: 'vpc-legacy', access: 'no-entry' };
+    serveScoped({ clusters: [memberCluster, legacy], status: 'partial' });
+    expect((await fetchEksIpMap(undefined, true, `accounts=${member}&regions=${mRegion}`)).bindingRead)
+      .toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      if (url.pathname === '/api/eks') return json({ clusters: [memberCluster, legacy] });
+      if (url.searchParams.get('kind') === 'pods') return json({ kind: 'pods', rows: [memberPod], status: 'partial', generatedAt: '2026-11-18T00:00:00Z' });
+      return json({ kind: 'endpoints', rows: [] });
+    }));
+    expect((await fetchEksIpMap(undefined, true, `accounts=${member}&regions=${mRegion}`)).bindingRead)
+      .toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+  });
+
+  describe('per-account scope queries', () => {
+    const westArn = `arn:aws:eks:us-west-2:${other}:cluster/west`;
+    const west = { ...memberCluster, id: westArn, arn: westArn, name: 'west', accountId: other, region: 'us-west-2', vpcId: 'vpc-west' };
+    function serveByQuery(byQuery: (q: URLSearchParams) => Response) {
+      const f = vi.fn(async (input: string) => {
+        const url = new URL(input, 'http://localhost');
+        if (url.pathname === '/api/eks') return byQuery(url.searchParams);
+        if (url.searchParams.get('kind') === 'pods') {
+          const cl = decodeURIComponent(url.pathname.split('/')[3]);
+          return json({ kind: 'pods', rows: [{ ...memberPod, uid: `uid-${cl}` }], generatedAt: '2026-11-18T00:00:00Z' });
+        }
+        if (url.searchParams.get('kind') === 'endpoints') return json({ kind: 'endpoints', rows: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      vi.stubGlobal('fetch', f);
+      return f;
+    }
+    const listing = (q: URLSearchParams) => {
+      const account = q.get('accounts'), r = q.get('regions');
+      const rows = [memberCluster, west].filter(c => c.accountId === account && c.region === r);
+      return json({ region: r, clusters: rows, errors: [] });
+    };
+
+    it('lists each account in its own regions and merges the clusters (no cross product)', async () => {
+      const f = serveByQuery(listing);
+      const result = await fetchEksIpMap(undefined, true,
+        [`accounts=${member}&regions=${mRegion}&includeGlobal=1`, `accounts=${other}&regions=us-west-2&includeGlobal=1`]);
+      const lists = requested(f).filter(u => u.startsWith('/api/eks?'));
+      expect(lists).toEqual([`/api/eks?accounts=${member}&regions=${mRegion}&includeGlobal=1`,
+        `/api/eks?accounts=${other}&regions=us-west-2&includeGlobal=1`]);
+      expect(result.status).toBe('ok');
+      expect(result.coveredRegions).toEqual([mRegion, 'us-west-2']);
+      expect(result.coveredAccountRegions).toEqual([`${member}|${mRegion}`, `${other}|us-west-2`].sort());
+      expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+      expect(result.map[scopedTargetIp('us-west-2', 'vpc-west', ip)]).toMatchObject({ resolved: 'eks', meta: { cluster: 'west' } });
+      expect(result.bindingRead).toEqual({ status: 'ok', reasons: [] });
+      expect(result.bindings?.map(b => b.authority).sort()).toEqual([memberArn, westArn].sort());
+    });
+
+    it('fails the whole read when any sub-listing fails, errors or truncates', async () => {
+      for (const bad of [json({ status: 'error' }, 403), json({ clusters: [west], truncated: true }),
+        json({ clusters: [west], errors: [{ accountId: other, region: 'us-west-2', message: 'x', reason: 'denied' }] })]) {
+        serveByQuery((q) => (q.get('accounts') === other ? bad.clone() : listing(q)));
+        expect(await fetchEksIpMap(undefined, true, [`accounts=${member}&regions=${mRegion}`, `accounts=${other}&regions=us-west-2`]))
+          .toMatchObject({ map: {}, globalUnknown: true, bindingRead: { status: 'withheld' } });
+      }
+    });
+
+    it('a clean multi-target listing with no clusters proves every requested account|region enumerated', async () => {
+      // 200, no errors, no truncation: each requested target was listed and holds no cluster.
+      serveScoped({ clusters: [], errors: [] });
+      const result = await fetchEksIpMap(undefined, true, `accounts=${member},${other}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`);
+      expect(result).toMatchObject({ map: {}, globalUnknown: false, status: 'empty', bindingRead: { status: 'empty', reasons: [] } });
+      expect(result.coveredAccountRegions).toEqual([`${other}|${mRegion}`, `${other}|us-west-2`, `${member}|${mRegion}`, `${member}|us-west-2`].sort());
+      expect(result.coveredRegions.sort()).toEqual([mRegion, 'us-west-2']);
+      // Alongside another sub-listing it contributes coverage and no clusters.
+      serveByQuery((q) => (q.get('accounts') === other ? json({ clusters: [], errors: [] }) : json({ region: mRegion, clusters: [memberCluster], errors: [] })));
+      const both = await fetchEksIpMap(undefined, true, [`accounts=${member}&regions=${mRegion}`, `accounts=${other}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`]);
+      expect(both.coveredAccountRegions).toEqual(expect.arrayContaining([`${other}|${mRegion}`, `${other}|us-west-2`, `${member}|${mRegion}`]));
+      expect(both.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    });
+
+    it.each([
+      ['all regions (requested targets unknown)', `accounts=${member},${other}&regions=__all__`, { clusters: [], errors: [] }],
+      ['all accounts', `accounts=__all__&regions=${mRegion}`, { clusters: [], errors: [] }],
+      ['no regions param (server default region unknown)', `accounts=${member},${other}`, { clusters: [], errors: [] }],
+      ['a partial status', `accounts=${member},${other}&regions=${mRegion}`, { clusters: [], errors: [], status: 'partial' }],
+      ['a reasoned error', `accounts=${member},${other}&regions=${mRegion}`,
+        { clusters: [], errors: [{ accountId: other, region: mRegion, message: 'x', reason: 'denied' }] }],
+      ['truncation', `accounts=${member},${other}&regions=${mRegion}`, { clusters: [], truncated: true }],
+    ])('an empty multi-target listing with %s still cannot certify coverage', async (_l, scope, body) => {
+      serveScoped(body);
+      expect(await fetchEksIpMap(undefined, false, scope)).toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
+    });
+
+    it('applies duplicate-IP vetoes across accounts (shared VPC) and dedupes a cluster listed twice', async () => {
+      const sharedArn = `arn:aws:eks:${mRegion}:${other}:cluster/shared`;
+      const shared = { ...memberCluster, id: sharedArn, arn: sharedArn, name: 'shared', accountId: other };
+      const f = serveByQuery((q) => json({ region: mRegion,
+        clusters: q.get('accounts') === member ? [memberCluster] : [shared, memberCluster], errors: [] }));
+      const result = await fetchEksIpMap(undefined, true, [`accounts=${member}&regions=${mRegion}`, `accounts=${other}&regions=${mRegion}`]);
+      expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toBeNull();
+      expect(requested(f).filter(u => u === `/api/eks/${encodeURIComponent(memberArn)}/incluster?kind=pods`)).toHaveLength(1);
+    });
+
+    it('reads at most 6 clusters in flight at once and keeps the same map', async () => {
+      // 20 connected clusters; #0 and #19 share a VPC, so their shared IP is vetoed regardless of completion order.
+      const many = Array.from({ length: 20 }, (_, i) => {
+        const arn = `arn:aws:eks:${mRegion}:${member}:cluster/c${i}`;
+        return { ...memberCluster, id: arn, arn, name: `c${i}`, vpcId: `vpc-${i % 19}` };
+      });
+      const pending = new Map<string, number>();
+      let maxClusters = 0, maxRequests = 0, inFlight = 0;
+      vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+        const url = new URL(input, 'http://localhost');
+        if (url.pathname === '/api/eks') return json({ region: mRegion, clusters: many, errors: [], truncated: false });
+        const ref = decodeURIComponent(url.pathname.split('/')[3]);
+        pending.set(ref, (pending.get(ref) ?? 0) + 1); inFlight++;
+        maxClusters = Math.max(maxClusters, pending.size); maxRequests = Math.max(maxRequests, inFlight);
+        // Deferred, uneven completion so lanes finish out of order.
+        await new Promise(resolve => setTimeout(resolve, (Number(ref.split('/c')[1]) * 7) % 5));
+        inFlight--;
+        const left = pending.get(ref)! - 1;
+        if (left) pending.set(ref, left); else pending.delete(ref);
+        if (url.searchParams.get('kind') === 'pods') return json({ kind: 'pods', rows: [memberPod], generatedAt: '2026-11-18T00:00:00Z' });
+        return json({ kind: 'endpoints', rows: [] });
+      }));
+      const result = await fetchEksIpMap(undefined, false, [`accounts=${member}&regions=${mRegion}`]);
+      expect(maxClusters).toBe(6);
+      expect(maxRequests).toBeLessThanOrEqual(12);
+      expect(result.status).toBe('ok');
+      const expected = Object.fromEntries(Array.from({ length: 19 }, (_, v) => [scopedTargetIp(mRegion, `vpc-${v}`, ip),
+        v === 0 ? null : expect.objectContaining({ resolved: 'eks', meta: expect.objectContaining({ cluster: `c${v}`, vpcId: `vpc-${v}` }) })]));
+      expect(result.map).toEqual(expected);
+    });
+  });
+
+});

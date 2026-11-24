@@ -308,7 +308,7 @@ describe('buildServiceGraph trace overlay', () => {
 
   it('draws nothing and adds no note for an unavailable overlay', () => {
     const input = withWeb();
-    input.trace = { available: false, reason: 'member_cluster', workloadCalls: [call('web', { workload: 'api' })], omitted: 0 };
+    input.trace = { available: false, reason: 'ambiguous_cluster', workloadCalls: [call('web', { workload: 'api' })], omitted: 0 };
     const g = buildServiceGraph(input);
     expect(g.edges.some((e) => e.evidence.includes('trace'))).toBe(false);
     expect(g.notes).toHaveLength(1);
@@ -432,7 +432,7 @@ describe('filterGraphInputByNamespace', () => {
   });
 
   it('keeps an unavailable or absent trace overlay as-is', () => {
-    const off: TraceOverlay = { available: false, reason: 'member_cluster', workloadCalls: [], omitted: 0 };
+    const off: TraceOverlay = { available: false, reason: 'ambiguous_cluster', workloadCalls: [], omitted: 0 };
     expect(filterGraphInputByNamespace({ ...base(), trace: off }, () => false).trace).toBe(off);
     expect(filterGraphInputByNamespace(base(), () => false).trace).toBeNull();
   });

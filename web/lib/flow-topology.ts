@@ -85,6 +85,9 @@ export interface FlowInput {
   ownershipRead?: {
     targetGroup?: 'failed' | 'capped'; ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
     eksScopes?: string[]; eksUnknown?: boolean; eksRegions?: string[]; configurationOnly?: boolean;
+    /** Scoped EKS listings: enumerated `account|region` pairs (host = `self`). When present it
+     *  replaces the region-only `eksRegions` check, so one account cannot cover another. */
+    eksAccountRegions?: string[];
     /** ENI-ownership inputs (eni and owner types) whose read was withheld, capped or failed. */
     ownerIncomplete?: string[];
   };
@@ -700,7 +703,9 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           : reads?.ecsTask ? 'ecs_task_inventory_incomplete'
           : reads?.subnet ? 'subnet_inventory_incomplete'
           : !reads?.configurationOnly && reads?.eksUnknown ? 'eks_inventory_incomplete'
-          : !reads?.configurationOnly && reads?.eksRegions && !reads.eksRegions.includes(str(t.region))
+          : !reads?.configurationOnly && (reads?.eksAccountRegions
+            ? !reads.eksAccountRegions.includes(`${str(t.account_id)}|${str(t.region)}`)
+            : reads?.eksRegions && !reads.eksRegions.includes(str(t.region)))
             ? 'eks_not_enumerated'
           : !reads?.configurationOnly && reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
             ? 'eks_inventory_incomplete' : undefined;

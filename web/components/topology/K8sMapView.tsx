@@ -5,14 +5,18 @@
 // requests, clears state, and every late result is dropped by the `live` flag / `signal.aborted`):
 //  - in-cluster kinds ingresses/services/pods/endpoints (failed kinds are disclosed, never hidden)
 //  - db-refs (config-inferred datastores; failure/partial/truncated and a capped or unconfirmed inventory match are disclosed, the graph still renders)
-//  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters and an
-//    incomplete listing itself). Name uniqueness is checked against the FLEET-wide listing (all
-//    accounts/regions), not the selector's scope: a narrowed scope (incl. the UI default, host account
-//    only — DEFAULT_SCOPE in web/lib/account-context.ts, resolved by getEksScope in web/lib/eks-scope.ts)
-//    hides same-named clusters of other accounts/regions without any truncated/error disclosure.
-//    An ARN id is a host cluster only when its account equals the
-//    unique isHost account of /api/accounts; if that lookup fails, every ARN id is a member.
-//  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders)
+//  - trace overlay (host and member clusters alike; the module refuses ambiguous clusters and an
+//    incomplete listing itself). Name uniqueness is checked against the FLEET-wide listing, not the
+//    selector's scope: a narrowed scope (incl. the UI default, host account only — DEFAULT_SCOPE in
+//    web/lib/account-context.ts, resolved by getEksScope in web/lib/eks-scope.ts) hides same-named clusters
+//    of other accounts/regions without any truncated/error disclosure. The fleet is read per registered
+//    account (web/lib/eks-fleet.ts readFleet, from the same /api/accounts body) plus /api/eks/registrations
+//    (uniqueness = listed ∪ registered clusters): a single all-account listing is capped at 12 account×region
+//    targets and truncates on a real fleet. The trace read therefore
+//    waits for the /api/accounts lookup; a failed or malformed lookup fails the join closed (incomplete_listing).
+//  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders).
+//    An ARN id reads 'self' only when its account equals the unique isHost account of /api/accounts;
+//    if that lookup fails, an ARN id reads its own numeric account.
 //  - nodes LAZILY, the first time a Service is selected (detail panel only).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -26,9 +30,11 @@ import type { IngressRow, ServiceRow, EndpointRow } from '@/lib/eks-incluster';
 import type { PodRow, NodeRow } from '@/lib/eks-resources';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { useTheme } from '@/lib/use-theme';
-import { useActiveScope, scopeParams, ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
+import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { readFleet } from '@/lib/eks-fleet';
 import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
+import { hostAccountOf } from '@/lib/host-account';
 
 const KINDS = ['ingresses', 'services', 'pods', 'endpoints'] as const;
 
@@ -45,10 +51,6 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   unsupported_scope: '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.',
   unavailable: '트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.',
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.',
-  // Reached by a real member cluster, and by an ARN-identified host cluster (outside the deployment
-  // region) only when the host account could not be resolved from /api/accounts. The copy states the
-  // rule, not that this IS a member account.
-  member_cluster: '트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 같은 이름의 클러스터가 없는지 확인할 수 없으므로 트레이스로 관측된 호출을 표시하지 않습니다.',
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되었거나 오래된 원본을 포함해 트레이스로 관측된 호출을 표시하지 않습니다.',
 };
@@ -64,24 +66,13 @@ export const traceOmittedNotice = (omitted: number) =>
 /**
  * Account whose Route53 inventory is read. Inventory keys host rows as 'self', so a bare-name id and an
  * ARN whose account is the resolved host account both read 'self'; any other ARN reads its own account.
- * With an unknown host account (null) an ARN keeps its numeric account: the conservative member handling,
- * matching the trace overlay's member_cluster refusal.
+ * With an unknown host account (null) an ARN keeps its numeric account (the conservative member handling).
+ * Route53 only: the trace join gates host and member clusters alike and never reads the host account.
  */
 const dnsAccountOf = (id: string, hostAccountId: string | null) => {
   const account = parseEksClusterId(id)?.accountId;
   return !account || account === hostAccountId ? 'self' : account;
 };
-
-/** The unique host row's 12-digit account id from `GET /api/accounts`, or null when it is absent,
- *  ambiguous (more than one host row) or malformed. Never guessed. */
-function hostAccountOf(body: unknown): string | null {
-  const accounts = (body as { accounts?: unknown } | null)?.accounts;
-  const hosts = Array.isArray(accounts)
-    ? accounts.filter((a): a is { accountId?: unknown } => !!a && typeof a === 'object' && (a as { isHost?: unknown }).isHost === true)
-    : [];
-  const id = hosts.length === 1 ? hosts[0].accountId : undefined;
-  return typeof id === 'string' && /^\d{12}$/.test(id) ? id : null;
-}
 
 async function readJson(r: Response): Promise<Record<string, unknown>> {
   // An OK response must parse; error bodies are best-effort only (message is never shown for kinds).
@@ -90,15 +81,15 @@ async function readJson(r: Response): Promise<Record<string, unknown>> {
   throw new Error(String(d?.message ?? r.status));
 }
 
-export default function K8sMapView({ query }: { query: string }) {
+/** `initialCluster` (a listed cluster id, e.g. from `?cluster=` deep links) preselects that cluster when the
+ *  scoped listing contains it; otherwise the first connected cluster is selected as before. */
+export default function K8sMapView({ query, initialCluster = '' }: { query: string; initialCluster?: string }) {
   // Only 'dark' is a dark theme (cobalt/teal are light variants) — same mapping as /topology.
   const theme = useTheme() === 'dark' ? 'dark' as const : 'light' as const;
   const { tt } = useI18n();
   const [clusters, setClusters] = useState<{ id: string; label: string }[] | null>(null);
-  // Every listed cluster id in scope (any access state). Feeds the trace join's name-uniqueness check
-  // only when the scope is already fleet-wide; otherwise the separate fleet listing below does.
-  const [registeredNames, setRegisteredNames] = useState<string[]>([]);
   const [cluster, setCluster] = useState('');
+  const initialClusterRef = useRef(initialCluster);
   const [err, setErr] = useState('');
   const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [scope, , scopeReady] = useActiveScope();
@@ -111,14 +102,16 @@ export default function K8sMapView({ query }: { query: string }) {
   const nodesAbort = useRef<AbortController | null>(null);
   const [hiddenNs, setHiddenNs] = useState<ReadonlySet<string>>(new Set());
   const [showSystem, setShowSystem] = useState(false);
-  // Host account id, needed only for ARN-identified clusters: undefined = lookup pending, null = not determinable.
-  const [hostAccount, setHostAccount] = useState<string | null | undefined>(undefined);
+  // `/api/accounts` body: the host account id (Route53 read of ARN-identified clusters) and the fleet's account
+  // list. undefined = lookup pending; null = failed (the host is then not determinable, the fleet incomplete).
+  const [accountsBody, setAccountsBody] = useState<unknown>(undefined);
+  const hostAccount = accountsBody === undefined ? undefined : hostAccountOf(accountsBody);
   useEffect(() => {
     let live = true;
     fetch('/api/accounts')
       .then((r) => (r.ok ? r.json() : null))
-      .then((body) => { if (live) setHostAccount(hostAccountOf(body)); })
-      .catch(() => { if (live) setHostAccount(null); });
+      .then((body) => { if (live) setAccountsBody(body ?? null); })
+      .catch(() => { if (live) setAccountsBody(null); });
     return () => { live = false; };
   }, []);
 
@@ -126,7 +119,6 @@ export default function K8sMapView({ query }: { query: string }) {
     if (!scopeReady) return;
     let live = true;
     setClusters(null);
-    setRegisteredNames([]);
     setCluster('');
     setErr('');
     setCollection({});
@@ -150,8 +142,8 @@ export default function K8sMapView({ query }: { query: string }) {
           return { id, label: eksClusterLabel(id) };
         });
         setClusters(rows);
-        setRegisteredNames(listed.map((c) => c.id || c.name));
-        if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
+        const wanted = initialClusterRef.current;
+        if (rows.length > 0) setCluster((cur) => cur || (rows.some((c) => c.id === wanted) ? wanted : rows[0].id));
         // Same disclosure as /eks: scope notes, per-target read failures and truncation stay visible.
         setCollection({ errors: Array.isArray(d.errors) ? d.errors : undefined, truncated: !!d.truncated });
       })
@@ -161,50 +153,30 @@ export default function K8sMapView({ query }: { query: string }) {
 
   // Fleet listing for the trace join's name-uniqueness check only (never the cluster selector). A
   // narrowed scope hides same-named clusters of other accounts/regions without disclosure (see header),
-  // so uniqueness is proven against every registered account/region. A scope that is already fleet-wide
-  // reuses the scoped listing (no second request). null = pending.
-  const fleetWide = scope.accounts === ALL_ACCOUNTS && scope.regions === ALL_REGIONS;
+  // so uniqueness is proven against every registered account's all-region listing. null = pending.
   const [fleetRead, setFleetRead] = useState<{ names: string[]; incomplete: boolean } | null>(null);
   useEffect(() => {
     setFleetRead(null);
-    if (!scopeReady || fleetWide) return;
+    if (accountsBody === undefined) return;
     let live = true;
     const ctrl = new AbortController();
-    const { signal } = ctrl;
-    const current = () => live && !signal.aborted;
-    fetch(`/api/eks?${scopeParams({ accounts: ALL_ACCOUNTS, regions: ALL_REGIONS, includeGlobal: true })}`, { signal })
-      .then(async (r) => {
-        // Same parsing as the scoped listing; a non-OK or unparseable response is a failed listing.
-        if (!r.ok) throw new Error(String(r.status));
-        return r.json();
-      })
-      .then((d: { clusters?: { id?: string; name: string }[]; errors?: EksCollectionStatus['errors']; truncated?: boolean }) => {
-        if (!current()) return;
-        const listed: unknown = d?.clusters;
-        const errors: unknown = d?.errors;
-        setFleetRead({
-          names: (Array.isArray(listed) ? listed as { id?: string; name: string }[] : []).map((c) => c.id || c.name),
-          incomplete: !!d?.truncated || (Array.isArray(errors) ? errors : []).some((e) => !!(e as { reason?: unknown } | null)?.reason),
-        });
-      })
-      // Fail closed: a failed, aborted or unparseable fleet listing cannot prove uniqueness.
-      .catch(() => { if (current()) setFleetRead({ names: [], incomplete: true }); });
+    // readFleet fails closed (failed, aborted, unparseable, truncated or reasoned-error listing → incomplete).
+    void readFleet(accountsBody, ctrl.signal)
+      .then((f) => { if (live && !ctrl.signal.aborted) setFleetRead({ names: f.names, incomplete: f.incomplete }); })
+      .catch(() => { if (live && !ctrl.signal.aborted) setFleetRead({ names: [], incomplete: true }); });
     return () => { live = false; ctrl.abort(); };
-  }, [scopeQuery, scopeReady, fleetWide]);
+  }, [accountsBody]);
 
   // Only a real read failure (route `eksReadFailure` shape carries `reason`) or truncation makes the
   // listing incomplete; the informational wildcard-scope note does not. An incomplete listing also
   // cannot prove the selected name is unique, so it blocks the trace join.
   const inconclusive = !!collection.truncated || (collection.errors ?? []).some((e) => !!e.reason);
-  // Fleet evidence for the trace join: derived from the scoped listing when it is already fleet-wide.
-  const fleet = fleetWide
-    ? (clusters === null ? null : { names: registeredNames, incomplete: inconclusive })
-    : fleetRead;
+  const fleet = fleetRead;
   // Stable effect keys (null = fleet listing pending).
   const fleetNamesKey = fleet ? fleet.names.join('\n') : null;
   const traceListingIncomplete = inconclusive || !!fleet?.incomplete;
-  // Only an ARN id needs the host account. A bare name is the host by construction, so it neither waits
-  // for the lookup nor re-reads when it settles. undefined = an ARN id whose lookup is still pending.
+  // Only an ARN id's Route53 read needs the host account. A bare name is the host by construction, so it
+  // neither waits for the lookup nor re-reads when it settles. undefined = an ARN id whose lookup is still pending.
   const hostForCluster = cluster && parseEksClusterId(cluster)?.accountId ? hostAccount : null;
   useEffect(() => {
     // Switching clusters (or scope) clears every per-cluster piece before anything new arrives.
@@ -259,21 +231,20 @@ export default function K8sMapView({ query }: { query: string }) {
 
   useEffect(() => {
     setTrace(null);
-    // An ARN id waits for the host-account lookup: reading earlier would mis-scope the read. The join
-    // also waits for the fleet listing (name uniqueness is checked against it; see header).
-    if (!cluster || hostForCluster === undefined || fleetNamesKey === null) return;
+    // The join waits for the per-account fleet, which itself depends on the /api/accounts lookup
+    // (name uniqueness is checked against that fleet; see header): host and member clusters are gated alike.
+    if (!cluster || fleetNamesKey === null) return;
     let live = true;
     const ctrl = new AbortController();
     const { signal } = ctrl;
     const current = () => live && !signal.aborted;
     fetchTraceOverlay({
       id: cluster, registeredNames: fleetNamesKey ? fleetNamesKey.split('\n') : [], listingIncomplete: traceListingIncomplete,
-      ...(hostForCluster ? { hostAccountId: hostForCluster } : {}),
     }, signal)
       .then((o) => { if (current()) setTrace(o); })
       .catch(() => { if (current()) setTrace({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 }); });
     return () => { live = false; ctrl.abort(); };
-  }, [cluster, fleetNamesKey, traceListingIncomplete, hostForCluster]);
+  }, [cluster, fleetNamesKey, traceListingIncomplete]);
 
   // Route53 does not depend on the fleet listing; only an ARN id waits for the host-account lookup.
   useEffect(() => {

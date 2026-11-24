@@ -56,6 +56,18 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       expect(node.meta?.cluster).toBeUndefined();
     }
   });
+  it('checks enumeration per account when scoped coverage is present, and per region otherwise', () => {
+    const memberTg = { ...tg, account_id: '111111111111' };
+    const issue = (ownershipRead: Record<string, unknown>) =>
+      target({ tg: [memberTg], ownershipRead }).meta?.ambiguity;
+    // Another account's clusters in the same region do not enumerate this account.
+    expect(issue({ eksRegions: [region], eksAccountRegions: [`123456789012|${region}`] })).toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: [region], eksAccountRegions: [] })).toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: [region], eksAccountRegions: [`111111111111|${region}`] })).not.toBe('eks_not_enumerated');
+    // Field absent: today's region-only rule is unchanged.
+    expect(issue({ eksRegions: [region] })).not.toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: ['ap-northeast-2'] })).toBe('eks_not_enumerated');
+  });
   it('labels cached configuration without certifying exclusive ownership', () => {
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
       ownershipRead: { configurationOnly: true } });

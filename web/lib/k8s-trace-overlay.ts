@@ -8,7 +8,10 @@
 //    incomplete listing cannot prove that no same-named cluster exists. Callers must not pass a
 //    scope-filtered listing: a narrowed scope hides same-named clusters without any truncation or
 //    error flag.
-//  - The trace snapshot is host-only (`account=self`); member clusters are refused without a fetch.
+//  - The snapshot is the host deployment's publication (the route accepts only `account=self`), but the
+//    `k8s.cluster.name` claim is not tied to an account: a cluster of any registered account (host or
+//    member, bare name or full EKS ARN id) joins under the same two guards above — fleet-wide name
+//    uniqueness and a complete listing. Refusals never fetch.
 //  - A trace service maps to a K8s workload ONLY through its `runs_on` relation, and only when it
 //    runs on exactly one `ns/deployment` in the selected cluster. Never by service-name similarity.
 //  - An incomplete read (anything omitted by the route's page/edge caps) cannot prove that a service
@@ -41,7 +44,7 @@ import { eksClusterName, parseEksClusterId } from './eks-cluster-id';
 import { extractManagedDbHosts } from './db-endpoint';
 
 export type TraceOverlayReason =
-  | 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'member_cluster' | 'incomplete_listing'
+  | 'disabled' | 'unsupported_scope' | 'unavailable' | 'ambiguous_cluster' | 'incomplete_listing'
   | 'partial_snapshot';
 export interface TraceWorkloadCall {
   fromWorkload: WorkloadRef;
@@ -85,8 +88,6 @@ export interface TraceCluster {
   registeredNames: string[];
   /** The fleet listing was truncated, errored or failed: uniqueness is unprovable, so no join. */
   listingIncomplete?: boolean;
-  /** Host account id. An ARN id is a host cluster only when its account equals this; otherwise member. */
-  hostAccountId?: string;
 }
 
 const MAX_PAGES = 5;
@@ -96,12 +97,11 @@ const K8S_NAME = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 const unavailable = (reason: TraceOverlayReason): TraceOverlay => ({ available: false, reason, workloadCalls: [], omitted: 0 });
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Scope gate shared by build and fetch: the selected cluster name, or the refusal. */
+/** Scope gate shared by build and fetch: the selected cluster name, or the refusal. Host and member
+ *  clusters are gated alike: only the fleet listing's completeness and the bare name's uniqueness count. */
 function clusterGate(cluster: TraceCluster): { name: string } | { refuse: TraceOverlay } {
   const parsed = typeof cluster?.id === 'string' ? parseEksClusterId(cluster.id) : null;
   if (!parsed) return { refuse: unavailable('unavailable') };
-  if (parsed.accountId && !(/^\d{12}$/.test(cluster.hostAccountId ?? '') && parsed.accountId === cluster.hostAccountId))
-    return { refuse: unavailable('member_cluster') };
   if (cluster.listingIncomplete) return { refuse: unavailable('incomplete_listing') };
   const names = Array.isArray(cluster.registeredNames) ? cluster.registeredNames : [];
   if (names.filter((n) => typeof n === 'string' && eksClusterName(n) === parsed.name).length !== 1)

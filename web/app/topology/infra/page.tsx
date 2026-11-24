@@ -322,7 +322,7 @@ function InfraTopologyPageInner() {
       </div>}
       {view === 'graph' && <GraphView q={q} onVpc={onVpc} />}
       {view === 'map' && <InfraMapView query={q} />}
-      {view === 'k8s' && <K8sMapView query={q} />}
+      {view === 'k8s' && <K8sMapView query={q} initialCluster={params.get('cluster') ?? ''} />}
     </div>
   );
 }
