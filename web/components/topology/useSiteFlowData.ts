@@ -118,7 +118,8 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
 /**
  * Inventory + EKS map + host lookup + fleet listing for one page scope (the view is keyed by it). A new `reload`
  * value re-runs every read: the previous composition stays on screen (no canvas teardown) while the fleet and host
- * lookup go back to pending, so cluster evidence is re-read against the new fleet (useClusterEvidence).
+ * lookup go back to pending, so cluster evidence is re-read against the new fleet (useClusterEvidence). A reload that
+ * fails (every inventory type failed, or an invalid response) clears it: no stale flow beside the failure.
  */
 export function useSiteInventory(inventoryScope: string, reload = 0): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
@@ -153,7 +154,8 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
         const [h, scope] = await Promise.all([host, eksScope]);
         if (!live) return;
         setLoading(false);
-        if (loaded.allFailed) { setError(loaded.failed.map((r) => r.error).join('; ')); return; }
+        // Fail closed: a failed (re)load never leaves the previous flow and its pod attributions on screen.
+        if (loaded.allFailed) { setData(null); setError(loaded.failed.map((r) => r.error).join('; ')); return; }
         const cut = timedOut && (loaded.eksAborted || (scope === null && fleetCut));
         if (loaded.eks && cut) loaded.eks.bindingRead = { status: 'withheld', reasons: [DEADLINE_REASON] };
         else if (scope === null && loaded.eks) loaded.eks.bindingRead = { status: 'withheld', reasons: [FLEET_INCOMPLETE_REASON] };
@@ -174,7 +176,7 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
           eks: loaded.eks, issues, eksScope: scope ?? [],
         });
       })
-      .catch(() => { if (live) { setLoading(false); setError('site: invalid inventory response'); } })
+      .catch(() => { if (live) { setLoading(false); setData(null); setError('site: invalid inventory response'); } })
       .finally(() => clearTimeout(deadline));
     return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
   }, [inventoryScope, reload]);
