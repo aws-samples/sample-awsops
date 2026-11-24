@@ -83,14 +83,17 @@ export function inventoryEvidence(
 // scoped listing per entry: the site view (deriveEksScope in components/topology/useSiteFlowData.ts) passes
 // one entry per account with only that account's regions, for explicit page regions and all-region pages
 // alike, so a region one account lacks never 403s another and each request stays under the server's
-// 12-target cap. Every sub-listing is validated on its own and computes its own coverage with its own
-// `accounts`; any failed, errored or truncated sub-listing fails the whole read. The cluster lists are concatenated (deduped by ARN) BEFORE
-// the candidate loop, so duplicate-IP vetoes and blocked scopes apply across accounts.
+// 12-target cap; at most 4 are in flight at once. Every sub-listing is validated on its own and
+// computes its own coverage with its own `accounts`; any failed, errored or truncated sub-listing fails
+// the whole read. The cluster lists are concatenated (deduped by ARN) BEFORE the candidate loop, so
+// duplicate-IP vetoes and blocked scopes apply across accounts.
 //
 // Blocked scopes (a not-connected or unreadable cluster's region|vpc) null that scope's map entries. In scoped
 // mode they drop only the bindings observed in that scope: `bindingRead` is then `partial` with
 // `binding_scope_blocked` and the blocked cluster ids. The unscoped default path withholds every binding
 // (`binding_read_incomplete`), as before. Every other binding gap withholds all bindings in both modes.
+/** Scoped listings in flight at once (matches the fleet reader's bound in eks-fleet.ts). */
+const LISTING_CONCURRENCY = 4;
 type ListedCluster = Cluster & { ref: string };
 type Listing = { clusters: ListedCluster[]; regions: string[]; keys: string[] | null; hasErrors: boolean; partial: boolean };
 async function readListing(scopeQuery: string, signal: AbortSignal | undefined): Promise<Listing | { fail: EksIpResolution['reasons'][number] | undefined }> {
@@ -155,7 +158,13 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
   const queries = Array.isArray(scopeQuery) ? scopeQuery : [scopeQuery];
   try {
     if (signal?.aborted || !queries.length) return fail();
-    const listings = await Promise.all(queries.map(q => readListing(q, signal)));
+    // At most LISTING_CONCURRENCY scoped listings in flight (the site view passes one per account).
+    const listings: Awaited<ReturnType<typeof readListing>>[] = new Array(queries.length);
+    let nextQuery = 0;
+    const lane = async () => {
+      for (let i = nextQuery++; i < queries.length; i = nextQuery++) listings[i] = await readListing(queries[i], signal);
+    };
+    await Promise.all(Array.from({ length: Math.min(LISTING_CONCURRENCY, queries.length) }, lane));
     const clusters: ListedCluster[] = [];
     const seenClusters = new Set<string>();
     const keys = new Set<string>();

@@ -499,6 +499,27 @@ describe('SiteFlowView', () => {
     expect(peak).toBeGreaterThan(1);
   });
 
+  it('bounds the per-account scoped EKS listings to 4 in flight', async () => {
+    const members = Array.from({ length: 7 }, (_, i) => `55555555550${i}`);
+    const many = { accounts: [{ accountId: HOST_ID, isHost: true, enabled: true },
+      ...members.map((accountId) => ({ accountId, isHost: false, enabled: true }))] };
+    let inFlight = 0, peak = 0;
+    stubFetch((u) => {
+      if (u === '/api/accounts') return json(many);
+      if (isFleet(u)) return fleetOf(u, CLUSTERS, ['self', ...members]); // every account is a wildcard scan: listed in all of R
+      if (u.startsWith('/api/eks?')) {
+        inFlight++; peak = Math.max(peak, inFlight);
+        return new Promise<Response>((r) => setTimeout(() => { inFlight--; r(json(listingFor(u, CLUSTERS))); }, 5));
+      }
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toHaveLength(8);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);
+  });
+
   it('a not-connected cluster of another account in a resolved region vetoes a shared VPC', async () => {
     // Host `shop` (connected, ap-northeast-2, VPC V). Member: connected `orders` in us-east-1 and a NOT-connected
     // `legacy` in ap-northeast-2 inside the same (RAM-shared) VPC V. The member must be listed in ap-northeast-2 too.
