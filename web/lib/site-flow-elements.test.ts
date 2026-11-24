@@ -159,14 +159,24 @@ describe('buildSiteElements', () => {
     const els = byId(buildSiteElements(f, initialExpanded(f)) as El[]);
     expect(cls(els.get(CL))).toEqual(new Set(['group', 'collapsed', 'gkind-cluster', 'inferred']));
     const merged = [...els.values()].find((e) => e.data.source === 'tg1' && e.data.target === CL)!;
-    expect(cls(merged).has('inferred')).toBe(true);
+    expect(cls(merged)).toEqual(new Set(['ev-observed', 'inferred'])); // inferred-only: the plain inferred overlay
     expect(cls(els.get('datastore:rds')).has('faded')).toBe(true);
-    // a highlighted member wins over the inferred overlay
+    // a highlighted member wins over the inferred overlay on nodes
     const g = flow({ highlight: { nodes: ['wl:front'], edges: ['e5'], inferred: ['wl:api', 'e6'] } });
     const els2 = byId(buildSiteElements(g, initialExpanded(g)) as El[]);
     expect(cls(els2.get(CL)).has('hl')).toBe(true);
+    // a merged edge with a highlighted AND an inferred member shows the inferred part (dashed highlight)
     const merged2 = [...els2.values()].find((e) => e.data.source === 'tg1' && e.data.target === CL)!;
-    expect(cls(merged2)).toEqual(new Set(['ev-observed', 'hl']));
+    expect(cls(merged2)).toEqual(new Set(['ev-observed', 'hl', 'partial-inferred']));
+    // regardless of member order: the inferred member listed first still yields hl + partial-inferred
+    const h = flow({ highlight: { nodes: ['wl:api'], edges: ['e6'], inferred: ['wl:front', 'e5'] } });
+    const merged3 = [...byId(buildSiteElements(h, initialExpanded(h)) as El[]).values()]
+      .find((e) => e.data.source === 'tg1' && e.data.target === CL)!;
+    expect(cls(merged3)).toEqual(new Set(['ev-observed', 'hl', 'partial-inferred']));
+    // an expanded, unmerged highlighted edge never carries the partial class
+    const all = byId(buildSiteElements(g, new Set(g.groups.map((x) => x.id))) as El[]);
+    expect(cls(all.get('e5'))).toEqual(new Set(['ev-observed', 'hl']));
+    expect(cls(all.get('e6'))).toEqual(new Set(['ev-inferred', 'inferred']));
   });
 
   it('is accepted by a real headless cytoscape (no dangling parents/endpoints or duplicate ids)', () => {
@@ -214,6 +224,13 @@ describe('buildSiteStyle', () => {
     const idx = (sel: string) => style.findIndex((s) => s.selector === sel);
     expect(idx('edge.inferred')).toBeGreaterThan(idx('edge.ev-observed'));
     expect(idx('edge.inferred')).toBeGreaterThan(idx('edge.hl'));
+  });
+  it('draws a highlighted merged edge with inferred members as a dashed highlight', () => {
+    expect(rule('edge.hl.partial-inferred')).toMatchObject({ 'line-style': 'dashed', 'line-color': '#00aa88' });
+    expect(rule('edge.hl.partial-inferred')?.['line-dash-pattern']).not.toEqual(rule('edge.inferred')?.['line-dash-pattern']);
+    const idx = (sel: string) => style.findIndex((s) => s.selector === sel);
+    expect(idx('edge.hl.partial-inferred')).toBeGreaterThan(idx('edge.hl'));
+    expect(idx('edge.hl.partial-inferred')).toBeGreaterThan(idx('edge.ev-observed'));
   });
   it('fades with opacity 0.15 and colours error labels', () => {
     expect(rule('.faded')?.opacity).toBe(0.15);

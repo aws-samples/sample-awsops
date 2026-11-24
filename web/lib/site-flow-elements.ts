@@ -7,6 +7,8 @@
 //   calls/errors, and keep their member edge ids for highlight roll-up.
 // - Highlight: `hl` when any member is in highlight.nodes/edges; else `inferred` when any member is in
 //   highlight.inferred (a separate overlay, the element keeps its own `ev-*` evidence class); else `faded`.
+//   A merged EDGE with both a highlighted and an inferred member also gets `partial-inferred` (dashed highlight),
+//   so the inferred part of the request path is never drawn as an observed one.
 import type { ElementDefinition } from 'cytoscape';
 import { EVIDENCE_RANK, type SiteEvidence, type SiteFlow, type SiteGroup } from './site-flow';
 
@@ -61,6 +63,11 @@ export function buildSiteElements(
       if (infSet.has(m)) inferred = true;
     }
     return inferred ? 'inferred' : 'faded';
+  };
+  /** Edge status: `hl` plus `partial-inferred` when some member is highlighted and another only inferred. */
+  const edgeStatus = (members: string[]): string => {
+    const s = status(members);
+    return s === 'hl' && members.some((m) => infSet.has(m)) ? 'hl partial-inferred' : s;
   };
   const classes = (...xs: string[]) => xs.filter(Boolean).join(' ');
 
@@ -144,7 +151,7 @@ export function buildSiteElements(
         ...(m.calls !== undefined ? { calls: m.calls } : {}), ...(m.errors !== undefined ? { errors: m.errors } : {}),
         ...(label !== undefined ? { label } : {}),
       },
-      classes: classes(`ev-${m.evidence}`, m.evidence === 'traced' && errors > 0 ? 'has-errors' : '', status(m.members)),
+      classes: classes(`ev-${m.evidence}`, m.evidence === 'traced' && errors > 0 ? 'has-errors' : '', edgeStatus(m.members)),
     };
   });
 
