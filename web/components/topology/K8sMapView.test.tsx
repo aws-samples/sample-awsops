@@ -155,6 +155,17 @@ describe('K8sMapView', () => {
     for (const kind of ['ingresses', 'services', 'endpoints']) expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=${kind}`);
   });
 
+  it('preselects a listed initialCluster (deep link) and ignores one the listing lacks', async () => {
+    const calls = stubFetch(HOST_AND_MEMBER);
+    render(<LanguageProvider><K8sMapView query="" initialCluster={MEMBER_ARN} /></LanguageProvider>);
+    await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=pods`));
+    expect((screen.getByRole('combobox', { name: '클러스터' }) as HTMLSelectElement).value).toBe(MEMBER_ARN);
+    cleanup();
+    const again = stubFetch(HOST_AND_MEMBER);
+    render(<LanguageProvider><K8sMapView query="" initialCluster="arn:aws:eks:ap-northeast-2:222222222222:cluster/gone" /></LanguageProvider>);
+    await waitFor(() => expect(again).toContain('/api/eks/shared/incluster?kind=pods'));
+  });
+
   it('discloses partial or capped listings instead of presenting them as complete', async () => {
     stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected' }],
       errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }], truncated: true });

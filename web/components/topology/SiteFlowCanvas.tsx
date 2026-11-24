@@ -7,7 +7,8 @@
 //  - the instance is created per `flow` (and per error-label language) and destroyed on change/unmount;
 //  - tap on a leaf → onSelect(node); tap on a collapsed group, or on an expanded group's label (above its body),
 //    toggles it on the SAME instance and re-runs fcose with `randomize: false`, seeding revealed nodes at the toggled group's position;
-//  - `theme` changes only restyle (colours re-read from CSS tokens), never rebuild or re-layout.
+//  - `theme` / `themeKey` changes only restyle (colours re-read from CSS tokens), never rebuild or re-layout.
+//    `themeKey` is the raw app theme (teal/cobalt/dark): two light themes differ in brand tokens.
 // The container is role="img" with a count summary; the view provides the accessible list fallback.
 import { useEffect, useRef } from 'react';
 import type { Core, ElementDefinition, LayoutOptions, Position } from 'cytoscape';
@@ -45,8 +46,8 @@ function withPositions(els: ElementDefinition[], prev: Map<string, Position>, se
   });
 }
 
-export default function SiteFlowCanvas({ flow, theme, onSelect }: {
-  flow: SiteFlow; theme: 'light' | 'dark'; onSelect?: (node: SiteNode) => void;
+export default function SiteFlowCanvas({ flow, theme, themeKey, onSelect }: {
+  flow: SiteFlow; theme: 'light' | 'dark'; themeKey?: string; onSelect?: (node: SiteNode) => void;
 }) {
   const { tt } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -119,7 +120,7 @@ export default function SiteFlowCanvas({ flow, theme, onSelect }: {
   useEffect(() => {
     // Theme switch: the data-theme attribute is already applied, so the tokens read the new values.
     cyRef.current?.style(tokenStyle());
-  }, [theme]);
+  }, [theme, themeKey]);
 
   return (
     <div

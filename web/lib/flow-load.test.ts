@@ -125,6 +125,21 @@ describe('loadFlowInput', () => {
     expect(r.input.ownershipRead?.eksAccountRegions).toEqual([]); // absent coverage proves nothing
   });
 
+  it('hands the EKS read a separate (possibly pending) scope while inventory keeps the page scope', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => { urls.push(url); return page([]); }));
+    const eksQuery = 'accounts=self&regions=ap-northeast-2&includeGlobal=1';
+    let release!: (q: string) => void;
+    const pending = new Promise<string>((r) => { release = r; });
+    const load = loadFlowInput(scope, new AbortController().signal, true, { eksScope: true, eksScopeQuery: pending });
+    await vi.waitFor(() => expect(urls.length).toBeGreaterThan(0)); // inventory lanes start before the scope settles
+    expect(fetchEksIpMap).not.toHaveBeenCalled();
+    release(eksQuery);
+    await load;
+    expect(fetchEksIpMap).toHaveBeenCalledWith(expect.any(AbortSignal), true, eksQuery);
+    expect(urls.every((u) => u.includes(`accounts=${ACCOUNT}`))).toBe(true);
+  });
+
   it('forwards per-account coverage only for the scoped listing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => page([])));
     vi.mocked(fetchEksIpMap).mockResolvedValueOnce({ map: {}, blockedScopes: [], globalUnknown: false, status: 'ok', reasons: [],

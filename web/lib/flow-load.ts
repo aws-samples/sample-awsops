@@ -99,6 +99,12 @@ export type FlowLoad = {
 export interface FlowLoadOptions {
   /** Resolve pod IPs on clusters in the selected accounts/regions (site view only). */
   eksScope?: boolean;
+  /**
+   * With `eksScope`: the listing scope for the EKS read instead of `inventoryScope` (inventory reads keep
+   * `inventoryScope`). A promise lets the inventory lanes start while the caller still derives it; it must
+   * not reject. Used to hand the listing explicit regions, since an all-region listing withholds bindings.
+   */
+  eksScopeQuery?: string | Promise<string>;
 }
 
 // `entitiesEnabled` is forwarded to fetchEksIpMap (the page reads it from useEntityTopology).
@@ -129,7 +135,8 @@ export async function loadFlowInput(inventoryScope: string, signal: AbortSignal,
   };
   const [, eks] = await Promise.all([
     Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-    options.eksScope ? fetchEksIpMap(signal, entitiesEnabled, inventoryScope)
+    options.eksScope ? Promise.resolve(options.eksScopeQuery ?? inventoryScope)
+      .then(scope => fetchEksIpMap(signal, entitiesEnabled, scope))
       : account === 'self' ? fetchEksIpMap(signal, entitiesEnabled) : Promise.resolve(null),
   ]);
   const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);

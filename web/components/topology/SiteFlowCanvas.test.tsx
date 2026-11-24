@@ -206,6 +206,17 @@ describe('SiteFlowCanvas', () => {
     expect(h.factory).toHaveBeenCalledTimes(1);
   });
 
+  it('restyles between two light themes (raw theme key) without rebuilding', async () => {
+    document.documentElement.style.setProperty('--brand-500', '#0a0a0a');
+    const f = flow();
+    const { rerender } = render(<SiteFlowCanvas flow={f} theme="light" themeKey="teal" />);
+    const cy = await mounted();
+    expect(cy.style).not.toHaveBeenCalled();
+    rerender(<SiteFlowCanvas flow={f} theme="light" themeKey="cobalt" />);
+    await waitFor(() => expect(cy.style).toHaveBeenCalledTimes(1));
+    expect(h.factory).toHaveBeenCalledTimes(1);
+  });
+
   it('exposes an image role with a node/edge count summary', () => {
     render(<SiteFlowCanvas flow={flow()} theme="light" />);
     const img = screen.getByRole('img');

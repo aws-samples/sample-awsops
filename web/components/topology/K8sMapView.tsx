@@ -30,6 +30,7 @@ import { useTheme } from '@/lib/use-theme';
 import { useActiveScope, scopeParams, ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
 import { eksClusterLabel, parseEksClusterId } from '@/lib/eks-cluster-id';
 import { EksCollectionNotice, type EksCollectionStatus } from '@/components/eks/EksFilterPanel';
+import { hostAccountOf } from '@/lib/host-account';
 
 const KINDS = ['ingresses', 'services', 'pods', 'endpoints'] as const;
 
@@ -69,17 +70,6 @@ const dnsAccountOf = (id: string, hostAccountId: string | null) => {
   return !account || account === hostAccountId ? 'self' : account;
 };
 
-/** The unique host row's 12-digit account id from `GET /api/accounts`, or null when it is absent,
- *  ambiguous (more than one host row) or malformed. Never guessed. */
-function hostAccountOf(body: unknown): string | null {
-  const accounts = (body as { accounts?: unknown } | null)?.accounts;
-  const hosts = Array.isArray(accounts)
-    ? accounts.filter((a): a is { accountId?: unknown } => !!a && typeof a === 'object' && (a as { isHost?: unknown }).isHost === true)
-    : [];
-  const id = hosts.length === 1 ? hosts[0].accountId : undefined;
-  return typeof id === 'string' && /^\d{12}$/.test(id) ? id : null;
-}
-
 async function readJson(r: Response): Promise<Record<string, unknown>> {
   // An OK response must parse; error bodies are best-effort only (message is never shown for kinds).
   if (r.ok) return r.json();
@@ -87,7 +77,9 @@ async function readJson(r: Response): Promise<Record<string, unknown>> {
   throw new Error(String(d?.message ?? r.status));
 }
 
-export default function K8sMapView({ query }: { query: string }) {
+/** `initialCluster` (a listed cluster id, e.g. from `?cluster=` deep links) preselects that cluster when the
+ *  scoped listing contains it; otherwise the first connected cluster is selected as before. */
+export default function K8sMapView({ query, initialCluster = '' }: { query: string; initialCluster?: string }) {
   // Only 'dark' is a dark theme (cobalt/teal are light variants) — same mapping as /topology.
   const theme = useTheme() === 'dark' ? 'dark' as const : 'light' as const;
   const { tt } = useI18n();
@@ -96,6 +88,7 @@ export default function K8sMapView({ query }: { query: string }) {
   // only when the scope is already fleet-wide; otherwise the separate fleet listing below does.
   const [registeredNames, setRegisteredNames] = useState<string[]>([]);
   const [cluster, setCluster] = useState('');
+  const initialClusterRef = useRef(initialCluster);
   const [err, setErr] = useState('');
   const [collection, setCollection] = useState<EksCollectionStatus>({});
   const [scope, , scopeReady] = useActiveScope();
@@ -149,7 +142,8 @@ export default function K8sMapView({ query }: { query: string }) {
         });
         setClusters(rows);
         setRegisteredNames(listed.map((c) => c.id || c.name));
-        if (rows.length > 0) setCluster((cur) => cur || rows[0].id);
+        const wanted = initialClusterRef.current;
+        if (rows.length > 0) setCluster((cur) => cur || (rows.some((c) => c.id === wanted) ? wanted : rows[0].id));
         // Same disclosure as /eks: scope notes, per-target read failures and truncation stay visible.
         setCollection({ errors: Array.isArray(d.errors) ? d.errors : undefined, truncated: !!d.truncated });
       })
