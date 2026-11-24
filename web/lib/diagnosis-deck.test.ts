@@ -78,3 +78,14 @@ it('retains each finding and its scoped provenance in native slide notes only', 
   expect(slide.notes).toContain('Evidence · Inventory, historical scope only.');
   expect(slide.notes).toContain('Additional qualification.');
 });
+
+it('shows qualifying prose and a trailing safety notice even when a heading also owns a table', () => {
+  const md = '## Assessment\n\n### Immediate checks\n\n| Subject | How to verify |\n|---|---|\n| DB | Verify backup. |\n\n' +
+    '**Coverage and unknowns** · Conclusions apply only to the selected period.\n\n' +
+    '_[Do not run the command; review it through your change process (degraded)]_';
+  const deck = buildDiagnosisDeck({id: 8, markdown: md}, 'en');
+  const visible = deck.slides.flatMap(s => [s.caption, ...s.items.flatMap(r => [r.label,r.text])]).join(' ');
+  expect(visible).toContain('Conclusions apply only to the selected period.');
+  expect(visible).toContain('Do not run the command');
+  expect(visible).toContain('Verify backup.');
+});
