@@ -23,6 +23,39 @@ export interface GraphSources {
   registryFailed?: true;
 }
 
+// JOIN against integrations as defense-in-depth against an orphan row (deleteDatasource() sweeps
+// datasource_graph_queries on delete, but a row surviving that sweep — e.g. a race, or predating
+// that fix — must still never surface a source for an instance that no longer exists).
+const READY_GRAPH_QUERIES = `SELECT gq.integration_id, gq.query FROM datasource_graph_queries gq
+       JOIN integrations i ON i.id = gq.integration_id
+       WHERE gq.account_id = 'self' AND gq.status = 'ready'`;
+
+const otelTemplate = (q: GraphQueryRow['query']) => {
+  const sql = q?.args_template?.sql;
+  return typeof sql === 'string' ? sql : undefined;
+};
+
+export interface ClickHouseTraceDatasource { instanceId: number; template?: string }
+
+/** The registered ClickHouse trace datasources (`otel_v1` catalog rows) with their catalog SQL
+ *  template, read the same way loadGraphSources does. Unlike it there is no bare-default fallback:
+ *  callers report "no trace source" instead of guessing an unregistered default instance.
+ *  Duplicate (instance, template) rows collapse to one. Throws on registry read failure. */
+export async function listClickHouseTraceDatasources(pool: Pool): Promise<ClickHouseTraceDatasource[]> {
+  const r = await pool.query(READY_GRAPH_QUERIES);
+  const seen = new Set<string>();
+  const out: ClickHouseTraceDatasource[] = [];
+  for (const row of r.rows as GraphQueryRow[]) {
+    if (row.query?.mapper !== 'otel_v1' || !Number.isSafeInteger(row.integration_id)) continue;
+    const template = otelTemplate(row.query);
+    const key = JSON.stringify([row.integration_id, template ?? null]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ instanceId: row.integration_id, ...(template !== undefined ? { template } : {}) });
+  }
+  return out;
+}
+
 /** Load ready graph-source adapters across every registered datasource instance. Falls back to a
  *  bare default ClickHouseOtelTraceSource (the pre-registry behavior) when no ready row exists yet
  *  — a fresh environment before the first daily datasource_index run.
@@ -30,14 +63,7 @@ export interface GraphSources {
 export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
   let rows: GraphQueryRow[] = [];
   try {
-    // JOIN against integrations as defense-in-depth against an orphan row (deleteDatasource() sweeps
-    // datasource_graph_queries on delete, but a row surviving that sweep — e.g. a race, or predating
-    // that fix — must still never surface a source for an instance that no longer exists).
-    const r = await pool.query(
-      `SELECT gq.integration_id, gq.query FROM datasource_graph_queries gq
-       JOIN integrations i ON i.id = gq.integration_id
-       WHERE gq.account_id = 'self' AND gq.status = 'ready'`,
-    );
+    const r = await pool.query(READY_GRAPH_QUERIES);
     rows = r.rows as GraphQueryRow[];
   } catch {
     return {
@@ -59,8 +85,7 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
     const q = row.query;
     const mapper = q?.mapper;
     if (mapper === 'otel_v1') {
-      const sql = q?.args_template?.sql;
-      const template = typeof sql === 'string' ? sql : undefined;
+      const template = otelTemplate(q);
       // The catalog's exporter-schema template is read as whole-window aggregates; any other
       // (generated/custom) template keeps the bounded newest-span reader.
       const shape = otelAggregateShape(template);
