@@ -229,8 +229,8 @@ export default function K8sMapView({ query, initialCluster = '' }: { query: stri
 
   useEffect(() => {
     setTrace(null);
-    // The join waits only for the fleet listing (name uniqueness is checked against it; see header),
-    // never for the host-account lookup: host and member clusters are gated alike.
+    // The join waits for the per-account fleet, which itself depends on the /api/accounts lookup
+    // (name uniqueness is checked against that fleet; see header): host and member clusters are gated alike.
     if (!cluster || fleetNamesKey === null) return;
     let live = true;
     const ctrl = new AbortController();
