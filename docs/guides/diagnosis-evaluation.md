@@ -407,7 +407,7 @@ Run from the repository root:
 
 ```bash
 python3 -m pytest -q scripts/v2/workers/diagnosis
-cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts \
+cd web && npx vitest run lib/diagnosis-deck.test.ts lib/trace-source.test.ts lib/trace-graph.test.ts \
   lib/graph-store-trace.test.ts lib/graph-state.test.ts
 ```
 
@@ -416,10 +416,9 @@ ship the trace adapter and worker image, then obtain explicit authorization for
 live discovery/model acceptance; source verification alone does not activate
 the flag or establish release readiness.
 
-API reference / API 참고:
-[Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).
-
-
 ### Presentation exports
 
-The report detail and printable view build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the source sections for inspection. The PowerPoint contains native text and chart elements, with the source rows for each briefing slide in its speaker notes. Large groups show a bounded excerpt with a range and total; the detailed evidence appendix is available in the original report.
+The Present button opens an isolated preview from the report detail and print view. Those views also build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the source sections for inspection. The PowerPoint contains editable text and shapes, with the source rows for each briefing slide in its speaker notes. Large groups show a bounded excerpt with a range and total; the detailed evidence appendix is available in the original report.
+
+API reference / API 참고:
+[Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).

@@ -69,3 +69,12 @@ describe('stored heading and decision-role compatibility', () => {
       !s.caption.includes('Compare actual') && s.items.every(r => !r.text.includes('Compare actual')))).toBe(true);
   });
 });
+
+it('retains each finding and its scoped provenance in native slide notes only', () => {
+  const md = '## Security\n\nPartial assessment · Admitted findings 1\n\n**DB** · Hypothesis\n\n' +
+    'Review storage protection.\n\nEvidence · Inventory, historical scope only.\n\nAdditional qualification.';
+  const slide = buildDiagnosisDeck({id: 9, markdown:md}, 'en').slides[1];
+  expect(slide.items).toEqual([{label:'DB · Hypothesis',text:'Review storage protection.'}]);
+  expect(slide.notes).toContain('Evidence · Inventory, historical scope only.');
+  expect(slide.notes).toContain('Additional qualification.');
+});
