@@ -31,17 +31,12 @@ import type { DbResource } from '@/lib/db-ref-resolve';
 import type { SiteFlowInput } from '@/lib/site-flow';
 import { hostAccountOf } from '@/lib/host-account';
 import { ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
+import { INCOMPLETE_FLEET, readFleet, type Fleet, type FleetCluster } from '@/lib/eks-fleet';
 import { INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
 
-/** Per-account fleet listing (one account per request keeps it under the server's 12-target cap). */
-export const fleetUrl = (account: string) =>
-  `/api/eks?${new URLSearchParams({ accounts: account, regions: ALL_REGIONS, includeGlobal: '1' })}`;
-const FLEET_CONCURRENCY = 4;
 const DEADLINE_MS = 30000;
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 
-export interface FleetCluster { id: string; name: string; arn?: string; accountId?: string; region?: string; access?: string }
-export interface Fleet { clusters: FleetCluster[]; names: string[]; incomplete: boolean }
 export interface InventoryIssue { type: string; issue: 'failed' | 'capped' | 'incomplete' | 'running' | 'partial' | 'unknown' }
 /** Hop types the builder walks: a missing sync record there cannot prove the chain complete. Optional enrichment
  *  types stay exempt (a never-collected one would flag every load). Critical types already require a ledger. */
@@ -59,53 +54,6 @@ export interface SiteInventory {
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 
-/** Fleet listing body → clusters/names; any malformed, truncated or reasoned-error listing is incomplete. */
-export function parseFleet(body: unknown): Fleet {
-  const list = record(body) && Array.isArray(body.clusters) ? body.clusters : null;
-  if (!list || !list.every((c) => record(c) && nonempty(c.name))) return { clusters: [], names: [], incomplete: true };
-  const clusters = (list as Record<string, unknown>[]).map((c) => ({
-    id: nonempty(c.id) ? c.id : String(c.name), name: String(c.name),
-    ...(nonempty(c.arn) ? { arn: c.arn } : {}), ...(nonempty(c.accountId) ? { accountId: c.accountId } : {}),
-    ...(nonempty(c.region) ? { region: c.region } : {}), ...(nonempty(c.access) ? { access: c.access } : {}),
-  }));
-  const errors = record(body) && Array.isArray(body.errors) ? body.errors : [];
-  const incomplete = (record(body) && body.truncated === true) || errors.some((e) => record(e) && !!e.reason)
-    || (record(body) && body.status === 'error');
-  return { clusters, names: clusters.map((c) => c.id), incomplete };
-}
-
-const INCOMPLETE_FLEET = (): Fleet => ({ clusters: [], names: [], incomplete: true });
-
-/** Accounts to list for the fleet: the host as `self` plus every enabled member; null when the body is malformed. */
-export function fleetAccounts(body: unknown): string[] | null {
-  const rows = record(body) && Array.isArray(body.accounts) ? body.accounts : null;
-  if (!rows || !rows.every((a) => record(a) && typeof a.accountId === 'string' && /^\d{12}$/.test(a.accountId))) return null;
-  const members = (rows as Record<string, unknown>[]).filter((a) => a.isHost !== true && a.enabled === true).map((a) => String(a.accountId));
-  return ['self', ...[...new Set(members)].sort()];
-}
-
-/** Merged per-account fleet listing (bounded concurrency, shared signal). Fails closed into `incomplete`. */
-export async function readFleet(accountsBody: unknown, signal: AbortSignal): Promise<Fleet> {
-  const accounts = fleetAccounts(accountsBody);
-  if (!accounts) return INCOMPLETE_FLEET();
-  const parts: Fleet[] = new Array(accounts.length);
-  let next = 0;
-  const lane = async () => {
-    for (let i = next++; i < accounts.length; i = next++) {
-      parts[i] = await fetch(fleetUrl(accounts[i]), { signal })
-        .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(FLEET_CONCURRENCY, accounts.length) }, lane));
-  const clusters: FleetCluster[] = [];
-  const seen = new Set<string>();
-  for (const c of parts.flatMap((p) => p.clusters)) {
-    const key = c.arn ?? c.id;
-    if (!seen.has(key)) { seen.add(key); clusters.push(c); }
-  }
-  return { clusters, names: clusters.map((c) => c.id), incomplete: signal.aborted || parts.some((p) => p.incomplete) };
-}
-
 /** Host-alias account of a listed cluster: bare-id rows are host default-region clusters by construction. */
 const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
   !c.id.startsWith('arn:') || (hostAccount && c.accountId === hostAccount) ? 'self' : c.accountId ?? '';
@@ -121,7 +69,7 @@ export const FLEET_INCOMPLETE_REASON = 'binding_fleet_incomplete';
  * RAM-shared VPC): fetchEksIpMap then blocks that region|vpc (`binding_scope_blocked`, disclosed). One query per
  * account avoids the server's accounts × regions product (a region one account lacks 403s the whole listing);
  * an account spanning >12 regions fails closed as a truncated listing. Accounts with no fleet cluster in R need no
- * request. A truncated, errored or failed fleet listing cannot prove which clusters exist: `null` (the caller fails
+ * request, except wildcard-scan accounts (fleet `wildcard`), which are listed in all of R. A truncated, errored or failed fleet listing cannot prove which clusters exist: `null` (the caller fails
  * the EKS read closed). No connected cluster in scope keeps the page scope (its all-region note withholds
  * bindings with a disclosed reason).
  */
@@ -140,6 +88,12 @@ export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, host
     if (!resolving.has(c.region!)) continue;
     const owner = ownerOf(c, hostAccount);
     (byOwner.get(owner) ?? byOwner.set(owner, new Set()).get(owner)!).add(c.region!);
+  }
+  // A wildcard-scan account's fleet listing (all-region discovery note) only covers its configured, registered and
+  // home regions, so it may hold unlisted clusters elsewhere: list it explicitly in ALL of R (the server accepts any
+  // explicit region for a `*` scan scope), so its not-connected clusters in any resolved region can veto.
+  for (const owner of fleet.wildcard) {
+    if (!selected || selected.has(owner)) byOwner.set(owner, new Set(resolving));
   }
   return [...byOwner.keys()].sort().map((owner) => new URLSearchParams({ accounts: owner,
     regions: [...byOwner.get(owner)!].sort().join(','), includeGlobal: q.get('includeGlobal') ?? '1' }).toString());

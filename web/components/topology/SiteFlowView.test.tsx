@@ -128,7 +128,11 @@ function listingFor(url: string, all: Listed[]) {
   return { clusters, errors: [], ...(accounts.length === 1 && regions.length === 1 && regions[0] !== '__all__' ? { region: regions[0] } : {}) };
 }
 /** One account's all-region fleet listing (with the reason-less discovery note the server adds). */
-const fleetOf = (url: string, all: Listed[]) => json({ ...listingFor(url, all), errors: [NOTE] });
+/** The host's scan is always wildcard, so its listing carries the all-region note; members' only when `*`. */
+const fleetOf = (url: string, all: Listed[], wildcard: string[] = ['self']) => {
+  const account = new URL(url, 'http://localhost').searchParams.get('accounts')!;
+  return json({ ...listingFor(url, all), errors: wildcard.includes(account) ? [{ ...NOTE, accountId: account }] : [] });
+};
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 let calls: string[] = [];
 function stubFetch(over: Handler = () => undefined, rows = inventory()) {
@@ -213,12 +217,12 @@ describe('SiteFlowView', () => {
       .toBe('traced');
     expect(f.edges.find((e) => e.source === wl(HOST_ARN, 'web/front') && e.target === `ds:elasticache:${CACHE_HOST}`)?.evidence).toBe('configured');
     expect(f.gaps).toEqual([]);
-    // Fleet listing exactly as K8sMapView; the scoped EKS listing never asks for all regions.
     // Fleet: one all-region listing per enabled registered account (host as `self`), merged; disabled ones skipped.
     expect(calls.filter(isFleet).sort()).toEqual([fleetUrl(MEMBER), fleetUrl(THIRD), fleetUrl('self')]);
     expect(calls).not.toContain('/api/eks?accounts=__all__&regions=__all__&includeGlobal=1');
     // One listing per account with only that account's regions (no accounts × regions product).
     const scoped = calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u));
+    expect(scoped.some((u) => u.includes('regions=__all__'))).toBe(false); // the scoped EKS reads never ask for all regions
     expect(scoped.sort()).toEqual([`/api/eks?accounts=${MEMBER}&regions=${REGION}&includeGlobal=1`,
       `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
     // Member pods are read by ARN id, host default-region ones by their listed bare id; db-refs likewise.
@@ -318,7 +322,7 @@ describe('SiteFlowView', () => {
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
   });
 
-  it('two accounts with clusters in different regions: each listed in its own region, both resolve', async () => {
+  it('two accounts with clusters in different regions: the member in its own region, the wildcard host in all of R', async () => {
     const east = 'us-east-1', eastArn = `arn:aws:eks:${east}:${MEMBER}:cluster/orders`;
     const eastCluster = { ...cluster(eastArn, 'orders', MEMBER, eastArn, MEMBER_VPC), region: east };
     const listed = [CLUSTERS[0], eastCluster];
@@ -339,7 +343,8 @@ describe('SiteFlowView', () => {
     view();
     await settled();
     expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u)).sort())
-      .toEqual([`/api/eks?accounts=${MEMBER}&regions=${east}&includeGlobal=1`, `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
+      .toEqual([`/api/eks?accounts=${MEMBER}&regions=${east}&includeGlobal=1`,
+        `/api/eks?accounts=self&regions=${encodeURIComponent(`${REGION},${east}`)}&includeGlobal=1`]);
     expect(ids()).toEqual(expect.arrayContaining([wl(HOST_ARN, 'web/front'), wl(eastArn, 'biz/orders-api')]));
     expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
   });
@@ -390,7 +395,8 @@ describe('SiteFlowView', () => {
     }, { ...rows, target_group: [rows.target_group[0]], nlb: [rows.nlb[0]] });
     view('view=site&host=mall.example.com', hostScope);
     await settled();
-    expect(calls).toContain(`/api/eks?${hostScope}`);
+    // Requested twice: once as the host's fleet listing, once as the page-scope EKS read.
+    expect(calls.filter((u) => u === `/api/eks?${hostScope}`)).toHaveLength(2);
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
     expect(notices()).toContain(GAP_NOTICE.pods_unresolved);
     expect(notices()).toContain(BINDING_NOTICE.binding_scope_partial);
@@ -469,11 +475,68 @@ describe('SiteFlowView', () => {
     await settled();
     expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u)).sort()).toEqual([
       `/api/eks?accounts=${MEMBER}&regions=${encodeURIComponent(`${REGION},${east}`)}&includeGlobal=1`,
-      `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
+      `/api/eks?accounts=self&regions=${encodeURIComponent(`${REGION},${east}`)}&includeGlobal=1`]);
     expect(ids()).not.toContain(wl(HOST_ARN, 'web/front')); // V is blocked by `legacy`
     expect(ids()).toContain(wl(eastArn, 'biz/orders-api'));
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
     expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
+  });
+
+  it('lists a wildcard-scan member (all-region note) in ALL resolved regions, so an unlisted cluster there can veto', async () => {
+    // The member's fleet listing covers only its configured/registered regions (us-east-1) and carries the note;
+    // an explicit ap-northeast-2 listing reveals a not-connected cluster in the host's (RAM-shared) VPC.
+    const east = 'us-east-1', eastArn = `arn:aws:eks:${east}:${MEMBER}:cluster/orders`;
+    const hiddenArn = `arn:aws:eks:${REGION}:${MEMBER}:cluster/hidden`;
+    const eastCluster = { ...cluster(eastArn, 'orders', MEMBER, eastArn, MEMBER_VPC), region: east };
+    const fleet = [CLUSTERS[0], eastCluster];
+    const scoped = [...fleet, cluster(hiddenArn, 'hidden', MEMBER, hiddenArn, HOST_VPC, 'no-entry')];
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, fleet, ['self', MEMBER]);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, scoped));
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(calls).toContain(`/api/eks?accounts=${MEMBER}&regions=${encodeURIComponent(`${REGION},${east}`)}&includeGlobal=1`);
+    expect(ids()).not.toContain(wl(HOST_ARN, 'web/front'));
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} hidden (${MEMBER} / ${REGION})`);
+    // Without the note the member is listed only where its fleet clusters are, and the hidden cluster stays unseen.
+    cleanup(); canvas.props = null;
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, fleet);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, scoped));
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(calls).toContain(`/api/eks?accounts=${MEMBER}&regions=${east}&includeGlobal=1`);
+    expect(ids()).toContain(wl(HOST_ARN, 'web/front'));
+  });
+
+  it('a registered account row without a boolean `enabled` makes the fleet incomplete', async () => {
+    stubFetch((u) => (u === '/api/accounts'
+      ? json({ accounts: [{ accountId: HOST_ID, isHost: true, enabled: true }, { accountId: MEMBER, isHost: false }] }) : undefined));
+    view();
+    await settled();
+    expect(calls.filter(isFleet)).toEqual([]);
+    expect(notices()).toContain(BINDING_NOTICE.binding_fleet_incomplete);
+  });
+
+  it('dedupes the host listed both as `self` and by its numeric id (no spurious ambiguous_cluster)', async () => {
+    const both = { accounts: [...ACCOUNTS.accounts, { accountId: HOST_ID, isHost: false, enabled: true }] };
+    stubFetch((u) => {
+      if (u === '/api/accounts') return json(both);
+      // The server canonicalizes the host's numeric id to `self`.
+      if (u === fleetUrl(HOST_ID)) return fleetOf(fleetUrl('self'), CLUSTERS);
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(calls).toContain(fleetUrl(HOST_ID));
+    expect(calls).toContain(fleetUrl('self'));
+    expect(canvas.props!.flow.gaps).not.toContain('ambiguous_cluster');
+    expect(canvas.props!.flow.edges.find((e) => e.source === wl(HOST_ARN, 'web/front') && e.target === wl(HOST_ARN, 'web/catalog'))?.evidence)
+      .toBe('traced');
   });
 
   it('lists an account whose only clusters in a resolved region are not connected', async () => {
