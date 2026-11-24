@@ -119,6 +119,17 @@ async function readListing(scopeQuery: string, signal: AbortSignal | undefined):
     hasErrors = list.status === 'partial' || (list.errors !== undefined && (!Array.isArray(list.errors) || list.errors.length > 0));
   }
   if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return { fail: undefined };
+  // A clean (no error, no partial status, untruncated) scoped multi-target listing with no clusters has no envelope
+  // region, but it proves every REQUESTED account|region target was enumerated and empty: derive its coverage from
+  // the request itself. Only explicit accounts and regions are requested targets; `__all__` or an absent `regions`
+  // (server-side default) leaves them unknown, and the read fails as before.
+  if (scoped && !clusters.length && !nonempty(list.region)) {
+    const q = new URLSearchParams(scopeQuery);
+    const accounts = (q.get('accounts') ?? '').split(','), regions = (q.get('regions') ?? '').split(',');
+    if (hasErrors || partial || !accounts.every(a => /^(?:self|\d{12})$/.test(a)) || !regions.every(r => r !== '__all__' && validRegion(r)))
+      return { fail: undefined };
+    return { clusters: [], regions, keys: accounts.flatMap(a => regions.map(r => `${a}|${r}`)), hasErrors: false, partial: false };
+  }
   if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return { fail: undefined };
   const regions: string[] = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
   if (!regions.length || clusters.some(c => !regions.includes(c.region!))) return { fail: undefined };

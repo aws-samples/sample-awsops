@@ -601,6 +601,33 @@ describe('scope-aware EKS listing', () => {
       }
     });
 
+    it('a clean multi-target listing with no clusters proves every requested account|region enumerated', async () => {
+      // 200, no errors, no truncation: each requested target was listed and holds no cluster.
+      serveScoped({ clusters: [], errors: [] });
+      const result = await fetchEksIpMap(undefined, true, `accounts=${member},${other}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`);
+      expect(result).toMatchObject({ map: {}, globalUnknown: false, status: 'empty', bindingRead: { status: 'empty', reasons: [] } });
+      expect(result.coveredAccountRegions).toEqual([`${other}|${mRegion}`, `${other}|us-west-2`, `${member}|${mRegion}`, `${member}|us-west-2`].sort());
+      expect(result.coveredRegions.sort()).toEqual([mRegion, 'us-west-2']);
+      // Alongside another sub-listing it contributes coverage and no clusters.
+      serveByQuery((q) => (q.get('accounts') === other ? json({ clusters: [], errors: [] }) : json({ region: mRegion, clusters: [memberCluster], errors: [] })));
+      const both = await fetchEksIpMap(undefined, true, [`accounts=${member}&regions=${mRegion}`, `accounts=${other}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`]);
+      expect(both.coveredAccountRegions).toEqual(expect.arrayContaining([`${other}|${mRegion}`, `${other}|us-west-2`, `${member}|${mRegion}`]));
+      expect(both.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    });
+
+    it.each([
+      ['all regions (requested targets unknown)', `accounts=${member},${other}&regions=__all__`, { clusters: [], errors: [] }],
+      ['all accounts', `accounts=__all__&regions=${mRegion}`, { clusters: [], errors: [] }],
+      ['no regions param (server default region unknown)', `accounts=${member},${other}`, { clusters: [], errors: [] }],
+      ['a partial status', `accounts=${member},${other}&regions=${mRegion}`, { clusters: [], errors: [], status: 'partial' }],
+      ['a reasoned error', `accounts=${member},${other}&regions=${mRegion}`,
+        { clusters: [], errors: [{ accountId: other, region: mRegion, message: 'x', reason: 'denied' }] }],
+      ['truncation', `accounts=${member},${other}&regions=${mRegion}`, { clusters: [], truncated: true }],
+    ])('an empty multi-target listing with %s still cannot certify coverage', async (_l, scope, body) => {
+      serveScoped(body);
+      expect(await fetchEksIpMap(undefined, false, scope)).toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
+    });
+
     it('applies duplicate-IP vetoes across accounts (shared VPC) and dedupes a cluster listed twice', async () => {
       const sharedArn = `arn:aws:eks:${mRegion}:${other}:cluster/shared`;
       const shared = { ...memberCluster, id: sharedArn, arn: sharedArn, name: 'shared', accountId: other };
@@ -612,9 +639,4 @@ describe('scope-aware EKS listing', () => {
     });
   });
 
-  it('cannot certify coverage for a multi-target listing with no clusters', async () => {
-    serveScoped({ clusters: [] });
-    expect(await fetchEksIpMap(undefined, false, `accounts=${member},${other}&regions=${mRegion}`))
-      .toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
-  });
 });
