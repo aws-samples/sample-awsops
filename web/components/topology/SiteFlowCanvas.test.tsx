@@ -31,6 +31,15 @@ const h = vi.hoisted(() => {
       },
     };
     Object.assign(cy, {
+      getElementById: (id: string) => {
+        const el = cy.els.find((e) => e.data.id === id);
+        return {
+          nonempty: () => !!el,
+          data: (d?: Record<string, unknown>) => (d ? void Object.assign(el!.data, d) : el!.data),
+          removeData: (k: string) => { delete el!.data[k]; },
+          classes: (c: string) => { el!.classes = c; },
+        };
+      },
       on: (evt: string, sel: string, fn: (e: unknown) => void) => { cy.handlers.set(`${evt} ${sel}`, fn); },
       batch: (fn: () => void) => fn(),
       elements: () => ({ remove: () => { cy.els = []; } }),
@@ -174,14 +183,55 @@ describe('SiteFlowCanvas', () => {
     expect(h.factory).toHaveBeenCalledTimes(1);
   });
 
-  it('destroys the instance on unmount and rebuilds when the flow changes', async () => {
+  it('a path-only change keeps the instance and its layout, updating only the highlight classes in place', async () => {
     const { rerender, unmount } = render(<SiteFlowCanvas flow={flow()} theme="light" />);
-    const first = await mounted();
-    rerender(<SiteFlowCanvas flow={flow({ path: '/products' })} theme="light" />);
-    const second = await mounted(2);
-    expect(first.destroy).toHaveBeenCalledTimes(1);
+    const cy = await mounted();
+    expect(cls(get(cy.els, 'dns1')).has('hl')).toBe(false);
+    rerender(<SiteFlowCanvas flow={flow({ path: '/products', highlight: { nodes: ['dns1', 'cf1'], edges: ['e1'], inferred: [] } })} theme="light" />);
+    await waitFor(() => expect(cls(get(cy.els, 'dns1')).has('hl')).toBe(true));
+    expect(cls(get(cy.els, 'tg1')).has('faded')).toBe(true);
+    expect(cls(get(cy.els, 'e1')).has('hl')).toBe(true);
+    expect(h.factory).toHaveBeenCalledTimes(1); // no new cytoscape instance
+    expect(cy.add).not.toHaveBeenCalled(); // no rebuild
+    expect(cy.layout).not.toHaveBeenCalled(); // no re-layout
+    expect(cy.destroy).not.toHaveBeenCalled();
+    rerender(<SiteFlowCanvas flow={flow({ path: null })} theme="light" />);
+    await waitFor(() => expect(cls(get(cy.els, 'dns1')).has('hl')).toBe(false));
+    expect(cls(get(cy.els, 'tg1')).has('faded')).toBe(false);
     unmount();
-    expect(second.destroy).toHaveBeenCalledTimes(1);
+    expect(cy.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a structural change (evidence landing) keeps expanded groups and known positions, re-running fcose without randomizing', async () => {
+    const { rerender } = render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    const cy = await mounted();
+    cy.tap(CL); // expand the cluster (its namespace stays collapsed)
+    cy.layout.mockClear(); cy.run.mockClear();
+    const base = flow();
+    const landed = flow({
+      nodes: [...base.nodes, { id: 'wl:cart', kind: 'workload', label: 'cart', group: NS },
+        { id: 'db2', kind: 'datastore', label: 'cart-cache', group: 'datastore:cache' }],
+      edges: [...base.edges, { id: 'e7', source: 'wl:front', target: 'wl:cart', evidence: 'traced', calls: 3 },
+        { id: 'e8', source: 'wl:cart', target: 'db2', evidence: 'configured' }],
+      groups: [...base.groups, { id: 'datastore:cache', kind: 'datastore', label: 'cache', parent: 'host:shop.example.com' }],
+    });
+    rerender(<SiteFlowCanvas flow={landed} theme="light" />);
+    await waitFor(() => expect(cy.layout).toHaveBeenCalledTimes(1));
+    expect(h.factory).toHaveBeenCalledTimes(1);
+    expect(cy.layout).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'fcose', randomize: false }));
+    expect(get(cy.els, CL)?.data).toMatchObject({ label: 'shop', role: 'group' }); // still expanded
+    expect(get(cy.els, NS)?.data).toMatchObject({ label: 'web (+3)', role: 'collapsed', parent: CL });
+    expect(get(cy.els, 'datastore:cache')?.data).toMatchObject({ role: 'collapsed' }); // a new datastore group starts collapsed
+    expect(get(cy.els, 'dns1')?.position).toEqual({ x: 100, y: 200 }); // known position carried
+    expect(get(cy.els, 'datastore:cache')?.position).toBeDefined(); // new node seeded near its parent
+  });
+
+  it('builds from the latest flow when it changes before the dynamic import resolves', async () => {
+    const { rerender } = render(<SiteFlowCanvas flow={flow()} theme="light" />);
+    rerender(<SiteFlowCanvas flow={flow({ path: '/x', highlight: { nodes: ['dns1'], edges: [], inferred: [] } })} theme="light" />);
+    const cy = await mounted();
+    expect(cls(get(cy.opts.elements as El[], 'dns1')).has('hl')).toBe(true);
+    expect(h.factory).toHaveBeenCalledTimes(1);
   });
 
   it('never creates an instance when unmounted before the dynamic import resolves', async () => {

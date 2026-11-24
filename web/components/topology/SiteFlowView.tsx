@@ -7,7 +7,9 @@
 //    db-refs are then read per cluster ARN and the final flow is built once they all land. While they load, the
 //    `trace_unavailable` / `db_refs_partial` gaps stage 1 necessarily carries are not shown (evidence pending).
 //  - the composed SiteFlow is memoized on its real inputs, so typing in the host box, opening a detail panel or a
-//    theme switch never hands the canvas a new flow (a new flow re-lays the canvas out).
+//    theme switch never hands the canvas a new flow. A path change hands it a flow with the same structure (the
+//    canvas only re-highlights in place); evidence landing changes the structure (the canvas re-lays out from the
+//    known positions). The canvas is keyed by host: a new host starts a fresh instance and layout.
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
@@ -329,7 +331,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
         )}
         {flow && flow.nodes.length > 0 && (
           <>
-            <SiteFlowCanvas flow={flow} theme={theme} themeKey={rawTheme} onSelect={onSelect} />
+            <SiteFlowCanvas key={flow.host} flow={flow} theme={theme} themeKey={rawTheme} onSelect={onSelect} />
             {flow.path && <HighlightChain flow={flow} />}
           </>
         )}
