@@ -10,8 +10,9 @@
 //    selector's scope: a narrowed scope (incl. the UI default, host account only — DEFAULT_SCOPE in
 //    web/lib/account-context.ts, resolved by getEksScope in web/lib/eks-scope.ts) hides same-named clusters
 //    of other accounts/regions without any truncated/error disclosure. The fleet is read per registered
-//    account (web/lib/eks-fleet.ts readFleet, from the same /api/accounts body): a single all-account
-//    listing is capped at 12 account×region targets and truncates on a real fleet. The trace read therefore
+//    account (web/lib/eks-fleet.ts readFleet, from the same /api/accounts body) plus /api/eks/registrations
+//    (uniqueness = listed ∪ registered clusters): a single all-account listing is capped at 12 account×region
+//    targets and truncates on a real fleet. The trace read therefore
 //    waits for the /api/accounts lookup; a failed or malformed lookup fails the join closed (incomplete_listing).
 //  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders).
 //    An ARN id reads 'self' only when its account equals the unique isHost account of /api/accounts;
