@@ -774,10 +774,10 @@ describe('SiteFlowView', () => {
     expect(ids()).toContain(`ds:rds_cluster:${MEMBER}:${REGION}:orders`); // the other cluster's refs still land
   });
 
-  it('unknown host → host_not_found notice', async () => {
+  it('unknown host → host_not_found notice naming the searched host', async () => {
     stubFetch();
     view('view=site&host=nope.example.com');
-    await waitFor(() => expect(notices()).toContain(GAP_NOTICE.host_not_found), { timeout: 3000 });
+    await waitFor(() => expect(notices()).toContain(`${GAP_NOTICE.host_not_found} nope.example.com`), { timeout: 3000 });
     expect(screen.queryByTestId('site-canvas')).toBeNull();
   });
 

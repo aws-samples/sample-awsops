@@ -28,7 +28,8 @@ import { useTheme } from '@/lib/use-theme';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
 
-/** One notice per SiteGap (Korean source, translated via tt(); lockstep-tested). */
+/** One notice per SiteGap (Korean source, translated via tt(); lockstep-tested). `host_not_found` is followed by the
+ *  searched host, like `binding_scope_blocked` by its cluster labels. */
 export const GAP_NOTICE: Record<SiteGap, string> = {
   inventory_incomplete: '일부 인벤토리를 조회하지 못했거나 동기화가 끝나지 않아 흐름이 일부만 표시될 수 있습니다.',
   pods_unresolved: '일부 대상의 Pod를 확인하지 못해 워크로드 대신 대상으로 표시합니다. 조회 범위 밖의 클러스터이거나, 클러스터 네트워크(VPC)를 알 수 없거나, Pod 식별 근거가 부족한 경우입니다.',
@@ -38,7 +39,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되어 트레이스 호출을 표시하지 않습니다.',
   route_unavailable: '경로별 트레이스 집계를 읽지 못해 경로 강조가 이름 기반 추론에 머뭅니다.',
   db_refs_partial: '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.',
-  host_not_found: '인벤토리에서 이 호스트를 찾지 못했습니다.',
+  host_not_found: '인벤토리에서 다음 호스트를 찾지 못했습니다:',
   behaviors_unavailable: 'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.',
   route_ambiguous: '요청 경로에 맞는 API 경로가 여러 개라 하나로 강조하지 않습니다.',
   trace_unmapped: '일부 트레이스 호출을 워크로드나 데이터 저장소에 연결하지 못해 생략했습니다.',
@@ -230,6 +231,8 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${ev.failedDbRefs.map(eksClusterLabel).join(', ')})`);
+    } else if (g === 'host_not_found') {
+      notices.push(`${tt(GAP_NOTICE[g])} ${flow?.host ?? host}`); // the searched (normalized) host follows the colon
     } else notices.push(tt(GAP_NOTICE[g]));
   }
   // Inventory read issues are disclosed even without a host flow (host index).

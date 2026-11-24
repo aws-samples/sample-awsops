@@ -109,7 +109,7 @@ export const TERMS: Record<string, Pair> = {
     zh: '部分工作负载的数据存储引用无法读取，因此数据存储连接仅部分显示。',
     ja: '一部のワークロードのデータストア参照を読み取れないため、データストアへの接続が一部のみ表示されます。',
   },
-  '인벤토리에서 이 호스트를 찾지 못했습니다.': { en: 'This host was not found in the inventory.', zh: '在资产清单中未找到此主机。', ja: 'インベントリにこのホストが見つかりません。' },
+  '인벤토리에서 다음 호스트를 찾지 못했습니다:': { en: 'This host was not found in the inventory:', zh: '在资产清单中未找到以下主机：', ja: 'インベントリに次のホストが見つかりません:' },
   'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.': {
     en: 'CloudFront cache behaviors could not be read, so per-path behaviors are not shown.', zh: '无法读取 CloudFront 缓存行为，因此不显示按路径的行为。',
     ja: 'CloudFront のキャッシュ動作を読み取れないため、パス別の動作を表示しません。',
