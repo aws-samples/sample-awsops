@@ -86,9 +86,10 @@ export function inventoryEvidence(
 // truncated sub-listing fails the whole read. The cluster lists are concatenated (deduped by ARN) BEFORE
 // the candidate loop, so duplicate-IP vetoes and blocked scopes apply across accounts.
 //
-// Blocked scopes (a not-connected or unreadable cluster's region|vpc) null that scope's map entries and drop
-// only the bindings observed in it: `bindingRead` is then `partial` with `binding_scope_blocked` and the
-// blocked cluster ids. Every other binding gap still withholds all bindings.
+// Blocked scopes (a not-connected or unreadable cluster's region|vpc) null that scope's map entries. In scoped
+// mode they drop only the bindings observed in that scope: `bindingRead` is then `partial` with
+// `binding_scope_blocked` and the blocked cluster ids. The unscoped default path withholds every binding
+// (`binding_read_incomplete`), as before. Every other binding gap withholds all bindings in both modes.
 type ListedCluster = Cluster & { ref: string };
 type Listing = { clusters: ListedCluster[]; regions: string[]; keys: string[] | null; hasErrors: boolean; partial: boolean };
 async function readListing(scopeQuery: string, signal: AbortSignal | undefined): Promise<Listing | { fail: EksIpResolution['reasons'][number] | undefined }> {
@@ -268,7 +269,8 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
   if (signal?.aborted) return fail();
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
-  if (listHasErrors) bindingGaps.add('binding_read_incomplete');
+  // The unscoped default path keeps its contract: any blocked scope withholds every binding.
+  if (listHasErrors || (!scoped && blockedScopes.size)) bindingGaps.add('binding_read_incomplete');
   // Reason-less all-region discovery note: listed targets are sound, unlisted regions unknown.
   if (scopePartial) bindingGaps.add('binding_scope_partial');
   // A blocked region|vpc (not-connected or unreadable cluster) cannot veto its IPs: drop only the bindings

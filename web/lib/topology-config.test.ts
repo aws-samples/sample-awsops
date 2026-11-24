@@ -527,6 +527,16 @@ describe('scope-aware EKS listing', () => {
     expect(graph.nodes.find(n => n.kind === 'target')?.meta?.ambiguity).toBe('eks_inventory_incomplete');
   });
 
+  it('keeps the unscoped default path withholding every binding when any cluster is blocked', async () => {
+    const hostArn = `arn:aws:eks:${region}:${other}:cluster/host-cluster`;
+    serveScoped({ region, clusters: [{ ...cluster, id: hostArn, arn: hostArn, accountId: other },
+      { ...cluster, name: 'offline', id: 'offline', vpcId: 'vpc-offline', access: 'no-entry' }] });
+    const result = await fetchEksIpMap(undefined, true);
+    expect(result.bindingRead).toEqual({ status: 'withheld', reasons: ['binding_read_incomplete'] });
+    expect(result.bindings).toBeUndefined();
+    expect(result.map[scopedTargetIp(region, vpcId, ip)]).toMatchObject({ resolved: 'eks' });
+  });
+
   it('keeps global withholding for listing errors and partial pod reads alongside a blocked scope', async () => {
     const legacyArn = `arn:aws:eks:${mRegion}:${member}:cluster/legacy`;
     const legacy = { ...memberCluster, id: legacyArn, arn: legacyArn, name: 'legacy', vpcId: 'vpc-legacy', access: 'no-entry' };
