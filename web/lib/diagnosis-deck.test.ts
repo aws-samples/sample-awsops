@@ -50,3 +50,22 @@ describe('presentations of stored diagnoses', () => {
     expect(html).toContain("default-src 'none'");
   });
 });
+
+describe('stored heading and decision-role compatibility', () => {
+  it('keeps old doubled subheadings inside their source section', () => {
+    const deck = buildDiagnosisDeck({id: 8, markdown: '## Security\n\n## ### Follow-up\n\nRead the policy.'}, 'en');
+    expect(deck.sections.map(s => s.title)).toEqual(['Security']);
+    expect(deck.slides.some(s => s.chapter === 'Security' && s.title === 'Follow-up')).toBe(true);
+  });
+  it.each([true, false])('keeps decision criteria separate from findings and table scope (table=%s)', (table) => {
+    const md = '## Security\n\nPartial assessment · Admitted findings 1\n\n**DB** · Hypothesis\n\nReview encryption.\n\n'
+      + (table ? '### Root Cause and Remediation\n\n| Subject | How to verify |\n|---|---|\n| DB | Check policy. |\n\n' : '')
+      + '**Decision criteria**\n\nCompare actual settings with policy.';
+    const deck = buildDiagnosisDeck({id: 2, markdown: md}, 'en');
+    const decision = deck.slides.filter(s => s.title === 'Decision criteria');
+    expect(decision).toHaveLength(1);
+    expect(decision[0].items[0].text).toBe('Compare actual settings with policy.');
+    expect(deck.slides.filter(s => s !== decision[0]).every(s =>
+      !s.caption.includes('Compare actual') && s.items.every(r => !r.text.includes('Compare actual')))).toBe(true);
+  });
+});

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { toString } from 'mdast-util-to-string';
 import type { RootContent, Table, Paragraph } from 'mdast';
 import type { Lang } from './i18n';
+import { normalizeHeadings } from './report-headings';
 
 export interface ReportForDeck {
   id: number;
@@ -109,6 +110,8 @@ const plain = (node: RootContent | Table['children'][number]['children'][number]
 const stripSignal = (s: string) => s.replace(/^\[(?:Critical|Warning|Info)\]\s*/i, '').trim();
 const appendix = /^(?:근거 부록|Evidence appendix|根拠資料|证据附录)$/i;
 const sourceLine = /^(?:근거|Evidence|根拠|证据)\s*·/i;
+// Exact code-owned labels from diagnosis/editor.py; these are operator guidance.
+const decisionHeadings = new Set(['개선 여부를 결정하는 기준', 'Decision criteria', '改善を判断する基準', '改进决策依据']);
 const coverageLine = /(?:채택 소견|Admitted findings|採用所見|采纳发现)\s*\d+/i;
 
 function tableRows(table: Table) {
@@ -194,7 +197,7 @@ export function displayedText(text: string, limit: number): string {
 }
 
 export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): DiagnosisDeck {
-  const source = report.markdown.replace(/\r\n?/g, '\n');
+  const source = normalizeHeadings(report.markdown.replace(/\r\n?/g, '\n'));
   const tree = unified().use(remarkParse).use(remarkGfm).parse(source);
   const copy = deckCopy[lang];
   const blocks: { title: string; nodes: RootContent[]; start: number }[] = [];
@@ -278,7 +281,9 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
     };
     for (const group of groups) {
       const tables = group.nodes.filter((n): n is Table => n.type === 'table');
-      const paragraphs = toItems(group.nodes);
+      const allItems = toItems(group.nodes);
+      const decisions = allItems.filter(r => decisionHeadings.has(r.label));
+      const paragraphs = allItems.filter(r => !decisionHeadings.has(r.label));
       const isDomain = paragraphs.some((r) => coverageLine.test(r.text));
       if (isDomain) {
         const findings = paragraphs.filter((r) => r.label && !coverageLine.test(r.text));
@@ -324,6 +329,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         );
         add(label, rows, scope, notes);
       }
+      for (const decision of decisions) add(decision.label, [{ label: '', text: decision.text }]);
     }
   });
   if (slides.length === 1)

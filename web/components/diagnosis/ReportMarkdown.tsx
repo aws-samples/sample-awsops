@@ -1,4 +1,5 @@
 'use client';
+import { normalizeHeadings } from '@/lib/report-headings';
 import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -14,9 +15,7 @@ import remarkGfm from 'remark-gfm';
 // `## ### X` — which CommonMark parses as an h2 whose TEXT is literally "### X" (so "###" shows on
 // screen). Collapse any doubled heading prefix to the inner one (`## ### X` → `### X`). Applied at
 // render so EXISTING stored reports are fixed too, not only freshly generated ones.
-export function normalizeHeadings(md: string): string {
-  return md.replace(/^(#{1,6})[ \t]+(#{1,6}[ \t])/gm, '$2');
-}
+export { normalizeHeadings } from '@/lib/report-headings';
 
 function ReportMarkdownImpl({ markdown }: { markdown: string }) {
   return (
