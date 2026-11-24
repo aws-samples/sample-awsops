@@ -200,7 +200,7 @@ export function displayedText(text: string, limit: number): string {
 
 export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): DiagnosisDeck {
   const source = normalizeHeadings(report.markdown.replace(/\r\n?/g, '\n'));
-  const tree = unified().use(remarkParse).use(remarkGfm).parse(source);
+  const tree = unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).parse(source);
   const copy = deckCopy[lang];
   const blocks: { title: string; nodes: RootContent[]; start: number }[] = [];
   const preamble: RootContent[] = [];

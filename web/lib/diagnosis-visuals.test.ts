@@ -92,3 +92,12 @@ describe('architecture briefing', () => {
     expect(Object.keys(zip.files).some((n) => n.endsWith('.xlsx'))).toBe(true);
   });
 });
+
+it('preserves multiple numeric ranges within one paragraph in both presentation formats', async () => {
+  const line = '11월 10~24일에 관측된 시간 구간은 61~66시간입니다.';
+  const deck = buildDiagnosisDeck({ id: 7, markdown: '## 기간\n\n' + line }, 'ko');
+  expect(deck.slides[1].items[0].text).toBe(line);
+  expect(await renderDeckHtml(deck)).toContain(line);
+  const archive = await JSZip.loadAsync(await (await renderDeckPptx(deck)).arrayBuffer());
+  expect(await archive.file('ppt/slides/slide2.xml')!.async('string')).toContain(line);
+});

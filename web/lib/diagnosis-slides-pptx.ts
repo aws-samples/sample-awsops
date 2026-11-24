@@ -49,7 +49,8 @@ function relationships(
   const gap = width - 2 * nodeW;
   rows.forEach((row, i) => {
     const y = top + pitch * i;
-    const sourceH = Math.min(pitch * 0.44, row.source.length > 120 ? 0.83 : 0.54);
+    const singleLineSource = fittedSize(row.source, width - 0.2, 0.36, 15) >= 14;
+    const sourceH = Math.min(pitch * 0.44, singleLineSource ? 0.36 : 0.83);
     const nodeH = pitch - sourceH - 0.1;
     for (const side of ['left', 'right'] as const) {
       const x = side === 'left' ? left : left + width - nodeW;
@@ -59,10 +60,10 @@ function relationships(
         objectName: `Endpoint ${i} ${side}`,
         bold: true,
         align: 'center',
-        margin: 6,
+        margin: 4,
         fill: { color: lavender },
         line: { color: rule, width: 1 },
-        fontSize: fittedSize(name, nodeW - 0.18, nodeH - 0.18, 19),
+        fontSize: fittedSize(name, nodeW - 0.16, nodeH - 0.13, 19),
       });
     }
     slide.addShape('line', {

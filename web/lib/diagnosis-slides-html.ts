@@ -333,7 +333,7 @@ h3 {
   margin: 0.35em 0;
 }
 .endpoint {
-  font: 600 clamp(14px, 1.25vw, 20px)/1.4 ui-monospace, monospace;
+  font: 600 clamp(19px, 1.4vw, 22px)/1.4 ui-monospace, monospace;
   padding: 0.5em 0.65em;
   border: 1px solid var(--accent);
   border-radius: 5px;
@@ -384,7 +384,7 @@ h3 {
   font-weight: 600;
 }
 .zone dd, .matrix {
-  font-size: clamp(16px, 1.35vw, 22px);
+  font-size: clamp(19px, 1.4vw, 22px);
   line-height: 1.4;
 }
 .visual-slide :is(.endpoint, .relation-label, .relation-source, .zone-role, .zone h3, .zone dt, .zone dd, .matrix th, .matrix td, .caption) {
@@ -594,7 +594,7 @@ const script = `
 
 export async function renderDeckHtml(deck: DiagnosisDeck): Promise<string> {
   const c = deckCopy[deck.lang];
-  const parser = unified().use(remarkParse).use(remarkGfm);
+  const parser = unified().use(remarkParse).use(remarkGfm, { singleTilde: false });
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script));
   const scriptHash = btoa(String.fromCharCode(...new Uint8Array(hash)));
   const pages = deck.slides
