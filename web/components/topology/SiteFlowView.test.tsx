@@ -832,6 +832,24 @@ describe('SiteFlowView', () => {
     expect(notices()).not.toContain('s3: unknown');
   });
 
+  it.each(['cloudfront_vpc_origin', 'apigatewayv2_api'])('a never-synced hop type (%s) → inventory_incomplete', async (type) => {
+    stubFetch((u) => (/^\/api\/inventory\/(\w+)\?/.exec(u)?.[1] === type
+      ? json({ rows: [], run: null, consistency: 'statement-snapshot' }) : undefined));
+    view();
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('inventory_incomplete');
+    expect(notices()).toContain(`${GAP_NOTICE.inventory_incomplete} (${type}: unknown)`);
+  });
+
+  it.each(['apigatewayv2_route', 'vpc_endpoint'])('a never-synced enrichment type (%s) adds no inventory gap', async (type) => {
+    stubFetch((u) => (/^\/api\/inventory\/(\w+)\?/.exec(u)?.[1] === type
+      ? json({ rows: [], run: null, consistency: 'statement-snapshot' }) : undefined));
+    view();
+    await settled();
+    expect(notices()).not.toContain(`${type}: unknown`);
+    expect(notices()).not.toContain(`${GAP_NOTICE.inventory_incomplete} (`); // no inventory issue listed at all
+  });
+
   it('keeps the detail panel open when evidence lands and the selected node still exists', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });

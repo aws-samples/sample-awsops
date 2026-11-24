@@ -42,9 +42,16 @@ const DEADLINE_MS = 30000;
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 
 export interface InventoryIssue { type: string; issue: 'failed' | 'capped' | 'incomplete' | 'running' | 'partial' | 'unknown' }
-/** Hop types the builder walks: a missing sync record there cannot prove the chain complete. Optional enrichment
- *  types stay exempt (a never-collected one would flag every load). Critical types already require a ledger. */
-export const HOP_TYPES: ReadonlySet<string> = new Set(['route53', 'cloudfront', 'alb', 'nlb', 'alb_listener_rule']);
+/** Types whose rows add or remove a chain hop in buildFlowGraph: a missing sync record (`unknown`) for any of them
+ *  cannot prove the chain complete and is disclosed as `inventory_incomplete`. route53/cloudfront/alb/nlb/
+ *  apigatewayv2_api are hop nodes; cloudfront_vpc_origin links a VPC origin to its ALB/NLB; apigatewayv2_integration
+ *  links an API to its Lambda/LB; alb_listener_rule decides which TG the highlight follows. Exempt (never add or
+ *  remove a hop; a never-collected one would flag every load): label/row-only enrichment (apigatewayv2_route route
+ *  labels, s3 bucket rows, lambda/ec2 target names), ENI-owner enrichment (eni/vpc_endpoint/nat_gateway, guarded by
+ *  ownerIncomplete) and the CloudFront→WAF side edge (waf). Critical types (target_group, ecs_task, subnet, eni)
+ *  already require a ledger: a missing run fails the read (`failed`). */
+export const HOP_TYPES: ReadonlySet<string> = new Set(['route53', 'cloudfront', 'cloudfront_vpc_origin', 'alb', 'nlb',
+  'alb_listener_rule', 'apigatewayv2_api', 'apigatewayv2_integration']);
 export interface SiteInventory {
   flow: FlowGraph;
   cloudfrontRows: Row[];
