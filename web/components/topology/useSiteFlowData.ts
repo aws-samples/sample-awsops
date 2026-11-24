@@ -14,8 +14,11 @@
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
 //    recognized when deriving the EKS scope. The EKS read waits for this lookup (evidence pending meanwhile).
-//  - fleet listing (`/api/eks?accounts=__all__&regions=__all__&includeGlobal=1`, as K8sMapView): name
-//    uniqueness for the trace join; truncation or a read error with a `reason` marks it incomplete.
+//  - fleet listing: one `/api/eks?accounts=<id>&regions=__all__&includeGlobal=1` per enabled registered account
+//    from `/api/accounts` (host as `self`), merged. A single all-account request is capped at 12 account×region
+//    targets server-side and truncates on a real fleet. The merged fleet drives deriveEksScope and the trace
+//    join's name uniqueness; any failed / reasoned-error / truncated request, or a failed or malformed
+//    `/api/accounts`, marks it incomplete.
 //  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for the mount.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildFlowGraph, type FlowGraph } from '@/lib/flow-topology';
@@ -27,10 +30,13 @@ import type { DbRef } from '@/lib/eks-db-refs';
 import type { DbResource } from '@/lib/db-ref-resolve';
 import type { SiteFlowInput } from '@/lib/site-flow';
 import { hostAccountOf } from '@/lib/host-account';
-import { scopeParams, ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
+import { ALL_ACCOUNTS, ALL_REGIONS } from '@/lib/account-context';
 import { INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
 
-export const FLEET_URL = `/api/eks?${scopeParams({ accounts: ALL_ACCOUNTS, regions: ALL_REGIONS, includeGlobal: true })}`;
+/** Per-account fleet listing (one account per request keeps it under the server's 12-target cap). */
+export const fleetUrl = (account: string) =>
+  `/api/eks?${new URLSearchParams({ accounts: account, regions: ALL_REGIONS, includeGlobal: '1' })}`;
+const FLEET_CONCURRENCY = 4;
 const DEADLINE_MS = 30000;
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 
@@ -66,6 +72,38 @@ export function parseFleet(body: unknown): Fleet {
   const incomplete = (record(body) && body.truncated === true) || errors.some((e) => record(e) && !!e.reason)
     || (record(body) && body.status === 'error');
   return { clusters, names: clusters.map((c) => c.id), incomplete };
+}
+
+const INCOMPLETE_FLEET = (): Fleet => ({ clusters: [], names: [], incomplete: true });
+
+/** Accounts to list for the fleet: the host as `self` plus every enabled member; null when the body is malformed. */
+export function fleetAccounts(body: unknown): string[] | null {
+  const rows = record(body) && Array.isArray(body.accounts) ? body.accounts : null;
+  if (!rows || !rows.every((a) => record(a) && typeof a.accountId === 'string' && /^\d{12}$/.test(a.accountId))) return null;
+  const members = (rows as Record<string, unknown>[]).filter((a) => a.isHost !== true && a.enabled === true).map((a) => String(a.accountId));
+  return ['self', ...[...new Set(members)].sort()];
+}
+
+/** Merged per-account fleet listing (bounded concurrency, shared signal). Fails closed into `incomplete`. */
+export async function readFleet(accountsBody: unknown, signal: AbortSignal): Promise<Fleet> {
+  const accounts = fleetAccounts(accountsBody);
+  if (!accounts) return INCOMPLETE_FLEET();
+  const parts: Fleet[] = new Array(accounts.length);
+  let next = 0;
+  const lane = async () => {
+    for (let i = next++; i < accounts.length; i = next++) {
+      parts[i] = await fetch(fleetUrl(accounts[i]), { signal })
+        .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(FLEET_CONCURRENCY, accounts.length) }, lane));
+  const clusters: FleetCluster[] = [];
+  const seen = new Set<string>();
+  for (const c of parts.flatMap((p) => p.clusters)) {
+    const key = c.arn ?? c.id;
+    if (!seen.has(key)) { seen.add(key); clusters.push(c); }
+  }
+  return { clusters, names: clusters.map((c) => c.id), incomplete: signal.aborted || parts.some((p) => p.incomplete) };
 }
 
 /** Host-alias account of a listed cluster: bare-id rows are host default-region clusters by construction. */
@@ -127,12 +165,11 @@ export function useSiteInventory(inventoryScope: string): {
     const ctrl = new AbortController();
     const { signal } = ctrl;
     const deadline = setTimeout(() => ctrl.abort(), DEADLINE_MS);
-    const host = fetch('/api/accounts', { signal })
-      .then((r) => (r.ok ? r.json() : null)).then(hostAccountOf).catch(() => null);
+    const accountsBody: Promise<unknown> = fetch('/api/accounts', { signal })
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const host = accountsBody.then(hostAccountOf);
     // Fail closed: a failed, aborted or unparseable fleet listing cannot prove name uniqueness.
-    const fleetRead = fetch(FLEET_URL, { signal })
-      .then((r) => (r.ok ? r.json() : null)).then(parseFleet)
-      .catch(() => ({ clusters: [], names: [], incomplete: true }) as Fleet);
+    const fleetRead = accountsBody.then((body) => readFleet(body, signal)).catch(INCOMPLETE_FLEET);
     void host.then((h) => { if (live) setHostAccount(h); });
     void fleetRead.then((f) => { if (live) setFleet(f); });
     const eksScope = Promise.all([host, fleetRead]).then(([h, f]) => deriveEksScope(inventoryScope, f, h));
