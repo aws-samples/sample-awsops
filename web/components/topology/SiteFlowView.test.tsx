@@ -861,6 +861,13 @@ describe('SiteFlowView notices', () => {
     expect(Object.keys(GAP_NOTICE).sort()).toEqual([...GAPS].sort());
     expect(new Set(Object.values(GAP_NOTICE)).size).toBe(GAPS.length);
   });
+  it('binding_scope_partial names its only trigger (no connected cluster in scope) and gives no region advice', () => {
+    // The per-account derivation lists explicit regions whenever a cluster is in scope, so the all-region note
+    // only remains when no connected cluster is in the selected scope; picking regions would not change that.
+    expect(BINDING_NOTICE.binding_scope_partial).toContain('연결된 EKS 클러스터가 없');
+    expect(BINDING_NOTICE.binding_scope_partial).not.toContain('리전을 지정');
+    expect(applyTerms('en', BINDING_NOTICE.binding_scope_partial)).not.toMatch(/(select|choose|pick)\s+(explicit\s+)?regions/i);
+  });
   it.each(['en', 'zh', 'ja'] as const)('translates every gap and binding notice (%s)', (lang) => {
     for (const ko of [...Object.values(GAP_NOTICE), ...Object.values(BINDING_NOTICE)]) {
       const out = applyTerms(lang, ko);

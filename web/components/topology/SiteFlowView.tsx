@@ -48,7 +48,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
 /** Why pod bindings were withheld or narrowed (fetchEksIpMap bindingRead reasons; Korean source, lockstep-tested).
  *  `binding_scope_blocked` (status `partial`) is followed by the blocked cluster labels. */
 export const BINDING_NOTICE: Record<string, string> = {
-  binding_scope_partial: '전체 리전 범위의 EKS 목록은 일부 리전만 확인하므로 Pod 식별 근거를 사용하지 않습니다. 계정·리전 선택에서 리전을 지정하세요.',
+  binding_scope_partial: '선택한 범위에 연결된 EKS 클러스터가 없어 전체 리전 EKS 목록만 확인했습니다. 이 목록은 일부 리전만 포함하므로 Pod 식별 근거를 사용하지 않습니다.',
   binding_read_incomplete: '일부 EKS 클러스터를 읽지 못했거나 연결되지 않아 Pod 식별 근거를 사용하지 않습니다.',
   binding_clock_unknown: 'Pod 조회 시각을 확인할 수 없어 Pod 식별 근거를 사용하지 않습니다.',
   binding_rows_invalid: 'Pod 조회 결과 형식이 올바르지 않아 Pod 식별 근거를 사용하지 않습니다.',

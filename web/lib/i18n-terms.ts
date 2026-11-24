@@ -134,10 +134,10 @@ export const TERMS: Record<string, Pair> = {
     en: 'No cache behavior or listener rule matches this request path.', zh: '没有与此请求路径匹配的缓存行为或监听规则。',
     ja: 'このリクエストパスに一致するキャッシュ動作やリスナールールはありません。',
   },
-  '전체 리전 범위의 EKS 목록은 일부 리전만 확인하므로 Pod 식별 근거를 사용하지 않습니다. 계정·리전 선택에서 리전을 지정하세요.': {
-    en: 'An all-region EKS listing covers only some regions, so pod identity evidence is not used. Select regions in the account/region selector.',
-    zh: '全区域范围的 EKS 列表仅覆盖部分区域，因此不使用 Pod 识别依据。请在账户/区域选择中指定区域。',
-    ja: '全リージョン範囲の EKS 一覧は一部のリージョンしか確認しないため、Pod 識別の根拠を使用しません。アカウント・リージョンの選択でリージョンを指定してください。',
+  '선택한 범위에 연결된 EKS 클러스터가 없어 전체 리전 EKS 목록만 확인했습니다. 이 목록은 일부 리전만 포함하므로 Pod 식별 근거를 사용하지 않습니다.': {
+    en: 'No connected EKS cluster is in the selected scope, so only the all-region EKS listing was read. That listing covers only some regions, so pod identity evidence is not used.',
+    zh: '所选范围内没有已连接的 EKS 集群，因此仅读取了全区域 EKS 列表。该列表仅覆盖部分区域，因此不使用 Pod 识别依据。',
+    ja: '選択した範囲に接続済みの EKS クラスターがないため、全リージョンの EKS 一覧のみを確認しました。この一覧は一部のリージョンしか含まないため、Pod 識別の根拠を使用しません。',
   },
   '일부 EKS 클러스터를 읽지 못했거나 연결되지 않아 Pod 식별 근거를 사용하지 않습니다.': {
     en: 'Some EKS clusters could not be read or are not connected, so pod identity evidence is not used.',
