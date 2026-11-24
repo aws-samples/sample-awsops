@@ -6,6 +6,7 @@ import { toString } from 'mdast-util-to-string';
 import type { RootContent, Table, Paragraph } from 'mdast';
 import type { Lang } from './i18n';
 import { normalizeHeadings } from './report-headings';
+import { architectureHeading, tableVisuals, type BriefingVisual } from './diagnosis-visuals';
 
 export interface ReportForDeck {
   id: number;
@@ -20,6 +21,7 @@ export interface DeckItem {
   count?: number;
 }
 export interface BriefingSlide {
+  visual?: BriefingVisual;
   chapter: string;
   title: string;
   items: DeckItem[];
@@ -47,7 +49,7 @@ export const deckCopy = {
     brief: '진단 브리핑',
     first: '먼저 확인할 일',
     report: '진단',
-    detail: '원문',
+    detail: '섹션 본문',
     close: '닫기',
     next: '다음',
     prev: '이전',
@@ -62,7 +64,7 @@ export const deckCopy = {
     brief: 'Diagnosis briefing',
     first: 'First check',
     report: 'Report',
-    detail: 'Source',
+    detail: 'Section text',
     close: 'Close',
     next: 'Next',
     prev: 'Previous',
@@ -77,7 +79,7 @@ export const deckCopy = {
     brief: '診断ブリーフィング',
     first: '最初の確認',
     report: '診断',
-    detail: '原文',
+    detail: 'セクション本文',
     close: '閉じる',
     next: '次へ',
     prev: '前へ',
@@ -92,7 +94,7 @@ export const deckCopy = {
     brief: '诊断简报',
     first: '优先核查',
     report: '报告',
-    detail: '原文',
+    detail: '章节正文',
     close: '关闭',
     next: '下一页',
     prev: '上一页',
@@ -261,7 +263,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
     }
     const add = (heading: string, items: DeckItem[], caption = '', notes = '') => {
       if (!items.length) return;
-      const shown = items.slice(0, 3);
+      const shown = items.some(r => r.count !== undefined) ? items.slice(0, 3) : items;
       const fullNotes = notes || items.map((r) => [r.label, r.text].filter(Boolean).join('\n')).join('\n\n');
       let from = 0;
       while (from < shown.length) {
@@ -270,7 +272,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         for (const item of shown.slice(from)) {
           // Budget the projection for a readable row height in a 16:9 presentation.
           const weight = Math.max(100, Math.min(600, item.text.length), Math.min(180, item.label.length * 2));
-          if (page.length && cost + weight > 390) break;
+          if (page.length >= 3 || (page.length && cost + weight > 390)) break;
           page.push(item);
           cost += weight;
         }
@@ -312,7 +314,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         !tables.length &&
         !(
           group.heading === '' &&
-          /^(현재 아키텍처|Current architecture|現在のアーキテクチャ|当前架构)$/i.test(block.title) &&
+          architectureHeading.test(block.title) &&
           groups.length > 1 &&
           paragraphs.length === 1 &&
           !paragraphs[0].label
@@ -344,7 +346,39 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
           .map((row) => row.map((cell, index) => header[index] + ': ' + cell).join('\n'))
           .join('\n\n');
         const notes = [originals, proseNotes].filter(Boolean).join('\n\n');
-        add(label, rows, scope?.text, notes);
+        const visuals = tableVisuals(block.title, table, columns);
+        if (visuals.length) {
+          // Give the diagram or comparison its author's interpretation on the same page.
+          // Only consume text immediately before this table, and only if it fits in full.
+          const before = group.nodes[group.nodes.indexOf(table) - 1];
+          const lead = before?.type === 'paragraph'
+            ? paragraphs.find(r => !r.label && r.text === plain(before) && r.text.length <= 165)
+            : undefined;
+          const caption = scope?.text || lead?.text || '';
+          if (lead && caption === lead.text) presented.add(lead);
+          const inventoryGroup = relationships && tables.some(other =>
+            other !== table && /^(?:유형|Type|種類|类型)$/i.test(plain(other.children[0].children[0])),
+          );
+          const visualTitle = relationships && group.heading && !inventoryGroup ? group.heading : label;
+          for (const visual of visuals) {
+            if (visual.kind === 'sourceRows') {
+              add(label, visual.rows.map(([relation, ...details]) => ({ label: relation, text: details.join('　') })), caption, notes);
+              continue;
+            }
+            const items = (visual.kind === 'relationships' || visual.kind === 'placement')
+              ? visual.rows.map(r => ({ label: r.label, text: [r.left, r.right, r.source].join(' · ') }))
+              : visual.rows.map(r => ({ label: r[0], text: r.slice(1).join('　') }));
+            slides.push({
+              chapter: block.title, title: visualTitle,
+              items, total: items.length, from: 0, caption, notes, section, visual,
+            });
+          }
+        } else {
+          const fallback = relationships && architectureHeading.test(block.title)
+            ? columns.slice(1).map(([relation, ...details]) => ({ label: relation, text: details.join('　') }))
+            : rows;
+          add(label, fallback, scope?.text, notes);
+        }
       }
       // A table may be followed by a limitation, safety instruction or explanation.
       // Keep that prose visible, including beyond the per-slide excerpt cap.
