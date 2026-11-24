@@ -19,11 +19,16 @@ import type { SiteRoute } from './site-flow';
 const row = (over: Record<string, unknown> = {}) => ({
   Svc: 'frontend', Route: '/api/orders/{id}', NextSvc: 'orders', NextRoute: '/orders/{id}', Calls: '12', ...over,
 });
-const answer = (rows: unknown[], extra: Record<string, unknown> = {}) =>
-  invokeMcpLambdaTool.mockResolvedValue({ rows, collectionStatus: rows.length ? 'ok' : 'empty', ...extra });
+const isAmbiguity = (sql: string) => sql.includes('uniqExact');
+const answer = (rows: unknown[], extra: Record<string, unknown> = {}, ambiguity: unknown[] = [{ AmbiguousTraces: '0' }]) =>
+  invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => isAmbiguity(args.sql)
+    ? { rows: ambiguity, collectionStatus: 'ok' }
+    : { rows, collectionStatus: rows.length ? 'ok' : 'empty', ...extra });
 const read = (over: Partial<Parameters<typeof readTraceRoutes>[0]> = {}) =>
   readTraceRoutes({ windowMins: 60, deadlineMs: 5_000, limit: 200, ...over });
-const sqlOf = (i = 0) => invokeMcpLambdaTool.mock.calls[i][0].args.sql as string;
+const callOf = (ambiguity = false) => invokeMcpLambdaTool.mock.calls
+  .map(([call]) => call).find((call) => isAmbiguity(call.args.sql) === ambiguity)!;
+const sqlOf = (ambiguity = false) => callOf(ambiguity).args.sql as string;
 
 describe('readTraceRoutes', () => {
   beforeEach(() => {
@@ -36,29 +41,35 @@ describe('readTraceRoutes', () => {
   it('builds one bounded, window-anchored query that selects only route templates, services and counts', async () => {
     answer([row()]);
     await read({ windowMins: 15, limit: 120 });
-    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
-    const { kind, tool, args, connConfig } = invokeMcpLambdaTool.mock.calls[0][0];
-    expect({ kind, tool, connConfig }).toEqual({
-      kind: 'clickhouse', tool: 'clickhouse_query', connConfig: { endpoint: 'https://ch.example.com' },
-    });
-    expect(args.max_rows).toBe(120);
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(2);
+    for (const [{ kind, tool, connConfig }] of invokeMcpLambdaTool.mock.calls) {
+      expect({ kind, tool, connConfig }).toEqual({
+        kind: 'clickhouse', tool: 'clickhouse_query', connConfig: { endpoint: 'https://ch.example.com' },
+      });
+    }
+    expect(callOf().args.max_rows).toBe(120);
+    expect(callOf(true).args.max_rows).toBe(1);
     const sql = sqlOf();
     expect(sql).toMatch(/INTERVAL 15 MINUTE/);
     expect(sql).toMatch(/LIMIT 120$/);
     expect(sql).toContain('FROM otel_traces');
     // Every attribute read is the route template; never raw paths or resource attributes.
-    const keys = [...sql.matchAll(/Attributes\['([^']+)'\]/g)].map((m) => m[1]);
-    expect(keys.length).toBeGreaterThan(0);
-    expect(new Set(keys)).toEqual(new Set(['http.route']));
-    expect(sql).not.toContain('ResourceAttributes');
-    expect(sql).not.toContain('url.path');
-    expect(sql).not.toMatch(/http\.target|http\.url|url\.full/);
+    for (const text of [sql, sqlOf(true)]) {
+      const keys = [...text.matchAll(/Attributes\['([^']+)'\]/g)].map((m) => m[1]);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(new Set(keys)).toEqual(new Set(['http.route']));
+      expect(text).not.toContain('ResourceAttributes');
+      expect(text).not.toContain('url.path');
+      expect(text).not.toMatch(/http\.target|http\.url|url\.full/);
+    }
     // Join sides are restricted to the window and the exporter's span kinds.
     expect(sql.match(/fromUnixTimestamp64Milli\(\d+\) - INTERVAL 15 MINUTE/g)).toHaveLength(3);
-    expect(sql).toContain("SpanKind IN ('Server', 'SERVER', 'SPAN_KIND_SERVER')");
-    expect(sql).toContain("SpanKind IN ('Client', 'CLIENT', 'SPAN_KIND_CLIENT')");
-    expect(sql).toContain("SpanAttributes['http.route'] != ''");
+    expect(sql).toContain("toString(SpanKind) IN ('Server', 'SERVER', 'SPAN_KIND_SERVER', '2')");
+    expect(sql).toContain("toString(SpanKind) IN ('Client', 'CLIENT', 'SPAN_KIND_CLIENT', '3')");
+    expect(sql).toContain("countIf(SpanRoute != '') > 0");
     expect(sql).toContain('LEFT JOIN');
+    expect(sqlOf(true)).toMatch(/INTERVAL 15 MINUTE/);
+    expect(sqlOf(true)).toMatch(/WHERE Servers > 1$/);
     expect(sql).toMatch(/GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY Calls DESC LIMIT 120$/);
     // Same-service children are excluded from `next` without dropping the parent route.
     expect(sql).toMatch(/if\(\w+\.ServiceName = \w+\.ServiceName, '', /);
@@ -68,7 +79,7 @@ describe('readTraceRoutes', () => {
     answer([row()]);
     await read({ limit: 10_000 });
     expect(sqlOf()).toMatch(/LIMIT 500$/);
-    expect(invokeMcpLambdaTool.mock.calls[0][0].args.max_rows).toBe(500);
+    expect(callOf().args.max_rows).toBe(500);
     invokeMcpLambdaTool.mockClear();
     expect(await read({ windowMins: 61 as 60 })).toEqual({ status: 'unavailable', reasons: ['invalid_request'], routes: [] });
     expect(await read({ limit: Number.NaN })).toEqual({ status: 'unavailable', reasons: ['invalid_request'], routes: [] });
@@ -105,7 +116,8 @@ describe('readTraceRoutes', () => {
   });
 
   it('does not treat an unconfirmed empty response as a complete window', async () => {
-    invokeMcpLambdaTool.mockResolvedValue({ rows: [] });
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => isAmbiguity(args.sql)
+      ? { rows: [{ AmbiguousTraces: '0' }], collectionStatus: 'ok' } : { rows: [] });
     expect(await read()).toEqual({ status: 'partial', reasons: ['empty_not_confirmed'], routes: [] });
   });
 
@@ -133,6 +145,42 @@ describe('readTraceRoutes', () => {
     expect(await read()).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
   });
 
+  it('pairs a route with its service\'s client calls by trace, so INTERNAL spans in between keep the hop', async () => {
+    // S (frontend, routed) -> INTERNAL handler -> C (frontend client) -> D (orders server).
+    answer([row()]);
+    await read();
+    const sql = sqlOf();
+    expect(sql).toContain('ON n.TraceId = s.TraceId AND n.ClientService = s.ServiceName');
+    expect(sql).not.toMatch(/ParentSpanId = s\.SpanId/);
+    expect(sql).toContain('ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId');
+    // Only (trace, service) pairs with exactly one server span are paired.
+    expect(sql).toContain('WHERE Servers = 1) AS s');
+  });
+
+  it('skips traces where a service has several server spans and reports them as partial', async () => {
+    answer([row()], {}, [{ AmbiguousTraces: '4' }]);
+    expect(await read()).toEqual({
+      status: 'partial', reasons: ['route_ambiguous_traces'], ambiguousTraces: 4,
+      routes: [{ service: 'frontend', route: '/api/orders/{id}', calls: 12,
+        next: [{ service: 'orders', route: '/orders/{id}', calls: 12 }] }],
+    });
+    invokeMcpLambdaTool.mockReset();
+    answer([], {}, [{ AmbiguousTraces: 2 }]);
+    expect(await read()).toEqual({ status: 'partial', reasons: ['route_ambiguous_traces'], ambiguousTraces: 2, routes: [] });
+  });
+
+  it('fails closed on a malformed or missing ambiguity count', async () => {
+    for (const ambiguity of [[], [{ AmbiguousTraces: '-1' }], [{ AmbiguousTraces: 'x' }], [{}], [{ AmbiguousTraces: '1' }, { AmbiguousTraces: '1' }]]) {
+      invokeMcpLambdaTool.mockReset();
+      answer([row()], {}, ambiguity);
+      expect(await read()).toEqual({ status: 'unavailable', reasons: ['malformed_rows'], routes: [] });
+    }
+    invokeMcpLambdaTool.mockReset();
+    invokeMcpLambdaTool.mockImplementation(async ({ args }: { args: { sql: string } }) => isAmbiguity(args.sql)
+      ? { error: 'DB::Exception: detail', collectionStatus: 'error' } : { rows: [row()], collectionStatus: 'ok' });
+    expect(await read()).toEqual({ status: 'unavailable', reasons: ['query_failed'], routes: [] });
+  });
+
   it('refuses non-exporter shapes before querying', async () => {
     const custom = 'SELECT trace_id AS TraceId FROM spans LIMIT {cap}';
     const noKind = 'SELECT TraceId, SpanId, ParentSpanId, ServiceName, Timestamp, Duration, ResourceAttributes, ' +
@@ -151,6 +199,7 @@ describe('readTraceRoutes', () => {
       'MINUTE AND Timestamp <= now() ORDER BY Timestamp DESC LIMIT {cap}';
     expect((await read({ template })).status).toBe('ok');
     expect(sqlOf().match(/FROM `otel`\.`otel_traces`/g)).toHaveLength(3);
+    expect(sqlOf(true).match(/FROM `otel`\.`otel_traces`/g)).toHaveLength(1);
   });
 
   it('fails closed on malformed rows', async () => {
