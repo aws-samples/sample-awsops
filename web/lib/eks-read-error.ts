@@ -26,6 +26,7 @@ const OPERATIONS = {
   'eks-list': ['EKS inventory is unavailable', 500],
   'eks-list-target': ['EKS inventory query failed', 502],
   'eks-fleet': ['EKS scope could not be loaded', 503],
+  'eks-registrations': ['EKS registrations are unavailable.', 503],
   'eks-fleet-cluster': ['Kubernetes resource read unavailable', 502],
   'eks-fleet-events': ['Kubernetes events are unavailable.', 502],
   'eks-fleet-nodes': ['Node details are unavailable.', 502],
