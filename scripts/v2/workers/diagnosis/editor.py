@@ -93,6 +93,17 @@ def compose(bundle, analysis, invariant, lang):
 
     evidence = {r["id"]: r for r in bundle.get("evidence", [])}
 
+    def source_context(record):
+        scope = {k: record[k] for k in ("region", "regions", "window", "captured_at", "fresh") if k in record}
+        coverage = record.get("coverage", {})
+        ratio = coverage.get("sample_ratio")
+        limited = (coverage.get("sampled") is True or coverage.get("complete") is False
+                   or (type(ratio) in (int, float) and ratio < 1))
+        source = view._scrubbed(record.get("source") or record.get("kind"), "source")
+        context = view._scope_text(view._scrubbed(scope), lang)
+        qualifier = {"ko": "해당 관측 범위", "en": "limited scope", "ja": "限定範囲", "zh": "有限范围"}[lang] if limited else ""
+        return view._code(" · ".join(filter(None, (source, context, qualifier))))
+
     def provenance(f):
         # Qualify every cited source window, without repeating the field ledger or
         # presenting an arbitrary same-resource metric as evidence for a hypothesis.
@@ -101,26 +112,7 @@ def compose(bundle, analysis, invariant, lang):
             record = evidence.get(ref, {})
             if not record:
                 continue
-            scope = {k: record[k] for k in ("kind", "region", "regions", "window", "captured_at", "fresh")
-                     if k in record}
-            coverage = record.get("coverage", {})
-            scope["coverage"] = {k: coverage[k] for k in ("sampled", "complete", "sample_ratio") if k in coverage}
-            if f["claim"] == "observation":
-                text = view._scope_text(view._scrubbed(scope), lang)
-                if text:
-                    notes.append(view._code(view._scrubbed(text)))
-            else:
-                # Put a concise source, window and material qualification beside the conclusion.
-                # Producer status codes, percentages of rows and the full ledger stay in the appendix.
-                scope.pop("kind", None)
-                ratio = coverage.get("sample_ratio")
-                partial = (coverage.get("sampled") is True or coverage.get("complete") is False
-                           or (type(ratio) in (int, float) and ratio < 1))
-                scope["coverage"] = {"complete": False} if partial else {}
-                source = view._scrubbed(record.get("source") or record.get("kind"), "source")
-                context = view._scope_text(view._scrubbed(scope), lang)
-                if source:
-                    notes.append(view._code(" · ".join(filter(None, [source, context]))))
+            notes.append(source_context(record))
             # A validated single-resource metrics observation is the code-owned
             # collection statement, never a free-form hypothesis about a different metric.
             refs = f.get("resource_ids", [])
@@ -186,18 +178,7 @@ def compose(bundle, analysis, invariant, lang):
             pillar = view._label(view._PILLARS, f["pillar"], lang)
             severity = view._label(view._SEVERITY_LABEL, f["severity"], lang)
             records = [evidence[i] for i in f.get("evidence_ids", []) if i in evidence]
-            cited = []
-            for record in records:
-                source_name = record.get("source")
-                if not source_name:
-                    continue
-                scope = {k: record[k] for k in ("region", "regions", "captured_at", "fresh") if k in record}
-                scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
-                                     if k in {"complete", "sampled", "sample_ratio"}}
-                detail = view._scope_text(view._scrubbed(scope), lang)
-                text = " · ".join(filter(None, [view._scrubbed(source_name, "source"), detail]))
-                cited.append(view._code(view._scrubbed(text)))
-            cited = list(dict.fromkeys(cited))
+            cited = list(dict.fromkeys(source_context(r) for r in records if r.get("source")))
             source = ", ".join(cited[:2]) or unknown_source
             if len(cited) > 2:
                 source += f" (+{len(cited) - 2})"
