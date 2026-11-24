@@ -577,6 +577,49 @@ describe('SiteFlowView', () => {
     expect(screen.queryByRole('region', { name: '강조된 요청 경로' })).toBeNull();
   });
 
+  it('refresh keeps the traced calls and datastores on screen until the new evidence commits, then swaps', async () => {
+    let release: (() => void) | null = null;
+    let hold = false;
+    stubFetch((u) => (hold && u === `/api/eks/${ENC_MEMBER}/db-refs`
+      ? new Promise<Response>((r) => { release = () => r(json(DB_REFS[ENC_MEMBER])); }) : undefined));
+    view();
+    await settled();
+    const ds = `ds:rds_cluster:${MEMBER}:${REGION}:orders`;
+    const traced = () => canvas.props!.flow.edges.some((e) => e.source === wl(HOST_ARN, 'web/front') && e.target === wl(HOST_ARN, 'web/catalog') && e.evidence === 'traced');
+    expect(ids()).toContain(ds);
+    expect(traced()).toBe(true);
+    const count = (u: string) => calls.filter((c) => c === u).length;
+    hold = true;
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    // The reload's evidence read has started (new inventory + fleet landed) but has not committed yet.
+    await waitFor(() => expect(count(`/api/eks/${ENC_MEMBER}/db-refs`)).toBe(2), { timeout: 3000 });
+    await waitFor(() => expect(count('/api/eks/shop/db-refs')).toBe(2));
+    for (const f of canvas.flows.slice(1)) {
+      expect(f.nodes.map((n) => n.id)).toContain(ds); // never rebuilt without the datastore
+      expect(f.edges.some((e) => e.evidence === 'traced')).toBe(true); // nor without the traced calls
+    }
+    expect(ids()).toContain(ds);
+    expect(traced()).toBe(true);
+    act(() => release!());
+    await settled();
+    expect(ids()).toContain(ds);
+    expect(traced()).toBe(true);
+  });
+
+  it('a cluster evidence read that never settles is cut at 30 s and disclosed (trace and datastore gaps)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    const never = () => new Promise<Response>(() => {}); // ignores abort, like a stuck connection
+    stubFetch((u) => (u === '/api/topology?lens=service' || u === '/api/eks/shop/db-refs' ? never() : undefined));
+    view();
+    await waitFor(() => expect(calls).toContain('/api/eks/shop/db-refs'), { timeout: 3000 });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await settled();
+    expect(canvas.props!.flow.gaps).toEqual(expect.arrayContaining(['trace_unavailable', 'db_refs_partial']));
+    expect(notices()).toContain(GAP_NOTICE.trace_unavailable);
+    expect(notices()).toContain(`${GAP_NOTICE.db_refs_partial} (shop (${HOST_ID} / ${REGION}))`);
+  });
+
   it('refresh re-runs every load and re-reads cluster evidence (no cached trace/db-refs reused)', async () => {
     let failMember = true;
     stubFetch((u) => (!isFleet(u) && u.startsWith(`/api/eks?accounts=${MEMBER}&`) && failMember ? json({ status: 'error' }, 403) : undefined));

@@ -116,9 +116,10 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
 
 /**
  * Inventory + EKS map + host lookup + fleet listing for one page scope (the view is keyed by it). A new `reload`
- * value re-runs every read: the previous composition stays on screen (no canvas teardown) while the fleet and host
- * lookup go back to pending, so cluster evidence is re-read against the new fleet (useClusterEvidence). A reload that
- * fails (every inventory type failed, or an invalid response) clears it: no stale flow beside the failure.
+ * value re-runs every read. The previous inventory, host account and fleet stay on screen until the reload lands and
+ * are then replaced together; the new fleet makes useClusterEvidence re-read every cluster, which keeps the previous
+ * evidence shown until the new batch commits. A reload that fails (every inventory type failed, or an invalid
+ * response) clears the inventory: no stale flow beside the failure.
  */
 export function useSiteInventory(inventoryScope: string, reload = 0): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
@@ -130,7 +131,7 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let live = true;
-    setLoading(true); setError(''); setFleet(null); setHostAccount(undefined);
+    setLoading(true); setError('');
     const ctrl = new AbortController();
     const { signal } = ctrl;
     // The deadline aborts every read; a read it cut is disclosed as `binding_deadline` (refresh retries), never as
@@ -144,15 +145,14 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
     // Fail closed: a failed, aborted or unparseable fleet listing cannot prove name uniqueness.
     const fleetRead = accountsBody.then((body) => readFleet(body, signal)).catch(INCOMPLETE_FLEET)
       .then((f) => { fleetCut = signal.aborted; return f; });
-    void host.then((h) => { if (live) setHostAccount(h); });
-    void fleetRead.then((f) => { if (live) setFleet(f); });
     const eksScope = Promise.all([host, fleetRead]).then(([h, f]) => deriveEksScope(inventoryScope, f, h));
     // An underivable scope (incomplete fleet) issues no listing: fetchEksIpMap fails an empty query list closed.
     loadFlowInput(inventoryScope, signal, true, { eksScope: true, eksScopeQuery: eksScope.then((scope) => scope ?? []) })
       .then(async (loaded) => {
-        const [h, scope] = await Promise.all([host, eksScope]);
+        const [h, f, scope] = await Promise.all([host, fleetRead, eksScope]);
         if (!live) return;
-        setLoading(false);
+        // Inventory, host account and fleet are swapped in together (one batched render).
+        setLoading(false); setHostAccount(h); setFleet(f);
         // Fail closed: a failed (re)load never leaves the previous flow and its pod attributions on screen.
         if (loaded.allFailed) { setData(null); setError(loaded.failed.map((r) => r.error).join('; ')); return; }
         const cut = timedOut && (loaded.eksAborted || (scope === null && fleetCut));
@@ -175,7 +175,7 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
           eks: loaded.eks, issues, eksScope: scope ?? [],
         });
       })
-      .catch(() => { if (live) { setLoading(false); setData(null); setError('site: invalid inventory response'); } })
+      .catch(() => { if (live) { setLoading(false); setData(null); setFleet(null); setError('site: invalid inventory response'); } })
       .finally(() => clearTimeout(deadline));
     return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
   }, [inventoryScope, reload]);
@@ -216,13 +216,16 @@ export async function readDbRefs(id: string, signal: AbortSignal): Promise<DbRef
   }
 }
 
-async function readClusterEvidence(arn: string, fleet: Fleet, signal: AbortSignal): Promise<ClusterEvidence> {
+/** Trace overlay + db-refs of one cluster. Each read that has not settled when `cut` resolves (the batch deadline)
+ *  counts as failed (trace unavailable / db-refs failed), so a stuck read is disclosed and never blocks the other one. */
+async function readClusterEvidence(arn: string, fleet: Fleet, signal: AbortSignal, cut: Promise<void>): Promise<ClusterEvidence> {
   // Routes address a cluster by its listed id (bare name for host default-region clusters, else the ARN).
   const id = fleet.clusters.find((c) => c.arn === arn)?.id ?? arn;
+  const unavailable = (): TraceOverlay => ({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 });
   const [trace, db] = await Promise.all([
-    fetchTraceOverlay({ id: arn, registeredNames: fleet.names, listingIncomplete: fleet.incomplete }, signal)
-      .catch((): TraceOverlay => ({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 })),
-    readDbRefs(id, signal),
+    Promise.race([fetchTraceOverlay({ id: arn, registeredNames: fleet.names, listingIncomplete: fleet.incomplete }, signal)
+      .catch(unavailable), cut.then(unavailable)]),
+    Promise.race([readDbRefs(id, signal), cut.then(DB_FAILED)]),
   ]);
   const { failed, ...rest } = db;
   return { trace, dbRefs: { cluster: arn, ...rest }, dbRefsFailed: failed };
@@ -230,8 +233,11 @@ async function readClusterEvidence(arn: string, fleet: Fleet, signal: AbortSigna
 
 /**
  * Trace overlay + db-refs per bound cluster ARN (sorted, deduped by the caller). Results are cached per ARN and
- * fleet read (a refresh yields a new fleet, so nothing cached survives it) and committed in ONE state update per
- * batch, so the flow is rebuilt once when the evidence lands.
+ * fleet read (a refresh yields a new fleet, so nothing cached survives it; entries of a superseded fleet are pruned)
+ * and committed in ONE state update per batch, so the flow is rebuilt once when the evidence lands. While a batch for
+ * the same clusters is pending (e.g. after a refresh) the last committed evidence stays shown, then swaps. Each batch
+ * has a DEADLINE_MS deadline: reads still running are aborted and commit as failed (trace unavailable / db-refs failed),
+ * so `trace_unavailable` / `db_refs_partial` are disclosed instead of a loading state that never ends.
  */
 export function useClusterEvidence(arns: string[], fleet: Fleet | null): {
   pending: boolean; traces: SiteFlowInput['traces']; dbRefs: SiteFlowInput['dbRefs']; failedDbRefs: string[];
@@ -240,28 +246,40 @@ export function useClusterEvidence(arns: string[], fleet: Fleet | null): {
   const cache = useRef(new Map<string, { fleet: Fleet; ev: ClusterEvidence }>());
   const cached = (arn: string) => { const c = cache.current.get(arn); return c && c.fleet === fleet ? c.ev : undefined; };
   const [version, setVersion] = useState(0);
+  const lastDone = useRef<{ key: string; traces: SiteFlowInput['traces']; dbRefs: SiteFlowInput['dbRefs']; failedDbRefs: string[] } | null>(null);
   useEffect(() => {
     if (!key || !fleet) return undefined;
     const missing = key.split('\n').filter((a) => !cached(a));
     if (!missing.length) return undefined;
     let live = true;
     const ctrl = new AbortController();
-    void Promise.all(missing.map((arn) => readClusterEvidence(arn, fleet, ctrl.signal))).then((list) => {
+    let cut = () => {};
+    const deadline = new Promise<void>((r) => { cut = r; });
+    const timer = setTimeout(() => { ctrl.abort(); cut(); }, DEADLINE_MS);
+    void Promise.all(missing.map((arn) => readClusterEvidence(arn, fleet, ctrl.signal, deadline))).then((list) => {
+      clearTimeout(timer);
       if (!live) return;
+      for (const [arn, c] of cache.current) if (c.fleet !== fleet) cache.current.delete(arn);
       list.forEach((ev, i) => cache.current.set(missing[i], { fleet, ev }));
       setVersion((v) => v + 1);
     });
-    return () => { live = false; ctrl.abort(); };
+    return () => { live = false; clearTimeout(timer); ctrl.abort(); };
   }, [key, fleet]);
   return useMemo(() => {
     const entries = key ? key.split('\n').map(cached) : [];
     const pending = !!key && (fleet === null || entries.some((e) => !e));
-    const done = pending ? [] : (entries as ClusterEvidence[]);
-    return {
-      pending,
+    if (pending) {
+      // Same clusters, evidence being re-read: keep the last committed evidence on screen until the new batch lands.
+      const prev = lastDone.current?.key === key ? lastDone.current : null;
+      return { pending, traces: prev?.traces ?? [], dbRefs: prev?.dbRefs ?? [], failedDbRefs: prev?.failedDbRefs ?? [] };
+    }
+    const done = entries as ClusterEvidence[];
+    const result = {
       traces: done.map((e) => ({ cluster: e.dbRefs.cluster, overlay: e.trace })),
       dbRefs: done.map((e) => e.dbRefs),
       failedDbRefs: done.filter((e) => e.dbRefsFailed).map((e) => e.dbRefs.cluster),
     };
+    lastDone.current = { key, ...result };
+    return { pending, ...result };
   }, [key, fleet, version]); // `version` re-reads the ref cache after each committed batch
 }
