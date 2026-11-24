@@ -69,3 +69,12 @@ describe('stored heading and decision-role compatibility', () => {
       !s.caption.includes('Compare actual') && s.items.every(r => !r.text.includes('Compare actual')))).toBe(true);
   });
 });
+
+it('keeps the worker-owned audit appendix outside customer HTML and PowerPoint input', async () => {
+  const markdown = '# Assessment\n\n- [Risks](#assessment)\n- [Evidence appendix](#evidence_appendix)\n\n' +
+    '## Risks\n\nReview the storage protection policy.\n\n## Evidence appendix\n\nCollector diagnostic marker.\n';
+  const deck = buildDiagnosisDeck({id: 42, markdown}, 'en');
+  expect(deck.sections.map(s => s.title)).toEqual(['Risks']);
+  expect(JSON.stringify(deck)).not.toContain('Collector diagnostic marker.');
+  expect(await renderDeckHtml(deck)).not.toContain('Collector diagnostic marker.');
+});

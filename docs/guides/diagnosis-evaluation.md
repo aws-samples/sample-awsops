@@ -422,7 +422,7 @@ API reference / API 참고:
 
 ### Presentation exports
 
-The report detail and printable view build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the source sections for inspection. The PowerPoint contains native text and chart elements, with the source rows for each briefing slide in its speaker notes. Large groups show a bounded excerpt with a range and total; the detailed evidence appendix is available in the original report.
+The report detail and printable view build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the customer sections for inspection. The worker-owned technical appendix remains in the authenticated audit view and full Markdown, and is excluded from customer presentations. The PowerPoint contains native text and chart elements, with the source rows for each briefing slide in its speaker notes. Large groups show a bounded excerpt with a range and total; the detailed evidence appendix is available in the original report.
 
 
 ### Customer findings and collection coverage
