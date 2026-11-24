@@ -569,6 +569,8 @@ describe('SiteFlowView', () => {
     expect(count('/api/eks/shop/db-refs')).toBe(0); // no binding → no evidence read yet
     failMember = false;
     fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(screen.getByTestId('site-canvas')).toBeTruthy(); // the current flow stays on screen while reloading
+    expect(screen.getByText(PENDING)).toBeTruthy();
     await waitFor(() => expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api')), { timeout: 3000 });
     await settled();
     expect(count('/api/accounts')).toBe(2);
