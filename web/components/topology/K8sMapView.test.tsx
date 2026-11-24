@@ -73,19 +73,19 @@ function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Han
   }));
   return calls;
 }
-const HOST_ONLY = { clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected' }] };
+const HOST_ONLY = { clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' }] };
 const HOST_AND_MEMBER = { clusters: [
-  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected' },
-  { id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected' },
-  { id: 'offline', name: 'offline', accountId: '111111111111', access: 'denied' },
+  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' },
+  { id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected', region: 'ap-northeast-2' },
+  { id: 'offline', name: 'offline', accountId: '111111111111', access: 'denied', region: 'ap-northeast-2' },
 ] };
 const HOST_ARN = 'arn:aws:eks:us-west-2:111111111111:cluster/west';
 // A member-account cluster whose bare name is unique across the fleet listing.
 const UNIQUE_MEMBER_ARN = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/orders';
 const ENC_UNIQUE_MEMBER = encodeURIComponent(UNIQUE_MEMBER_ARN);
 const HOST_AND_UNIQUE_MEMBER = { clusters: [
-  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected' },
-  { id: UNIQUE_MEMBER_ARN, name: 'orders', accountId: '123456789012', access: 'connected' },
+  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' },
+  { id: UNIQUE_MEMBER_ARN, name: 'orders', accountId: '123456789012', access: 'connected', region: 'ap-northeast-2' },
 ] };
 const RDS_HOST = 'orders.cluster-abc.ap-northeast-2.rds.amazonaws.com';
 // The member cluster runs prod/api (Service api → pod api-1, workload api).
@@ -124,7 +124,7 @@ const memberTraceHandler: Handler = (u) => {
   return undefined;
 };
 const ENC_HOST_ARN = encodeURIComponent(HOST_ARN);
-const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111111111111', access: 'connected' }] };
+const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111111111111', access: 'connected', region: 'us-west-2' }] };
 const ACCOUNTS = { accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true, enabled: true },
   { accountId: '222222222222', alias: 'Member', isHost: false, enabled: true }] };
 /** Per-account fleet listing URLs (lib/eks-fleet.ts fleetUrl). */
@@ -173,7 +173,7 @@ describe('K8sMapView', () => {
   });
 
   it('discloses partial or capped listings instead of presenting them as complete', async () => {
-    stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected' }],
+    stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected', region: 'ap-northeast-2' }],
       errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }], truncated: true });
     view();
     expect(await screen.findByText(/222222222222 \/ us-east-1: AccessDenied/)).toBeTruthy();
@@ -679,7 +679,7 @@ describe('K8sMapView trace join fleet listing', () => {
   it('merges per-account fleet listings: a same-named cluster only in the member listing reaches the join', async () => {
     narrow();
     const seen = seenTrace();
-    const member = { clusters: [{ id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected' }] };
+    const member = { clusters: [{ id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected', region: 'ap-northeast-2' }] };
     stubFetch(HOST_ONLY, 200, (u) => (u === fleetUrl('222222222222') ? new Response(JSON.stringify(member)) : undefined));
     view();
     await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));

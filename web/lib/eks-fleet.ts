@@ -2,7 +2,7 @@
 // One `/api/eks?accounts=<id>&regions=__all__&includeGlobal=1` per enabled registered account from
 // `GET /api/accounts` (host as `self`), merged: a single all-account request is capped at 12 account×region
 // targets server-side (eks-scope.ts TARGET_CAP, no registrations passed) and truncates on a real fleet.
-// Fail closed: any failed / reasoned-error / truncated request, an aborted signal, or a failed or malformed
+// Fail closed: any failed / errored / truncated / malformed request (parseFleet), an aborted signal, or a failed or malformed
 // `/api/accounts` body (any row without a 12-digit `accountId` or a boolean `enabled`) marks it incomplete.
 import { ALL_REGIONS } from './account-context';
 
@@ -26,21 +26,39 @@ export const INCOMPLETE_FLEET = (): Fleet => ({ clusters: [], names: [], incompl
 export const fleetUrl = (account: string) =>
   `/api/eks?${new URLSearchParams({ accounts: account, regions: ALL_REGIONS, includeGlobal: '1' })}`;
 
-/** One listing body → clusters/names; any malformed, truncated or reasoned-error listing is incomplete. */
+const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
+const ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/[\w-]+$/;
+/** The reason-less all-region discovery note the server adds for a wildcard-scan account (the only tolerated error). */
+const isDiscoveryNote = (e: unknown): e is { accountId: string } => record(e) && e.reason === undefined && e.region === ALL_REGIONS
+  && typeof e.accountId === 'string' && /^(?:self|\d{12})$/.test(e.accountId);
+/** A fully validated listing row: id, name, region, access and a 12-digit owning account that any ARN agrees with. */
+function validRow(c: unknown): c is Record<string, string> {
+  if (!record(c) || !nonempty(c.id) || !nonempty(c.name) || !nonempty(c.access)
+    || typeof c.region !== 'string' || !REGION_RE.test(c.region)
+    || typeof c.accountId !== 'string' || !/^\d{12}$/.test(c.accountId)) return false;
+  for (const arn of [c.id.startsWith('arn:') ? c.id : null, c.arn === undefined ? null : c.arn]) {
+    if (arn === null) continue;
+    const m = typeof arn === 'string' ? ARN_RE.exec(arn) : null;
+    if (!m || m[1] !== c.region || m[2] !== c.accountId) return false;
+  }
+  return true;
+}
+
+/**
+ * One listing body → clusters/names. Fail closed: a malformed, truncated or reasoned-error listing, a non-array
+ * `errors`, any error entry other than the discovery note, or any cluster row that is not fully valid (validRow)
+ * marks it incomplete, since the fleet proves trace-name uniqueness and scopes pod bindings.
+ */
 export function parseFleet(body: unknown): Fleet {
-  const list = record(body) && Array.isArray(body.clusters) ? body.clusters : null;
-  if (!list || !list.every((c) => record(c) && nonempty(c.name))) return INCOMPLETE_FLEET();
-  const clusters = (list as Record<string, unknown>[]).map((c) => ({
-    id: nonempty(c.id) ? c.id : String(c.name), name: String(c.name),
-    ...(nonempty(c.arn) ? { arn: c.arn } : {}), ...(nonempty(c.accountId) ? { accountId: c.accountId } : {}),
-    ...(nonempty(c.region) ? { region: c.region } : {}), ...(nonempty(c.access) ? { access: c.access } : {}),
+  if (!record(body) || !Array.isArray(body.clusters) || !body.clusters.every(validRow)) return INCOMPLETE_FLEET();
+  if (body.errors !== undefined && !Array.isArray(body.errors)) return INCOMPLETE_FLEET();
+  const errors: unknown[] = Array.isArray(body.errors) ? body.errors : [];
+  const clusters: FleetCluster[] = (body.clusters as Record<string, string>[]).map((c) => ({
+    id: c.id, name: c.name, ...(nonempty(c.arn) ? { arn: c.arn } : {}), accountId: c.accountId, region: c.region, access: c.access,
   }));
-  const errors = record(body) && Array.isArray(body.errors) ? body.errors : [];
-  const incomplete = (record(body) && body.truncated === true) || errors.some((e) => record(e) && !!e.reason)
-    || (record(body) && body.status === 'error');
+  const incomplete = body.truncated === true || body.status === 'error' || !errors.every(isDiscoveryNote);
   // The server's note names the wildcard account (`self` for the host, else its 12-digit id).
-  const wildcard = [...new Set(errors.flatMap((e) => (record(e) && !e.reason && e.region === ALL_REGIONS
-    && typeof e.accountId === 'string' && /^(?:self|\d{12})$/.test(e.accountId) ? [e.accountId] : [])))].sort();
+  const wildcard = [...new Set(errors.filter(isDiscoveryNote).map((e) => e.accountId))].sort();
   return { clusters, names: clusters.map((c) => c.id), incomplete, wildcard };
 }
 
