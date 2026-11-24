@@ -482,6 +482,48 @@ describe('scope-aware EKS listing', () => {
       .toEqual([`${other}|${mRegion}`]);
   });
 
+  it('credits every requested account|region of a clean explicit listing, even regions without clusters', async () => {
+    const scope = `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`;
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    const result = await fetchEksIpMap(undefined, false, scope);
+    expect(result).toMatchObject({ status: 'ok', globalUnknown: false });
+    expect(result.coveredAccountRegions).toEqual([`${member}|${mRegion}`, `${member}|us-west-2`]);
+    expect(result.coveredRegions).toEqual([mRegion, 'us-west-2']);
+    expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toMatchObject({ resolved: 'eks' });
+    // Multi-account explicit request: only the request's own accounts are credited.
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member},${other}&regions=${mRegion}`)).coveredAccountRegions)
+      .toEqual([`${other}|${mRegion}`, `${member}|${mRegion}`].sort());
+  });
+
+  it.each([
+    ['a partial status', { status: 'partial', truncated: false }],
+    ['the reason-less discovery note', { truncated: false, errors: [{ accountId: member, region: '__all__', message: 'note' }] }],
+    ['an unreported truncation flag', {}],
+  ])('grants no request-derived coverage under %s', async (_label, extra) => {
+    serveScoped({ clusters: [memberCluster], ...extra });
+    const result = await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`);
+    expect(result.coveredAccountRegions).toEqual([`${member}|${mRegion}`]);
+    expect(result.coveredRegions).toEqual([mRegion]);
+  });
+
+  it('still fails a clean-looking explicit listing that errors or truncates', async () => {
+    for (const extra of [{ truncated: true }, { truncated: false, errors: [{ accountId: member, region: 'us-west-2', message: 'x', reason: 'denied' }] }]) {
+      serveScoped({ clusters: [memberCluster], ...extra });
+      expect(await fetchEksIpMap(undefined, false, `accounts=${member}&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`))
+        .toMatchObject({ map: {}, globalUnknown: true, status: 'unavailable' });
+    }
+  });
+
+  it('keeps row-derived coverage for __all__ accounts or regions', async () => {
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=__all__&regions=${encodeURIComponent(`${mRegion},us-west-2`)}`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+    serveScoped({ clusters: [memberCluster], errors: [], truncated: false });
+    expect((await fetchEksIpMap(undefined, false, `accounts=${member}&regions=__all__`)).coveredAccountRegions)
+      .toEqual([`${member}|${mRegion}`]);
+  });
+
   it('keys host clusters as self only when the listing identifies them as host', async () => {
     const hostArn = `arn:aws:eks:us-west-2:${other}:cluster/far`;
     const far = { ...memberCluster, id: hostArn, arn: hostArn, name: 'far', accountId: other, region: 'us-west-2', vpcId: 'vpc-far' };
@@ -636,6 +678,37 @@ describe('scope-aware EKS listing', () => {
       const result = await fetchEksIpMap(undefined, true, [`accounts=${member}&regions=${mRegion}`, `accounts=${other}&regions=${mRegion}`]);
       expect(result.map[scopedTargetIp(mRegion, mVpc, ip)]).toBeNull();
       expect(requested(f).filter(u => u === `/api/eks/${encodeURIComponent(memberArn)}/incluster?kind=pods`)).toHaveLength(1);
+    });
+
+    it('reads at most 6 clusters in flight at once and keeps the same map', async () => {
+      // 20 connected clusters; #0 and #19 share a VPC, so their shared IP is vetoed regardless of completion order.
+      const many = Array.from({ length: 20 }, (_, i) => {
+        const arn = `arn:aws:eks:${mRegion}:${member}:cluster/c${i}`;
+        return { ...memberCluster, id: arn, arn, name: `c${i}`, vpcId: `vpc-${i % 19}` };
+      });
+      const pending = new Map<string, number>();
+      let maxClusters = 0, maxRequests = 0, inFlight = 0;
+      vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+        const url = new URL(input, 'http://localhost');
+        if (url.pathname === '/api/eks') return json({ region: mRegion, clusters: many, errors: [], truncated: false });
+        const ref = decodeURIComponent(url.pathname.split('/')[3]);
+        pending.set(ref, (pending.get(ref) ?? 0) + 1); inFlight++;
+        maxClusters = Math.max(maxClusters, pending.size); maxRequests = Math.max(maxRequests, inFlight);
+        // Deferred, uneven completion so lanes finish out of order.
+        await new Promise(resolve => setTimeout(resolve, (Number(ref.split('/c')[1]) * 7) % 5));
+        inFlight--;
+        const left = pending.get(ref)! - 1;
+        if (left) pending.set(ref, left); else pending.delete(ref);
+        if (url.searchParams.get('kind') === 'pods') return json({ kind: 'pods', rows: [memberPod], generatedAt: '2026-11-18T00:00:00Z' });
+        return json({ kind: 'endpoints', rows: [] });
+      }));
+      const result = await fetchEksIpMap(undefined, false, [`accounts=${member}&regions=${mRegion}`]);
+      expect(maxClusters).toBe(6);
+      expect(maxRequests).toBeLessThanOrEqual(12);
+      expect(result.status).toBe('ok');
+      const expected = Object.fromEntries(Array.from({ length: 19 }, (_, v) => [scopedTargetIp(mRegion, `vpc-${v}`, ip),
+        v === 0 ? null : expect.objectContaining({ resolved: 'eks', meta: expect.objectContaining({ cluster: `c${v}`, vpcId: `vpc-${v}` }) })]));
+      expect(result.map).toEqual(expected);
     });
   });
 

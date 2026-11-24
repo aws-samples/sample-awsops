@@ -94,6 +94,8 @@ export function inventoryEvidence(
 // (`binding_read_incomplete`), as before. Every other binding gap withholds all bindings in both modes.
 /** Scoped listings in flight at once (matches the fleet reader's bound in eks-fleet.ts). */
 const LISTING_CONCURRENCY = 4;
+/** Clusters whose in-cluster reads (endpoints + pods) are in flight at once, across all merged listings. */
+const CLUSTER_CONCURRENCY = 6;
 type ListedCluster = Cluster & { ref: string };
 type Listing = { clusters: ListedCluster[]; regions: string[]; keys: string[] | null; hasErrors: boolean; partial: boolean };
 async function readListing(scopeQuery: string, signal: AbortSignal | undefined): Promise<Listing | { fail: EksIpResolution['reasons'][number] | undefined }> {
@@ -119,20 +121,27 @@ async function readListing(scopeQuery: string, signal: AbortSignal | undefined):
     hasErrors = list.status === 'partial' || (list.errors !== undefined && (!Array.isArray(list.errors) || list.errors.length > 0));
   }
   if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return { fail: undefined };
-  // A clean (no error, no partial status, untruncated) scoped multi-target listing with no clusters has no envelope
-  // region, but it proves every REQUESTED account|region target was enumerated and empty: derive its coverage from
-  // the request itself. Only explicit accounts and regions are requested targets; `__all__` or an absent `regions`
-  // (server-side default) leaves them unknown, and the read fails as before.
+  // A clean (no error, no partial status, untruncated) scoped listing proves every REQUESTED account|region target
+  // was enumerated, whether or not it returned clusters there: credit the request's own pairs on top of the
+  // row-derived keys. Only explicit accounts and regions are requested targets; `__all__` or an absent `regions`
+  // (server-side default) leaves them unknown and keeps row/envelope-derived coverage. A non-empty page must report
+  // `truncated: false` explicitly; an empty one cannot hide rows beyond the cap.
+  const request = new URLSearchParams(scopeQuery);
+  const requestedAccounts = (request.get('accounts') ?? '').split(','), requestedRegions = (request.get('regions') ?? '').split(',');
+  const requested = scoped && !hasErrors && !partial
+    && (list.truncated === false || (list.truncated === undefined && !clusters.length))
+    && requestedAccounts.every(a => /^(?:self|\d{12})$/.test(a))
+    && requestedRegions.every(r => r !== '__all__' && validRegion(r))
+    ? requestedAccounts.flatMap(a => requestedRegions.map(r => `${a}|${r}`)) : null;
+  // An empty multi-target listing has no envelope region: only the request can prove its coverage.
   if (scoped && !clusters.length && !nonempty(list.region)) {
-    const q = new URLSearchParams(scopeQuery);
-    const accounts = (q.get('accounts') ?? '').split(','), regions = (q.get('regions') ?? '').split(',');
-    if (hasErrors || partial || !accounts.every(a => /^(?:self|\d{12})$/.test(a)) || !regions.every(r => r !== '__all__' && validRegion(r)))
-      return { fail: undefined };
-    return { clusters: [], regions, keys: accounts.flatMap(a => regions.map(r => `${a}|${r}`)), hasErrors: false, partial: false };
+    if (!requested) return { fail: undefined };
+    return { clusters: [], regions: requestedRegions, keys: requested, hasErrors: false, partial: false };
   }
   if ((list.region !== undefined && !validRegion(list.region)) || clusters.some(c => !validRegion(c.region))) return { fail: undefined };
   const regions: string[] = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
   if (!regions.length || clusters.some(c => !regions.includes(c.region!))) return { fail: undefined };
+  if (requested) for (const r of requestedRegions) if (!regions.includes(r)) regions.push(r);
   let keys: string[] | null = null;
   if (scoped) {
     // A region is enumerated per account: one account's clusters prove nothing about another
@@ -147,6 +156,7 @@ async function readListing(scopeQuery: string, signal: AbortSignal | undefined):
     const set = new Set(clusters.flatMap(c => [`${c.accountId}|${c.region}`,
       ...(hostIds.has(c.accountId!) ? [`self|${c.region}`] : [])]));
     if (nonempty(list.region) && accounts !== '__all__' && !accounts.includes(',')) set.add(`${accounts}|${list.region}`);
+    requested?.forEach(k => set.add(k));
     keys = [...set];
   }
   return { clusters: clusters.map(c => ({ ...c, ref: scoped ? c.id! : c.name })), regions, keys, hasErrors, partial };
@@ -192,7 +202,7 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
     }
     if (signal?.aborted) return fail();
     coveredAccountRegions = [...keys].sort();
-    await Promise.all(clusters.map(async cluster => {
+    const readCluster = async (cluster: ListedCluster) => {
       const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
       if (cluster.access !== 'connected') {
         if (cluster.access === 'entry-only' || cluster.access === 'no-entry') {
@@ -282,7 +292,14 @@ export async function fetchEksIpMap(signal?: AbortSignal, includeBindings = fals
         // workload labels coincide. Unproven records block ownership rather than asserting it.
         candidates.set(key, candidates.has(key) ? null : resolution);
       }
-    }));
+    };
+    // At most CLUSTER_CONCURRENCY clusters read at once; no new cluster starts once the load is aborted.
+    // The candidate merge (duplicate key → null) is independent of completion order.
+    let nextCluster = 0;
+    const clusterLane = async () => {
+      for (let i = nextCluster++; i < clusters.length && !signal?.aborted; i = nextCluster++) await readCluster(clusters[i]);
+    };
+    await Promise.all(Array.from({ length: Math.min(CLUSTER_CONCURRENCY, clusters.length) }, clusterLane));
   } catch {
     // Unknown scope or enumeration failure can hide an owner anywhere in the account.
     return fail();
