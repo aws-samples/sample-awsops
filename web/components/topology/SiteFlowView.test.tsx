@@ -112,6 +112,16 @@ const DB_REFS: Record<string, unknown> = {
 const ACCOUNTS = { accounts: [{ accountId: HOST_ID, isHost: true }, { accountId: MEMBER, isHost: false }] };
 
 type Handler = (url: string) => Response | Promise<Response> | undefined;
+type Listed = ReturnType<typeof cluster>;
+/** Scoped `/api/eks?` listing honoring `accounts`/`regions` like the server (host = `self` = bare id or HOST_ID). */
+function listingFor(url: string, all: Listed[]) {
+  const q = new URL(url, 'http://localhost').searchParams;
+  const accounts = (q.get('accounts') ?? 'self').split(','), regions = (q.get('regions') ?? REGION).split(',');
+  const owner = (c: Listed) => (c.accountId === HOST_ID ? 'self' : c.accountId);
+  const clusters = all.filter((c) => (accounts.includes('__all__') || accounts.includes(owner(c)))
+    && (regions.includes('__all__') || regions.includes(c.region)));
+  return { clusters, errors: [], ...(accounts.length === 1 && regions.length === 1 && regions[0] !== '__all__' ? { region: regions[0] } : {}) };
+}
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 let calls: string[] = [];
 function stubFetch(over: Handler = () => undefined, rows = inventory()) {
@@ -122,7 +132,7 @@ function stubFetch(over: Handler = () => undefined, rows = inventory()) {
     if (custom) return custom;
     if (url === '/api/accounts') return json(ACCOUNTS);
     if (url === FLEET_URL) return json(FLEET);
-    if (url.startsWith('/api/eks?')) return json({ clusters: CLUSTERS, errors: [] });
+    if (url.startsWith('/api/eks?')) return json(listingFor(url, CLUSTERS));
     const m = /^\/api\/eks\/([^/]+)\/(incluster\?kind=(\w+)|db-refs)$/.exec(url);
     if (m && m[3] === 'pods') return json({ kind: 'pods', rows: PODS[m[1]] ?? [], generatedAt: NOW });
     if (m && m[3]) return json({ kind: m[3], rows: [] });
@@ -198,8 +208,10 @@ describe('SiteFlowView', () => {
     expect(f.gaps).toEqual([]);
     // Fleet listing exactly as K8sMapView; the scoped EKS listing never asks for all regions.
     expect(calls).toContain(FLEET_URL);
+    // One listing per account with only that account's regions (no accounts × regions product).
     const scoped = calls.filter((u) => u.startsWith('/api/eks?') && u !== FLEET_URL);
-    expect(scoped).toEqual([`/api/eks?accounts=${encodeURIComponent(`${MEMBER},self`)}&regions=${REGION}&includeGlobal=1`]);
+    expect(scoped.sort()).toEqual([`/api/eks?accounts=${MEMBER}&regions=${REGION}&includeGlobal=1`,
+      `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
     // Member pods are read by ARN id, host default-region ones by their listed bare id; db-refs likewise.
     expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=pods`);
     expect(calls).toContain('/api/eks/shop/incluster?kind=pods');
@@ -263,8 +275,8 @@ describe('SiteFlowView', () => {
   });
 
   it('mirrors <hostId>|region coverage to the self key host inventory rows use (host id from /api/accounts)', async () => {
-    // Host cluster in a non-default region, listed by ARN, in a multi-account scope: fetchEksIpMap alone keys only
-    // bare-id (host default-region) rows as `self`, so `self|us-west-2` comes only from the /api/accounts host id.
+    // Explicit page regions over two accounts pass through as ONE listing; there fetchEksIpMap keys only bare-id
+    // (host default-region) rows as `self`, so the ARN-listed host cluster in us-west-2 needs the /api/accounts id.
     const west = 'us-west-2', westArn = `arn:aws:eks:${west}:${HOST_ID}:cluster/west`;
     const westCluster = { ...cluster(westArn, 'west', HOST_ID, westArn, HOST_VPC), region: west };
     const listed = [westCluster, CLUSTERS[1]];
@@ -274,26 +286,83 @@ describe('SiteFlowView', () => {
     rows.nlb = [inv('self', 'web-nlb', { arn: WEB_NLB_ARN, dns_name: WEB_NLB_DNS, scheme: 'internal', region: west, vpc_id: HOST_VPC }),
       rows.nlb[1]];
     const westPods = { kind: 'pods', rows: [pod('web', 'front')(HOST_PODS[0])], generatedAt: NOW };
+    const scope = `accounts=${encodeURIComponent(`${MEMBER},self`)}&regions=${encodeURIComponent(`${REGION},${west}`)}&includeGlobal=1`;
     const serve = (accounts: unknown) => stubFetch((u) => {
       if (u === '/api/accounts') return json(accounts);
       if (u === FLEET_URL) return json({ clusters: listed });
-      if (u.startsWith('/api/eks?')) return json({ clusters: listed, errors: [] });
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
       if (u === `/api/eks/${encodeURIComponent(westArn)}/incluster?kind=pods`) return json(westPods);
       return undefined;
     }, rows);
     serve(ACCOUNTS);
-    view();
+    view('view=site&host=mall.example.com', scope);
     await settled();
-    expect(calls).toContain(`/api/eks?accounts=${encodeURIComponent(`${MEMBER},self`)}&regions=${encodeURIComponent(`${REGION},${west}`)}&includeGlobal=1`);
+    expect(calls).toContain(`/api/eks?${scope}`);
     expect(ids()).toContain(wl(westArn, 'web/front'));
     expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api'));
     // Without a resolvable host id the host ARN row is not recognized as `self`: its targets stay unresolved.
     cleanup(); canvas.props = null;
     serve({ accounts: [] });
-    view();
+    view('view=site&host=mall.example.com', scope);
     await settled();
     expect(ids()).not.toContain(wl(westArn, 'web/front'));
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+  });
+
+  it('two accounts with clusters in different regions: each listed in its own region, both resolve', async () => {
+    const east = 'us-east-1', eastArn = `arn:aws:eks:${east}:${MEMBER}:cluster/orders`;
+    const eastCluster = { ...cluster(eastArn, 'orders', MEMBER, eastArn, MEMBER_VPC), region: east };
+    const listed = [CLUSTERS[0], eastCluster];
+    const rows = inventory();
+    rows.target_group = [rows.target_group[0], inv(MEMBER, 'api-tg', { ...tg(MEMBER, 'api-tg', API_NLB_ARN, MEMBER_VPC, ['10.1.1.20']).data, region: east })];
+    rows.nlb = [rows.nlb[0], inv(MEMBER, 'api-nlb', { arn: API_NLB_ARN, dns_name: API_NLB_DNS, scheme: 'internal', region: east, vpc_id: MEMBER_VPC })];
+    stubFetch((u) => {
+      if (u === FLEET_URL) return json({ clusters: listed });
+      // The server would 403 a member region outside its scan scope; only per-account listings are answered.
+      if (u.startsWith('/api/eks?')) {
+        const q = new URL(u, 'http://localhost').searchParams;
+        return q.get('accounts')!.includes(',') ? json({ status: 'error', message: 'EKS region is not enabled' }, 403) : json(listingFor(u, listed));
+      }
+      if (u === `/api/eks/${encodeURIComponent(eastArn)}/incluster?kind=pods`) return json({ kind: 'pods', rows: MEMBER_PODS.map(pod('biz', 'orders-api')), generatedAt: NOW });
+      if (u === `/api/eks/${encodeURIComponent(eastArn)}/db-refs`) return json(DB_REFS[ENC_MEMBER]);
+      return undefined;
+    }, rows);
+    view();
+    await settled();
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && u !== FLEET_URL).sort())
+      .toEqual([`/api/eks?accounts=${MEMBER}&regions=${east}&includeGlobal=1`, `/api/eks?accounts=self&regions=${REGION}&includeGlobal=1`]);
+    expect(ids()).toEqual(expect.arrayContaining([wl(HOST_ARN, 'web/front'), wl(eastArn, 'biz/orders-api')]));
+    expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
+  });
+
+  it('one failing per-account listing fails the whole pod map closed', async () => {
+    stubFetch((u) => (u.startsWith(`/api/eks?accounts=${MEMBER}&`) ? json({ status: 'error' }, 403) : undefined));
+    view();
+    await settled();
+    expect(ids()).not.toContain(wl(HOST_ARN, 'web/front'));
+    expect(ids()).not.toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(notices()).toContain(BINDING_NOTICE.cluster_unreadable);
+  });
+
+  it('a not-connected cluster blocks only its own network: other pods resolve, its target stays unresolved', async () => {
+    const legacyArn = `arn:aws:eks:${REGION}:${MEMBER}:cluster/legacy`;
+    const legacy = cluster(legacyArn, 'legacy', MEMBER, legacyArn, 'vpc-0legacy', 'no-entry');
+    const listed = [...CLUSTERS, legacy];
+    const rows = inventory();
+    // A second TG behind the member NLB whose IP target lives in the blocked VPC.
+    rows.target_group = [...rows.target_group, tg(MEMBER, 'legacy-tg', API_NLB_ARN, 'vpc-0legacy', ['10.9.9.9'])];
+    stubFetch((u) => {
+      if (u === FLEET_URL) return json({ ...FLEET, clusters: listed });
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      return undefined;
+    }, rows);
+    view();
+    await settled();
+    expect(ids()).toEqual(expect.arrayContaining([wl(HOST_ARN, 'web/front'), wl(MEMBER_ARN, 'biz/orders-api')]));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(canvas.props!.flow.nodes.some((n) => n.kind === 'target' && n.id.includes('legacy-tg'))).toBe(true);
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
   });
 
   it('withheld bindings (all-region listing) → pods_unresolved with the reason', async () => {
@@ -330,6 +399,41 @@ describe('SiteFlowView', () => {
     await settled();
     expect(canvas.props!.flow.gaps).toContain('inventory_incomplete');
     expect(notices()).toContain(`${GAP_NOTICE.inventory_incomplete} (alb_listener_rule: failed)`);
+  });
+
+  it('discloses inventory issues on the host index too (no host picked)', async () => {
+    stubFetch((u) => (u.startsWith('/api/inventory/alb_listener_rule?') ? json({ status: 'error' }, 500) : undefined));
+    view('view=site');
+    await screen.findByRole('list', { name: '호스트 목록' }, { timeout: 3000 });
+    expect(notices()).toContain(`${GAP_NOTICE.inventory_incomplete} (alb_listener_rule: failed)`);
+  });
+
+  it('a missing sync record flags hop types (route53) but not optional enrichment types (s3)', async () => {
+    stubFetch((u) => {
+      const t = /^\/api\/inventory\/(\w+)\?/.exec(u)?.[1];
+      if (t === 'route53' || t === 's3') return json({ rows: t === 'route53' ? inventory().route53 : [], run: null, consistency: 'statement-snapshot' });
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('inventory_incomplete');
+    expect(notices()).toContain('(route53: unknown)');
+    expect(notices()).not.toContain('s3: unknown');
+  });
+
+  it('keeps the detail panel open when evidence lands and the selected node still exists', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubFetch((u) => (u === '/api/topology?lens=service' ? gate.then(() => json(TRACE)) as unknown as Response : undefined));
+    view();
+    await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
+    const stage1 = canvas.props!.flow;
+    act(() => canvas.props!.onSelect!(stage1.nodes.find((n) => n.id === 'cf:E1EXAMPLE')!));
+    await screen.findByRole('dialog', { name: 'detail:E1EXAMPLE' });
+    release();
+    await settled();
+    expect(canvas.props!.flow).not.toBe(stage1);
+    expect(screen.getByRole('dialog', { name: 'detail:E1EXAMPLE' })).toBeTruthy();
   });
 
   it('trace listing guard: an incomplete fleet listing refuses the trace join (incomplete_listing)', async () => {

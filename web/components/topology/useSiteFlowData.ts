@@ -4,11 +4,13 @@
 // composed in the browser (buildSiteFlow); every read is abort-safe and fails closed into a gap/notice:
 //  - inventory: loadFlowInput with the page scope (full live rows, incl. CloudFront behaviors and ALB listener
 //    rules). Any interactive type that failed, was capped, swept unstably or whose aggregate run is failed,
-//    partial or running yields `inventory_incomplete`.
+//    partial or running yields `inventory_incomplete`; so does a missing sync record (`unknown`) for the hop types
+//    the builder walks (HOP_TYPES).
 //  - EKS pod map + bindings: the scoped listing (`eksScope`). An all-region listing returns a discovery note that
-//    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions: the regions of the
-//    connected clusters the fleet listing reports in the selected accounts. Inventory reads keep the page scope,
-//    so no LB/TG row is dropped. Targets outside those regions stay unresolved (`eks_not_enumerated`).
+//    withholds bindings (`binding_scope_partial`), so the EKS read gets EXPLICIT regions: one listing per account
+//    with only that account's connected-cluster regions from the fleet listing (no accounts × regions product, so
+//    a region one account lacks never 403s another). Inventory reads keep the page scope, so no LB/TG row is
+//    dropped. Targets outside those regions stay unresolved (`eks_not_enumerated`).
 //  - host account: `/api/accounts` (unique isHost row). Host inventory rows are keyed `self` while the listing
 //    reports the numeric id, so `<hostId>|region` coverage is mirrored to `self|region`, and host clusters are
 //    recognized when deriving the EKS scope. The EKS read waits for this lookup (evidence pending meanwhile).
@@ -34,15 +36,18 @@ const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 
 export interface FleetCluster { id: string; name: string; arn?: string; accountId?: string; region?: string; access?: string }
 export interface Fleet { clusters: FleetCluster[]; names: string[]; incomplete: boolean }
-export interface InventoryIssue { type: string; issue: 'failed' | 'capped' | 'incomplete' | 'running' | 'partial' }
+export interface InventoryIssue { type: string; issue: 'failed' | 'capped' | 'incomplete' | 'running' | 'partial' | 'unknown' }
+/** Hop types the builder walks: a missing sync record there cannot prove the chain complete. Optional enrichment
+ *  types stay exempt (a never-collected one would flag every load). Critical types already require a ledger. */
+export const HOP_TYPES: ReadonlySet<string> = new Set(['route53', 'cloudfront', 'alb', 'nlb', 'alb_listener_rule']);
 export interface SiteInventory {
   flow: FlowGraph;
   cloudfrontRows: Row[];
   bindings: Binding[];
   eks: EksIpResolution | null;
   issues: InventoryIssue[];
-  /** The scope string the EKS read used (explicit regions when derivable). */
-  eksScope: string;
+  /** The scope the EKS read used: per-account queries when derivable, else the page scope. */
+  eksScope: string | string[];
 }
 
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -68,25 +73,26 @@ const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
   !c.id.startsWith('arn:') || (hostAccount && c.accountId === hostAccount) ? 'self' : c.accountId ?? '';
 
 /**
- * The scope string for the EKS read. Explicit page regions pass through unchanged. For an all-region page
- * scope: the accounts and regions of the CONNECTED fleet clusters inside the selected accounts (smallest
- * listing that can bind pods). The listing still returns every cluster in those regions, registered or not, and
- * any non-connected one makes fetchEksIpMap withhold ALL bindings (`binding_read_incomplete`), disclosed.
+ * The scope for the EKS read. Explicit page regions pass through unchanged. For an all-region page scope: one
+ * query per account owning a CONNECTED fleet cluster inside the selected accounts, with only that account's
+ * cluster regions (each well under the server's 12-target cap unless one account spans >12 regions, which
+ * then fails closed as a truncated listing). A listing still returns every cluster in those regions; a
+ * not-connected one blocks only its own region|vpc (fetchEksIpMap `binding_scope_blocked`, disclosed).
  * Nothing derivable (no fleet, no connected cluster in scope) keeps the page scope, whose all-region note then
  * withholds bindings with a disclosed reason.
  */
-export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, hostAccount: string | null): string {
+export function deriveEksScope(inventoryScope: string, fleet: Fleet | null, hostAccount: string | null): string | string[] {
   const q = new URLSearchParams(inventoryScope);
   if ((q.get('regions') ?? ALL_REGIONS) !== ALL_REGIONS || !fleet) return inventoryScope;
   const accounts = q.get('accounts') || 'self';
   const selected = accounts === ALL_ACCOUNTS ? null : new Set(accounts.split(','));
   const inScope = fleet.clusters.filter((c) => c.access === 'connected' && nonempty(c.region) && REGION_RE.test(c.region)
     && ownerOf(c, hostAccount) && (!selected || selected.has(ownerOf(c, hostAccount))));
-  const regions = [...new Set(inScope.map((c) => c.region!))].sort();
-  if (!regions.length) return inventoryScope;
+  if (!inScope.length) return inventoryScope;
   const owners = [...new Set(inScope.map((c) => ownerOf(c, hostAccount)))].sort();
-  return new URLSearchParams({ accounts: owners.join(','), regions: regions.join(','),
-    includeGlobal: q.get('includeGlobal') ?? '1' }).toString();
+  return owners.map((owner) => new URLSearchParams({ accounts: owner,
+    regions: [...new Set(inScope.filter((c) => ownerOf(c, hostAccount) === owner).map((c) => c.region!))].sort().join(','),
+    includeGlobal: q.get('includeGlobal') ?? '1' }).toString());
 }
 
 /** Mirror each enumerated `<hostId>|region` to the `self|region` key host inventory rows use. */
@@ -128,10 +134,9 @@ export function useSiteInventory(inventoryScope: string): {
         const issues: InventoryIssue[] = [];
         TYPES.forEach((type, i) => {
           const r = loaded.res[i];
-          // A missing ledger (`unknown`) is not flagged here: critical types already require one, and a
-          // never-collected optional type would otherwise flag every load.
           const issue: InventoryIssue['issue'] | null = r.readFailed ? 'failed' : r.incomplete ? 'incomplete' : r.capped ? 'capped'
-            : r.aggregateStatus === 'failed' || r.aggregateStatus === 'partial' || r.aggregateStatus === 'running' ? r.aggregateStatus : null;
+            : r.aggregateStatus === 'failed' || r.aggregateStatus === 'partial' || r.aggregateStatus === 'running' ? r.aggregateStatus
+            : r.aggregateStatus === 'unknown' && HOP_TYPES.has(type) ? 'unknown' : null;
           if (issue) issues.push({ type, issue });
         });
         setData({

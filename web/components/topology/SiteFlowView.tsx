@@ -43,7 +43,8 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   path_unmatched: '요청 경로에 맞는 캐시 동작이나 리스너 규칙이 없습니다.',
 };
 
-/** Why pod bindings were withheld (fetchEksIpMap bindingRead reasons; Korean source, lockstep-tested). */
+/** Why pod bindings were withheld or narrowed (fetchEksIpMap bindingRead reasons; Korean source, lockstep-tested).
+ *  `binding_scope_blocked` (status `partial`) is followed by the blocked cluster labels. */
 export const BINDING_NOTICE: Record<string, string> = {
   binding_scope_partial: '전체 리전 범위의 EKS 목록은 일부 리전만 확인하므로 Pod 식별 근거를 사용하지 않습니다. 계정·리전 선택에서 리전을 지정하세요.',
   binding_read_incomplete: '일부 EKS 클러스터를 읽지 못했거나 연결되지 않아 Pod 식별 근거를 사용하지 않습니다.',
@@ -53,7 +54,7 @@ export const BINDING_NOTICE: Record<string, string> = {
   binding_authority_unverified: '클러스터 ARN을 확인할 수 없어 Pod 식별 근거를 사용하지 않습니다.',
   cluster_unreadable: 'EKS 클러스터 목록을 읽지 못했거나 클러스터 정보(VPC 등)가 없어 Pod 식별 근거를 사용하지 않습니다.',
   cluster_limit_possible: 'EKS 클러스터 목록이 상한에 도달해 Pod 식별 근거를 사용하지 않습니다.',
-  cluster_not_connected: '연결되지 않은 EKS 클러스터가 있어 Pod 식별 근거를 사용하지 않습니다.',
+  binding_scope_blocked: '연결되지 않았거나 읽지 못한 EKS 클러스터가 있어 그 클러스터의 네트워크(VPC)에 있는 Pod는 확인하지 않습니다:',
 };
 const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';
 
@@ -207,7 +208,8 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   // ---- detail panel ----
   const [selected, setSelected] = useState<SiteNode | null>(null);
   const onSelect = useCallback((node: SiteNode) => setSelected(node), []);
-  useEffect(() => { setSelected(null); }, [flow]);
+  // A rebuilt flow (e.g. evidence landing) keeps the panel open while the selected node still exists.
+  useEffect(() => { setSelected((cur) => (cur && flow?.nodes.find((n) => n.id === cur.id)) || null); }, [flow]);
   const detail = selected ? detailOf(selected, data) : null;
   const k8sHref = selected && (selected.kind === 'workload' || selected.kind === 'service') && selected.ref?.cluster
     ? `/topology/infra?${new URLSearchParams({ view: 'k8s', cluster: listedId(selected.ref.cluster, inv.fleet) })}` : null;
@@ -223,10 +225,17 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
       notices.push(`${tt(GAP_NOTICE[g])} (${ev.failedDbRefs.map(eksClusterLabel).join(', ')})`);
     } else notices.push(tt(GAP_NOTICE[g]));
   }
+  // Inventory read issues are disclosed even without a host flow (host index).
+  if (data?.issues.length && !flow?.gaps.includes('inventory_incomplete')) {
+    notices.unshift(`${tt(GAP_NOTICE.inventory_incomplete)} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
+  }
   const bindingRead = data?.eks?.bindingRead;
   if (flow?.gaps.includes('pods_unresolved') && bindingRead?.status === 'withheld') {
     const reasons = bindingRead.reasons.length ? bindingRead.reasons : ['cluster_unreadable'];
     for (const r of reasons) notices.push(BINDING_NOTICE[r] ? tt(BINDING_NOTICE[r]) : `${tt(BINDING_FALLBACK)} (${r})`);
+  }
+  if (bindingRead?.status === 'partial') {
+    notices.push(`${tt(BINDING_NOTICE.binding_scope_blocked)} ${(bindingRead.blockedClusters ?? []).map(eksClusterLabel).join(', ')}`);
   }
 
   const listId = 'site-host-options';

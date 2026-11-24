@@ -102,9 +102,10 @@ export interface FlowLoadOptions {
   /**
    * With `eksScope`: the listing scope for the EKS read instead of `inventoryScope` (inventory reads keep
    * `inventoryScope`). A promise lets the inventory lanes start while the caller still derives it; it must
-   * not reject. Used to hand the listing explicit regions, since an all-region listing withholds bindings.
+   * not reject. Used to hand the listing explicit regions, since an all-region listing withholds bindings; an
+   * array lists each entry separately (fetchEksIpMap per-account queries).
    */
-  eksScopeQuery?: string | Promise<string>;
+  eksScopeQuery?: string | string[] | Promise<string | string[]>;
 }
 
 // `entitiesEnabled` is forwarded to fetchEksIpMap (the page reads it from useEntityTopology).
