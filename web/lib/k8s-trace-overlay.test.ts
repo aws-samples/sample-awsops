@@ -67,15 +67,23 @@ describe('buildTraceOverlay', () => {
     expect(o.skipped).toBe(1);
   });
 
-  it('accepts a host-account ARN id only when the host account is known; other ARNs are member clusters', () => {
-    const arn = 'arn:aws:eks:us-west-2:111111111111:cluster/mall-a';
-    const host = buildTraceOverlay([fixture()], { id: arn, registeredNames: ['mall-a'], hostAccountId: '111111111111' });
-    expect(host.available).toBe(true);
-    expect(host.workloadCalls).toHaveLength(2);
-    expect(buildTraceOverlay([fixture()], { id: arn, registeredNames: ['mall-a'] }))
-      .toEqual({ available: false, reason: 'member_cluster', workloadCalls: [], omitted: 0 });
-    expect(buildTraceOverlay([fixture()], { id: arn, registeredNames: ['mall-a'], hostAccountId: '222222222222' }).reason)
-      .toBe('member_cluster');
+  it('joins an ARN-identified cluster of any account (host or member) whose name is unique across the fleet', () => {
+    for (const account of ['111111111111', '123456789012']) {
+      const arn = `arn:aws:eks:us-west-2:${account}:cluster/mall-a`;
+      const o = buildTraceOverlay([fixture()], { id: arn, registeredNames: [arn, 'mall-b'] });
+      expect(o.available).toBe(true);
+      expect(o.reason).toBeUndefined();
+      expect(o.workloadCalls).toEqual(buildTraceOverlay([fixture()], HOST).workloadCalls);
+      expect(o.workloadCalls).toHaveLength(2);
+    }
+  });
+
+  it('refuses a member ARN whose bare name also exists in another account', () => {
+    const member = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/mall-a';
+    for (const registeredNames of [[member, 'mall-a'], [member, 'arn:aws:eks:ap-northeast-2:111111111111:cluster/mall-a']]) {
+      expect(buildTraceOverlay([fixture()], { id: member, registeredNames }))
+        .toEqual({ available: false, reason: 'ambiguous_cluster', workloadCalls: [], omitted: 0 });
+    }
   });
 
   it('refuses the join when the cluster label is registered twice or not at all', () => {
@@ -88,9 +96,10 @@ describe('buildTraceOverlay', () => {
   it('refuses the join when the cluster listing is incomplete (a same-named cluster may be unlisted)', () => {
     expect(buildTraceOverlay([fixture()], { ...HOST, listingIncomplete: true }))
       .toEqual({ available: false, reason: 'incomplete_listing', workloadCalls: [], omitted: 0 });
-    // A member cluster keeps its own, more specific refusal.
-    expect(buildTraceOverlay([fixture()], { id: 'arn:aws:eks:us-east-1:222222222222:cluster/mall-a', registeredNames: ['mall-a'], listingIncomplete: true }).reason)
-      .toBe('member_cluster');
+    // A member cluster is refused by the same listing-completeness guard as a host cluster.
+    const member = 'arn:aws:eks:us-east-1:123456789012:cluster/mall-a';
+    expect(buildTraceOverlay([fixture()], { id: member, registeredNames: [member], listingIncomplete: true }))
+      .toEqual({ available: false, reason: 'incomplete_listing', workloadCalls: [], omitted: 0 });
     expect(buildTraceOverlay([fixture()], { ...HOST, listingIncomplete: false }).available).toBe(true);
   });
 
@@ -255,13 +264,23 @@ describe('fetchTraceOverlay', () => {
     expect(await fetchTraceOverlay(HOST)).toEqual({ available: false, reason: 'partial_snapshot', workloadCalls: [], omitted: 0 });
   });
 
-  it('returns member_cluster, incomplete_listing or ambiguous_cluster without fetching', async () => {
+  it('returns incomplete_listing or ambiguous_cluster without fetching, also for a member cluster', async () => {
     const fn = stub(async () => respond(200, fixture()));
-    expect((await fetchTraceOverlay({ id: 'arn:aws:eks:ap-northeast-2:222222222222:cluster/mall-a', registeredNames: ['mall-a'] })).reason)
-      .toBe('member_cluster');
+    const member = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/mall-a';
+    expect((await fetchTraceOverlay({ id: member, registeredNames: [member, 'mall-a'] })).reason).toBe('ambiguous_cluster');
+    expect((await fetchTraceOverlay({ id: member, registeredNames: [member], listingIncomplete: true })).reason).toBe('incomplete_listing');
     expect((await fetchTraceOverlay({ id: 'mall-a', registeredNames: ['mall-a', 'mall-a'] })).reason).toBe('ambiguous_cluster');
     expect((await fetchTraceOverlay({ ...HOST, listingIncomplete: true })).reason).toBe('incomplete_listing');
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('reads the snapshot and draws calls for a member cluster whose name is unique across the fleet', async () => {
+    const fn = stub(async () => respond(200, fixture()));
+    const member = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/mall-a';
+    const o = await fetchTraceOverlay({ id: member, registeredNames: [member, 'mall-b'] });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(o.available).toBe(true);
+    expect(o.workloadCalls).toHaveLength(2);
   });
 
   it('follows nextCursor on the pinned snapshot, stops after 5 pages and sets omitted from the response', async () => {

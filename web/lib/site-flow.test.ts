@@ -293,7 +293,7 @@ describe('buildSiteFlow rules', () => {
   });
   it('rule 5: an unavailable overlay contributes its gap and no trace edges; partial refs are disclosed', () => {
     const f = buildSiteFlow(input({
-      traces: [{ cluster: ARN, overlay: { available: false, reason: 'member_cluster', workloadCalls: [], omitted: 0 } }],
+      traces: [{ cluster: ARN, overlay: { available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 } }],
       dbRefs: [{ cluster: ARN, partial: true, refs: [ref('platform', 'api-gateway', CACHE, 'elasticache')],
         resolved: { map: new Map(), capped: false, incomplete: true } }],
     }));

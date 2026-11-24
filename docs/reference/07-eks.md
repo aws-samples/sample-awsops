@@ -277,9 +277,12 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 ### Scope and limits
 
 - Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
-  snapshot, which is host-account only. A trace service maps to a workload only
+  snapshot (`/api/topology?lens=service`, which accepts only `account=self`). The join
+  keys on the `k8s.cluster.name` claim in that snapshot, so clusters of every registered
+  account, host and member, join the same way: a bare-name id and a full EKS ARN id are
+  matched by their bare cluster name. A trace service maps to a workload only
   through its `runs_on` relation to exactly one `namespace/deployment` of the selected
-  cluster, and the cluster name must be unique across the fleet-wide cluster listing
+  cluster, and the cluster's bare name must be unique across the fleet-wide cluster listing
   (all registered accounts and regions), not just the clusters of the selected scope: a
   narrowed scope, including the default host-account-only scope, hides same-named
   clusters of other accounts or regions without any truncation or error flag. When the
@@ -300,14 +303,17 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   mirrors `partialInputs` in `web/lib/service-topology/read-published.ts`, since a capped
   source may have dropped a second `runs_on` relation. Calls that cannot be mapped to one workload or managed
   datastore are counted, not guessed, and add no node.
-- Member clusters (full EKS ARN ids) read through the member role show Kubernetes
-  structure and `db-refs` links but no trace edges. A host cluster outside the
+- Member clusters (full EKS ARN ids) are read through the member role and get the same
+  trace join as host clusters. The only cluster-level trace guards are the two above: fleet-wide
+  uniqueness of the bare cluster name (`ambiguous_cluster` when another account or
+  region has a cluster with the same name) and a completely read fleet listing
+  (`incomplete_listing`). The trace read never waits for the host-account lookup.
+- The host-account lookup is used for Route 53 only. A host cluster outside the
   deployment region also has an ARN id, and the cluster listing reports a numeric
   account for every row, so the page resolves the host account from the single
-  `isHost` row of `GET /api/accounts`: an ARN whose account equals it is a host cluster
-  for both trace edges and Route 53 records. If that lookup fails or does not return
-  exactly one 12-digit host account, every ARN id is treated as a member: no trace
-  edges, with the member-cluster notice, and Route 53 is read for the ARN's account.
+  `isHost` row of `GET /api/accounts`: an ARN whose account equals it reads the host's
+  (`self`) Route 53 records. If that lookup fails or does not return exactly one
+  12-digit host account, Route 53 is read for the ARN's own account.
 - Route 53 records are read from the synced inventory of the cluster's account (`self`
   for the host) and matched to gateway hosts exactly; the record name is only the DNS
   node's label, so a wildcard record (`\052` decoded to a leading `*.`) links like any

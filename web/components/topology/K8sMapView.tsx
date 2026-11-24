@@ -5,14 +5,15 @@
 // requests, clears state, and every late result is dropped by the `live` flag / `signal.aborted`):
 //  - in-cluster kinds ingresses/services/pods/endpoints (failed kinds are disclosed, never hidden)
 //  - db-refs (config-inferred datastores; failure/partial/truncated and a capped or unconfirmed inventory match are disclosed, the graph still renders)
-//  - trace overlay (host-only snapshot; the module refuses member/ambiguous clusters and an
+//  - trace overlay (host and member clusters alike; the module refuses ambiguous clusters and an
 //    incomplete listing itself). Name uniqueness is checked against the FLEET-wide listing (all
 //    accounts/regions), not the selector's scope: a narrowed scope (incl. the UI default, host account
 //    only — DEFAULT_SCOPE in web/lib/account-context.ts, resolved by getEksScope in web/lib/eks-scope.ts)
 //    hides same-named clusters of other accounts/regions without any truncated/error disclosure.
-//    An ARN id is a host cluster only when its account equals the
-//    unique isHost account of /api/accounts; if that lookup fails, every ARN id is a member.
-//  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders)
+//    The trace read never waits for the host-account lookup below; only Route53 uses it.
+//  - Route53 records for the cluster's account (a capped or failed read is disclosed; the graph still renders).
+//    An ARN id reads 'self' only when its account equals the unique isHost account of /api/accounts;
+//    if that lookup fails, an ARN id reads its own numeric account.
 //  - nodes LAZILY, the first time a Service is selected (detail panel only).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -45,10 +46,6 @@ export const TRACE_NOTICE: Record<TraceOverlayReason, string> = {
   unsupported_scope: '현재 범위에서는 트레이스로 관측된 호출을 표시할 수 없습니다.',
   unavailable: '트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.',
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 이 클러스터에 연결할 수 없습니다.',
-  // Reached by a real member cluster, and by an ARN-identified host cluster (outside the deployment
-  // region) only when the host account could not be resolved from /api/accounts. The copy states the
-  // rule, not that this IS a member account.
-  member_cluster: '트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 같은 이름의 클러스터가 없는지 확인할 수 없으므로 트레이스로 관측된 호출을 표시하지 않습니다.',
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되었거나 오래된 원본을 포함해 트레이스로 관측된 호출을 표시하지 않습니다.',
 };
@@ -64,8 +61,8 @@ export const traceOmittedNotice = (omitted: number) =>
 /**
  * Account whose Route53 inventory is read. Inventory keys host rows as 'self', so a bare-name id and an
  * ARN whose account is the resolved host account both read 'self'; any other ARN reads its own account.
- * With an unknown host account (null) an ARN keeps its numeric account: the conservative member handling,
- * matching the trace overlay's member_cluster refusal.
+ * With an unknown host account (null) an ARN keeps its numeric account (the conservative member handling).
+ * Route53 only: the trace join gates host and member clusters alike and never reads the host account.
  */
 const dnsAccountOf = (id: string, hostAccountId: string | null) => {
   const account = parseEksClusterId(id)?.accountId;
@@ -111,7 +108,8 @@ export default function K8sMapView({ query }: { query: string }) {
   const nodesAbort = useRef<AbortController | null>(null);
   const [hiddenNs, setHiddenNs] = useState<ReadonlySet<string>>(new Set());
   const [showSystem, setShowSystem] = useState(false);
-  // Host account id, needed only for ARN-identified clusters: undefined = lookup pending, null = not determinable.
+  // Host account id, needed only for the Route53 read of ARN-identified clusters: undefined = lookup pending,
+  // null = not determinable.
   const [hostAccount, setHostAccount] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
@@ -203,8 +201,8 @@ export default function K8sMapView({ query }: { query: string }) {
   // Stable effect keys (null = fleet listing pending).
   const fleetNamesKey = fleet ? fleet.names.join('\n') : null;
   const traceListingIncomplete = inconclusive || !!fleet?.incomplete;
-  // Only an ARN id needs the host account. A bare name is the host by construction, so it neither waits
-  // for the lookup nor re-reads when it settles. undefined = an ARN id whose lookup is still pending.
+  // Only an ARN id's Route53 read needs the host account. A bare name is the host by construction, so it
+  // neither waits for the lookup nor re-reads when it settles. undefined = an ARN id whose lookup is still pending.
   const hostForCluster = cluster && parseEksClusterId(cluster)?.accountId ? hostAccount : null;
   useEffect(() => {
     // Switching clusters (or scope) clears every per-cluster piece before anything new arrives.
@@ -259,21 +257,20 @@ export default function K8sMapView({ query }: { query: string }) {
 
   useEffect(() => {
     setTrace(null);
-    // An ARN id waits for the host-account lookup: reading earlier would mis-scope the read. The join
-    // also waits for the fleet listing (name uniqueness is checked against it; see header).
-    if (!cluster || hostForCluster === undefined || fleetNamesKey === null) return;
+    // The join waits only for the fleet listing (name uniqueness is checked against it; see header),
+    // never for the host-account lookup: host and member clusters are gated alike.
+    if (!cluster || fleetNamesKey === null) return;
     let live = true;
     const ctrl = new AbortController();
     const { signal } = ctrl;
     const current = () => live && !signal.aborted;
     fetchTraceOverlay({
       id: cluster, registeredNames: fleetNamesKey ? fleetNamesKey.split('\n') : [], listingIncomplete: traceListingIncomplete,
-      ...(hostForCluster ? { hostAccountId: hostForCluster } : {}),
     }, signal)
       .then((o) => { if (current()) setTrace(o); })
       .catch(() => { if (current()) setTrace({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 }); });
     return () => { live = false; ctrl.abort(); };
-  }, [cluster, fleetNamesKey, traceListingIncomplete, hostForCluster]);
+  }, [cluster, fleetNamesKey, traceListingIncomplete]);
 
   // Route53 does not depend on the fleet listing; only an ARN id waits for the host-account lookup.
   useEffect(() => {
