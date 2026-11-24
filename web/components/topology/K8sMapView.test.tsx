@@ -62,6 +62,7 @@ function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Han
     const custom = handler?.(url);
     if (custom) return custom;
     if (url === '/api/accounts') return new Response(JSON.stringify(ACCOUNTS));
+    if (url === '/api/eks/registrations') return new Response(JSON.stringify({ clusters: [] })); // no extra registered names
     // The scoped selector listing and every per-account fleet listing (lib/eks-fleet.ts) answer the same body.
     if (url.startsWith('/api/eks?')) return new Response(JSON.stringify(listing), { status });
     const kind = /kind=(\w+)/.exec(url)?.[1];
@@ -128,8 +129,8 @@ const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111
 const ACCOUNTS = { accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true, enabled: true },
   { accountId: '222222222222', alias: 'Member', isHost: false, enabled: true }] };
 /** Per-account fleet listing URLs (lib/eks-fleet.ts fleetUrl). */
-const fleetUrl = (account: string) => `/api/eks?accounts=${account}&regions=__all__&includeGlobal=1`;
-const isFleet = (u: string) => /^\/api\/eks\?accounts=(self|\d{12})&regions=__all__&includeGlobal=1$/.test(u);
+const fleetUrl = (account: string) => `/api/eks?accounts=${account}&regions=__all__`;
+const isFleet = (u: string) => /^\/api\/eks\?accounts=(self|\d{12})&regions=__all__$/.test(u);
 const accountsHandler = (body: unknown, status = 200): Handler => (u) => (u === '/api/accounts' ? new Response(JSON.stringify(body), { status }) : undefined);
 const view = () => render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
 const graphNamespaces = () => canvas.props?.graph.namespaces.map((n) => n.name) ?? [];
@@ -674,6 +675,27 @@ describe('K8sMapView trace join fleet listing', () => {
     expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'ambiguous_cluster' });
     // The selector still follows the narrowed scope: the member cluster is not offered.
     expect((await screen.findAllByRole('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['shared']);
+  });
+
+  it('refuses the join when a same-named cluster is only registered (outside every listing), not listed', async () => {
+    // The member is not a wildcard scan, so its all-region listing covers configured regions only; its `shared`
+    // cluster registered in us-west-2 is invisible there but present in the registry.
+    narrow();
+    const twin = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
+    const calls = stubFetch(HOST_ONLY, 200, (u) => (u === '/api/eks/registrations'
+      ? new Response(JSON.stringify({ clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', region: 'ap-northeast-2' },
+        { id: twin, name: 'shared', accountId: '222222222222', region: 'us-west-2' }] })) : undefined));
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.ambiguous_cluster)).toBeTruthy();
+    expect(calls).toContain('/api/eks/registrations');
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+  });
+
+  it('a failed registrations read refuses the join as an incomplete listing', async () => {
+    narrow();
+    stubFetch(HOST_ONLY, 200, (u) => (u === '/api/eks/registrations' ? new Response('{}', { status: 503 }) : undefined));
+    view();
+    await waitFor(() => expect(canvas.props?.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' }));
   });
 
   it('merges per-account fleet listings: a same-named cluster only in the member listing reaches the join', async () => {

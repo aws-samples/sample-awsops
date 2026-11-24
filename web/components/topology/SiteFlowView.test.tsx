@@ -78,9 +78,9 @@ const cluster = (id: string, name: string, accountId: string, arn: string, vpcId
   ({ id, name, arn, accountId, region: REGION, vpcId, access });
 const CLUSTERS = [cluster('shop', 'shop', HOST_ID, HOST_ARN, HOST_VPC), cluster(MEMBER_ARN, 'orders', MEMBER, MEMBER_ARN, MEMBER_VPC)];
 const THIRD = '222222222222';
-/** Per-account fleet listing URL (`/api/eks?accounts=<id>&regions=__all__&includeGlobal=1`). */
-const fleetUrl = (account: string) => `/api/eks?accounts=${account}&regions=__all__&includeGlobal=1`;
-const isFleet = (u: string) => /^\/api\/eks\?accounts=(self|\d{12})&regions=__all__&includeGlobal=1$/.test(u);
+/** Per-account fleet listing URL (`/api/eks?accounts=<id>&regions=__all__`). */
+const fleetUrl = (account: string) => `/api/eks?accounts=${account}&regions=__all__`;
+const isFleet = (u: string) => /^\/api\/eks\?accounts=(self|\d{12})&regions=__all__$/.test(u);
 const NOTE = { accountId: 'self', region: '__all__', message: 'All-region discovery covers configured and registered regions only.' };
 const FLEET = { clusters: CLUSTERS, errors: [NOTE] };
 const pod = (namespace: string, workload: string) => ([ip, name]: readonly [string, string]) =>
@@ -143,6 +143,7 @@ function stubFetch(over: Handler = () => undefined, rows = inventory()) {
     const custom = over(url, init);
     if (custom) return custom;
     if (url === '/api/accounts') return json(ACCOUNTS);
+    if (url === '/api/eks/registrations') return json({ clusters: [] }); // no registered cluster beyond the listings
     if (isFleet(url)) return fleetOf(url, CLUSTERS);
     if (url.startsWith('/api/eks?')) return json(listingFor(url, CLUSTERS));
     const m = /^\/api\/eks\/([^/]+)\/(incluster\?kind=(\w+)|db-refs)$/.exec(url);
@@ -436,18 +437,17 @@ describe('SiteFlowView', () => {
     const hostScope = 'accounts=self&regions=__all__&includeGlobal=1';
     const rows = inventory();
     stubFetch((u) => {
-      // The host fleet listing and the page-scope EKS read share one URL: first call = fleet, second = EKS read.
-      if (u === fleetUrl('self')) {
-        return calls.filter((c) => c === u).length === 1 ? fleetOf(u, [{ ...CLUSTERS[0], access: 'unknown' }])
-          : json({ ...FLEET, clusters: [CLUSTERS[0]] });
-      }
+      // The host's fleet listing sees `shop` unconnected; the page-scope EKS read (its own URL) carries the note.
+      if (u === fleetUrl('self')) return fleetOf(u, [{ ...CLUSTERS[0], access: 'unknown' }]);
       if (isFleet(u)) return fleetOf(u, []);
+      if (u === `/api/eks?${hostScope}`) return json({ ...FLEET, clusters: [CLUSTERS[0]] });
       return undefined;
     }, { ...rows, target_group: [rows.target_group[0]], nlb: [rows.nlb[0]] });
     view('view=site&host=mall.example.com', hostScope);
     await settled();
-    // Requested twice: once as the host's fleet listing, once as the page-scope EKS read.
-    expect(calls.filter((u) => u === `/api/eks?${hostScope}`)).toHaveLength(2);
+    // The fleet listing (no includeGlobal) and the page-scope EKS read are separate requests.
+    expect(calls.filter((u) => u === fleetUrl('self'))).toHaveLength(1);
+    expect(calls.filter((u) => u === `/api/eks?${hostScope}`)).toHaveLength(1);
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
     expect(notices()).toContain(GAP_NOTICE.pods_unresolved);
     expect(notices()).toContain(BINDING_NOTICE.binding_scope_partial);
@@ -845,6 +845,29 @@ describe('SiteFlowView', () => {
     await settled();
     expect(canvas.props!.flow).not.toBe(stage1);
     expect(screen.getByRole('dialog', { name: 'detail:E1EXAMPLE' })).toBeTruthy();
+  });
+
+  it('trace name uniqueness also counts registered clusters outside every listing (ambiguous_cluster)', async () => {
+    // THIRD (non-wildcard) registered an `orders` cluster in us-west-2, outside its configured regions: no listing shows it.
+    const twin = `arn:aws:eks:us-west-2:${THIRD}:cluster/orders`;
+    stubFetch((u) => (u === '/api/eks/registrations' ? json({ clusters: [
+      { id: 'shop', name: 'shop', accountId: HOST_ID, region: REGION },
+      { id: MEMBER_ARN, name: 'orders', accountId: MEMBER, region: REGION },
+      { id: twin, name: 'orders', accountId: THIRD, region: 'us-west-2' },
+    ] }) : undefined));
+    view();
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('ambiguous_cluster');
+    expect(notices()).toContain(GAP_NOTICE.ambiguous_cluster);
+    // Pod bindings are unaffected (the listed clusters still decide scope and vetoes).
+    expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+  });
+
+  it('a failed registrations read fails the fleet closed', async () => {
+    stubFetch((u) => (u === '/api/eks/registrations' ? json({ status: 'error' }, 503) : undefined));
+    view();
+    await settled();
+    expect(notices()).toContain(BINDING_NOTICE.binding_fleet_incomplete);
   });
 
   it('trace listing guard: an incomplete fleet fails the EKS read closed, so no trace join is attempted', async () => {

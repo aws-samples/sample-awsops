@@ -1,14 +1,19 @@
 // Fleet-wide EKS cluster listing for name uniqueness (trace joins) and EKS scope derivation (client-safe).
-// One `/api/eks?accounts=<id>&regions=__all__&includeGlobal=1` per enabled registered account from
-// `GET /api/accounts` (host as `self`), merged: a single all-account request is capped at 12 account×region
-// targets server-side (eks-scope.ts TARGET_CAP, no registrations passed) and truncates on a real fleet.
-// Fail closed: any failed / errored / truncated / malformed request (parseFleet), an aborted signal, or a failed or malformed
-// `/api/accounts` body (any row without a 12-digit `accountId` or a boolean `enabled`) marks it incomplete.
+// One `/api/eks?accounts=<id>&regions=__all__` per enabled registered account from `GET /api/accounts` (host as
+// `self`), merged: a single all-account request is capped at 12 account×region targets server-side (eks-scope.ts
+// TARGET_CAP, no registrations passed) and truncates on a real fleet. `__all__` covers only an account's configured
+// (and, for wildcard scans, registered/home) regions, so `GET /api/eks/registrations` is read too: the uniqueness set
+// (`names`) is the listed clusters ∪ every registered cluster, while `clusters` (scope derivation, vetoes) stays the
+// listed set. Fail closed: any failed / errored / truncated / malformed listing (parseFleet) or registrations read,
+// an aborted signal, or a failed or malformed `/api/accounts` body (any row without a 12-digit `accountId` or a
+// boolean `enabled`) marks it incomplete.
 import { ALL_REGIONS } from './account-context';
 
 export interface FleetCluster { id: string; name: string; arn?: string; accountId?: string; region?: string; access?: string }
 export interface Fleet {
+  /** Listed clusters (scope derivation and vetoes). */
   clusters: FleetCluster[];
+  /** Trace-join uniqueness set: listed ∪ registered cluster ids, one per cluster (account|region|name). */
   names: string[];
   incomplete: boolean;
   /** Listed accounts (`self` or 12-digit) whose listing carried the reason-less all-region discovery note: their
@@ -23,8 +28,18 @@ const nonempty = (v: unknown): v is string => typeof v === 'string' && v.length 
 export const INCOMPLETE_FLEET = (): Fleet => ({ clusters: [], names: [], incomplete: true, wildcard: [] });
 
 /** Per-account fleet listing URL (one account per request keeps it under the server's 12-target cap). */
-export const fleetUrl = (account: string) =>
-  `/api/eks?${new URLSearchParams({ accounts: account, regions: ALL_REGIONS, includeGlobal: '1' })}`;
+export const fleetUrl = (account: string) => `/api/eks?${new URLSearchParams({ accounts: account, regions: ALL_REGIONS })}`;
+export const REGISTRATIONS_URL = '/api/eks/registrations';
+
+interface Registered { id: string; name: string; accountId: string; region: string }
+/** `/api/eks/registrations` body → registered clusters; null (fleet incomplete) on any malformed shape. */
+export function parseRegistrations(body: unknown): Registered[] | null {
+  const list = record(body) && Array.isArray(body.clusters) ? body.clusters : null;
+  if (!list || !list.every((c) => record(c) && nonempty(c.id) && nonempty(c.name)
+    && typeof c.accountId === 'string' && /^(?:self|\d{12})$/.test(c.accountId)
+    && typeof c.region === 'string' && REGION_RE.test(c.region))) return null;
+  return (list as Record<string, string>[]).map((c) => ({ id: c.id, name: c.name, accountId: c.accountId, region: c.region }));
+}
 
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 const ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/[\w-]+$/;
@@ -71,25 +86,36 @@ export function fleetAccounts(body: unknown): string[] | null {
   return ['self', ...[...new Set(members)].sort()];
 }
 
-/** Merged per-account fleet listing (bounded concurrency, shared signal). Clusters deduped by ARN, else id. */
+/** Merged per-account fleet listing plus the registry (bounded concurrency, shared signal). Listed clusters deduped by
+ *  ARN, else id; the uniqueness set adds every registered cluster not already listed (same account|region|name). */
 export async function readFleet(accountsBody: unknown, signal: AbortSignal): Promise<Fleet> {
   const accounts = fleetAccounts(accountsBody);
   if (!accounts) return INCOMPLETE_FLEET();
   const parts: Fleet[] = new Array(accounts.length);
+  let registered: Registered[] | null = null;
+  // The registrations read is one more task in the same FLEET_CONCURRENCY budget.
+  const tasks = [...accounts.map((account, i) => async () => {
+    parts[i] = await fetch(fleetUrl(account), { signal })
+      .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
+  }), async () => {
+    registered = await fetch(REGISTRATIONS_URL, { signal })
+      .then((r) => (r.ok ? r.json() : null)).then(parseRegistrations).catch(() => null);
+  }];
   let next = 0;
-  const lane = async () => {
-    for (let i = next++; i < accounts.length; i = next++) {
-      parts[i] = await fetch(fleetUrl(accounts[i]), { signal })
-        .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(FLEET_CONCURRENCY, accounts.length) }, lane));
+  const lane = async () => { for (let i = next++; i < tasks.length; i = next++) await tasks[i](); };
+  await Promise.all(Array.from({ length: Math.min(FLEET_CONCURRENCY, tasks.length) }, lane));
   const clusters: FleetCluster[] = [];
   const seen = new Set<string>();
   for (const c of parts.flatMap((p) => p.clusters)) {
     const key = c.arn ?? c.id;
     if (!seen.has(key)) { seen.add(key); clusters.push(c); }
   }
-  return { clusters, names: clusters.map((c) => c.id), incomplete: signal.aborted || parts.some((p) => p.incomplete),
+  const identity = (c: { accountId?: string; region?: string; name: string }) => `${c.accountId}|${c.region}|${c.name}`;
+  const known = new Set(clusters.map(identity));
+  const names = clusters.map((c) => c.id);
+  for (const r of (registered ?? []) as Registered[]) {
+    if (!known.has(identity(r))) { known.add(identity(r)); names.push(r.id); }
+  }
+  return { clusters, names, incomplete: signal.aborted || registered === null || parts.some((p) => p.incomplete),
     wildcard: [...new Set(parts.flatMap((p) => p.wildcard))].sort() };
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fleetAccounts, fleetUrl, parseFleet, readFleet } from './eks-fleet';
+import { buildTraceOverlay } from './k8s-trace-overlay';
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 afterEach(() => vi.unstubAllGlobals());
@@ -45,11 +46,77 @@ describe('eks-fleet', () => {
     ]) expect(parseFleet({ clusters: [bad], errors: [] }).incomplete, JSON.stringify(bad)).toBe(true);
   });
 
+  it('per-account fleet URL asks for all regions only (includeGlobal is ignored by /api/eks)', () => {
+    expect(fleetUrl('111111111111')).toBe('/api/eks?accounts=111111111111&regions=__all__');
+  });
+
+  describe('registered clusters join the uniqueness set', () => {
+    const ACCOUNTS_BODY = { accounts: [{ accountId: '123456789012', isHost: true, enabled: true },
+      { accountId: '111111111111', isHost: false, enabled: true }, { accountId: '222222222222', isHost: false, enabled: true }] };
+    const A_ORDERS = { id: 'arn:aws:eks:ap-northeast-2:111111111111:cluster/orders', name: 'orders',
+      arn: 'arn:aws:eks:ap-northeast-2:111111111111:cluster/orders', accountId: '111111111111', region: 'ap-northeast-2', access: 'connected' };
+    const HOST_SHOP = { id: 'shop', name: 'shop', accountId: '123456789012', region: 'ap-northeast-2', access: 'connected' };
+    const serve = (registrations: () => Response, seen: string[] = []) => vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+      seen.push(u);
+      if (u === '/api/eks/registrations') return registrations();
+      const account = new URL(u, 'http://x').searchParams.get('accounts');
+      return json({ clusters: account === 'self' ? [HOST_SHOP] : account === '111111111111' ? [A_ORDERS] : [],
+        errors: account === 'self' ? [{ accountId: 'self', region: '__all__', message: 'note' }] : [] });
+    }));
+
+    it('a registered same-named cluster in a region the non-wildcard account\'s listing does not cover makes the name ambiguous', async () => {
+      // B (non-wildcard) registered `orders` in us-west-2, outside its configured regions: its listing is empty.
+      const B_ORDERS = 'arn:aws:eks:us-west-2:222222222222:cluster/orders';
+      const seen: string[] = [];
+      serve(() => json({ clusters: [
+        { id: 'shop', name: 'shop', accountId: '123456789012', region: 'ap-northeast-2' },
+        { id: A_ORDERS.id, name: 'orders', accountId: '111111111111', region: 'ap-northeast-2' },
+        { id: B_ORDERS, name: 'orders', accountId: '222222222222', region: 'us-west-2' },
+      ] }), seen);
+      const fleet = await readFleet(ACCOUNTS_BODY, new AbortController().signal);
+      expect(seen).toContain('/api/eks/registrations');
+      expect(fleet.incomplete).toBe(false);
+      expect(fleet.clusters.map((c) => c.id).sort()).toEqual([A_ORDERS.id, 'shop'].sort()); // scope/veto set unchanged
+      // Listed and registered copies of the same cluster count once; B's registered twin is added.
+      expect(fleet.names.sort()).toEqual([A_ORDERS.id, B_ORDERS, 'shop'].sort());
+      // The trace join for A's `orders` is refused as ambiguous (gate runs before any snapshot is read).
+      expect(buildTraceOverlay([], { id: A_ORDERS.id, registeredNames: fleet.names, listingIncomplete: fleet.incomplete }))
+        .toMatchObject({ available: false, reason: 'ambiguous_cluster' });
+      expect(buildTraceOverlay([], { id: 'shop', registeredNames: fleet.names, listingIncomplete: fleet.incomplete }).reason)
+        .not.toBe('ambiguous_cluster');
+    });
+
+    it.each([
+      ['failed', () => json({ status: 'error' }, 503)],
+      ['malformed (no clusters array)', () => json({ rows: [] })],
+      ['malformed row', () => json({ clusters: [{ id: 'arn:aws:eks:us-west-2:222222222222:cluster/orders', name: 'orders', accountId: '222222222222' }] })],
+      ['non-JSON', () => new Response('<html>', { status: 200 })],
+    ])('a %s registrations read makes the fleet incomplete', async (_l, registrations) => {
+      serve(registrations);
+      expect((await readFleet(ACCOUNTS_BODY, new AbortController().signal)).incomplete).toBe(true);
+    });
+
+    it('counts the registrations read in the 4-request concurrency budget', async () => {
+      let inFlight = 0, peak = 0;
+      const many = { accounts: [{ accountId: '123456789012', isHost: true, enabled: true },
+        ...Array.from({ length: 6 }, (_, i) => ({ accountId: `33333333330${i}`, isHost: false, enabled: true }))] };
+      vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+        inFlight++; peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return u === '/api/eks/registrations' ? json({ clusters: [] }) : json({ clusters: [], errors: [] });
+      }));
+      await readFleet(many, new AbortController().signal);
+      expect(peak).toBe(4);
+    });
+  });
+
   it('reads one listing per account and merges them, deduped by ARN', async () => {
     const arn = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/shop';
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (u: string) => {
       urls.push(u);
+      if (u === '/api/eks/registrations') return json({ clusters: [] });
       return json({ clusters: [{ id: 'shop', name: 'shop', arn, accountId: '123456789012', region: 'ap-northeast-2', access: 'connected' },
         ...(u.includes('111111111111') ? [{ id: 'arn:aws:eks:us-east-1:111111111111:cluster/api', name: 'api',
           arn: 'arn:aws:eks:us-east-1:111111111111:cluster/api', accountId: '111111111111', region: 'us-east-1', access: 'no-entry' }] : [])],
@@ -57,7 +124,7 @@ describe('eks-fleet', () => {
     }));
     const fleet = await readFleet({ accounts: [{ accountId: '123456789012', isHost: true, enabled: true },
       { accountId: '111111111111', isHost: false, enabled: true }] }, new AbortController().signal);
-    expect(urls.sort()).toEqual([fleetUrl('111111111111'), fleetUrl('self')]);
+    expect(urls.sort()).toEqual(['/api/eks/registrations', fleetUrl('111111111111'), fleetUrl('self')].sort());
     expect(fleet).toEqual({ clusters: expect.any(Array), names: ['shop', 'arn:aws:eks:us-east-1:111111111111:cluster/api'],
       incomplete: false, wildcard: ['self'] });
   });
