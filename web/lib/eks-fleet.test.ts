@@ -67,6 +67,22 @@ describe('eks-fleet', () => {
     expect(parseRegistrations({ clusters: [row], truncated: true, unparsed: 1 })).toBeNull();
   });
 
+  it('registrations: a bare id must equal the row name on the host account (host default region only)', () => {
+    const bare = { id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' };
+    // Valid host bare ids: `self`, or the known host's numeric id.
+    expect(parseRegistrations({ clusters: [bare] })).toEqual([bare]);
+    expect(parseRegistrations({ clusters: [{ ...bare, accountId: '123456789012' }] }, '123456789012'))
+      .toEqual([{ ...bare, accountId: '123456789012' }]);
+    for (const [bad, hostId] of [
+      [{ ...bare, name: 'payments' }, null], // id names another cluster
+      [{ ...bare, name: 'payments' }, '123456789012'],
+      [{ ...bare, accountId: '111111111111' }, '123456789012'], // bare id on a non-host account
+      [{ ...bare, accountId: '111111111111' }, null], // numeric account without a known host id
+      [{ ...bare, id: '-shop', name: '-shop' }, null], // not a valid cluster name
+      [{ ...bare, id: 'shop/x', name: 'shop/x' }, null],
+    ] as const) expect(parseRegistrations({ clusters: [bare, bad] }, hostId), JSON.stringify(bad)).toBeNull();
+  });
+
   it('per-account fleet URL asks for all regions only (includeGlobal is ignored by /api/eks)', () => {
     expect(fleetUrl('111111111111')).toBe('/api/eks?accounts=111111111111&regions=__all__');
   });
@@ -136,6 +152,8 @@ describe('eks-fleet', () => {
       ['non-JSON', () => new Response('<html>', { status: 200 })],
       ['ARN/row mismatch', () => json({ clusters: [{ id: 'arn:aws:eks:us-west-2:222222222222:cluster/orders', name: 'cart', accountId: '222222222222', region: 'us-west-2' }] })],
       ['dropped unparseable ids', () => json({ clusters: [], truncated: true, unparsed: 1 })],
+      ['bare id/name mismatch', () => json({ clusters: [{ id: 'shop', name: 'payments', accountId: 'self', region: 'ap-northeast-2' }] })],
+      ['bare id on a non-host account', () => json({ clusters: [{ id: 'orders', name: 'orders', accountId: '111111111111', region: 'ap-northeast-2' }] })],
     ])('a %s registrations read makes the fleet incomplete', async (_l, registrations) => {
       serve(registrations);
       expect((await readFleet(ACCOUNTS_BODY, new AbortController().signal)).incomplete).toBe(true);

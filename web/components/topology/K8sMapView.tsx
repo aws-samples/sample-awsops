@@ -162,7 +162,8 @@ export default function K8sMapView({ query, initialCluster = '' }: { query: stri
     const ctrl = new AbortController();
     // readFleet fails closed (failed, aborted, unparseable, truncated or reasoned-error listing → incomplete).
     void readFleet(accountsBody, ctrl.signal)
-      .then((f) => { if (live && !ctrl.signal.aborted) setFleetRead({ names: f.names, incomplete: f.incomplete }); });
+      .then((f) => { if (live && !ctrl.signal.aborted) setFleetRead({ names: f.names, incomplete: f.incomplete }); })
+      .catch(() => { if (live && !ctrl.signal.aborted) setFleetRead({ names: [], incomplete: true }); });
     return () => { live = false; ctrl.abort(); };
   }, [accountsBody]);
 

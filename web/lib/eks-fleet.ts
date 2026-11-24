@@ -33,15 +33,22 @@ export const fleetUrl = (account: string) => `/api/eks?${new URLSearchParams({ a
 export const REGISTRATIONS_URL = '/api/eks/registrations';
 
 interface Registered { id: string; name: string; accountId: string; region: string }
-/** An ARN registration id must agree with the row's name, region and account (`self` only for a known host id). */
+/** An ARN registration id must agree with the row's name, region and account (`self` only for a known host id). A bare
+ *  (non-ARN) id is host-default-region-only by design: it must be a valid cluster name equal to the row's name, on the
+ *  host account (`self`, or the known host id). */
 function registrationArnAgrees(c: Record<string, unknown>, hostId: string | null): boolean {
-  if (typeof c.id !== 'string' || !c.id.startsWith('arn:')) return true;
+  if (typeof c.id !== 'string') return false;
+  if (!c.id.startsWith('arn:')) {
+    return CLUSTER_NAME_RE.test(c.id) && c.id === c.name
+      && (c.accountId === 'self' || (hostId !== null && c.accountId === hostId));
+  }
   const m = REG_ARN_RE.exec(c.id);
   if (!m || m[1] !== c.region || m[3] !== c.name) return false;
   return m[2] === c.accountId || (c.accountId === 'self' && hostId !== null && m[2] === hostId);
 }
 /** `/api/eks/registrations` body → registered clusters; null (fleet incomplete) on any malformed shape, including an
- *  ARN id whose name/account/region disagree with the row (`hostId`: the host's numeric id, for `self` rows). */
+ *  ARN id whose name/account/region disagree with the row, or a bare id that is not the row's name on the host account
+ *  (`hostId`: the host's numeric id, for `self` rows). */
 export function parseRegistrations(body: unknown, hostId: string | null = null): Registered[] | null {
   if (!record(body) || body.truncated === true || body.status === 'error') return null; // a capped registry proves nothing
   const list = Array.isArray(body.clusters) ? body.clusters : null;
@@ -55,6 +62,8 @@ const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 const ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/[\w-]+$/;
 /** ARN_RE plus the cluster name (registrations cross-check the row's name too). */
 const REG_ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/;
+/** An EKS cluster name (a bare registration id). */
+const CLUSTER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 /** The reason-less all-region discovery note the server adds for a wildcard-scan account (the only tolerated error). */
 const isDiscoveryNote = (e: unknown): e is { accountId: string } => record(e) && e.reason === undefined && e.region === ALL_REGIONS
   && typeof e.accountId === 'string' && /^(?:self|\d{12})$/.test(e.accountId);

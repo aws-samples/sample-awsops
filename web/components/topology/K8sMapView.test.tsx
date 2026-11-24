@@ -36,6 +36,14 @@ vi.mock('@/lib/k8s-dns', async (importActual) => {
   return { ...actual, fetchDnsRecords: (a: string, s?: AbortSignal) => (dns.override ? dns.override(a, s) : actual.fetchDnsRecords(a, s)) };
 });
 
+// readFleet is the real module unless a test overrides it.
+import type { Fleet } from '@/lib/eks-fleet';
+const fleetMock = vi.hoisted(() => ({ override: null as null | ((body: unknown, s: AbortSignal) => Promise<Fleet>) }));
+vi.mock('@/lib/eks-fleet', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/eks-fleet')>();
+  return { ...actual, readFleet: (b: unknown, s: AbortSignal) => (fleetMock.override ? fleetMock.override(b, s) : actual.readFleet(b, s)) };
+});
+
 import K8sMapView, { TRACE_NOTICE, traceOmittedNotice } from './K8sMapView';
 import { applyTerms } from '@/lib/i18n-terms';
 
@@ -145,6 +153,7 @@ beforeEach(() => {
   canvas.renders = 0;
   trace.override = null;
   dns.override = null;
+  fleetMock.override = null;
   window.localStorage.setItem('awsops:scope', JSON.stringify({ accounts: '__all__', regions: '__all__', includeGlobal: true }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear(); });
@@ -762,6 +771,16 @@ describe('K8sMapView trace join fleet listing', () => {
     expect(graphNamespaces()).toEqual(['dev', 'prod']);
     expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
     expect(screen.queryByText(/boom/)).toBeNull();
+  });
+
+  it('fails closed to an incomplete listing when readFleet itself rejects', async () => {
+    narrow();
+    fleetMock.override = () => Promise.reject(new Error('unexpected'));
+    const calls = stubFetch(HOST_ONLY);
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' });
   });
 
   it('waits for the fleet listing before the trace read, without delaying Route53', async () => {
