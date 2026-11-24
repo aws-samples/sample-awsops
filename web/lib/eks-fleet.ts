@@ -33,18 +33,28 @@ export const fleetUrl = (account: string) => `/api/eks?${new URLSearchParams({ a
 export const REGISTRATIONS_URL = '/api/eks/registrations';
 
 interface Registered { id: string; name: string; accountId: string; region: string }
-/** `/api/eks/registrations` body → registered clusters; null (fleet incomplete) on any malformed shape. */
-export function parseRegistrations(body: unknown): Registered[] | null {
+/** An ARN registration id must agree with the row's name, region and account (`self` only for a known host id). */
+function registrationArnAgrees(c: Record<string, unknown>, hostId: string | null): boolean {
+  if (typeof c.id !== 'string' || !c.id.startsWith('arn:')) return true;
+  const m = REG_ARN_RE.exec(c.id);
+  if (!m || m[1] !== c.region || m[3] !== c.name) return false;
+  return m[2] === c.accountId || (c.accountId === 'self' && hostId !== null && m[2] === hostId);
+}
+/** `/api/eks/registrations` body → registered clusters; null (fleet incomplete) on any malformed shape, including an
+ *  ARN id whose name/account/region disagree with the row (`hostId`: the host's numeric id, for `self` rows). */
+export function parseRegistrations(body: unknown, hostId: string | null = null): Registered[] | null {
   if (!record(body) || body.truncated === true || body.status === 'error') return null; // a capped registry proves nothing
   const list = Array.isArray(body.clusters) ? body.clusters : null;
   if (!list || !list.every((c) => record(c) && nonempty(c.id) && nonempty(c.name)
     && typeof c.accountId === 'string' && /^(?:self|\d{12})$/.test(c.accountId)
-    && typeof c.region === 'string' && REGION_RE.test(c.region))) return null;
+    && typeof c.region === 'string' && REGION_RE.test(c.region) && registrationArnAgrees(c, hostId))) return null;
   return (list as Record<string, string>[]).map((c) => ({ id: c.id, name: c.name, accountId: c.accountId, region: c.region }));
 }
 
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 const ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/[\w-]+$/;
+/** ARN_RE plus the cluster name (registrations cross-check the row's name too). */
+const REG_ARN_RE = /^arn:aws(?:-[a-z0-9-]+)?:eks:([a-z0-9-]+):(\d{12}):cluster\/([\w-]+)$/;
 /** The reason-less all-region discovery note the server adds for a wildcard-scan account (the only tolerated error). */
 const isDiscoveryNote = (e: unknown): e is { accountId: string } => record(e) && e.reason === undefined && e.region === ALL_REGIONS
   && typeof e.accountId === 'string' && /^(?:self|\d{12})$/.test(e.accountId);
@@ -93,6 +103,7 @@ export function fleetAccounts(body: unknown): string[] | null {
 export async function readFleet(accountsBody: unknown, signal: AbortSignal): Promise<Fleet> {
   const accounts = fleetAccounts(accountsBody);
   if (!accounts) return INCOMPLETE_FLEET();
+  const hostId = hostAccountOf(accountsBody);
   const parts: Fleet[] = new Array(accounts.length);
   let registered: Registered[] | null = null;
   // The registrations read is one more task in the same FLEET_CONCURRENCY budget.
@@ -101,7 +112,7 @@ export async function readFleet(accountsBody: unknown, signal: AbortSignal): Pro
       .then((r) => (r.ok ? r.json() : null)).then(parseFleet).catch(INCOMPLETE_FLEET);
   }), async () => {
     registered = await fetch(REGISTRATIONS_URL, { signal })
-      .then((r) => (r.ok ? r.json() : null)).then(parseRegistrations).catch(() => null);
+      .then((r) => (r.ok ? r.json() : null)).then((b) => parseRegistrations(b, hostId)).catch(() => null);
   }];
   let next = 0;
   const lane = async () => { for (let i = next++; i < tasks.length; i = next++) await tasks[i](); };
@@ -114,7 +125,6 @@ export async function readFleet(accountsBody: unknown, signal: AbortSignal): Pro
   }
   // `self` and the host's numeric id name the same account (listings report numeric ids; the registry reports
   // `self` when the server has no HOST_ACCOUNT_ID). Without a known host id only `self` itself is the host.
-  const hostId = hostAccountOf(accountsBody);
   const account = (id: string | undefined) => (id === 'self' || (hostId !== null && id === hostId) ? 'host' : id);
   const identity = (c: { accountId?: string; region?: string; name: string }) => `${account(c.accountId)}|${c.region}|${c.name}`;
   const known = new Set(clusters.map(identity));

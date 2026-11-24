@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fleetAccounts, fleetUrl, parseFleet, readFleet } from './eks-fleet';
+import { fleetAccounts, fleetUrl, parseFleet, parseRegistrations, readFleet } from './eks-fleet';
 import { buildTraceOverlay } from './k8s-trace-overlay';
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -44,6 +44,27 @@ describe('eks-fleet', () => {
       { ...ok, arn: 'arn:aws:eks:eu-west-1:111111111111:cluster/api' }, // ARN names another region
       { ...host, accountId: undefined }, { ...host, accountId: 'self' },
     ]) expect(parseFleet({ clusters: [bad], errors: [] }).incomplete, JSON.stringify(bad)).toBe(true);
+  });
+
+  it('registrations: an ARN id must agree with the row name/account/region (`self` only for the known host id)', () => {
+    const arn = 'arn:aws:eks:us-west-2:111111111111:cluster/orders';
+    const row = { id: arn, name: 'orders', accountId: '111111111111', region: 'us-west-2' };
+    expect(parseRegistrations({ clusters: [row, { id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' }] }))
+      .toEqual([row, { id: 'shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' }]);
+    for (const bad of [
+      { ...row, name: 'cart' }, // ARN names another cluster
+      { ...row, accountId: '222222222222' }, // ARN names another account
+      { ...row, region: 'us-east-1' }, // ARN names another region
+      { ...row, id: 'arn:aws:eks:us-west-2:111111111111:cluster/' }, // unparseable ARN
+      { ...row, accountId: 'self' }, // `self` without a known host id
+    ]) expect(parseRegistrations({ clusters: [row, bad] }), JSON.stringify(bad)).toBeNull();
+    // A host ARN registered as `self` agrees only when the host's numeric id is known and matches.
+    const hostArn = { id: 'arn:aws:eks:ap-northeast-2:123456789012:cluster/shop', name: 'shop', accountId: 'self', region: 'ap-northeast-2' };
+    expect(parseRegistrations({ clusters: [hostArn] }, '123456789012')).toEqual([hostArn]);
+    expect(parseRegistrations({ clusters: [hostArn] }, '111111111111')).toBeNull();
+    expect(parseRegistrations({ clusters: [hostArn] })).toBeNull();
+    // The server's flag for dropped unparseable registry ids is an incomplete registry.
+    expect(parseRegistrations({ clusters: [row], truncated: true, unparsed: 1 })).toBeNull();
   });
 
   it('per-account fleet URL asks for all regions only (includeGlobal is ignored by /api/eks)', () => {
@@ -113,6 +134,8 @@ describe('eks-fleet', () => {
       ['malformed (no clusters array)', () => json({ rows: [] })],
       ['malformed row', () => json({ clusters: [{ id: 'arn:aws:eks:us-west-2:222222222222:cluster/orders', name: 'orders', accountId: '222222222222' }] })],
       ['non-JSON', () => new Response('<html>', { status: 200 })],
+      ['ARN/row mismatch', () => json({ clusters: [{ id: 'arn:aws:eks:us-west-2:222222222222:cluster/orders', name: 'cart', accountId: '222222222222', region: 'us-west-2' }] })],
+      ['dropped unparseable ids', () => json({ clusters: [], truncated: true, unparsed: 1 })],
     ])('a %s registrations read makes the fleet incomplete', async (_l, registrations) => {
       serve(registrations);
       expect((await readFleet(ACCOUNTS_BODY, new AbortController().signal)).incomplete).toBe(true);

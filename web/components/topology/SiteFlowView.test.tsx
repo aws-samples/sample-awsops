@@ -2,7 +2,7 @@
 // SiteFlowView: the real loaders run (loadFlowInput, fetchEksIpMap, fetchTraceOverlay, buildSiteFlow) against a
 // fetch stub keyed by URL; only the Cytoscape canvas is mocked (its props are captured).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
 import type { SiteFlow, SiteGap, SiteNode } from '@/lib/site-flow';
 
@@ -31,7 +31,8 @@ vi.mock('@/components/ui/DetailPanel', () => ({
 
 import SiteFlowView, { BINDING_NOTICE, GAP_NOTICE, HighlightChain } from './SiteFlowView';
 import { applyTerms } from '@/lib/i18n-terms';
-import { withHostAlias } from './useSiteFlowData';
+import { useClusterEvidence, withHostAlias } from './useSiteFlowData';
+import type { Fleet } from '@/lib/eks-fleet';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
 const REGION = 'ap-northeast-2', HOST_ID = '123456789012', MEMBER = '111111111111';
@@ -912,6 +913,39 @@ describe('SiteFlowView', () => {
     expect(canvas.props!.flow.edges.some((e) => e.source === wl(MEMBER_ARN, 'biz/orders-api') && e.evidence === 'traced')).toBe(false);
     // The host cluster's name is unique, so its trace calls still join.
     expect(ids()).toContain(wl(HOST_ARN, 'web/catalog'));
+  });
+
+  it('cluster evidence: 8 bound clusters are read at most 4 at a time, then commit together', async () => {
+    const arns = Array.from({ length: 8 }, (_, i) => `arn:aws:eks:${REGION}:${MEMBER}:cluster/c${i}`);
+    const fleet: Fleet = { clusters: [], names: arns, incomplete: false, wildcard: [] };
+    let inFlight = 0, peak = 0;
+    const held: (() => void)[] = [];
+    const started: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/topology?lens=service') return json({ status: 'error' }, 404); // trace disabled: settles at once
+      if (/^\/api\/eks\/[^/]+\/db-refs$/.test(url)) {
+        started.push(url);
+        inFlight++; peak = Math.max(peak, inFlight);
+        await new Promise<void>((r) => held.push(r));
+        inFlight--;
+        return json({ refs: [], secretRefs: [], truncated: false, partial: false, inventoryCapped: false, inventoryIncomplete: false });
+      }
+      return json({ status: 'error' }, 404);
+    }));
+    const { result } = renderHook(() => useClusterEvidence(arns, fleet));
+    await waitFor(() => expect(started).toHaveLength(4));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(started).toHaveLength(4); // the other 4 wait for a free lane
+    expect(result.current.pending).toBe(true);
+    // Release reads as they arrive until every cluster was read.
+    await waitFor(() => {
+      while (held.length) held.shift()!();
+      expect(started).toHaveLength(8);
+    });
+    await waitFor(() => { while (held.length) held.shift()!(); expect(result.current.pending).toBe(false); });
+    expect(peak).toBe(4);
+    expect(result.current.dbRefs.map((d) => d.cluster)).toEqual(arns);
+    expect(result.current.failedDbRefs).toEqual([]);
   });
 
   it('a failed db-refs read is partial for that cluster and names it', async () => {

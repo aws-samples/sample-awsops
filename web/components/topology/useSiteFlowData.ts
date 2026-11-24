@@ -39,6 +39,8 @@ import { INCOMPLETE_FLEET, readFleet, type Fleet, type FleetCluster } from '@/li
 import { INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
 
 const DEADLINE_MS = 30000;
+/** Per-cluster evidence reads (trace overlay + db-refs) in flight at once, like the other laned loaders. */
+const EVIDENCE_LANES = 4;
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
 
 export interface InventoryIssue { type: string; issue: 'failed' | 'capped' | 'incomplete' | 'running' | 'partial' | 'unknown' }
@@ -247,7 +249,8 @@ async function readClusterEvidence(arn: string, fleet: Fleet, signal: AbortSigna
  * and committed in ONE state update per batch, so the flow is rebuilt once when the evidence lands. While a batch for
  * the same clusters is pending (e.g. after a refresh) the last committed evidence stays shown, then swaps. Each batch
  * has a DEADLINE_MS deadline: reads still running are aborted and commit as failed (trace unavailable / db-refs failed),
- * so `trace_unavailable` / `db_refs_partial` are disclosed instead of a loading state that never ends.
+ * so `trace_unavailable` / `db_refs_partial` are disclosed instead of a loading state that never ends. At most
+ * EVIDENCE_LANES clusters are read at once.
  */
 export function useClusterEvidence(arns: string[], fleet: Fleet | null): {
   pending: boolean; traces: SiteFlowInput['traces']; dbRefs: SiteFlowInput['dbRefs']; failedDbRefs: string[];
@@ -266,7 +269,14 @@ export function useClusterEvidence(arns: string[], fleet: Fleet | null): {
     let cut = () => {};
     const deadline = new Promise<void>((r) => { cut = r; });
     const timer = setTimeout(() => { ctrl.abort(); cut(); }, DEADLINE_MS);
-    void Promise.all(missing.map((arn) => readClusterEvidence(arn, fleet, ctrl.signal, deadline))).then((list) => {
+    // At most EVIDENCE_LANES clusters read at once (shared PG pool), lanes pulling from one shared index; the batch
+    // still commits once, and a cluster first reached after the deadline settles as failed via `deadline`.
+    const list: ClusterEvidence[] = new Array(missing.length);
+    let next = 0;
+    const lane = async () => {
+      for (let i = next++; i < missing.length; i = next++) list[i] = await readClusterEvidence(missing[i], fleet, ctrl.signal, deadline);
+    };
+    void Promise.all(Array.from({ length: Math.min(EVIDENCE_LANES, missing.length) }, lane)).then(() => {
       clearTimeout(timer);
       if (!live) return;
       for (const [arn, c] of cache.current) if (c.fleet !== fleet) cache.current.delete(arn);
