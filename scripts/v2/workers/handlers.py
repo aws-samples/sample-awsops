@@ -127,7 +127,12 @@ def _report(payload, dry_run):
                 scope=scope, lang=lang, **budget_kwargs)
             broken = "database_connection_broken" in (summary.get("degraded") or [])
             artifact_uri = _upload_markdown(md, report_id)
-            _export_artifacts(md, report_id)  # best-effort DOCX+PDF; never fails the report
+            if budget is not None:
+                from diagnosis.editor import customer_download
+                export_md = customer_download(md, lang)
+            else:
+                export_md = md
+            _export_artifacts(export_md, report_id)  # best-effort customer DOCX+PDF
             meta = summary.get("title_and_tags") if budget is not None else None
             if not (isinstance(meta, dict) and isinstance(meta.get("title"), str)
                     and isinstance(meta.get("tags"), list)):

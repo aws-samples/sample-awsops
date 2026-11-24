@@ -1,19 +1,20 @@
 """Compose the operator report from validated findings, keeping the evidence ledger in an appendix."""
 from . import architecture, presentation as view
+from .evidence import METRIC_OBSERVATION_TEXT
 from .report import _has_mutating_cli
 from .sections import RCA_HEADINGS
 
 _TITLES = {
     "ko": ("진단 의견", "주요 소견과 평가 범위", "확인할 순서", "근거 부록",
-           "일부 근거가 누락되거나 제한됐습니다. 세부 수집 범위는 부록에 있습니다.",
+           "이번 판단은 표시된 대상과 관측 기간에 한정됩니다.",
            "이 기록에서 구체적인 후속 확인 항목을 도출하지 못했습니다."),
     "en": ("Assessment", "Supporting findings and scope", "Next checks", "Evidence appendix",
-           "Some evidence is incomplete. The appendix describes collection coverage.",
+           "The assessment is limited to the resources and observation windows shown.",
            "No specific follow-up check was established."),
     "ja": ("診断所見", "主な所見と評価範囲", "確認の順序", "根拠資料",
-           "一部の根拠は不完全です。収集範囲は付録を参照してください。", "具体的な確認項目は特定できませんでした。"),
+           "判断は記載した対象と観測期間に限ります。", "具体的な確認項目は特定できませんでした。"),
     "zh": ("诊断意见", "主要发现与评估范围", "后续核查", "证据附录",
-           "部分证据不完整。采集范围见附录。", "现有证据未能确定具体的后续核查。"),
+           "判断仅适用于所列资源及观测时段。", "现有证据未能确定具体的后续核查。"),
 }
 
 
@@ -65,6 +66,13 @@ _BRIEF = {
            "立即核查", "对象", "核查方法", "采集范围与未知项"),
 }
 
+_DECISION_HOLD = {
+    "ko": ("현재 근거로 시정 조치를 결정하기 어렵습니다.", "결정 전에 확인할 사항"),
+    "en": ("The available evidence does not establish a corrective action.", "Before deciding"),
+    "ja": ("現在の根拠だけでは是正措置を決定できません。", "判断前の確認事項"),
+    "zh": ("现有证据不足以确定整改措施。", "决策前需核实"),
+}
+
 
 def compose(bundle, analysis, invariant, lang):
     titles = _TITLES[lang]
@@ -85,6 +93,17 @@ def compose(bundle, analysis, invariant, lang):
 
     evidence = {r["id"]: r for r in bundle.get("evidence", [])}
 
+    def source_context(record):
+        scope = {k: record[k] for k in ("region", "regions", "window", "captured_at", "fresh") if k in record}
+        coverage = record.get("coverage", {})
+        ratio = coverage.get("sample_ratio")
+        limited = (coverage.get("sampled") is True or coverage.get("complete") is False
+                   or (type(ratio) in (int, float) and ratio < 1))
+        source = view._scrubbed(record.get("source") or record.get("kind"), "source")
+        context = view._scope_text(view._scrubbed(scope), lang)
+        qualifier = {"ko": "해당 관측 범위", "en": "limited scope", "ja": "限定範囲", "zh": "有限范围"}[lang] if limited else ""
+        return view._code(" · ".join(filter(None, (source, context, qualifier))))
+
     def provenance(f):
         # Qualify every cited source window, without repeating the field ledger or
         # presenting an arbitrary same-resource metric as evidence for a hypothesis.
@@ -93,13 +112,7 @@ def compose(bundle, analysis, invariant, lang):
             record = evidence.get(ref, {})
             if not record:
                 continue
-            scope = {k: record[k] for k in ("kind", "region", "regions", "window", "captured_at", "fresh")
-                     if k in record}
-            coverage = record.get("coverage", {})
-            scope["coverage"] = {k: coverage[k] for k in ("sampled", "complete", "sample_ratio") if k in coverage}
-            text = view._scope_text(view._scrubbed(scope), lang)
-            if text:
-                notes.append(view._code(view._scrubbed(text)))
+            notes.append(source_context(record))
             # A validated single-resource metrics observation is the code-owned
             # collection statement, never a free-form hypothesis about a different metric.
             refs = f.get("resource_ids", [])
@@ -113,7 +126,10 @@ def compose(bundle, analysis, invariant, lang):
                             and series.get("unit")):
                         notes.append(view._code(f"{name} ({statistic}, {field}) "
                                                 f"{series[field]} {series['unit']}"))
-        return ("\n\n" + copy[1] + " · " + "; ".join(dict.fromkeys(notes))) if notes else ""
+        unique = list(dict.fromkeys(notes))
+        if f["claim"] != "observation" and len(unique) > 2:
+            unique = [*unique[:2], f"+{len(unique) - 2}"]
+        return ("\n\n" + copy[1] + " · " + "; ".join(unique)) if unique else ""
 
     def safe_checks(f):
         return list(dict.fromkeys(text for raw in f.get("prerequisites", [])
@@ -123,17 +139,19 @@ def compose(bundle, analysis, invariant, lang):
     def assessment(f):
         # Specialist explanatory language is a hypothesis even when the selected claim is observed.
         claim = f["claim"]
-        text = f.get("explanation")
-        if claim != "observation":
-            text = plan.get("paragraphs", {}).get(f["id"], text)
-        prose = view._safe_explanation(text) or view._WITHHELD[lang]
+        prose = view.customer_explanation(f, analysis)
         label = {"observation": copy[3], "sizing_candidate": copy[5],
                  "coverage_gap": copy[6]}.get(claim, copy[4])
         return label, prose
 
+    displayable = {f["id"] for f in ordered if assessment(f)[1]}
+
     def paragraph(f):
         label, prose = assessment(f)
-        return f"**{subject(f)}** · {label}\n\n{prose}" + provenance(f)
+        basis = provenance(f)
+        if f["claim"] == "observation" and f.get("explanation") == METRIC_OBSERVATION_TEXT[lang] and basis:
+            return f"**{subject(f)}** · {label}" + basis
+        return f"**{subject(f)}** · {label}\n\n{prose}" + basis
 
     def block(key, title, body):
         return {"key": key, "title": title, "body": body}
@@ -149,7 +167,8 @@ def compose(bundle, analysis, invariant, lang):
      quick_title, subject_col, check_col, scope_title) = _BRIEF[lang]
     # The editor breaks severity ties. Unselected serious findings still outrank selected low ones.
     pref = {ident: i for i, ident in enumerate(plan["lead"])}
-    ranked = sorted(ordered, key=lambda f: (view._SEVERITY.get(f["severity"], 5),
+    ranked = sorted((f for f in ordered if f["id"] in displayable
+                     and f.get("explanation") != METRIC_OBSERVATION_TEXT[lang]), key=lambda f: (view._SEVERITY.get(f["severity"], 5),
                                             pref.get(f["id"], len(pref))))
     first = next((f for f in ranked if safe_checks(f)), None)
     if ranked:
@@ -159,25 +178,14 @@ def compose(bundle, analysis, invariant, lang):
             pillar = view._label(view._PILLARS, f["pillar"], lang)
             severity = view._label(view._SEVERITY_LABEL, f["severity"], lang)
             records = [evidence[i] for i in f.get("evidence_ids", []) if i in evidence]
-            cited = []
-            for record in records:
-                source_name = record.get("source")
-                if not source_name:
-                    continue
-                scope = {k: record[k] for k in ("region", "regions", "captured_at", "fresh") if k in record}
-                scope["coverage"] = {k: v for k, v in record.get("coverage", {}).items()
-                                     if k in {"complete", "sampled", "sample_ratio"}}
-                detail = view._scope_text(view._scrubbed(scope), lang)
-                text = " · ".join(filter(None, [view._scrubbed(source_name, "source"), detail]))
-                cited.append(view._code(view._scrubbed(text)))
-            cited = list(dict.fromkeys(cited))
+            cited = list(dict.fromkeys(source_context(r) for r in records if r.get("source")))
             source = ", ".join(cited[:2]) or unknown_source
             if len(cited) > 2:
                 source += f" (+{len(cited) - 2})"
             table.append(f"| {n} | {pillar} · {severity} | **{subject(f, compact=True)}** · {label} — {prose} | {source} |")
-        lead = severity_marker(list(by_id)) + f"### {risk_title}\n\n" + "\n".join(table)
+        lead = severity_marker([f["id"] for f in ranked]) + f"### {risk_title}\n\n" + "\n".join(table)
     else:
-        lead = copy[7]
+        lead = "[Warning]\n\n" + _DECISION_HOLD[lang][0] if ordered else copy[7]
     if first:
         quick_rows = []
         for f in ranked:
@@ -207,10 +215,21 @@ def compose(bundle, analysis, invariant, lang):
         state = coverage.get(pillar, {}).get("status")
         status = labels[{"completed": 0, "partial": 1, "failed": 2}.get(state, 3)]
         warning = "[Warning]\n\n" if state in {"partial", "failed"} else ""
-        body = f"{warning}{status} · {labels[4]} {len(ids)}\n\n{paragraphs(ids)}"
-        if ids:
+        visible = [i for i in ids if i in displayable]
+        # A scope gap never becomes an executive risk. Keep an operator check
+        # at the decision point, with its complete analysis and diagnostics in the appendix.
+        held = next(((by_id[i], checks[0]) for i in ids if i not in displayable
+                     and (checks := safe_checks(by_id[i]))), None)
+        if ids and not visible:
+            warning = "[Warning]\n\n"
+        detail = paragraphs(visible) if visible or not ids else _DECISION_HOLD[lang][0]
+        body = f"{warning}{status} · {labels[4]} {len(ids)}\n\n{detail}"
+        if held:
+            pending, check = held
+            body += f"\n\n**{_DECISION_HOLD[lang][1]}**　{subject(pending, compact=True)} — {check}"
+        if visible:
             rows = []
-            for ident in ids:
+            for ident in visible:
                 f = by_id[ident]
                 checks = safe_checks(f)
                 if checks:
@@ -223,16 +242,13 @@ def compose(bundle, analysis, invariant, lang):
             body += f"\n\n**{_DECISION_HEADING[lang]}**\n\n" + _DECISIONS[pillar][language_index]
         result.append(block(pillar, view._label(view._PILLARS, pillar, lang), body))
     checks = []
-    withheld = False
     first_ids = [first["id"]] if first else []
-    candidates = list(dict.fromkeys(first_ids + plan["next"] + list(by_id)))
+    candidates = [i for i in dict.fromkeys(first_ids + plan["next"] + list(by_id)) if i in displayable]
     for ident in candidates:
         f = by_id[ident]
         available = safe_checks(f)
-        withheld |= any(not view._safe_explanation(raw) or _has_mutating_cli(raw)
-                        for raw in f.get("prerequisites", []))
         if len(checks) >= 4:
-            continue
+            break
         rank = view._label(view._SEVERITY_LABEL, f["severity"], lang)
         pillar = view._label(view._PILLARS, f["pillar"], lang)
         for check in available:
@@ -241,8 +257,6 @@ def compose(bundle, analysis, invariant, lang):
                 checks.append(item)
                 break
     body = "\n\n".join("- " + check for check in checks) or titles[5]
-    if withheld:
-        body += "\n\n" + view._WITHHELD[lang]
     if checks:
         phases = {
             "ko": ("개선 실행 순서", "선정한 대상의 소유자와 현재 구성·영향 범위·측정 기준선을 합의합니다.",
@@ -292,3 +306,13 @@ def fit_sections(sections, limit, lang):
             section["body"] = body
         remaining -= len(body.encode())
     return clipped
+
+
+def customer_download(markdown, lang):
+    """The worker-owned final appendix is for the audit view and Markdown archive."""
+    title = appendix_title(lang)
+    body, marker, _ = markdown.rpartition(f"\n## {title}\n")
+    toc = f"- [{title}](#evidence_appendix)"
+    if not marker or toc not in body.split("\n## ", 1)[0].splitlines():
+        return markdown
+    return body.replace(toc + "\n", "", 1).rstrip() + "\n"

@@ -213,9 +213,17 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
   const title = report.title?.trim() || (heading && plain(heading)) || `${copy.report} #${report.id}`;
   if (!blocks.length)
     blocks.push({ title: copy.brief, nodes: preamble.filter((n) => n !== heading), start: 0 });
+  // The worker keeps the technical ledger for the authenticated investigator.
+  // An offline customer export must not embed it, even in the source dialog or notes.
+  const finalBlock = blocks[blocks.length - 1];
+  const appendixLink = `- [${finalBlock.title}](#evidence_appendix)`;
+  const preambleText = source.slice(0, blocks[0].start).trim();
+  const hasLedger = appendix.test(finalBlock.title) && preambleText.split('\n').includes(appendixLink);
+  const sourceEnd = hasLedger ? finalBlock.start : source.length;
+  if (hasLedger) blocks.pop();
   const sections = blocks.map((b, i) => ({
     title: b.title,
-    text: source.slice(b.start, blocks[i + 1]?.start ?? source.length).trim(),
+    text: source.slice(b.start, blocks[i + 1]?.start ?? sourceEnd).trim(),
   }));
   const generated = preamble.find((n) => n.type === 'blockquote');
   const generatedText = generated ? plain(generated) : '';
@@ -368,7 +376,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
     metadata,
     coverTitle: named?.[1] || title,
     coverScope: named?.[2] || '',
-    preamble: source.slice(0, blocks[0].start).trim(),
+    preamble: hasLedger ? preambleText.split('\n').filter(line => line !== appendixLink).join('\n') : preambleText,
     firstAction,
     slides,
     sections,
