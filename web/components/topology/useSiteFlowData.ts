@@ -70,7 +70,8 @@ const ownerOf = (c: FleetCluster, hostAccount: string | null) =>
 /**
  * The scope string for the EKS read. Explicit page regions pass through unchanged. For an all-region page
  * scope: the accounts and regions of the CONNECTED fleet clusters inside the selected accounts (smallest
- * listing that can bind pods; a non-connected cluster in a listed region would block that region's bindings).
+ * listing that can bind pods). The listing still returns every cluster in those regions, registered or not, and
+ * any non-connected one makes fetchEksIpMap withhold ALL bindings (`binding_read_incomplete`), disclosed.
  * Nothing derivable (no fleet, no connected cluster in scope) keeps the page scope, whose all-region note then
  * withholds bindings with a disclosed reason.
  */

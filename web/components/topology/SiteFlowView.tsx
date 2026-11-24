@@ -163,6 +163,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
     return `/topology?${q}`;
   }, [paramsKey]);
 
+  const pathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hostDraft, setHostDraft] = useState(host);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -173,6 +174,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   }, [hosts, hostDraft, host]);
   const chooseHost = (h: string) => {
     const next = normalizeHost(h);
+    if (pathTimer.current) clearTimeout(pathTimer.current); // a pending path replace must not navigate back
     setOpen(false); setActive(-1); setHostDraft(next);
     if (next !== host) router.push(hrefWith({ host: next }), { scroll: false });
   };
@@ -188,7 +190,6 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   };
 
   const [pathDraft, setPathDraft] = useState(urlPath);
-  const pathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { setPathDraft(urlPath); }, [urlPath]);
   useEffect(() => () => { if (pathTimer.current) clearTimeout(pathTimer.current); }, []);
   const onPathChange = (value: string) => {

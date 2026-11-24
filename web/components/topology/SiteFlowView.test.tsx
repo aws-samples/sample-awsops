@@ -263,24 +263,37 @@ describe('SiteFlowView', () => {
   });
 
   it('mirrors <hostId>|region coverage to the self key host inventory rows use (host id from /api/accounts)', async () => {
-    // Host cluster in a non-default region: listed by ARN, so fetchEksIpMap alone cannot key it as `self`.
+    // Host cluster in a non-default region, listed by ARN, in a multi-account scope: fetchEksIpMap alone keys only
+    // bare-id (host default-region) rows as `self`, so `self|us-west-2` comes only from the /api/accounts host id.
     const west = 'us-west-2', westArn = `arn:aws:eks:${west}:${HOST_ID}:cluster/west`;
     const westCluster = { ...cluster(westArn, 'west', HOST_ID, westArn, HOST_VPC), region: west };
+    const listed = [westCluster, CLUSTERS[1]];
     const rows = inventory();
-    rows.target_group = [inv('self', 'tg-west', { ...tg('self', 'web-tg', WEB_NLB_ARN, HOST_VPC, ['10.0.1.10']).data, region: west })];
-    rows.nlb = [inv('self', 'web-nlb', { arn: WEB_NLB_ARN, dns_name: WEB_NLB_DNS, scheme: 'internal', region: west, vpc_id: HOST_VPC })];
+    rows.target_group = [inv('self', 'tg-west', { ...tg('self', 'web-tg', WEB_NLB_ARN, HOST_VPC, ['10.0.1.10']).data, region: west }),
+      rows.target_group[1]];
+    rows.nlb = [inv('self', 'web-nlb', { arn: WEB_NLB_ARN, dns_name: WEB_NLB_DNS, scheme: 'internal', region: west, vpc_id: HOST_VPC }),
+      rows.nlb[1]];
     const westPods = { kind: 'pods', rows: [pod('web', 'front')(HOST_PODS[0])], generatedAt: NOW };
-    stubFetch((u) => {
-      if (u === FLEET_URL) return json({ clusters: [westCluster] });
-      if (u.startsWith('/api/eks?')) return json({ clusters: [westCluster], errors: [] });
+    const serve = (accounts: unknown) => stubFetch((u) => {
+      if (u === '/api/accounts') return json(accounts);
+      if (u === FLEET_URL) return json({ clusters: listed });
+      if (u.startsWith('/api/eks?')) return json({ clusters: listed, errors: [] });
       if (u === `/api/eks/${encodeURIComponent(westArn)}/incluster?kind=pods`) return json(westPods);
       return undefined;
     }, rows);
+    serve(ACCOUNTS);
     view();
     await settled();
-    expect(calls).toContain(`/api/eks?accounts=self&regions=${west}&includeGlobal=1`);
+    expect(calls).toContain(`/api/eks?accounts=${encodeURIComponent(`${MEMBER},self`)}&regions=${encodeURIComponent(`${REGION},${west}`)}&includeGlobal=1`);
     expect(ids()).toContain(wl(westArn, 'web/front'));
-    expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
+    expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+    // Without a resolvable host id the host ARN row is not recognized as `self`: its targets stay unresolved.
+    cleanup(); canvas.props = null;
+    serve({ accounts: [] });
+    view();
+    await settled();
+    expect(ids()).not.toContain(wl(westArn, 'web/front'));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
   });
 
   it('withheld bindings (all-region listing) → pods_unresolved with the reason', async () => {
