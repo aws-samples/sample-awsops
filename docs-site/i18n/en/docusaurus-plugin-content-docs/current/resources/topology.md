@@ -123,7 +123,7 @@ Workload identity also requires a complete, fresh service-snapshot read with kno
 
 Open `/topology?view=site` for this opt-in view; it is not the default view yet. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
 
-- **Path input**: enter a path to highlight the branch it takes.
+- **Path input**: enter a path to highlight the branch it takes; the highlight continues past the gateway to downstream services and datastores through trace-observed route templates. A page path served from a static origin is linked to the API route it most likely calls, and that link is marked as inferred (dashed).
 - **Expanding groups**: click a group to expand the nodes inside it.
 - **Line styles**: solid lines are observed, dotted lines are configured, and dashed lines are inferred. Traced calls carry their call counts.
 - **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn. **Refresh** reads all evidence again.
