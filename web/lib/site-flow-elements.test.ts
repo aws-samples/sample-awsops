@@ -164,7 +164,12 @@ describe('buildSiteElements', () => {
     // a highlighted member wins over the inferred overlay on nodes
     const g = flow({ highlight: { nodes: ['wl:front'], edges: ['e5'], inferred: ['wl:api', 'e6'] } });
     const els2 = byId(buildSiteElements(g, initialExpanded(g)) as El[]);
-    expect(cls(els2.get(CL)).has('hl')).toBe(true);
+    // a collapsed group rolling up a highlighted AND an inferred leaf shows the inferred part too
+    expect(cls(els2.get(CL))).toEqual(new Set(['group', 'collapsed', 'gkind-cluster', 'hl', 'partial-inferred']));
+    // only highlighted leaves: plain hl
+    const only = flow({ highlight: { nodes: ['wl:front'], edges: ['e5'], inferred: [] } });
+    expect(cls(byId(buildSiteElements(only, initialExpanded(only)) as El[]).get(CL)))
+      .toEqual(new Set(['group', 'collapsed', 'gkind-cluster', 'hl']));
     // a merged edge with a highlighted AND an inferred member shows the inferred part (dashed highlight)
     const merged2 = [...els2.values()].find((e) => e.data.source === 'tg1' && e.data.target === CL)!;
     expect(cls(merged2)).toEqual(new Set(['ev-observed', 'hl', 'partial-inferred']));
@@ -231,6 +236,13 @@ describe('buildSiteStyle', () => {
     const idx = (sel: string) => style.findIndex((s) => s.selector === sel);
     expect(idx('edge.hl.partial-inferred')).toBeGreaterThan(idx('edge.hl'));
     expect(idx('edge.hl.partial-inferred')).toBeGreaterThan(idx('edge.ev-observed'));
+  });
+  it('draws a collapsed group with highlighted and inferred leaves with a dashed highlight border', () => {
+    expect(rule('node.hl.partial-inferred')).toMatchObject({ 'border-style': 'dashed', 'border-color': '#00aa88' });
+    expect(rule('node.hl')?.['border-style']).toBeUndefined(); // plain hl stays solid
+    const idx = (sel: string) => style.findIndex((s) => s.selector === sel);
+    expect(idx('node.hl.partial-inferred')).toBeGreaterThan(idx('node.hl'));
+    expect(idx('node.hl.partial-inferred')).toBeGreaterThan(idx('node.collapsed'));
   });
   it('fades with opacity 0.15 and colours error labels', () => {
     expect(rule('.faded')?.opacity).toBe(0.15);

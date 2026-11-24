@@ -7,8 +7,8 @@
 //   calls/errors, and keep their member edge ids for highlight roll-up.
 // - Highlight: `hl` when any member is in highlight.nodes/edges; else `inferred` when any member is in
 //   highlight.inferred (a separate overlay, the element keeps its own `ev-*` evidence class); else `faded`.
-//   A merged EDGE with both a highlighted and an inferred member also gets `partial-inferred` (dashed highlight),
-//   so the inferred part of the request path is never drawn as an observed one.
+//   A merged EDGE with both a highlighted and an inferred member, and a COLLAPSED group whose leaves include both,
+//   also get `partial-inferred` (dashed highlight), so the inferred part of the path never reads as observed.
 import type { ElementDefinition } from 'cytoscape';
 import { EVIDENCE_RANK, type SiteEvidence, type SiteFlow, type SiteGroup } from './site-flow';
 
@@ -64,8 +64,8 @@ export function buildSiteElements(
     }
     return inferred ? 'inferred' : 'faded';
   };
-  /** Edge status: `hl` plus `partial-inferred` when some member is highlighted and another only inferred. */
-  const edgeStatus = (members: string[]): string => {
+  /** Rolled-up status: `hl` plus `partial-inferred` when some member is highlighted and another only inferred. */
+  const rolledStatus = (members: string[]): string => {
     const s = status(members);
     return s === 'hl' && members.some((m) => infSet.has(m)) ? 'hl partial-inferred' : s;
   };
@@ -109,7 +109,7 @@ export function buildSiteElements(
           id: g.id, label: `${g.label} (+${leaves.length})`, groupKind: g.kind, count: leaves.length,
           role: 'collapsed' satisfies SiteElementRole, ...parent,
         },
-        classes: classes('group', 'collapsed', `gkind-${g.kind}`, status(leaves)),
+        classes: classes('group', 'collapsed', `gkind-${g.kind}`, rolledStatus(leaves)),
       });
     }
   }
@@ -151,7 +151,7 @@ export function buildSiteElements(
         ...(m.calls !== undefined ? { calls: m.calls } : {}), ...(m.errors !== undefined ? { errors: m.errors } : {}),
         ...(label !== undefined ? { label } : {}),
       },
-      classes: classes(`ev-${m.evidence}`, m.evidence === 'traced' && errors > 0 ? 'has-errors' : '', edgeStatus(m.members)),
+      classes: classes(`ev-${m.evidence}`, m.evidence === 'traced' && errors > 0 ? 'has-errors' : '', rolledStatus(m.members)),
     };
   });
 

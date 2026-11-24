@@ -2,8 +2,8 @@
 // Edge evidence is never conveyed by colour alone: observed = solid, configured = dotted, evidence `inferred` =
 // dashed (muted), traced = solid + calls label. The `inferred` HIGHLIGHT overlay (page→API name inference) is a
 // separate class: dashed + its own colour, ordered after the evidence/highlight rules so it always wins. A merged
-// highlighted edge that also carries inferred members (`partial-inferred`) is a dashed highlight (highlight colour,
-// shorter dashes than the inferred overlay), so the inferred part never reads as a solid observed hop.
+// highlighted edge or collapsed group that also carries inferred members (`partial-inferred`) is a dashed highlight
+// (highlight colour; edges use shorter dashes than the inferred overlay), so the inferred part never reads as observed.
 import type { StylesheetStyle } from 'cytoscape';
 import type { SiteGroup, SiteKind } from './site-flow';
 import { LABEL_PX } from './site-flow-elements';
@@ -84,6 +84,7 @@ export function buildSiteStyle(p: SitePalette): StylesheetStyle[] {
     s('edge.hl.partial-inferred', {
       'line-style': 'dashed', 'line-dash-pattern': [4, 3], 'line-color': p.highlight, 'target-arrow-color': p.highlight,
     }),
+    s('node.hl.partial-inferred', { 'border-color': p.highlight, 'border-style': 'dashed', 'border-width': 3 }),
     s('node.inferred', { 'border-color': p.inferred, 'border-style': 'dashed', 'border-width': 3 }),
     s('edge.inferred', {
       'line-style': 'dashed', 'line-dash-pattern': [8, 4], 'line-color': p.inferred,

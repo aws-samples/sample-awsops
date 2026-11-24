@@ -13,8 +13,9 @@
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
 //  - trace routes (useSiteInventory `routes`, read once per load) continue the path highlight past the gateway; they
 //    reach the builder only for a read with status `ok`/`partial`. Until the first read lands, `route_unavailable` is
-//    not shown (evidence pending). A `partial` read adds a notice with its reasons; with no trace datasource
-//    registered (`no_trace_source`) that cause replaces the generic `route_unavailable` notice.
+//    not shown (evidence pending). Only with a path entered (routes change nothing drawn otherwise): a `partial` read
+//    adds a notice with its reasons, and with no trace datasource registered (`no_trace_source`) that cause replaces
+//    the generic `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -41,7 +42,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 클러스터에 연결할 수 없습니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 트레이스 호출을 연결하지 않습니다.',
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되어 트레이스 호출을 표시하지 않습니다.',
-  route_unavailable: '경로별 트레이스 집계를 읽지 못해 경로 강조가 경로를 알 수 없는 지점에서 멈춥니다.',
+  route_unavailable: '경로 정보가 없거나 요청 경로에 맞는 라우트가 없어 경로를 알 수 없는 지점에서 강조가 멈춥니다.',
   db_refs_partial: '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.',
   host_not_found: '인벤토리에서 다음 호스트를 찾지 못했습니다:',
   behaviors_unavailable: 'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.',
@@ -261,7 +262,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   for (const g of flow?.gaps ?? []) {
     if (ev.pending && PENDING_ARTIFACTS.has(g)) continue;
     if (g === 'route_unavailable' && !routeRead) continue; // the first route read has not landed yet
-    if (g === 'route_unavailable' && noTraceSource) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
+    if (g === 'route_unavailable' && noTraceSource && flow?.path) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
     if (g === 'inventory_incomplete' && data?.issues.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {
@@ -282,7 +283,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   if (bindingRead?.status === 'partial') {
     notices.push(`${tt(BINDING_NOTICE.binding_scope_blocked)} ${(bindingRead.blockedClusters ?? []).map(eksClusterLabel).join(', ')}`);
   }
-  if (flow && routeRead?.status === 'partial') {
+  if (flow?.path && routeRead?.status === 'partial') { // without a path, routes change nothing drawn
     notices.push(routeRead.reasons.length ? `${tt(ROUTE_NOTICE.partial)} (${routeRead.reasons.join(', ')})` : tt(ROUTE_NOTICE.partial));
   }
 
