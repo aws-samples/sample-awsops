@@ -37,7 +37,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 클러스터에 연결할 수 없습니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 트레이스 호출을 연결하지 않습니다.',
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되어 트레이스 호출을 표시하지 않습니다.',
-  route_unavailable: '경로별 트레이스 집계를 읽지 못해 경로 강조가 게이트웨이 워크로드에서 멈춥니다.',
+  route_unavailable: '경로별 트레이스 집계를 읽지 못해 경로 강조가 경로를 알 수 없는 지점에서 멈춥니다.',
   db_refs_partial: '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.',
   host_not_found: '인벤토리에서 다음 호스트를 찾지 못했습니다:',
   behaviors_unavailable: 'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.',

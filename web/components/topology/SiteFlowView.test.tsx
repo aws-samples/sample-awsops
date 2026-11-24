@@ -558,6 +558,19 @@ describe('SiteFlowView', () => {
     expect(notices()).not.toContain(BINDING_NOTICE.binding_deadline);
   });
 
+  it('a refresh whose loads all fail clears the previous flow (no stale pod attributions next to the failure)', async () => {
+    let fail = false;
+    stubFetch((u) => (fail && u.startsWith('/api/inventory/') ? json({ status: 'error' }, 500) : undefined));
+    view();
+    await settled();
+    expect(ids()).toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+    fail = true;
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(screen.getByText(/로드 실패:/)).toBeTruthy(), { timeout: 3000 });
+    expect(screen.queryByTestId('site-canvas')).toBeNull();
+    expect(screen.queryByRole('region', { name: '강조된 요청 경로' })).toBeNull();
+  });
+
   it('refresh re-runs every load and re-reads cluster evidence (no cached trace/db-refs reused)', async () => {
     let failMember = true;
     stubFetch((u) => (!isFleet(u) && u.startsWith(`/api/eks?accounts=${MEMBER}&`) && failMember ? json({ status: 'error' }, 403) : undefined));
@@ -863,9 +876,11 @@ describe('SiteFlowView notices', () => {
     expect(Object.keys(GAP_NOTICE).sort()).toEqual([...GAPS].sort());
     expect(new Set(Object.values(GAP_NOTICE)).size).toBe(GAPS.length);
   });
-  it('route_unavailable says the highlight stops at the gateway and claims no inference', () => {
-    // Page→API inference needs the per-route aggregates this gap reports missing, so none is drawn.
-    expect(GAP_NOTICE.route_unavailable).toContain('게이트웨이');
+  it('route_unavailable says the highlight stops where the route is unknown and claims no inference', () => {
+    // Page→API inference needs the per-route aggregates this gap reports missing, so none is drawn; every emitter
+    // (no route rows, unknown request path, no matching route, no traced next hop) stops where the route is unknown.
+    expect(GAP_NOTICE.route_unavailable).toContain('경로를 알 수 없는 지점에서 멈춥니다');
+    expect(applyTerms('en', GAP_NOTICE.route_unavailable)).toContain('stops where the route is unknown');
     expect(GAP_NOTICE.route_unavailable).not.toContain('추론');
     for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, GAP_NOTICE.route_unavailable)).not.toMatch(/infer|推断|推定/i);
   });
