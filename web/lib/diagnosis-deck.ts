@@ -295,13 +295,19 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
       const allItems = toItems(group.nodes);
       const decisions = allItems.filter(r => decisionHeadings.has(r.label));
       const paragraphs = allItems.filter(r => !decisionHeadings.has(r.label));
+      const presented = new Set<DeckItem>();
       const isDomain = paragraphs.some((r) => coverageLine.test(r.text));
       if (isDomain) {
         const findings = paragraphs.filter((r) => r.label && !coverageLine.test(r.text));
         const status = paragraphs.find((r) => coverageLine.test(r.text));
         if (findings.length) {
           add(block.title, findings, status?.text, proseNotes);
-        } else add(block.title, paragraphs, '', proseNotes);
+          for (const item of findings) presented.add(item);
+          if (status) presented.add(status);
+        } else {
+          add(block.title, paragraphs, '', proseNotes);
+          for (const item of paragraphs) presented.add(item);
+        }
       } else if (
         !tables.length &&
         !(
@@ -313,6 +319,7 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         )
       ) {
         add(group.heading || block.title, paragraphs, '', proseNotes);
+        for (const item of paragraphs) presented.add(item);
       }
       for (const table of tables) {
         const rows = tableItems(table);
@@ -329,14 +336,23 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
         const relationships = /^(?:관계 유형|Relationship|関係|关系)$/i.test(header[0]);
         const label = relationships ? header[0] + ' / ' + header[1] : group.heading || block.title;
         const scope = relationships
-          ? paragraphs.find((r) => /\b\d+\s*\/\s*\d+/.test(r.text))?.text
-          : paragraphs.find((r) => r.label)?.text;
+          ? paragraphs.find((r) => /\b\d+\s*\/\s*\d+/.test(r.text))
+          : undefined;
+        if (scope && rows.length) presented.add(scope);
         const originals = columns
           .slice(1)
           .map((row) => row.map((cell, index) => header[index] + ': ' + cell).join('\n'))
           .join('\n\n');
         const notes = [originals, proseNotes].filter(Boolean).join('\n\n');
-        add(label, rows, scope, notes);
+        add(label, rows, scope?.text, notes);
+      }
+      // A table may be followed by a limitation, safety instruction or explanation.
+      // Keep that prose visible, including beyond the per-slide excerpt cap.
+      if (tables.length || isDomain) {
+        const remaining = paragraphs.filter(item => !presented.has(item));
+        for (let i = 0; i < remaining.length; i += 3) {
+          add(group.heading || block.title, remaining.slice(i, i + 3), '', proseNotes);
+        }
       }
       for (const decision of decisions) add(decision.label, [{ label: '', text: decision.text }]);
     }
