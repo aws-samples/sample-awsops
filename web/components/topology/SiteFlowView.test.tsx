@@ -386,12 +386,18 @@ describe('SiteFlowView', () => {
     expect(notices()).not.toContain(BINDING_NOTICE.cluster_unreadable);
   });
 
-  it('explicit page regions where no selected account has a cluster keep the page scope', async () => {
-    const west = 'us-west-2';
+  it('explicit page regions with no cluster in R: only wildcard accounts are listed there; with none, the page scope is kept', async () => {
+    const west = 'us-west-2', scope = `accounts=${MEMBER}&regions=${west}&includeGlobal=1`;
     stubFetch();
-    view('view=site&host=mall.example.com', `accounts=${MEMBER}&regions=${west}&includeGlobal=1`);
+    view('view=site&host=mall.example.com', scope);
     await settled();
-    expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toEqual([`/api/eks?accounts=${MEMBER}&regions=${west}&includeGlobal=1`]);
+    // The host's scan is a wildcard (its fleet listing carries the note), so it is listed in R and can veto there.
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toEqual([`/api/eks?accounts=self&regions=${west}&includeGlobal=1`]);
+    cleanup(); canvas.props = null;
+    stubFetch((u) => (isFleet(u) ? fleetOf(u, CLUSTERS, []) : undefined)); // no wildcard account: nothing to list
+    view('view=site&host=mall.example.com', scope);
+    await settled();
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toEqual([`/api/eks?${scope}`]);
   });
 
   it('one failing per-account listing fails the whole pod map closed', async () => {
@@ -624,6 +630,25 @@ describe('SiteFlowView', () => {
     expect(ids()).toContain(wl(eastArn, 'biz/orders-api'));
     expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
     expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
+  });
+
+  it('an UNSELECTED account\'s not-connected cluster in the selected account\'s shared VPC still vetoes it', async () => {
+    // Page scope = the member only. THIRD is enabled but not selected; its not-connected `shadow` cluster sits in the
+    // member's (RAM-shared) VPC, so the member pods there cannot be attributed: selection limits what is shown, not
+    // which clusters can veto.
+    const shadowArn = `arn:aws:eks:${REGION}:${THIRD}:cluster/shadow`;
+    const listed = [...CLUSTERS, cluster(shadowArn, 'shadow', THIRD, shadowArn, MEMBER_VPC, 'no-entry')];
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, listed);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      return undefined;
+    }, { ...inventory(), target_group: [inventory().target_group[1]] });
+    view('view=site&host=mall.example.com', `accounts=${MEMBER}&regions=__all__&includeGlobal=1`);
+    await settled();
+    expect(calls).toContain(`/api/eks?accounts=${THIRD}&regions=${REGION}&includeGlobal=1`);
+    expect(ids()).not.toContain(wl(MEMBER_ARN, 'biz/orders-api'));
+    expect(canvas.props!.flow.gaps).toContain('pods_unresolved');
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} shadow (${THIRD} / ${REGION})`);
   });
 
   it('lists a wildcard-scan member (all-region note) in ALL resolved regions, so an unlisted cluster there can veto', async () => {
