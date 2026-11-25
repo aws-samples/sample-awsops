@@ -164,6 +164,15 @@ describe('renderSiteFlowContext', () => {
     expect(tiny).toContain('Gaps: ambiguous_cluster, partial_snapshot…');
     expect(tiny.endsWith('…[site flow truncated]')).toBe(true);
   });
+  it('renders a gapNames override (sorted, de-duplicated) instead of flow.gaps, and it survives truncation', () => {
+    const f = flowFor();
+    const text = renderSiteFlowContext({ ...f, gaps: ['partial_snapshot'] }, 3000, ['trace_unavailable', 'evidence_pending', 'trace_unavailable']);
+    expect(text.split('\n')[1]).toBe('Gaps: evidence_pending, trace_unavailable');
+    expect(renderSiteFlowContext(f, 3000, []).split('\n')[1]).toBe('Gaps: none');
+    const tiny = renderSiteFlowContext({ ...f, gaps: [] }, 400, ['evidence_pending']);
+    expect(tiny.split('\n')[1]).toBe('Gaps: evidence_pending');
+    expect(tiny.length).toBeLessThanOrEqual(400);
+  });
   it('caps an oversized host/path so header, Gaps and marker survive', () => {
     const f: SiteFlow = { ...flowFor(), host: 'h'.repeat(5000), path: `/${'p'.repeat(5000)}`, gaps: ['partial_snapshot'] };
     const text = renderSiteFlowContext(f);

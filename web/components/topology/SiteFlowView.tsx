@@ -84,6 +84,19 @@ export const ROUTE_NOTICE = {
 
 /** Gaps stage 1 always carries for bound clusters until their evidence lands. */
 const PENDING_ARTIFACTS = new Set<SiteGap>(['trace_unavailable', 'db_refs_partial']);
+
+/** The gaps the screen states for a flow, in flow order: gaps of artifacts still loading and a route gap before the
+ *  first route read are hidden, and `route_unavailable` with a path but no trace source reads `no_trace_source`.
+ *  The notices list and the AI chat context both derive from this, so they cannot drift. */
+function displayedGaps(flow: SiteFlow | null, s: { evPending: boolean; routeRead: boolean; noTraceSource: boolean }): Array<SiteGap | 'no_trace_source'> {
+  const out: Array<SiteGap | 'no_trace_source'> = [];
+  for (const g of flow?.gaps ?? []) {
+    if (s.evPending && PENDING_ARTIFACTS.has(g)) continue;
+    if (g === 'route_unavailable' && !s.routeRead) continue; // the first route read has not landed yet
+    out.push(g === 'route_unavailable' && s.noTraceSource && flow?.path ? 'no_trace_source' : g);
+  }
+  return out;
+}
 // Technical kind labels stay English (FLOW_KIND_LABELS precedent).
 const KIND_LABEL: Record<SiteKind, string> = {
   dns: 'DNS', cdn: 'CloudFront', behavior: 'Behavior', rule: 'Rule', origin: 'Origin', lb: 'LB', tg: 'Target Group',
@@ -205,10 +218,6 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const flow = useMemo<SiteFlow | null>(() => (data && host ? buildSiteFlow({ host, path: urlPath, flow: data.flow,
     cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, routes, gaps: flowGaps }) : null),
   [data, host, urlPath, ev.traces, ev.dbRefs, routes, flowGaps]);
-  // AI chat context: the composed flow on screen, re-rendered whenever it changes; none without a host flow, and
-  // cleared when the view unmounts.
-  useEffect(() => { setPageContext(flow ? renderSiteFlowContext(flow) : null); }, [flow]);
-  useEffect(() => () => setPageContext(null), []);
 
   // ---- URL state ----
   const hrefWith = useCallback((next: { host?: string; path?: string }) => {
@@ -275,11 +284,18 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   // ---- disclosures ----
   const evidencePending = inv.pending || (!!host && (ev.pending || inv.routesPending));
   const noTraceSource = routeRead?.status === 'unavailable' && routeRead.reasons.includes('no_trace_source');
+  const shownGaps = displayedGaps(flow, { evPending: ev.pending, routeRead: !!routeRead, noTraceSource });
+  // AI chat context: the composed flow on screen with the SAME gaps the screen states (plus `evidence_pending` while
+  // evidence still loads, so a pending flow never looks complete); re-rendered whenever either changes; none without a
+  // host flow, and cleared when the view unmounts.
+  const gapsKey = [...shownGaps, ...(evidencePending ? ['evidence_pending'] : [])].join(',');
+  useEffect(() => {
+    setPageContext(flow ? renderSiteFlowContext(flow, 3000, gapsKey ? gapsKey.split(',') : []) : null);
+  }, [flow, gapsKey]);
+  useEffect(() => () => setPageContext(null), []);
   const notices: string[] = [];
-  for (const g of flow?.gaps ?? []) {
-    if (ev.pending && PENDING_ARTIFACTS.has(g)) continue;
-    if (g === 'route_unavailable' && !routeRead) continue; // the first route read has not landed yet
-    if (g === 'route_unavailable' && noTraceSource && flow?.path) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
+  for (const g of shownGaps) {
+    if (g === 'no_trace_source') { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
     if (g === 'inventory_incomplete' && data?.issues.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {

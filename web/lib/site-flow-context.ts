@@ -33,7 +33,8 @@ function chainOrder(edges: SiteEdge[]): SiteEdge[] {
   return [...out, ...byId.filter((e) => !emitted.has(e.id))];
 }
 
-export function renderSiteFlowContext(flow: SiteFlow, maxChars = 3000): string {
+/** `gapNames` replaces `flow.gaps` in the Gaps line (the view passes the gaps it actually shows on screen). */
+export function renderSiteFlowContext(flow: SiteFlow, maxChars = 3000, gapNames?: readonly string[]): string {
   const label = new Map(flow.nodes.map((n) => [n.id, clean(n.label)]));
   const groupOf = new Map(flow.nodes.map((n) => [n.id, n.group]));
   const groupById = new Map(flow.groups.map((g) => [g.id, g]));
@@ -76,13 +77,13 @@ export function renderSiteFlowContext(flow: SiteFlow, maxChars = 3000): string {
     for (const e of buckets.get(id)!) lines.push(line(e));
   }
   // Gaps sit right after the header and survive truncation: a truncated flow must never look complete.
-  const gapNames = [...flow.gaps].sort(cmp);
-  const gaps = `Gaps: ${gapNames.length ? gapNames.join(', ') : 'none'}`;
+  const sortedGaps = [...new Set<string>(gapNames ?? flow.gaps)].sort(cmp);
+  const gaps = `Gaps: ${sortedGaps.length ? sortedGaps.join(', ') : 'none'}`;
   const full = [head, gaps, ...lines].join('\n');
   if (full.length <= maxChars) return full;
   let shownGaps = gaps;
-  for (let n = gapNames.length - 1; head.length + shownGaps.length + MARKER.length + 2 > maxChars && n >= 0; n--)
-    shownGaps = `Gaps: ${gapNames.slice(0, n).join(', ')}${n ? ', ' : ''}…`.replace(', …', '…');
+  for (let n = sortedGaps.length - 1; head.length + shownGaps.length + MARKER.length + 2 > maxChars && n >= 0; n--)
+    shownGaps = `Gaps: ${sortedGaps.slice(0, n).join(', ')}${n ? ', ' : ''}…`.replace(', …', '…');
   const kept = [head, shownGaps];
   let len = kept.join('\n').length + 1 + MARKER.length;
   if (len <= maxChars) for (const l of lines) {

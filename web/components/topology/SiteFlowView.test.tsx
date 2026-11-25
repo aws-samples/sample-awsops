@@ -1393,7 +1393,8 @@ describe('SiteFlowView chat page context', () => {
     nav.search = 'view=site&host=mall.example.com&path=/products/1';
     r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
     await waitFor(() => expect(getPageContext()).toContain('path /products/1'));
-    expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow));
+    await settled();
+    await waitFor(() => expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow))); // once nothing is pending
     nav.search = 'view=site';
     r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
     await waitFor(() => expect(getPageContext()).toBeNull());
@@ -1402,6 +1403,48 @@ describe('SiteFlowView chat page context', () => {
     await waitFor(() => expect(getPageContext()).not.toBeNull());
     r.unmount();
     expect(getPageContext()).toBeNull();
+  });
+
+  const gapsLine = () => getPageContext()!.split('\n')[1];
+
+  it('states evidence_pending (not the hidden trace/db gaps) while evidence loads, then the real gaps', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubFetch((u) => (u === '/api/topology?lens=service' || u === '/api/eks/shop/db-refs'
+      ? gate.then(() => json({ status: 'error' }, 502)) as unknown as Response : undefined));
+    view();
+    await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    expect(gapsLine()).toContain('evidence_pending');
+    expect(gapsLine()).not.toContain('trace_unavailable');
+    expect(gapsLine()).not.toContain('db_refs_partial');
+    release();
+    await settled();
+    await waitFor(() => expect(gapsLine()).toContain('trace_unavailable'));
+    expect(gapsLine()).not.toContain('evidence_pending');
+  });
+
+  it('does not state route_unavailable before the first route read lands', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubRoutes(() => gate.then(() => json(routesBody('ok'))) as unknown as Response);
+    view(PRODUCTS);
+    await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    expect(getPageContext()).toContain('path /products/1');
+    expect(gapsLine()).not.toContain('route_unavailable');
+    release();
+    await settled();
+  });
+
+  it('states no_trace_source in place of route_unavailable when a path has no trace source', async () => {
+    stubRoutes(routesBody('unavailable', [], ['no_trace_source']));
+    view(PRODUCTS);
+    await settled();
+    await waitFor(() => expect(gapsLine()).toContain('no_trace_source'));
+    expect(gapsLine()).not.toContain('route_unavailable');
+    expect(gapsLine()).not.toContain('evidence_pending');
   });
 
   it('sets nothing on the host index (no host selected)', async () => {
