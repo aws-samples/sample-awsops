@@ -211,6 +211,18 @@ it('updates the cluster filter from same-page navigation and writes filter contr
     expect(select.value).toBe('');
   });
 
+it('keeps a legacy deep link on the flow graph when the cluster select changes (adds view=flow)', async () => {
+    serve();
+    const router = mount('/topology?cluster=ecs%3Aecs-app');
+    await flowReady();
+    const select = screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '' } });
+    expect(router.push).toHaveBeenLastCalledWith('/topology?view=flow', { scroll: false });
+    fireEvent.change(select, { target: { value: 'ecs:ecs-app' } });
+    const last = String(vi.mocked(router.push).mock.calls.at(-1)?.[0]);
+    expect(new URLSearchParams(last.split('?')[1]).get('view')).toBe('flow');
+  });
+
 it.each(SCOPE_CHANGES)('clears a previous scope cluster while retaining other URL settings: %j', async nextScope => {
     let changed = false;
     serve({ inventoryReply: (url, body) => Response.json({

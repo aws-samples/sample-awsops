@@ -55,7 +55,7 @@ it.each(['/topology', '/topology?view=site', '/topology?host=mall.example.com', 
 
 it.each([
   '/topology?view=flow', '/topology?view=e2e', '/topology?lens=service', '/topology?cluster=ecs%3Aecs-app',
-  '/topology?monitor=m&range=1800', '/topology?metric=bytes', '/topology?category=ALL',
+  '/topology?view=foo', '/topology?clusterScope=accounts%3Dself', '/topology?monitor=m&range=1800', '/topology?metric=bytes', '/topology?category=ALL',
 ])('keeps the old flow graph at %s', async (url) => {
   window.history.replaceState({}, '', url);
   render(<TopologyPage />);
