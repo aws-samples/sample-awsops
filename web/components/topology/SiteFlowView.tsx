@@ -20,7 +20,8 @@
 //    `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
-//  - the composed flow is the AI chat's page context (renderSiteFlowContext) while a host flow exists; cleared on unmount.
+//  - the composed flow is the AI chat's page context (renderSiteFlowContext) while a host flow exists; cleared on unmount
+//    only while it is still this view's value.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -36,7 +37,7 @@ import { useTheme } from '@/lib/use-theme';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
 import { renderSiteFlowContext } from '@/lib/site-flow-context';
-import { setPageContext } from '@/lib/chat-page-context';
+import { clearPageContext, createPageContextOwner, setPageContext } from '@/lib/chat-page-context';
 
 /** One notice per SiteGap (Korean source, translated via tt(); lockstep-tested). `host_not_found` is followed by the
  *  searched host, like `binding_scope_blocked` by its cluster labels. */
@@ -289,10 +290,12 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   // evidence still loads, so a pending flow never looks complete); re-rendered whenever either changes; none without a
   // host flow, and cleared when the view unmounts.
   const gapsKey = [...shownGaps, ...(evidencePending ? ['evidence_pending'] : [])].join(',');
+  // This view's owner token: the unmount clears the context only while it is still this view's (clear-if-mine).
+  const [pageOwner] = useState(createPageContextOwner);
   useEffect(() => {
-    setPageContext(flow ? renderSiteFlowContext(flow, 3000, gapsKey ? gapsKey.split(',') : []) : null);
-  }, [flow, gapsKey]);
-  useEffect(() => () => setPageContext(null), []);
+    setPageContext(flow ? renderSiteFlowContext(flow, 3000, gapsKey ? gapsKey.split(',') : []) : null, pageOwner);
+  }, [flow, gapsKey, pageOwner]);
+  useEffect(() => () => clearPageContext(pageOwner), [pageOwner]);
   const notices: string[] = [];
   for (const g of shownGaps) {
     if (g === 'no_trace_source') { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }

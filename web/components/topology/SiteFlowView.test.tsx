@@ -34,7 +34,7 @@ import { applyTerms } from '@/lib/i18n-terms';
 import { parseSiteRoutes, useClusterEvidence, withHostAlias } from './useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
 import type { RouteHop } from '@/lib/trace-routes';
-import { getPageContext, setPageContext } from '@/lib/chat-page-context';
+import { createPageContextOwner, getPageContext, setPageContext } from '@/lib/chat-page-context';
 import { renderSiteFlowContext } from '@/lib/site-flow-context';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
@@ -1446,6 +1446,16 @@ describe('SiteFlowView chat page context', () => {
     await waitFor(() => expect(gapsLine()).toContain('no_trace_source'));
     expect(gapsLine()).not.toContain('route_unavailable');
     expect(gapsLine()).not.toContain('evidence_pending');
+  });
+
+  it('unmounting does not clear a page context another producer set after it', async () => {
+    stubFetch();
+    const r = view();
+    await settled();
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    setPageContext('another producer\'s context', createPageContextOwner());
+    r.unmount();
+    expect(getPageContext()).toBe('another producer\'s context');
   });
 
   it('sets nothing on the host index (no host selected)', async () => {
