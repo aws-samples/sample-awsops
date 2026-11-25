@@ -35,7 +35,9 @@ export interface SiteEdge { id: string; source: string; target: string; evidence
 export interface SiteGroup { id: string; kind: 'host' | 'cdn' | 'lb' | 'cluster' | 'namespace' | 'datastore'; label: string; parent?: string }
 export type SiteGap = 'inventory_incomplete' | 'pods_unresolved' | 'trace_unavailable' | 'ambiguous_cluster' | 'incomplete_listing'
   | 'partial_snapshot' | 'route_unavailable' | 'db_refs_partial' | 'host_not_found' | 'behaviors_unavailable' | 'route_ambiguous'
-  | 'trace_unmapped' | 'private_zone_only' | 'rule_unresolved' | 'path_unmatched';
+  | 'trace_unmapped' | 'private_zone_only' | 'rule_unresolved' | 'path_unmatched'
+  /** Supplied by the caller via `input.gaps`: the trace route read was partial while a path was entered. */
+  | 'routes_partial';
 export interface SiteFlow {
   host: string;
   /** Normalized requested path (query/fragment stripped, leading '/'), or null. */

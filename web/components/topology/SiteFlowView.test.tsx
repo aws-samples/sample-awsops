@@ -1102,13 +1102,35 @@ describe('SiteFlowView trace routes', () => {
     expect(items.some((t) => t?.includes('(추론)'))).toBe(false);
   });
 
-  it('partial routes are still followed and the read reasons are disclosed', async () => {
-    stubRoutes(routesBody('partial', ROUTES, ['capped', 'multi_source_counts']));
+  it('partial routes are still followed and disclosed as one routes_partial gap listing the read reasons', async () => {
+    stubRoutes(routesBody('partial', ROUTES, ['capped', 'multi_source_counts', 'route_raw_path']));
     view(PRODUCTS);
     await settled();
     expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
-    expect(notices()).toContain(`${ROUTE_NOTICE.partial} (capped, multi_source_counts)`);
+    // The gap reaches the flow itself (the AI context reads flow.gaps), not only the notice list.
+    expect(canvas.props!.flow.gaps).toContain('routes_partial');
+    // Counts are discarded client-side, so multi_source_counts is not listed as a cause.
+    expect(notices()).toContain(`${GAP_NOTICE.routes_partial} (capped, route_raw_path)`);
+    expect(notices().split(GAP_NOTICE.routes_partial)).toHaveLength(2); // exactly one notice
     expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+  });
+
+  it('a partial read whose only reason is multi_source_counts adds no gap or notice', async () => {
+    stubRoutes(routesBody('partial', ROUTES, ['multi_source_counts']));
+    view(PRODUCTS);
+    await settled();
+    expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
+    expect(notices()).toBe('');
+  });
+
+  it('a partial read without listed reasons is still disclosed', async () => {
+    stubRoutes(routesBody('partial', ROUTES, []));
+    view(PRODUCTS);
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('routes_partial');
+    expect(notices()).toContain(GAP_NOTICE.routes_partial);
+    expect(notices()).not.toContain(`${GAP_NOTICE.routes_partial} (`);
   });
 
   it.each([
@@ -1129,7 +1151,8 @@ describe('SiteFlowView trace routes', () => {
     expect(hl().nodes).not.toContain(CATALOG_DS);
     expect(canvas.props!.flow.gaps).toContain('route_unavailable');
     expect(notices()).toContain(GAP_NOTICE.route_unavailable);
-    expect(notices()).not.toContain(ROUTE_NOTICE.partial);
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
+    expect(notices()).not.toContain(GAP_NOTICE.routes_partial);
     expect(notices()).not.toContain(ROUTE_NOTICE.no_trace_source);
   });
 
@@ -1315,7 +1338,7 @@ describe('parseSiteRoutes', () => {
 describe('SiteFlowView notices', () => {
   const GAPS: SiteGap[] = ['inventory_incomplete', 'pods_unresolved', 'trace_unavailable', 'ambiguous_cluster', 'incomplete_listing',
     'partial_snapshot', 'route_unavailable', 'db_refs_partial', 'host_not_found', 'behaviors_unavailable', 'route_ambiguous',
-    'trace_unmapped', 'private_zone_only', 'rule_unresolved', 'path_unmatched'];
+    'trace_unmapped', 'private_zone_only', 'rule_unresolved', 'path_unmatched', 'routes_partial'];
   it('has one distinct notice per SiteGap', () => {
     expect(Object.keys(GAP_NOTICE).sort()).toEqual([...GAPS].sort());
     expect(new Set(Object.values(GAP_NOTICE)).size).toBe(GAPS.length);
@@ -1332,6 +1355,12 @@ describe('SiteFlowView notices', () => {
     expect(en).toContain('no route matches');
     expect(GAP_NOTICE.route_unavailable).not.toContain('추론');
     for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, GAP_NOTICE.route_unavailable)).not.toMatch(/infer|推断|推定/i);
+  });
+  it('no_trace_source names the missing ClickHouse source with route data (Tempo/X-Ray alone cannot feed routes)', () => {
+    expect(ROUTE_NOTICE.no_trace_source).toContain('경로 데이터가 있는 ClickHouse 트레이스 데이터 소스가 없어');
+    for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ROUTE_NOTICE.no_trace_source)).toContain('ClickHouse');
+    expect(applyTerms('en', ROUTE_NOTICE.no_trace_source)).toMatch(/route data/);
+    expect(applyTerms('en', ROUTE_NOTICE.no_trace_source)).not.toMatch(/no trace datasource is connected/i);
   });
   it('binding_scope_partial names its only trigger (no connected cluster in scope) and gives no region advice', () => {
     // The per-account derivation lists explicit regions whenever a cluster is in scope, so the all-region note
