@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ verify: vi.fn(), query: vi.fn(), read: vi.fn() }));
+const mocks = vi.hoisted(() => ({ verify: vi.fn(), query: vi.fn(), read: vi.fn(), pool: null as unknown }));
 vi.mock('@/lib/auth', () => ({ verifyUser: mocks.verify }));
-vi.mock('@/lib/db', () => ({ getPool: () => ({ query: mocks.query }) }));
+// The registry read runs in graphReadTransaction: a pool with `connect` only (no direct pool.query). Transaction
+// control statements are answered here; the registry SELECT goes to mocks.query.
+vi.mock('@/lib/db', () => ({ getPool: () => mocks.pool }));
 // graph-sources (real) → trace-source → datasources/mcp-lambda-invoke: stub the AWS-facing leaves.
 vi.mock('@/lib/datasources', () => ({
   getDatasource: vi.fn(async () => null), getDefaultDatasource: vi.fn(async () => null), resolveConnConfig: vi.fn(),
@@ -27,8 +29,21 @@ const get = async (qs = '') => {
   return { res, body: await res.json() };
 };
 
+const CONTROL = /^(BEGIN|SET LOCAL|COMMIT|ROLLBACK)\b/;
+const freshPool = () => {
+  const client = {
+    query: vi.fn(async (text: string, ...rest: unknown[]) => (CONTROL.test(text) ? { rows: [] } : mocks.query(text, ...rest))),
+    release: vi.fn(), on: vi.fn(), removeListener: vi.fn(),
+  };
+  return { connect: vi.fn(async () => client), client };
+};
+let pool: ReturnType<typeof freshPool>;
+
 beforeEach(() => {
   clearRouteCache();
+  // Graph-read admission is per pool and a hung read keeps its slot: every test gets its own pool.
+  pool = freshPool();
+  mocks.pool = pool;
   vi.stubEnv('TOPOLOGY_ENTITIES_ENABLED', 'true');
   mocks.verify.mockResolvedValue({ sub: 'fixture' });
 });
@@ -268,6 +283,24 @@ describe('GET /api/topology/site-routes', () => {
     expect(deadlines.slice(4)).toEqual([2000, 2000]);
   });
 
+  it('reads the registry in a read-only transaction with server-side timeouts, then releases the client', async () => {
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    mocks.read.mockResolvedValue({ status: 'ok', reasons: [], routes: [hop()] });
+    expect((await get()).res.status).toBe(200);
+    expect('query' in pool).toBe(false);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    const sql = pool.client.query.mock.calls.map(([text]) => String(text));
+    expect(sql[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const select = sql.findIndex((t) => /datasource_graph_queries/.test(t));
+    for (const setting of ['statement_timeout', 'lock_timeout', 'transaction_timeout']) {
+      const at = sql.findIndex((t) => t.startsWith(`SET LOCAL ${setting}`));
+      expect(at).toBeGreaterThan(0);
+      expect(at).toBeLessThan(select);
+    }
+    expect(sql[sql.length - 1]).toBe('COMMIT');
+    expect(pool.client.release).toHaveBeenCalledTimes(1);
+  });
+
   it('maps a registry failure to a fixed 503 body', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     mocks.query.mockRejectedValue(Object.assign(new Error('password=hunter2'), { code: '57P01' }));
@@ -277,9 +310,11 @@ describe('GET /api/topology/site-routes', () => {
     expect(res.headers.get('Cache-Control')).toBe('private, no-store');
     expect(JSON.stringify(error.mock.calls)).not.toContain('hunter2');
     expect(mocks.read).not.toHaveBeenCalled();
+    expect(pool.client.query.mock.calls.map(([t]) => t)).toContain('ROLLBACK');
+    expect(pool.client.release).toHaveBeenCalledTimes(1);
   });
 
-  it('bounds a hung registry read with a fixed 503 timeout', async () => {
+  it('bounds a hung registry read with a fixed 503 timeout and discards its connection', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mocks.query.mockReturnValue(new Promise(() => {}));
@@ -288,6 +323,27 @@ describe('GET /api/topology/site-routes', () => {
     const res = await pending;
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'timeout' });
+    expect(mocks.read).not.toHaveBeenCalled();
+    // The client is destroyed (release(true)), not returned to the pool with the statement still running.
+    expect(pool.client.release).toHaveBeenCalledWith(true);
+  });
+
+  it('refuses a third concurrent registry read with a fixed 503 instead of taking another connection', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.query.mockReturnValue(new Promise(() => {}));
+    const first = GET(req()), second = GET(req());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pool.connect).toHaveBeenCalledTimes(2);
+    const third = await GET(req());
+    expect(third.status).toBe(503);
+    expect(await third.json()).toEqual({ error: 'read_unavailable' });
+    expect(pool.connect).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+    for (const res of await Promise.all([first, second])) {
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'timeout' });
+    }
     expect(mocks.read).not.toHaveBeenCalled();
   });
 });

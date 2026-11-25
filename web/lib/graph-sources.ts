@@ -5,7 +5,7 @@
 // ready-to-use adapters — one per registered, capability-matched datasource instance — instead of a
 // single hardcoded default ClickHouse instance.
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import {
   ClickHouseOtelAggregateSource, ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource,
   otelAggregateShape, type TraceSource,
@@ -40,9 +40,11 @@ export interface ClickHouseTraceDatasource { instanceId: number; template?: stri
 /** The registered ClickHouse trace datasources (`otel_v1` catalog rows) with their catalog SQL
  *  template, read the same way loadGraphSources does. Unlike it there is no bare-default fallback:
  *  callers report "no trace source" instead of guessing an unregistered default instance.
- *  Duplicate (instance, template) rows collapse to one. Throws on registry read failure. */
-export async function listClickHouseTraceDatasources(pool: Pool): Promise<ClickHouseTraceDatasource[]> {
-  const r = await pool.query(READY_GRAPH_QUERIES);
+ *  Duplicate (instance, template) rows collapse to one. Throws on registry read failure.
+ *  `db` is a pool or a checked-out client: request paths pass graphReadTransaction's client so
+ *  the read carries server-side statement/lock/transaction timeouts. */
+export async function listClickHouseTraceDatasources(db: Pool | PoolClient): Promise<ClickHouseTraceDatasource[]> {
+  const r = await db.query(READY_GRAPH_QUERIES);
   const seen = new Set<string>();
   const out: ClickHouseTraceDatasource[] = [];
   for (const row of r.rows as GraphQueryRow[]) {

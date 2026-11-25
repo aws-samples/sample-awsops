@@ -1,12 +1,14 @@
 // GET /api/topology/site-routes — trace route templates (http.route) per service for the site flow.
-// Read-only: every registered ClickHouse trace datasource (registry catalog, never the request) is
-// read through readTraceRoutes, at most SOURCE_LANES at once, each within what is left of the total budget;
+// Read-only: the registry is read in graphReadTransaction (server-side statement/lock/transaction timeouts, its 2 s
+// deadline and shared admission cap), then every registered ClickHouse trace datasource (registry catalog, never the
+// request) is read through readTraceRoutes, at most SOURCE_LANES at once, each within what is left of the total budget;
 // only templates, service names and counts leave here. Per-source results are reused server-side for
 // ROUTE_CACHE_TTL_MS with single-flight (site-routes-cache.ts); the response itself stays `no-store`.
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { listClickHouseTraceDatasources } from '@/lib/graph-sources';
 import { graphDiagnostic } from '@/lib/graph-state';
+import { graphReadTransaction, GraphReadDeadline } from '@/lib/graph-transaction';
 import { readTraceRoutes, type RouteHop, type RouteRead } from '@/lib/trace-routes';
 import { cachedRouteRead, routeCacheKey } from '@/lib/site-routes-cache';
 
@@ -16,7 +18,6 @@ const json = (value: unknown, status = 200) =>
 
 const WINDOWS = new Map<string, 15 | 60 | 180>([['15', 15], ['60', 60], ['180', 180]]);
 const TOTAL_BUDGET_MS = 10_000;
-const REGISTRY_DEADLINE_MS = 2_000;
 const SOURCE_DEADLINE_MS = 8_000;
 const ROUTE_LIMIT = 500;
 /** Sources read at once (each read is one ClickHouse aggregate pair through the MCP Lambda). */
@@ -41,8 +42,6 @@ async function within(read: Promise<RouteRead>, ms: number): Promise<RouteRead> 
     clearTimeout(timer);
   }
 }
-
-class RegistryDeadline extends Error {}
 
 type Next = RouteHop['next'][number];
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -99,13 +98,9 @@ export async function GET(request: Request) {
   if (windowMins === undefined) return json({ error: 'invalid_request' }, 400);
 
   const started = Date.now();
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const datasources = await Promise.race([
-      listClickHouseTraceDatasources(getPool()),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RegistryDeadline()), REGISTRY_DEADLINE_MS); }),
-    ]);
-    clearTimeout(timer);
+    // Bounded on Aurora as well as here: a lost race never leaves the statement holding one of the pool's connections.
+    const datasources = await graphReadTransaction(getPool(), (c) => listClickHouseTraceDatasources(c));
     if (!datasources.length) return json({ status: 'unavailable', reasons: ['no_trace_source'], routes: [] });
     // At most SOURCE_LANES sources at once, lanes pulling from one shared index. Each source's deadline is what is
     // left of the total budget when its lane reaches it; a source reached with no budget left is not read.
@@ -124,8 +119,8 @@ export async function GET(request: Request) {
     await Promise.all(Array.from({ length: Math.min(SOURCE_LANES, datasources.length) }, lane));
     return json(combine(reads));
   } catch (e) {
-    clearTimeout(timer);
     console.error('[site-routes] read failed', graphDiagnostic('trace_sources', e));
-    return json({ error: e instanceof RegistryDeadline ? 'timeout' : 'read_unavailable' }, 503);
+    // GraphReadBusy (both graph-read slots taken) and query failures share the fixed `read_unavailable` body.
+    return json({ error: e instanceof GraphReadDeadline ? 'timeout' : 'read_unavailable' }, 503);
   }
 }
