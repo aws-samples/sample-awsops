@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { renderSiteFlowContext } from './site-flow-context';
+import type { SiteFlow } from './site-flow';
 import { buildPageContextBlock, PAGE_CONTEXT_MARKER, PAGE_CONTEXT_MAX_CHARS } from './page-context-block';
 
 const inner = (block: string) => block.slice(block.indexOf('>\n') + 2, block.lastIndexOf('\n</page_context>'));
@@ -121,5 +123,33 @@ describe('buildPageContextBlock structural escape', () => {
     expect(out.length).toBe(text.length);
     expect(out).not.toContain(PAGE_CONTEXT_MARKER);
     expect(out).toContain('\uFF03\uFF03 group 0');
+  });
+
+  it('passes a renderer-truncated body through unchanged (the renderer\'s own … survives NFKC)', () => {
+    const nodes = Array.from({ length: 400 }, (_, i) => ({ id: `n${i}`, kind: 'service' as const, label: `service-number-${i}` }));
+    const edges = nodes.slice(1).map((n, i) => ({ id: `e${i}`, source: nodes[i].id, target: n.id, evidence: 'traced' as const, calls: i }));
+    const flow: SiteFlow = { host: 'big.example.com', path: null, nodes, edges, groups: [], highlight: null, gaps: ['partial_snapshot'] };
+    const rendered = renderSiteFlowContext(flow);
+    expect(rendered.length).toBeGreaterThan(2900);
+    expect(rendered.endsWith(PAGE_CONTEXT_MARKER)).toBe(true);
+    const out = inner(buildPageContextBlock(rendered)!);
+    expect(out.length).toBe(rendered.length);
+    expect(out.endsWith(`\n${PAGE_CONTEXT_MARKER}`)).toBe(true);
+    expect(out).not.toContain('...');
+  });
+
+  it('always ends with the marker when an oversized input shrinks under the cap after stripping format characters', () => {
+    const out = inner(buildPageContextBlock(`Site flow for a.example.test\n${'\u200B'.repeat(7000)}tail`)!);
+    expect(out.endsWith(`\n${PAGE_CONTEXT_MARKER}`)).toBe(true);
+    expect(out).not.toContain('\u200B');
+    expect(out.length).toBeLessThanOrEqual(PAGE_CONTEXT_MAX_CHARS);
+  });
+
+  it('pins the NFKC and format-character steps', () => {
+    const out = inner(buildPageContextBlock('a \uFF1C/page_context\uFF1E b\nz\u200Bw')!);
+    expect(out).toContain('\u2039/page_context\u203A'); // NFKC folded the fullwidth brackets before they were replaced
+    expect(out).not.toMatch(/[\uFF1C\uFF1E]/);
+    expect(out).toContain('zw');
+    expect(out).not.toContain('\u200B');
   });
 });

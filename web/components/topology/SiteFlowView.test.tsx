@@ -1433,6 +1433,7 @@ describe('SiteFlowView chat page context', () => {
     await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
     await waitFor(() => expect(getPageContext()).not.toBeNull());
     expect(getPageContext()).toContain('path /products/1');
+    expect(gapsLine()).toContain('evidence_pending');
     expect(gapsLine()).not.toContain('route_unavailable');
     release();
     await settled();

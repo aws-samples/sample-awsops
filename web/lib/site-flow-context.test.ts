@@ -172,6 +172,7 @@ describe('renderSiteFlowContext', () => {
     const tiny = renderSiteFlowContext({ ...f, gaps: [] }, 400, ['evidence_pending']);
     expect(tiny.split('\n')[1]).toBe('Gaps: evidence_pending');
     expect(tiny.length).toBeLessThanOrEqual(400);
+    expect(tiny.endsWith('…[site flow truncated]')).toBe(true);
   });
   it('caps an oversized host/path so header, Gaps and marker survive', () => {
     const f: SiteFlow = { ...flowFor(), host: 'h'.repeat(5000), path: `/${'p'.repeat(5000)}`, gaps: ['partial_snapshot'] };
