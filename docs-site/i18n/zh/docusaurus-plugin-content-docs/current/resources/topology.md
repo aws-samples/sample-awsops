@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # 拓扑
 
-默认 `/topology` 视图通过交互式图形探索配置中的请求路径（**Route53 → CloudFront → Load Balancer → Target Group → 目标**）。下文介绍可选的**服务 + 网络**视图。
+默认 `/topology` 视图是按域名展示的站点流量，详见下文**站点流量**。在 `/topology?view=flow` 中可通过交互式图形探索配置中的请求路径（**Route53 → CloudFront → Load Balancer → Target Group → 目标**）；下文还介绍可选的**服务 + 网络**视图。
 
 <Screenshot src="/screenshots/resources/topology.png" alt="请求流图" />
 
@@ -67,7 +67,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ## 服务 + 网络（可选视图）
 
-打开 `/topology?view=e2e`，或在配置拓扑、服务地图（`/topology/services`）、网络监视器（`/network-flow`）中选择**服务 + 网络 →**。默认 `/topology` 配置视图仍可通过**返回配置流**打开。
+打开 `/topology?view=e2e`，或在配置拓扑、服务地图（`/topology/services`）、网络监视器（`/network-flow`）中选择**服务 + 网络 →**。配置流视图（`/topology?view=flow`）仍可通过**返回配置流**打开。
 
 服务与 Network Flow Monitor（NFM）观测仅支持**主机账户（`self`）**。选择成员账户或所有账户时只显示配置，不会将主机观测叠加到这些账户。NFM 仅查询主机账户配置的 AWS 区域，并非全账户或跨区域的流量普查。
 
@@ -123,7 +123,7 @@ trace中的数字账户ID仅与已认证的主账户身份核对后关联。无�
 
 ## 站点流量
 
-打开 `/topology?view=site` 即可使用此可选视图，它目前还不是默认视图。在顶部的域名选择器中选择一个域名，即可以分组图的形式查看其请求流：DNS、CloudFront 行为、负载均衡器与监听器规则、目标组、EKS 工作负载（包括其他已注册账户中的集群）、追踪中观测到的服务调用以及数据存储。
+这是打开 `/topology` 时的默认视图（`?view=site` 打开的是同一视图）。可通过顶部的**请求流量图 →** 链接或 `/topology?view=flow` 打开原有的请求流图；带有集群筛选等仅适用于请求流图的参数的旧链接仍会打开该图。在顶部的域名选择器中选择一个域名，即可以分组图的形式查看其请求流：DNS、CloudFront 行为、负载均衡器与监听器规则、目标组、EKS 工作负载（包括其他已注册账户中的集群）、追踪中观测到的服务调用以及数据存储。
 
 - **路径输入**：输入路径后，会高亮该路径经过的分支，并沿追踪中观测到的路由模板（最近 60 分钟）越过网关，延续到下游服务以及最后一个服务的数据存储。由静态源提供的页面路径会关联到路由模板按名称匹配的 API 路由，该关联标记为推断（虚线）。
 - **路由模板的限制**：路由按服务名称在向该追踪数据源导出数据的所有集群和命名空间中汇总，因此同名服务（例如部署在两个可用区集群中的同一应用）会被合并。`http.route` 不包含 HTTP 方法，同一模板上的 GET 与 POST 会被合并，并且只有在时间窗口内观测到的模板才会成为候选。没有下游调用的路由可能在该服务结束，也可能是下一跳未接入追踪或经过消息传递。包含类似 ID 片段的路由（原始路径）不会被使用。
