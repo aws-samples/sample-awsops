@@ -29,10 +29,11 @@ vi.mock('@/components/ui/DetailPanel', () => ({
   ),
 }));
 
-import SiteFlowView, { BINDING_NOTICE, GAP_NOTICE, HighlightChain } from './SiteFlowView';
+import SiteFlowView, { BINDING_NOTICE, GAP_NOTICE, HighlightChain, ROUTE_NOTICE } from './SiteFlowView';
 import { applyTerms } from '@/lib/i18n-terms';
-import { useClusterEvidence, withHostAlias } from './useSiteFlowData';
+import { parseSiteRoutes, useClusterEvidence, withHostAlias } from './useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
+import type { RouteHop } from '@/lib/trace-routes';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
 const REGION = 'ap-northeast-2', HOST_ID = '123456789012', MEMBER = '111111111111';
@@ -993,20 +994,6 @@ describe('SiteFlowView', () => {
     expect(items.some((t) => t?.includes('front'))).toBe(false);
   });
 
-  it('labels inferred hops in the chain list', async () => {
-    stubFetch();
-    view('view=site&host=mall.example.com&path=/api/orders');
-    await settled();
-    const f = canvas.props!.flow;
-    // Inferred ids come only from page→API route inference (route aggregation lands later), so the list
-    // contract is checked on the exported list with an inferred id added.
-    const withInferred = { ...f, highlight: { ...f.highlight!, inferred: [wl(HOST_ARN, 'web/catalog')] } };
-    cleanup();
-    render(<LanguageProvider><HighlightChain flow={withInferred} /></LanguageProvider>);
-    const item = screen.getAllByRole('listitem').find((li) => li.textContent?.includes('catalog'));
-    expect(item?.textContent).toContain('(추론)');
-    expect(screen.getAllByRole('listitem').filter((li) => li.textContent?.includes('(추론)'))).toHaveLength(1);
-  });
 
   // A synthetic highlighted chain: every node highlighted, edges `a->b` highlighted in the given order.
   const chainFlow = (nodes: [string, SiteNode['kind'], string][], links: [string, string][]): SiteFlow => ({
@@ -1019,6 +1006,13 @@ describe('SiteFlowView', () => {
     render(<LanguageProvider><HighlightChain flow={flow} /></LanguageProvider>);
     return screen.getAllByRole('listitem').map((li) => li.textContent);
   };
+
+  it('labels inferred hops in the chain list', () => {
+    const front = wl(HOST_ARN, 'web/front'), catalog = wl(HOST_ARN, 'web/catalog');
+    const f = chainFlow([[front, 'workload', 'front'], [catalog, 'workload', 'catalog']], [[front, catalog]]);
+    const items = chainItems({ ...f, highlight: { nodes: [front], edges: [], inferred: [catalog, `${front}->${catalog}`] } });
+    expect(items).toEqual(['Workload front', 'Workload catalog(추론)']);
+  });
 
   it('lists sequential workload hops in request order (front before catalog), not sorted by label or id', () => {
     const front = wl(HOST_ARN, 'web/front'), catalog = wl(HOST_ARN, 'web/catalog');
@@ -1061,21 +1055,312 @@ describe('SiteFlowView', () => {
   });
 });
 
+// ---- trace routes (`/api/topology/site-routes`) ----
+const ROUTES_URL = '/api/topology/site-routes';
+const CATALOG_DS = `ds:rds_cluster:${HOST_ID}:${REGION}:catalog`;
+const ORDERS_DS = `ds:rds_cluster:${MEMBER}:${REGION}:orders`;
+const CACHE_DS = `ds:elasticache:${CACHE_HOST}`;
+/** front (gateway behind the default behavior) → catalog → catalog's datastore. Typed as the server's hop shape so
+ *  a server-side contract change fails the typecheck here. */
+const ROUTES: RouteHop[] = [
+  { service: 'front', route: '/products/{id}', calls: 9, next: [{ service: 'catalog', route: '/catalog/{id}', calls: 9 }] },
+  { service: 'catalog', route: '/catalog/{id}', calls: 9, next: [] },
+];
+const routesBody = (status: string, routes: unknown[] = ROUTES, reasons: string[] = []) => ({ status, reasons, routes });
+/** catalog reads its own database (configured db-ref), so the route chain has a datastore to close on. */
+const DB_REFS_CATALOG = { ...(DB_REFS.shop as Record<string, unknown>), refs: [...(DB_REFS.shop as { refs: unknown[] }).refs,
+  { workload: { namespace: 'web', name: 'catalog' }, via: 'env', host: 'catalog-db.cluster-abc.ap-northeast-2.rds.amazonaws.com',
+    kind: 'rds', resource: { type: 'rds_cluster', id: 'catalog', region: REGION, accountId: HOST_ID } }] };
+/** Stub with a routes handler (body or Response) and catalog's db-ref. */
+function stubRoutes(routes: (() => Response | Promise<Response>) | unknown, over: Handler = () => undefined, rows = inventory()) {
+  stubFetch((u, init) => {
+    const custom = over(u, init);
+    if (custom) return custom;
+    if (u === ROUTES_URL) return typeof routes === 'function' ? (routes as () => Response)() : json(routes);
+    if (u === '/api/eks/shop/db-refs') return json(DB_REFS_CATALOG);
+    return undefined;
+  }, rows);
+}
+const hl = () => canvas.props!.flow.highlight!;
+const PRODUCTS = 'view=site&host=mall.example.com&path=/products/1';
+const front = wl(HOST_ARN, 'web/front'), catalog = wl(HOST_ARN, 'web/catalog'), ordersApi = wl(MEMBER_ARN, 'biz/orders-api');
+
+describe('SiteFlowView trace routes', () => {
+  it('ok routes: the highlight follows the route chain to the downstream service and its datastore', async () => {
+    stubRoutes(routesBody('ok'));
+    view(PRODUCTS);
+    await settled();
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1); // default window, no scope parameters
+    expect(hl().nodes).toEqual(expect.arrayContaining([front, catalog, CATALOG_DS]));
+    expect(hl().edges).toEqual(expect.arrayContaining([`${front}->${catalog}`]));
+    expect(hl().nodes).not.toContain(CACHE_DS); // front is not terminal: its own datastore is not on this route
+    expect(hl().inferred).toEqual([]);
+    expect(canvas.props!.flow.gaps).not.toContain('route_unavailable');
+    expect(notices()).toBe('');
+    const items = within(screen.getByRole('region', { name: '강조된 요청 경로' })).getAllByRole('listitem').map((li) => li.textContent);
+    expect(items.slice(-3)).toEqual(['Workload front', 'Service catalog', 'Datastore catalog']);
+    expect(items.some((t) => t?.includes('(추론)'))).toBe(false);
+  });
+
+  it('partial routes are still followed and disclosed as one routes_partial gap listing the read reasons', async () => {
+    stubRoutes(routesBody('partial', ROUTES, ['capped', 'multi_source_counts', 'route_raw_path']));
+    view(PRODUCTS);
+    await settled();
+    expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
+    // The gap reaches the flow itself (the AI context reads flow.gaps), not only the notice list.
+    expect(canvas.props!.flow.gaps).toContain('routes_partial');
+    // Counts are discarded client-side, so multi_source_counts is not listed as a cause.
+    expect(notices()).toContain(`${GAP_NOTICE.routes_partial} (capped, route_raw_path)`);
+    expect(notices().split(GAP_NOTICE.routes_partial)).toHaveLength(2); // exactly one notice
+    expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+  });
+
+  it('a partial read whose only reason is multi_source_counts adds no gap or notice', async () => {
+    stubRoutes(routesBody('partial', ROUTES, ['multi_source_counts']));
+    view(PRODUCTS);
+    await settled();
+    expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
+    expect(notices()).toBe('');
+  });
+
+  it('a partial read without listed reasons is still disclosed', async () => {
+    stubRoutes(routesBody('partial', ROUTES, []));
+    view(PRODUCTS);
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('routes_partial');
+    expect(notices()).toContain(GAP_NOTICE.routes_partial);
+    expect(notices()).not.toContain(`${GAP_NOTICE.routes_partial} (`);
+  });
+
+  it.each([
+    ['unavailable', () => json(routesBody('unavailable', [], ['query_failed']))],
+    ['404 (flag off)', () => json({ error: 'topology_entities_disabled', class: 'service' }, 404)],
+    ['503', () => json({ error: 'read_unavailable' }, 503)],
+    ['network error', () => Promise.reject(new TypeError('network'))],
+    ['malformed: extra top-level key', () => json({ ...routesBody('ok'), ambiguousTraces: 1 })],
+    ['malformed: extra hop key', () => json(routesBody('ok', [{ ...ROUTES[0], path: '/products/1' }, ROUTES[1]]))],
+    ['malformed: string count', () => json(routesBody('ok', [{ ...ROUTES[0], calls: '9' }, ROUTES[1]]))],
+    ['malformed: unknown status', () => json(routesBody('degraded'))],
+  ])('%s → route_unavailable notice and no route-based highlight', async (_, respond) => {
+    stubRoutes(respond);
+    view(PRODUCTS);
+    await settled();
+    expect(hl().nodes).toContain(front); // the infra walk still reaches the gateway
+    expect(hl().nodes).not.toContain(catalog);
+    expect(hl().nodes).not.toContain(CATALOG_DS);
+    expect(canvas.props!.flow.gaps).toContain('route_unavailable');
+    expect(notices()).toContain(GAP_NOTICE.route_unavailable);
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
+    expect(notices()).not.toContain(GAP_NOTICE.routes_partial);
+    expect(notices()).not.toContain(ROUTE_NOTICE.no_trace_source);
+  });
+
+  it('no trace datasource → its own notice in place of the generic route_unavailable one', async () => {
+    stubRoutes(routesBody('unavailable', [], ['no_trace_source']));
+    view(PRODUCTS);
+    await settled();
+    expect(canvas.props!.flow.gaps).toContain('route_unavailable');
+    expect(notices()).toContain(ROUTE_NOTICE.no_trace_source);
+    expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+    expect(hl().nodes).not.toContain(catalog);
+  });
+
+  it('without a path no route read is made and no route notice is shown (routes change nothing drawn)', async () => {
+    stubRoutes(routesBody('partial', ROUTES, ['capped']));
+    view();
+    await settled();
+    expect(canvas.props!.flow.path).toBeNull();
+    expect(calls).not.toContain(ROUTES_URL);
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
+    cleanup();
+    stubRoutes(routesBody('unavailable', [], ['no_trace_source']));
+    view('view=site&host=mall.example.com&path=?q=1'); // normalizes to no path
+    await settled();
+    expect(canvas.props!.flow.path).toBeNull();
+    expect(calls).not.toContain(ROUTES_URL);
+    expect(notices()).not.toContain(ROUTE_NOTICE.no_trace_source);
+    expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+  });
+
+  it('the host index makes no route read, even with a path in the URL', async () => {
+    stubRoutes(routesBody('ok'));
+    view('view=site&path=/products/1');
+    await screen.findByRole('list', { name: '호스트 목록' }, { timeout: 3000 });
+    await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull(), { timeout: 3000 });
+    expect(calls).not.toContain(ROUTES_URL);
+  });
+
+  it('a path entered after the load starts one route read without re-reading the inventory', async () => {
+    stubRoutes(routesBody('ok'));
+    const r = view();
+    await settled();
+    expect(calls).not.toContain(ROUTES_URL);
+    const accountsReads = calls.filter((u) => u === '/api/accounts').length;
+    const inventoryReads = calls.filter((u) => u.startsWith('/api/inventory/')).length;
+    nav.search = PRODUCTS;
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS])), { timeout: 3000 });
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1);
+    expect(calls.filter((u) => u === '/api/accounts')).toHaveLength(accountsReads);
+    expect(calls.filter((u) => u.startsWith('/api/inventory/'))).toHaveLength(inventoryReads);
+    // Clearing and re-entering a path within the same load reuses the landed read.
+    nav.search = 'view=site&host=mall.example.com';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(canvas.props!.flow.path).toBeNull());
+    nav.search = 'view=site&host=mall.example.com&path=/products/2';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(canvas.props!.flow.path).toBe('/products/2'));
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1);
+  });
+
+  it('member-only scope still reads (and uses) the app-level routes', async () => {
+    stubRoutes(routesBody('ok', [{ service: 'orders-api', route: '/api/orders', calls: 3, next: [] }]), (u) => {
+      if (u.startsWith('/api/eks?') && !isFleet(u)) return json({ clusters: [CLUSTERS[1]], errors: [] });
+      return undefined;
+    }, { ...inventory(), target_group: [inventory().target_group[1]] });
+    view('view=site&host=mall.example.com&path=/api/orders', `accounts=${MEMBER}&regions=__all__&includeGlobal=1`);
+    await settled();
+    expect(calls).toContain(ROUTES_URL);
+    expect(hl().nodes).toEqual(expect.arrayContaining([ordersApi, ORDERS_DS]));
+    expect(canvas.props!.flow.gaps).not.toContain('route_unavailable');
+  });
+
+  it('while the first route read is pending: evidence pending, no false route_unavailable notice', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubRoutes(() => gate.then(() => json(routesBody('ok'))));
+    view(PRODUCTS);
+    await waitFor(() => expect(canvas.props?.flow.highlight?.nodes).toContain(front), { timeout: 3000 });
+    await waitFor(() => expect(calls).toContain('/api/eks/shop/db-refs'));
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+    act(() => release());
+    await settled();
+    expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
+  });
+
+  it('a route read that never settles is cut at 30 s → route_unavailable', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    stubRoutes(() => new Promise<Response>(() => {})); // ignores abort, like a stuck connection
+    view(PRODUCTS);
+    await waitFor(() => expect(calls).toContain(ROUTES_URL), { timeout: 3000 });
+    await waitFor(() => expect(calls).toContain('/api/eks/shop/db-refs'), { timeout: 3000 });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await settled();
+    expect(notices()).toContain(GAP_NOTICE.route_unavailable);
+    expect(hl().nodes).not.toContain(catalog);
+  });
+
+  it('a path change reuses the loaded routes (no new route read)', async () => {
+    stubRoutes(routesBody('ok'));
+    const r = view(PRODUCTS);
+    await settled();
+    nav.search = 'view=site&host=mall.example.com&path=/products/2';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(canvas.props!.flow.path).toBe('/products/2'));
+    expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS]));
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1);
+  });
+
+  it('refresh keeps the routes until the replacement lands, then swaps', async () => {
+    let hold: ((r: Response) => void) | null = null;
+    let reads = 0;
+    stubRoutes(() => (++reads === 1 ? json(routesBody('ok'))
+      : new Promise<Response>((r) => { hold = r; })));
+    view(PRODUCTS);
+    await settled();
+    expect(hl().nodes).toContain(CATALOG_DS);
+    const before = canvas.flows.length;
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 3000 });
+    await waitFor(() => expect(calls.filter((u) => u === '/api/eks/shop/db-refs')).toHaveLength(2), { timeout: 3000 });
+    await waitFor(() => expect(screen.queryByRole('button', { name: '새로고침' })?.hasAttribute('disabled')).toBe(false), { timeout: 3000 });
+    for (const f of canvas.flows.slice(before)) expect(f.highlight?.nodes).toContain(CATALOG_DS); // never rebuilt without routes
+    expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+    // The replacement: front's route now ends at front (terminal) → front's own datastore, no catalog hop.
+    act(() => hold!(json(routesBody('ok', [{ service: 'front', route: '/products/{id}', calls: 4, next: [] }]))));
+    await waitFor(() => expect(hl().nodes).toContain(CACHE_DS));
+    expect(hl().nodes).not.toContain(CATALOG_DS);
+    expect(hl().nodes).not.toContain(catalog);
+  });
+
+  it('a page path on a static origin links to the API route whose template matches by name (inferred, labelled)', async () => {
+    const rows = inventory();
+    rows.cloudfront = [inv('self', 'E1EXAMPLE', { ...CF_DATA, region: 'global',
+      origins: [...CF_DATA.origins, { Id: 's3-static', DomainName: 'shop-static.s3.ap-northeast-2.amazonaws.com' }],
+      default_cache_behavior: { TargetOriginId: 's3-static' } })];
+    // Five orders-api templates match /api/orders/7; one ranks best, so the link is not ambiguous (best-rank ties only).
+    stubRoutes(routesBody('ok', ['/api/orders/{id}', '/api/{a}/{b}', '/api/:x/:y', '/api/*', '/api/**']
+      .map((route) => ({ service: 'orders-api', route, calls: 2, next: [] }))), undefined, rows);
+    view('view=site&host=mall.example.com&path=/orders/7');
+    await settled();
+    const f = canvas.props!.flow;
+    expect(f.gaps).not.toContain('route_ambiguous');
+    expect(f.gaps).not.toContain('route_unavailable');
+    expect(hl().nodes).toContain('origin:E1EXAMPLE:shop-static.s3.ap-northeast-2.amazonaws.com'); // the observed page request
+    expect(hl().inferred).toEqual(expect.arrayContaining(['cf:E1EXAMPLE/beh:0', ordersApi, ORDERS_DS]));
+    expect(hl().nodes).not.toContain(ordersApi);
+    const items = within(screen.getByRole('region', { name: '강조된 요청 경로' })).getAllByRole('listitem').map((li) => li.textContent);
+    expect(items).toEqual(expect.arrayContaining(['Behavior /api/*(추론)', 'Workload orders-api(추론)', 'Datastore orders(추론)']));
+    expect(items.find((t) => t?.includes('shop-static'))).not.toContain('(추론)');
+  });
+});
+
+describe('parseSiteRoutes', () => {
+  it('keeps templates and service names only; an optional next route may be absent', () => {
+    expect(parseSiteRoutes(routesBody('partial', [{ service: 'a', route: '/x', calls: 1, next: [{ service: 'b', calls: 1 }] }], ['capped'])))
+      .toEqual({ status: 'partial', reasons: ['capped'], routes: [{ service: 'a', route: '/x', next: [{ service: 'b' }] }] });
+    expect(parseSiteRoutes(routesBody('ok', [])).routes).toEqual([]);
+  });
+  it('unavailable carries its reasons but no routes', () => {
+    expect(parseSiteRoutes(routesBody('unavailable', [], ['no_trace_source'])))
+      .toEqual({ status: 'unavailable', reasons: ['no_trace_source'], routes: null });
+  });
+  it.each([
+    ['not an object', []],
+    ['missing reasons', { status: 'ok', routes: [] }],
+    ['non-string reason', routesBody('ok', [], [1 as unknown as string])],
+    ['routes not an array', { status: 'ok', reasons: [], routes: {} }],
+    ['empty service', routesBody('ok', [{ service: '', route: '/x', calls: 1, next: [] }])],
+    ['negative calls', routesBody('ok', [{ service: 'a', route: '/x', calls: -1, next: [] }])],
+    ['fractional calls', routesBody('ok', [{ service: 'a', route: '/x', calls: 1.5, next: [] }])],
+    ['missing next', routesBody('ok', [{ service: 'a', route: '/x', calls: 1 }])],
+    ['next extra key', routesBody('ok', [{ service: 'a', route: '/x', calls: 1, next: [{ service: 'b', calls: 1, url: '/y' }] }])],
+    ['next empty route', routesBody('ok', [{ service: 'a', route: '/x', calls: 1, next: [{ service: 'b', route: '', calls: 1 }] }])],
+    ['next missing calls', routesBody('ok', [{ service: 'a', route: '/x', calls: 1, next: [{ service: 'b' }] }])],
+  ])('malformed (%s) → failed, no routes', (_, body) => {
+    expect(parseSiteRoutes(body)).toEqual({ status: 'failed', reasons: [], routes: null });
+  });
+});
+
 describe('SiteFlowView notices', () => {
   const GAPS: SiteGap[] = ['inventory_incomplete', 'pods_unresolved', 'trace_unavailable', 'ambiguous_cluster', 'incomplete_listing',
     'partial_snapshot', 'route_unavailable', 'db_refs_partial', 'host_not_found', 'behaviors_unavailable', 'route_ambiguous',
-    'trace_unmapped', 'private_zone_only', 'rule_unresolved', 'path_unmatched'];
+    'trace_unmapped', 'private_zone_only', 'rule_unresolved', 'path_unmatched', 'routes_partial'];
   it('has one distinct notice per SiteGap', () => {
     expect(Object.keys(GAP_NOTICE).sort()).toEqual([...GAPS].sort());
     expect(new Set(Object.values(GAP_NOTICE)).size).toBe(GAPS.length);
   });
-  it('route_unavailable says the highlight stops where the route is unknown and claims no inference', () => {
+  it('route_unavailable names both causes (no route data / no matching route), says where it stops, claims no inference', () => {
     // Page→API inference needs the per-route aggregates this gap reports missing, so none is drawn; every emitter
     // (no route rows, unknown request path, no matching route, no traced next hop) stops where the route is unknown.
-    expect(GAP_NOTICE.route_unavailable).toContain('경로를 알 수 없는 지점에서 멈춥니다');
-    expect(applyTerms('en', GAP_NOTICE.route_unavailable)).toContain('stops where the route is unknown');
+    expect(GAP_NOTICE.route_unavailable).toContain('경로를 알 수 없는 지점에서 강조가 멈춥니다');
+    expect(GAP_NOTICE.route_unavailable).toContain('경로 정보가 없거나');
+    expect(GAP_NOTICE.route_unavailable).toContain('맞는 라우트가 없어');
+    const en = applyTerms('en', GAP_NOTICE.route_unavailable);
+    expect(en).toContain('stops where the route is unknown');
+    expect(en).toContain('Route data is unavailable');
+    expect(en).toContain('no route matches');
     expect(GAP_NOTICE.route_unavailable).not.toContain('추론');
     for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, GAP_NOTICE.route_unavailable)).not.toMatch(/infer|推断|推定/i);
+  });
+  it('no_trace_source names the missing ClickHouse source with route data (Tempo/X-Ray alone cannot feed routes)', () => {
+    expect(ROUTE_NOTICE.no_trace_source).toContain('경로 데이터가 있는 ClickHouse 트레이스 데이터 소스가 없어');
+    for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ROUTE_NOTICE.no_trace_source)).toContain('ClickHouse');
+    expect(applyTerms('en', ROUTE_NOTICE.no_trace_source)).toMatch(/route data/);
+    expect(applyTerms('en', ROUTE_NOTICE.no_trace_source)).not.toMatch(/no trace datasource is connected/i);
   });
   it('binding_scope_partial names its only trigger (no connected cluster in scope) and gives no region advice', () => {
     // The per-account derivation lists explicit regions whenever a cluster is in scope, so the all-region note
@@ -1084,8 +1369,8 @@ describe('SiteFlowView notices', () => {
     expect(BINDING_NOTICE.binding_scope_partial).not.toContain('리전을 지정');
     expect(applyTerms('en', BINDING_NOTICE.binding_scope_partial)).not.toMatch(/(select|choose|pick)\s+(explicit\s+)?regions/i);
   });
-  it.each(['en', 'zh', 'ja'] as const)('translates every gap and binding notice (%s)', (lang) => {
-    for (const ko of [...Object.values(GAP_NOTICE), ...Object.values(BINDING_NOTICE)]) {
+  it.each(['en', 'zh', 'ja'] as const)('translates every gap, binding and route notice (%s)', (lang) => {
+    for (const ko of [...Object.values(GAP_NOTICE), ...Object.values(BINDING_NOTICE), ...Object.values(ROUTE_NOTICE)]) {
       const out = applyTerms(lang, ko);
       expect(out, ko).not.toBe(ko);
       expect(/[가-힣]/.test(out), ko).toBe(false);

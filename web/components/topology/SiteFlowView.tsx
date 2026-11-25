@@ -11,6 +11,13 @@
 //    canvas only re-highlights in place); evidence landing changes the structure (the canvas re-lays out from the
 //    known positions). The canvas is keyed by host: a new host starts a fresh instance and layout.
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
+//  - trace routes (useSiteInventory `routes`, read once per load once a host and a path exist) continue the path highlight past the gateway; they
+//    reach the builder only for a read with status `ok`/`partial`. Until the first read lands, `route_unavailable` is
+//    not shown (evidence pending). Only with a path entered (routes change nothing drawn otherwise): a `partial` read
+//    adds the `routes_partial` gap to the final flow (so the AI context sees it), whose one notice lists the read's
+//    reasons — except when `multi_source_counts` is the only reason (counts are discarded here, so nothing drawn is
+//    affected); with no ClickHouse trace datasource registered (`no_trace_source`) that cause replaces the generic
+//    `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,7 +28,7 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import SiteFlowCanvas from '@/components/topology/SiteFlowCanvas';
 import { useClusterEvidence, useSiteInventory, type SiteInventory } from '@/components/topology/useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
-import { buildSiteFlow, normalizeHost, siteHosts, type SiteFlow, type SiteGap, type SiteKind, type SiteNode } from '@/lib/site-flow';
+import { buildSiteFlow, normalizeHost, normalizePath, siteHosts, type SiteFlow, type SiteGap, type SiteKind, type SiteNode } from '@/lib/site-flow';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { isComposingKey } from '@/lib/ime';
 import { useTheme } from '@/lib/use-theme';
@@ -37,7 +44,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   ambiguous_cluster: '같은 이름의 클러스터가 여러 개라 트레이스 호출을 클러스터에 연결할 수 없습니다.',
   incomplete_listing: '클러스터 목록이 일부만 조회되어 트레이스 호출을 연결하지 않습니다.',
   partial_snapshot: '트레이스 스냅샷이 일부만 수집되어 트레이스 호출을 표시하지 않습니다.',
-  route_unavailable: '경로별 트레이스 집계를 읽지 못해 경로 강조가 경로를 알 수 없는 지점에서 멈춥니다.',
+  route_unavailable: '경로 정보가 없거나 요청 경로에 맞는 라우트가 없어 경로를 알 수 없는 지점에서 강조가 멈춥니다.',
   db_refs_partial: '일부 워크로드의 데이터 저장소 참조를 읽지 못해 데이터 저장소 연결이 일부만 표시됩니다.',
   host_not_found: '인벤토리에서 다음 호스트를 찾지 못했습니다:',
   behaviors_unavailable: 'CloudFront 캐시 동작을 읽지 못해 경로별 동작을 표시하지 않습니다.',
@@ -46,6 +53,7 @@ export const GAP_NOTICE: Record<SiteGap, string> = {
   private_zone_only: '프라이빗 호스팅 영역에만 있는 호스트라 공개 요청 경로를 강조하지 않습니다.',
   rule_unresolved: '로드 밸런서 리스너 규칙을 확인하지 못해 경로 강조가 일부에서 멈춥니다.',
   path_unmatched: '요청 경로에 맞는 캐시 동작이나 리스너 규칙이 없습니다.',
+  routes_partial: '경로별 트레이스 집계가 일부만 확인되어 경로 강조가 일부 경로를 따라가지 못할 수 있습니다.',
 };
 
 /** Why pod bindings were withheld or narrowed (fetchEksIpMap bindingRead reasons; Korean source, lockstep-tested).
@@ -64,6 +72,12 @@ export const BINDING_NOTICE: Record<string, string> = {
   binding_deadline: 'EKS 조회가 제한 시간(30초) 안에 끝나지 않아 Pod 식별 근거를 사용하지 않습니다. 새로고침으로 다시 시도하세요.',
 };
 const BINDING_FALLBACK = 'Pod 식별 근거를 확인할 수 없습니다.';
+
+/** Trace route read notices beyond the gaps (Korean source, lockstep-tested). Route aggregates come only from
+ *  ClickHouse sources indexed in the graph catalog, so Tempo/X-Ray sources alone still give `no_trace_source`. */
+export const ROUTE_NOTICE = {
+  no_trace_source: '경로 데이터가 있는 ClickHouse 트레이스 데이터 소스가 없어 요청 경로를 API 이후로 따라가지 못합니다.',
+} as const;
 
 /** Gaps stage 1 always carries for bound clusters until their evidence lands. */
 const PENDING_ARTIFACTS = new Set<SiteGap>(['trace_unavailable', 'db_refs_partial']);
@@ -162,7 +176,8 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const paramsKey = params.toString();
 
   const [reload, setReload] = useState(0);
-  const inv = useSiteInventory(inventoryScope, reload);
+  // The route read starts only with a host and a path (the builder's own path normalization decides "a path").
+  const inv = useSiteInventory(inventoryScope, reload, !!host && normalizePath(urlPath) !== null);
   const data = inv.data;
   const hosts = useMemo(() => (data ? siteHosts(data.flow) : []), [data]);
   const baseGaps = useMemo<SiteGap[]>(() => (data?.issues.length ? ['inventory_incomplete'] : []), [data]);
@@ -173,10 +188,20 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const arns = useMemo(() => [...new Set((stage1?.nodes ?? []).flatMap((n) => (n.kind === 'workload' && n.ref?.cluster ? [n.ref.cluster] : [])))].sort(),
     [stage1]);
   const ev = useClusterEvidence(arns, inv.fleet);
+  const routeRead = inv.routes;
+  // Only a read that returned routes (ok/partial) feeds the builder; the memo key is the routes array itself, so a
+  // read without routes (pending → failed/unavailable) never rebuilds the flow.
+  const routes = routeRead && (routeRead.status === 'ok' || routeRead.status === 'partial') ? routeRead.routes : null;
+  // A partial route read is a gap of the final flow (not stage 1) once a path is entered. `multi_source_counts` alone
+  // only says per-hop counts were merged across sources; the counts are discarded here, so nothing drawn is affected.
+  const routeCauses = routeRead?.status === 'partial' ? routeRead.reasons.filter((r) => r !== 'multi_source_counts') : [];
+  const routesPartial = routeRead?.status === 'partial' && normalizePath(urlPath) !== null
+    && !(routeRead.reasons.length > 0 && routeCauses.length === 0);
+  const flowGaps = useMemo<SiteGap[]>(() => (routesPartial ? [...baseGaps, 'routes_partial'] : baseGaps), [baseGaps, routesPartial]);
 
   const flow = useMemo<SiteFlow | null>(() => (data && host ? buildSiteFlow({ host, path: urlPath, flow: data.flow,
-    cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, gaps: baseGaps }) : null),
-  [data, host, urlPath, ev.traces, ev.dbRefs, baseGaps]);
+    cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, routes, gaps: flowGaps }) : null),
+  [data, host, urlPath, ev.traces, ev.dbRefs, routes, flowGaps]);
 
   // ---- URL state ----
   const hrefWith = useCallback((next: { host?: string; path?: string }) => {
@@ -241,14 +266,19 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
     ? `/topology/infra?${new URLSearchParams({ view: 'k8s', cluster: listedId(selected.ref.cluster, inv.fleet) })}` : null;
 
   // ---- disclosures ----
-  const evidencePending = inv.pending || (!!host && ev.pending);
+  const evidencePending = inv.pending || (!!host && (ev.pending || inv.routesPending));
+  const noTraceSource = routeRead?.status === 'unavailable' && routeRead.reasons.includes('no_trace_source');
   const notices: string[] = [];
   for (const g of flow?.gaps ?? []) {
     if (ev.pending && PENDING_ARTIFACTS.has(g)) continue;
+    if (g === 'route_unavailable' && !routeRead) continue; // the first route read has not landed yet
+    if (g === 'route_unavailable' && noTraceSource && flow?.path) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
     if (g === 'inventory_incomplete' && data?.issues.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${ev.failedDbRefs.map(eksClusterLabel).join(', ')})`);
+    } else if (g === 'routes_partial' && routeCauses.length) {
+      notices.push(`${tt(GAP_NOTICE[g])} (${routeCauses.join(', ')})`);
     } else if (g === 'host_not_found') {
       notices.push(`${tt(GAP_NOTICE[g])} ${flow?.host ?? host}`); // the searched (normalized) host follows the colon
     } else notices.push(tt(GAP_NOTICE[g]));

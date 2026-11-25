@@ -317,11 +317,12 @@ All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
-## topology (1)
+## topology (2)
 
 | Path | Method | Role | Auth |
 |------|--------|------|------|
 | `/api/topology` | GET | Published host service snapshot with bounded service, entry, placement and evidence lenses. Select a returned entity with `focus`, filter by `q` and pin `snapshot` when following `nextCursor`. Returns 404 when `topology_entities_enabled` is disabled, 422 for unsupported scopes, or 410 for an expired snapshot. | `verifyUser` |
+| `/api/topology/site-routes` | GET | Trace route templates (`http.route`) per traced service with the downstream service/route each one calls, for the site flow. Reads every registered ClickHouse trace datasource (registry catalog template, never request input), at most 4 at a time, each within what is left of a 10 s budget; an `ok`/`partial` per-source result is reused for 60 s (single-flight per source, template and window, at most 64 retained and 8 loading at once; a source past the loading cap reports `query_failed`), while `unavailable` results and failures are not. A read that reaches its row limit (`capped`) or comes back truncated drops its last, possibly cut hop; hops whose route or downstream route has an id-like segment are dropped (`route_raw_path`). Only route templates, service names and distinct-trace counts are returned as exactly `{ status, reasons, routes }`; a hop reported by several sources keeps its largest count, adds `multi_source_counts` and reports `partial`. A source that is `partial` keeps its routes; `unavailable` means no source returned routes. Optional `windowMins` is 15, 60 (default) or 180; any other parameter or value returns 400. No registered source returns `unavailable` with `no_trace_source`. Returns 404 when `topology_entities_enabled` is disabled and 503 when the registry read fails, is busy or exceeds its 2 s timed read-only transaction (`timeout`). | `verifyUser` |
 
 ## network-topology (1)
 
