@@ -128,6 +128,7 @@ Open `/topology?view=site` for this opt-in view; it is not the default view yet.
 - **Expanding groups**: click a group to expand the nodes inside it.
 - **Line styles**: solid lines are observed, dotted lines are configured, and dashed lines are inferred. A highlighted group or edge that is only partly inferred has a dashed highlight. Traced calls carry their call counts.
 - **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn. **Refresh** reads all evidence again; route template aggregates may be reused for up to a minute.
+- **AI chat context**: while a flow is on screen, questions to the AI assistant carry that flow with your message as on-screen data (not an instruction), so the answer is grounded in it; it is not saved in the conversation history. A note above the chat input shows while it is attached.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
