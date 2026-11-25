@@ -9,6 +9,7 @@ vi.mock('@/lib/datasources', () => ({
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: vi.fn() }));
 vi.mock('@/lib/trace-routes', () => ({ readTraceRoutes: mocks.read }));
 import { GET } from './route';
+import { clearRouteCache } from '@/lib/site-routes-cache';
 
 const CATALOG_SQL = 'SELECT TraceId, SpanId, ParentSpanId, ServiceName, SpanKind, Timestamp, Duration, ' +
   'ResourceAttributes, SpanAttributes, StatusCode FROM `otel`.`otel_traces` WHERE Timestamp >= now() - ' +
@@ -27,6 +28,7 @@ const get = async (qs = '') => {
 };
 
 beforeEach(() => {
+  clearRouteCache();
   vi.stubEnv('TOPOLOGY_ENTITIES_ENABLED', 'true');
   mocks.verify.mockResolvedValue({ sub: 'fixture' });
 });
@@ -191,6 +193,79 @@ describe('GET /api/topology/site-routes', () => {
     mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
     mocks.read.mockResolvedValue({ status: 'partial', reasons: ['capped', 'Code: 241 secret'], routes: [] });
     expect((await get()).body).toEqual({ status: 'partial', reasons: ['capped'], routes: [] });
+  });
+
+  it('keeps route_raw_path from a source', async () => {
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    mocks.read.mockResolvedValue({ status: 'partial', reasons: ['route_raw_path'], routes: [hop()] });
+    expect((await get()).body).toEqual({ status: 'partial', reasons: ['route_raw_path'], routes: [hop()] });
+  });
+
+  it('reuses an ok/partial per-source read for 60 s, keyed by source, template and window', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-24T00:00:00Z'));
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    mocks.read.mockResolvedValue({ status: 'partial', reasons: ['capped'], routes: [hop()] });
+    const first = await get();
+    vi.setSystemTime(new Date('2026-11-24T00:00:59Z'));
+    const second = await get();
+    expect(second.body).toEqual(first.body);
+    expect(second.res.headers.get('Cache-Control')).toBe('private, no-store'); // reuse is server-side only
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+    await get('?windowMins=15'); // another window is another aggregate
+    expect(mocks.read).toHaveBeenCalledTimes(2);
+    mocks.query.mockResolvedValue({ rows: [otelRow(7, CATALOG_SQL.replace('`otel`.', '`traces`.'))] });
+    await get(); // another registry template for the same source is another key
+    expect(mocks.read).toHaveBeenCalledTimes(3);
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    vi.setSystemTime(new Date('2026-11-24T00:01:00Z')); // expired
+    await get();
+    expect(mocks.read).toHaveBeenCalledTimes(4);
+  });
+
+  it('single-flight: concurrent requests for the same source share one read', async () => {
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    let release!: () => void;
+    mocks.read.mockImplementation(() => new Promise((r) => { release = () => r({ status: 'ok', reasons: [], routes: [hop()] }); }));
+    const a = GET(req()), b = GET(req());
+    await vi.waitFor(() => expect(mocks.read).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(await ra.json()).toEqual({ status: 'ok', reasons: [], routes: [hop()] });
+    expect(await rb.json()).toEqual({ status: 'ok', reasons: [], routes: [hop()] });
+  });
+
+  it('never reuses an unavailable or rejected read', async () => {
+    mocks.query.mockResolvedValue({ rows: [otelRow(7)] });
+    mocks.read.mockResolvedValueOnce({ status: 'unavailable', reasons: ['deadline'], routes: [] });
+    expect((await get()).body.status).toBe('unavailable');
+    mocks.read.mockRejectedValueOnce(new Error('upstream'));
+    expect((await get()).body).toEqual({ status: 'unavailable', reasons: ['query_failed'], routes: [] });
+    mocks.read.mockResolvedValueOnce({ status: 'ok', reasons: [], routes: [hop()] });
+    expect((await get()).body.status).toBe('ok');
+    expect(mocks.read).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads at most 4 sources at once, each within what is left of the total budget', async () => {
+    vi.useFakeTimers();
+    mocks.query.mockResolvedValue({ rows: [1, 2, 3, 4, 5, 6].map((id) => otelRow(id)) });
+    let inFlight = 0, peak = 0;
+    // Like readTraceRoutes: settles (unavailable) once its own deadline passes.
+    mocks.read.mockImplementation(({ deadlineMs }: { deadlineMs: number }) => {
+      inFlight += 1; peak = Math.max(peak, inFlight);
+      return new Promise((r) => setTimeout(() => { inFlight -= 1; r({ status: 'unavailable', reasons: ['deadline'], routes: [] }); }, deadlineMs));
+    });
+    const pending = GET(req());
+    await vi.advanceTimersByTimeAsync(10_000);
+    const res = await pending;
+    expect(await res.json()).toEqual({ status: 'unavailable', reasons: ['deadline'], routes: [] });
+    expect(peak).toBe(4);
+    const deadlines = mocks.read.mock.calls.map(([o]) => o.deadlineMs);
+    expect(deadlines.slice(0, 4)).toEqual([8000, 8000, 8000, 8000]);
+    // Lanes 5 and 6 start when the first four give up at 8 s: only 2 s of the 10 s budget remain.
+    expect(deadlines.slice(4)).toEqual([2000, 2000]);
   });
 
   it('maps a registry failure to a fixed 503 body', async () => {

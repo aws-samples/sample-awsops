@@ -1,11 +1,14 @@
 // GET /api/topology/site-routes — trace route templates (http.route) per service for the site flow.
 // Read-only: every registered ClickHouse trace datasource (registry catalog, never the request) is
-// read concurrently through readTraceRoutes; only templates, service names and counts leave here.
+// read through readTraceRoutes, at most SOURCE_LANES at once, each within what is left of the total budget;
+// only templates, service names and counts leave here. Per-source results are reused server-side for
+// ROUTE_CACHE_TTL_MS with single-flight (site-routes-cache.ts); the response itself stays `no-store`.
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { listClickHouseTraceDatasources } from '@/lib/graph-sources';
 import { graphDiagnostic } from '@/lib/graph-state';
 import { readTraceRoutes, type RouteHop, type RouteRead } from '@/lib/trace-routes';
+import { cachedRouteRead, routeCacheKey } from '@/lib/site-routes-cache';
 
 export const dynamic = 'force-dynamic';
 const json = (value: unknown, status = 200) =>
@@ -16,12 +19,28 @@ const TOTAL_BUDGET_MS = 10_000;
 const REGISTRY_DEADLINE_MS = 2_000;
 const SOURCE_DEADLINE_MS = 8_000;
 const ROUTE_LIMIT = 500;
+/** Sources read at once (each read is one ClickHouse aggregate pair through the MCP Lambda). */
+const SOURCE_LANES = 4;
 // readTraceRoutes' fixed reason vocabulary plus this route's own; anything else is dropped.
 const REASONS = new Set([
   'deadline', 'capped', 'malformed_rows', 'route_unsupported_schema', 'invalid_request', 'missing_configuration',
   'configuration_failed', 'query_failed', 'malformed_payload', 'payload_truncated', 'incomplete_collection',
-  'count_not_confirmed', 'empty_not_confirmed', 'route_ambiguous_traces', 'multi_source_counts', 'no_trace_source',
+  'count_not_confirmed', 'empty_not_confirmed', 'route_ambiguous_traces', 'route_raw_path', 'multi_source_counts',
+  'no_trace_source',
 ]);
+const FAILED: RouteRead = { status: 'unavailable', reasons: ['query_failed'], routes: [] };
+const DEADLINE: RouteRead = { status: 'unavailable', reasons: ['deadline'], routes: [] };
+
+/** `read` bounded by this caller's remaining budget: a shared in-flight read started by another request may have
+ *  more time left than this one. The shared read itself keeps running for its other callers. */
+async function within(read: Promise<RouteRead>, ms: number): Promise<RouteRead> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([read, new Promise<RouteRead>((r) => { timer = setTimeout(() => r(DEADLINE), Math.max(0, ms)); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 class RegistryDeadline extends Error {}
 
@@ -88,11 +107,21 @@ export async function GET(request: Request) {
     ]);
     clearTimeout(timer);
     if (!datasources.length) return json({ status: 'unavailable', reasons: ['no_trace_source'], routes: [] });
-    const deadlineMs = Math.max(0, Math.min(SOURCE_DEADLINE_MS, TOTAL_BUDGET_MS - (Date.now() - started)));
-    const settled = await Promise.allSettled(datasources.map(({ instanceId, template }) =>
-      readTraceRoutes({ instanceId, template, windowMins, deadlineMs, limit: ROUTE_LIMIT })));
-    const reads = settled.map((s): RouteRead => (s.status === 'fulfilled' ? s.value
-      : { status: 'unavailable', reasons: ['query_failed'], routes: [] }));
+    // At most SOURCE_LANES sources at once, lanes pulling from one shared index. Each source's deadline is what is
+    // left of the total budget when its lane reaches it; a source reached with no budget left is not read.
+    const reads: RouteRead[] = new Array(datasources.length);
+    let next = 0;
+    const lane = async () => {
+      for (let i = next++; i < datasources.length; i = next++) {
+        const { instanceId, template } = datasources[i];
+        const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
+        const read = cachedRouteRead(routeCacheKey(instanceId, template, windowMins), () => (remaining > 0
+          ? readTraceRoutes({ instanceId, template, windowMins, deadlineMs: Math.min(SOURCE_DEADLINE_MS, remaining), limit: ROUTE_LIMIT })
+          : Promise.resolve(DEADLINE)));
+        reads[i] = await within(read, remaining).catch(() => FAILED);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(SOURCE_LANES, datasources.length) }, lane));
     return json(combine(reads));
   } catch (e) {
     clearTimeout(timer);
