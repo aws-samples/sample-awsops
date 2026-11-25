@@ -331,7 +331,8 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
             group.heading,
           )
         ) {
-          firstAction = columns[1]?.[1]?.split(/(?<=[.!?。！？])(?:\s|$)/u)[0].trim();
+          const action = columns[1]?.[1];
+          firstAction = action?.match(/^.*?[.!?。！？](?=\s|$)/u)?.[0] ?? action;
         }
         const relationships = /^(?:관계 유형|Relationship|関係|关系)$/i.test(header[0]);
         const label = relationships ? header[0] + ' / ' + header[1] : group.heading || block.title;
