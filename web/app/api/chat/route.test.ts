@@ -1521,4 +1521,107 @@ describe('page context (site flow on screen)', () => {
     await readStream(await POST(req({ prompt: 'q', pageContext: PAGE, sessionId: 's'.repeat(36) })));
     expect(vi.mocked(bedrockDirectStream).mock.calls.at(-1)![0]).toBe(`${BLOCK}\n\nq`);
   });
+
+  // Audit breadcrumb: the stored exchange meta says how long the delivered block body was — never its text or a hash.
+  const lastMeta = () => (recordExchange.mock.calls.at(-1)![0] as { meta: Record<string, unknown> }).meta;
+
+  it('records pageContextChars (block body length) when the block is delivered to the streamed invoke', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'q', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(lastMeta().pageContextChars).toBe(PAGE.length);
+    expect(JSON.stringify(recordExchange.mock.calls)).not.toMatch(/shop\.example\.test|page_context/);
+    await readStream(await POST(req({ prompt: 'q', sessionId: 's'.repeat(36) })));
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+  });
+
+  it('records no pageContextChars when the block is dropped by the prompt cap', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('ops');
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'q'.repeat(49_990), pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+  });
+
+  it('records pageContextChars on the assistant, fan-out and Bedrock-direct paths', async () => {
+    process.env.HYBRID_ROUTING_ENABLED = 'true';
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    const { POST } = await import('./route');
+    isProductHelpIntent.mockReturnValue(true);
+    await readStream(await POST(req({ prompt: 'awsops 사용법', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(lastMeta().pageContextChars).toBe(PAGE.length);
+    isProductHelpIntent.mockReturnValue(false);
+
+    process.env.MULTI_ROUTE_SYNTHESIS_ENABLED = 'true';
+    classifyRoute.mockResolvedValue(multiRoute);
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'network', skill: 'network', agentName: 'network', skillHashes: [] });
+    invokeAgent.mockImplementation(async ({ gateway }: { gateway: string }) => `ans-${gateway}`);
+    await readStream(await POST(req({ prompt: 'q', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(synthesizeStream).toHaveBeenCalled();
+    expect(lastMeta().pageContextChars).toBe(PAGE.length);
+    delete process.env.MULTI_ROUTE_SYNTHESIS_ENABLED;
+
+    classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'ops', skill: 'ops', agentName: 'ops', skillHashes: [] });
+    invokeAgent.mockRejectedValue(new Error('runtime down'));
+    const { bedrockDirectStream } = await import('@/lib/bedrock-direct');
+    vi.mocked(bedrockDirectStream).mockImplementationOnce(async function* () { yield 'general answer'; });
+    await readStream(await POST(req({ prompt: 'q', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(lastMeta()).toEqual(expect.objectContaining({ via: 'bedrock-direct-fallback', pageContextChars: PAGE.length }));
+  });
+
+  it('records no pageContextChars on the no-model guide paths (inactive pin, unavailable custom pin)', async () => {
+    process.env.HYBRID_ROUTING_ENABLED = 'true';
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    classifyRoute.mockResolvedValue({
+      primary: 'container', ranked: [{ key: 'container', score: 1, active: false }],
+      method: 'pin', multiDomain: false, selected: [{ key: 'container', score: 1, active: false }],
+    });
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'container', skill: 'container', agentName: 'container', skillHashes: [] });
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'q', section: 'container', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(recordExchange).toHaveBeenCalledTimes(1);
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+
+    classifyRoute.mockResolvedValue({ primary: 'ops', ranked: [{ key: 'ops', score: 1, active: true }], method: 'regex' });
+    getEnabledCustomAgents.mockResolvedValue([]); // the pinned custom agent is absent from this Agent Space
+    await readStream(await POST(req({ prompt: 'q', section: 'compliance', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(recordExchange).toHaveBeenCalledTimes(2);
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+    expect(invokeAgent).not.toHaveBeenCalled();
+  });
+
+  it('never delivers the block to an ADR-004 custom agent (picked or pinned), nor its Bedrock-direct fallback', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    pickGateway.mockReturnValue('security');
+    getEnabledCustomAgents.mockResolvedValue([{ name: 'compliance', tier: 'custom', enabled: true, routingKeywords: ['cis'], skills: [] }]);
+    pickCustomAgent.mockReturnValue('compliance');
+    resolveAgent.mockReturnValue({ tier: 'custom', gateway: 'security', systemPromptOverride: 'OVR', agentName: 'compliance', agentVersion: 2, skillHashes: [] });
+    invokeAgent.mockResolvedValue('ok');
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'cis check', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(callOf()).toEqual(expect.objectContaining({ agentName: 'compliance' }));
+    expect(lastUser(callOf()).content).toBe('cis check');
+    expect(JSON.stringify(invokeAgent.mock.calls)).not.toMatch(/page_context|shop\.example\.test/);
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+
+    process.env.HYBRID_ROUTING_ENABLED = 'true';
+    classifyRoute.mockResolvedValue({ primary: 'security', ranked: [{ key: 'security', score: 1, active: true }], method: 'regex' });
+    await readStream(await POST(req({ prompt: 'cis check', section: 'compliance', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(lastUser(callOf()).content).toBe('cis check');
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+
+    invokeAgent.mockRejectedValue(new Error('runtime down'));
+    const { bedrockDirectStream } = await import('@/lib/bedrock-direct');
+    vi.mocked(bedrockDirectStream).mockImplementationOnce(async function* () { yield 'general answer'; });
+    const calls = recordExchange.mock.calls.length;
+    await readStream(await POST(req({ prompt: 'cis check', section: 'compliance', pageContext: PAGE, sessionId: 's'.repeat(36) })));
+    expect(vi.mocked(bedrockDirectStream).mock.calls.at(-1)![0]).toBe('cis check');
+    expect(recordExchange.mock.calls.length).toBe(calls + 1);
+    expect(lastMeta()).toEqual(expect.objectContaining({ via: 'bedrock-direct-fallback' }));
+    expect(lastMeta()).not.toHaveProperty('pageContextChars');
+  });
 });

@@ -77,6 +77,13 @@ const SSE_HEADERS = {
 } as const;
 
 
+const PAGE_BLOCK_OPEN = '<page_context source="site_flow">\n';
+const PAGE_BLOCK_CLOSE = '\n</page_context>';
+/** Length of the body inside a built page block (the wrapper's lead line and tags excluded). */
+function pageContextBodyLength(block: string): number {
+  return block.length - (block.indexOf(PAGE_BLOCK_OPEN) + PAGE_BLOCK_OPEN.length) - PAGE_BLOCK_CLOSE.length;
+}
+
 function json(obj: unknown, status: number) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 }
@@ -334,14 +341,14 @@ export async function POST(request: Request) {
   if (prompt.length > MAX_PROMPT) return json({ status: 'error', message: 'prompt too large' }, 413);
   // Optional on-screen context (the site flow view): untrusted client data, capped, defused and wrapped once here,
   // then prepended to the LAST USER MESSAGE of the model payload only (user-turn data, never the system prompt /
-  // extraContext). Routing/classifier input, the stored exchange and logs keep the original prompt. When the block
-  // would push the user message past MAX_PROMPT it is dropped (the user's text always wins; no error).
+  // extraContext), and only when the request resolves to a built-in target (see `pageBlock` below). Routing/classifier
+  // input, the stored exchange and logs keep the original prompt. When the block would push the user message past
+  // MAX_PROMPT it is dropped (the user's text always wins; no error).
   if (body.pageContext != null && typeof body.pageContext !== 'string') { // null = absent
     return json({ status: 'error', message: 'pageContext must be a string' }, 400);
   }
   const builtPageBlock = buildPageContextBlock(body.pageContext ?? undefined);
-  const pageBlock = builtPageBlock && prompt.length + builtPageBlock.length + 2 <= MAX_PROMPT ? builtPageBlock : undefined;
-  const agentPrompt = pageBlock ? `${pageBlock}\n\n${prompt}` : prompt;
+  const fittingPageBlock = builtPageBlock && prompt.length + builtPageBlock.length + 2 <= MAX_PROMPT ? builtPageBlock : undefined;
   // Sanitize ONCE at the boundary (bug fix, PR #138 review MINOR) — a malformed entry (non-array,
   // or non-string `content`) would otherwise throw deep inside the classifier/assistant history
   // renderers, silently degrading routing instead of failing loud or just being dropped.
@@ -614,6 +621,12 @@ export async function POST(request: Request) {
     : 'Some external connections are unavailable; tool access remains restricted. Check the connection status.\n\n') : '';
   const fallbackNotice = mcpNotice + accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
     ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
+  // The page block goes only to a built-in target (built-in gateway, fan-out of built-ins, the Bedrock-direct
+  // fallback, the AWSops Assistant); an ADR-004 custom agent (picked or pinned) never receives it.
+  const pageBlock = spec.tier === 'builtin' ? fittingPageBlock : undefined;
+  const agentPrompt = pageBlock ? `${pageBlock}\n\n${prompt}` : prompt;
+  // Audit breadcrumb for the paths that deliver the block to a model: its body length only (never text or a hash).
+  const pageMeta = pageBlock ? { pageContextChars: pageContextBodyLength(pageBlock) } : {};
   // Model payload only (agent invokes + the Bedrock-direct fallback): the page block rides the last user turn.
   const messages: ChatMsg[] = [...history, { role: 'user', content: agentPrompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
@@ -714,7 +727,7 @@ export async function POST(request: Request) {
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: c })}\n\n`));
           if (TYPE_DELAY_MS) await new Promise((r) => setTimeout(r, TYPE_DELAY_MS));
         }
-        if (!request.signal.aborted) record(text);
+        if (!request.signal.aborted) record(text, pageMeta);
         controller.enqueue(enc.encode('data: [DONE]\n\n'));
         controller.close();
         return;
@@ -748,7 +761,7 @@ export async function POST(request: Request) {
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: t })}\n\n`));
         }
         if (!request.signal.aborted) {
-          record(full); // don't persist a half-streamed, client-aborted answer
+          record(full, pageMeta); // don't persist a half-streamed, client-aborted answer
           void recordChatInvoke({ gateway: fanGateways[0] ?? spec.gateway, userSub: user.sub, elapsedMs: Date.now() - tf0, success: true, via });
         }
         controller.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -836,7 +849,7 @@ export async function POST(request: Request) {
               controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: d })}\n\n`));
             }
             if (!request.signal.aborted) {
-              record(text, { via: 'bedrock-direct-fallback' });
+              record(text, { via: 'bedrock-direct-fallback', ...pageMeta });
               void recordChatInvoke({ gateway: spec.gateway, userSub: user.sub, elapsedMs: Date.now() - t0, success: true, via: 'bedrock-direct-fallback' });
             }
             controller.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -879,7 +892,7 @@ export async function POST(request: Request) {
       controller.enqueue(enc.encode(`event: meta\ndata: ${JSON.stringify(footerMeta)}\n\n`));
       // don't persist a half-streamed, client-aborted answer (same guard as the assistant/fanout paths)
       if (!request.signal.aborted) {
-        record(text, footerMeta);
+        record(text, { ...footerMeta, ...pageMeta });
         void recordChatInvoke({
           gateway: spec.gateway, userSub: user.sub, elapsedMs: Date.now() - t0, success: true,
           model: provenance.model, toolCount: provenance.tools.length, usage,
