@@ -1448,6 +1448,24 @@ describe('SiteFlowView chat page context', () => {
     expect(gapsLine()).not.toContain('evidence_pending');
   });
 
+  it('states binding_scope_blocked when the screen warns of a partial pod binding read', async () => {
+    // A not-connected cluster in a VPC no target uses: bindings elsewhere resolve, so the flow itself has no gap, yet
+    // the screen warns that pods in that cluster's network were not checked. The Gaps line must not read `none`.
+    const legacyArn = `arn:aws:eks:${REGION}:${MEMBER}:cluster/legacy`;
+    const listed = [...CLUSTERS, cluster(legacyArn, 'legacy', MEMBER, legacyArn, 'vpc-0legacy', 'no-entry')];
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, listed);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
+    expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
+    await waitFor(() => expect(gapsLine()).toContain('binding_scope_blocked'));
+    expect(gapsLine()).not.toContain('legacy'); // the reason name only, never the cluster labels
+  });
+
   it('unmounting does not clear a page context another producer set after it', async () => {
     stubFetch();
     const r = view();
