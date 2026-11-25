@@ -941,6 +941,8 @@ def _generate_evidence(conn, account, tier, report_id, on_progress, model, scope
             plan, _ = pillar_agents.edit_report(analysis["findings"], model_id=model_id, budget=budget, lang=lang, stages=stages)
             analysis["model_stages"].extend(stages)
             analysis["editor_plan"] = plan
+            if any(s.get("stage") == "report_editor_check" and s.get("status") == "partial" for s in stages):
+                analysis["degraded"].append("report_editor_check:partial_verification")
         except Exception as exc:
             # Keep a readable fallback and the full trace of the already validated analysis.
             stage = "report_editor_check" if stages else "report_editor"

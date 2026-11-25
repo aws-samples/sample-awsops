@@ -175,16 +175,18 @@ def test_handler_uses_entry_budget_and_skips_enabled_title_model(monkeypatch, ex
     def generate(*args, **kwargs):
         state["budget"] = kwargs["budget"]
         assert state["budget"].remaining(analysis=False) <= 3300
-        return "# local report", {"degraded": [], "render_degraded": [], **extra,
+        md = "# local report\n- [근거 부록](#evidence_appendix)\n\n## 진단 의견\n\nDecision.\n\n## 근거 부록\n\nAudit ledger."
+        return md, {"degraded": [], "render_degraded": [], **extra,
                                   "title_and_tags": {"title": "Local title", "tags": ["security"]}}, ["inventory"]
 
     monkeypatch.setattr(report, "generate", generate)
     monkeypatch.setattr(report, "make_title_and_tags", lambda *a, **kw: pytest.fail("title inferred"))
     monkeypatch.setattr(handlers, "_upload_markdown", lambda *a: "s3://test/report.md")
-    monkeypatch.setattr(handlers, "_export_artifacts", lambda *a: None)
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda md, rid: state.update(customer_export=md))
     monkeypatch.setattr(ddb, "finish_report", lambda *a, **kw: state.update(finished=kw))
     result, _ = handlers._report({"account": "self", "report_id": 1}, dry_run=False)
     assert result["status"] == expected_status and state["closed"]
+    assert "Decision." in state["customer_export"] and "Audit ledger." not in state["customer_export"]
     assert state["finished"]["title"] == "Local title"
     assert state["finished"]["summary"]["budget"]["attempt_count"] == 0
 
@@ -785,3 +787,112 @@ def test_architecture_groups_correlated_flows_but_preserves_directed_call_pairs(
     assert body.count("| Network flow") == 1 and body.count("| Observed call") == 2
     assert "3 / 3" in body and "DNS-window correlation" in body and "truncated" in body
     assert "` left ` → ` right `" in body and "` right ` → ` left `" in body
+
+
+@pytest.mark.parametrize("accepted,valid", [(["F1"], True), (["F1", "F1"], False), (["F1", "F3"], False)])
+def test_editor_preserves_only_verified_rewrites(monkeypatch, accepted, valid):
+    from diagnosis import pillar_agents
+    from diagnosis.test_presentation import finding
+
+    rows = [finding(id="first"), finding(id="second")]
+    def reply(stage, *args, **kwargs):
+        meta = {"stage": stage, "status": "succeeded"}
+        if stage == "report_editor_check":
+            return {"accepted": accepted, "_stage": meta}
+        draft = {"lead": ["F1"], "context": ["F2"], "next": [], "_stage": meta,
+                 "paragraphs": [{"id": "F1", "text": "Review available memory."},
+                                {"id": "F2", "text": "Unconfirmed explanation."}]}
+        kwargs["validate"](draft)
+        return draft
+    monkeypatch.setattr(pillar_agents, "_structured", reply)
+    if not valid:
+        with pytest.raises(pillar_agents.ModelStageError, match="editor_verification_failed"):
+            pillar_agents.edit_report(rows, model_id="test", budget=None, lang="en")
+        return
+    plan, stages = pillar_agents.edit_report(rows, model_id="test", budget=None, lang="en")
+    assert plan["paragraphs"] == {"first": "Review available memory."}
+    assert stages[-1] == {"stage": "report_editor_check", "status": "partial",
+                          "checked_count": 2, "accepted_count": 1}
+
+
+def test_partially_verified_editor_keeps_report_partial_and_renders_both_sources(monkeypatch):
+    from diagnosis import pillar_agents
+    from diagnosis.test_presentation import finding
+
+    rows = [finding(id="first"), finding(id="second", explanation="Check the scope of the sample.")]
+    prepare(monkeypatch, findings=analysis(findings=rows, evidence_bundle=bundle(), model_stages=[]))
+
+    def mixed(_findings, *, stages, **_kwargs):
+        stages.extend([{"stage": "report_editor", "status": "succeeded"},
+                       {"stage": "report_editor_check", "status": "partial", "checked_count": 2, "accepted_count": 1}])
+        return {"lead": ["first"], "context": ["second"], "next": [],
+                "paragraphs": {"first": "Review available memory."}}, stages
+    monkeypatch.setattr(pillar_agents, "edit_report", mixed)
+    md, summary, _ = report.generate(object(), "self", lang="en")
+    body = md.split("\n## Evidence appendix")[0]
+    assert "Review available memory." in body and "Check the scope of the sample." in body
+    assert "report_editor_check:partial_verification" in summary["render_degraded"]
+    assert summary["model_stages"][-1]["accepted_count"] == 1
+
+
+def test_scope_gaps_and_withheld_claims_cannot_displace_customer_risks(monkeypatch):
+    from diagnosis.test_presentation import finding
+    rows = [finding(id="gap", severity="critical", pillar="reliability", claim="coverage_gap",
+                    explanation="The trace source was not collected.", prerequisites=["Verify the recovery objective."]),
+            finding(id="withheld", severity="high", explanation="Value is 99%."),
+            finding(id="decision", severity="medium", explanation="The application may be waiting on memory.",
+                    prerequisites=["Compare memory and application latency."])]
+    prepare(monkeypatch, findings=analysis(findings=rows, editor_plan={
+        "lead": ["gap", "withheld"], "context": [], "next": ["gap"], "paragraphs": {}}))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    main, appendix = md.split("\n## Evidence appendix", 1)
+    brief = main.split("## Assessment", 1)[1].split("\n## ", 1)[0]
+    assert "application may be waiting on memory" in brief
+    assert "[Critical]" in brief
+    for title in ("Reliability", "Performance Efficiency"):
+        pillar = main.split("\n## " + title + "\n", 1)[1].split("\n## ", 1)[0]
+        assert "[Critical]" in pillar
+    assert "trace source was not collected" not in main and "model text withheld" not in main
+    assert "Verify the recovery objective." in main
+    assert "trace source was not collected" in appendix and "model text withheld" in appendix
+
+
+def test_only_coverage_gaps_still_get_six_honest_sections_without_a_risk_ranking(monkeypatch):
+    from diagnosis.test_presentation import finding
+    prepare(monkeypatch, findings=analysis(findings=[finding(id="gap", severity="critical", claim="coverage_gap",
+        explanation="Source detail is unavailable.", prerequisites=["Compare the utilization window."])]))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    front = md.split("\n## Evidence appendix")[0]
+    assert "### Top risks" not in front
+    assert "[Critical]" in front.split("\n## Assessment\n", 1)[1].split("\n## ", 1)[0]
+    assert "Compare the utilization window." in front and "## Sustainability" in front
+    assert "Source detail is unavailable." not in front and "Source detail is unavailable." in md
+
+
+@pytest.mark.parametrize("statement_lang", ["ko", "en", "ja", "zh"])
+def test_metric_collection_statements_stay_out_of_rankings_and_pillar_prose(monkeypatch, statement_lang):
+    from diagnosis.evidence import METRIC_OBSERVATION_TEXT
+    from diagnosis.test_presentation import finding
+
+    measured = bundle()
+    measured["evidence"][0]["facts"]["metrics"] = {
+        "CPUUtilization": {"Maximum": {"max": 17.25, "unit": "Percent", "status": "Complete"}}}
+    statement = METRIC_OBSERVATION_TEXT[statement_lang]
+    row = finding(claim="observation", explanation=f"  {statement}\n", prerequisites=["Check the baseline."])
+    prepare(monkeypatch, data=measured, findings=analysis(findings=[row]))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    front = md.split("\n## Evidence appendix", 1)[0]
+    assert "### Top risks" not in front and "### Immediate checks" not in front
+    assert statement not in front
+    assert "17.25" in front
+
+
+@pytest.mark.parametrize("locale,title", [("ko","근거 부록"), ("en","Evidence appendix"),
+                                          ("zh","证据附录"), ("ja","根拠資料")])
+def test_customer_download_omits_only_managed_evidence_appendix(locale, title):
+    from diagnosis.editor import customer_download
+    md = f"# Report\n\n- [A](#a)\n- [{title}](#evidence_appendix)\n\n## A\n\nCheck the owner.\n\n## {title}\n\nCollection diagnostics.\n"
+    result = customer_download(md, locale)
+    assert "Check the owner." in result and "Collection diagnostics." not in result and title not in result
+    legacy = f"# Old report\n## {title}\nLegacy content."
+    assert customer_download(legacy, locale) == legacy

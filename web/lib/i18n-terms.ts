@@ -7,6 +7,9 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '발표 보기': { en: 'Present', zh: '演示', ja: 'プレゼン表示' },
+  '발표 자료 생성 중…': { en: 'Preparing slides…', zh: '正在生成幻灯片…', ja: 'スライドを作成中…' },
+  '발표 자료를 만들지 못했습니다.': { en: 'Could not create the slides.', zh: '无法生成幻灯片。', ja: 'スライドを作成できませんでした。' },
   'EKS 조회가 제한 시간(30초) 안에 끝나지 않아 Pod 식별 근거를 사용하지 않습니다. 새로고침으로 다시 시도하세요.': {
     en: 'The EKS read did not finish within the time limit (30 seconds), so pod identity evidence is not used. Refresh to try again.',
     zh: 'EKS 查询未在时限（30 秒）内完成，因此不使用 Pod 身份依据。请刷新后重试。',
