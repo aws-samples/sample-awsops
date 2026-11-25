@@ -16,15 +16,19 @@ function safeSlice(s: string, n: number): string {
   return last >= 0xd800 && last <= 0xdbff ? t.slice(0, -1) : t;
 }
 
-/** Defuse what could read as structure or a speaker change inside the block:
- *  - any opening/closing `page_context` tag (cannot end or nest the block);
- *  - chat-template tokens `<|…|>`;
- *  - line-leading markdown headings (`## x` → `\## x`) and role prefixes (`system:` → `"system":`). */
+/** Defuse what could read as structure or a speaker change inside the block. Order matters:
+ *  1. strip Unicode format characters (zero-width / bidi) that could split a lookalike tag;
+ *  2. NFKC-normalize so fullwidth/compat forms fold to their ASCII shape before the checks below;
+ *  3. replace EVERY `<` / `>` with `‹` / `›` (the body can then neither open nor close any tag, including the
+ *     wrapper's page_context and the assistant path's user_query, nor form a `<|…|>` chat-template token);
+ *  4. line-leading `#` runs become the same number of fullwidth `＃` (length-preserving; after NFKC, which would fold
+ *     `＃` back to `#`) and role prefixes (`system:` → `"system":`). */
 function neutralize(text: string): string {
   return text
-    .replace(/<(\s*\/?\s*)(page_context)/gi, '&lt;$1$2')
-    .replace(/<\|/g, '&lt;|').replace(/\|>/g, '|&gt;')
-    .replace(/^([ \t]*)(#+)/gm, '$1\\$2')
+    .replace(/\p{Cf}/gu, '')
+    .normalize('NFKC')
+    .replace(/</g, '\u2039').replace(/>/g, '\u203A')
+    .replace(/^([ \t]*)(#+)/gm, (_m, ws: string, hashes: string) => ws + '\uFF03'.repeat(hashes.length))
     .replace(/^([ \t]*)(system|assistant|user|human)([ \t]*):/gim, '$1"$2"$3:');
 }
 
