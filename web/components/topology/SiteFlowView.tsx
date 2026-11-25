@@ -387,7 +387,7 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
               className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50 disabled:opacity-50">
               {tt('새로고침')}
             </button>
-            <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+            <Link href="/topology?view=flow" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('요청 흐름 그래프 →')}
             </Link>
           </div>

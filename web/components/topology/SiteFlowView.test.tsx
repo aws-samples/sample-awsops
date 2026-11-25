@@ -189,6 +189,13 @@ describe('SiteFlowView', () => {
     expect(canvas.props).toBeNull(); // no host → no canvas
   });
 
+  it('links to the old request flow graph with an explicit view=flow', async () => {
+    stubFetch();
+    view('view=site');
+    const link = await screen.findByRole('link', { name: '요청 흐름 그래프 →' });
+    expect(link.getAttribute('href')).toBe('/topology?view=flow');
+  });
+
   it('host combobox: search, arrow keys and Enter choose a host (keyboard accessible)', async () => {
     stubFetch();
     view('view=site');

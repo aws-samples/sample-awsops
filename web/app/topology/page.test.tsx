@@ -93,6 +93,7 @@ function serve(options: {
 }
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState({}, '', '/topology?view=flow');
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
 });

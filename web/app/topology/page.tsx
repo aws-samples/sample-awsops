@@ -219,6 +219,19 @@ export default function TopologyPage() {
   return <Suspense fallback={null}><TopologyScope /></Suspense>;
 }
 
+// `/topology` opens on the site view. The old request-flow graph lives at `?view=flow` (`?view=e2e` is its
+// service + network sub-view). Deep links that predate the site view carry no `view` but do carry params only
+// the flow graph reads, so they keep opening the flow graph:
+//   cluster, clusterScope  EKS/ECS cluster filter          monitor, metric, category, range  network filters (e2e)
+//   lens                   `lens=service` unified graph
+// `?view=site` stays an alias of the default. Any other `view` value is the flow graph.
+const FLOW_ONLY_PARAMS = ['cluster', 'clusterScope', 'lens', 'monitor', 'metric', 'category', 'range'] as const;
+function isSiteView(params: URLSearchParams): boolean {
+  const view = params.get('view');
+  if (view !== null) return view === 'site';
+  return !FLOW_ONLY_PARAMS.some((k) => params.has(k));
+}
+
 function TopologyScope() {
   const enabled = useEntityTopology();
   const [scope, , ready] = useActiveScope();
@@ -237,6 +250,7 @@ function TopologyScope() {
     const next = new URLSearchParams(params.toString());
     if (resetCluster) {
       next.delete('cluster'); next.delete('clusterScope');
+      if (!next.has('view')) next.set('view', 'flow');  // without the cluster param a bare URL would open the site view
     } else if (params.has('cluster') && clusterScope === null) next.set('clusterScope', inventoryScope);
     else return;
     router.replace(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
@@ -247,7 +261,7 @@ function TopologyScope() {
     supported={account === 'self' && scope.regions === '__all__' && scope.includeGlobal} />;
   // The site view loads its own inventory; mounting it here (not inside ScopedTopologyPage) avoids a second
   // full inventory load against the shared PG pool.
-  if (params.get('view') === 'site') return <SiteFlowView key={inventoryScope} inventoryScope={inventoryScope} />;
+  if (isSiteView(params)) return <SiteFlowView key={inventoryScope} inventoryScope={inventoryScope} />;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
@@ -522,6 +536,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const onEntry = (e: React.ChangeEvent<HTMLSelectElement>) => setEntryId(e.target.value);
   const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value, next = new URLSearchParams(params.toString());
+    if (!next.has('view')) next.set('view', 'flow');
     if (value) { next.set('cluster', value); next.set('clusterScope', inventoryScope); }
     else { next.delete('cluster'); next.delete('clusterScope'); }
     setClusterFilter(value); setSelected(null);
@@ -639,7 +654,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   </>;
   const viewHref = (view: boolean) => {
     const next = new URLSearchParams(params.toString());
-    if (view) next.set('view', 'e2e'); else next.delete('view');
+    next.set('view', view ? 'e2e' : 'flow');
     return `/topology${next.size ? `?${next}` : ''}`;
   };
   if (e2e) return <ServiceNetworkTopology podBindings={entitiesEnabled ? eksResolution?.bindings?.filter(binding => {
@@ -705,7 +720,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
             {entitiesEnabled && <Link href="/topology?lens=service" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]">{tt('통합 서비스 그래프')}</Link>}
-            <Link href="/topology?view=site" scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+            <Link href="/topology" scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('사이트 흐름 →')}
             </Link>
             <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">

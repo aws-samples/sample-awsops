@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// `/topology?view=site` mounts SiteFlowView from TopologyScope (keyed by the inventory scope) so the default
+// `/topology` (and its alias `?view=site`) mounts SiteFlowView from TopologyScope (keyed by the inventory scope) so the default
 // flow page's own inventory load never runs alongside the view's.
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -37,11 +37,28 @@ it('mounts the site view with the page inventory scope and no page-level invento
   expect(screen.queryByRole('heading', { name: 'Topology' })).toBeNull();
 });
 
-it('offers the site view from the default flow page without changing the default', async () => {
-  window.history.replaceState({}, '', '/topology');
+it('offers the site view from the flow graph as plain /topology', async () => {
+  window.history.replaceState({}, '', '/topology?view=flow');
   render(<TopologyPage />);
   const link = await screen.findByRole('link', { name: '사이트 흐름 →' });
-  expect(link.getAttribute('href')).toBe('/topology?view=site');
+  expect(link.getAttribute('href')).toBe('/topology');
   expect(screen.queryByTestId('site-view')).toBeNull();
   await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => String(u).startsWith('/api/inventory/'))).toBe(true));
+});
+
+it.each(['/topology', '/topology?view=site', '/topology?host=mall.example.com', '/topology?foo=bar'])('opens the site view at %s', async (url) => {
+  window.history.replaceState({}, '', url);
+  render(<TopologyPage />);
+  expect(await screen.findByTestId('site-view')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: '사이트 흐름 →' })).toBeNull();
+});
+
+it.each([
+  '/topology?view=flow', '/topology?view=e2e', '/topology?lens=service', '/topology?cluster=ecs%3Aecs-app',
+  '/topology?monitor=m&range=1800', '/topology?metric=bytes', '/topology?category=ALL',
+])('keeps the old flow graph at %s', async (url) => {
+  window.history.replaceState({}, '', url);
+  render(<TopologyPage />);
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => String(u).startsWith('/api/inventory/'))).toBe(true));
+  expect(screen.queryByTestId('site-view')).toBeNull();
 });

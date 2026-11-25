@@ -19,7 +19,7 @@ const task = (name: string) => row(`task-${name}`, {
 });
 beforeEach(() => {
   localStorage.clear();
-  window.history.replaceState({}, '', '/');
+  window.history.replaceState({}, '', '/?view=flow');
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1; });
 });
@@ -285,7 +285,7 @@ describe('bounded ownership inventory paging', () => {
 
   it.each([false, true])('discloses out-of-region context without exclusive cluster filtering (pin: %s)', async pin => {
     const west = <T extends { region: string }>(value: T) => ({ ...value, region: 'us-west-2' });
-    if (pin) window.history.replaceState({}, '', '/?cluster=ecs:ecs-app');
+    if (pin) window.history.replaceState({}, '', '/?view=flow&cluster=ecs:ecs-app');
     serve({ inventory: { target_group: [west(targets)], ecs_task: [west(task('ecs-api'))],
       subnet: [west(row('subnet-app', { vpc_id: vpcId }))] } });
     render(<TopologyPage />);
