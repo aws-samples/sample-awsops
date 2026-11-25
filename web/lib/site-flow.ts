@@ -86,8 +86,8 @@ export function normalizeHost(raw: string): string {
     .replace(/\.+$/, '');
 }
 
-/** CloudFront path semantics: case-sensitive, query/fragment ignored, leading '/' ensured. */
-function normalizePath(raw: string | undefined): string | null {
+/** CloudFront path semantics: case-sensitive, query/fragment ignored, leading '/' ensured; null = no path. */
+export function normalizePath(raw: string | undefined): string | null {
   const p = String(raw ?? '').trim().split(/[?#]/, 1)[0];
   return p ? (p.startsWith('/') ? p : `/${p}`) : null;
 }

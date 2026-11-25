@@ -1143,18 +1143,52 @@ describe('SiteFlowView trace routes', () => {
     expect(hl().nodes).not.toContain(catalog);
   });
 
-  it('without a path the route-read notices are not shown (routes change nothing drawn)', async () => {
+  it('without a path no route read is made and no route notice is shown (routes change nothing drawn)', async () => {
     stubRoutes(routesBody('partial', ROUTES, ['capped']));
     view();
     await settled();
     expect(canvas.props!.flow.path).toBeNull();
-    expect(notices()).not.toContain(ROUTE_NOTICE.partial);
+    expect(calls).not.toContain(ROUTES_URL);
+    expect(canvas.props!.flow.gaps).not.toContain('routes_partial');
     cleanup();
     stubRoutes(routesBody('unavailable', [], ['no_trace_source']));
-    view();
+    view('view=site&host=mall.example.com&path=?q=1'); // normalizes to no path
     await settled();
+    expect(canvas.props!.flow.path).toBeNull();
+    expect(calls).not.toContain(ROUTES_URL);
     expect(notices()).not.toContain(ROUTE_NOTICE.no_trace_source);
     expect(notices()).not.toContain(GAP_NOTICE.route_unavailable);
+  });
+
+  it('the host index makes no route read, even with a path in the URL', async () => {
+    stubRoutes(routesBody('ok'));
+    view('view=site&path=/products/1');
+    await screen.findByRole('list', { name: '호스트 목록' }, { timeout: 3000 });
+    await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull(), { timeout: 3000 });
+    expect(calls).not.toContain(ROUTES_URL);
+  });
+
+  it('a path entered after the load starts one route read without re-reading the inventory', async () => {
+    stubRoutes(routesBody('ok'));
+    const r = view();
+    await settled();
+    expect(calls).not.toContain(ROUTES_URL);
+    const accountsReads = calls.filter((u) => u === '/api/accounts').length;
+    const inventoryReads = calls.filter((u) => u.startsWith('/api/inventory/')).length;
+    nav.search = PRODUCTS;
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(hl().nodes).toEqual(expect.arrayContaining([catalog, CATALOG_DS])), { timeout: 3000 });
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1);
+    expect(calls.filter((u) => u === '/api/accounts')).toHaveLength(accountsReads);
+    expect(calls.filter((u) => u.startsWith('/api/inventory/'))).toHaveLength(inventoryReads);
+    // Clearing and re-entering a path within the same load reuses the landed read.
+    nav.search = 'view=site&host=mall.example.com';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(canvas.props!.flow.path).toBeNull());
+    nav.search = 'view=site&host=mall.example.com&path=/products/2';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(canvas.props!.flow.path).toBe('/products/2'));
+    expect(calls.filter((u) => u === ROUTES_URL)).toHaveLength(1);
   });
 
   it('member-only scope still reads (and uses) the app-level routes', async () => {

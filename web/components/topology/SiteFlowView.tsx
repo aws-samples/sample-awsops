@@ -11,7 +11,7 @@
 //    canvas only re-highlights in place); evidence landing changes the structure (the canvas re-lays out from the
 //    known positions). The canvas is keyed by host: a new host starts a fresh instance and layout.
 //  - the path box updates `?path=` with a debounced history replace while typing and pushes on Enter.
-//  - trace routes (useSiteInventory `routes`, read once per load) continue the path highlight past the gateway; they
+//  - trace routes (useSiteInventory `routes`, read once per load once a host and a path exist) continue the path highlight past the gateway; they
 //    reach the builder only for a read with status `ok`/`partial`. Until the first read lands, `route_unavailable` is
 //    not shown (evidence pending). Only with a path entered (routes change nothing drawn otherwise): a `partial` read
 //    adds a notice with its reasons, and with no trace datasource registered (`no_trace_source`) that cause replaces
@@ -26,7 +26,7 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import SiteFlowCanvas from '@/components/topology/SiteFlowCanvas';
 import { useClusterEvidence, useSiteInventory, type SiteInventory } from '@/components/topology/useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
-import { buildSiteFlow, normalizeHost, siteHosts, type SiteFlow, type SiteGap, type SiteKind, type SiteNode } from '@/lib/site-flow';
+import { buildSiteFlow, normalizeHost, normalizePath, siteHosts, type SiteFlow, type SiteGap, type SiteKind, type SiteNode } from '@/lib/site-flow';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { isComposingKey } from '@/lib/ime';
 import { useTheme } from '@/lib/use-theme';
@@ -173,7 +173,8 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const paramsKey = params.toString();
 
   const [reload, setReload] = useState(0);
-  const inv = useSiteInventory(inventoryScope, reload);
+  // The route read starts only with a host and a path (the builder's own path normalization decides "a path").
+  const inv = useSiteInventory(inventoryScope, reload, !!host && normalizePath(urlPath) !== null);
   const data = inv.data;
   const hosts = useMemo(() => (data ? siteHosts(data.flow) : []), [data]);
   const baseGaps = useMemo<SiteGap[]>(() => (data?.issues.length ? ['inventory_incomplete'] : []), [data]);

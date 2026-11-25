@@ -22,11 +22,14 @@
 //    listed clusters drive deriveEksScope; the trace join's name uniqueness uses listed ∪ registered clusters.
 //    Any failed / errored / truncated / malformed request, or a failed or malformed `/api/accounts`, marks it
 //    incomplete.
-//  - trace routes: `/api/topology/site-routes` (default 60-minute window) once per load, on the same signal and
-//    bounded by the same deadline (raced, so a read that ignores the abort still settles). App-level datasources:
-//    no account/region scope. Committed on its own (never delays the inventory) and kept across a refresh until
-//    the replacement lands. Routes are used only for status `ok`/`partial`; `unavailable`, a 404 (flag off), any
-//    other non-OK response, a malformed body or the deadline give no routes (the builder reports `route_unavailable`).
+//  - trace routes: `/api/topology/site-routes` (default 60-minute window), only once a host AND a path exist (routes
+//    change nothing drawn otherwise, so the host index and a host without a path read none), then once per load: a
+//    path change, or clearing and re-entering a path, reuses the landed read; a refresh or scope change reads again
+//    when a path is present (else when one is entered). Its own abort signal and DEADLINE_MS deadline (raced, so a
+//    read that ignores the abort still settles). App-level datasources: no account/region scope. Committed on its own
+//    (never delays the inventory) and kept across a refresh until the replacement lands. Routes are used only for
+//    status `ok`/`partial`; `unavailable`, a 404 (flag off), any other non-OK response, a malformed body or the deadline
+//    give no routes (the builder reports `route_unavailable`).
 //  - per bound cluster (Binding.authority ARN): the trace overlay and db-refs, cached per ARN for one fleet read.
 //  - refresh (`reload`): every read above runs again and no cached cluster evidence is reused.
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -179,13 +182,13 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
 
 /**
  * Inventory + EKS map + host lookup + fleet listing + trace routes for one page scope (the view is keyed by it). A
- * new `reload` value re-runs every read. The previous inventory, host account and fleet stay on screen until the
+ * new `reload` value re-runs every read (the route read only while `wantRoutes`, i.e. a host and a path exist). The previous inventory, host account and fleet stay on screen until the
  * reload lands and are then replaced together; the new fleet makes useClusterEvidence re-read every cluster, which
  * keeps the previous evidence shown until the new batch commits. A reload that fails (every inventory type failed, or
  * an invalid response) clears the inventory: no stale flow beside the failure. The route read commits on its own:
  * `routes` is null until the first read lands, then holds the last landed read (kept while a reload's read runs).
  */
-export function useSiteInventory(inventoryScope: string, reload = 0): {
+export function useSiteInventory(inventoryScope: string, reload = 0, wantRoutes = false): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
   routes: SiteRouteRead | null; routesPending: boolean;
 } {
@@ -195,21 +198,35 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
   const [fleet, setFleet] = useState<Fleet | null>(null);
   const [loading, setLoading] = useState(true);
   const [routes, setRoutes] = useState<SiteRouteRead | null>(null);
-  const [routesLoading, setRoutesLoading] = useState(true);
+  // The load (scope + reload) the route read belongs to: latched the first time a route read is wanted in that load,
+  // so it starts once per load and a path change or a path cleared and re-entered never refetches. Derived state
+  // set during render (React's "adjust state on prop change" pattern), so the read starts on the same commit.
+  const load = `${reload}\n${inventoryScope}`;
+  const [routeLoad, setRouteLoad] = useState<string | null>(null);
+  const [landedLoad, setLandedLoad] = useState<string | null>(null);
+  if (wantRoutes && routeLoad !== load) setRouteLoad(load);
+  useEffect(() => {
+    if (routeLoad === null) return undefined;
+    let live = true;
+    const ctrl = new AbortController();
+    let cut = () => {};
+    const routesCut = new Promise<void>((r) => { cut = r; });
+    const deadline = setTimeout(() => { ctrl.abort(); cut(); }, DEADLINE_MS);
+    void Promise.race([readSiteRoutes(ctrl.signal), routesCut.then(ROUTES_FAILED)]).then((r) => {
+      clearTimeout(deadline);
+      if (live) { setRoutes(r); setLandedLoad(routeLoad); }
+    });
+    return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
+  }, [routeLoad]);
   useEffect(() => {
     let live = true;
-    setLoading(true); setError(''); setRoutesLoading(true);
+    setLoading(true); setError('');
     const ctrl = new AbortController();
     const { signal } = ctrl;
     // The deadline aborts every read; a read it cut is disclosed as `binding_deadline` (refresh retries), never as
     // a failure of the cluster or fleet. A read that settled before it keeps its own reason.
     let timedOut = false;
-    let cutRoutes = () => {};
-    const routesCut = new Promise<void>((r) => { cutRoutes = r; });
-    const deadline = setTimeout(() => { timedOut = true; ctrl.abort(); cutRoutes(); }, DEADLINE_MS);
-    // Trace routes: independent of the inventory (never delays it); raced against the deadline.
-    const routesRead = Promise.race([readSiteRoutes(signal), routesCut.then(ROUTES_FAILED)])
-      .then((r) => { if (live) { setRoutes(r); setRoutesLoading(false); } });
+    const deadline = setTimeout(() => { timedOut = true; ctrl.abort(); }, DEADLINE_MS);
     let fleetCut = false;
     const accountsBody: Promise<unknown> = fetch('/api/accounts', { signal })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null);
@@ -248,11 +265,11 @@ export function useSiteInventory(inventoryScope: string, reload = 0): {
         });
       })
       .catch(() => { if (live) { setLoading(false); setData(null); setFleet(null); setError('site: invalid inventory response'); } });
-    // The deadline stays armed until BOTH reads settle (the route read may outlast the inventory).
-    void Promise.all([inventoryRead, routesRead]).finally(() => clearTimeout(deadline));
+    void inventoryRead.finally(() => clearTimeout(deadline));
     return () => { live = false; clearTimeout(deadline); ctrl.abort(); };
   }, [inventoryScope, reload]);
-  return { data, error, hostAccount, fleet, pending: loading, routes, routesPending: routesLoading };
+  // Pending only while a wanted read for this load has not landed (no path → nothing pending).
+  return { data, error, hostAccount, fleet, pending: loading, routes, routesPending: wantRoutes && landedLoad !== routeLoad };
 }
 
 export interface ClusterEvidence {
