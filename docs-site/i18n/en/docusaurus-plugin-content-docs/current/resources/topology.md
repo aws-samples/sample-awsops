@@ -119,6 +119,16 @@ Numeric trace account IDs are reconciled only with the authenticated host accoun
 
 Workload identity also requires a complete, fresh service-snapshot read with known zero node/edge drops, orphan/invalid spans and unresolved messaging. Missing loss metadata, a capped root or a subgraph response cannot certify complete workload membership. The source panel preserves read failures, retained publication metadata, source query windows and separate producer clocks. Stale, retained, dropped, capped, partial or unknown service evidence remains visible but cannot establish the related workload identity. This verifies evidence within the query scope, not collection of all traffic.
 
+## Site flow
+
+Open `/topology?view=site` for this opt-in view; it is not the default view yet. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
+
+- **Path input**: enter a path to highlight the branch it takes; the highlight continues past the gateway through trace-observed route templates (last 60 minutes) to downstream services, and the last service's datastores. A page path served from a static origin is linked to the API route whose route template matches it by name, and that link is marked as inferred (dashed).
+- **Route template limits**: routes are aggregated by service name across all clusters and namespaces exporting to the trace source, so same-named services (for example one app deployed to clusters in two Availability Zones) are merged. `http.route` carries no HTTP method, so GET and POST on one template are merged, and only templates seen in the window are candidates. A route with no downstream call may end at that service, or its next hop may be uninstrumented or go through messaging. Routes containing id-like segments (raw paths) are not used.
+- **Expanding groups**: click a group to expand the nodes inside it.
+- **Line styles**: solid lines are observed, dotted lines are configured, and dashed lines are inferred. A highlighted group or edge that is only partly inferred has a dashed highlight. Traced calls carry their call counts.
+- **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn. **Refresh** reads all evidence again; route template aggregates may be reused for up to a minute.
+
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:
 - Does this CloudFront distribution talk to its origin over TLS?

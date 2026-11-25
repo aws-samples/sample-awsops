@@ -35,7 +35,9 @@ export interface SiteEdge { id: string; source: string; target: string; evidence
 export interface SiteGroup { id: string; kind: 'host' | 'cdn' | 'lb' | 'cluster' | 'namespace' | 'datastore'; label: string; parent?: string }
 export type SiteGap = 'inventory_incomplete' | 'pods_unresolved' | 'trace_unavailable' | 'ambiguous_cluster' | 'incomplete_listing'
   | 'partial_snapshot' | 'route_unavailable' | 'db_refs_partial' | 'host_not_found' | 'behaviors_unavailable' | 'route_ambiguous'
-  | 'trace_unmapped' | 'private_zone_only' | 'rule_unresolved' | 'path_unmatched';
+  | 'trace_unmapped' | 'private_zone_only' | 'rule_unresolved' | 'path_unmatched'
+  /** Supplied by the caller via `input.gaps`: the trace route read was partial while a path was entered. */
+  | 'routes_partial';
 export interface SiteFlow {
   host: string;
   /** Normalized requested path (query/fragment stripped, leading '/'), or null. */
@@ -70,10 +72,10 @@ const KIND: Record<FlowKind, SiteKind> = {
 };
 const TRACE_GAP: Record<TraceOverlayReason, SiteGap> = {
   disabled: 'trace_unavailable', unsupported_scope: 'trace_unavailable', unavailable: 'trace_unavailable',
-  member_cluster: 'trace_unavailable', partial_snapshot: 'partial_snapshot', ambiguous_cluster: 'ambiguous_cluster',
+  partial_snapshot: 'partial_snapshot', ambiguous_cluster: 'ambiguous_cluster',
   incomplete_listing: 'incomplete_listing',
 };
-const EVIDENCE_RANK: Record<SiteEvidence, number> = { inferred: 0, configured: 1, observed: 2, traced: 3 };
+export const EVIDENCE_RANK: Record<SiteEvidence, number> = { inferred: 0, configured: 1, observed: 2, traced: 3 };
 const ROUTE_LABEL_CAP = 3;
 
 /** Lowercase, trim, strip scheme/userinfo/path/query/port and trailing dots (Route53 spelling). */
@@ -86,8 +88,8 @@ export function normalizeHost(raw: string): string {
     .replace(/\.+$/, '');
 }
 
-/** CloudFront path semantics: case-sensitive, query/fragment ignored, leading '/' ensured. */
-function normalizePath(raw: string | undefined): string | null {
+/** CloudFront path semantics: case-sensitive, query/fragment ignored, leading '/' ensured; null = no path. */
+export function normalizePath(raw: string | undefined): string | null {
   const p = String(raw ?? '').trim().split(/[?#]/, 1)[0];
   return p ? (p.startsWith('/') ? p : `/${p}`) : null;
 }

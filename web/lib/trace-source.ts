@@ -168,7 +168,7 @@ type ConnConfig = Awaited<ReturnType<typeof resolveConnConfig>>;
 interface ResolvedSource { sourceId: string; connConfig?: ConnConfig; reason?: Reason }
 
 /** Resolve identity before credentials, so even a secret lookup failure identifies the actual row. */
-async function resolveSource(kind: 'clickhouse' | 'tempo' | 'prometheus' | 'mimir', instanceId?: number): Promise<ResolvedSource> {
+export async function resolveSource(kind: 'clickhouse' | 'tempo' | 'prometheus' | 'mimir', instanceId?: number): Promise<ResolvedSource> {
   let sourceId = `${kind}:${instanceId ?? 'default'}`;
   try {
     const row = instanceId !== undefined ? await getDatasource(instanceId) : await getDefaultDatasource(kind);
@@ -334,7 +334,7 @@ const DEFAULT_OTEL_SQL_TEMPLATE =
   'WHERE Timestamp >= now() - INTERVAL {window} MINUTE AND Timestamp <= now() ORDER BY Timestamp DESC LIMIT {cap}';
 const CLICKHOUSE_ROW_CAP = 1000; // clickhouse_mcp.MAX_ROWS_CAP
 
-function clickhouseRows(result: unknown): { rows?: unknown[]; reasons: Reason[] } {
+export function clickhouseRows(result: unknown): { rows?: unknown[]; reasons: Reason[] } {
   if (Array.isArray(result)) return { rows: result, reasons: [] };
   const r = object(result);
   const inner = object(r?.result);

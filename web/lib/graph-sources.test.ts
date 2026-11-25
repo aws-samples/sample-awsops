@@ -7,7 +7,7 @@ vi.mock('@/lib/datasources', () => ({
   resolveConnConfig: vi.fn(async () => ({})),
 }));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: vi.fn(async () => ({ rows: [] })) }));
-import { loadGraphSources } from './graph-sources';
+import { listClickHouseTraceDatasources, loadGraphSources } from './graph-sources';
 import { ClickHouseOtelAggregateSource, ClickHouseOtelTraceSource, TempoTraceSource, MetricsCallsSource } from './trace-source';
 
 // Adapter internals (connector calls, credential resolution) are covered by trace-source.test.ts —
@@ -115,5 +115,30 @@ describe('loadGraphSources', () => {
     expect(sources).toHaveLength(1); // no ready rows survived the join → bare default fallback
     expect(sources[0]).toBeInstanceOf(ClickHouseOtelAggregateSource);
     expect((sources[0] as unknown as { instanceId?: number }).instanceId).toBeUndefined();
+  });
+});
+
+describe('listClickHouseTraceDatasources', () => {
+  it('returns only registered otel_v1 instances with their catalog SQL, deduped, with no default fallback', async () => {
+    const query = vi.fn(async () => ({ rows: [
+      { integration_id: 7, query: { tool: 'clickhouse_query', mapper: 'otel_v1', args_template: { sql: 'SELECT 1 LIMIT {cap}' } } },
+      { integration_id: 7, query: { tool: 'clickhouse_query', mapper: 'otel_v1', args_template: { sql: 'SELECT 1 LIMIT {cap}' } } },
+      { integration_id: 8, query: { tool: 'clickhouse_query', mapper: 'otel_v1', args_template: {} } },
+      { integration_id: 9, query: { tool: 'tempo_search', mapper: 'tempo_v1', args_template: {} } },
+      { integration_id: 3, query: { tool: 'prometheus_query', mapper: 'servicegraph_v1', args_template: { query: 'x' } } },
+      { integration_id: 4, query: null },
+    ] }));
+    const pool = { query } as unknown as import('pg').Pool;
+    expect(await listClickHouseTraceDatasources(pool)).toEqual([
+      { instanceId: 7, template: 'SELECT 1 LIMIT {cap}' }, { instanceId: 8 },
+    ]);
+    // Same registry read as loadGraphSources: ready self rows joined against live integrations.
+    expect(String((query.mock.calls[0] as unknown[])[0])).toMatch(/JOIN integrations[\s\S]*status = 'ready'/);
+    expect(await listClickHouseTraceDatasources(mockPool([]))).toEqual([]);
+  });
+
+  it('propagates a registry read failure to the caller', async () => {
+    const pool = { query: vi.fn(async () => { throw new Error('db down'); }) } as unknown as import('pg').Pool;
+    await expect(listClickHouseTraceDatasources(pool)).rejects.toThrow();
   });
 });

@@ -277,17 +277,21 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 ### Scope and limits
 
 - Trace edges (`web/lib/k8s-trace-overlay.ts`) come from the published service
-  snapshot, which is host-account only. A trace service maps to a workload only
+  snapshot (`/api/topology?lens=service`, which accepts only `account=self`). The join
+  keys on the `k8s.cluster.name` claim in that snapshot, so clusters of every registered
+  account, host and member, join the same way: a bare-name id and a full EKS ARN id are
+  matched by their bare cluster name. A trace service maps to a workload only
   through its `runs_on` relation to exactly one `namespace/deployment` of the selected
-  cluster, and the cluster name must be unique across the fleet-wide cluster listing
-  (all registered accounts and regions), not just the clusters of the selected scope: a
-  narrowed scope, including the default host-account-only scope, hides same-named
-  clusters of other accounts or regions without any truncation or error flag. When the
-  selected scope is already all accounts and all regions, its listing is reused;
-  otherwise the page reads the fleet listing separately (the cluster selector still
-  follows the selected scope). A truncated scope or fleet listing, one with a per-target
-  read failure, or a failed or unparseable fleet listing cannot prove that uniqueness, so
-  the join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
+  cluster, and the cluster's bare name must be unique across the listed fleet clusters ∪
+  every registered cluster (all registered accounts and regions), not just the clusters of
+  the selected scope: a narrowed scope, including the default host-account-only scope,
+  hides same-named clusters of other accounts or regions without any truncation or error
+  flag. The page therefore never reuses the selected scope's listing for this check: it
+  always reads the per-account fleet built from `GET /api/accounts` plus the registry (see
+  the fleet paragraph below; the cluster selector still follows the selected scope). A
+  truncated scope or fleet listing, one with a per-target read failure, or a failed or
+  unparseable fleet listing or registrations read cannot prove that uniqueness, so the
+  join is refused (`incomplete_listing`, no trace edges) without reading the snapshot. The snapshot
   API returns at most 200 entities per page with relations between same-page entities
   only; the overlay reads up to 5 pages and draws trace edges only when it can account
   for every entity and relation, otherwise it draws none and discloses the count of
@@ -300,14 +304,42 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   mirrors `partialInputs` in `web/lib/service-topology/read-published.ts`, since a capped
   source may have dropped a second `runs_on` relation. Calls that cannot be mapped to one workload or managed
   datastore are counted, not guessed, and add no node.
-- Member clusters (full EKS ARN ids) read through the member role show Kubernetes
-  structure and `db-refs` links but no trace edges. A host cluster outside the
+- Member clusters (full EKS ARN ids) are read through the member role and get the same
+  trace join as host clusters. Besides the snapshot checks above, the cluster-level guards
+  are uniqueness of the bare cluster name in that set (`ambiguous_cluster` when it appears
+  more than once) and a completely read fleet (`incomplete_listing`). Because the fleet is
+  built from the `GET /api/accounts` body, the trace read waits for that lookup; a failed
+  or malformed lookup leaves the fleet incomplete and the join is refused with
+  `incomplete_listing`.
+- Residual gaps: uniqueness is proven only over clusters AWSops can see, listed or
+  registered. Telemetry from a producer that is neither (an unregistered cluster in an
+  unlisted region, or a non-EKS producer emitting the same `k8s.cluster.name`) cannot be
+  excluded and would be attributed to the selected cluster. The trace snapshot stays
+  scoped to the host's publication even when the join target is a member cluster.
+- The fleet listing (`readFleet` in `web/lib/eks-fleet.ts`, shared by the K8s map and the
+  site flow view) issues one `GET /api/eks?accounts=<id>&regions=__all__` per enabled
+  registered account from `GET /api/accounts` (the host as `self`, disabled accounts
+  skipped) plus one `GET /api/eks/registrations`, at most 4 requests in flight. Listed
+  clusters are merged and deduplicated by ARN, else by listed id (the bare id for host
+  default-region rows); they drive the site view's EKS scope and vetoes. For a non-wildcard
+  account `__all__` covers only its configured regions, so the uniqueness set adds every
+  registered cluster (registry and env clusters, disabled accounts included) not already
+  listed under the same account, region and name. A single all-account request is not used
+  because the server caps a listing without registrations at 12 account × region targets
+  (`TARGET_CAP` in `web/lib/eks-scope.ts`) and reports it truncated; the cap still applies
+  per account, so an account spanning more than 12 regions truncates and the join is
+  refused (`incomplete_listing`). A failed, truncated, errored or malformed per-account
+  listing (any error entry other than the reason-less `__all__` note, or a row without a
+  valid id, region, access and account), a failed or malformed registrations read, an
+  aborted read, or an `/api/accounts` body with a row lacking a 12-digit `accountId` or a
+  boolean `enabled` marks the whole fleet incomplete.
+- Apart from the fleet's account list, the host account resolved from that lookup is
+  used for Route 53 only. A host cluster outside the
   deployment region also has an ARN id, and the cluster listing reports a numeric
   account for every row, so the page resolves the host account from the single
-  `isHost` row of `GET /api/accounts`: an ARN whose account equals it is a host cluster
-  for both trace edges and Route 53 records. If that lookup fails or does not return
-  exactly one 12-digit host account, every ARN id is treated as a member: no trace
-  edges, with the member-cluster notice, and Route 53 is read for the ARN's account.
+  `isHost` row of `GET /api/accounts`: an ARN whose account equals it reads the host's
+  (`self`) Route 53 records. If that lookup fails or does not return exactly one
+  12-digit host account, Route 53 is read for the ARN's own account.
 - Route 53 records are read from the synced inventory of the cluster's account (`self`
   for the host) and matched to gateway hosts exactly; the record name is only the DNS
   node's label, so a wildcard record (`\052` decoded to a leading `*.`) links like any
@@ -335,6 +367,37 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   the budget, are packed into a near-square grid in their box. Columns, barycenter ordering
   and box stacking are computed by the module itself. No edge route is precomputed: the
   canvas draws each edge as a smoothstep path between node handles.
+- Site flow trace routes (`web/lib/trace-routes.ts`, served by `GET /api/topology/site-routes`
+  and read in `web/components/topology/useSiteFlowData.ts`) continue a path highlight past
+  the gateway: route templates (`http.route`, default window 60 minutes) to downstream
+  services, and the last service's datastores. The view reads them only once a host and a
+  path are entered, once per load: a path change reuses the landed read, and Refresh or a
+  scope change reads again. The route reads at most 4 ClickHouse trace sources at once
+  within a 10 s budget and reuses an `ok`/`partial` per-source result for 60 s, single-flight
+  per (source, registry template, window); `unavailable` results and failures are never
+  reused. The reuse is a `BoundedTtlCache` (`web/lib/site-routes-cache.ts`): at most 64
+  retained reads and 8 loads at once, each load aborted at the 8 s per-source deadline (an
+  aborted read launches no ClickHouse query it has not already started). The registry itself is read in a
+  timed read-only graph transaction (2 s). Residuals, disclosed rather than corrected:
+  - Routes are aggregated by service name across all clusters and namespaces exporting to
+    the trace source, so same-named services in different namespaces or clusters merge.
+    The common legitimate case is one app deployed to two clusters (for example
+    `shop-az-a` and `shop-az-c`). The route-to-workload join still requires
+    exactly one traced edge to that name (fail-closed).
+  - `http.route` carries no HTTP method, so GET and POST on one template merge, and only
+    templates seen in the window are candidates for a path.
+  - A route with no downstream entry ends the highlight on that service's datastores, but it
+    can also be an uninstrumented or messaging hop.
+  - When the routes read reaches its row limit (500, reason `capped`) or the connector
+    reports it truncated or partial, the hop of the last row is dropped, since the cut may
+    have removed its downstream rows and left it looking terminal. Rows ordered by route total and then hop key keep each hop's rows contiguous.
+    A row whose route or downstream route has an id-like segment (all digits of length 4
+    or more, a UUID, or hex of length 16 or more) means an instrumentation wrote the raw path
+    into `http.route`: it is not published, its whole hop is dropped and the read reports
+    `route_raw_path`. `url.path` is never used as a fallback.
+  - A `partial` read with a path entered adds the `routes_partial` site gap (one notice
+    listing the reasons, also visible to the AI context); `multi_source_counts` alone adds
+    nothing, because the client discards counts.
 
 ## Key files
 
@@ -352,12 +415,15 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
 | `web/lib/eks-access.ts` | Target metadata and Access Entry checks for the applicable host/member principal |
 | `web/lib/eks-incluster.ts` | Scoped endpoint/CA cache, bearer construction, read-only Kubernetes transport |
 | `web/app/api/eks/` | Discovery, registration, fleet, summary, and detail routes |
+| `web/app/api/eks/registrations/route.ts` | Every registered cluster id (no AWS call) for trace-name uniqueness |
+| `web/lib/eks-fleet.ts` | Per-account fleet listing plus registry: listed clusters and the uniqueness set |
+| `web/lib/host-account.ts` | Host account id from the unique `isHost` row of `GET /api/accounts` |
 | `web/lib/eks-db-refs.ts`, `web/lib/db-endpoint.ts`, `web/lib/db-ref-resolve.ts` | Server-side Pod env/ConfigMap host extraction and inventory matching for `db-refs` |
 | `web/lib/k8s-service-graph.ts`, `web/lib/k8s-trace-overlay.ts`, `web/lib/k8s-graph-layout.ts`, `web/lib/k8s-dns.ts` | Service graph model, trace overlay, namespace-boxed column layout and Route 53 matching |
 | `web/components/topology/K8sMapView.tsx`, `ServiceGraphCanvas.tsx`, `ServiceDetailPanel.tsx` | Graph page, canvas and Service detail panel |
 | `web/app/eks/`, `web/components/eks/` | Scope-aware views, qualified requests, stale-response protection |
 
-See the [API reference](../api-reference.md#eks-10) for response status and metadata
+See the [API reference](../api-reference.md#eks-12) for response status and metadata
 contracts, including conditional envelope `region`, partial `errors`, and `truncated`.
 NFM pod-transfer attribution remains host/deployment-region only; member and other
 region requests return explicit unavailability rather than a host namesake's data.

@@ -19,7 +19,7 @@ vi.mock('@/components/topology/ServiceGraphCanvas', () => ({
   },
 }));
 // fetchTraceOverlay is the real module unless a test overrides it.
-const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string; hostAccountId?: string; registeredNames?: string[]; listingIncomplete?: boolean }, s?: AbortSignal) => Promise<TraceOverlay>) }));
+const trace = vi.hoisted(() => ({ override: null as null | ((c: { id: string; registeredNames?: string[]; listingIncomplete?: boolean }, s?: AbortSignal) => Promise<TraceOverlay>) }));
 vi.mock('@/lib/k8s-trace-overlay', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/k8s-trace-overlay')>();
   return {
@@ -34,6 +34,14 @@ const dns = vi.hoisted(() => ({ override: null as null | ((accountId: string, s?
 vi.mock('@/lib/k8s-dns', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/k8s-dns')>();
   return { ...actual, fetchDnsRecords: (a: string, s?: AbortSignal) => (dns.override ? dns.override(a, s) : actual.fetchDnsRecords(a, s)) };
+});
+
+// readFleet is the real module unless a test overrides it.
+import type { Fleet } from '@/lib/eks-fleet';
+const fleetMock = vi.hoisted(() => ({ override: null as null | ((body: unknown, s: AbortSignal) => Promise<Fleet>) }));
+vi.mock('@/lib/eks-fleet', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/eks-fleet')>();
+  return { ...actual, readFleet: (b: unknown, s: AbortSignal) => (fleetMock.override ? fleetMock.override(b, s) : actual.readFleet(b, s)) };
 });
 
 import K8sMapView, { TRACE_NOTICE, traceOmittedNotice } from './K8sMapView';
@@ -61,6 +69,9 @@ function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Han
     calls.push(url);
     const custom = handler?.(url);
     if (custom) return custom;
+    if (url === '/api/accounts') return new Response(JSON.stringify(ACCOUNTS));
+    if (url === '/api/eks/registrations') return new Response(JSON.stringify({ clusters: [] })); // no extra registered names
+    // The scoped selector listing and every per-account fleet listing (lib/eks-fleet.ts) answer the same body.
     if (url.startsWith('/api/eks?')) return new Response(JSON.stringify(listing), { status });
     const kind = /kind=(\w+)/.exec(url)?.[1];
     if (url.includes('/incluster?')) return new Response(JSON.stringify({ kind, rows: ROWS[kind ?? ''] ?? [] }));
@@ -71,16 +82,63 @@ function stubFetch(listing: Record<string, unknown>, status = 200, handler?: Han
   }));
   return calls;
 }
-const HOST_ONLY = { clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected' }] };
+const HOST_ONLY = { clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' }] };
 const HOST_AND_MEMBER = { clusters: [
-  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected' },
-  { id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected' },
-  { id: 'offline', name: 'offline', accountId: '111111111111', access: 'denied' },
+  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' },
+  { id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected', region: 'ap-northeast-2' },
+  { id: 'offline', name: 'offline', accountId: '111111111111', access: 'denied', region: 'ap-northeast-2' },
 ] };
 const HOST_ARN = 'arn:aws:eks:us-west-2:111111111111:cluster/west';
+// A member-account cluster whose bare name is unique across the fleet listing.
+const UNIQUE_MEMBER_ARN = 'arn:aws:eks:ap-northeast-2:123456789012:cluster/orders';
+const ENC_UNIQUE_MEMBER = encodeURIComponent(UNIQUE_MEMBER_ARN);
+const HOST_AND_UNIQUE_MEMBER = { clusters: [
+  { id: 'shared', name: 'shared', accountId: '111111111111', access: 'connected', region: 'ap-northeast-2' },
+  { id: UNIQUE_MEMBER_ARN, name: 'orders', accountId: '123456789012', access: 'connected', region: 'ap-northeast-2' },
+] };
+const RDS_HOST = 'orders.cluster-abc.ap-northeast-2.rds.amazonaws.com';
+// The member cluster runs prod/api (Service api → pod api-1, workload api).
+const MEMBER_ROWS: Record<string, unknown[]> = {
+  services: [svc('prod', 'api')],
+  endpoints: [{ name: 'api', namespace: 'prod', ips: ['10.0.2.10'], targets: [{ ip: '10.0.2.10', pod: 'api-1' }] }],
+  pods: [{ name: 'api-1', namespace: 'prod', podIP: '10.0.2.10', workload: 'api', node: 'node-a', status: 'Running',
+    restarts: 0, age: '1h', cpuRequest: 0, memRequest: 0, diskRequest: 0 }],
+  ingresses: [],
+};
+const traceEnt = (id: string, kind: string, label: string, cluster: string | null, namespace: string | null) => ({
+  id, kind, label, layers: ['trace'], evidenceRefs: [], claim: false, region: 'ap-northeast-2', cluster, namespace,
+  ownerReason: null, vpc: null, sourceId: 'tempo:1', spanCount: null, knownStatus: null, errors: null, durationSumMs: null,
+});
+// A complete, healthy service snapshot: the member cluster's api workload queries a managed RDS host.
+const MEMBER_TRACE_PAGE = {
+  status: 'partial', snapshotId: '11111111-2222-4333-8444-555555555555', nextCursor: null, omitted: { entities: 0, relations: 0 },
+  gaps: ['nfm:not_collected', 'kubernetes:live_ownership_unavailable'],
+  sources: [{ sourceId: 'trace', generation: 'g1', status: 'ok', stale: false, retained: false, capped: false }],
+  entities: [
+    traceEnt('s-api', 'service', 'api', 'orders', 'prod'),
+    traceEnt('w-api', 'workload', 'prod/api', 'orders', 'prod'),
+    traceEnt('d-orders', 'db', `postgresql:${RDS_HOST}/orders`, null, null),
+  ],
+  relations: [
+    { id: 'runs_on:s-api->w-api', source: 's-api', target: 'w-api', kind: 'runs_on', layer: 'trace', confidence: 'observed', evidenceRefs: [] },
+    { id: 'queries:s-api->d-orders', source: 's-api', target: 'd-orders', kind: 'queries', layer: 'trace', confidence: 'observed', evidenceRefs: [], spanCount: 4 },
+  ],
+};
+const memberTraceHandler: Handler = (u) => {
+  if (u.startsWith(`/api/eks/${ENC_UNIQUE_MEMBER}/incluster?`)) {
+    const kind = /kind=(\w+)/.exec(u)?.[1] ?? '';
+    return new Response(JSON.stringify({ kind, rows: MEMBER_ROWS[kind] ?? [] }));
+  }
+  if (u === '/api/topology?lens=service') return new Response(JSON.stringify(MEMBER_TRACE_PAGE));
+  return undefined;
+};
 const ENC_HOST_ARN = encodeURIComponent(HOST_ARN);
-const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111111111111', access: 'connected' }] };
-const ACCOUNTS = { accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true }, { accountId: '222222222222', alias: 'Member', isHost: false }] };
+const HOST_ARN_ONLY = { clusters: [{ id: HOST_ARN, name: 'west', accountId: '111111111111', access: 'connected', region: 'us-west-2' }] };
+const ACCOUNTS = { accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true, enabled: true },
+  { accountId: '222222222222', alias: 'Member', isHost: false, enabled: true }] };
+/** Per-account fleet listing URLs (lib/eks-fleet.ts fleetUrl). */
+const fleetUrl = (account: string) => `/api/eks?accounts=${account}&regions=__all__`;
+const isFleet = (u: string) => /^\/api\/eks\?accounts=(self|\d{12})&regions=__all__$/.test(u);
 const accountsHandler = (body: unknown, status = 200): Handler => (u) => (u === '/api/accounts' ? new Response(JSON.stringify(body), { status }) : undefined);
 const view = () => render(<LanguageProvider><K8sMapView query="" /></LanguageProvider>);
 const graphNamespaces = () => canvas.props?.graph.namespaces.map((n) => n.name) ?? [];
@@ -95,6 +153,7 @@ beforeEach(() => {
   canvas.renders = 0;
   trace.override = null;
   dns.override = null;
+  fleetMock.override = null;
   window.localStorage.setItem('awsops:scope', JSON.stringify({ accounts: '__all__', regions: '__all__', includeGlobal: true }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear(); });
@@ -112,8 +171,19 @@ describe('K8sMapView', () => {
     for (const kind of ['ingresses', 'services', 'endpoints']) expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=${kind}`);
   });
 
+  it('preselects a listed initialCluster (deep link) and ignores one the listing lacks', async () => {
+    const calls = stubFetch(HOST_AND_MEMBER);
+    render(<LanguageProvider><K8sMapView query="" initialCluster={MEMBER_ARN} /></LanguageProvider>);
+    await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=pods`));
+    expect((screen.getByRole('combobox', { name: '클러스터' }) as HTMLSelectElement).value).toBe(MEMBER_ARN);
+    cleanup();
+    const again = stubFetch(HOST_AND_MEMBER);
+    render(<LanguageProvider><K8sMapView query="" initialCluster="arn:aws:eks:ap-northeast-2:222222222222:cluster/gone" /></LanguageProvider>);
+    await waitFor(() => expect(again).toContain('/api/eks/shared/incluster?kind=pods'));
+  });
+
   it('discloses partial or capped listings instead of presenting them as complete', async () => {
-    stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected' }],
+    stubFetch({ clusters: [{ id: 'shared', name: 'shared', access: 'connected', region: 'ap-northeast-2' }],
       errors: [{ accountId: '222222222222', region: 'us-east-1', message: 'AccessDenied', reason: 'denied' }], truncated: true });
     view();
     expect(await screen.findByText(/222222222222 \/ us-east-1: AccessDenied/)).toBeTruthy();
@@ -200,14 +270,30 @@ describe('K8sMapView service graph data', () => {
     expect(screen.queryByText(/raw-detail/)).toBeNull();
   });
 
-  it('never reads the trace snapshot for a member cluster and shows the member-cluster notice', async () => {
+  it('reads the trace snapshot for a member cluster whose name is unique across the fleet and draws its trace calls', async () => {
+    const calls = stubFetch(HOST_AND_UNIQUE_MEMBER, 200, memberTraceHandler);
+    view();
+    await screen.findAllByRole('option');
+    fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: UNIQUE_MEMBER_ARN } });
+    await waitFor(() => expect(canvas.props?.input.trace?.workloadCalls.length).toBe(1));
+    expect(calls).toContain('/api/topology?lens=service');
+    expect(canvas.props!.input.trace).toEqual({
+      available: true, omitted: 0, skipped: 0,
+      workloadCalls: [{ fromWorkload: { namespace: 'prod', name: 'api' }, to: { datastoreHost: RDS_HOST }, spanCount: 4 }],
+    });
+    expect(canvas.props!.graph.edges.some((e) => e.source === 'svc:prod/api' && e.evidence.includes('trace'))).toBe(true);
+    for (const ko of Object.values(TRACE_NOTICE)) expect(screen.queryByText(ko)).toBeNull();
+  });
+
+  it('refuses the trace join for a member cluster whose name is shared with a host cluster', async () => {
     const calls = stubFetch(HOST_AND_MEMBER);
     view();
     await screen.findAllByRole('option');
     fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
-    expect(await screen.findByText('트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.')).toBeTruthy();
+    await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_MEMBER}/incluster?kind=pods`));
+    expect(await screen.findByText(TRACE_NOTICE.ambiguous_cluster)).toBeTruthy();
     expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
-    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'member_cluster' });
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'ambiguous_cluster' });
   });
 
   it('reads the trace snapshot for a uniquely named host cluster and shows the disabled notice on 404', async () => {
@@ -307,18 +393,18 @@ describe('K8sMapView service graph data', () => {
     trace.override = (c, s) => {
       seen.push({ id: c.id, signal: s });
       if (c.id === 'shared') return first.promise;
-      return Promise.resolve({ available: false, reason: 'member_cluster', workloadCalls: [], omitted: 0 });
+      return Promise.resolve({ available: false, reason: 'partial_snapshot', workloadCalls: [], omitted: 0 });
     };
     stubFetch(HOST_AND_MEMBER);
     view();
     await waitFor(() => expect(seen.map((s) => s.id)).toContain('shared'));
     fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
-    expect(await screen.findByText('트레이스로 관측된 호출은 호스트 계정 클러스터에만 표시합니다. 이 클러스터는 ARN으로 식별되어 호스트 계정이 아닌 클러스터로 처리됩니다.')).toBeTruthy();
+    expect(await screen.findByText(TRACE_NOTICE.partial_snapshot)).toBeTruthy();
     expect(seen[0].signal?.aborted).toBe(true);
     // An aborted read resolves like a failure; it must not replace the member cluster's overlay.
     await act(async () => { first.resolve({ available: false, reason: 'unavailable', workloadCalls: [], omitted: 0 }); });
     expect(screen.queryByText('트레이스 스냅샷을 읽지 못해 트레이스로 관측된 호출을 표시하지 않습니다.')).toBeNull();
-    expect(canvas.props!.input.trace).toMatchObject({ reason: 'member_cluster' });
+    expect(canvas.props!.input.trace).toMatchObject({ reason: 'partial_snapshot' });
   });
 
   it('shows a visible, counted notice when the trace snapshot was only partially read', async () => {
@@ -431,62 +517,79 @@ describe('K8sMapView host account scope', () => {
     expect(calls.some((u) => u.includes('accounts=111111111111'))).toBe(false);
     await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
     expect(await screen.findByText(TRACE_NOTICE.disabled)).toBeTruthy();
-    expect(screen.queryByText(TRACE_NOTICE.member_cluster)).toBeNull();
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'disabled' });
   });
 
-  it('passes the resolved host account id to the trace overlay only for an ARN id', async () => {
-    const seen: { id: string; hostAccountId?: string }[] = [];
+  it('passes only the cluster id and fleet evidence to the trace overlay, never a host account', async () => {
+    const seen: Record<string, unknown>[] = [];
     trace.override = (c) => {
-      seen.push({ id: c.id, hostAccountId: c.hostAccountId });
+      seen.push({ ...c });
       return Promise.resolve({ available: true, workloadCalls: [], omitted: 0, skipped: 0 });
     };
     stubFetch(HOST_ARN_ONLY, 200, accountsHandler(ACCOUNTS));
     view();
     await waitFor(() => expect(seen.some((s) => s.id === HOST_ARN)).toBe(true));
-    expect(seen.find((s) => s.id === HOST_ARN)?.hostAccountId).toBe('111111111111');
+    expect(seen.find((s) => s.id === HOST_ARN)).toEqual({ id: HOST_ARN, registeredNames: [HOST_ARN], listingIncomplete: false });
     cleanup();
     vi.unstubAllGlobals();
     seen.length = 0;
-    stubFetch(HOST_ONLY, 200, accountsHandler(ACCOUNTS));
+    stubFetch(HOST_AND_UNIQUE_MEMBER, 200, accountsHandler(ACCOUNTS));
     view();
-    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
-    expect(seen.find((s) => s.id === 'shared')?.hostAccountId).toBeUndefined();
+    await screen.findAllByRole('option');
+    fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: UNIQUE_MEMBER_ARN } });
+    await waitFor(() => expect(seen.some((s) => s.id === UNIQUE_MEMBER_ARN)).toBe(true));
+    expect(seen.find((s) => s.id === UNIQUE_MEMBER_ARN))
+      .toEqual({ id: UNIQUE_MEMBER_ARN, registeredNames: ['shared', UNIQUE_MEMBER_ARN], listingIncomplete: false });
   });
 
-  it.each<[string, Handler]>([
-    ['a non-OK response', accountsHandler({}, 500)],
-    ['two host rows', accountsHandler({ accounts: [{ accountId: '111111111111', isHost: true }, { accountId: '333333333333', isHost: true }] })],
-    ['a malformed host id', accountsHandler({ accounts: [{ accountId: 'self', isHost: true }] })],
-    ['no accounts array', accountsHandler({ rows: [] })],
-    ['a rejected request', (u) => (u === '/api/accounts' ? Promise.reject(new Error('net')) : undefined)],
-  ])('keeps the member handling for an ARN cluster when the host account cannot be determined (%s)', async (_label, handler) => {
+  // The fleet is read from the same /api/accounts body, so a failed or malformed lookup also fails the trace join
+  // closed (incomplete_listing); two host rows still yield a well-formed account list (fleet complete).
+  it.each<[string, Handler, boolean]>([
+    ['a non-OK response', accountsHandler({}, 500), false],
+    ['two host rows', accountsHandler({ accounts: [{ accountId: '111111111111', isHost: true, enabled: true }, { accountId: '333333333333', isHost: true, enabled: true }] }), true],
+    ['a malformed host id', accountsHandler({ accounts: [{ accountId: 'self', isHost: true, enabled: true }] }), false],
+    ['no accounts array', accountsHandler({ rows: [] }), false],
+    ['a rejected request', (u) => (u === '/api/accounts' ? Promise.reject(new Error('net')) : undefined), false],
+  ])('reads Route53 for the ARN account when the host account cannot be determined (%s)', async (_label, handler, joins) => {
     const calls = stubFetch(HOST_ARN_ONLY, 200, handler);
     view();
     await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=111111111111&'))).toBe(true));
-    expect(await screen.findByText(TRACE_NOTICE.member_cluster)).toBeTruthy();
-    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
-    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'member_cluster' });
+    if (joins) {
+      expect(await screen.findByText(TRACE_NOTICE.disabled)).toBeTruthy();
+      expect(calls.filter((u) => u === '/api/topology?lens=service')).toHaveLength(1);
+      expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'disabled' });
+    } else {
+      expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+      expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+      expect(calls.filter(isFleet)).toEqual([]);
+    }
   });
 
-  it('keeps a member ARN cluster a member when the host account is known', async () => {
-    const calls = stubFetch(HOST_AND_MEMBER, 200, accountsHandler(ACCOUNTS));
+  it('reads Route53 for a member ARN cluster by its own account when the host account is known', async () => {
+    const calls = stubFetch(HOST_AND_UNIQUE_MEMBER, 200, accountsHandler(ACCOUNTS));
     view();
     await screen.findAllByRole('option');
-    fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: MEMBER_ARN } });
-    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=222222222222&'))).toBe(true));
-    expect(await screen.findByText(TRACE_NOTICE.member_cluster)).toBeTruthy();
-    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
+    // The trace read waits for the fleet (per-account listings); let the initial cluster's read start first.
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    fireEvent.change(screen.getByRole('combobox', { name: '클러스터' }), { target: { value: UNIQUE_MEMBER_ARN } });
+    await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=123456789012&'))).toBe(true));
+    // One snapshot read for the initially selected host cluster, one for the member cluster.
+    await waitFor(() => expect(calls.filter((u) => u === '/api/topology?lens=service')).toHaveLength(2));
   });
 
-  it('waits for the host account lookup before the trace and Route53 reads of an ARN cluster, without repeating the in-cluster reads', async () => {
+  it('waits for the host account lookup before the Route53 read and the trace read of an ARN cluster, without repeating reads', async () => {
     const pending = deferred<Response>();
     const calls = stubFetch(HOST_ARN_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
     view();
     await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_HOST_ARN}/incluster?kind=pods`));
-    expect(calls.some((u) => u.startsWith('/api/inventory/route53') || u.startsWith('/api/topology'))).toBe(false);
+    // The fleet (hence the trace join) needs the account list from the same lookup.
+    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
+    expect(calls.some((u) => u.startsWith('/api/inventory/route53'))).toBe(false);
     await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
     await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=self&'))).toBe(true));
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
     expect(calls.filter((u) => u === `/api/eks/${ENC_HOST_ARN}/incluster?kind=pods`)).toHaveLength(1);
+    expect(calls.filter((u) => u === '/api/topology?lens=service')).toHaveLength(1);
   });
 
   it('shows the evidence loading indicator while an ARN cluster waits for the host account lookup', async () => {
@@ -497,18 +600,20 @@ describe('K8sMapView host account scope', () => {
     await waitFor(() => expect(canvas.props).not.toBeNull());
     await waitFor(() => expect(calls).toContain(`/api/eks/${ENC_HOST_ARN}/db-refs`));
     expect(await screen.findByText(PENDING)).toBeTruthy();
-    expect(calls.some((u) => u.startsWith('/api/inventory/route53') || u.startsWith('/api/topology'))).toBe(false);
+    expect(calls.some((u) => u.startsWith('/api/inventory/route53'))).toBe(false);
     await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
     await waitFor(() => expect(screen.queryByText(PENDING)).toBeNull());
   });
 
-  it('does not repeat the trace or Route53 read of a bare-name cluster when the host account lookup settles', async () => {
+  it('does not repeat the Route53 read of a bare-name cluster when the host account lookup settles; the trace read follows it once', async () => {
     const pending = deferred<Response>();
     const calls = stubFetch(HOST_ONLY, 200, (u) => (u === '/api/accounts' ? pending.promise : undefined));
     view();
+    // A bare name's Route53 read never waits for the lookup; the trace read waits for the fleet it feeds.
     await waitFor(() => expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1));
-    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
+    expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
     await act(async () => { pending.resolve(new Response(JSON.stringify(ACCOUNTS))); });
+    await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
     expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1);
     expect(calls.filter((u) => u === '/api/topology?lens=service')).toHaveLength(1);
   });
@@ -534,7 +639,7 @@ describe('K8sMapView host account scope', () => {
 
 describe('K8sMapView trace notices', () => {
   it('has one translated notice per non-available trace-overlay reason', () => {
-    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'incomplete_listing', 'member_cluster', 'partial_snapshot', 'unavailable', 'unsupported_scope']);
+    expect(Object.keys(TRACE_NOTICE).sort()).toEqual(['ambiguous_cluster', 'disabled', 'incomplete_listing', 'partial_snapshot', 'unavailable', 'unsupported_scope']);
     for (const ko of Object.values(TRACE_NOTICE)) {
       for (const lang of ['en', 'zh', 'ja'] as const) expect(applyTerms(lang, ko)).not.toBe(ko);
     }
@@ -556,8 +661,6 @@ describe('K8sMapView trace notices', () => {
 describe('K8sMapView trace join fleet listing', () => {
   // UI default scope: host account only. It hides other accounts' clusters without any disclosure.
   const NARROW = { accounts: ['self'], regions: '__all__', includeGlobal: true };
-  const FLEET_URL = '/api/eks?accounts=__all__&regions=__all__&includeGlobal=1';
-  const isFleet = (u: string) => u === FLEET_URL;
   const fleetHandler = (body: unknown, status = 200): Handler => (u) => (isFleet(u) ? new Response(JSON.stringify(body), { status }) : undefined);
   const narrow = () => window.localStorage.setItem('awsops:scope', JSON.stringify(NARROW));
   const seenTrace = () => {
@@ -574,11 +677,45 @@ describe('K8sMapView trace join fleet listing', () => {
     const calls = stubFetch(HOST_ONLY, 200, fleetHandler(HOST_AND_MEMBER));
     view();
     expect(await screen.findByText(TRACE_NOTICE.ambiguous_cluster)).toBeTruthy();
-    expect(calls).toContain(FLEET_URL);
+    expect(calls).toContain(fleetUrl('self'));
+    expect(calls).toContain(fleetUrl('222222222222'));
+    expect(calls).not.toContain('/api/eks?accounts=__all__&regions=__all__&includeGlobal=1');
     expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
     expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'ambiguous_cluster' });
     // The selector still follows the narrowed scope: the member cluster is not offered.
     expect((await screen.findAllByRole('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['shared']);
+  });
+
+  it('refuses the join when a same-named cluster is only registered (outside every listing), not listed', async () => {
+    // The member is not a wildcard scan, so its all-region listing covers configured regions only; its `shared`
+    // cluster registered in us-west-2 is invisible there but present in the registry.
+    narrow();
+    const twin = 'arn:aws:eks:us-west-2:222222222222:cluster/shared';
+    const calls = stubFetch(HOST_ONLY, 200, (u) => (u === '/api/eks/registrations'
+      ? new Response(JSON.stringify({ clusters: [{ id: 'shared', name: 'shared', accountId: '111111111111', region: 'ap-northeast-2' },
+        { id: twin, name: 'shared', accountId: '222222222222', region: 'us-west-2' }] })) : undefined));
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.ambiguous_cluster)).toBeTruthy();
+    expect(calls).toContain('/api/eks/registrations');
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+  });
+
+  it('a failed registrations read refuses the join as an incomplete listing', async () => {
+    narrow();
+    stubFetch(HOST_ONLY, 200, (u) => (u === '/api/eks/registrations' ? new Response('{}', { status: 503 }) : undefined));
+    view();
+    await waitFor(() => expect(canvas.props?.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' }));
+  });
+
+  it('merges per-account fleet listings: a same-named cluster only in the member listing reaches the join', async () => {
+    narrow();
+    const seen = seenTrace();
+    const member = { clusters: [{ id: MEMBER_ARN, name: 'shared', accountId: '222222222222', access: 'connected', region: 'ap-northeast-2' }] };
+    stubFetch(HOST_ONLY, 200, (u) => (u === fleetUrl('222222222222') ? new Response(JSON.stringify(member)) : undefined));
+    view();
+    await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
+    // Both same-named ids reach the overlay, whose gate refuses the join as ambiguous.
+    expect(seen.find((s) => s.id === 'shared')).toMatchObject({ registeredNames: ['shared', MEMBER_ARN], listingIncomplete: false });
   });
 
   it('passes the fleet names (both same-named clusters) to the overlay for a host-only scope', async () => {
@@ -636,24 +773,35 @@ describe('K8sMapView trace join fleet listing', () => {
     expect(screen.queryByText(/boom/)).toBeNull();
   });
 
+  it('fails closed to an incomplete listing when readFleet itself rejects', async () => {
+    narrow();
+    fleetMock.override = () => Promise.reject(new Error('unexpected'));
+    const calls = stubFetch(HOST_ONLY);
+    view();
+    expect(await screen.findByText(TRACE_NOTICE.incomplete_listing)).toBeTruthy();
+    expect(calls.filter((u) => u.startsWith('/api/topology'))).toEqual([]);
+    expect(canvas.props!.input.trace).toMatchObject({ available: false, reason: 'incomplete_listing' });
+  });
+
   it('waits for the fleet listing before the trace read, without delaying Route53', async () => {
     narrow();
-    const pending = deferred<Response>();
-    const calls = stubFetch(HOST_ONLY, 200, (u) => (isFleet(u) ? pending.promise : undefined));
+    const pending = deferred<void>();
+    const calls = stubFetch(HOST_ONLY, 200, (u) => (isFleet(u) ? pending.promise.then(() => new Response(JSON.stringify(HOST_ONLY))) : undefined));
     view();
     await waitFor(() => expect(calls.some((u) => u.startsWith('/api/inventory/route53?accounts=self&'))).toBe(true));
     expect(calls.some((u) => u.startsWith('/api/topology'))).toBe(false);
-    await act(async () => { pending.resolve(new Response(JSON.stringify(HOST_ONLY))); });
+    await act(async () => { pending.resolve(); });
     await waitFor(() => expect(calls).toContain('/api/topology?lens=service'));
     expect(calls.filter((u) => u.startsWith('/api/inventory/route53'))).toHaveLength(1);
   });
 
-  it('makes no second listing request when the scope is already all accounts and all regions', async () => {
+  it('reads the fleet per account even when the scope is already all accounts and all regions (that listing is capped)', async () => {
     const seen = seenTrace();
     const calls = stubFetch(HOST_AND_MEMBER);
     view();
     await waitFor(() => expect(seen.some((s) => s.id === 'shared')).toBe(true));
-    expect(calls.filter((u) => u.startsWith('/api/eks?'))).toHaveLength(1);
+    expect(calls.filter((u) => u.startsWith('/api/eks?') && !isFleet(u))).toEqual(['/api/eks?accounts=__all__&regions=__all__&includeGlobal=1']);
+    expect(calls.filter(isFleet).sort()).toEqual([fleetUrl('222222222222'), fleetUrl('self')]);
     expect(seen.find((s) => s.id === 'shared')).toMatchObject({ registeredNames: ['shared', MEMBER_ARN, 'offline'], listingIncomplete: false });
   });
 });

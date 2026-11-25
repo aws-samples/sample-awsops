@@ -44,6 +44,8 @@
     "@smithy/signature-v4": "^5.7.5",
     "@xyflow/react": "^12.12.1",
     "clsx": "^2.1.1",
+    "cytoscape": "^3.35.0",
+    "cytoscape-fcose": "^2.2.0",
     "jose": "^6.2.15",
     "lucide-react": "^1.68.0",
     "mdast-util-to-string": "4.0.0",

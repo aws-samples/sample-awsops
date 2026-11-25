@@ -91,12 +91,13 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [EKS evidence producer](../web/lib/topology-config.ts), and
 [IP-target builder](../web/lib/flow-topology.ts).
 
-## eks (10)
+## eks (12)
 | Path | Method | Behavior | Authentication |
 |------|--------|----------|----------------|
 | `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; never writes; for an administrator, an unregistered member cluster with a verified Access Entry is flagged `accessEntryVerified: true` so the admin page can offer one-click registration (the ordinary register POST, sent only when the admin clicks); partial errors and enumeration limits are disclosed | verifyUser |
 | `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; a node-only read failure keeps the cluster reachable with `nodesReason`/`nodesError`, and `nodesSource: "aws-api"` marks member EC2/node-group rows; unavailable scope/registration storage returns 503 | verifyUser |
 | `/api/eks/node-eni` | GET | `node` DNS lookup in EC2 inventory and traffic metrics; optional `cluster` selects its registered account/region; node-only requests retain host/deployment-region behavior | verifyUser |
+| `/api/eks/registrations` | GET | Every registered cluster id (registry plus env-configured clusters, including clusters of disabled accounts) as `{ clusters: [{ id, name, accountId, region }], truncated: false }` (the registry read has no row cap; a registry id that does not parse is dropped and the response is instead `{ clusters, truncated: true, unparsed: <count> }` with the parseable clusters and no dropped id text; a client treats `truncated: true` or `status: "error"` as incomplete), a bare id parsed as a host cluster in the deployment region (`accountId` is the numeric host id, or `self` without `HOST_ACCOUNT_ID`); used only for the client's trace-join name uniqueness; no AWS call; an unavailable registry returns 503; `no-store` | verifyUser |
 | `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; a node-only failure keeps the cluster counted and reports `nodesUnavailable`; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |
 | `/api/eks/[cluster]/db-refs` | GET | Managed-database hostnames extracted server-side from Pod env and ConfigMaps, matched to inventory endpoints; returns workload, `via`, host, kind, matched resource and referenced Secret names only (no values), with `truncated`/`partial` flags for the Kubernetes read and `inventoryCapped`/`inventoryIncomplete` flags for the inventory match (a type without one stable succeeded sync snapshot, or cut off by the page cap, has its matches withheld); only `account`/`region` query parameters accepted; `no-store` | verifyUser |
 | `/api/eks/[cluster]/incluster` | GET | Read-only Kubernetes resources selected by `kind`; canonical registration allowlist applies | verifyUser |
@@ -316,11 +317,12 @@ All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
-## topology (1)
+## topology (2)
 
 | Path | Method | Role | Auth |
 |------|--------|------|------|
 | `/api/topology` | GET | Published host service snapshot with bounded service, entry, placement and evidence lenses. Select a returned entity with `focus`, filter by `q` and pin `snapshot` when following `nextCursor`. Returns 404 when `topology_entities_enabled` is disabled, 422 for unsupported scopes, or 410 for an expired snapshot. | `verifyUser` |
+| `/api/topology/site-routes` | GET | Trace route templates (`http.route`) per traced service with the downstream service/route each one calls, for the site flow. Reads every registered ClickHouse trace datasource (registry catalog template, never request input), at most 4 at a time, each within what is left of a 10 s budget; an `ok`/`partial` per-source result is reused for 60 s (single-flight per source, template and window, at most 64 retained and 8 loading at once; a source past the loading cap reports `query_failed`), while `unavailable` results and failures are not. A read that reaches its row limit (`capped`) or comes back truncated drops its last, possibly cut hop; hops whose route or downstream route has an id-like segment are dropped (`route_raw_path`). Only route templates, service names and distinct-trace counts are returned as exactly `{ status, reasons, routes }`; a hop reported by several sources keeps its largest count, adds `multi_source_counts` and reports `partial`. A source that is `partial` keeps its routes; `unavailable` means no source returned routes. Optional `windowMins` is 15, 60 (default) or 180; any other parameter or value returns 400. No registered source returns `unavailable` with `no_trace_source`. Returns 404 when `topology_entities_enabled` is disabled and 503 when the registry read fails, is busy or exceeds its 2 s timed read-only transaction (`timeout`). | `verifyUser` |
 
 ## network-topology (1)
 
