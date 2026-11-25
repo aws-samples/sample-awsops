@@ -8,13 +8,15 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # Topology
 
-The default `/topology` view explores the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph. The optional **Service + Network** view is described below.
+The default `/topology` view is the per-domain site flow, described under **Site flow** below. At `/topology?view=flow` you can explore the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph; the optional **Service + Network** view is described below.
 
-<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
+<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph (?view=flow)" />
 
-These saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
+The screenshot above shows the request flow graph (`/topology?view=flow`); saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
 
 ## Features
+The features and steps below describe the request flow graph (`/topology?view=flow`). For the default site flow, see **Site flow** below.
+
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
 - Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
@@ -39,8 +41,8 @@ These saved screenshots are illustrative examples; verify your selected account 
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="Node focus mode + detail panel" />
 
-## How to use
-1. Click **Topology** in the sidebar.
+## How to use (request flow graph)
+1. Click **Topology** in the sidebar, then select **Request flow graph →** at the top of the site flow view, or open `/topology?view=flow`.
 2. Once the graph renders, use the **MiniMap** and **Controls** to zoom into the area you want to inspect.
 3. To view a single entry point, pick a target in the top **CloudFront** or **LB** selector.
 4. To find a specific resource, type part of its name in the search box and choose from the autocomplete list.
@@ -67,7 +69,7 @@ Configuration topology shows the source capture range, with eligible host last-s
 
 ## Service + Network (opt-in)
 
-Open `/topology?view=e2e`, or select **Service + Network →** on the configuration topology, service map (`/topology/services`) or network monitor (`/network-flow`). The default `/topology` configuration view remains available through **Back to configuration flow**.
+Open `/topology?view=e2e`, or select **Service + Network →** on the configuration topology, service map (`/topology/services`) or network monitor (`/network-flow`). The configuration flow view (`/topology?view=flow`) remains available through **Back to configuration flow**.
 
 Service and Network Flow Monitor (NFM) observations are supported only for the **host account (`self`)**. Member and all-account selections show configuration only; host observations are never overlaid on those accounts. NFM uses the host account's configured AWS region, not an account-wide or multi-region traffic census.
 
@@ -121,7 +123,7 @@ Workload identity also requires a complete, fresh service-snapshot read with kno
 
 ## Site flow
 
-Open `/topology?view=site` for this opt-in view; it is not the default view yet. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
+This is the default view at `/topology` (`?view=site` opens the same view). Open the previous request flow graph from the **Request flow graph →** link at the top or at `/topology?view=flow`; older links that carry request-flow-graph-only parameters such as the cluster filter still open that graph. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
 
 - **Path input**: enter a path to highlight the branch it takes; the highlight continues past the gateway through trace-observed route templates (last 60 minutes) to downstream services, and the last service's datastores. A page path served from a static origin is linked to the API route whose route template matches it by name, and that link is marked as inferred (dashed).
 - **Route template limits**: routes are aggregated by service name across all clusters and namespaces exporting to the trace source, so same-named services (for example one app deployed to clusters in two Availability Zones) are merged. `http.route` carries no HTTP method, so GET and POST on one template are merged, and only templates seen in the window are candidates. A route with no downstream call may end at that service, or its next hop may be uninstrumented or go through messaging. Routes containing id-like segments (raw paths) are not used.

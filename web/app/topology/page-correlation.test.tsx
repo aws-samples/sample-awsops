@@ -17,7 +17,7 @@ let quality: 'healthy' | 'missing-run' | 'running' | 'missing-capture' = 'health
 beforeEach(() => {
  quality = 'healthy';
  localStorage.clear(); setActiveScope(DEFAULT_SCOPE);
- window.history.replaceState({}, '', '/topology');
+ window.history.replaceState({}, '', '/topology?view=flow');
  vi.stubGlobal('requestAnimationFrame', () => 0); vi.stubGlobal('cancelAnimationFrame', () => {});
  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
   const url = new URL(input, 'http://localhost');

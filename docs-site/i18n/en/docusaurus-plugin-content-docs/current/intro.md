@@ -18,7 +18,7 @@ AWSops is a unified operations dashboard that lets you **view your AWS and Kuber
 - **AI Assistant** — ask operations questions in natural language; each question is auto-routed to the right domain and answered in markdown.
 - **AI Diagnosis** — generate a comprehensive report on your account’s operational health at the depth you choose, and export it as MD, DOCX, or PDF.
 - **Resource Inventory** — sort, search, and inspect 20+ resource types such as EC2, Lambda, RDS, S3, VPC, and IAM.
-- **Topology** — explore the request flow from Route53 → CloudFront → LB → Target Group → target as a graph.
+- **Topology** — explore the per-domain site flow (the default view) and, at `?view=flow`, the request flow graph from Route53 → CloudFront → LB → Target Group → target.
 - **EKS / Kubernetes** — review your cluster fleet and nodes, pods, and deployments read-only.
 - **Cost analysis** — see the per-service cost breakdown and trends, plus Bedrock model usage.
 - **Datasource Explore** — query connected observability datasources in their native query language.

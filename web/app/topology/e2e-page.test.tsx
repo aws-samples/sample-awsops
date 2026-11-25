@@ -51,13 +51,13 @@ it('mounts the opt-in view with current inventory evidence and no automatic netw
   render(<TopologyPage />);
   expect(await screen.findByRole('heading', { name: '서비스 + 네트워크' })).toBeTruthy();
   await screen.findByLabelText('Inventory collection evidence');
-  expect(screen.getByRole('link', { name: '구성 흐름으로 돌아가기' }).getAttribute('href')).toBe('/topology');
+  expect(screen.getByRole('link', { name: '구성 흐름으로 돌아가기' }).getAttribute('href')).toBe('/topology?view=flow');
   expect(observations()).toHaveLength(2);
   expect(screen.queryByRole('heading', { name: 'Topology' })).toBeNull();
 });
 
 it('follows URL mode changes and leaves the default view free of observation reads', async () => {
-  window.history.replaceState({}, '', '/topology');
+  window.history.replaceState({}, '', '/topology?view=flow');
   serve();
   const view = render(<TopologyPage />);
   await screen.findByTestId('default-flow');

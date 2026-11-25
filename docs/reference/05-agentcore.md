@@ -104,7 +104,7 @@ hard-`false`); the 9 gateway-routed keys answer via their own agents.
   excluded. The routing order is pin > keyword > previous section > default (`ops`, or
   `ACTIVE_FALLBACK` with hybrid routing, where the classifier also decides before the previous
   section and the result carries `method: 'previous'`).
-- *Page context (site flow).* While the site flow view (`/topology?view=site`) shows a host flow, the client sends its
+- *Page context (site flow).* While the site flow view (`/topology`, alias `?view=site`) shows a host flow, the client sends its
   `renderSiteFlowContext()` text as the optional `pageContext` string (`null` = absent; any other non-string → 400).
   The Gaps line carries the gaps the screen states (while evidence loads it says `evidence_pending` instead of the
   hidden trace/datastore gaps; `no_trace_source` replaces `route_unavailable` when a path has no trace source; a

@@ -215,7 +215,7 @@ function HostServiceMap() {
         </dl>
         {/* A claimed queue ARN is never an inventory bridge. */}
         {selected.kind === 'db' && text(selected.meta?.infra_ref) && <Link className="mt-2 inline-block text-brand-700" href={`/topology/resource/${encodeURIComponent(text(selected.meta?.infra_ref))}`}>{tt('인프라 리소스 보기 →')}</Link>}
-        {selected.kind === 'workload' && text(selected.meta?.cluster) && <Link className="mt-2 inline-block text-brand-700" href={`/topology?cluster=${encodeURIComponent(`eks:${text(selected.meta?.cluster)}`)}`}>{tt('클러스터 요청 흐름 →')}</Link>}
+        {selected.kind === 'workload' && text(selected.meta?.cluster) && <Link className="mt-2 inline-block text-brand-700" href={`/topology?view=flow&cluster=${encodeURIComponent(`eks:${text(selected.meta?.cluster)}`)}`}>{tt('클러스터 요청 흐름 →')}</Link>}
       </details>}
     </div>
   );

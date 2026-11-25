@@ -138,7 +138,7 @@ export default function ServiceTopologyView({ supported }: { supported: boolean 
   };
   return (
     <div className="space-y-3">
-      <PageHeader title={tt('통합 서비스 그래프')} right={<Link href="/topology">{tt('요청 흐름')}</Link>} />
+      <PageHeader title={tt('통합 서비스 그래프')} right={<Link href="/topology?view=flow">{tt('요청 흐름')}</Link>} />
       {!supported ? (
         <p role="status" className="p-4">
           {tt('현재 범위에서는 서비스 맵을 표시할 수 없습니다. 호스트 계정, 전체 리전 및 전역 리소스를 선택하세요.')}

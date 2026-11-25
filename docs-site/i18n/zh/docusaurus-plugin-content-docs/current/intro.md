@@ -18,7 +18,7 @@ AWSops 是一个可以**实时查看 AWS 与 Kubernetes 运维状态、用自然
 - **AI 助手** — 用自然语言提出运维问题，问题会自动路由到合适的领域，并以 Markdown 形式返回答案。
 - **AI 诊断** — 按不同深度生成分析账户运维状态的综合报告，并导出为 MD、DOCX、PDF。
 - **资源清单** — 对 EC2、Lambda、RDS、S3、VPC、IAM 等 20 多种资源进行排序、搜索和详情查看。
-- **拓扑** — 以图形方式探索 Route53 → CloudFront → LB → Target Group → 目标的请求流。
+- **拓扑** — 探索按域名展示的站点流量（默认视图），以及 `?view=flow` 中从 Route53 → CloudFront → LB → Target Group → 目标的请求流图。
 - **EKS / Kubernetes** — 以只读方式查看集群舰队以及节点、Pod、Deployment。
 - **成本分析** — 查看按服务分解的成本与趋势，以及 Bedrock 模型使用量。
 - **数据源探索** — 使用原生查询语言查询已连接的可观测性数据源。

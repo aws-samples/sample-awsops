@@ -111,7 +111,7 @@ async function screenshot(page: Page, name: string, width: number) {
 test('request paths refit after resizing an asynchronously loaded canvas', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   const errors = await fixtures(page);
-  await page.goto('/topology');
+  await page.goto('/topology?view=flow');
   await page.getByRole('button', { name: /경로 보기 →/ }).first().click();
   await expect(page.locator('.react-flow__node')).toHaveCount(4);
   for (const width of [390, 1440]) {
@@ -148,7 +148,7 @@ for (const width of [1440, 768, 390]) {
   test(`entry-point and VPC selection at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });
     const errors = await fixtures(page);
-    await page.goto('/topology');
+    await page.goto('/topology?view=flow');
     await expect.poll(async () => (await page.getByRole('heading', { name: 'Topology', exact: true }).boundingBox())?.width ?? 0).toBeGreaterThan(100);
     await expect(page.getByRole('button', { name: /경로 보기 →/ }).first()).toBeVisible();
     await screenshot(page, 'entry-overview', width);
