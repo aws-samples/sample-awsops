@@ -10,11 +10,13 @@ import Screenshot from '@site/src/components/Screenshot';
 
 기본 `/topology` 보기는 도메인별 사이트 흐름이며 아래 **사이트 흐름**에서 설명합니다. `/topology?view=flow`에서는 구성에 따른 요청 경로(**Route53 → CloudFront → Load Balancer → Target Group → 타깃**)를 인터랙티브 그래프로 탐색할 수 있고, 선택형 **서비스 + 네트워크** 보기는 아래에서 설명합니다.
 
-<Screenshot src="/screenshots/resources/topology.png" alt="요청 흐름 그래프" />
+<Screenshot src="/screenshots/resources/topology.png" alt="요청 흐름 그래프 (?view=flow)" />
 
-이 스크린샷은 설명용으로 저장한 예시이므로, 사용 시 선택한 계정과 현재 조회 범위를 확인하세요.
+위 스크린샷은 요청 흐름 그래프(`/topology?view=flow`)이며, 설명용으로 저장한 예시이므로, 사용 시 선택한 계정과 현재 조회 범위를 확인하세요.
 
 ## 주요 기능
+아래 기능과 사용 방법은 요청 흐름 그래프(`/topology?view=flow`)에 대한 설명입니다. 기본 사이트 흐름은 아래 **사이트 흐름**을 참고하세요.
+
 ### 요청 흐름 그래프
 - **Route53 → CloudFront → Load Balancer → Target Group → 타깃**으로 이어지는 트래픽 경로를 노드와 엣지로 시각화합니다.
 - 노드는 종류별 색상과 아이콘으로 구분되며, 타깃 노드는 **healthy / unhealthy / draining** 등 health 상태에 따라 색이 바뀝니다. 그래프 상단 정보 줄에 현재 그래프에 존재하는 종류/health 색상 범례 칩이 함께 표시됩니다.
@@ -39,8 +41,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="노드 포커스 모드 + 상세 패널" />
 
-## 사용 방법
-1. 사이드바에서 **토폴로지**를 클릭합니다.
+## 사용 방법 (요청 흐름 그래프)
+1. 사이드바에서 **토폴로지**를 클릭한 뒤, 사이트 흐름 화면 상단의 **요청 흐름 그래프 →**를 선택하거나 `/topology?view=flow`를 엽니다.
 2. 그래프가 그려지면 **MiniMap**과 **Controls**로 원하는 영역을 확대해 살펴봅니다.
 3. 특정 진입점만 보려면 상단 **CloudFront** 또는 **LB** 선택 상자에서 대상을 고릅니다.
 4. 찾는 리소스가 있으면 검색창에 이름 일부를 입력하고 자동완성 목록에서 선택합니다.

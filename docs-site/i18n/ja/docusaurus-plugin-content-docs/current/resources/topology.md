@@ -10,11 +10,13 @@ import Screenshot from '@site/src/components/Screenshot';
 
 デフォルトの `/topology` ビューはドメインごとのサイトフローで、後述の**サイトフロー**で説明します。`/topology?view=flow` では、構成に基づくリクエスト経路（**Route53 → CloudFront → Load Balancer → Target Group → ターゲット**）をインタラクティブなグラフで探索できます。任意で選択できる**サービス + ネットワーク**ビューについても後述します。
 
-<Screenshot src="/screenshots/resources/topology.png" alt="リクエストフローグラフ" />
+<Screenshot src="/screenshots/resources/topology.png" alt="リクエストフローグラフ（?view=flow）" />
 
-これらは説明用に保存したスクリーンショットです。ページを使用する際は、選択中のアカウントと現在の表示範囲を確認してください。
+上のスクリーンショットはリクエストフローグラフ（`/topology?view=flow`）で、説明用に保存したものです。ページを使用する際は、選択中のアカウントと現在の表示範囲を確認してください。
 
 ## 主な機能
+以下の機能と使い方は、リクエストフローグラフ（`/topology?view=flow`）についての説明です。デフォルトのサイトフローは後述の**サイトフロー**を参照してください。
+
 ### リクエストフローグラフ
 - **Route53 → CloudFront → Load Balancer → Target Group → ターゲット**へと続くトラフィック経路を、ノードとエッジで可視化します。
 - ノードは種類ごとの色とアイコンで区別され、ターゲットノードは **healthy / unhealthy / draining** などの health 状態に応じて色が変わります。グラフ上部の情報行に、現在のグラフに存在する種類/health の色凡例チップが表示されます。
@@ -39,8 +41,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="ノードフォーカスモード + 詳細パネル" />
 
-## 使い方
-1. サイドバーで**トポロジー**をクリックします。
+## 使い方（リクエストフローグラフ）
+1. サイドバーで**トポロジー**をクリックし、サイトフロー画面上部の**リクエストフローグラフ →**を選ぶか、`/topology?view=flow` を開きます。
 2. グラフが描画されたら、**MiniMap** と **Controls** で目的のエリアを拡大して確認します。
 3. 特定のエントリーポイントだけを表示するには、上部の **CloudFront** または **LB** 選択ボックスで対象を選びます。
 4. 探しているリソースがあれば、検索ボックスに名前の一部を入力し、オートコンプリートのリストから選択します。

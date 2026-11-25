@@ -10,11 +10,13 @@ import Screenshot from '@site/src/components/Screenshot';
 
 默认 `/topology` 视图是按域名展示的站点流量，详见下文**站点流量**。在 `/topology?view=flow` 中可通过交互式图形探索配置中的请求路径（**Route53 → CloudFront → Load Balancer → Target Group → 目标**）；下文还介绍可选的**服务 + 网络**视图。
 
-<Screenshot src="/screenshots/resources/topology.png" alt="请求流图" />
+<Screenshot src="/screenshots/resources/topology.png" alt="请求流图（?view=flow）" />
 
-这些截图是保存的示例，仅供说明；使用页面时，请核对所选账户和当前查询范围。
+上方截图为请求流图（`/topology?view=flow`），是保存的示例，仅供说明；使用页面时，请核对所选账户和当前查询范围。
 
 ## 主要功能
+以下功能与使用方法针对请求流图（`/topology?view=flow`）。默认的站点流量请参见下文**站点流量**。
+
 ### 请求流图
 - 将 **Route53 → CloudFront → Load Balancer → Target Group → 目标**相连的流量路径以节点和边可视化。
 - 节点按类型以颜色和图标区分，目标节点会根据 **healthy / unhealthy / draining** 等 health 状态变换颜色。图上方的信息行会显示当前图中存在的类型/health 颜色图例。
@@ -39,8 +41,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="节点聚焦模式 + 详情面板" />
 
-## 使用方法
-1. 在侧边栏点击**拓扑**。
+## 使用方法（请求流图）
+1. 在侧边栏点击**拓扑**，然后选择站点流量视图顶部的**请求流量图 →**，或打开 `/topology?view=flow`。
 2. 图形绘制完成后，通过 **MiniMap** 和 **Controls** 放大查看所需区域。
 3. 若只想查看特定入口点，在顶部 **CloudFront** 或 **LB** 选择框中选择目标。
 4. 若有要找的资源，在搜索框输入名称的一部分，并从自动补全列表中选择。

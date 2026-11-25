@@ -10,11 +10,13 @@ import Screenshot from '@site/src/components/Screenshot';
 
 The default `/topology` view is the per-domain site flow, described under **Site flow** below. At `/topology?view=flow` you can explore the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph; the optional **Service + Network** view is described below.
 
-<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
+<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph (?view=flow)" />
 
-These saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
+The screenshot above shows the request flow graph (`/topology?view=flow`); saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
 
 ## Features
+The features and steps below describe the request flow graph (`/topology?view=flow`). For the default site flow, see **Site flow** below.
+
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
 - Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
@@ -39,8 +41,8 @@ These saved screenshots are illustrative examples; verify your selected account 
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="Node focus mode + detail panel" />
 
-## How to use
-1. Click **Topology** in the sidebar.
+## How to use (request flow graph)
+1. Click **Topology** in the sidebar, then select **Request flow graph →** at the top of the site flow view, or open `/topology?view=flow`.
 2. Once the graph renders, use the **MiniMap** and **Controls** to zoom into the area you want to inspect.
 3. To view a single entry point, pick a target in the top **CloudFront** or **LB** selector.
 4. To find a specific resource, type part of its name in the search box and choose from the autocomplete list.
