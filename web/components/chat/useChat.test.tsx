@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useChat, parseFrame, newSessionId } from './useChat';
+import { setPageContext } from '@/lib/chat-page-context';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -186,5 +187,30 @@ describe('gateways provenance (asGateways)', () => {
     const msg = await streamMeta(value);
     expect(msg.tools).toEqual(['t']);
     expect(msg.gateways).toBeUndefined();
+  });
+});
+
+describe('page context in the request body', () => {
+  async function sentBody(): Promise<Record<string, unknown>> {
+    const read = vi.fn().mockResolvedValue({ done: true });
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({ ok: true, body: { getReader: () => ({ read }) } } as any);
+    try {
+      const { result } = renderHook(() => useChat());
+      await act(async () => { await result.current.send('q'); });
+      return JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('carries pageContext only while a page has set it', async () => {
+    expect(await sentBody()).not.toHaveProperty('pageContext');
+    setPageContext('Site flow for shop.example.test');
+    try {
+      expect((await sentBody()).pageContext).toBe('Site flow for shop.example.test');
+    } finally {
+      setPageContext(null);
+    }
+    expect(await sentBody()).not.toHaveProperty('pageContext');
   });
 });

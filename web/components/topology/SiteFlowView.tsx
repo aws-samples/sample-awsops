@@ -20,6 +20,7 @@
 //    `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
+//  - the composed flow is the AI chat's page context (renderSiteFlowContext) while a host flow exists; cleared on unmount.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -34,6 +35,8 @@ import { isComposingKey } from '@/lib/ime';
 import { useTheme } from '@/lib/use-theme';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { renderSiteFlowContext } from '@/lib/site-flow-context';
+import { setPageContext } from '@/lib/chat-page-context';
 
 /** One notice per SiteGap (Korean source, translated via tt(); lockstep-tested). `host_not_found` is followed by the
  *  searched host, like `binding_scope_blocked` by its cluster labels. */
@@ -202,6 +205,10 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   const flow = useMemo<SiteFlow | null>(() => (data && host ? buildSiteFlow({ host, path: urlPath, flow: data.flow,
     cloudfrontRows: data.cloudfrontRows, bindings: data.bindings, traces: ev.traces, dbRefs: ev.dbRefs, routes, gaps: flowGaps }) : null),
   [data, host, urlPath, ev.traces, ev.dbRefs, routes, flowGaps]);
+  // AI chat context: the composed flow on screen, re-rendered whenever it changes; none without a host flow, and
+  // cleared when the view unmounts.
+  useEffect(() => { setPageContext(flow ? renderSiteFlowContext(flow) : null); }, [flow]);
+  useEffect(() => () => setPageContext(null), []);
 
   // ---- URL state ----
   const hrefWith = useCallback((next: { host?: string; path?: string }) => {

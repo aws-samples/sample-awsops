@@ -34,6 +34,8 @@ import { applyTerms } from '@/lib/i18n-terms';
 import { parseSiteRoutes, useClusterEvidence, withHostAlias } from './useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
 import type { RouteHop } from '@/lib/trace-routes';
+import { getPageContext, setPageContext } from '@/lib/chat-page-context';
+import { renderSiteFlowContext } from '@/lib/site-flow-context';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
 const REGION = 'ap-northeast-2', HOST_ID = '123456789012', MEMBER = '111111111111';
@@ -1378,3 +1380,35 @@ describe('SiteFlowView notices', () => {
   });
 });
 
+
+describe('SiteFlowView chat page context', () => {
+  afterEach(() => setPageContext(null));
+
+  it('attaches the rendered host flow, follows flow changes, and clears without a host and on unmount', async () => {
+    stubFetch();
+    const r = view();
+    await settled();
+    await waitFor(() => expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow)));
+    expect(getPageContext()).toMatch(/^Site flow for mall\.example\.com /);
+    nav.search = 'view=site&host=mall.example.com&path=/products/1';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).toContain('path /products/1'));
+    expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow));
+    nav.search = 'view=site';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).toBeNull());
+    nav.search = 'view=site&host=mall.example.com';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    r.unmount();
+    expect(getPageContext()).toBeNull();
+  });
+
+  it('sets nothing on the host index (no host selected)', async () => {
+    setPageContext('stale context from another page');
+    stubFetch();
+    view('view=site');
+    await screen.findByRole('list', { name: '호스트 목록' }, { timeout: 3000 });
+    expect(getPageContext()).toBeNull();
+  });
+});

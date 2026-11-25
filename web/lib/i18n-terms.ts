@@ -68,6 +68,7 @@ export const TERMS: Record<string, Pair> = {
   '인벤토리에 표시할 호스트가 없습니다.': { en: 'The inventory has no hosts to show.', zh: '资产清单中没有可显示的主机。', ja: 'インベントリに表示できるホストがありません。' },
   '검색으로 나머지 호스트를 찾으세요.': { en: 'Search to find the remaining hosts.', zh: '请通过搜索查找其余主机。', ja: '残りのホストは検索で探してください。' },
   '사이트 흐름 근거 상태': { en: 'Site flow evidence status', zh: '站点流量证据状态', ja: 'サイトフローの根拠の状態' },
+  '현재 보고 있는 사이트 흐름을 함께 보냅니다.': { en: 'The site flow you are viewing is sent with your question.', zh: '将随问题一并发送您正在查看的站点流量。', ja: '表示中のサイトフローを質問と一緒に送信します。' },
   '연결 근거(인벤토리·EKS·트레이스·데이터 저장소)를 불러오는 중…': {
     en: 'Loading connection evidence (inventory, EKS, traces, datastores)…',
     zh: '正在加载连接依据（资产清单、EKS、链路追踪、数据存储）…',

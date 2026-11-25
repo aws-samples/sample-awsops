@@ -35,6 +35,7 @@ const SURFACES = [
   'components/topology/K8sMapView.tsx',
   'components/chat/TimeSeriesTable.tsx',
   'components/chat/AssistantClient.tsx',
+  'components/chat/ChatDrawer.tsx',
   'components/diagnosis/DiagnosisView.tsx',
   'components/diagnosis/PresentationDownloads.tsx',
   'components/diagnosis/PillarCoverage.tsx',

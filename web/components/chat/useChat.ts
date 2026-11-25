@@ -5,6 +5,7 @@ import { sectionByKey } from '@/lib/sections';
 import type { ThreadSummary, ThreadMessage } from '@/lib/chat-store';
 import { getActiveAccount } from '@/lib/account-context';
 import { boundOutgoingHistory } from '@/lib/chat-context';
+import { getPageContext } from '@/lib/chat-page-context';
 
 const TOO_LARGE_MSG: Record<string, string> = {
   ko: '대화나 질문이 너무 길어 보낼 수 없습니다. 새 대화를 시작하거나 질문을 줄여 주세요.',
@@ -273,8 +274,12 @@ export function useChat() {
         const a = getActiveAccount();
         accountId = a && a !== 'self' && a !== '__all__' ? a : undefined;
       } catch { /* SSR / no storage — server defaults apply */ }
+      // What the user is looking at (e.g. the site flow view) rides along only while a page has set it; it is part
+      // of requestFields so the outgoing-history bound accounts for its size.
+      const pageContext = getPageContext();
       const requestFields = { prompt, section: overrideSection ?? null, previousSection, switchedFrom,
-        sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId };
+        sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId,
+        ...(pageContext ? { pageContext } : {}) };
       const res = await fetch('/api/chat', {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json' },
