@@ -182,11 +182,12 @@ export function withHostAlias(keys: string[], hostAccount: string | null): strin
 
 /**
  * Inventory + EKS map + host lookup + fleet listing + trace routes for one page scope (the view is keyed by it). A
- * new `reload` value re-runs every read (the route read only while `wantRoutes`, i.e. a host and a path exist). The previous inventory, host account and fleet stay on screen until the
- * reload lands and are then replaced together; the new fleet makes useClusterEvidence re-read every cluster, which
- * keeps the previous evidence shown until the new batch commits. A reload that fails (every inventory type failed, or
- * an invalid response) clears the inventory: no stale flow beside the failure. The route read commits on its own:
- * `routes` is null until the first read lands, then holds the last landed read (kept while a reload's read runs).
+ * new `reload` value re-runs every read (the route read only while `wantRoutes`: a host and a path exist). The
+ * previous inventory, host account and fleet stay on screen until the reload lands and are then replaced together;
+ * the new fleet makes useClusterEvidence re-read every cluster, which keeps the previous evidence shown until the new
+ * batch commits. A reload that fails (every inventory type failed, or an invalid response) clears the inventory: no
+ * stale flow beside the failure. The route read commits on its own: `routes` is null until the first read lands, then
+ * holds the last landed read (kept while a reload's read runs).
  */
 export function useSiteInventory(inventoryScope: string, reload = 0, wantRoutes = false): {
   data: SiteInventory | null; error: string; hostAccount: string | null | undefined; fleet: Fleet | null; pending: boolean;
