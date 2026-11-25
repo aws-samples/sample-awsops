@@ -1286,7 +1286,7 @@ describe('SiteFlowView trace routes', () => {
     expect(hl().nodes).not.toContain(catalog);
   });
 
-  it('a page path on a static origin links to the API route it most likely calls (inferred, labelled)', async () => {
+  it('a page path on a static origin links to the API route whose template matches by name (inferred, labelled)', async () => {
     const rows = inventory();
     rows.cloudfront = [inv('self', 'E1EXAMPLE', { ...CF_DATA, region: 'global',
       origins: [...CF_DATA.origins, { Id: 's3-static', DomainName: 'shop-static.s3.ap-northeast-2.amazonaws.com' }],

@@ -367,6 +367,34 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   the budget, are packed into a near-square grid in their box. Columns, barycenter ordering
   and box stacking are computed by the module itself. No edge route is precomputed: the
   canvas draws each edge as a smoothstep path between node handles.
+- Site flow trace routes (`web/lib/trace-routes.ts`, served by `GET /api/topology/site-routes`
+  and read in `web/components/topology/useSiteFlowData.ts`) continue a path highlight past
+  the gateway: route templates (`http.route`, default window 60 minutes) to downstream
+  services, and the last service's datastores. The view reads them only once a host and a
+  path are entered, once per load: a path change reuses the landed read, and Refresh or a
+  scope change reads again. The route reads at most 4 ClickHouse trace sources at once
+  within a 10 s budget and reuses an `ok`/`partial` per-source result for 60 s, single-flight
+  per (source, registry template, window); `unavailable` results and failures are never
+  reused. Residuals, disclosed rather than corrected:
+  - Routes are aggregated by service name across all clusters and namespaces exporting to
+    the trace source, so same-named services in different namespaces or clusters merge.
+    The common legitimate case is one app deployed to two clusters (for example
+    `shop-az-a` and `shop-az-c`). The route-to-workload join still requires
+    exactly one traced edge to that name (fail-closed).
+  - `http.route` carries no HTTP method, so GET and POST on one template merge, and only
+    templates seen in the window are candidates for a path.
+  - A route with no downstream entry ends the highlight on that service's datastores, but it
+    can also be an uninstrumented or messaging hop.
+  - When the routes read reaches its row limit (500), the hop of the last row is dropped
+    (`capped`), since the cut may have removed its downstream rows and left it looking
+    terminal. Rows ordered by route total and then hop key keep each hop's rows contiguous.
+    A row whose route or downstream route has an id-like segment (all digits of length 4
+    or more, a UUID, or hex of length 16 or more) means an instrumentation wrote the raw path
+    into `http.route`: it is not published, its whole hop is dropped and the read reports
+    `route_raw_path`. `url.path` is never used as a fallback.
+  - A `partial` read with a path entered adds the `routes_partial` site gap (one notice
+    listing the reasons, also visible to the AI context); `multi_source_counts` alone adds
+    nothing, because the client discards counts.
 
 ## Key files
 
