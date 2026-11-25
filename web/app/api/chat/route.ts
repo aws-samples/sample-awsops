@@ -336,10 +336,10 @@ export async function POST(request: Request) {
   // then prepended to the LAST USER MESSAGE of the model payload only (user-turn data, never the system prompt /
   // extraContext). Routing/classifier input, the stored exchange and logs keep the original prompt. When the block
   // would push the user message past MAX_PROMPT it is dropped (the user's text always wins; no error).
-  if (body.pageContext !== undefined && typeof body.pageContext !== 'string') {
+  if (body.pageContext != null && typeof body.pageContext !== 'string') { // null = absent
     return json({ status: 'error', message: 'pageContext must be a string' }, 400);
   }
-  const builtPageBlock = buildPageContextBlock(body.pageContext);
+  const builtPageBlock = buildPageContextBlock(body.pageContext ?? undefined);
   const pageBlock = builtPageBlock && prompt.length + builtPageBlock.length + 2 <= MAX_PROMPT ? builtPageBlock : undefined;
   const agentPrompt = pageBlock ? `${pageBlock}\n\n${prompt}` : prompt;
   // Sanitize ONCE at the boundary (bug fix, PR #138 review MINOR) — a malformed entry (non-array,
