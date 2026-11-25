@@ -140,11 +140,14 @@ function fold(rows: unknown[], cut: boolean): { routes: RouteHop[]; raw: boolean
 }
 
 async function query(
-  opts: { instanceId?: number; template?: string; deadlineMs: number }, windowMins: number, limit: number, endMs: number,
+  opts: { instanceId?: number; template?: string; deadlineMs: number; signal?: AbortSignal },
+  windowMins: number, limit: number, endMs: number,
 ): Promise<RouteRead> {
   const shape = otelAggregateShape(opts.template);
   if (!shape || !shape.spanKind) return unavailable('route_unsupported_schema');
   const { connConfig, reason } = await resolveSource('clickhouse', opts.instanceId);
+  // The caller gave up while the datasource resolved: never launch the ClickHouse reads.
+  if (opts.signal?.aborted) return unavailable('deadline');
   if (reason) return unavailable(reason === 'missing_configuration' ? reason : 'configuration_failed');
   const sql = routeSql(shape.table, windowMins, endMs, limit);
   // The tool only tightens its own execution bound, so ClickHouse stops when the BFF gives up.
@@ -193,17 +196,25 @@ async function query(
 
 /** Aggregate route templates per traced service over an allowlisted window. Every read is bounded
  *  by `deadlineMs` (datasource resolution included) and returns only fixed reason strings.
+ *  An aborted `signal` (the caller's cache deadline) settles the read as `deadline` too: an already
+ *  aborted one starts nothing, and one aborted during datasource resolution launches no ClickHouse read.
  *  `template` is the registry catalog's otel_v1 SQL (graph-sources); never a request input. */
 export async function readTraceRoutes(opts: {
   instanceId?: number; template?: string; windowMins: 15 | 60 | 180; deadlineMs: number; limit: number;
+  signal?: AbortSignal;
 }): Promise<RouteRead> {
   if (!WINDOWS.has(opts.windowMins) || !Number.isFinite(opts.limit) || !Number.isFinite(opts.deadlineMs)) {
     return unavailable('invalid_request');
   }
+  const { signal } = opts;
+  if (signal?.aborted) return unavailable('deadline');
   const limit = Math.min(ROUTE_LIMIT_CAP, Math.max(1, Math.floor(opts.limit)));
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const deadline = new Promise<RouteRead>((resolve) => {
     timer = setTimeout(() => resolve(unavailable('deadline')), Math.max(0, opts.deadlineMs));
+    onAbort = () => resolve(unavailable('deadline'));
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
   try {
     return await Promise.race([
@@ -212,5 +223,6 @@ export async function readTraceRoutes(opts: {
     ]);
   } finally {
     clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
 }

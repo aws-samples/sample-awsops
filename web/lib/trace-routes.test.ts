@@ -149,6 +149,38 @@ describe('readTraceRoutes', () => {
     expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
   });
 
+  it('starts nothing when the signal is already aborted', async () => {
+    answer([row()]);
+    const controller = new AbortController();
+    controller.abort();
+    expect(await read({ signal: controller.signal })).toEqual({ status: 'unavailable', reasons: ['deadline'], routes: [] });
+    expect(getDefaultDatasource).not.toHaveBeenCalled();
+    expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
+  });
+
+  it('stops before the ClickHouse reads when the signal aborts during datasource resolution', async () => {
+    answer([row()]);
+    let resolve!: (v: unknown) => void;
+    getDefaultDatasource.mockImplementation(() => new Promise((r) => { resolve = r; }));
+    const controller = new AbortController();
+    const pending = read({ signal: controller.signal });
+    await vi.waitFor(() => expect(getDefaultDatasource).toHaveBeenCalled());
+    controller.abort();
+    expect(await pending).toEqual({ status: 'unavailable', reasons: ['deadline'], routes: [] });
+    resolve({ id: 3, kind: 'clickhouse', isDefault: true });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
+  });
+
+  it('settles as a deadline when the signal aborts while the ClickHouse reads are in flight', async () => {
+    invokeMcpLambdaTool.mockImplementation(() => new Promise(() => {}));
+    const controller = new AbortController();
+    const pending = read({ signal: controller.signal });
+    await vi.waitFor(() => expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(2));
+    controller.abort();
+    expect(await pending).toEqual({ status: 'unavailable', reasons: ['deadline'], routes: [] });
+  });
+
   it('marks a saturated limit as capped and drops the hop the cut may have split', async () => {
     answer([row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
       row(), row({ NextSvc: 'payments', Calls: '2' })]);

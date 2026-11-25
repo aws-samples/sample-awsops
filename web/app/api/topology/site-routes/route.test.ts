@@ -267,16 +267,21 @@ describe('GET /api/topology/site-routes', () => {
     vi.useFakeTimers();
     mocks.query.mockResolvedValue({ rows: [1, 2, 3, 4, 5, 6].map((id) => otelRow(id)) });
     let inFlight = 0, peak = 0;
-    // Like readTraceRoutes: settles (unavailable) once its own deadline passes.
-    mocks.read.mockImplementation(({ deadlineMs }: { deadlineMs: number }) => {
+    // Like readTraceRoutes: settles (unavailable) once its own deadline passes or the cache aborts its signal.
+    mocks.read.mockImplementation(({ deadlineMs, signal }: { deadlineMs: number; signal: AbortSignal }) => {
       inFlight += 1; peak = Math.max(peak, inFlight);
-      return new Promise((r) => setTimeout(() => { inFlight -= 1; r({ status: 'unavailable', reasons: ['deadline'], routes: [] }); }, deadlineMs));
+      return new Promise((r) => {
+        const settle = () => { clearTimeout(timer); inFlight -= 1; r({ status: 'unavailable', reasons: ['deadline'], routes: [] }); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', settle); settle(); }, deadlineMs);
+        signal.addEventListener('abort', settle, { once: true });
+      });
     });
     const pending = GET(req());
     await vi.advanceTimersByTimeAsync(10_000);
     const res = await pending;
     expect(await res.json()).toEqual({ status: 'unavailable', reasons: ['deadline'], routes: [] });
     expect(peak).toBe(4);
+    expect(mocks.read.mock.calls.every(([o]) => o.signal instanceof AbortSignal)).toBe(true);
     const deadlines = mocks.read.mock.calls.map(([o]) => o.deadlineMs);
     expect(deadlines.slice(0, 4)).toEqual([8000, 8000, 8000, 8000]);
     // Lanes 5 and 6 start when the first four give up at 8 s: only 2 s of the 10 s budget remain.

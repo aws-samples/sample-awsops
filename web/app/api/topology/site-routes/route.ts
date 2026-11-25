@@ -3,14 +3,14 @@
 // deadline and shared admission cap), then every registered ClickHouse trace datasource (registry catalog, never the
 // request) is read through readTraceRoutes, at most SOURCE_LANES at once, each within what is left of the total budget;
 // only templates, service names and counts leave here. Per-source results are reused server-side for
-// ROUTE_CACHE_TTL_MS with single-flight (site-routes-cache.ts); the response itself stays `no-store`.
+// ROUTE_CACHE_TTL_MS with single-flight (site-routes-cache.ts, a BoundedTtlCache); the response stays `no-store`.
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { listClickHouseTraceDatasources } from '@/lib/graph-sources';
 import { graphDiagnostic } from '@/lib/graph-state';
 import { graphReadTransaction, GraphReadDeadline } from '@/lib/graph-transaction';
 import { readTraceRoutes, type RouteHop, type RouteRead } from '@/lib/trace-routes';
-import { cachedRouteRead, routeCacheKey } from '@/lib/site-routes-cache';
+import { ROUTE_SOURCE_DEADLINE_MS, cachedRouteRead, routeCacheKey } from '@/lib/site-routes-cache';
 
 export const dynamic = 'force-dynamic';
 const json = (value: unknown, status = 200) =>
@@ -18,7 +18,6 @@ const json = (value: unknown, status = 200) =>
 
 const WINDOWS = new Map<string, 15 | 60 | 180>([['15', 15], ['60', 60], ['180', 180]]);
 const TOTAL_BUDGET_MS = 10_000;
-const SOURCE_DEADLINE_MS = 8_000;
 const ROUTE_LIMIT = 500;
 /** Sources read at once (each read is one ClickHouse aggregate pair through the MCP Lambda). */
 const SOURCE_LANES = 4;
@@ -110,8 +109,10 @@ export async function GET(request: Request) {
       for (let i = next++; i < datasources.length; i = next++) {
         const { instanceId, template } = datasources[i];
         const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
-        const read = cachedRouteRead(routeCacheKey(instanceId, template, windowMins), () => (remaining > 0
-          ? readTraceRoutes({ instanceId, template, windowMins, deadlineMs: Math.min(SOURCE_DEADLINE_MS, remaining), limit: ROUTE_LIMIT })
+        const read = cachedRouteRead(routeCacheKey(instanceId, template, windowMins), (signal) => (remaining > 0
+          ? readTraceRoutes({
+            instanceId, template, windowMins, deadlineMs: Math.min(ROUTE_SOURCE_DEADLINE_MS, remaining), limit: ROUTE_LIMIT, signal,
+          })
           : Promise.resolve(DEADLINE)));
         reads[i] = await within(read, remaining).catch(() => FAILED);
       }
