@@ -385,9 +385,9 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
     templates seen in the window are candidates for a path.
   - A route with no downstream entry ends the highlight on that service's datastores, but it
     can also be an uninstrumented or messaging hop.
-  - When the routes read reaches its row limit (500), the hop of the last row is dropped
-    (`capped`), since the cut may have removed its downstream rows and left it looking
-    terminal. Rows ordered by route total and then hop key keep each hop's rows contiguous.
+  - When the routes read reaches its row limit (500, reason `capped`) or the connector
+    reports it truncated or partial, the hop of the last row is dropped, since the cut may
+    have removed its downstream rows and left it looking terminal. Rows ordered by route total and then hop key keep each hop's rows contiguous.
     A row whose route or downstream route has an id-like segment (all digits of length 4
     or more, a UUID, or hex of length 16 or more) means an instrumentation wrote the raw path
     into `http.route`: it is not published, its whole hop is dropped and the read reports

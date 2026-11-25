@@ -170,6 +170,20 @@ describe('readTraceRoutes', () => {
     expect(out.routes.some((h) => h.route === '/api/orders/{id}')).toBe(false);
   });
 
+  it('drops the last hop of a connector-truncated or partial read even under the limit (no capped)', async () => {
+    // The connector flags truncation below max_rows too (rows_before_limit_at_least, a 206, a `partial` body).
+    const rows = [row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
+      row({ NextSvc: '', NextRoute: '', Calls: '15', RouteCalls: '20' })];
+    for (const extra of [{ truncated: true }, { collectionStatus: 'partial' }]) {
+      invokeMcpLambdaTool.mockReset();
+      answer(rows, extra);
+      const out = await read({ limit: 200 });
+      expect(out.status).toBe('partial');
+      expect(out.reasons).not.toContain('capped');
+      expect(out.routes).toEqual([{ service: 'frontend', route: '/healthz', next: [], calls: 40 }]);
+    }
+  });
+
   it('keeps every hop when the read stayed under the limit', async () => {
     answer([row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
       row({ NextSvc: '', NextRoute: '', Calls: '15', RouteCalls: '20' })]);

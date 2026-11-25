@@ -100,11 +100,11 @@ const rawPath = (route: string | undefined) => !!route && route.split('/').some(
 
 /**
  * Rows → hops. Every row is validated first (any malformed row fails the read). Then a hop is dropped as incomplete
- * when (a) `capped`: it is the last row's hop, which the LIMIT may have cut (left with only its no-downstream row it
- * would read as a terminal route), or (b) any of its rows names a route or downstream route with a raw id segment
+ * when (a) `cut`: it is the last row's hop, which the LIMIT or a connector truncation may have cut (left with only
+ * its no-downstream row it would read as a terminal route), or (b) any of its rows names a route or downstream route with a raw id segment
  * (`raw`): the row cannot be published and the hop without it is incomplete in the same way.
  */
-function fold(rows: unknown[], capped: boolean): { routes: RouteHop[]; raw: boolean } | undefined {
+function fold(rows: unknown[], cut: boolean): { routes: RouteHop[]; raw: boolean } | undefined {
   const hops = new Map<string, RouteHop & { byNext: Map<string, RouteHop['next'][number]> }>();
   const incomplete = new Set<string>();
   let raw = false, lastKey: string | undefined;
@@ -129,7 +129,7 @@ function fold(rows: unknown[], capped: boolean): { routes: RouteHop[]; raw: bool
     hop.byNext.set(nextKey, entry);
     hop.next.push(entry);
   }
-  if (capped && lastKey !== undefined) incomplete.add(lastKey);
+  if (cut && lastKey !== undefined) incomplete.add(lastKey);
   const routes = [...hops].filter(([key]) => !incomplete.has(key)).map(([, hop]) => hop)
     .map(({ service, route, next, calls: total }) => ({
       service, route, calls: total,
@@ -170,7 +170,10 @@ async function query(
   // Defensive clamp, as in trace-source: a connector ignoring max_rows stays bounded.
   const rows = main.rows.slice(0, limit);
   const capped = main.rows.length >= limit;
-  const folded = fold(rows, capped);
+  // The connector also flags truncation below max_rows (rows_before_limit_at_least, a 206 or a `partial` body,
+  // agent/lambda/clickhouse_mcp.py _run_sql): its rows may stop inside the last hop as well.
+  const cut = capped || main.reasons.some((r) => r === 'payload_truncated' || r === 'incomplete_collection');
+  const folded = fold(rows, cut);
   if (!folded || ambiguousTraces === undefined) return unavailable('malformed_rows');
   const { routes } = folded;
   const reasons: RouteReason[] = [...new Set([...main.reasons, ...amb.reasons] as RouteReason[])];
