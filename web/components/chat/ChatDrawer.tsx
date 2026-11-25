@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Menu, Plus, X, Maximize2, Minimize2, ExternalLink } from 'lucide-react';
 import PresetChips from './PresetChips';
@@ -8,6 +8,7 @@ import MessageList from './MessageList';
 import ThreadList from './ThreadList';
 import { useChat } from './useChat';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { getPageContext, subscribePageContext } from '@/lib/chat-page-context';
 
 const THREADS_W = 240;
 const DEFAULT_W = 420;
@@ -24,6 +25,8 @@ function detailPanelW(): number {
 export default function ChatDrawer() {
   const { tt } = useI18n();
   const chat = useChat();
+  // Disclosure: a page (the site flow view) has attached what is on screen to the next question.
+  const pageContextAttached = useSyncExternalStore(subscribePageContext, () => getPageContext() !== null, () => false);
   const router = useRouter();
   const path = usePathname();
   const [open, setOpen] = useState(false);
@@ -185,6 +188,9 @@ export default function ChatDrawer() {
             {chat.msgs.length === 0
               ? <PresetChips onPick={chat.send} />
               : <MessageList msgs={chat.msgs} onSwitch={chat.resendWith} onFollowUp={chat.followUp} />}
+            {pageContextAttached && (
+              <p role="note" className="px-4 pb-1 text-[11px] text-ink-400">{tt('현재 보고 있는 사이트 흐름을 함께 보냅니다.')}</p>
+            )}
             <Composer disabled={chat.busy} onSend={chat.send} seed={seed} />
           </div>
         </div>

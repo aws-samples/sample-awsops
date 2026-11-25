@@ -20,6 +20,8 @@
 //    `route_unavailable` notice.
 //  - every SiteGap has one notice; withheld pod bindings add a notice per reason.
 //  - the refresh button re-runs every load (useSiteInventory `reload`), keeping the current flow on screen meanwhile.
+//  - the composed flow is the AI chat's page context (renderSiteFlowContext) while a host flow exists; cleared on unmount
+//    only while it is still this view's value.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -34,6 +36,8 @@ import { isComposingKey } from '@/lib/ime';
 import { useTheme } from '@/lib/use-theme';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { renderSiteFlowContext } from '@/lib/site-flow-context';
+import { clearPageContext, createPageContextOwner, setPageContext } from '@/lib/chat-page-context';
 
 /** One notice per SiteGap (Korean source, translated via tt(); lockstep-tested). `host_not_found` is followed by the
  *  searched host, like `binding_scope_blocked` by its cluster labels. */
@@ -81,6 +85,24 @@ export const ROUTE_NOTICE = {
 
 /** Gaps stage 1 always carries for bound clusters until their evidence lands. */
 const PENDING_ARTIFACTS = new Set<SiteGap>(['trace_unavailable', 'db_refs_partial']);
+
+/** A gap the screen states: a flow gap, or a pseudo-gap for a notice that has no flow gap of its own. */
+type ShownGap = SiteGap | 'no_trace_source' | 'binding_scope_blocked';
+
+/** The gaps the screen states for a flow, in flow order: gaps of artifacts still loading and a route gap before the
+ *  first route read are hidden, and `route_unavailable` with a path but no trace source reads `no_trace_source`.
+ *  A partial pod binding read (blocked cluster scopes) adds `binding_scope_blocked` last, with or without a flow.
+ *  The notices list and the AI chat context both derive from this, so they cannot drift. */
+function displayedGaps(flow: SiteFlow | null, s: { evPending: boolean; routeRead: boolean; noTraceSource: boolean; bindingPartial: boolean }): ShownGap[] {
+  const out: ShownGap[] = [];
+  for (const g of flow?.gaps ?? []) {
+    if (s.evPending && PENDING_ARTIFACTS.has(g)) continue;
+    if (g === 'route_unavailable' && !s.routeRead) continue; // the first route read has not landed yet
+    out.push(g === 'route_unavailable' && s.noTraceSource && flow?.path ? 'no_trace_source' : g);
+  }
+  if (s.bindingPartial) out.push('binding_scope_blocked');
+  return out;
+}
 // Technical kind labels stay English (FLOW_KIND_LABELS precedent).
 const KIND_LABEL: Record<SiteKind, string> = {
   dns: 'DNS', cdn: 'CloudFront', behavior: 'Behavior', rule: 'Rule', origin: 'Origin', lb: 'LB', tg: 'Target Group',
@@ -268,11 +290,33 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   // ---- disclosures ----
   const evidencePending = inv.pending || (!!host && (ev.pending || inv.routesPending));
   const noTraceSource = routeRead?.status === 'unavailable' && routeRead.reasons.includes('no_trace_source');
+  const bindingRead = data?.eks?.bindingRead;
+  const bindingPartial = bindingRead?.status === 'partial';
+  const hasRouteRead = !!routeRead;
+  const shownGaps = useMemo(
+    () => displayedGaps(flow, { evPending: ev.pending, routeRead: hasRouteRead, noTraceSource, bindingPartial }),
+    [flow, ev.pending, hasRouteRead, noTraceSource, bindingPartial],
+  );
+  // AI chat context: the composed flow on screen with the SAME gaps the screen states (plus `evidence_pending` while
+  // evidence still loads, so a pending flow never looks complete); re-rendered whenever either changes; none without a
+  // host flow, and cleared when the view unmounts.
+  const contextGaps = useMemo(
+    () => [...shownGaps, ...(evidencePending ? ['evidence_pending'] : [])],
+    [shownGaps, evidencePending],
+  );
+  // This view's owner token: the unmount clears the context only while it is still this view's (clear-if-mine).
+  const [pageOwner] = useState(createPageContextOwner);
+  useEffect(() => {
+    setPageContext(flow ? renderSiteFlowContext(flow, 3000, contextGaps) : null, pageOwner);
+  }, [flow, contextGaps, pageOwner]);
+  useEffect(() => () => clearPageContext(pageOwner), [pageOwner]);
   const notices: string[] = [];
-  for (const g of flow?.gaps ?? []) {
-    if (ev.pending && PENDING_ARTIFACTS.has(g)) continue;
-    if (g === 'route_unavailable' && !routeRead) continue; // the first route read has not landed yet
-    if (g === 'route_unavailable' && noTraceSource && flow?.path) { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
+  for (const g of shownGaps) {
+    if (g === 'no_trace_source') { notices.push(tt(ROUTE_NOTICE.no_trace_source)); continue; }
+    if (g === 'binding_scope_blocked') {
+      notices.push(`${tt(BINDING_NOTICE.binding_scope_blocked)} ${(bindingRead?.blockedClusters ?? []).map(eksClusterLabel).join(', ')}`);
+      continue;
+    }
     if (g === 'inventory_incomplete' && data?.issues.length) {
       notices.push(`${tt(GAP_NOTICE[g])} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
     } else if (g === 'db_refs_partial' && ev.failedDbRefs.length) {
@@ -287,13 +331,9 @@ export default function SiteFlowView({ inventoryScope }: { inventoryScope: strin
   if (data?.issues.length && !flow?.gaps.includes('inventory_incomplete')) {
     notices.unshift(`${tt(GAP_NOTICE.inventory_incomplete)} (${data.issues.map((i) => `${i.type}: ${i.issue}`).join(', ')})`);
   }
-  const bindingRead = data?.eks?.bindingRead;
   if (flow?.gaps.includes('pods_unresolved') && bindingRead?.status === 'withheld') {
     const reasons = bindingRead.reasons.length ? bindingRead.reasons : ['cluster_unreadable'];
     for (const r of reasons) notices.push(BINDING_NOTICE[r] ? tt(BINDING_NOTICE[r]) : `${tt(BINDING_FALLBACK)} (${r})`);
-  }
-  if (bindingRead?.status === 'partial') {
-    notices.push(`${tt(BINDING_NOTICE.binding_scope_blocked)} ${(bindingRead.blockedClusters ?? []).map(eksClusterLabel).join(', ')}`);
   }
 
   const listId = 'site-host-options';

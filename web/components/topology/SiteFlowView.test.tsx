@@ -34,6 +34,8 @@ import { applyTerms } from '@/lib/i18n-terms';
 import { parseSiteRoutes, useClusterEvidence, withHostAlias } from './useSiteFlowData';
 import type { Fleet } from '@/lib/eks-fleet';
 import type { RouteHop } from '@/lib/trace-routes';
+import { createPageContextOwner, getPageContext, setPageContext } from '@/lib/chat-page-context';
+import { renderSiteFlowContext } from '@/lib/site-flow-context';
 
 // ---- synthetic estate: one host CloudFront → two NLBs → host cluster `shop` and member cluster `orders` ----
 const REGION = 'ap-northeast-2', HOST_ID = '123456789012', MEMBER = '111111111111';
@@ -1378,3 +1380,107 @@ describe('SiteFlowView notices', () => {
   });
 });
 
+
+describe('SiteFlowView chat page context', () => {
+  afterEach(() => setPageContext(null));
+
+  it('attaches the rendered host flow, follows flow changes, and clears without a host and on unmount', async () => {
+    stubFetch();
+    const r = view();
+    await settled();
+    await waitFor(() => expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow)));
+    expect(getPageContext()).toMatch(/^Site flow for mall\.example\.com /);
+    nav.search = 'view=site&host=mall.example.com&path=/products/1';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).toContain('path /products/1'));
+    await settled();
+    await waitFor(() => expect(getPageContext()).toBe(renderSiteFlowContext(canvas.props!.flow))); // once nothing is pending
+    nav.search = 'view=site';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).toBeNull());
+    nav.search = 'view=site&host=mall.example.com';
+    r.rerender(<LanguageProvider><SiteFlowView inventoryScope={SCOPE} /></LanguageProvider>);
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    r.unmount();
+    expect(getPageContext()).toBeNull();
+  });
+
+  const gapsLine = () => getPageContext()!.split('\n')[1];
+
+  it('states evidence_pending (not the hidden trace/db gaps) while evidence loads, then the real gaps', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubFetch((u) => (u === '/api/topology?lens=service' || u === '/api/eks/shop/db-refs'
+      ? gate.then(() => json({ status: 'error' }, 502)) as unknown as Response : undefined));
+    view();
+    await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
+    expect(screen.getByText(PENDING)).toBeTruthy();
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    expect(gapsLine()).toContain('evidence_pending');
+    expect(gapsLine()).not.toContain('trace_unavailable');
+    expect(gapsLine()).not.toContain('db_refs_partial');
+    release();
+    await settled();
+    await waitFor(() => expect(gapsLine()).toContain('trace_unavailable'));
+    expect(gapsLine()).not.toContain('evidence_pending');
+  });
+
+  it('does not state route_unavailable before the first route read lands', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    stubRoutes(() => gate.then(() => json(routesBody('ok'))) as unknown as Response);
+    view(PRODUCTS);
+    await screen.findByTestId('site-canvas', {}, { timeout: 3000 });
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    expect(getPageContext()).toContain('path /products/1');
+    expect(gapsLine()).toContain('evidence_pending');
+    expect(gapsLine()).not.toContain('route_unavailable');
+    release();
+    await settled();
+  });
+
+  it('states no_trace_source in place of route_unavailable when a path has no trace source', async () => {
+    stubRoutes(routesBody('unavailable', [], ['no_trace_source']));
+    view(PRODUCTS);
+    await settled();
+    await waitFor(() => expect(gapsLine()).toContain('no_trace_source'));
+    expect(gapsLine()).not.toContain('route_unavailable');
+    expect(gapsLine()).not.toContain('evidence_pending');
+  });
+
+  it('states binding_scope_blocked when the screen warns of a partial pod binding read', async () => {
+    // A not-connected cluster in a VPC no target uses: bindings elsewhere resolve, so the flow itself has no gap, yet
+    // the screen warns that pods in that cluster's network were not checked. The Gaps line must not read `none`.
+    const legacyArn = `arn:aws:eks:${REGION}:${MEMBER}:cluster/legacy`;
+    const listed = [...CLUSTERS, cluster(legacyArn, 'legacy', MEMBER, legacyArn, 'vpc-0legacy', 'no-entry')];
+    stubFetch((u) => {
+      if (isFleet(u)) return fleetOf(u, listed);
+      if (u.startsWith('/api/eks?')) return json(listingFor(u, listed));
+      return undefined;
+    });
+    view();
+    await settled();
+    expect(notices()).toContain(`${BINDING_NOTICE.binding_scope_blocked} legacy (${MEMBER} / ${REGION})`);
+    expect(canvas.props!.flow.gaps).not.toContain('pods_unresolved');
+    await waitFor(() => expect(gapsLine()).toContain('binding_scope_blocked'));
+    expect(gapsLine()).not.toContain('legacy'); // the reason name only, never the cluster labels
+  });
+
+  it('unmounting does not clear a page context another producer set after it', async () => {
+    stubFetch();
+    const r = view();
+    await settled();
+    await waitFor(() => expect(getPageContext()).not.toBeNull());
+    setPageContext('another producer\'s context', createPageContextOwner());
+    r.unmount();
+    expect(getPageContext()).toBe('another producer\'s context');
+  });
+
+  it('sets nothing on the host index (no host selected)', async () => {
+    setPageContext('stale context from another page');
+    stubFetch();
+    view('view=site');
+    await screen.findByRole('list', { name: '호스트 목록' }, { timeout: 3000 });
+    expect(getPageContext()).toBeNull();
+  });
+});

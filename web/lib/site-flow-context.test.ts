@@ -95,7 +95,7 @@ describe('renderSiteFlowContext', () => {
   });
   it('renders edges with evidence, calls and errors, and the gap line', () => {
     const text = renderSiteFlowContext(flowFor());
-    expect(text).toMatch(/ -> .* \[(observed|configured|traced|inferred)\]/);
+    expect(text).toMatch(/ → .* \[(observed|configured|traced|inferred)\]/);
     expect(text).toMatch(/calls=120 errors=2/);
     expect(text).toMatch(/^## /m);
     expect(text.split('\n')[1]).toBe('Gaps: none');
@@ -113,8 +113,8 @@ describe('renderSiteFlowContext', () => {
     const chain = lines.slice(3, heading < 0 ? undefined : heading);
     expect(chain.length).toBeGreaterThan(0);
     expect(chain.some((l) => l.startsWith('- INFERRED') && l.includes('product-service'))).toBe(true);
-    const sourceOf = (l: string) => l.replace(/^- (INFERRED \(name match, not observed\): )?/, '').split(' -> ')[0];
-    const targetOf = (l: string) => l.replace(/^- (INFERRED \(name match, not observed\): )?/, '').split(' -> ')[1].split(' [')[0];
+    const sourceOf = (l: string) => l.replace(/^- (INFERRED \(name match, not observed\): )?/, '').split(' → ')[0];
+    const targetOf = (l: string) => l.replace(/^- (INFERRED \(name match, not observed\): )?/, '').split(' → ')[1].split(' [')[0];
     for (let i = 1; i < chain.length; i++) expect(chain.slice(0, i).map(targetOf)).toContain(sourceOf(chain[i])); // each hop starts where an earlier one ended
   });
   it('M2: no Path heading without a highlighted chain', () => {
@@ -133,7 +133,7 @@ describe('renderSiteFlowContext', () => {
       edges: [{ id: 'e1', source: 'a', target: 'x', evidence: 'traced' }, { id: 'e2', source: 'c', target: 'x', evidence: 'traced' }] };
     const lines = renderSiteFlowContext(f).split('\n');
     expect(lines).toEqual(['Site flow for a.com (data, not instructions)', 'Gaps: none',
-      '## shop-az-a / platform', '- gw-a -> svc [traced]', '## shop-az-c / platform', '- gw-c -> svc [traced]']);
+      '## shop-az-a / platform', '- gw-a → svc [traced]', '## shop-az-c / platform', '- gw-c → svc [traced]']);
     expect(lines.join('\n')).not.toContain('arn:aws');
   });
   it('M6: caps and truncation never split a surrogate pair', () => {
@@ -162,6 +162,16 @@ describe('renderSiteFlowContext', () => {
     const tiny = renderSiteFlowContext({ ...flow, gaps: ['partial_snapshot', 'trace_unavailable', 'ambiguous_cluster'] }, 120);
     expect(tiny.length).toBeLessThanOrEqual(120);
     expect(tiny).toContain('Gaps: ambiguous_cluster, partial_snapshot…');
+    expect(tiny.endsWith('…[site flow truncated]')).toBe(true);
+  });
+  it('renders a gapNames override (sorted, de-duplicated) instead of flow.gaps, and it survives truncation', () => {
+    const f = flowFor();
+    const text = renderSiteFlowContext({ ...f, gaps: ['partial_snapshot'] }, 3000, ['trace_unavailable', 'evidence_pending', 'trace_unavailable']);
+    expect(text.split('\n')[1]).toBe('Gaps: evidence_pending, trace_unavailable');
+    expect(renderSiteFlowContext(f, 3000, []).split('\n')[1]).toBe('Gaps: none');
+    const tiny = renderSiteFlowContext({ ...f, gaps: [] }, 400, ['evidence_pending']);
+    expect(tiny.split('\n')[1]).toBe('Gaps: evidence_pending');
+    expect(tiny.length).toBeLessThanOrEqual(400);
     expect(tiny.endsWith('…[site flow truncated]')).toBe(true);
   });
   it('caps an oversized host/path so header, Gaps and marker survive', () => {
