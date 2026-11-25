@@ -27,6 +27,7 @@ import { currentAccountId, currentAccountAlias } from '@/lib/account';
 import { listConfiguredSchemas, renderSchemaForPrompt } from '@/lib/datasource-schema';
 import { listDatasources } from '@/lib/datasources';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
+import { buildPageContextBlock, composeExtraContext, schemaBudget } from '@/lib/page-context-block';
 import { randomUUID, createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -90,11 +91,14 @@ function chunk(text: string): string[] {
  *  and dropped datasources are disclosed instead of silently sliced off. */
 const SCHEMA_CTX_TOTAL = 7000; // fits inside the agent's 8000-char extraContext budget with headroom
 const SCHEMA_CTX_MAX_DATASOURCES = 12;
-function renderSchemaContext(schemas: { label: string; kind: string | null; schema: unknown; version?: string | null }[]): string {
+function renderSchemaContext(
+  schemas: { label: string; kind: string | null; schema: unknown; version?: string | null }[],
+  total = SCHEMA_CTX_TOTAL, // less when a page-context block shares the agent's 8000-char extraContext budget
+): string {
   const header = '## Datasource schemas (cached) — use these real names AND the server version when writing queries';
   const lines = [header];
   const shown = schemas.slice(0, SCHEMA_CTX_MAX_DATASOURCES);
-  const perEntry = Math.max(500, Math.floor((SCHEMA_CTX_TOTAL - header.length) / Math.max(1, shown.length)));
+  const perEntry = Math.max(500, Math.floor((total - header.length) / Math.max(1, shown.length)));
   for (const s of shown) {
     const ver = s.version ? ` v${s.version}` : ''; // version informs version-specific DSL/syntax
     const labelLine = `- **${s.label}** (${s.kind ?? ''}${ver}):`;
@@ -104,8 +108,8 @@ function renderSchemaContext(schemas: { label: string; kind: string | null; sche
   }
   if (schemas.length > shown.length) lines.push(`… (+${schemas.length - shown.length} more datasource(s) omitted)`);
   // Absolute backstop: per-entry budgeting doesn't account for per-line indentation, so cap the joined
-  // block at SCHEMA_CTX_TOTAL (well within the agent's 8000-char extraContext budget).
-  return lines.join('\n').slice(0, SCHEMA_CTX_TOTAL);
+  // block at `total` (well within the agent's 8000-char extraContext budget).
+  return lines.join('\n').slice(0, total);
 }
 
 /** v1 priority-10 'aws-data' local handler (v1 route.ts:1167-1216 port): LLM-generated Steampipe
@@ -320,7 +324,7 @@ export async function POST(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
 
-  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; previousSection?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
+  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; previousSection?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string; pageContext?: unknown };
   try {
     // bound BEFORE parse (App-Router has no default body cap → OOM guard); 512KB covers prompt + thread history
     body = (await readJsonBounded(request, 512_000)) as typeof body;
@@ -331,6 +335,13 @@ export async function POST(request: Request) {
   const prompt = typeof body.prompt === 'string' ? body.prompt : '';
   if (!prompt) return json({ status: 'error', message: 'prompt required' }, 400);
   if (prompt.length > MAX_PROMPT) return json({ status: 'error', message: 'prompt too large' }, 413);
+  // Optional on-screen context (the site flow view): untrusted data, capped and wrapped once here. It rides only
+  // the agent's extraContext / the assistant's tagged turn — never routing/classifier input, `messages`, the stored
+  // exchange or logs.
+  if (body.pageContext !== undefined && typeof body.pageContext !== 'string') {
+    return json({ status: 'error', message: 'pageContext must be a string' }, 400);
+  }
+  const pageBlock = buildPageContextBlock(body.pageContext);
   // Sanitize ONCE at the boundary (bug fix, PR #138 review MINOR) — a malformed entry (non-array,
   // or non-string `content`) would otherwise throw deep inside the classifier/assistant history
   // renderers, silently degrading routing instead of failing loud or just being dropped.
@@ -643,7 +654,7 @@ export async function POST(request: Request) {
       const entries = dsRows
         .filter((d) => d.isDefault && byId.has(d.id))
         .map((d) => { const s = byId.get(d.id)!; return { label: d.name, kind: d.kind, schema: s.schema, version: s.version }; });
-      if (entries.length) datasourceSchemaContext = renderSchemaContext(entries);
+      if (entries.length) datasourceSchemaContext = renderSchemaContext(entries, schemaBudget(pageBlock, SCHEMA_CTX_TOTAL));
     } catch { /* schema cache is best-effort; the agent still works (can call discovery tools) without it */ }
   }
 
@@ -695,7 +706,8 @@ export async function POST(request: Request) {
         // Bug fix: pass the client-supplied history along so the assistant fallback isn't a
         // context-blind one-off (previously dropped, causing "질문이 맥락 없이..." answers on
         // any follow-up that landed here — e.g. via the inactive-section degrade path above).
-        const text = await assistantAnswer(prompt, { history }); // Haiku, KB-grounded, never throws
+        // Haiku, KB-grounded, never throws; the page block (if any) is a tagged data block in its user turn.
+        const text = await assistantAnswer(prompt, { history, ...(pageBlock ? { pageContext: pageBlock } : {}) });
         for (const c of chunk(text)) {
           if (request.signal.aborted) break;
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: c })}\n\n`));
@@ -713,7 +725,8 @@ export async function POST(request: Request) {
         const settled = await Promise.allSettled(
           fanGateways.map((g) => invokeAgent({
             gateway: g, messages, sessionId, accountId, accountAlias, regions,
-            extraContext: obs(g) ? datasourceSchemaContext : undefined, // cached schema reaches fanned monitoring/data agents too
+            // page block for every fanned agent; cached schema only for the monitoring/data ones
+            extraContext: composeExtraContext(pageBlock, obs(g) ? datasourceSchemaContext : undefined),
             responseLanguage: lang,
           })),
         );
@@ -784,7 +797,7 @@ export async function POST(request: Request) {
           agentName: spec.agentName, agentVersion: spec.agentVersion, skillHashes: spec.skillHashes,
           accountId, accountAlias, regions,
           integrations: spec.integrations, // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
-          extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
+          extraContext: composeExtraContext(pageBlock, datasourceSchemaContext), // page block + cached datasource schemas
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing
           handoff: spec.tier === 'builtin', // cross-gateway handoff opt-in: built-in section agents only
         })) {
