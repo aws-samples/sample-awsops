@@ -375,7 +375,10 @@ query parameters are accepted, and responses are `Cache-Control: private, no-sto
   scope change reads again. The route reads at most 4 ClickHouse trace sources at once
   within a 10 s budget and reuses an `ok`/`partial` per-source result for 60 s, single-flight
   per (source, registry template, window); `unavailable` results and failures are never
-  reused. Residuals, disclosed rather than corrected:
+  reused. The reuse is a `BoundedTtlCache` (`web/lib/site-routes-cache.ts`): at most 64
+  retained reads and 8 loads at once, each load aborted at the 8 s per-source deadline (an
+  aborted read launches no ClickHouse query it has not already started). The registry itself is read in a
+  timed read-only graph transaction (2 s). Residuals, disclosed rather than corrected:
   - Routes are aggregated by service name across all clusters and namespaces exporting to
     the trace source, so same-named services in different namespaces or clusters merge.
     The common legitimate case is one app deployed to two clusters (for example
