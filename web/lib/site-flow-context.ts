@@ -47,7 +47,7 @@ export function renderSiteFlowContext(flow: SiteFlow, maxChars = 3000, gapNames?
     return labels.join(' / ');
   };
   const hi = flow.highlight, inferred = new Set(hi?.inferred ?? []); // inferred ids are disjoint from highlight.edges
-  const line = (e: SiteEdge) => `- ${inferred.has(e.id) ? INFERRED : ''}${label.get(e.source) ?? '?'} -> ${label.get(e.target) ?? '?'} [${e.evidence}]`
+  const line = (e: SiteEdge) => `- ${inferred.has(e.id) ? INFERRED : ''}${label.get(e.source) ?? '?'} → ${label.get(e.target) ?? '?'} [${e.evidence}]`
     + (e.route ? ` route=${clean(e.route)}` : '')
     + (e.calls !== undefined ? ` calls=${e.calls}` : '') + (e.errors !== undefined ? ` errors=${e.errors}` : '');
 
