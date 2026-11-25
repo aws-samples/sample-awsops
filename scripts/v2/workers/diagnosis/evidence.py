@@ -129,6 +129,11 @@ _ID = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$")
 _OPAQUE_ID = re.compile(r"^(?:[a-z]{1,4}:[0-9a-f]{32}|summary-[0-9a-f]{24})$")
 
 
+def is_metric_observation_text(value):
+    """Recognize the code-owned collection statement in any admitted language."""
+    return isinstance(value, str) and value.strip() in METRIC_OBSERVATION_TEXT.values()
+
+
 def _project(value, depth=0, *, mapping=False):
     if depth > 7:
         return None
@@ -462,7 +467,7 @@ class EvidenceIndex:
             # not the model's prose, as the observation; the only admitted prose is the
             # code-owned collection statement.
             resource = self.resources.get(refs[0], {})
-            if finding["explanation"].strip() not in METRIC_OBSERVATION_TEXT.values():
+            if not is_metric_observation_text(finding["explanation"]):
                 return False
             return any(row["kind"] == "metrics" and row["resource_ids"] == refs
                        and self._complete(row, sampled=True) and isinstance(row["facts"], dict)

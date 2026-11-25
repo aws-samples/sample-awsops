@@ -1,6 +1,6 @@
 """Compose the operator report from validated findings, keeping the evidence ledger in an appendix."""
 from . import architecture, presentation as view
-from .evidence import METRIC_OBSERVATION_TEXT
+from .evidence import is_metric_observation_text
 from .report import _has_mutating_cli
 from .sections import RCA_HEADINGS
 
@@ -149,7 +149,7 @@ def compose(bundle, analysis, invariant, lang):
     def paragraph(f):
         label, prose = assessment(f)
         basis = provenance(f)
-        if f["claim"] == "observation" and f.get("explanation") == METRIC_OBSERVATION_TEXT[lang] and basis:
+        if f["claim"] == "observation" and is_metric_observation_text(f.get("explanation")) and basis:
             return f"**{subject(f)}** · {label}" + basis
         return f"**{subject(f)}** · {label}\n\n{prose}" + basis
 
@@ -161,16 +161,17 @@ def compose(bundle, analysis, invariant, lang):
         return "[Critical]\n\n" if min(ranks) <= 1 else "[Warning]\n\n" if min(ranks) == 2 else ""
 
     def paragraphs(ids):
-        return severity_marker(ids) + "\n\n".join(paragraph(by_id[i]) for i in ids) if ids else copy[7]
+        return "\n\n".join(paragraph(by_id[i]) for i in ids) if ids else copy[7]
 
     (risk_title, rank_col, severity_col, issue_col, source_col, unknown_source,
      quick_title, subject_col, check_col, scope_title) = _BRIEF[lang]
     # The editor breaks severity ties. Unselected serious findings still outrank selected low ones.
     pref = {ident: i for i, ident in enumerate(plan["lead"])}
     ranked = sorted((f for f in ordered if f["id"] in displayable
-                     and f.get("explanation") != METRIC_OBSERVATION_TEXT[lang]), key=lambda f: (view._SEVERITY.get(f["severity"], 5),
+                     and not is_metric_observation_text(f.get("explanation"))), key=lambda f: (view._SEVERITY.get(f["severity"], 5),
                                             pref.get(f["id"], len(pref))))
     first = next((f for f in ranked if safe_checks(f)), None)
+    lead_marker = severity_marker(by_id)
     if ranked:
         table = [f"| {rank_col} | {severity_col} | {issue_col} | {source_col} |", "| ---: | --- | --- | --- |"]
         for n, f in enumerate(ranked[:3], 1):
@@ -183,9 +184,9 @@ def compose(bundle, analysis, invariant, lang):
             if len(cited) > 2:
                 source += f" (+{len(cited) - 2})"
             table.append(f"| {n} | {pillar} · {severity} | **{subject(f, compact=True)}** · {label} — {prose} | {source} |")
-        lead = severity_marker([f["id"] for f in ranked]) + f"### {risk_title}\n\n" + "\n".join(table)
+        lead = lead_marker + f"### {risk_title}\n\n" + "\n".join(table)
     else:
-        lead = "[Warning]\n\n" + _DECISION_HOLD[lang][0] if ordered else copy[7]
+        lead = (lead_marker or "[Warning]\n\n") + _DECISION_HOLD[lang][0] if ordered else copy[7]
     if first:
         quick_rows = []
         for f in ranked:
@@ -214,16 +215,16 @@ def compose(bundle, analysis, invariant, lang):
         ids = [i for i in priority if by_id[i]["pillar"] == pillar]
         state = coverage.get(pillar, {}).get("status")
         status = labels[{"completed": 0, "partial": 1, "failed": 2}.get(state, 3)]
-        warning = "[Warning]\n\n" if state in {"partial", "failed"} else ""
         visible = [i for i in ids if i in displayable]
         # A scope gap never becomes an executive risk. Keep an operator check
         # at the decision point, with its complete analysis and diagnostics in the appendix.
         held = next(((by_id[i], checks[0]) for i in ids if i not in displayable
                      and (checks := safe_checks(by_id[i]))), None)
-        if ids and not visible:
-            warning = "[Warning]\n\n"
+        marker = severity_marker(ids)
+        if not marker and (state in {"partial", "failed"} or (ids and not visible)):
+            marker = "[Warning]\n\n"
         detail = paragraphs(visible) if visible or not ids else _DECISION_HOLD[lang][0]
-        body = f"{warning}{status} · {labels[4]} {len(ids)}\n\n{detail}"
+        body = f"{marker}{status} · {labels[4]} {len(ids)}\n\n{detail}"
         if held:
             pending, check = held
             body += f"\n\n**{_DECISION_HOLD[lang][1]}**　{subject(pending, compact=True)} — {check}"
