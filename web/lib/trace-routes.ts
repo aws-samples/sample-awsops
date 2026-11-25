@@ -1,6 +1,7 @@
 // Read-only route-template aggregation over the exporter-default ClickHouse otel_traces schema.
 // Only http.route templates, service names and counts leave this boundary: never url.path, query
-// strings or any other span/resource attribute value (raw paths carry ids and PII).
+// strings or any other span/resource attribute value (raw paths carry ids and PII). An instrumentation that writes
+// the raw path into http.route is caught by its id-like segments: those hops are dropped (`route_raw_path`).
 import { invokeMcpLambdaTool } from '@/lib/mcp-lambda-invoke';
 import { clickhouseRows, otelAggregateShape, resolveSource } from '@/lib/trace-source';
 
@@ -16,7 +17,7 @@ export interface RouteRead {
 
 type RouteReason = 'deadline' | 'capped' | 'malformed_rows' | 'route_unsupported_schema' | 'invalid_request'
   | 'missing_configuration' | 'configuration_failed' | 'query_failed' | 'malformed_payload' | 'payload_truncated'
-  | 'incomplete_collection' | 'count_not_confirmed' | 'empty_not_confirmed' | 'route_ambiguous_traces';
+  | 'incomplete_collection' | 'count_not_confirmed' | 'empty_not_confirmed' | 'route_ambiguous_traces' | 'route_raw_path';
 
 const WINDOWS = new Set([15, 60, 180]);
 const ROUTE_LIMIT_CAP = 500;
@@ -63,7 +64,10 @@ function routeSql(table: string, windowMins: number, endMs: number, limit: numbe
     'count() OVER (PARTITION BY ServiceName, RouteTemplate) AS RouteCalls ' +
     `FROM (${perTrace}) WHERE Entries = 1) AS s ` +
     `LEFT JOIN (${downstream}) AS n ON n.TraceId = s.TraceId AND n.ClientService = s.ServiceName ` +
-    `GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Calls DESC LIMIT ${limit}`;
+    // A hop's rows share RouteCalls, so ordering by it and then the hop key keeps each hop's rows contiguous: a LIMIT
+    // cut can only split the hop of the last returned row (fold drops it).
+    'GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Svc, Route, Calls DESC, NextSvc, NextRoute ' +
+    `LIMIT ${limit}`;
   const ambiguous = `SELECT uniqExact(TraceId) AS AmbiguousTraces FROM (${perTrace}) WHERE Entries > 1`;
   return { routes, ambiguous };
 }
@@ -90,8 +94,20 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-function fold(rows: unknown[]): RouteHop[] | undefined {
+// Segments that are ids rather than template parts: an instrumentation writing the raw path into http.route.
+const RAW_SEGMENT = [/^\d{4,}$/, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, /^[0-9a-f]{16,}$/i];
+const rawPath = (route: string | undefined) => !!route && route.split('/').some((seg) => RAW_SEGMENT.some((re) => re.test(seg)));
+
+/**
+ * Rows → hops. Every row is validated first (any malformed row fails the read). Then a hop is dropped as incomplete
+ * when (a) `capped`: it is the last row's hop, which the LIMIT may have cut (left with only its no-downstream row it
+ * would read as a terminal route), or (b) any of its rows names a route or downstream route with a raw id segment
+ * (`raw`): the row cannot be published and the hop without it is incomplete in the same way.
+ */
+function fold(rows: unknown[], capped: boolean): { routes: RouteHop[]; raw: boolean } | undefined {
   const hops = new Map<string, RouteHop & { byNext: Map<string, RouteHop['next'][number]> }>();
+  const incomplete = new Set<string>();
+  let raw = false, lastKey: string | undefined;
   for (const value of rows) {
     const row = record(value);
     const service = bounded(row?.Svc), route = bounded(row?.Route);
@@ -100,10 +116,12 @@ function fold(rows: unknown[]): RouteHop[] | undefined {
     if (!service || !route || calls === undefined || routeCalls === undefined || calls > routeCalls
         || !nextService.ok || !nextRoute.ok) return undefined;
     const key = JSON.stringify([service, route]);
+    lastKey = key;
     let hop = hops.get(key);
     if (!hop) { hop = { service, route, next: [], calls: routeCalls, byNext: new Map() }; hops.set(key, hop); }
     // Distinct-trace counts do not add up: every row of a hop must carry the same route total.
     if (hop.calls !== routeCalls) return undefined;
+    if (rawPath(route) || rawPath(nextRoute.value)) { raw = true; incomplete.add(key); continue; }
     if (!nextService.value || nextService.value === service) continue;
     const nextKey = JSON.stringify([nextService.value, nextRoute.value ?? null]);
     if (hop.byNext.has(nextKey)) return undefined;
@@ -111,12 +129,14 @@ function fold(rows: unknown[]): RouteHop[] | undefined {
     hop.byNext.set(nextKey, entry);
     hop.next.push(entry);
   }
-  return [...hops.values()]
+  if (capped && lastKey !== undefined) incomplete.add(lastKey);
+  const routes = [...hops].filter(([key]) => !incomplete.has(key)).map(([, hop]) => hop)
     .map(({ service, route, next, calls: total }) => ({
       service, route, calls: total,
       next: next.sort((a, b) => b.calls - a.calls || cmp(a.service, b.service) || cmp(a.route ?? '', b.route ?? '')),
     }))
     .sort((a, b) => b.calls - a.calls || cmp(a.service, b.service) || cmp(a.route, b.route));
+  return { routes, raw };
 }
 
 async function query(
@@ -149,11 +169,14 @@ async function query(
   const ambiguousTraces = amb.rows.length === 1 ? count(record(amb.rows[0])?.AmbiguousTraces, true) : undefined;
   // Defensive clamp, as in trace-source: a connector ignoring max_rows stays bounded.
   const rows = main.rows.slice(0, limit);
-  const routes = fold(rows);
-  if (!routes || ambiguousTraces === undefined) return unavailable('malformed_rows');
+  const capped = main.rows.length >= limit;
+  const folded = fold(rows, capped);
+  if (!folded || ambiguousTraces === undefined) return unavailable('malformed_rows');
+  const { routes } = folded;
   const reasons: RouteReason[] = [...new Set([...main.reasons, ...amb.reasons] as RouteReason[])];
-  if (main.rows.length >= limit) reasons.push('capped');
+  if (capped) reasons.push('capped');
   if (ambiguousTraces > 0) reasons.push('route_ambiguous_traces');
+  if (folded.raw) reasons.push('route_raw_path');
   if (!rows.length && !reasons.length) {
     const outer = record(payloads[0]) ?? {};
     const status = outer.collectionStatus ?? record(outer.result)?.collectionStatus;

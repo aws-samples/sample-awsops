@@ -84,7 +84,8 @@ describe('readTraceRoutes', () => {
     expect(sql).toContain('LEFT JOIN');
     expect(sqlOf(true)).toMatch(/INTERVAL 15 MINUTE/);
     expect(sqlOf(true)).toMatch(/WHERE Entries > 1$/);
-    expect(sql).toMatch(/GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Calls DESC LIMIT 120$/);
+    // Each hop's rows are contiguous (route total, then the hop key), so a LIMIT cut splits at most the last hop.
+    expect(sql).toMatch(/GROUP BY Svc, Route, NextSvc, NextRoute ORDER BY RouteCalls DESC, Svc, Route, Calls DESC, NextSvc, NextRoute LIMIT 120$/);
     // Same-service children are excluded from `next` without dropping the parent route.
     expect(sql).toMatch(/if\(\w+\.ServiceName = \w+\.ServiceName, '', /);
   });
@@ -148,13 +149,56 @@ describe('readTraceRoutes', () => {
     expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
   });
 
-  it('marks a saturated limit as capped', async () => {
-    answer([row(), row({ NextSvc: 'payments', Calls: '2' })]);
-    const out = await read({ limit: 2 });
+  it('marks a saturated limit as capped and drops the hop the cut may have split', async () => {
+    answer([row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
+      row(), row({ NextSvc: 'payments', Calls: '2' })]);
+    const out = await read({ limit: 3 });
     expect(out.status).toBe('partial');
     // The connector's own truncation markers for the same saturated read are carried alongside.
     expect(out.reasons).toEqual(['payload_truncated', 'incomplete_collection', 'capped']);
-    expect(out.routes).toHaveLength(1);
+    // The last row's hop may continue past the LIMIT, so only the complete hop before it is kept.
+    expect(out.routes).toEqual([{ service: 'frontend', route: '/healthz', next: [], calls: 40 }]);
+  });
+
+  it('never turns a hop cut down to its empty-next row into a terminal route', async () => {
+    // The cut lands inside /api/orders/{id}: its no-downstream row (15 traces) came back, its orders row did not.
+    answer([row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
+      row({ NextSvc: '', NextRoute: '', Calls: '15', RouteCalls: '20' })]);
+    const out = await read({ limit: 2 });
+    expect(out.reasons).toContain('capped');
+    expect(out.routes).toEqual([{ service: 'frontend', route: '/healthz', next: [], calls: 40 }]);
+    expect(out.routes.some((h) => h.route === '/api/orders/{id}')).toBe(false);
+  });
+
+  it('keeps every hop when the read stayed under the limit', async () => {
+    answer([row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
+      row({ NextSvc: '', NextRoute: '', Calls: '15', RouteCalls: '20' })]);
+    const out = await read({ limit: 3 });
+    expect(out).toMatchObject({ status: 'ok', reasons: [] });
+    expect(out.routes.map((h) => h.route)).toEqual(['/healthz', '/api/orders/{id}']);
+  });
+
+  it('drops hops whose route or downstream route carries a raw path segment (route_raw_path)', async () => {
+    const uuid = '0f8fad5b-d9cb-469f-a165-70867728950e', hex = 'a1b2c3d4e5f60718', digits = '48151';
+    answer([
+      row({ Route: '/healthz', NextSvc: '', NextRoute: '', Calls: '40', RouteCalls: '40' }),
+      // A raw downstream route: the hop also has an empty-next row, which must not survive as a terminal hop.
+      row({ NextRoute: `/orders/${digits}`, Calls: '12', RouteCalls: '20' }),
+      row({ NextSvc: '', NextRoute: '', Calls: '8', RouteCalls: '20' }),
+      row({ Svc: 'users', Route: `/users/${uuid}`, NextSvc: '', NextRoute: '', Calls: '5', RouteCalls: '5' }),
+      row({ Svc: 'files', Route: `/files/${hex.toUpperCase()}/meta`, NextSvc: '', NextRoute: '', Calls: '4', RouteCalls: '4' }),
+      // Templates, short numbers and version segments are not ids.
+      row({ Svc: 'catalog', Route: '/v2/items/{id}/:sku/123', NextSvc: 'search', NextRoute: '/q/abc123', Calls: '3', RouteCalls: '3' }),
+    ]);
+    const out = await read();
+    expect(out.status).toBe('partial');
+    expect(out.reasons).toEqual(['route_raw_path']);
+    expect(out.routes).toEqual([
+      { service: 'frontend', route: '/healthz', next: [], calls: 40 },
+      { service: 'catalog', route: '/v2/items/{id}/:sku/123', calls: 3, next: [{ service: 'search', route: '/q/abc123', calls: 3 }] },
+    ]);
+    const text = JSON.stringify(out);
+    for (const raw of [uuid, hex, hex.toUpperCase(), digits]) expect(text).not.toContain(raw);
   });
 
   it('carries connector truncation markers as partial evidence', async () => {
