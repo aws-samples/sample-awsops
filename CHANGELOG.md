@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-26
+
+The EC2 power-state and custom MCP attestation migrations carry the ledger label `2.0.0`. The trace provenance and service topology migrations carry `0.10.1`. Use the release commit and SQL checksums to identify these four migrations.
+
 ### Added
 
 - Network topology page: `/topology/network` draws a configuration-based, cross-account network map from central inventory. The fleet view groups VPCs into account and region boxes and joins them through Transit Gateway attachments and VPC peering, matched by attachment or peering ID rather than CIDR. Peers outside the selected accounts appear as stubs. Selecting up to four VPCs opens an AWS-diagram-style detail view with AZ columns, public/private subnets and resource tiles. Inventory now also collects TGW attachments, VPC peering connections and VPC endpoints, shown in the Network group. Fleet search and a connected-resources filter retain parent containers, counterpart context and source completeness notices; regional TGW hubs appear above VPC cards with connections behind resource labels.
@@ -707,6 +711,10 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 **작성 규칙:** 기능별로 실제 사용자에게 보이는 최종 동작을 서술하며, 카테고리별로 기능당 1개 항목만 둔다(공유 마이그레이션 목록처럼 여러 기능에 걸치는 인프라/스키마 항목은 별도의 한 줄로 두어도 된다). PR 번호·CI 리뷰 라운드 번호·시도 횟수는 적지 않는다 — 그런 정보는 git 히스토리와 PR 스레드에 남는다. 같은 기능에 대한 이후 수정이 이전 항목을 대체하면 새 항목을 추가하지 말고 기존 항목을 고쳐 쓴다.
 
 ## [Unreleased]
+
+## [0.11.0] - 2026-11-26
+
+EC2 전원 상태와 사용자 지정 MCP 증명 마이그레이션의 원장 버전은 `2.0.0`입니다. 트레이스 추론 출처와 서비스 토폴로지 마이그레이션의 원장 버전은 `0.10.1`입니다. 이 네 건은 릴리스 커밋과 SQL 체크섬으로 식별할 수 있습니다.
 
 ### Added
 
