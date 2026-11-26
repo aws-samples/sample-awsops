@@ -262,7 +262,9 @@ export default function DiagnosisView() {
   }, [view?.id, hasReportMarkdown]);
 
   // Generation date of the opened report (the view object omits created_at → look it up on the row).
-  const createdAt = reports.find((r) => r.id === view?.id)?.created_at;
+  const selectedRow = reports.find((r) => r.id === view?.id);
+  const createdAt = selectedRow?.created_at;
+  const reportTier = active?.tier ?? selectedRow?.tier;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -506,7 +508,7 @@ export default function DiagnosisView() {
                     {tt('인쇄용 보기')}
                   </a>
                   <PresentationDownloads key={view.id} report={{
-                    id: view.id, title: view.title, tier: view.tier, status: view.status, markdown: view.markdown,
+                    id: view.id, title: view.title, tier: reportTier, status: view.status, markdown: view.markdown,
                   }} />
                   {(['md', 'docx', 'pdf'] as const).map((f) => (
                     <a
@@ -545,7 +547,7 @@ export default function DiagnosisView() {
               <ReportSections markdown={view.markdown} />
             </>
           ) : view?.status === 'running' ? (
-            <ProgressPanel progress={view.progress} stalled={pollTicks >= LONG_AFTER} createdAt={createdAt} tier={active?.tier ?? reports.find((r) => r.id === view?.id)?.tier} />
+            <ProgressPanel progress={view.progress} stalled={pollTicks >= LONG_AFTER} createdAt={createdAt} tier={reportTier} />
           ) : view?.status === 'failed' ? (
             <FailedPanel error={view.error} onRetry={run} disabled={running} />
           ) : (

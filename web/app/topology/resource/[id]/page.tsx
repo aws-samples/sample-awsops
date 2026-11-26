@@ -120,7 +120,7 @@ export default function ResourceTopologyPage({ params }: { params: Promise<{ id:
                 <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
               </select>
             </label>
-            <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
+            <Link href="/topology?view=flow" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
           </div>
         }
       />

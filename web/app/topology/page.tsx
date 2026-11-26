@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEntityTopology } from '@/components/topology/TopologyCapability';
 import ServiceTopologyView from '@/components/topology/ServiceTopologyView';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
+import SiteFlowView from '@/components/topology/SiteFlowView';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -16,26 +17,18 @@ import { isComposingKey } from '@/lib/ime';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
-import { fetchEksIpMap, inventoryEvidence, type EksIpResolution, type InventoryEvidence, type AggregateRunStatus } from '@/lib/topology-config';
+import { type EksIpResolution, type AggregateRunStatus } from '@/lib/topology-config';
+import { loadFlowInput, rowLimit, type Row } from '@/lib/flow-load';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { FLOW_INPUT_KEY as FLOW_KEY, INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
+import { INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
 import { infraNodeId } from '@/lib/graph-identity';
 import { selectGraphPaths } from '@/lib/graph-display';
 import useGraphViewport from '@/components/topology/useGraphViewport';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
-
-type InvType = (typeof TYPES)[number];
-// Every inventory read the ENI owner resolver consults (eni-owner.ts) that this page fetches.
-const OWNER_TYPES: InvType[] = ['eni', 'vpc_endpoint', 'nat_gateway', 'alb', 'nlb', 'lambda', 'ec2'];
-// The page cannot prove freshness without comparing clocks, so RDS placement inference (which
-// needs complete, current DB and proxy lists) is left to the materialized graph: these reads are
-// not fetched and always count as incomplete.
-const SAVED_GRAPH_ONLY_OWNER_TYPES = ['rds', 'rds_cluster', 'rds_proxy'];
-type Row = Record<string, unknown>;
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default
 // node text to light, so dark nodes get explicit dark fills + light text). Target nodes are
@@ -129,13 +122,6 @@ function nodeLabel(n: FlowNode): ReactNode {
   );
 }
 
-const ROW_CAP = 500; // /api/inventory caps limit at 500
-const INVENTORY_LANES = 2; // Shared max:3 PG pool also serves authentication and other reads.
-const CRITICAL_PAGES = 20;
-// Paged to completion: ownership reads that a cut list would turn into "unknown". ENIs run
-// about 500 per account, so a single 500-row page would leave IP-target owners unresolved.
-const CRITICAL_TYPES = new Set<string>(['target_group', 'ecs_task', 'subnet', 'eni']);
-const rowLimit = (type: string) => ROW_CAP * (CRITICAL_TYPES.has(type) ? CRITICAL_PAGES : 1);
 const ISSUE_STATUSES = ['failed', 'partial'] as const;
 type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
 const EVIDENCE_COPY = {
@@ -193,63 +179,6 @@ const EVIDENCE_COPY = {
   },
 };
 
-const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
-const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
-
-async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean; runSucceeded?: boolean }> {
-  const scopeQuery = new URLSearchParams(inventoryScope), account = scopeQuery.get('accounts') ?? 'self';
-  const critical = CRITICAL_TYPES.has(t);
-  const rows: Row[] = [], seen = new Set<string>();
-  let version: string | undefined, finishedAt: string | null = null;
-  let firstRun: Row | null = null;
-  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete,
-    runSucceeded: firstRun?.status === 'succeeded', ...inventoryEvidence(rows, firstRun, account === 'self') });
-  try {
-    for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
-      if (signal.aborted) throw new Error();
-      const qs = new URLSearchParams(scopeQuery);
-      qs.set('limit', String(ROW_CAP)); qs.set('offset', String(page * ROW_CAP));
-      const r = await fetch(`/api/inventory/${t}?${qs}`, { signal });
-      if (!r.ok) throw new Error();
-      const d: unknown = await r.json();
-      if (signal.aborted || !record(d) || d.error || d.status === 'error'
-        || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
-      const run = record(d.run) ? d.run : null;
-      const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
-      if (critical) {
-        if (d.consistency !== 'statement-snapshot') throw new Error();
-        // The global type sweep covers every account. Only a stable success permits ownership.
-        if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
-          || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
-          || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0))) throw new Error();
-        const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
-        if (version !== undefined && version !== current) return result(false, true);
-        version = current;
-
-      }
-      if (page === 0) firstRun = run;
-      for (const row of d.rows) {
-        if (!record(row) || !record(row.data)) throw new Error();
-        if (critical) {
-          if (!nonempty(row.account_id) || !nonempty(row.region) || !nonempty(row.resource_id)
-            || (account !== '__all__' && !account.split(',').includes(row.account_id))) throw new Error();
-          const key = JSON.stringify([row.account_id, row.region, row.resource_id]);
-          if (seen.has(key)) throw new Error();
-          seen.add(key);
-        }
-        rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region, captured_at: row.captured_at });
-      }
-      finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
-      // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
-      if (incomplete || d.rows.length < ROW_CAP) return result(false, incomplete);
-    }
-    return result(true); // 10,000 critical rows still need an end-of-data proof.
-  } catch {
-    // Fetch/JSON errors can contain response fragments; expose only the fixed type-scoped reason.
-    throw new Error(`${t}: invalid inventory response`);
-  }
-}
-
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
 type NetMaps = { vpc: Map<string, string>; subnet: Map<string, string>; sg: Map<string, string> };
 const emptyNetMaps = (): NetMaps => ({ vpc: new Map(), subnet: new Map(), sg: new Map() });
@@ -290,6 +219,19 @@ export default function TopologyPage() {
   return <Suspense fallback={null}><TopologyScope /></Suspense>;
 }
 
+// `/topology` opens on the site view. The old request-flow graph lives at `?view=flow` (`?view=e2e` is its
+// service + network sub-view). Deep links that predate the site view carry no `view` but do carry params only
+// the flow graph reads, so they keep opening the flow graph:
+//   cluster, clusterScope  EKS/ECS cluster filter          monitor, metric, category, range  network filters (e2e)
+//   lens                   `lens=service` unified graph
+// `?view=site` stays an alias of the default. Any other `view` value is the flow graph.
+const FLOW_ONLY_PARAMS = ['cluster', 'clusterScope', 'lens', 'monitor', 'metric', 'category', 'range'] as const;
+function isSiteView(params: URLSearchParams): boolean {
+  const view = params.get('view');
+  if (view !== null) return view === 'site';
+  return !FLOW_ONLY_PARAMS.some((k) => params.has(k));
+}
+
 function TopologyScope() {
   const enabled = useEntityTopology();
   const [scope, , ready] = useActiveScope();
@@ -308,6 +250,7 @@ function TopologyScope() {
     const next = new URLSearchParams(params.toString());
     if (resetCluster) {
       next.delete('cluster'); next.delete('clusterScope');
+      if (!next.has('view')) next.set('view', 'flow');  // without the cluster param a bare URL would open the site view
     } else if (params.has('cluster') && clusterScope === null) next.set('clusterScope', inventoryScope);
     else return;
     router.replace(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
@@ -316,6 +259,9 @@ function TopologyScope() {
   if (!ready || resetCluster) return null;
   if (enabled && params.get('lens') === 'service') return <ServiceTopologyView key={inventoryScope}
     supported={account === 'self' && scope.regions === '__all__' && scope.includeGlobal} />;
+  // The site view loads its own inventory; mounting it here (not inside ScopedTopologyPage) avoids a second
+  // full inventory load against the shared PG pool.
+  if (isSiteView(params)) return <SiteFlowView key={inventoryScope} inventoryScope={inventoryScope} />;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
@@ -376,53 +322,16 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       setEksResolution(null);
     }
     try {
-      const NET = ['vpc', 'security_group'] as const;
-      const read = async (type: InvType | typeof NET[number]) => {
-        try { return { ...await fetchType(type, inventoryScope, controller.signal), readFailed: false, error: '' }; }
-        catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
-          ...inventoryEvidence([], null, false), readFailed: true, error: `${type}: invalid inventory response` }; }
-      };
-      const types = [...TYPES, ...NET];
-      const results: Awaited<ReturnType<typeof read>>[] = new Array(types.length);
-      let next = 0;
-      const lane = async () => {
-        for (;;) {
-          const index = next++;
-          if (index >= types.length) return;
-          // fetchType stops before issuing a request when aborted; fill every result slot
-          // so queued/unread types cannot be mistaken for successful empty inventories.
-          results[index] = await read(types[index]);
-        }
-      };
-      const [, eks] = await Promise.all([
-        Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-        account === 'self' ? fetchEksIpMap(controller.signal, entitiesEnabled) : Promise.resolve(null),
-      ]);
+      const loaded = await loadFlowInput(inventoryScope, controller.signal, entitiesEnabled);
       if (!current()) return;
-      const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
-      const failed = results.filter(result => result.readFailed);
+      const { input: out, types, results, res, net, eks, failed } = loaded;
       setErr(failed.map(result => result.error).join('; '));
-      if (res.every(result => result.readFailed)) {
+      if (loaded.allFailed) {
         setRetained(displayedAccount.current === account && displayedHasNodes.current);
         return;
       }
-      const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
-        const result = res[TYPES.indexOf(type)];
-        return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
-      };
-      // Owner reads are usable only from a succeeded sweep.
-      const ownerIssue = (type: InvType) => readIssue(type) !== undefined
-        || !res[TYPES.indexOf(type)].runSucceeded;
-      const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
-        targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
-        eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
-        ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
-        // Capped or failed owner reads: the ENI resolver refuses misses and inferences they guard.
-        ownerIncomplete: [...OWNER_TYPES.filter(ownerIssue), ...SAVED_GRAPH_ONLY_OWNER_TYPES],
-      } };
-      TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
-      const incomplete = res.some(result => result.incomplete);
+      const incomplete = loaded.incomplete;
       if (!nextHasNodes && (failed.length > 0 || incomplete)
         && displayedAccount.current === account && displayedHasNodes.current) {
         setRetained(true);
@@ -627,6 +536,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const onEntry = (e: React.ChangeEvent<HTMLSelectElement>) => setEntryId(e.target.value);
   const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value, next = new URLSearchParams(params.toString());
+    if (!next.has('view')) next.set('view', 'flow');
     if (value) { next.set('cluster', value); next.set('clusterScope', inventoryScope); }
     else { next.delete('cluster'); next.delete('clusterScope'); }
     setClusterFilter(value); setSelected(null);
@@ -744,7 +654,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   </>;
   const viewHref = (view: boolean) => {
     const next = new URLSearchParams(params.toString());
-    if (view) next.set('view', 'e2e'); else next.delete('view');
+    next.set('view', view ? 'e2e' : 'flow');
     return `/topology${next.size ? `?${next}` : ''}`;
   };
   if (e2e) return <ServiceNetworkTopology podBindings={entitiesEnabled ? eksResolution?.bindings?.filter(binding => {
@@ -810,6 +720,9 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
             {entitiesEnabled && <Link href="/topology?lens=service" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]">{tt('통합 서비스 그래프')}</Link>}
+            <Link href="/topology" scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+              {tt('사이트 흐름 →')}
+            </Link>
             <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('서비스 + 네트워크 →')}
             </Link>

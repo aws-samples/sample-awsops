@@ -268,6 +268,8 @@ User: "Tell me details about the default VPC from that list"
 AI: (References previous context to provide default VPC details)
 ```
 
+While a domain's flow is on screen in the `/topology` site flow view, that flow is sent with your question as data (not as an instruction to the AI) to the built-in agents only (never to custom agents) and is not saved in the conversation history.
+
 ### Saved History
 
 Conversation history is saved per user and can be viewed in the panel at the bottom of the screen.

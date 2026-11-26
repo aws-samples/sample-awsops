@@ -23,6 +23,15 @@ describe('presentations of stored diagnoses', () => {
     expect(deck.slides.some((s) => s.chapter === 'Evidence appendix')).toBe(false);
     expect(await renderDeckHtml(deck)).toContain('Internal source detail.');
   });
+  it.each([
+    ['Review the route. Compare traffic.', 'Review the route.'],
+    ['Check v1.2 before continuing', 'Check v1.2 before continuing'],
+    ['확인하세요。 비교하세요。', '확인하세요。'],
+  ])('keeps the sentence ending in the first action on the cover', (action, expected) => {
+    const markdown = '## Assessment\n\n### Immediate checks\n\n| Subject | Check |\n|---|---|\n| DB | ' + action + ' |';
+    expect(buildDiagnosisDeck({ id: 2, markdown }, 'en').firstAction).toBe(expected);
+  });
+
   it('shows the selected range and retains omitted rows in notes', () => {
     const markdown =
       '## Inventory\n| Type | Count | Example |\n|---|---|---|\n' +

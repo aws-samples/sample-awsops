@@ -313,7 +313,7 @@ function InfraTopologyPageInner() {
               placeholder={tt('검색 (id · 이름 · IP · 타입)…')}
               className="w-full min-w-0 rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 sm:w-56"
             />
-            <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
+            <Link href="/topology?view=flow" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
           </div>
         }
       />
@@ -322,7 +322,7 @@ function InfraTopologyPageInner() {
       </div>}
       {view === 'graph' && <GraphView q={q} onVpc={onVpc} />}
       {view === 'map' && <InfraMapView query={q} />}
-      {view === 'k8s' && <K8sMapView query={q} />}
+      {view === 'k8s' && <K8sMapView query={q} initialCluster={params.get('cluster') ?? ''} />}
     </div>
   );
 }

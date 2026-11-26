@@ -848,6 +848,10 @@ def test_scope_gaps_and_withheld_claims_cannot_displace_customer_risks(monkeypat
     main, appendix = md.split("\n## Evidence appendix", 1)
     brief = main.split("## Assessment", 1)[1].split("\n## ", 1)[0]
     assert "application may be waiting on memory" in brief
+    assert "[Critical]" in brief
+    for title in ("Reliability", "Performance Efficiency"):
+        pillar = main.split("\n## " + title + "\n", 1)[1].split("\n## ", 1)[0]
+        assert "[Critical]" in pillar
     assert "trace source was not collected" not in main and "model text withheld" not in main
     assert "Verify the recovery objective." in main
     assert "trace source was not collected" in appendix and "model text withheld" in appendix
@@ -855,13 +859,33 @@ def test_scope_gaps_and_withheld_claims_cannot_displace_customer_risks(monkeypat
 
 def test_only_coverage_gaps_still_get_six_honest_sections_without_a_risk_ranking(monkeypatch):
     from diagnosis.test_presentation import finding
-    prepare(monkeypatch, findings=analysis(findings=[finding(id="gap", claim="coverage_gap",
+    prepare(monkeypatch, findings=analysis(findings=[finding(id="gap", severity="critical", claim="coverage_gap",
         explanation="Source detail is unavailable.", prerequisites=["Compare the utilization window."])]))
     md, _, _ = report.generate(object(), "self", lang="en")
     front = md.split("\n## Evidence appendix")[0]
     assert "### Top risks" not in front
+    assert "[Critical]" in front.split("\n## Assessment\n", 1)[1].split("\n## ", 1)[0]
     assert "Compare the utilization window." in front and "## Sustainability" in front
     assert "Source detail is unavailable." not in front and "Source detail is unavailable." in md
+
+
+@pytest.mark.parametrize("statement_lang", ["ko", "en", "ja", "zh"])
+def test_metric_collection_statements_stay_out_of_rankings_and_pillar_prose(monkeypatch, statement_lang):
+    from diagnosis.evidence import METRIC_OBSERVATION_TEXT
+    from diagnosis.test_presentation import finding
+
+    measured = bundle()
+    measured["evidence"][0]["facts"]["metrics"] = {
+        "CPUUtilization": {"Maximum": {"max": 17.25, "unit": "Percent", "status": "Complete"}}}
+    statement = METRIC_OBSERVATION_TEXT[statement_lang]
+    row = finding(claim="observation", explanation=f"  {statement}\n", prerequisites=["Check the baseline."])
+    prepare(monkeypatch, data=measured, findings=analysis(findings=[row]))
+    md, _, _ = report.generate(object(), "self", lang="en")
+    front = md.split("\n## Evidence appendix", 1)[0]
+    assert "### Top risks" not in front and "### Immediate checks" not in front
+    assert statement not in front
+    assert "17.25" in front
+
 
 @pytest.mark.parametrize("locale,title", [("ko","근거 부록"), ("en","Evidence appendix"),
                                           ("zh","证据附录"), ("ja","根拠資料")])

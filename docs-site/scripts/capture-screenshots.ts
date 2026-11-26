@@ -48,7 +48,7 @@ const pages: PageCapture[] = [
   { category: 'operations', name: 'jobs', path: '/jobs' },
   { category: 'resources', name: 'inventory', path: '/inventory/ec2' },
   { category: 'resources', name: 'eks', path: '/eks' },
-  { category: 'resources', name: 'topology', path: '/topology' },
+  { category: 'resources', name: 'topology', path: '/topology?view=flow' },
   { category: 'cost', name: 'cost-explorer', path: '/cost' },
   { category: 'cost', name: 'bedrock', path: '/bedrock' },
   // /datasources now redirects into the Integrations hub (Task 29 fold-in).

@@ -8,13 +8,15 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # Topology
 
-The default `/topology` view explores the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph. The optional **Service + Network** view is described below.
+The default `/topology` view is the per-domain site flow, described under **Site flow** below. At `/topology?view=flow` you can explore the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph; the optional **Service + Network** view is described below.
 
-<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
+<Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph (?view=flow)" />
 
-These saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
+The screenshot above shows the request flow graph (`/topology?view=flow`); saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
 
 ## Features
+The features and steps below describe the request flow graph (`/topology?view=flow`). For the default site flow, see **Site flow** below.
+
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
 - Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
@@ -39,8 +41,8 @@ These saved screenshots are illustrative examples; verify your selected account 
 
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="Node focus mode + detail panel" />
 
-## How to use
-1. Click **Topology** in the sidebar.
+## How to use (request flow graph)
+1. Click **Topology** in the sidebar, then select **Request flow graph →** at the top of the site flow view, or open `/topology?view=flow`.
 2. Once the graph renders, use the **MiniMap** and **Controls** to zoom into the area you want to inspect.
 3. To view a single entry point, pick a target in the top **CloudFront** or **LB** selector.
 4. To find a specific resource, type part of its name in the search box and choose from the autocomplete list.
@@ -67,7 +69,7 @@ Configuration topology shows the source capture range, with eligible host last-s
 
 ## Service + Network (opt-in)
 
-Open `/topology?view=e2e`, or select **Service + Network →** on the configuration topology, service map (`/topology/services`) or network monitor (`/network-flow`). The default `/topology` configuration view remains available through **Back to configuration flow**.
+Open `/topology?view=e2e`, or select **Service + Network →** on the configuration topology, service map (`/topology/services`) or network monitor (`/network-flow`). The configuration flow view (`/topology?view=flow`) remains available through **Back to configuration flow**.
 
 Service and Network Flow Monitor (NFM) observations are supported only for the **host account (`self`)**. Member and all-account selections show configuration only; host observations are never overlaid on those accounts. NFM uses the host account's configured AWS region, not an account-wide or multi-region traffic census.
 
@@ -118,6 +120,17 @@ Grouped targets show member-specific IP, namespace and Pod evidence with omissio
 Numeric trace account IDs are reconciled only with the authenticated host account identity. Unverified host scope withholds those identity links; failed or partial reads and unknown observation windows remain distinct from successful empty results.
 
 Workload identity also requires a complete, fresh service-snapshot read with known zero node/edge drops, orphan/invalid spans and unresolved messaging. Missing loss metadata, a capped root or a subgraph response cannot certify complete workload membership. The source panel preserves read failures, retained publication metadata, source query windows and separate producer clocks. Stale, retained, dropped, capped, partial or unknown service evidence remains visible but cannot establish the related workload identity. This verifies evidence within the query scope, not collection of all traffic.
+
+## Site flow
+
+This is the default view at `/topology` (`?view=site` opens the same view). Open the previous request flow graph from the **Request flow graph →** link at the top or at `/topology?view=flow`; older links that carry request-flow-graph-only parameters such as the cluster filter still open that graph. Pick a domain in the domain picker at the top to see its request flow as a clustered graph: DNS, CloudFront behaviors, load balancers and listener rules, target groups, EKS workloads (including clusters in other registered accounts), trace-observed service calls and datastores.
+
+- **Path input**: enter a path to highlight the branch it takes; the highlight continues past the gateway through trace-observed route templates (last 60 minutes) to downstream services, and the last service's datastores. A page path served from a static origin is linked to the API route whose route template matches it by name, and that link is marked as inferred (dashed).
+- **Route template limits**: routes are aggregated by service name across all clusters and namespaces exporting to the trace source, so same-named services (for example one app deployed to clusters in two Availability Zones) are merged. `http.route` carries no HTTP method, so GET and POST on one template are merged, and only templates seen in the window are candidates. A route with no downstream call may end at that service, or its next hop may be uninstrumented or go through messaging. Routes containing id-like segments (raw paths) are not used.
+- **Expanding groups**: click a group to expand the nodes inside it.
+- **Line styles**: solid lines are observed, dotted lines are configured, and dashed lines are inferred. A highlighted group or edge that is only partly inferred has a dashed highlight. Traced calls carry their call counts.
+- **Notices**: any hop that cannot be decided is disclosed as a notice instead of being drawn. **Refresh** reads all evidence again; route template aggregates may be reused for up to a minute.
+- **AI chat context**: while a flow is on screen, questions to the AI assistant carry that flow with your message as on-screen data (not an instruction), so the answer is grounded in it; it is not saved in the conversation history, and it is not attached when a question is routed to an administrator-registered custom agent. A note above the chat input shows while it is attached.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:

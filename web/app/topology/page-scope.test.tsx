@@ -78,7 +78,7 @@ function search(value: string) {
   fireEvent.change(screen.getByPlaceholderText('리소스 이름 검색…'), { target: { value } });
 }
 
-function mount(initial = '/topology', component = <TopologyPage />) {
+function mount(initial = '/topology?view=flow', component = <TopologyPage />) {
   window.history.replaceState({}, '', initial);
   let update!: (href: string) => void;
   const entries = [initial];
@@ -150,7 +150,7 @@ it('uses router navigation for view controls and preserves unrelated deep-link p
     expect(router.push).toHaveBeenCalledWith('/topology?monitor=vpc-monitor&range=1800&view=e2e', { scroll: false });
     fireEvent.click(screen.getByRole('link', { name: '구성 흐름으로 돌아가기' }));
     await flowReady();
-    expect(router.push).toHaveBeenLastCalledWith('/topology?monitor=vpc-monitor&range=1800', { scroll: false });
+    expect(router.push).toHaveBeenLastCalledWith('/topology?monitor=vpc-monitor&range=1800&view=flow', { scroll: false });
   });
 
 it.each([
@@ -202,13 +202,25 @@ it('updates the cluster filter from same-page navigation and writes filter contr
     // The cluster select is identified by its option, avoiding assumptions about toolbar order.
     const select = screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement;
     expect(select.value).toBe('ecs:ecs-app');
-    act(() => router.push('/topology'));
+    act(() => router.push('/topology?view=flow'));
     expect(select.value).toBe('');
     fireEvent.change(select, { target: { value: 'ecs:ecs-app' } });
     expect(new URLSearchParams(window.location.search).get('cluster')).toBe('ecs:ecs-app');
     expect(new URLSearchParams(window.location.search).get('clusterScope')).toBe('accounts=self&regions=__all__&includeGlobal=1');
     act(() => router.back());
     expect(select.value).toBe('');
+  });
+
+it('keeps a legacy deep link on the flow graph when the cluster select changes (adds view=flow)', async () => {
+    serve();
+    const router = mount('/topology?cluster=ecs%3Aecs-app');
+    await flowReady();
+    const select = screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '' } });
+    expect(router.push).toHaveBeenLastCalledWith('/topology?view=flow', { scroll: false });
+    fireEvent.change(select, { target: { value: 'ecs:ecs-app' } });
+    const last = String(vi.mocked(router.push).mock.calls.at(-1)?.[0]);
+    expect(new URLSearchParams(last.split('?')[1]).get('view')).toBe('flow');
   });
 
 it.each(SCOPE_CHANGES)('clears a previous scope cluster while retaining other URL settings: %j', async nextScope => {
@@ -225,7 +237,7 @@ it.each(SCOPE_CHANGES)('clears a previous scope cluster while retaining other UR
     act(() => setActiveScope(nextScope));
     await screen.findByRole('option', { name: 'ECS · new-scope' });
     await waitFor(() => expect((screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement).value).toBe(''));
-    expect(router.replace).toHaveBeenCalledWith('/topology?monitor=retained-monitor&range=1800', { scroll: false });
+    expect(router.replace).toHaveBeenCalledWith('/topology?monitor=retained-monitor&range=1800&view=flow', { scroll: false });
     const expected = nextScope.accounts[0] === 'self' ? 'ecs-api' : 'member-api';
     search(expected);
     expect(await screen.findByRole('button', { name: new RegExp(expected) })).toBeTruthy();
