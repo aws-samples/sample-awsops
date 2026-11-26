@@ -65,30 +65,9 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 ## Oversized promotion review
 
-The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
-per review call and up to 32 supported HEAD images under the existing byte/codec
-bounds. A larger diff is reviewed in at most 10 complete file-boundary batches that
-must all pass (`pr-review-head-images.md`). An accumulated dev-to-main promotion
-can still exceed that even if each feature PR was independently reviewed. It stays blocked; rerunning unchanged input cannot
-restore missing scope, and historical feature-review comments are not proof of
-complete review of the current promotion HEAD.
+The required `AI Code Review` uses the official Claude Code Action on Amazon Bedrock. It reads changes from the promotion's exact merge base and HEAD. Large changes are divided among GitHub Actions jobs. Every job must return a complete review of its assigned pages, and every required image must be available for inspection. A missing verdict or a CRITICAL or MAJOR finding blocks the promotion. Open the linked run summary for the findings.
 
-For the `samples` repository, **dev is the default branch**. Verify the live setting
-with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before rollout.
-An ordinary reviewed PR merged into dev therefore updates the trusted workflow for
-subsequent reviews, including main-targeted promotions; the workflow need not reach
-main first. Do not assume this activation path for another repository whose default
-branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
-must authorize the workflow change under the existing protections.
-
-Complete bounded batching exists: a promotion diff up to 10 file-boundary batches,
-whose batch-1 file set fits one batch, is reviewed in full by the same protected
-workflow on its current HEAD. A promotion beyond that still needs authenticated
-exact-commit coverage reuse, which is not implemented, through an ordinary PR to dev
-before it can continue. Do not bypass required checks, alter
-main to hide changes, or publish the release tag while this prerequisite is pending.
-Smaller promotion intervals can prevent future accumulation, but cannot repair the
-already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).
+The workflow for automatic reviews comes from the repository's default branch. Verify that branch with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before changing the workflow. Land the workflow through an ordinary protected PR to dev. Its next eligible event uses the reviewed workflow. Tag only the successful main merge as described below. [Review inputs and limits](pr-review-head-images.md)
 
 ## Version and tag on main promotion
 

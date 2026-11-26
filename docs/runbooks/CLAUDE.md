@@ -30,7 +30,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [pr-review-head-images.md](pr-review-head-images.md) | Two-reviewer input admission, HEAD image staging, BASE distinction and incomplete-review diagnostics |
+| [pr-review-head-images.md](pr-review-head-images.md) | Claude Code Action on Bedrock, exact-commit review, HEAD image staging and coverage diagnostics |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
 | [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
@@ -46,12 +46,10 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 ## Deployment invariants
 
-- HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
-  deterministic declaration gate. Two comprehensive vendor reports each attest L2–L5;
-  filtered diff admission is 6,000 lines/128 KiB per call (larger diffs: at most 10 complete
-  file-boundary batches that must all pass) and chair stdin is at most 256 KiB.
-  Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
-  output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
+- The required AI review uses the official Claude Code Action on Bedrock. Validate the
+  exact current commit, all four review areas and actual Read results for every page
+  and normalized HEAD image. Major and critical findings block the merge.
+  See `pr-review-head-images.md` for limits and the protected recovery path.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
