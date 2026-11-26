@@ -222,9 +222,16 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
   const preambleText = source.slice(0, blocks[0].start).trim();
   const hasLedger = appendix.test(finalBlock.title) && preambleText.split('\n').includes(appendixLink);
   const coverageHeadings = ['Data coverage', '데이터 커버리지 (Data coverage)', 'データカバレッジ (Data coverage)', '数据覆盖 (Data coverage)'];
-  const first = finalBlock.nodes[0];
-  const collectorNote = coverageHeadings.includes(finalBlock.title) && first?.type === 'paragraph'
-    && plain(first).startsWith('이 리포트가 근거로 삼은 수집기 상태 — ');
+  // Legacy report.py appends a list of `collector_key`: status rows. Its
+  // introductory sentence is translated or edited independently of the data shape.
+  const collectorNote = coverageHeadings.includes(finalBlock.title) && finalBlock.nodes.some(node =>
+    node.type === 'list' && node.children.some(item => {
+      const paragraph = item.children[0];
+      if (paragraph?.type !== 'paragraph') return false;
+      const [key, status] = paragraph.children;
+      return key?.type === 'inlineCode' && status?.type === 'text' && /^:\s*\S/.test(status.value);
+    }),
+  );
   const sourceEnd = hasLedger || collectorNote ? finalBlock.start : source.length;
   if (hasLedger || collectorNote) blocks.pop();
   const sections = blocks.map((b, i) => ({

@@ -41,6 +41,7 @@ describe('architecture briefing', () => {
     expect(deck.slides.at(-1)?.items[0].text).toContain('hypothesis');
     const html = await renderDeckHtml(deck);
     expect(html).toContain('class="vpc"');
+    expect(html).not.toContain('<span>Configuration</span><strong>gateway');
     expect(html.match(/class="connector directed"/g)).toHaveLength(1);
     const archive = await JSZip.loadAsync(await (await renderDeckPptx(deck)).arrayBuffer());
     const page = await archive.file('ppt/slides/slide3.xml')!.async('string');
@@ -106,7 +107,7 @@ it('preserves multiple numeric ranges within one paragraph in both presentation 
 
 it.each(['Data coverage', '데이터 커버리지 (Data coverage)', 'データカバレッジ (Data coverage)', '数据覆盖 (Data coverage)'])(
   'omits the generated collector appendix from customer slides and source text for %s', (heading) => {
-    const note = '이 리포트가 근거로 삼은 수집기 상태 — `empty`/`degraded`는 해당 영역 진단이 빈약할 수 있음을 뜻합니다.';
+    const note = 'The collector status introduction may change between worker versions.';
     const markdown = `## Findings\n\nKeep this finding.\n\n## ${heading}\n\n${note}\n\n- \`collector_key\`: degraded — operator diagnostics`;
     const deck = buildDiagnosisDeck({ id: 8, markdown }, 'en');
     expect(deck.sections.map(s => s.title)).toEqual(['Findings']);

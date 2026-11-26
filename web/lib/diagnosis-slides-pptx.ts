@@ -128,11 +128,12 @@ function placement(
       fill: { color: white },
       line: { color: 'A1BAAF', width: 1 },
     });
-    text(resourceRole(r.left, lang) || r.label, x + 0.18, y + 0.15, w - 0.36, 0.4, 15, {
+    const role = resourceRole(r.left, lang);
+    if (role) text(role, x + 0.18, y + 0.15, w - 0.36, 0.4, 15, {
       bold: true,
       color: '225744',
     });
-    text(r.left, x + 0.18, y + 0.63, w - 0.36, h * 0.36, 20, { bold: true });
+    text(r.left, x + 0.18, y + (role ? 0.63 : 0.18), w - 0.36, h * 0.36, 20, { bold: true });
     text(r.source, x + 0.18, y + 0.74 + h * 0.36, w - 0.36, h * 0.64 - 0.86, 15, {
       color: muted,
       valign: 'top',
@@ -483,7 +484,7 @@ export async function renderDeckPptx(deck: DiagnosisDeck): Promise<Blob> {
         );
       });
     }
-    const clipped = s.items.some((r) => r.label.length > 86 || r.text.length > 600);
+    const clipped = !s.visual && s.items.some((r) => r.label.length > 86 || r.text.length > 600);
     const count =
       s.total > s.items.length ? `${c.excerpt} ${s.from + 1}–${s.from + s.items.length} / ${s.total}` : '';
     if (count || clipped)

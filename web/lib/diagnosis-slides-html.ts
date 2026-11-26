@@ -73,7 +73,7 @@ const visualCopy = {
 
 function renderVisual(visual: NonNullable<BriefingSlide['visual']>, title: string, lang: DiagnosisDeck['lang']) {
   if (visual.kind === 'stages') {
-    return `<ol class="stages">${visual.rows.map(r => `<li><h3>${escape(r[0])}</h3><dl>${visual.headers.slice(1).map((h, i) =>
+    return `<ol class="stages" role="list">${visual.rows.map(r => `<li><h3>${escape(r[0])}</h3><dl>${visual.headers.slice(1).map((h, i) =>
       `<dt>${escape(h)}</dt><dd>${escape(r[i + 1])}</dd>`).join('')}</dl></li>`).join('')}</ol>`;
   }
   if (visual.kind === 'comparison') {
@@ -82,9 +82,10 @@ function renderVisual(visual: NonNullable<BriefingSlide['visual']>, title: strin
       `<li><strong>${escape(r[0])}</strong><span>${escape(r[1])}</span><meter min="0" max="${max}" value="${visual.values[i]}" aria-hidden="true"></meter><p>${escape(visual.headers[2])} · ${escape(r[2])}</p></li>`).join('')}</ul></figure>`;
   }
   if (visual.kind === 'placement') {
-    return `<section class="vpc"><h3>Amazon VPC　${escape(visual.container)}</h3><ul>${visual.rows.map(row =>
-      `<li><span>${escape(resourceRole(row.left, lang) || row.label)}</span><strong>${escape(row.left)}</strong><p>${escape(row.source)}</p></li>`
-    ).join('')}</ul></section>`;
+    return `<section class="vpc"><h3>Amazon VPC　${escape(visual.container)}</h3><ul>${visual.rows.map(row => {
+      const role = resourceRole(row.left, lang);
+      return `<li>${role ? '<span>' + escape(role) + '</span>' : ''}<strong>${escape(row.left)}</strong><p>${escape(row.source)}</p></li>`;
+    }).join('')}</ul></section>`;
   }
   if (visual.kind === 'relationships') {
     const copy = visualCopy[lang];
