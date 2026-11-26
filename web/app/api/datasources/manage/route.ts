@@ -108,7 +108,9 @@ export async function POST(request: Request) {
     const ds = await getDatasource(id);
     if (ds?.isDefault) await mirrorDefaultCredential(kind, blob); // first of its kind → it is the default
     warmSchemaCache(id, kind, blob as ConnConfig); // §3.C connect-time introspect (best-effort, after response)
-    void enqueueConnectorTargetSync(kind, user.sub); // make the kind callable from chat (fire-and-forget like warmSchemaCache; the helper swallows errors, gated)
+    // The default-off admin-add path is scoped by the 2026-11-05 owner decision in PR #231.
+    // Its public record is docs/decisions/023-connector-target-registration.md.
+    void enqueueConnectorTargetSync(kind, user.sub);
     return json({ id }, 201);
   } catch (e) {
     const msg = (e as Error).message || 'create failed';

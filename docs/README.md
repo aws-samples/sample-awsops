@@ -1,9 +1,7 @@
 # AWSops documentation
 
 Developer and operator documentation for AWSops v2. The multilingual product guide lives
-in [`../docs-site/`](../docs-site/). Architecture decision records (ADRs) and the BASELINE
-register are kept in a private upstream repository; documents here cite ADR numbers for
-traceability only. The published product guide describes operator-visible behavior. Its historical release notes count the documents distributed in the public sample. The Git history preserves the original release inventories.
+in [`../docs-site/`](../docs-site/). The BASELINE register and decisions 001–021 are maintained upstream. The accepted connector registration exception has a public decision record with its scope, panel outcome and dated owner sign-off. [Connector target registration decision](decisions/023-connector-target-registration.md). The published product guide describes operator-visible behavior. Its historical release notes count the documents distributed in the public sample. The Git history preserves the original release inventories.
 
 | Start here | Purpose |
 |---|---|
