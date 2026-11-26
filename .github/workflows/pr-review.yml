@@ -212,8 +212,8 @@ jobs:
           fi
           printf '<!-- multi-ai-pr-review -->\n## Claude Code Review\n\n**Status: %s** — %s\n\nHEAD %s. [Bedrock review details](%s/%s/actions/runs/%s).\n' \
             "$status" "$reason" "$HEAD" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/review.md"
-          comment=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
-            --jq '[.[][] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- multi-ai-pr-review -->")))] | last | .id // empty')
+          comment=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" |
+            jq -r '[.[][] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- multi-ai-pr-review -->")))] | last | .id // empty')
           if [[ -n "$comment" ]]; then
             jq -Rs '{body: .}' "$RUNNER_TEMP/review.md" | \
               gh api --silent -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment" --input -
