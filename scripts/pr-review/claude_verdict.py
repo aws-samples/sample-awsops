@@ -54,15 +54,16 @@ def verify_reads(events, directory, index):
 
 
 def validate(result, index, head):
+    lenses = result.get("lenses")
     if (result.get("head") != head or index["head"] != head or result.get("complete") is not True
-            or sorted(result.get("lenses", [])) != ["L2", "L3", "L4", "L5"]
+            or not isinstance(lenses, dict) or set(lenses) != {"L2", "L3", "L4", "L5"}
             or result.get("images") != [image["file"] for image in index["images"]]):
         raise ValueError("Incomplete review or stale HEAD")
-    if result.get("severity") not in {"NONE", "MINOR", "MAJOR", "CRITICAL"}:
-        raise ValueError("Missing review severity")
-    if not isinstance(result.get("summary"), str) or not result["summary"].strip():
-        raise ValueError("Missing review summary")
-    return result["severity"] in {"NONE", "MINOR"}
+    for assessment in lenses.values():
+        if (not isinstance(assessment, dict) or assessment.get("severity") not in {"NONE", "MINOR", "MAJOR", "CRITICAL"}
+                or not isinstance(assessment.get("analysis"), str) or not 32 <= len(assessment["analysis"].strip()) <= 5000):
+            raise ValueError("Missing substantive per-lens review")
+    return all(assessment["severity"] in {"NONE", "MINOR"} for assessment in lenses.values())
 
 
 if __name__ == "__main__":
@@ -73,10 +74,12 @@ if __name__ == "__main__":
     index = json.loads((directory / "index.json").read_text())
     passed = validate(result, index, os.environ["HEAD"])
     verify_reads(json.loads(Path(os.environ["TRANSCRIPT"]).read_text()), directory, index)
+    report = "\n\n".join(f"{lens} — {assessment['severity']}\n{assessment['analysis']}"
+                         for lens, assessment in sorted(result["lenses"].items()))
     summary = subprocess.run(["bash", "-eo", "pipefail", "-c",
                               "source scripts/pr-review/lib.sh; strip_controls | scrub_secrets"],
-                             input=result["summary"], capture_output=True, text=True, check=True).stdout
+                             input=report, capture_output=True, text=True, check=True).stdout
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
-        stream.write("<pre>" + html.escape(summary[:30000]) + "</pre>\n")
-    if not passed:
-        raise SystemExit("Claude reported a blocking finding. See the job summary.")
+        stream.write("<pre>" + html.escape(summary) + "</pre>\n")
+    with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+        stream.write("blocking=" + ("false" if passed else "true") + "\n")

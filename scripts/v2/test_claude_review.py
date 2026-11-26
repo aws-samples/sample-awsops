@@ -58,8 +58,9 @@ class ClaudeReviewTests(unittest.TestCase):
                         {"type": "user", "message": {"content": [
                             {"type": "tool_result", "tool_use_id": path.name, "content": path.read_text()}]}},
                     ])
-                result = dict(head=head, complete=True, severity="NONE", summary="No findings.",
-                              lenses=["L2", "L3", "L4", "L5"], images=[])
+                lenses = {key: {"severity": "NONE", "analysis": "Checked the exact Git changes against the base and found no defect."}
+                          for key in ["L2", "L3", "L4", "L5"]}
+                result = dict(head=head, complete=True, lenses=lenses, images=[])
                 verify_reads(events, directory, index)
                 with self.assertRaises(ValueError):
                     verify_reads(events[:-1], directory, index)
@@ -67,8 +68,8 @@ class ClaudeReviewTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     verify_reads(events, directory, index)
                 self.assertTrue(validate(result, index, head))
-                self.assertFalse(validate(dict(result, severity="MAJOR"), index, head))
-                for change in [dict(lenses=[]), dict(head=base), dict(complete=False), dict(images=["missing.png"]), dict(severity=None)]:
+                self.assertFalse(validate(dict(result, lenses=dict(lenses, L3=dict(lenses["L3"], severity="MAJOR"))), index, head))
+                for change in [dict(lenses=[]), dict(head=base), dict(complete=False), dict(images=["missing.png"]), dict(lenses=dict(lenses, L2={"analysis": "ok", "severity": "NONE"}))]:
                     with self.assertRaises(ValueError):
                         validate(dict(result, **change), index, head)
             self.assertEqual(paths, {"plain.ts", ":(glob)*.ts", "spaced ü.ts"})
