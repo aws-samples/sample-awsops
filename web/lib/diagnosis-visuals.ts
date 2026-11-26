@@ -34,9 +34,9 @@ const relationshipHeaders = new Set([
   '関係|両端|根拠と範囲',
   '关系|两个端点|证据和范围',
 ]);
-const call = /^(?:호출 표본|Observed call|観測された呼び出し|观测到的调用)(?:$| [(])/i;
+const call = /^(?:호출 표본|Observed call|観測された呼び出し|观测到的调用)(?:$|\s?[(（])/i;
 const association =
-  /^(?:네트워크 흐름|DNS 조회|구성 관계|허용 경로|Network flow|DNS lookup|Configuration|Permitted path|ネットワークフロー|DNS 照会|構成上の関係|許可された経路|网络流|DNS 查询|配置关系|允许的路径)(?:$| [(（])/i;
+  /^(?:네트워크 흐름|DNS 조회|구성 관계|허용 경로|Network flow|DNS lookup|Configuration|Permitted path|ネットワークフロー|DNS 照会|構成上の関係|許可された経路|网络流|DNS 查询|配置关系|允许的路径)(?:$|\s?[(（])/i;
 const boundaryHeaders = new Set([
   '경계|이번 진단에서 읽을 수 있는 구조|업무에 활용하는 방법',
   '구조를 읽는 순서|확인된 구성·관계|이 구조에서의 운영 판단',

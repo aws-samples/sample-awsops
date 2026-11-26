@@ -55,8 +55,10 @@ describe('architecture briefing', () => {
     ['Current architecture', 'Relationship', 'Endpoints', 'Source and scope', 'Permitted path'],
     ['現在のアーキテクチャ', '関係', '両端', '根拠と範囲', '許可された経路'],
     ['当前架构', '关系', '两个端点', '证据和范围', '允许的路径'],
+    ['現在のアーキテクチャ', '関係', '両端', '根拠と範囲', 'ネットワークフロー（方向未確認）'],
+    ['当前架构', '关系', '两个端点', '证据和范围', '网络流（方向未确认）'],
   ])(
-    'keeps permission edges neutral for saved %s regardless of the UI locale',
+    'keeps undirected edges neutral for saved %s regardless of the UI locale',
     (section, kind, pair, scope, label) => {
       const markdown = `## ${section}\n\n| ${kind} | ${pair} | ${scope} |\n|---|---|---|\n| ${label} | a / b | audit |\n`;
       expect(buildDiagnosisDeck({ id: 5, markdown }, 'en').slides[1].visual).toMatchObject({
@@ -101,3 +103,15 @@ it('preserves multiple numeric ranges within one paragraph in both presentation 
   const archive = await JSZip.loadAsync(await (await renderDeckPptx(deck)).arrayBuffer());
   expect(await archive.file('ppt/slides/slide2.xml')!.async('string')).toContain(line);
 });
+
+it.each(['Data coverage', '데이터 커버리지 (Data coverage)', 'データカバレッジ (Data coverage)', '数据覆盖 (Data coverage)'])(
+  'omits the generated collector appendix from customer slides and source text for %s', (heading) => {
+    const note = '이 리포트가 근거로 삼은 수집기 상태 — `empty`/`degraded`는 해당 영역 진단이 빈약할 수 있음을 뜻합니다.';
+    const markdown = `## Findings\n\nKeep this finding.\n\n## ${heading}\n\n${note}\n\n- \`collector_key\`: degraded — operator diagnostics`;
+    const deck = buildDiagnosisDeck({ id: 8, markdown }, 'en');
+    expect(deck.sections.map(s => s.title)).toEqual(['Findings']);
+    expect(JSON.stringify(deck)).not.toContain('collector_key');
+    const authored = buildDiagnosisDeck({ id: 8, markdown: `## ${heading}\n\nA customer-authored assessment.` }, 'en');
+    expect(authored.sections[0].text).toContain('customer-authored assessment');
+  },
+);

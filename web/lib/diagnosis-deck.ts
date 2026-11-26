@@ -221,8 +221,12 @@ export function buildDiagnosisDeck(report: ReportForDeck, lang: Lang): Diagnosis
   const appendixLink = `- [${finalBlock.title}](#evidence_appendix)`;
   const preambleText = source.slice(0, blocks[0].start).trim();
   const hasLedger = appendix.test(finalBlock.title) && preambleText.split('\n').includes(appendixLink);
-  const sourceEnd = hasLedger ? finalBlock.start : source.length;
-  if (hasLedger) blocks.pop();
+  const coverageHeadings = ['Data coverage', '데이터 커버리지 (Data coverage)', 'データカバレッジ (Data coverage)', '数据覆盖 (Data coverage)'];
+  const first = finalBlock.nodes[0];
+  const collectorNote = coverageHeadings.includes(finalBlock.title) && first?.type === 'paragraph'
+    && plain(first).startsWith('이 리포트가 근거로 삼은 수집기 상태 — ');
+  const sourceEnd = hasLedger || collectorNote ? finalBlock.start : source.length;
+  if (hasLedger || collectorNote) blocks.pop();
   const sections = blocks.map((b, i) => ({
     title: b.title,
     text: source.slice(b.start, blocks[i + 1]?.start ?? sourceEnd).trim(),
