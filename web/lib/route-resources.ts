@@ -14,10 +14,10 @@ const ARN = /arn:aws[a-z-]*:([a-z0-9-]+):[\w:/.+=@*-]*/gi;
 const NETWORK_ID_WORD: Record<string, string> = { eni: 'eni', sg: 'sg', acl: 'nacl', rtb: 'route table' };
 const NETWORK_ID_G = new RegExp(`\\b(${NETWORK_PREFIXES})${ID_TAIL}`, 'gi');
 const INSTANCE_ID_G = new RegExp(INSTANCE_ID.source, 'gi');
-/** Token that replaces an EC2 instance ID; no keyword rule matches it. */
-export const INSTANCE_TOKEN = 'ec2-instance';
+/** Replacement word for an EC2 instance ID in a routing query. */
+export const INSTANCE_ROUTING_WORD = 'ec2-instance';
 /** Object word for network IDs without a dedicated word (vpc, subnet, vpce, tgw, nat, igw, pcx, vpn, vgw, cgw). */
-export const NETWORK_RESOURCE_TOKEN = 'network-resource';
+export const NETWORK_RESOURCE_WORD = 'network-resource';
 // A role/user ARN is itself an IAM principal: keep that word so a question about what it may do stays
 // an IAM question ("Can arn:aws:sts::…:assumed-role/Admin/x modify sg-…?").
 const ARN_PRINCIPAL = /:(?:assumed-role|role|user)\//i;
@@ -51,6 +51,6 @@ export function resourceSection(prompt: string): string | undefined {
 export function stripResources(prompt: string): string {
   return prompt
     .replace(ARN, (m, service: string) => ` ${service}${ARN_PRINCIPAL.test(m) ? ' role' : ''} `)
-    .replace(NETWORK_ID_G, (_m, prefix: string) => ` ${NETWORK_ID_WORD[prefix.toLowerCase()] ?? NETWORK_RESOURCE_TOKEN} `)
-    .replace(INSTANCE_ID_G, ` ${INSTANCE_TOKEN} `);
+    .replace(NETWORK_ID_G, (_m, prefix: string) => ` ${NETWORK_ID_WORD[prefix.toLowerCase()] ?? NETWORK_RESOURCE_WORD} `)
+    .replace(INSTANCE_ID_G, ` ${INSTANCE_ROUTING_WORD} `);
 }
