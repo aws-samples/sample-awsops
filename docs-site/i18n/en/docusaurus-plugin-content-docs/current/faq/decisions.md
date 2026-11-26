@@ -16,15 +16,15 @@ Diagnosis and chat use read-only AWS access. External observability reads and ex
 
 ### Does AWSops change AWS resources directly or remediate automatically?
 
-**Diagnosis and chat have read-only access to monitored AWS workloads. Operators perform remediation.**
+**AWS-resource mutation and autonomous remediation are frozen, including on infrastructure owned by AWSops. Diagnosis and chat are read-only. The two owner-approved operations below are the only exceptions.**
 
 The code for the mutating-action framework and its execution substrate (SSM Automation + Change Manager × workers) is preserved dark, but the flags are permanently OFF and are not enabled.
 
-- Operators use their own console or infrastructure pipeline to terminate EC2 instances, change security groups, scale monitored workloads or deploy them.
+- No screen or AI feature terminates EC2 instances, modifies security groups, scales workloads or deploys code.
 - All ~160 AgentCore MCP Lambda tools are read-only.
 
 :::info
-Two optional maintenance tasks affect the AWSops stack itself. Both default to off. After Aurora master-secret rotation, `secret_rotation_redeploy_enabled` restarts the stack’s own web service with the same task definition. With `connector_target_sync_enabled`, an administrator adding a supported datasource can trigger creation or update of its one catalogued AgentCore gateway target. Enable connector registration on at most one stack per AWS account. [Connector registration runbook](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md) · [Public technical documentation](https://github.com/aws-samples/sample-awsops/blob/dev/docs/README.md)
+Both exceptions default to off. With `secret_rotation_redeploy_enabled`, rotation of the host Aurora master secret can restart only the host web service with its current task definition. With `connector_target_sync_enabled`, an administrator adding a supported datasource can create or update its one catalogued target on the stack’s external-observability or monitoring gateway, pointing only to that stack’s connector Lambda. This grants no delete or gateway-management authority. Only one stack per account can enable connector registration. [Rotation scope](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [Approved registration scope](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [Registration runbook](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### Are writes to external systems like Slack or Jira also blocked?

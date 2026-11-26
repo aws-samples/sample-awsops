@@ -1,7 +1,8 @@
 # AWSops documentation
 
-Developer and operator documentation for AWSops v2. The multilingual product guide lives
-in [`../docs-site/`](../docs-site/). The BASELINE register and decisions 001–021 are maintained upstream. The accepted connector registration exception has a public decision record with its scope, panel outcome and dated owner sign-off. [Connector target registration decision](decisions/023-connector-target-registration.md). The published product guide describes operator-visible behavior. Its historical release notes count the documents distributed in the public sample. The Git history preserves the original release inventories.
+This index covers developer and operator documentation for AWSops v2. The BASELINE register and decisions 001–021 are maintained upstream. A public decision record documents the accepted connector registration exception, its panel review and the dated owner sign-off. [Connector target registration decision](decisions/023-connector-target-registration.md)
+
+The multilingual product guide describes operator-visible behavior. Its historical release notes count documents distributed in the public sample. Git history preserves the original release inventories. [Product guide](../docs-site/)
 
 | Start here | Purpose |
 |---|---|

@@ -16,15 +16,15 @@ description: 以运维人员视角的 Q&A 形式整理 AWSops 为何如此运作
 
 ### AWSops 会直接变更 AWS 资源或自动采取措施吗？
 
-**诊断和聊天工具以只读方式访问受监控的 AWS 工作负载。修复操作由运维人员执行。**
+**冻结 AWS 资源变更和自主修复的规则也适用于 AWSops 自身的基础设施。诊断和聊天均为只读。唯一的例外是下文所列、经所有者批准的两项操作。**
 
 变更操作框架与执行 substrate（SSM Automation + Change Manager × worker）的代码以暗（dark）状态保留，但 flag 永久 OFF，不会启用。
 
-- 运维人员使用自己的控制台或基础设施流水线终止受监控的 EC2 实例、修改安全组、调整规模或部署工作负载。
+- 用户界面和 AI 功能均不能终止 EC2 实例、修改安全组、调整工作负载规模或部署代码。
 - 约 160 个 AgentCore MCP Lambda 工具全部为 read-only。
 
 :::info
-AWSops 自身的部署栈有两项默认关闭的维护功能。启用 `secret_rotation_redeploy_enabled` 后，Aurora 主密钥轮换会使用相同的任务定义重启本栈的 Web 服务。启用 `connector_target_sync_enabled` 后，管理员添加受支持的数据源时可以创建或更新目录中对应的一个 AgentCore 网关目标。每个 AWS 账户最多只能在一个栈中启用连接器注册。 [连接器注册运维手册](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md) · [公开技术文档](https://github.com/aws-samples/sample-awsops/blob/dev/docs/README.md)
+两项例外默认关闭。启用 `secret_rotation_redeploy_enabled` 后，仅当宿主 Aurora 主密钥轮换时，才可使用当前任务定义重启宿主 Web 服务。启用 `connector_target_sync_enabled` 后，管理员添加受支持的数据源时，可以在本栈的外部可观测性或监控网关上创建或更新目录中对应的一个目标。目标仅可指向同一栈的连接器 Lambda，此权限不包括删除目标或管理网关。每个账户最多在一个栈中启用注册。 [轮换操作范围](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [获批的注册范围](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [注册运维手册](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### 向 Slack·Jira 等外部系统写入记录也被禁止吗？

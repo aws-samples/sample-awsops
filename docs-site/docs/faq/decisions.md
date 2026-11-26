@@ -16,15 +16,15 @@ AWSops가 "왜 이렇게 동작하는가"를 결정하는 핵심 설계 원칙�
 
 ### AWSops가 AWS 리소스를 직접 변경하거나 자동으로 조치하나요?
 
-**진단과 채팅은 모니터링 대상 AWS 워크로드를 읽기 전용으로 조회합니다. 조치 실행은 운영자가 담당합니다.**
+**AWS 리소스 변경과 자율 조치는 AWSops 자체 인프라를 포함해 동결되어 있습니다. 진단과 채팅은 읽기 전용입니다. 예외는 아래에서 소유자가 승인한 두 작업뿐입니다.**
 
 변경 작업 프레임워크와 실행 substrate(SSM Automation + Change Manager × 워커)의 코드는 다크(dark) 상태로 보존되지만 플래그는 영구 OFF이며, 활성화하지 않습니다.
 
-- 운영자는 자신의 콘솔이나 인프라 파이프라인에서 모니터링 대상 EC2 종료, 보안 그룹 변경, 스케일 조정 및 배포를 수행합니다.
+- 화면이나 AI 기능으로 EC2 종료, 보안 그룹 변경, 워크로드 스케일 조정 또는 코드 배포를 실행할 수 없습니다.
 - 약 160개의 AgentCore MCP Lambda 도구는 모두 read-only입니다.
 
 :::info
-AWSops 자체 스택에는 기본값이 꺼진 유지보수 작업 두 가지가 있습니다. `secret_rotation_redeploy_enabled`를 켜면 Aurora 마스터 시크릿 교체 시 자체 웹 서비스를 같은 태스크 정의로 재시작합니다. `connector_target_sync_enabled`를 켜면 관리자가 지원 데이터소스를 추가할 때 해당 카탈로그의 AgentCore 게이트웨이 대상 하나를 생성하거나 갱신할 수 있습니다. 커넥터 등록은 AWS 계정당 최대 한 스택에서 활성화합니다. [커넥터 등록 런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md) · [공개 기술 문서](https://github.com/aws-samples/sample-awsops/blob/dev/docs/README.md)
+두 예외의 기본값은 모두 꺼짐입니다. `secret_rotation_redeploy_enabled`를 켜면 호스트 Aurora 마스터 시크릿 교체 시 호스트 웹 서비스만 기존 태스크 정의로 재시작할 수 있습니다. `connector_target_sync_enabled`를 켜면 관리자가 지원 데이터소스를 추가할 때 자체 관측성 또는 모니터링 게이트웨이의 카탈로그 대상 하나를 생성하거나 갱신할 수 있습니다. 대상은 같은 스택의 커넥터 Lambda로 제한되며 삭제나 게이트웨이 관리 권한은 없습니다. 이 기능은 계정당 한 스택에서만 활성화할 수 있습니다. [시크릿 교체 시 허용 범위](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [승인된 커넥터 등록 범위](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [등록 런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### Slack·Jira 같은 외부 시스템에 기록을 쓰는 것도 막혀 있나요?

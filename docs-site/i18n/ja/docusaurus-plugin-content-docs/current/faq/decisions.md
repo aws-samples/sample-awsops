@@ -16,15 +16,15 @@ AWSops が「なぜこのように動作するのか」を決める中核的な�
 
 ### AWSops は AWS リソースを直接変更したり、自動で対処したりしますか?
 
-**診断とチャットは監視対象の AWS ワークロードを読み取り専用で参照します。修復作業は運用者が実行します。**
+**AWS リソースの変更と自律的な修復は、AWSops 自身のインフラを含めて凍結されています。診断とチャットは読み取り専用です。例外はオーナーが承認した次の二つの操作に限られます。**
 
 変更作業フレームワークと実行 substrate(SSM Automation + Change Manager × ワーカー)のコードはダーク(dark)状態で保存されますが、フラグは恒久 OFF であり、有効化しません。
 
-- 監視対象の EC2 インスタンスの終了、セキュリティグループの変更、スケーリング、デプロイは運用者が自身のコンソールまたはインフラパイプラインで実行します。
+- 画面や AI 機能から EC2 の終了、セキュリティグループの変更、ワークロードのスケーリング、コードのデプロイは実行できません。
 - 約 160 個の AgentCore MCP Lambda ツールはすべて read-only です。
 
 :::info
-AWSops 自身のスタックには、既定で無効な保守機能が二つあります。`secret_rotation_redeploy_enabled` は Aurora のマスターシークレット更新時に、同じタスク定義で自身のウェブサービスを再起動します。`connector_target_sync_enabled` を有効にすると、管理者が対応データソースを追加した際にカタログにある AgentCore ゲートウェイターゲットを一つ作成または更新できます。コネクタ登録を有効にするスタックは AWS アカウントにつき一つまでです。 [コネクタ登録の運用手順](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md) · [公開技術文書](https://github.com/aws-samples/sample-awsops/blob/dev/docs/README.md)
+二つの例外は既定で無効です。`secret_rotation_redeploy_enabled` は、ホスト Aurora のマスターシークレット更新時にホストのウェブサービスだけを現在のタスク定義で再起動します。`connector_target_sync_enabled` は、管理者が対応データソースを追加した際に、本スタックの外部可観測性またはモニタリングゲートウェイで対応するカタログターゲットを一つ作成または更新できます。接続先は同じスタックのコネクタ Lambda に限定され、削除やゲートウェイ管理の権限は付与しません。登録を有効にするスタックはアカウントにつき一つまでです。 [ローテーション時の権限](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [承認済みの登録範囲](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [登録の運用手順](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### Slack・Jira のような外部システムへの記録の書き込みも禁止されていますか?

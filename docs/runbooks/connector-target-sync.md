@@ -12,7 +12,7 @@ or updates exactly one awsops-owned target, `<kind>-mcp-target`, on the kind's c
 Loki/Tempo/Mimir. The target configuration is the same one the provisioner writes (packaged
 `catalog.py`).
 
-The repository owner accepted this second exception on 2026-11-05 after panel review. The original dev merge records its date, sign-off, IAM limits and one-stack scope. The feature defaults to off. [Accepted decision at the original merge](https://github.com/aws-samples/sample-awsops/blob/9299708d122400c5214b5c213a37ddd89ccc3b50/docs/decisions/023-connector-target-registration.md) · [Original pull request](https://github.com/aws-samples/sample-awsops/pull/231)
+ADR-023 defines the current registration scope, IAM limits and prerequisites. The repository owner accepted this second exception on 2026-11-05 after panel review. The original dev merge records its date, sign-off, IAM limits and one-stack scope. The feature defaults to off. [Current ADR-023](../decisions/023-connector-target-registration.md) · [Accepted decision at the original merge](https://github.com/aws-samples/sample-awsops/blob/9299708d122400c5214b5c213a37ddd89ccc3b50/docs/decisions/023-connector-target-registration.md) · [Original pull request](https://github.com/aws-samples/sample-awsops/pull/231)
 
 ## Prerequisites
 
