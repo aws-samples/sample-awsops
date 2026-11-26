@@ -9,22 +9,22 @@ description: AWSops가 왜 이렇게 동작하는지 운영자 관점의 Q&A로 
 AWSops가 "왜 이렇게 동작하는가"를 결정하는 핵심 설계 원칙을 운영자가 가장 자주 묻는 질문 형태로 정리했습니다.
 
 :::info
-AWSops의 가장 중요한 원칙은 **읽기 전용(read-only)**입니다. 단, 이 제약은 정확히 **AWS 리소스 변경 + 자율 실행(autonomy)**에 묶여 있습니다. 외부 관측성 **데이터 읽기**와 거버넌스 하 외부 **데이터 기록(쓰기)**은 이 제약에 해당하지 않습니다 — 데이터 연산이지 AWS 리소스 변경이 아니기 때문입니다.
+진단과 채팅은 AWS 읽기 전용 권한을 사용합니다. 외부 관측성 데이터 조회와 외부 시스템 기록에는 커넥터 및 목적지별 통제가 적용됩니다.
 :::
 
 ## 보안 / Security
 
 ### AWSops가 AWS 리소스를 직접 변경하거나 자동으로 조치하나요?
 
-**아니요. AWS 리소스 변경과 자율 실행은 영구적으로 동결(do-not-enable)되어 있습니다.**
+**진단과 채팅은 모니터링 대상 AWS 워크로드를 읽기 전용으로 조회합니다. 조치 실행은 운영자가 담당합니다.**
 
 변경 작업 프레임워크와 실행 substrate(SSM Automation + Change Manager × 워커)의 코드는 다크(dark) 상태로 보존되지만 플래그는 영구 OFF이며, 활성화하지 않습니다.
 
-- EC2 종료, SG 수정, 스케일링, 배포 같은 **AWS 리소스 변경은 어떤 화면·AI 기능으로도 수행되지 않습니다.**
+- 운영자는 자신의 콘솔이나 인프라 파이프라인에서 모니터링 대상 EC2 종료, 보안 그룹 변경, 스케일 조정 및 배포를 수행합니다.
 - 약 160개의 AgentCore MCP Lambda 도구는 모두 read-only입니다.
 
 :::info
-"동결"의 범위는 **AWS 리소스 한정**입니다. 통제 층과 워커 실행 분기는 비-AWS 외부 데이터 쓰기에 재사용될 수 있으나, AWS 리소스 자동화 substrate 자체는 동결을 유지합니다.
+AWSops 자체 스택에는 기본값이 꺼진 유지보수 작업 두 가지가 있습니다. `secret_rotation_redeploy_enabled`를 켜면 Aurora 마스터 시크릿 교체 시 자체 웹 서비스를 같은 태스크 정의로 재시작합니다. `connector_target_sync_enabled`를 켜면 관리자가 지원 데이터소스를 추가할 때 해당 카탈로그의 AgentCore 게이트웨이 대상 하나를 생성하거나 갱신할 수 있습니다. 커넥터 등록은 AWS 계정당 최대 한 스택에서 활성화합니다. [커넥터 등록 런북](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md) · [공개 기술 문서](https://github.com/aws-samples/sample-awsops/blob/dev/docs/README.md)
 :::
 
 ### Slack·Jira 같은 외부 시스템에 기록을 쓰는 것도 막혀 있나요?
@@ -34,7 +34,7 @@ AWSops의 가장 중요한 원칙은 **읽기 전용(read-only)**입니다. 단,
 비-AWS-리소스 외부 knowledge/comms write(Slack·Notion·Confluence·Jira·ServiceNow 기록·메시지)는 좁게 허용됩니다. read-only 제약은 AWS 리소스 변경 + 자율에 적용되며, **외부 데이터 통합(read+write)은 제외**됩니다.
 
 - 외부 시스템에 리포트·티켓·메시지를 남기는 것은 거버넌스 통제 하에 가능합니다.
-- AWS 인프라 자체에 대한 변경 권한은 **어떤 경로로도** 부여되지 않습니다.
+- 외부 시스템에 기록하는 권한으로는 모니터링 대상 AWS 인프라를 변경할 수 없습니다.
 
 ### 외부에 쓸 때 내부 정보가 유출될 위험은 없나요?
 
