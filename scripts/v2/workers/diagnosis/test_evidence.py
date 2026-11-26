@@ -578,7 +578,7 @@ def test_redact_context_masks_ipv6_answers_and_keeps_classes_and_service_endpoin
     assert facts["answer_ips"] == ["<ip>", "<ip>"]
     assert facts["db_instance_class"] == "db.r6g.large"
     assert facts["service_name"] == "sts.ap-northeast-2.amazonaws.com"
-    assert "sts.ap-northeast-2.amazonaws.com" in facts["reason"]
+    assert facts["reason"] == 'Could not connect to the endpoint URL: "https://sts.ap-northeast-2.amazonaws.com/"'
 
 
 def test_model_boundary_masks_embedded_resource_hosts_and_ipv6_itself():
