@@ -118,7 +118,7 @@ the dev-tier roles above.
 #### Review CI protection and recovery
 
 For changed HEAD images, install the separately hash-pinned codec and verify the approved
-runner's Codex image attachment and Claude Read capabilities as described in
+runner's image decoding and Claude Read capabilities as described in
 [HEAD image evidence](pr-review-head-images.md). Missing capability or authentication
 requires correction through the existing runner/review setup, never a coverage waiver.
 
@@ -316,28 +316,7 @@ gh pr list -R aws-samples/sample-awsops --state all --label "ci-review:$REVIEW_H
 # gh label delete "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --yes
 ```
 
-Automatic CI code is selected from immutable `github.sha`, while the panel and chair read source
-context from a separate target-base worktree. Since **2025-12-08**, `pull_request_target`
-uses the default branch for its workflow, `GITHUB_REF`, and `GITHUB_SHA` regardless of PR
-target. See [GitHub's platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/),
-[environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
-[immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
-The workflow gives Codex and Claude one independent comprehensive review each,
-covering L2–L5, with at most two 1200-second attempts per vendor. Each report must
-attest all four checklists. Input admission precedes model credentials: complete
-filtered diff up to 6,000 lines/128 KiB per call (larger diffs: at most 10 complete batches that
-must all pass) and complete hash-valid image evidence.
-Comprehensive reports allow 60,000 bytes each, 120,000 bytes combined, with a
-256 KiB bound on actual chair stdin. Incomplete panel coverage skips chair calls
-and publishes fixed diagnostics and unadjudicated severity-keyword presence booleans without a code verdict.
-See [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size)
-and the [promotion constraint](branch-strategy.md#oversized-promotion-review).
-The panel and chair have a 10-second hard-kill grace. The job ceiling is 90 minutes.
-After Git/CLI/prompt preparation,
-immediately before the panel and again immediately before chair synthesis, the same OIDC
-role obtains a fresh one-hour session; its permissions and maximum session duration
-are unchanged. Failed or timed-out chair output cannot supply a successful verdict.
-Missing/failed vendor reports remain blocking; both vendors must cover all four checklists.
+Automatic review code comes from immutable `github.sha`. The action reads target-base source and prepared HEAD changes. The protected recovery path still requires an exact SHA label and environment approval. The official Claude Code Action invokes Amazon Bedrock through the existing `AWS_CI_REVIEW_ROLE_ARN` in `us-east-1`. Model jobs have read access to PRs. A separate job publishes the required result after checking the current base and head. [Review input and verification](pr-review-head-images.md)
 
 <a id="3-per-stack-terraform-secrets--스택별-tf-시크릿"></a>
 

@@ -284,60 +284,11 @@ secrets-manager) — installed by `make deps`.
   dependencies for the disposable fixture. Merge Verify runs it alongside all migration cases.
 - `v2/upgrade.sh` — `make upgrade`: RDS snapshot → migrate → deploy. Previews unless
   `CONFIRM=go`.
-- `pr-review/` — two-vendor review panel: `run-panel.sh` (two parallel comprehensive reports,
-  each combining all four checklist prompts), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
-  `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
-  its source contract and offline test entry are listed above.
-  Python review helpers use isolated mode (`-I`), excluding application-CWD and
-  PYTHONPATH module shadowing while model-phase credentials are active.
-  `review-limits.json` binds raw/scrubbed diff, report and chair-stdin budgets.
-  `chair_stdin_bytes` measures only synth-stdin.txt (diff + reports + short headers);
-  synth-prompt.txt/image-context text is a separate CLI argument. The max-budget
-  fixture verifies that distinction; do not add argument bytes to a stdin-only limit.
-  `report-panel-failure.sh` publishes fixed diagnostics and unadjudicated severity-keyword presence booleans with
-  named missing vendors and separate lens/image/report diagnostics, never approval.
-  `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
-  complete hash-valid image evidence before model credentials; no partial review.
-  `review_batches.py` splits a larger diff at file boundaries into at most 10 batches, each
-  admitted the same way and reviewed by both vendors plus its own chair; every batch must pass.
-  `run-batches.sh` runs each wave of at most 5 batches in its own step after fresh credentials.
-  Both panel reports require substantive sections for every L2–L5 checklist, including
-  security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
-  skips chair calls; report truncation cannot approve unseen findings. Promotions beyond
-  10 batches (or whose sensitive files exceed batch 1) are still rejected; no coverage reuse.
-  `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
-  `image-formats.json` selects detected extensions and the approved codec for both staging
-  and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.
-  Admit records against both metadata and rendered-context budgets; preserve admitted images
-  and fixed omission reasons. Check renamed blob sizes before reading.
-  `image-requirements.txt` pins the Python 3.12 binary dependency.
-  `stage_head_pngs.py` stages bounded regular HEAD raster Git blobs as read-only data before
-  review credentials; prompts use 200-character safe path labels, exact names stay in JSON data.
-  Codex receives hash-checked `--image` attachments; Claude Read uses the same generated files.
-  BASE pixels are historical, never replacement evidence for changed HEAD images.
-  `image_coverage.py` validates bounded full reports before truncation/verdict: each of
-  both vendor reports plus chair must declare plain `IMAGE_COVERAGE: COMPLETE` when images
-  are staged. Explicit failure always blocks; quoted/fenced/prose examples do not count.
-  Missing/unsupported required image evidence fails coverage; no finding suppression,
-  HEAD execution or added permissions. See `docs/runbooks/pr-review-head-images.md`.
-  Per-entry unavailable evidence preserves good files and publishes a deterministic FAIL.
-  Preparation faults also reach a fixed failure comment after context/diff validation.
-  The existing panel-prompt structure runner executes both pipeline and image fixture suites.
-  Static PNG/WebP/single-rendition ICO use hash-pinned Pillow 12.3.0 on Python 3.12; isolated
-  decode has CPU/memory/time/output bounds. Keep original blob/hash and render lineage.
-  32 attempts/files bound each change batch; animations/renditions never silently truncate.
-  Response presence stays counted on image failure. Normalize terminal controls, reserve
-  declaration prefixes (decorated failures block), and diagnose unreadable reports separately.
-  Only the accepted chair needs required coverage; discarded invalid output without a
-  declaration can recover. Explicit/malformed failures and panel failures remain sticky.
-  Omitted-path diagnostics use safe labels; gate reasons are quoted environment data.
-  `v2/ci_review_access.py` produces the protected-environment/IAM trust plan without API writes.
-  - **Pass `--strict-mcp-config` on every Claude panel/chair call.** A user-scope MCP server (e.g. github)
-    loads at session init; if its auth is broken, `claude -p` waits silently for the tool until
-    `CHAIR_TIMEOUT` with no error — killing both primary and fallback chairs and failing the
-    gate regardless of the diff.
-    `--allowedTools` is a permission allowlist and does not stop MCP loading, so it is not a
-    substitute.
+- `pr-review/` prepares exact-commit patches and sandboxed HEAD image evidence for the
+  official Claude Code Action on Amazon Bedrock. `claude_scope.py` produces the review index;
+  `claude_verdict.py` requires complete coverage and blocks major and critical findings.
+  `image_capability.py` is a separate operator diagnostic. See
+  `docs/runbooks/pr-review-head-images.md` for inputs, bounds and failure handling.
 
 ## Migration Filename Rule
 - `terraform/foundation/migrations/<ULID>_<snake_name>.sql`

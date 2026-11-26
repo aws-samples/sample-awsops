@@ -241,16 +241,6 @@ class AggregationTests(unittest.TestCase):
                 fx = self.batches(directory, envs)
                 self.assertIn(expected, fx.run("env", str(fx.review)).splitlines())
 
-    def test_partial_chair_failure_selects_the_infrastructure_badge(self):
-        with tempfile.TemporaryDirectory() as directory:
-            fx = self.batches(directory, ["chair_failed=1\n", "chair_used=Claude Fable 5\n"])
-            lines = fx.run("env", str(fx.review)).splitlines()
-            self.assertIn("chair_failed=0", lines)
-            self.assertIn("chair_failed_any=1", lines)
-        post = WorkflowTests.workflow.split("      - name: Post review comment (upsert)", 1)[1].split("      - name:", 1)[0]
-        any_branch = post.index('"${chair_failed_any:-0}" = "1"')
-        self.assertLess(post.index('"${chair_failed:-0}" = "1"'), any_branch)
-        self.assertLess(any_branch, post.index("CRITICAL/MAJOR issues must be resolved before merge"))
 
     def test_within_a_batch_the_last_write_wins_like_the_single_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -331,78 +321,6 @@ class ContractTests(unittest.TestCase):
             note = (Path(fx.works()[1][0]) / "batch-note.txt").read_text()
             self.assertIn("HEAD image context covers the whole PR", note)
             self.assertTrue(note.rstrip().endswith("still apply unchanged."))
-
-
-class WorkflowTests(unittest.TestCase):
-    workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
-
-    def step(self, identifier):
-        blocks = re.split(r"(?m)^(?=      - )", self.workflow)
-        matches = [block for block in blocks if re.search(rf"(?m)^        id: {identifier}$", block)]
-        self.assertEqual(len(matches), 1, identifier)
-        return matches[0]
-
-    def test_every_review_wave_runs_the_batch_runner_after_fresh_credentials(self):
-        self.assertIn("review_batches.py admit /tmp/pr-diff.txt", self.workflow)
-        order = ["panel_credentials", "panel_review", "panel_credentials_2", "panel_review_2",
-                 "chair_credentials", "chair_review", "chair_credentials_2", "chair_review_2"]
-        positions = [self.workflow.index(f"        id: {name}\n") for name in order]
-        self.assertEqual(positions, sorted(positions))
-        for phase, script in (("panel", "run-panel.sh"), ("chair", "synthesize.sh")):
-            for wave, suffix in ((1, ""), (2, "_2")):
-                block = self.step(f"{phase}_review{suffix}")
-                self.assertIn(f'run-batches.sh" {phase} {wave} /tmp/pr-review', block)
-                self.assertIn(script, block)
-                self.assertIn("WAVES: ${{ steps.input_scope.outputs.waves }}", block)
-                creds = self.step(f"{phase}_credentials{suffix}")
-                self.assertIn("role-duration-seconds: 3600", creds)
-            second = self.step(f"{phase}_review_2")
-            self.assertIn("steps.input_scope.outputs.waves == '2'", second)
-            self.assertIn(f"steps.{phase}_review.outcome == 'success'", second)
-        gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1]
-        self.assertIn("steps.panel_review_2.outcome || steps.panel_review.outcome", gate)
-        self.assertIn("steps.chair_review_2.outcome || steps.chair_review.outcome", gate)
-        runner = (ROOT / "scripts/pr-review/run-batches.sh").read_text()
-        self.assertIn("wait -n", runner)
-        self.assertIn("max_parallel_batches", runner)
-        self.assertIn('echo "::stop-commands::$STOP_TOKEN"', runner)
-        self.assertNotIn("--add-dir", self.workflow + runner)
-        self.assertIn("Remove batched-review work directories", self.workflow)
-        # Each wave is a separate step, so the job timeout must cover two worst-case waves of each
-        # phase plus 15 minutes of image staging and 15 minutes of setup and publication.
-        waves = -(-LIMITS["max_batches"] // LIMITS["max_parallel_batches"])
-        self.assertLessEqual(waves, 2)
-        timeout = int(re.search(r"(?m)^    timeout-minutes:\s*(\d+)\s*$", self.workflow).group(1))
-        self.assertGreaterEqual(timeout * 60 - waves * (2 * 1210 + 2 * 1030), 30 * 60)
-
-    def test_gate_reports_every_incomplete_batch_and_still_fails(self):
-        gate = self.workflow.split("      - name: Check for blocking issues\n", 1)[1].split(
-            "      - name: Post review comment", 1)[0]
-        gate = textwrap.dedent(gate.split("        run: |\n", 1)[1])
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            review = root / "pr-review"
-            rows = []
-            for index, severe in ((1, False), (2, True)):
-                work = review / f"batch-{index:02d}"
-                (work / "slot").mkdir(parents=True)
-                (work / "slot/codex-ALL.md").write_text("MAJOR: retained finding\n")
-                if severe:
-                    (work / "coverage-severe.flag").write_text("")
-                rows.append(f"{work}\t{work}/diff.txt\t{work}/lenses\n")
-            (review / "batch-works.tsv").write_text("".join(rows))
-            env = {**os.environ, "GITHUB_ENV": str(root / "env"), "GITHUB_OUTPUT": str(root / "output"),
-                   "IMAGE_STAGE_OUTCOME": "success", "INPUT_SCOPE_OUTCOME": "success",
-                   "REVIEW_INPUT_READY": "true", "PANEL_READY": "false",
-                   "PANEL_OUTCOME": "success", "CHAIR_OUTCOME": "skipped"}
-            subprocess.run(["bash", "-eu", "-c", gate.replace("/tmp/", f"{root}/")],
-                           cwd=ROOT, env=env, check=True, capture_output=True)
-            text = (root / "review.md").read_text()
-            self.assertIn("reason=Panel coverage incomplete", (root / "output").read_text())
-            self.assertIn("## Batch 02", text)
-            self.assertNotIn("batch-01", text)
-            self.assertNotIn("retained finding", text)
-            self.assertEqual(text.rstrip().splitlines()[-1], "VERDICT: FAIL")
 
 
 if __name__ == "__main__":
