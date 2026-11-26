@@ -21,7 +21,7 @@ function ReportMarkdownImpl({ markdown }: { markdown: string }) {
   return (
     <article className="report-markdown max-w-none text-[13.5px] leading-relaxed text-ink-700 [overflow-wrap:anywhere]">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
         components={{
           // Document title.
           h1: ({ children }) => (
