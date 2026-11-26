@@ -287,6 +287,7 @@ secrets-manager) — installed by `make deps`.
 - `pr-review/` prepares exact-commit patches and sandboxed HEAD image evidence for the
   official Claude Code Action on Amazon Bedrock. `claude_scope.py` produces the review index;
   `claude_verdict.py` requires complete coverage and blocks major and critical findings.
+  The prior panel and chair scripts, limits and tests are retained as historical helpers.
   `image_capability.py` is a separate operator diagnostic. See
   `docs/runbooks/pr-review-head-images.md` for inputs, bounds and failure handling.
 

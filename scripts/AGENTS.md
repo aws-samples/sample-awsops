@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 73b0f08cc5cb · generated-at: 2026-11-11 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3a1c577c33b1 · generated-at: 2026-11-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -18,43 +18,11 @@
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
-Changed HEAD PNG evidence is staged from bounded Git blobs before review credentials.
-All panel lenses and chair share safe labels and read-only generated paths; exact
-names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
-BASE pixels are historical. Required unavailable images fail coverage, never suppress
-findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
-Python helpers use isolated mode so application-base modules and PYTHONPATH cannot
-execute through standard-library imports under review credentials.
-`review-limits.json` ties raw/scrubbed diff, report and chair-stdin allocations.
-The stdin bound measures diff, reports and short headers only; synthesis instructions
-and image-context text are a separate CLI argument. The max-budget fixture proves
-that IO distinction, not model latency.
-`report-panel-failure.sh` retains fixed diagnostics and severity-keyword presence booleans, names missing vendors
-and separates checklist/image/report diagnoses without implying code safety.
-Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
-complete hash-valid image evidence before model credentials. No truncated reviews.
-`review_batches.py`: larger diffs in ≤10 file batches, ≤5 per wave (`run-batches.sh`); all pass.
-Two independent Codex/Claude reports each cover all four checklists and must declare
-substantive sections for L2–L5, including security L3, plus plain
-`LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
-Report truncation cannot approve unseen findings. Promotions beyond 10 batches (or whose
-sensitive files exceed batch 1) are still rejected; no coverage reuse.
-Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both
-comprehensive vendor reports and chair for staged images. Explicit failure overrides PASS even without
-images; examples inside quotes/fences/prose do not count as declarations.
-Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
-Preparation faults publish fixed failures after context/diff validation. Both image
-and pipeline fixture suites are run by the existing panel-prompt structure check.
-Static PNG/WebP/single-rendition ICO use an isolated hash-pinned Pillow 12.3.0 decoder on
-Python 3.12 with 32 attempts/files and bounded CPU/memory/time/bytes. Preserve source/render
-hashes and geometry; reject extra frames/renditions. Context admission includes rendered
-paths and final counter reserve; report omitted scope without discarding admitted images.
-Check renamed blob size before reading. Image failure does not erase response
-presence. Decorated failures block; terminal controls normalize before parsing; unreadable
-review output is distinct from image coverage. No new tool or AWS permission.
-The accepted chair must satisfy required coverage; discarded invalid output without a
-declaration may recover. Explicit/malformed and panel failures remain sticky. Omitted-path
-diagnostics use safe labels, and gate reasons are quoted environment data.
+The required review uses the official Claude Code Action on Bedrock, the existing review
+role and protected environments. Validate the exact current commit, four review areas,
+and successful complete Read results for each patch page and normalized HEAD image.
+Major or critical findings block merging. The prior panel scripts and tests remain as
+historical fixtures. See `docs/runbooks/pr-review-head-images.md`.
 
 ## Diagnostic and deployment boundaries
 - `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.

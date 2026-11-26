@@ -119,7 +119,7 @@ the dev-tier roles above.
 
 For changed HEAD images, install the separately hash-pinned codec and verify the approved
 runner's image decoding and Claude Read capabilities as described in
-[HEAD image evidence](pr-review-head-images.md). Missing capability or authentication
+[Claude Code review on Amazon Bedrock](pr-review-head-images.md). Missing capability or authentication
 requires correction through the existing runner/review setup, never a coverage waiver.
 
 Recovery approval is enforced by GitHub environments, outside PR-controlled code. A

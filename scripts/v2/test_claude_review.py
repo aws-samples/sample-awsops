@@ -12,7 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/pr-review"))
 import claude_scope
-from claude_verdict import validate
+from claude_verdict import validate, verify_reads
 
 
 class ClaudeReviewTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class ClaudeReviewTests(unittest.TestCase):
             dest = root / "packet"
             (dest / "images").mkdir(parents=True)
             (dest / "images/manifest.json").write_text(json.dumps(
-                {"status": "complete", "schema": 1, "images": [], "deleted": []}))
+                {"head": head, "merge_base": base, "status": "complete", "schema": 1, "images": [], "deleted": []}))
             previous = Path.cwd()
             try:
                 os.chdir(root)
@@ -46,16 +46,31 @@ class ClaudeReviewTests(unittest.TestCase):
             for group in groups:
                 directory = dest / str(group["group"])
                 index = json.loads((directory / "index.json").read_text())
-                receipts = []
+                events = []
+                group_paths = {page["path"] for page in index["pages"]}
+                self.assertFalse(group_paths & paths, "one file must stay in one review")
+                paths.update(group_paths)
                 for page in index["pages"]:
-                    paths.add(page["path"])
-                    receipts.append((directory / page["page"]).read_text().split()[-1])
-                result = dict(head=head, complete=True, severity="NONE", summary="No findings.", receipts=receipts, images=[])
-                self.assertTrue(validate(result, index, head, group["digest"]))
-                self.assertFalse(validate(dict(result, severity="MAJOR"), index, head, group["digest"]))
-                for change in [dict(receipts=[]), dict(head=base), dict(complete=False), dict(images=["missing.png"]), dict(severity=None)]:
+                    path = directory / page["page"]
+                    events.extend([
+                        {"type": "assistant", "message": {"content": [
+                            {"type": "tool_use", "name": "Read", "id": path.name, "input": {"file_path": str(path)}}]}},
+                        {"type": "user", "message": {"content": [
+                            {"type": "tool_result", "tool_use_id": path.name, "content": path.read_text()}]}},
+                    ])
+                result = dict(head=head, complete=True, severity="NONE", summary="No findings.",
+                              lenses=["L2", "L3", "L4", "L5"], images=[])
+                verify_reads(events, directory, index)
+                with self.assertRaises(ValueError):
+                    verify_reads(events[:-1], directory, index)
+                events[-1]["message"]["content"][0]["content"] = "END OF REVIEW PAGE"
+                with self.assertRaises(ValueError):
+                    verify_reads(events, directory, index)
+                self.assertTrue(validate(result, index, head))
+                self.assertFalse(validate(dict(result, severity="MAJOR"), index, head))
+                for change in [dict(lenses=[]), dict(head=base), dict(complete=False), dict(images=["missing.png"]), dict(severity=None)]:
                     with self.assertRaises(ValueError):
-                        validate(dict(result, **change), index, head, group["digest"])
+                        validate(dict(result, **change), index, head)
             self.assertEqual(paths, {"plain.ts", ":(glob)*.ts", "spaced ü.ts"})
 
     def test_action_uses_bedrock_and_all_results_gate_the_protected_check(self):
@@ -65,6 +80,15 @@ class ClaudeReviewTests(unittest.TestCase):
         self.assertEqual(action["with"]["use_bedrock"], "true")
         self.assertEqual(model["permissions"]["pull-requests"], "read")
         self.assertIn("ci-review-recovery", model["environment"])
+        self.assertNotIn("Bash", action["with"]["claude_args"])
+        self.assertIn('--tools "Read"', action["with"]["claude_args"])
+        self.assertIn("--strict-mcp-config", action["with"]["claude_args"])
+        self.assertIn("--setting-sources user", action["with"]["claude_args"])
+        for step in model["steps"]:
+            if "run" in step:
+                self.assertNotIn("${{", step["run"])
+            if step.get("uses", "").startswith("actions/checkout@"):
+                self.assertFalse(step["with"]["persist-credentials"])
         self.assertEqual(set(jobs["gate"]["needs"]), {"prepare", "claude"})
         self.assertIn("AI Code Review", jobs["gate"]["name"])
 
