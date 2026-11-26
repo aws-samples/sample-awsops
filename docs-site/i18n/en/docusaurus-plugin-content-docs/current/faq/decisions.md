@@ -9,22 +9,22 @@ description: Why AWSops behaves the way it does, framed as operator Q&A — read
 This page distills the core design principles that determine *why AWSops behaves the way it does*, in the form of the questions operators ask most.
 
 :::info
-AWSops's single most important principle is **read-only**. That constraint is bound precisely to **AWS-resource mutation + autonomy**. Reading external observability **data** and writing external **data records** under governance fall outside it — they are data operations, not AWS-resource changes.
+Diagnosis and chat use read-only AWS access. External observability reads and external records have separate connector and destination controls.
 :::
 
 ## Security
 
 ### Does AWSops change AWS resources directly or remediate automatically?
 
-**No. AWS-resource mutation and autonomous execution are permanently frozen (do-not-enable).**
+**AWS-resource mutation and autonomous remediation are frozen, including on infrastructure owned by AWSops. Diagnosis and chat are read-only. The two owner-approved operations below are the only exceptions.**
 
 The code for the mutating-action framework and its execution substrate (SSM Automation + Change Manager × workers) is preserved dark, but the flags are permanently OFF and are not enabled.
 
-- **No screen or AI feature performs AWS-resource changes** such as terminating EC2, modifying SGs, scaling, or deploying.
+- No screen or AI feature terminates EC2 instances, modifies security groups, scales workloads or deploys code.
 - All ~160 AgentCore MCP Lambda tools are read-only.
 
 :::info
-The "freeze" is scoped to **AWS resources only**. The control layer and the worker execution branch may be reused for non-AWS external data writes, but the AWS-resource automation substrate itself stays frozen.
+Both exceptions default to off. With `secret_rotation_redeploy_enabled`, rotation of the host Aurora master secret can restart only the host web service with its current task definition. With `connector_target_sync_enabled`, an administrator adding a supported datasource can create or update its one catalogued target on the stack’s external-observability or monitoring gateway, pointing only to that stack’s connector Lambda. This grants no delete or gateway-management authority. Only one stack per account can enable connector registration. [Rotation scope](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [Approved registration scope](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [Registration runbook](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### Are writes to external systems like Slack or Jira also blocked?
@@ -34,7 +34,7 @@ The "freeze" is scoped to **AWS resources only**. The control layer and the work
 Non-AWS-resource external knowledge/comms writes (records and messages in Slack, Notion, Confluence, Jira, ServiceNow) are narrowly allowed. The read-only constraint applies to AWS-resource mutation + autonomy, and **external data integration (read + write) is excluded** from it.
 
 - Leaving reports, tickets, and messages in external systems is possible under governance controls.
-- Mutation rights over AWS infrastructure itself are granted **by no path at all**.
+- Writing to an external system grants no write access to the monitored AWS infrastructure.
 
 ### Is there a risk of leaking internal information when writing externally?
 

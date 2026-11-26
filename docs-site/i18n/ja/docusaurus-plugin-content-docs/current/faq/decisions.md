@@ -9,22 +9,22 @@ description: AWSops がなぜこのように動作するのかを運用者視点
 AWSops が「なぜこのように動作するのか」を決める中核的な設計原則を、運用者が最もよく尋ねる質問の形式で整理しました。
 
 :::info
-AWSops の最も重要な原則は**読み取り専用(read-only)**です。ただし、この制約は正確には **AWS リソースの変更 + 自律実行(autonomy)**に紐づいています。外部オブザーバビリティの**データ読み取り**と、ガバナンス下の外部**データ記録(書き込み)**はこの制約に該当しません — データ演算であり、AWS リソースの変更ではないからです。
+診断とチャットは AWS の読み取り専用権限を使用します。外部の可観測性データの読み取りと外部システムへの記録には、コネクタと宛先ごとの制御が適用されます。
 :::
 
 ## セキュリティ / Security
 
 ### AWSops は AWS リソースを直接変更したり、自動で対処したりしますか?
 
-**いいえ。AWS リソースの変更と自律実行は恒久的に凍結(do-not-enable)されています。**
+**AWS リソースの変更と自律的な修復は、AWSops 自身のインフラを含めて凍結されています。診断とチャットは読み取り専用です。例外はオーナーが承認した次の二つの操作に限られます。**
 
 変更作業フレームワークと実行 substrate(SSM Automation + Change Manager × ワーカー)のコードはダーク(dark)状態で保存されますが、フラグは恒久 OFF であり、有効化しません。
 
-- EC2 の終了、SG の修正、スケーリング、デプロイのような **AWS リソースの変更は、どの画面・AI 機能でも実行されません。**
+- 画面や AI 機能から EC2 の終了、セキュリティグループの変更、ワークロードのスケーリング、コードのデプロイは実行できません。
 - 約 160 個の AgentCore MCP Lambda ツールはすべて read-only です。
 
 :::info
-「凍結」の範囲は **AWS リソース限定**です。統制層とワーカー実行分岐は非 AWS の外部データ書き込みに再利用され得ますが、AWS リソース自動化 substrate 自体は凍結を維持します。
+二つの例外は既定で無効です。`secret_rotation_redeploy_enabled` は、ホスト Aurora のマスターシークレット更新時にホストのウェブサービスだけを現在のタスク定義で再起動します。`connector_target_sync_enabled` は、管理者が対応データソースを追加した際に、本スタックの外部可観測性またはモニタリングゲートウェイで対応するカタログターゲットを一つ作成または更新できます。接続先は同じスタックのコネクタ Lambda に限定され、削除やゲートウェイ管理の権限は付与しません。登録を有効にするスタックはアカウントにつき一つまでです。 [ローテーション時の権限](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [承認済みの登録範囲](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [登録の運用手順](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### Slack・Jira のような外部システムへの記録の書き込みも禁止されていますか?
@@ -34,7 +34,7 @@ AWSops の最も重要な原則は**読み取り専用(read-only)**です。た�
 **非 AWS リソースの外部 knowledge/comms write**(Slack・Notion・Confluence・Jira・ServiceNow の記録・メッセージ)は狭く許可されています。read-only 制約は AWS リソースの変更 + 自律に適用され、**外部データ統合(read+write)は除外**されます。
 
 - 外部システムにレポート・チケット・メッセージを残すことは、ガバナンス統制の下で可能です。
-- AWS インフラ自体に対する変更権限は、**いかなる経路でも**付与されません。
+- 外部システムへの書き込み権限から、監視対象の AWS インフラを変更する権限は得られません。
 
 ### 外部に書き込むとき、内部情報が漏洩するリスクはありませんか?
 

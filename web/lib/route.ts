@@ -1,5 +1,5 @@
 import { sectionByKey, activeSections } from './sections';
-import { resourceSection, stripResources, INSTANCE_TOKEN } from './route-resources';
+import { resourceSection, stripResources, INSTANCE_ROUTING_WORD } from './route-resources';
 
 // Network objects whose names or questions carry security words; the security gateway is IAM-only.
 // network-resource: the stripResources word for vpc/subnet/… IDs.
@@ -21,7 +21,7 @@ const NETWORK_OBJECT_WITH_POLICY = new RegExp(
   `(?:${NETWORK_OBJECTS.source})(?:\\s*(?:의|에\\s*대한)?\\s*(?:정책|권한|policy|permissions?))?`, 'gi');
 
 // "i-… 보안 점검": the generic word 보안 directly after an instance ID asks about that instance.
-const INSTANCE_WITH_GENERIC_SECURITY = new RegExp(`${INSTANCE_TOKEN}\\s*(?:의|에\\s*대한)?\\s*보안`, 'gi');
+const INSTANCE_WITH_GENERIC_SECURITY = new RegExp(`${INSTANCE_ROUTING_WORD}\\s*(?:의|에\\s*대한)?\\s*보안`, 'gi');
 
 /** True when every security-rule match in `text` comes from a network object and its own policy
  *  words: with those blanked out, nothing in `text` matches the security rule any more. */

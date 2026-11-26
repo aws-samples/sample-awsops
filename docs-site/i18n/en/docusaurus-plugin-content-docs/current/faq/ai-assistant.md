@@ -89,7 +89,7 @@ Yes. Conversations are persisted as threads in **Aurora** (PostgreSQL). The file
 
 **No.** AWSops is a **read-only operations dashboard + AI diagnosis**. The assistant does **not** create, modify, delete, or restart AWS resources.
 
-- **AWS-resource mutation and autonomy are permanently frozen** (do-not-enable).
+- AWS-resource mutation and autonomous remediation are frozen across all infrastructure, including AWSops itself. The assistant cannot invoke either of the two owner-approved, default-off maintenance operations. [Design principles FAQ](./decisions.md)
 - The assistant only provides diagnosis, root-cause analysis (RCA), and recommendations. You make any actual change yourself in the AWS Console / IaC.
 - On the **external-data** side only, governed external observability **reads** and external record/ticket/message **writes** are permitted . These pass through SSRF guard · Secrets Manager · DLP/redaction · destination allowlist · human-gate · flag-OFF controls, and are **data records in external systems, not AWS-resource changes**.
 

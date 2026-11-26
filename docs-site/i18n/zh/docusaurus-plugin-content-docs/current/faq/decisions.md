@@ -9,22 +9,22 @@ description: 以运维人员视角的 Q&A 形式整理 AWSops 为何如此运作
 本页将决定 AWSops "为何如此运作"的核心设计原则整理为运维人员最常问的问题形式。
 
 :::info
-AWSops 最重要的原则是**只读（read-only）**。不过，该约束精确绑定于 **AWS 资源变更 + 自主执行（autonomy）**。外部可观测性**数据读取**以及治理之下的外部**数据记录（写入）**不属于该约束——因为它们是数据操作，而非 AWS 资源变更。
+诊断和聊天使用 AWS 只读权限。读取外部可观测性数据以及向外部系统写入记录时，分别应用连接器和目标端的管控措施。
 :::
 
 ## 安全 / Security
 
 ### AWSops 会直接变更 AWS 资源或自动采取措施吗？
 
-**不会。AWS 资源变更与自主执行已被永久冻结（do-not-enable）。**
+**冻结 AWS 资源变更和自主修复的规则也适用于 AWSops 自身的基础设施。诊断和聊天均为只读。唯一的例外是下文所列、经所有者批准的两项操作。**
 
 变更操作框架与执行 substrate（SSM Automation + Change Manager × worker）的代码以暗（dark）状态保留，但 flag 永久 OFF，不会启用。
 
-- 终止 EC2、修改 SG、扩缩容、部署等 **AWS 资源变更不会通过任何页面·AI 功能执行。**
+- 用户界面和 AI 功能均不能终止 EC2 实例、修改安全组、调整工作负载规模或部署代码。
 - 约 160 个 AgentCore MCP Lambda 工具全部为 read-only。
 
 :::info
-"冻结"的范围**仅限 AWS 资源**。管控层与 worker 执行分支可复用于非 AWS 的外部数据写入，但 AWS 资源自动化 substrate 本身维持冻结。
+两项例外默认关闭。启用 `secret_rotation_redeploy_enabled` 后，仅当宿主 Aurora 主密钥轮换时，才可使用当前任务定义重启宿主 Web 服务。启用 `connector_target_sync_enabled` 后，管理员添加受支持的数据源时，可以在本栈的外部可观测性或监控网关上创建或更新目录中对应的一个目标。目标仅可指向同一栈的连接器 Lambda，此权限不包括删除目标或管理网关。每个账户最多在一个栈中启用注册。 [轮换操作范围](https://github.com/aws-samples/sample-awsops/blob/dev/terraform/foundation/secret-rotation.tf) · [获批的注册范围](https://github.com/aws-samples/sample-awsops/blob/dev/docs/decisions/023-connector-target-registration.md) · [注册运维手册](https://github.com/aws-samples/sample-awsops/blob/dev/docs/runbooks/connector-target-sync.md)
 :::
 
 ### 向 Slack·Jira 等外部系统写入记录也被禁止吗？
@@ -34,7 +34,7 @@ AWSops 最重要的原则是**只读（read-only）**。不过，该约束精确
 **非 AWS 资源的外部 knowledge/comms write**（Slack·Notion·Confluence·Jira·ServiceNow 的记录·消息）被狭窄地允许。read-only 约束适用于 AWS 资源变更 + 自主执行，**外部数据集成（read+write）除外**。
 
 - 在外部系统中留下报告·工单·消息，在治理管控之下是可行的。
-- 对 AWS 基础设施本身的变更权限**不会通过任何途径**授予。
+- 向外部系统写入数据的权限不会授予修改受监控 AWS 基础设施的权限。
 
 ### 向外部写入时没有内部信息泄露的风险吗？
 
