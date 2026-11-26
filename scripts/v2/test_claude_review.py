@@ -74,6 +74,26 @@ class ClaudeReviewTests(unittest.TestCase):
                         validate(dict(result, **change), index, head)
             self.assertEqual(paths, {"plain.ts", ":(glob)*.ts", "spaced ü.ts"})
 
+    def test_publisher_selects_the_last_bot_comment_across_pages(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/pr-review.yml").read_text())
+        script = workflow["jobs"]["gate"]["steps"][0]["run"]
+        lookup = script.split("comment=$(", 1)[1].split(")\n", 1)[0]
+        # Validate the actual gh flag combination without authenticating or posting.
+        # gh rejects --slurp with --jq even when there are no comments.
+        self.assertIn("gh api --paginate --slurp", lookup)
+        self.assertNotIn("--jq", lookup)
+        jq = lookup.split("|\n", 1)[1].strip()
+        def select(pages):
+            return subprocess.run(["bash", "-euc", jq], input=json.dumps(pages),
+                                  text=True, capture_output=True, check=True).stdout.strip()
+        marker = "<!-- multi-ai-pr-review -->"
+        def comment(identifier, author, body):
+            return {"id": identifier, "user": {"login": author}, "body": body}
+        self.assertEqual(select([[]]), "")
+        self.assertEqual(select([[comment(1, "github-actions[bot]", marker)],
+                                 [comment(2, "reviewer", marker), comment(3, "github-actions[bot]", marker),
+                                  comment(4, "github-actions[bot]", "other check")]]), "3")
+
     def test_action_uses_bedrock_and_all_results_gate_the_protected_check(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/pr-review.yml").read_text())["jobs"]
         model = jobs["claude"]
