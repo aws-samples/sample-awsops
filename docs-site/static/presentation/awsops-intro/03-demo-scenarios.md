@@ -896,7 +896,7 @@ DOCX는 python-docx로, PDF는 chromium과 playwright로 렌더링합니다. 한
 
 ### 알림 다이제스트 (병합·배포 완료)
 
-- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨; 승인된 범위는 스케줄 요약뿐이지만 현재 구현은 수동 실행분까지 묶음 — 후속 정리 대상)
+- **`diagnosis_digest.py`** — `notified_at IS NULL` 리포트를 ~15분 배치로 묶어 SNS 1건 발송 (`workers_enabled && diagnosis_notify_enabled` 게이트로 이미 main 병합·라이브 배포됨; 내부 아키텍처 결정 기록이 진단 다이제스트에 승인한 범위는 스케줄 요약뿐인데, 현재 구현은 수동 실행분까지 묶어 그 승인 범위를 넘어섬 — 후속 정리 대상)
 - 완료 즉시 개별 발송(per-report) 방식 폐기 — 폭주 방지(하루 44건 → 1건)
 - **PII 스크러빙** — Bedrock 호출 전 ARN·계정ID·이메일·IP·액세스키를 결정론적으로 마스킹 (현재 라이브)
 
@@ -1235,7 +1235,7 @@ EKS 화면도 read-only지만 이제 완전한 메뉴 패밀리입니다. fleet 
 
 ### Read-Only 자세
 
-- **AWS-리소스 변경 + 자율 = 동결** (do-not-enable)
+- **AWS-리소스 변경 + 자율 = 동결** (do-not-enable · 기본 off 예외 2건 · 내부 아키텍처 결정 기록 기준)
 - 외부 관측성 **READ** 허용
 - 외부 기록 / 티켓 / 메시지 **WRITE** 는 거버넌스 하 허용
   - SSRF · Secrets · DLP · human-gate · flag-OFF
@@ -1262,7 +1262,7 @@ AWSops를 정리하면, read-only AWS 운영 대시보드에 AI 진단을 결합
 
 {cue: emphasis}
 
-가장 중요한 원칙은 read-only 자세입니다. read-only는 AWS **리소스**에 한정되고, AWS 리소스 변경과 자율 실행은 동결(새 명시적 결정 전까지, 영구 아님)입니다. 다만 외부 관측성 데이터를 읽고, 외부 기록이나 티켓, 메시지를 쓰는 것은 SSRF 방어, Secrets 관리, DLP, human-gate, flag-OFF 같은 거버넌스 아래에서 허용됩니다. 변경되는 것은 데이터일 뿐, AWS 리소스가 아닙니다.
+가장 중요한 원칙은 read-only 자세입니다. read-only는 AWS **리소스**에 한정되고, AWS 리소스 변경과 자율 실행은 프로젝트의 내부 아키텍처 결정 기록에 따라 동결(새 명시적 결정 전까지, 영구 아님)이고, 예외는 기본 off인 두 작업, 즉 자기 웹 서비스 재시작과 커넥터 target 등록뿐입니다. 다만 외부 관측성 데이터를 읽고, 외부 기록이나 티켓, 메시지를 쓰는 것은 SSRF 방어, Secrets 관리, DLP, human-gate, flag-OFF 같은 거버넌스 아래에서 허용됩니다. 변경되는 것은 데이터일 뿐, AWS 리소스가 아닙니다.
 
 시작은 간단합니다. configure하고 Terraform을 apply한 뒤 deploy하고, Cognito 사용자를 추가해 `/login`으로 들어오면 됩니다.
 
