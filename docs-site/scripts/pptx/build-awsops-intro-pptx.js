@@ -375,7 +375,7 @@ kit.sectionDivider(pres, {
     s.addText(n[0], safeText({ x: x + 0.08, y: rby + 0.12, w: rbw - 0.16, h: 0.28, fontFace: FONT, fontSize: 9.5, bold: true, color: C.ink, align: "center", margin: 0 }));
     s.addText(n[1], safeText({ x: x + 0.08, y: rby + 0.46, w: rbw - 0.16, h: 0.88, fontFace: FONT, fontSize: 8.5, color: C.muted, align: "center", valign: "top", margin: 0, lineSpacingMultiple: 1.2 }));
   });
-  s.addText("모니터링 대상 계정 조회는 읽기 전용 API — 변경 기능은 거버넌스 동결", {
+  s.addText("모니터링 대상 계정 조회는 읽기 전용 API — 변경 기능은 거버넌스 동결(결정 기록 기준)", {
     x: PAD + 0.15, y: 5.55, w: 6.1, h: 0.26, fontFace: FONT, fontSize: 8.5, bold: true, color: C.body, margin: 0,
   });
   // 우측: 4 레이어 요약

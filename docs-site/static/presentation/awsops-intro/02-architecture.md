@@ -166,7 +166,7 @@ AWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다
 | `incidents.tf` | 인시던트 webhook (`incident_lifecycle_enabled`) |
 | `k8sgpt.tf` | K8sGPT 예산/리소스 (`k8sgpt_enabled`) |
 | `writeback.tf` | RCA write-back (`rca_writeback_enabled`) |
-| `remediation.tf` | 리메디에이션 substrate (**FROZEN**) |
+| `remediation.tf` | 리메디에이션 substrate (**FROZEN**, 결정 기록 기준) |
 | `secret-rotation.tf` | 자기치유 재배포 |
 
 :::
