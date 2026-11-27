@@ -30,7 +30,7 @@ AWSops의 데이터소스는 **읽기 전용 커넥터 플랫폼**입니다. AWS
 | ClickHouse | SQL | 분석 DB |
 
 :::info 읽기 전용 자세
-데이터소스는 **데이터 read**(+ 거버넌스된 외부 record/ticket/message write)만 다룹니다. AWS 리소스 변경·자율 동작은 영구 동결(do-not-enable)입니다. `web/app/api/datasources/query/route.ts`의 도구 맵에는 **읽기 도구만** 존재하며(mutate 도구 도달 불가), 테스트가 이 불변식을 검증합니다.
+데이터소스는 **데이터 read**(+ 거버넌스된 외부 record/ticket/message write)만 다룹니다. AWS 리소스 변경·자율 동작은 동결(do-not-enable)입니다. 데이터소스와 관련된 예외는 하나뿐으로, 기본 꺼짐인 `connector_target_sync_enabled`를 켜면 데이터소스 추가 시 자체 AgentCore 게이트웨이에 해당 커넥터 대상 하나를 생성·갱신합니다(삭제·게이트웨이 관리 없음). `web/app/api/datasources/query/route.ts`의 도구 맵에는 **읽기 도구만** 존재하며(mutate 도구 도달 불가), 테스트가 이 불변식을 검증합니다.
 :::
 
 ## 새로운 데이터소스 타입(예: Elasticsearch, InfluxDB)을 추가하려면?

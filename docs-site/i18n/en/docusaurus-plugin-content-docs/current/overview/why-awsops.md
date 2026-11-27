@@ -139,7 +139,7 @@ No need to memorize a different query language per tool — **one line of natura
 | **Alert pipeline** | webhook (CloudWatch SNS/Alertmanager/Grafana) → correlation → automatic AI diagnosis → Slack |
 | **Event pre-scaling** | historical-metric analysis → Bedrock generates multi-phase warm-up plans/scripts (review-then-run) |
 | **CIS compliance** | Powerpipe benchmarks CIS v1.5–v4.0, **431 controls** |
-| **Security design** | SSRF allowlist on outbound calls, admin gate (adminEmails), no AWS resource mutation (read-only — changes are exported as scripts only) |
+| **Security design** | SSRF allowlist on outbound calls, admin gate (adminEmails), read-only by default (changes are exported as scripts only; two owner-approved, default-off exceptions — its own web-service restart and connector target registration) |
 
 <Screenshot src="/screenshots/overview/agentcore.png" alt="AgentCore dashboard — Runtime/Gateway/tool status" />
 

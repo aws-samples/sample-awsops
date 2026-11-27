@@ -27,7 +27,7 @@ flowchart LR
 | **Live queries** | AgentCore MCP Lambda tools (~160, read-only) call AWS APIs directly via boto3 |
 | **Steampipe's role** | **Not** the live query engine. It is only a flag-gated **inventory sync** (`steampipe_enabled`, default OFF) — no local 9193 service, no pg Pool |
 | **Gating** | All of AgentCore is gated by the `agentcore_enabled` Terraform flag (default OFF → `plan` = No changes, $0) |
-| **Read-only** | All tools are read-only; AWS-resource mutation and autonomy are permanently frozen |
+| **Read-only** | All tools are read-only; AWS-resource mutation and autonomy are frozen |
 
 :::info Steampipe is no longer the live engine
 Live AWS state is always answered by AgentCore tools. When enabled, Steampipe merely warms up on Fargate to sync inventory into Aurora — an auxiliary path, OFF by default.

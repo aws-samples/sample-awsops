@@ -34,6 +34,7 @@
 
   <!-- title -->
   <text x="28" y="34" fill="#e8eaf0" font-size="22" font-weight="700">Security Findings Pipeline</text>
+  <text x="330" y="34" fill="#6b7194" font-size="10.5">read-only posture per the project's recorded architecture decisions</text>
   <text x="28" y="52" fill="#9ba1b8" font-size="12.5">Derived entirely from a synced inventory table — no live scanning, no target-account writes</text>
 
   <!-- read-only badge -->
@@ -46,7 +47,7 @@
     <rect x="20" y="60" width="150" height="70" rx="10" fill="#1a1d2e" stroke="#74b9ff" stroke-width="1.5"/>
     <use href="#icon-account" x="32" y="72" width="22" height="22" color="#74b9ff"/>
     <text x="60" y="90" fill="#e8eaf0" font-size="13" font-weight="700">Host Account</text>
-    <text x="32" y="112" fill="#6b7194" font-size="10.5"><ACCOUNT_ID></text>
+    <text x="32" y="112" fill="#6b7194" font-size="10.5">&lt;ACCOUNT_ID&gt;</text>
 
     <rect x="20" y="265" width="150" height="70" rx="10" fill="#1a1d2e" stroke="#74b9ff" stroke-width="1.5"/>
     <use href="#icon-account" x="32" y="277" width="22" height="22" color="#74b9ff"/>

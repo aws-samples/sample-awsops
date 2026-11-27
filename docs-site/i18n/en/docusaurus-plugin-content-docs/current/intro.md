@@ -24,7 +24,7 @@ AWSops is a unified operations dashboard that lets you **view your AWS and Kuber
 - **Datasource Explore** — query connected observability datasources in their native query language.
 
 :::info A read-only operations dashboard
-AWSops does **not change** your AWS resources. It focuses on observing, analyzing, and diagnosing; for actions that require installing or changing something (for example, OpenCost) it provides guidance and scripts you run yourself.
+By default, AWSops does **not change** your AWS resources. It focuses on observing, analyzing, and diagnosing; for actions that require installing or changing something (for example, OpenCost) it provides guidance and scripts you run yourself. The only exceptions are two owner-approved, default-off operations (restarting its own web service when the database secret rotates, and registering a connector target on its own AgentCore gateway when an administrator adds a datasource), and both are limited to the AWSops stack's own resources.
 :::
 
 ## Next steps
